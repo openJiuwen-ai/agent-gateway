@@ -535,7 +535,6 @@
       "agentName": "Name",
       "agentModel": "Model",
       "agentSkills": "Skills",
-      "agentMaxIterations": "Max Iterations",
       "agentCompletionTimeout": "Completion Timeout",
       "teamName": "Team Name",
       "teamLifecycle": "Lifecycle",

@@ -534,7 +534,6 @@
       "agentName": "名称",
       "agentModel": "模型",
       "agentSkills": "技能",
-      "agentMaxIterations": "最大迭代次数",
       "agentCompletionTimeout": "完成超时时间",
       "teamName": "团队名称",
       "teamLifecycle": "生命周期",

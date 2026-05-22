@@ -102,7 +102,6 @@ interface AgentEntry {
   name: string;
   model: AgentModel;
   skills: string[];
-  max_iterations: number;
   completion_timeout: number;
 }
 
@@ -158,7 +157,6 @@ interface ConfigPanelProps {
     agents: Record<string, {
       model: { provider: string; api_base: string; api_key: string; model: string };
       skills: string[];
-      max_iterations: number;
       completion_timeout: number;
     }>;
     team: Array<{
@@ -177,7 +175,6 @@ interface AgentsTeamsPayload {
   agents: Record<string, {
     model: { provider: string; api_base: string; api_key: string; model: string };
     skills: string[];
-    max_iterations: number;
     completion_timeout: number;
   }>;
   team: Array<{
@@ -251,7 +248,7 @@ function getFieldLengthErrorKey(field: keyof ModelEntry, value: string): string 
       return null;
   }
 }
-const AGENT_KEYS = new Set(["name", "model", "skills", "max_iterations", "completion_timeout"]);
+const AGENT_KEYS = new Set(["name", "model", "skills", "completion_timeout"]);
 const TEAM_KEYS = new Set(["team_name", "lifecycle", "teammate_mode", "spawn_mode"]);
 const FREE_SEARCH_BOOLEAN_KEYS = new Set(["free_search_ddg_enabled", "free_search_bing_enabled"]);
 const FREE_SEARCH_KEYS = new Set([...FREE_SEARCH_BOOLEAN_KEYS]);
@@ -486,7 +483,6 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   name: "config.keys.agentName",
   model: "config.keys.agentModel",
   skills: "config.keys.agentSkills",
-  max_iterations: "config.keys.agentMaxIterations",
   completion_timeout: "config.keys.agentCompletionTimeout",
 };
 const KEY_PLACEHOLDER_I18N: Record<string, string> = {
@@ -506,7 +502,6 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   memory_forbidden_description: 1,
   model: 0,
   skills: 1,
-  max_iterations: 2,
   completion_timeout: 3,
 };
 
@@ -1226,7 +1221,6 @@ function MultiAgentSection({
     name: "",
     model: { provider: "", api_base: "", api_key: "", model: "" },
     skills: [],
-    max_iterations: 200,
     completion_timeout: 600,
   });
 
@@ -1351,17 +1345,16 @@ function MultiAgentSection({
     onAgentsChange([...agents, { ...newAgent, name }]);
     setExpandedIdx(agents.length);
     setAddingNew(false);
-    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [], max_iterations: 200, completion_timeout: 600 });
+    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [], completion_timeout: 600 });
   };
 
-  const agentFields: (keyof AgentEntry)[] = ["name", "skills", "max_iterations", "completion_timeout"];
+  const agentFields: (keyof AgentEntry)[] = ["name", "skills", "completion_timeout"];
 
   const getAgentFieldLabel = (field: string): string => {
     const labels: Record<string, string> = {
       name: t("config.keys.agentName"),
       model: t("config.keys.agentModel"),
       skills: t("config.keys.agentSkills"),
-      max_iterations: t("config.keys.agentMaxIterations"),
       completion_timeout: t("config.keys.agentCompletionTimeout"),
     };
     return labels[field] || field;
@@ -1442,18 +1435,6 @@ function MultiAgentSection({
                           onAgentsChange(copy);
                         }}
                         placeholder={t("config.keys.agentSkillsPlaceholder")}
-                      />
-                    ) : field === "max_iterations" ? (
-                      <input
-                        type="number"
-                        step="1"
-                        min="1"
-                        value={agent[field] ?? 1}
-                        onChange={(e) => {
-                          const v = parseInt(e.target.value.replace(/^0+/, '') || '1');
-                          updateAgentField(idx, field, v > 0 ? v : 1);
-                        }}
-                        className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                       />
                     ) : field === "completion_timeout" ? (
                       <input
@@ -1549,18 +1530,6 @@ function MultiAgentSection({
                   selected={newAgent.skills || []}
                   onChange={(selected) => setNewAgent((p) => ({ ...p, skills: selected }))}
                   placeholder={t("config.keys.agentSkillsPlaceholder")}
-                />
-              ) : field === "max_iterations" ? (
-                <input
-                  type="number"
-                  step="1"
-                  min="1"
-                  value={newAgent[field] ?? 1}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value.replace(/^0+/, '') || '1');
-                    setNewAgent((p) => ({ ...p, [field]: v > 0 ? v : 1 }));
-                  }}
-                  className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                 />
               ) : field === "completion_timeout" ? (
                 <input
@@ -2467,7 +2436,6 @@ export function ConfigPanel({
           model: matchedModel.model_name || "",
         } : { provider: "", api_base: "", api_key: "", model: modelName },
         skills: (normalizedConfig[`agent_skills_${i}`] || normalizedConfig[`agent_${i}_skills`] || "").split(/[,，]/).map((s: string) => s.trim()).filter(Boolean),
-        max_iterations: Math.max(1, Number(normalizedConfig[`agent_max_iterations_${i}`]) || Number(normalizedConfig[`agent_${i}_max_iterations`]) || 200),
         completion_timeout: Number(normalizedConfig[`agent_completion_timeout_${i}`]) || Number(normalizedConfig[`agent_${i}_completion_timeout`]) || 600,
       });
     }
@@ -2779,7 +2747,6 @@ export function ConfigPanel({
       agentsPayload[agent.name] = {
         model: { ...agent.model },
         skills: agent.skills,
-        max_iterations: agent.max_iterations,
         completion_timeout: agent.completion_timeout,
       };
     }
@@ -2938,14 +2905,14 @@ export function ConfigPanel({
               type="button"
               onClick={handleCancel}
               disabled={!hasChanges || saving}
-              className="btn !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="btn !px-3 !py-1.5 disabled:cursor-not-allowed"
             >
               {t('common.cancel')}
             </button>
             <button
               type="button"
               onClick={() => void handleSaveAndRestart()}
-              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || agentModelReferencesLost.length > 0 || (isProcessing && mode !== 'team')}
+              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || agentModelReferencesLost.length > 0 || hasAgentsTeamsValidationError || (isProcessing && mode !== 'team')}
               className="btn primary !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? t('common.saving') : t('common.save')}

@@ -48,7 +48,6 @@ type AgentsTeamsSavePayload = {
   agents: Record<string, {
     model: { provider: string; api_base: string; api_key: string; model: string };
     skills: string[];
-    max_iterations: number;
     completion_timeout: number;
   }>;
   team: Array<{
@@ -471,7 +470,7 @@ function AppContent() {
     }
   }, [clearRestartAutoCloseTimer, closeRestartModal, request]);
 
-  const applyConfigSaveUiState = useCallback((appliedWithoutRestart: boolean) => {
+const applyConfigSaveUiState = useCallback((appliedWithoutRestart: boolean) => {
     setConfigError(null);
     setRestartModalOpen(true);
     setRestartSuccess(false);
@@ -492,7 +491,6 @@ function AppContent() {
       updates[`agent_name_${idx}`] = name;
       updates[`agent_model_${idx}`] = agent.model.model;
       updates[`agent_skills_${idx}`] = agent.skills.join(',');
-      updates[`agent_max_iterations_${idx}`] = String(agent.max_iterations);
       updates[`agent_completion_timeout_${idx}`] = String(agent.completion_timeout);
     });
     payload.team.forEach((team, idx) => {
