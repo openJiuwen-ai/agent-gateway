@@ -1619,7 +1619,7 @@ function TeamItemSection({
 
   useEffect(() => {
     const allMembers = [...(team.predefined_members || []), team.leader].filter(Boolean) as { member_name: string }[];
-    const hasInvalidName = allMembers.some((m) => !/^[a-zA-Z0-9_]+$/.test(m.member_name));
+    const hasInvalidName = allMembers.some((m) => !/^[a-z][a-z0-9-]*$/.test(m.member_name));
     const hasDuplicate = allMembers.some((m, i) =>
       allMembers.some((m2, j) => i !== j && m.member_name === m2.member_name)
     );
