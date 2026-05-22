@@ -597,6 +597,7 @@
       "addAgent": "添加Agent",
       "removeAgent": "删除",
       "untitled": "未命名",
+      "duplicateName": "Agent名称已存在",
       "deleteConfirmTitle": "确认删除Agent？",
       "deleteConfirmMessage": "确定要删除 Agent \"{{agentName}}\" 吗？",
       "deleteConfirmMessageSimple": "Agent \"{{agentName}}\" 正在被 Team 引用。",

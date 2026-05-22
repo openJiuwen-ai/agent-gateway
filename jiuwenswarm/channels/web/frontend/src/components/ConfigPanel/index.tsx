@@ -1217,6 +1217,7 @@ function MultiAgentSection({
 }) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
+  const [newAgentError, setNewAgentError] = useState<string | null>(null);
   const [newAgent, setNewAgent] = useState<AgentEntry>({
     name: "",
     model: { provider: "", api_base: "", api_key: "", model: "" },
@@ -1243,11 +1244,10 @@ function MultiAgentSection({
     return references;
   };
 
-  // 检查模型是否被其他Agent引用（排除当前agentIdx）
-  const getModelReferences = (modelName: string, modelProvider: string, modelApiBase: string, excludeIdx: number): string[] => {
+  // 检查模型是否被Agent引用（包括当前agent）
+  const getModelReferences = (modelName: string, modelProvider: string, modelApiBase: string): string[] => {
     const references: string[] = [];
-    agents.forEach((agent, agentIdx) => {
-      if (agentIdx === excludeIdx) return;
+    agents.forEach((agent) => {
       if (agent.model.model === modelName &&
         agent.model.provider === modelProvider &&
         agent.model.api_base === modelApiBase) {
@@ -1341,7 +1341,12 @@ function MultiAgentSection({
   const handleAddNew = () => {
     const name = newAgent.name.trim();
     if (!name) return;
-    if (agents.some((a) => a.name === name)) return;
+    // 同名检测
+    if (agents.some((a) => a.name === name)) {
+      setNewAgentError(t("config.agentList.duplicateName"));
+      return;
+    }
+    setNewAgentError(null);
     onAgentsChange([...agents, { ...newAgent, name }]);
     setExpandedIdx(agents.length);
     setAddingNew(false);
@@ -1349,6 +1354,9 @@ function MultiAgentSection({
   };
 
   const agentFields: (keyof AgentEntry)[] = ["name", "skills", "completion_timeout"];
+
+  // Agent 必填字段
+  const AGENT_REQUIRED_FIELDS = new Set(["name"]);
 
   const getAgentFieldLabel = (field: string): string => {
     const labels: Record<string, string> = {
@@ -1412,7 +1420,7 @@ function MultiAgentSection({
                       const label = sameNameCount > 1
                         ? `${m.model_name} #${sameNameIdx + 1}`
                         : m.model_name;
-                      const modelRefs = getModelReferences(m.model_name, m.model_provider, m.api_base, idx);
+                      const modelRefs = getModelReferences(m.model_name, m.model_provider, m.api_base);
                       const isReferenced = modelRefs.length > 0;
                       return (
                         <option key={`${m.model_name}#${mi}`} value={`${m.model_name}#${mi}`}>
@@ -1424,7 +1432,10 @@ function MultiAgentSection({
                 </div>
                 {agentFields.map((field) => (
                   <div key={field} className="flex items-center gap-2 text-xs">
-                    <label className="w-28 text-text-muted shrink-0">{getAgentFieldLabel(field)}</label>
+                    <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                      {getAgentFieldLabel(field)}
+                      {AGENT_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+                    </label>
                     {field === "skills" ? (
                       <MultiSelectDropdown
                         options={installedSkills || []}
@@ -1523,7 +1534,10 @@ function MultiAgentSection({
           </div>
           {agentFields.map((field) => (
             <div key={field} className="flex items-center gap-2 text-xs">
-              <label className="w-28 text-text-muted shrink-0">{getAgentFieldLabel(field)}</label>
+              <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                {getAgentFieldLabel(field)}
+                {AGENT_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+              </label>
               {field === "skills" ? (
                 <MultiSelectDropdown
                   options={installedSkills || []}
@@ -1547,7 +1561,10 @@ function MultiAgentSection({
                 <input
                   type="text"
                   value={newAgent[field] as string}
-                  onChange={(e) => setNewAgent((p) => ({ ...p, [field]: e.target.value }))}
+                  onChange={(e) => {
+                    setNewAgent((p) => ({ ...p, [field]: e.target.value }));
+                    if (field === "name" && newAgentError) setNewAgentError(null);
+                  }}
                   maxLength={field === "name" ? 64 : undefined}
                   className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                 />
@@ -1555,6 +1572,7 @@ function MultiAgentSection({
             </div>
           ))}
           <div className="flex justify-end gap-2 pt-1">
+            {newAgentError && <span className="text-danger text-xs self-center">{newAgentError}</span>}
             <button type="button" onClick={() => setAddingNew(false)} className="btn !px-3 !py-1 text-xs">{t("common.cancel")}</button>
             <button type="button" onClick={handleAddNew} disabled={!newAgent.name.trim()} className="btn primary !px-3 !py-1 text-xs">{t("common.confirm")}</button>
           </div>
@@ -1737,6 +1755,11 @@ function TeamItemSection({
   const leaderFields: (keyof Leader)[] = ["member_name", "display_name", "persona", "agent_key"];
   const memberFields: (keyof TeamMember)[] = ["member_name", "display_name", "persona", "prompt_hint", "agent_key"];
 
+  // Team 必填字段
+  const TEAM_REQUIRED_FIELDS = new Set(["team_name", "lifecycle", "teammate_mode", "spawn_mode"]);
+  const LEADER_REQUIRED_FIELDS = new Set(["member_name", "display_name", "persona", "agent_key"]);
+  const MEMBER_REQUIRED_FIELDS = new Set(["member_name", "display_name", "persona", "agent_key"]);
+
   const getTeamFieldLabel = (field: string): string => {
     const labels: Record<string, string> = {
       team_name: t("config.keys.teamName"),
@@ -1774,7 +1797,10 @@ function TeamItemSection({
       <div className="space-y-2">
         {teamStringFields.map((field) => (
           <div key={field} className="flex items-center gap-2 text-xs">
-            <label className="w-28 text-text-muted shrink-0">{getTeamFieldLabel(field)}</label>
+            <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+              {getTeamFieldLabel(field)}
+              {TEAM_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+            </label>
             {field === "lifecycle" ? (
               <select
                 value={team[field] ?? ""}
@@ -1831,7 +1857,10 @@ function TeamItemSection({
           <div className="border-t border-border px-3 py-2 space-y-2">
             {leaderFields.map((field) => (
               <div key={field} className="flex items-center gap-2 text-xs">
-                <label className="w-28 text-text-muted shrink-0">{getLeaderFieldLabel(field)}</label>
+                <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                  {getLeaderFieldLabel(field)}
+                  {LEADER_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+                </label>
                 {field === "agent_key" ? (
                   <select
                     value={team.leader[field] ?? ""}
@@ -1885,7 +1914,10 @@ function TeamItemSection({
           <div className="border-t border-border px-3 py-2 space-y-2">
             {teammateFields.map((field) => (
               <div key={field} className="flex items-center gap-2 text-xs">
-                <label className="w-28 text-text-muted shrink-0">{getLeaderFieldLabel(field)}</label>
+                <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                  {getLeaderFieldLabel(field)}
+                  {LEADER_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+                </label>
                 {field === "agent_key" ? (
                   <select
                     value={team.teammate[field] ?? ""}
@@ -1961,7 +1993,10 @@ function TeamItemSection({
                     <div className="border-t border-border px-3 py-2 space-y-2">
                       {memberFields.map((field) => (
                         <div key={field} className="flex items-center gap-2 text-xs">
-                          <label className="w-28 text-text-muted shrink-0">{getMemberFieldLabel(field)}</label>
+                          <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                            {getMemberFieldLabel(field)}
+                            {MEMBER_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+                          </label>
                           {field === "agent_key" ? (
                             <select
                               value={member[field] ?? ""}
@@ -2004,7 +2039,10 @@ function TeamItemSection({
               <div className="rounded border border-accent/40 bg-accent/5 p-2 space-y-2">
                 {memberFields.map((field) => (
                   <div key={field} className="flex items-center gap-2 text-xs">
-                    <label className="w-28 text-text-muted shrink-0">{getMemberFieldLabel(field)}</label>
+                    <label className="w-28 text-text-muted shrink-0 flex items-center gap-0.5">
+                      {getMemberFieldLabel(field)}
+                      {MEMBER_REQUIRED_FIELDS.has(field) && <span className="text-danger">*</span>}
+                    </label>
                     {field === "agent_key" ? (
                       <select
                         value={newMember[field] ?? ""}
@@ -2223,6 +2261,7 @@ export function ConfigPanel({
     return next;
   });
   const [draftModels, setDraftModels] = useState<ModelEntry[]>(() => storeAvailableModels.map((m) => ({ ...m })));
+
   // 从 localStorage 加载缓存的 agents 和 teams
   const loadCachedAgentsTeams = (): { agents: AgentEntry[]; teams: TeamEntry[] } | null => {
     try {
@@ -2236,7 +2275,7 @@ export function ConfigPanel({
     return null;
   };
 
-  // 保存到 localStorage
+  // 仅缓存当前页面未保存的 agents 和 teams 草稿；后端配置始终是页面初始化来源。
   const saveCachedAgentsTeams = (agents: AgentEntry[], teams: TeamEntry[]) => {
     try {
       localStorage.setItem('jiuwenclaw_agents_teams_cache', JSON.stringify({ agents, teams }));
@@ -2259,7 +2298,6 @@ export function ConfigPanel({
   const [initialAgents, setInitialAgents] = useState<AgentEntry[]>(cached?.agents || []);
   const [initialTeams, setInitialTeams] = useState<TeamEntry[]>(cached?.teams || []);
   const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(false);
-  const [agentsTeamsValidationAttempted, setAgentsTeamsValidationAttempted] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2274,7 +2312,6 @@ export function ConfigPanel({
 
   const markAgentsTeamsEdited = () => {
     setAgentsTeamsEdited(true);
-    setAgentsTeamsValidationAttempted(false);
     setError(null);
   };
 
@@ -2412,7 +2449,6 @@ export function ConfigPanel({
     setDraftValues(normalizedConfig);
     setError(null);
     setModelError(null);
-    setAgentsTeamsValidationAttempted(false);
   }, [normalizedConfig]);
 
   useEffect(() => {
@@ -2618,6 +2654,13 @@ export function ConfigPanel({
     [draftValues],
   );
   const hasMissingRequiredModelFields = missingRequiredModelFields.length > 0;
+  const hasDuplicateAgentNames = useMemo(
+    () => {
+      const agentNames = draftAgents.map((a) => a.name.trim().toLowerCase());
+      return new Set(agentNames).size !== agentNames.length;
+    },
+    [draftAgents],
+  );
   const hasMissingModelApiKey = useMemo(
     () => draftModels.some((m) => !m.api_key.trim()),
     [draftModels],
@@ -2733,7 +2776,6 @@ export function ConfigPanel({
     setDraftAgents(initialAgents);
     setDraftTeams(initialTeams);
     setAgentsTeamsEdited(false);
-    setAgentsTeamsValidationAttempted(false);
     setError(null);
     setModelError(null);
     setAgentNameChangeWarning(null);
@@ -2833,7 +2875,6 @@ export function ConfigPanel({
 
     if (hasAgentsTeamsChanges && hasAgentsTeamsValidationError) {
       setConfigTab("agent");
-      setAgentsTeamsValidationAttempted(true);
       setError(t('config.agentsTeamsValidationError'));
       return;
     }
@@ -2875,10 +2916,10 @@ export function ConfigPanel({
         if (hasConfigChanges) {
           await onSaveConfig(configUpdates);
         }
+        // 保存成功后更新初始值，以便下次取消时能正确恢复
+        setInitialAgents(draftAgents);
+        setInitialTeams(draftTeams);
       }
-      // 保存成功后更新初始值，以便下次取消时能正确恢复
-      setInitialAgents(draftAgents);
-      setInitialTeams(draftTeams);
     } catch (saveError) {
       const message = saveError instanceof Error ? saveError.message : t('config.errors.saveFailed');
       setError(message);
@@ -2912,7 +2953,7 @@ export function ConfigPanel({
             <button
               type="button"
               onClick={() => void handleSaveAndRestart()}
-              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || agentModelReferencesLost.length > 0 || hasAgentsTeamsValidationError || (isProcessing && mode !== 'team')}
+              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || hasDuplicateAgentNames || hasAgentsTeamsValidationError || agentModelReferencesLost.length > 0 || (isProcessing && mode !== 'team')}
               className="btn primary !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? t('common.saving') : t('common.save')}
@@ -2924,9 +2965,14 @@ export function ConfigPanel({
             {error}
           </div>
         ) : null}
-        {!error && agentsTeamsValidationAttempted && hasAgentsTeamsValidationError ? (
+        {!error && hasMissingRequiredModelFields ? (
           <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
-            {t('config.agentsTeamsValidationError')}
+            {t('config.requiredIncomplete')}: {missingRequiredModelFields.join('、')}
+          </div>
+        ) : null}
+        {!error && hasMissingModelApiBase ? (
+          <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
+            {t('config.modelList.apiBaseRequired')}
           </div>
         ) : null}
         {!error && modelReferenceLostWarning ? (
@@ -2939,6 +2985,26 @@ export function ConfigPanel({
             {agentNameChangeWarning}
           </div>
         ) : null}
+        {!error && hasDuplicateAgentNames ? (
+          <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
+            {t('config.agentList.duplicateName')}
+          </div>
+        ) : null
+        }
+        {
+          !error && hasAgentsTeamsValidationError ? (
+            <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
+              {t('config.agentsTeamsValidationError')}
+            </div>
+          ) : null
+        }
+        {
+          !error && agentModelReferencesLost.length > 0 ? (
+            <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+              {t('config.model.referenceLostWarning')}: {agentModelReferencesLost.map((r) => r.agentName).join(', ')}
+            </div>
+          ) : null
+        }
 
         {!groups.length ? (
           <div className="text-sm text-text-muted flex-1 min-h-0">
@@ -3093,6 +3159,38 @@ export function ConfigPanel({
                     </div>
                   </div>
                 </div>
+              ) : null
+              }
+
+              {configTab === "security" ? (
+                <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
+                  {securityGroups.length === 0 ? (
+                    <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
+                  ) : (
+                    securityGroups.map((group) => (
+                      <GroupSection
+                        key={group.tag}
+                        group={group}
+                        draftValues={draftValues}
+                        onChange={handleFieldChange}
+                        defaultOpen
+                        alwaysExpanded
+                        t={t}
+                      />
+                    ))
+                  )}
+                  {embedGroups.map((group) => (
+                    <GroupSection
+                      key={group.tag}
+                      group={group}
+                      draftValues={draftValues}
+                      onChange={handleFieldChange}
+                      defaultOpen
+                      alwaysExpanded
+                      t={t}
+                    />
+                  ))}
+                </div>
               ) : null}
 
               {configTab === "security" ? (
@@ -3142,159 +3240,167 @@ export function ConfigPanel({
           </div>
         )}
       </div>
-      {deleteAgentConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
-          <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
-                <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold text-text mb-1">
-                {t("config.agentList.deleteConfirmTitle")}
-              </h3>
-              <p className="text-sm text-text-muted mb-5">
-                {deleteAgentConfirm.references.length > 0
-                  ? t("config.agentList.deleteConfirmMessageSimple", { agentName: deleteAgentConfirm.agentName })
-                  : t("config.agentList.deleteConfirmMessage", { agentName: deleteAgentConfirm.agentName })}
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDeleteAgentConfirm(null)}
-                  className="btn !px-4 !py-2"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteAgent}
-                  className="btn danger !px-4 !py-2"
-                >
-                  {t("common.delete")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {deleteModelConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
-          <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
-                <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold text-text mb-1">
-                {t("config.model.deleteConfirmTitle")}
-              </h3>
-              <p className="text-sm text-text-muted mb-5">
-                {deleteModelConfirm.references.length > 0
-                  ? t("config.model.deleteConfirmMessageSimple", { modelName: deleteModelConfirm.modelName, count: deleteModelConfirm.references.length })
-                  : t("config.model.deleteConfirmMessage", { modelName: deleteModelConfirm.modelName })}
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDeleteModelConfirm(null)}
-                  className="btn !px-4 !py-2"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteModel}
-                  className="btn danger !px-4 !py-2"
-                >
-                  {t("common.delete")}
-                </button>
+      {
+        deleteAgentConfirm && (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
+            <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
+                  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-semibold text-text mb-1">
+                  {t("config.agentList.deleteConfirmTitle")}
+                </h3>
+                <p className="text-sm text-text-muted mb-5">
+                  {deleteAgentConfirm.references.length > 0
+                    ? t("config.agentList.deleteConfirmMessageSimple", { agentName: deleteAgentConfirm.agentName })
+                    : t("config.agentList.deleteConfirmMessage", { agentName: deleteAgentConfirm.agentName })}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteAgentConfirm(null)}
+                    className="btn !px-4 !py-2"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteAgent}
+                    className="btn danger !px-4 !py-2"
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
-      {deleteTeamConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
-          <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
-                <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold text-text mb-1">
-                {t("config.team.deleteConfirmTitle")}
-              </h3>
-              <p className="text-sm text-text-muted mb-5">
-                {t("config.team.deleteConfirmMessage", {
-                  teamName: deleteTeamConfirm.teamName,
-                })}
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDeleteTeamConfirm(null)}
-                  className="btn !px-4 !py-2"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteTeam}
-                  className="btn danger !px-4 !py-2"
-                >
-                  {t("common.delete")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {deleteTeamMemberConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
-          <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
-            <div className="flex flex-col items-center text-center">
-              <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
-                <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-                </svg>
-              </div>
-              <h3 className="text-base font-semibold text-text mb-1">
-                {t("config.team.deleteMemberConfirmTitle")}
-              </h3>
-              <p className="text-sm text-text-muted mb-5">
-                {t("config.team.deleteMemberConfirmMessage", {
-                  memberName: deleteTeamMemberConfirm.memberName,
-                })}
-              </p>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setDeleteTeamMemberConfirm(null)}
-                  className="btn !px-4 !py-2"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteTeamMember}
-                  className="btn danger !px-4 !py-2"
-                >
-                  {t("common.delete")}
-                </button>
+        )
+      }
+      {
+        deleteModelConfirm && (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
+            <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
+                  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-semibold text-text mb-1">
+                  {t("config.model.deleteConfirmTitle")}
+                </h3>
+                <p className="text-sm text-text-muted mb-5">
+                  {deleteModelConfirm.references.length > 0
+                    ? t("config.model.deleteConfirmMessageSimple", { modelName: deleteModelConfirm.modelName, count: deleteModelConfirm.references.length })
+                    : t("config.model.deleteConfirmMessage", { modelName: deleteModelConfirm.modelName })}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteModelConfirm(null)}
+                    className="btn !px-4 !py-2"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteModel}
+                    className="btn danger !px-4 !py-2"
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      }
+      {
+        deleteTeamConfirm && (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
+            <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
+                  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-semibold text-text mb-1">
+                  {t("config.team.deleteConfirmTitle")}
+                </h3>
+                <p className="text-sm text-text-muted mb-5">
+                  {t("config.team.deleteConfirmMessage", {
+                    teamName: deleteTeamConfirm.teamName,
+                  })}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTeamConfirm(null)}
+                    className="btn !px-4 !py-2"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteTeam}
+                    className="btn danger !px-4 !py-2"
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      }
+      {
+        deleteTeamMemberConfirm && (
+          <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/35 backdrop-blur-[4px]" />
+            <div className="relative w-full max-w-96 rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-xl)] p-6">
+              <div className="flex flex-col items-center text-center">
+                <div className="w-12 h-12 rounded-full bg-danger/15 text-danger flex items-center justify-center mb-4">
+                  <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                  </svg>
+                </div>
+                <h3 className="text-base font-semibold text-text mb-1">
+                  {t("config.team.deleteMemberConfirmTitle")}
+                </h3>
+                <p className="text-sm text-text-muted mb-5">
+                  {t("config.team.deleteMemberConfirmMessage", {
+                    memberName: deleteTeamMemberConfirm.memberName,
+                  })}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTeamMemberConfirm(null)}
+                    className="btn !px-4 !py-2"
+                  >
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={confirmDeleteTeamMember}
+                    className="btn danger !px-4 !py-2"
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
+      }
 
-    </div>
+    </div >
   );
 }

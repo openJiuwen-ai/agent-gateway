@@ -598,6 +598,7 @@
       "addAgent": "Add Agent",
       "removeAgent": "Remove",
       "untitled": "Untitled",
+      "duplicateName": "Agent name already exists",
       "deleteConfirmTitle": "Delete Agent?",
       "deleteConfirmMessage": "Are you sure you want to delete agent \"{{agentName}}\"?",
       "deleteConfirmMessageSimple": "Agent \"{{agentName}}\" is referenced by team(s).",
