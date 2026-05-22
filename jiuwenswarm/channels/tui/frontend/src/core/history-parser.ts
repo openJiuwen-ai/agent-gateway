@@ -740,7 +740,7 @@ export function parseHistoryFrame(frame: EventFrame): HistoryItem | null {
   }
 
   if (
-    eventType === "context.compressed" ||
+    eventType === "context.usage" ||
     eventType === "chat.subtask_update" ||
     eventType === "chat.evolution_status" ||
     eventType === "chat.processing_status" ||

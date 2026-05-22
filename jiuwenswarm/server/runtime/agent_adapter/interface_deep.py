@@ -4868,17 +4868,17 @@ class JiuWenClawDeepAdapter:
                     todos = payload.get("todos", []) if isinstance(payload, dict) else []
                     return {"event_type": "todo.updated", "todos": todos}
 
-                if chunk_type == "context.compressed":
+                if chunk_type == "context.usage":
                     if isinstance(payload, dict):
                         return {
-                            "event_type": "context.compressed",
+                            "event_type": "context.usage",
                             "rate": payload.get("rate", 0),
-                            "before_compressed": payload.get("before_compressed") or 0,
-                            "after_compressed": payload.get("after_compressed") or 0,
+                            "context_max": payload.get("context_max") or 0,
+                            "tokens_used": payload.get("tokens_used") or 0,
                         }
-                    return {"event_type": "context.compressed", "rate": 0}
+                    return {"event_type": "context.usage", "rate": 0}
 
-                if chunk_type == "context_compression_state":
+                if chunk_type == "context.compression_state":
                     if hasattr(payload, "model_dump"):
                         state_payload = payload.model_dump(mode="json")
                     elif isinstance(payload, dict):
@@ -4886,7 +4886,7 @@ class JiuWenClawDeepAdapter:
                     else:
                         state_payload = {"summary": str(payload)}
                     return {
-                        "event_type": "context_compression_state",
+                        "event_type": "context.compression_state",
                         **state_payload,
                     }
 

@@ -625,8 +625,16 @@ function handleContextCompressed(
   payload: Record<string, unknown>,
 ): boolean {
   const rate = typeof payload.rate === "number" ? payload.rate : 0;
-  const before = typeof payload.before_compressed === "number" ? payload.before_compressed : null;
-  const after = typeof payload.after_compressed === "number" ? payload.after_compressed : null;
+  const before = typeof payload.context_max === "number"
+    ? payload.context_max
+    : typeof payload.before_compressed === "number"
+      ? payload.before_compressed
+      : null;
+  const after = typeof payload.tokens_used === "number"
+    ? payload.tokens_used
+    : typeof payload.after_compressed === "number"
+      ? payload.after_compressed
+      : null;
   delegate.setContextCompression({
     rate,
     beforeCompressed: before,
@@ -1039,10 +1047,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
     case "chat.file":
       return handleMediaEvent(delegate, payload, activeSessionId, effectiveEvent);
 
-    case "context.compressed":
+    case "context.usage":
       return handleContextCompressed(delegate, payload);
 
-    case "context_compression_state":
+    case "context.compression_state":
       return handleContextCompressionState(delegate, payload, activeSessionId);
 
     case "chat.subtask_update":

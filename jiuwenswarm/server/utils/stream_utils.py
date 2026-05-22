@@ -267,13 +267,24 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         )
         return {"event_type": "todo.updated", "todos": todos}
 
-    if chunk_type == "context.compressed":
+    if chunk_type == "context.usage":
         if isinstance(payload, dict):
             return {
-                "event_type": "context.compressed",
+                "event_type": "context.usage",
                 "rate": payload.get("rate", 0),
-                "before_compressed": payload.get("before_compressed") or 0,
-                "after_compressed": payload.get("after_compressed") or 0,
+                "context_max": payload.get("context_max") or 0,
+                "tokens_used": payload.get("tokens_used") or 0,
+            }
+
+    if chunk_type == "context.compression_state":
+        if isinstance(payload, dict):
+            return {
+                "event_type": "context.compression_state",
+                "status": payload.get("status", ""),
+                "phase": payload.get("phase", ""),
+                "processor": payload.get("processor", ""),
+                "summary": payload.get("summary", ""),
+                "operation_id": payload.get("operation_id", ""),
             }
 
     if isinstance(payload, dict):

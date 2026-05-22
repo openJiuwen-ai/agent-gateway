@@ -3,7 +3,7 @@
 """JiuClawStreamEventRail — Stream event emission, pause checks, context fix.
 
 Migrated from JiuClawReActAgent:
-  - _emit_tool_call / _emit_tool_result / _emit_todo_updated / _emit_context_compression
+  - _emit_tool_call / _emit_tool_result / _emit_todo_updated / _emit_context_usage
   - _fix_incomplete_tool_context
   - Pause checkpoint logic
 """
@@ -247,7 +247,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
             await self._fix_incomplete_tool_context(ctx.context)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
-        await self._emit_context_compression(ctx)
+        await self._emit_context_usage(ctx)
 
     # ------------------------------------------------------------------
     # before_tool_call: pause check + emit tool_call event
@@ -475,8 +475,8 @@ class JiuClawStreamEventRail(DeepAgentRail):
         ]
 
     @staticmethod
-    async def _emit_context_compression(ctx: AgentCallbackContext) -> None:
-        """Emit context compression stats based on raw_total_tokens and current context tokens."""
+    async def _emit_context_usage(ctx: AgentCallbackContext) -> None:
+        """Emit context usage stats (context_max, tokens_used, rate)."""
         session = ctx.session
         if session is None:
             return
@@ -514,17 +514,17 @@ class JiuClawStreamEventRail(DeepAgentRail):
 
             await session.write_stream(
                 OutputSchema(
-                    type="context.compressed",
+                    type="context.usage",
                     index=0,
                     payload={
                         "rate": rate,
-                        "before_compressed": raw_total_tokens,
-                        "after_compressed": current_context_tokens,
+                        "context_max": raw_total_tokens,
+                        "tokens_used": current_context_tokens,
                     },
                 )
             )
         except Exception:
-            logger.debug("context_compression emit failed", exc_info=True)
+            logger.debug("context_usage emit failed", exc_info=True)
 
     def _ensure_json_arguments(self, arguments: Any) -> str:
         """Ensure tool call arguments are valid JSON string.

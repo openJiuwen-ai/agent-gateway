@@ -922,24 +922,24 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const todos = Array.isArray(payload.todos) ? payload.todos : [];
         setTodos(todos as Parameters<typeof setTodos>[0]);
       }),
-      webClient.on('context.compressed', ({ payload }) => {
+      webClient.on('context.usage', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         const rate =
           typeof payload.rate === 'number' ? payload.rate : 0;
-        const beforeCompressed =
-          typeof payload.before_compressed === 'number' && Number.isFinite(payload.before_compressed)
-            ? payload.before_compressed
+        const contextMax =
+          typeof payload.context_max === 'number' && Number.isFinite(payload.context_max)
+            ? payload.context_max
             : null;
-        const afterCompressed =
-          typeof payload.after_compressed === 'number' && Number.isFinite(payload.after_compressed)
-            ? payload.after_compressed
+        const tokensUsed =
+          typeof payload.tokens_used === 'number' && Number.isFinite(payload.tokens_used)
+            ? payload.tokens_used
             : null;
-        setContextCompressionStats({ rate, beforeCompressed, afterCompressed });
-        console.debug('[ws] context.compressed', {
+        setContextCompressionStats({ rate, beforeCompressed: contextMax, afterCompressed: tokensUsed });
+        console.debug('[ws] context.usage', {
           session_id: payload.session_id,
           rate,
-          before_compressed: beforeCompressed,
-          after_compressed: afterCompressed,
+          context_max: contextMax,
+          tokens_used: tokensUsed,
         });
       }),
       webClient.on('heartbeat.relay', ({ payload }) => {

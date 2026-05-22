@@ -354,7 +354,8 @@ class WebChannel(BaseChannel):
             if event_name in ("connection.ack", "todo.updated", "chat.tool_call", "chat.tool_result",
                               "chat.processing_status", "chat.interrupt_result", "chat.evolution_status",
                               "chat.error", "heartbeat.relay",
-                              "context.compressed", "chat.ask_user_question", "chat.subtask_update",
+                              "context.usage", "context.compression_state",
+                              "chat.ask_user_question", "chat.subtask_update",
                               "history.message",
                               "chat.session_result", "chat.usage_metadata",
                               "chat.usage_summary", "chat.file") \
