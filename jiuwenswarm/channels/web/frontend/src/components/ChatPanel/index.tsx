@@ -5,10 +5,12 @@
  */
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores';
 import { AgentMode, UserAnswer } from '../../types';
 import { MessageList } from './MessageList';
+import { ContextCompressionLines } from './MessageItem';
 import { InputArea } from './InputArea';
 import { SubtaskProgress } from './SubtaskProgress';
 import { InlineQuestionCard } from './InlineQuestionCard';
@@ -52,13 +54,9 @@ function ThinkingIndicator() {
 function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
   return (
     <button className="chat-suggestion-card" onClick={onClick}>
-      <svg className="chat-suggestion-card__icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
-      </svg>
+      <Sparkles className="chat-suggestion-card__icon" strokeWidth={2} />
       <span className="chat-suggestion-card__text">{text}</span>
-      <svg className="chat-suggestion-card__arrow" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-      </svg>
+      <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} />
     </button>
   );
 }
@@ -93,7 +91,13 @@ export function ChatPanel({
   historyPager = null,
 }: ChatPanelProps) {
   const { t } = useTranslation();
-  const { messages, isThinking, toolExecutionOrder } = useChatStore();
+  const {
+    messages,
+    isThinking,
+    toolExecutionOrder,
+    contextCompressionRuntime,
+    contextCompressionSummary,
+  } = useChatStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prependScrollSnapRef = useRef<{ sh: number; st: number } | null>(null);
@@ -148,7 +152,7 @@ export function ChatPanel({
         behavior: historyPager?.loadedPages === 1 ? 'auto' : 'smooth',
       });
     }
-  }, [messages, isThinking, historyPager]);
+  }, [messages, isThinking, contextCompressionRuntime, contextCompressionSummary, historyPager]);
 
   useLayoutEffect(() => {
     if (!historyPager) {
@@ -226,6 +230,10 @@ export function ChatPanel({
                   <InlineQuestionCard onSubmit={onUserAnswer} />
                   {/* 思考中指示器 */}
                   {isThinking && <ThinkingIndicator />}
+                  <ContextCompressionLines
+                    runtime={contextCompressionRuntime}
+                    summary={contextCompressionSummary}
+                  />
                 </>
               ) : (
                 <div className="flex items-center justify-center h-32">

@@ -6,8 +6,19 @@
 
 import { useState, useCallback, useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
+import {
+  Copy,
+  Info,
+  Square,
+  Volume2,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Message, FileDownloadItem } from '../../types';
+import {
+  Message,
+  FileDownloadItem,
+  ContextCompressionRuntime,
+  ContextCompressionSummary,
+} from '../../types';
 import { StreamingContent } from './StreamingContent';
 import { ToolCallDisplay } from './ToolCallDisplay';
 import { MediaRenderer } from './MediaRenderer';
@@ -193,6 +204,54 @@ function TeamLeaderPlainTextMessage({
         className="team-member-message__plain"
       />
     </TeamMemberMessageFrame>
+  );
+}
+
+export function ContextCompressionLines({
+  runtime,
+  summary,
+  showSummary = true,
+}: {
+  runtime?: ContextCompressionRuntime;
+  summary?: ContextCompressionSummary;
+  showSummary?: boolean;
+}) {
+  const { t } = useTranslation();
+  const showRuntime = Boolean(runtime?.summary);
+  const finalSummary = !runtime && showSummary && summary && summary.count > 0 ? summary : null;
+  if (!showRuntime && !finalSummary) return null;
+
+  const isRunning = runtime?.status === 'running';
+  const isFailed = runtime?.status === 'failed';
+  const summaryItems = (finalSummary?.summaries ?? []).filter(Boolean);
+  const detailText = summaryItems
+    .map((item, index) => `${index + 1}. ${item}`)
+    .join('\n');
+
+  return (
+    <>
+      {showRuntime && (
+        <div className={clsx(
+          'mt-2 flex items-center gap-1.5 text-xs',
+          isFailed ? 'text-danger' : 'text-text-muted'
+        )}>
+          <span className={clsx(isRunning && 'context-compression-running-text')}>
+            {runtime?.summary}
+          </span>
+        </div>
+      )}
+      {finalSummary && (
+        <div
+          className="mt-2 flex items-center gap-1.5 text-xs text-text-muted"
+          title={detailText || undefined}
+        >
+          <Info className="h-3.5 w-3.5" strokeWidth={1.8} />
+          <span>
+            {t('chat.contextCompressionCompleted', { count: finalSummary.count })}
+          </span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -519,6 +578,10 @@ export function MessageItem({
   );
   const showCopy = Boolean(content) && !isStreaming;
   const isPlaying = audioBase64 ? isAudioPlaying : isSpeaking;
+  const visibleMediaItems = mediaItems?.length ? mediaItems : null;
+  const visibleFileItems = fileItems?.length ? fileItems : null;
+  const hasBubbleContent =
+    isUser || Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
 
   return (
     <div className={clsx(
@@ -530,38 +593,40 @@ export function MessageItem({
           <div className="hidden" data-testid="thinking-summary" aria-hidden="true" />
         )}
 
-        <div
-          className={clsx(
-            'chat-bubble relative group',
-            isUser ? 'user' : 'assistant',
-            !isUser && !isStreaming && 'markdown',
-            isStreaming && 'streaming'
-          )}
-          data-testid={!isUser ? 'thinking-panel' : undefined}
-        >
-          {isStreaming ? (
-            <StreamingContent content={content} isStreaming={true} />
-          ) : (
-            <>
-              {isUser ? (
-                <div className="chat-text">
-                  <span className="whitespace-pre-wrap">{content}</span>
-                </div>
-              ) : (
-                <MarkdownMessageBody
-                  content={content}
-                  testId="thinking-body"
-                />
-              )}
-              {mediaItems && mediaItems.length > 0 && (
-                <MediaRenderer items={mediaItems} />
-              )}
-              {fileItems && fileItems.length > 0 && (
-                <FileDownloadList files={fileItems} />
-              )}
-            </>
-          )}
-        </div>
+        {hasBubbleContent && (
+          <div
+            className={clsx(
+              'chat-bubble relative group',
+              isUser ? 'user' : 'assistant',
+              !isUser && !isStreaming && 'markdown',
+              isStreaming && 'streaming'
+            )}
+            data-testid={!isUser ? 'thinking-panel' : undefined}
+          >
+            {isStreaming ? (
+              <StreamingContent content={content} isStreaming={true} />
+            ) : (
+              <>
+                {isUser ? (
+                  <div className="chat-text">
+                    <span className="whitespace-pre-wrap">{content}</span>
+                  </div>
+                ) : (
+                  <MarkdownMessageBody
+                    content={content}
+                    testId="thinking-body"
+                  />
+                )}
+                {visibleMediaItems && (
+                  <MediaRenderer items={visibleMediaItems} />
+                )}
+                {visibleFileItems && (
+                  <FileDownloadList files={visibleFileItems} />
+                )}
+              </>
+            )}
+          </div>
+        )}
 
         {/* Token usage summary */}
         {!isUser && !isStreaming && message.usageSummary && message.usageSummary.total_tokens > 0 && (
@@ -596,9 +661,7 @@ export function MessageItem({
                 className="p-1.5 rounded-md transition-colors hover:text-accent hover:bg-secondary"
                 title={t('chatUi.copyMessage')}
               >
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 6.75h7.5m-7.5 3h7.5m-7.5 3h4.5M6.75 3h7.5A2.25 2.25 0 0116.5 5.25v13.5A2.25 2.25 0 0114.25 21h-7.5A2.25 2.25 0 014.5 18.75V5.25A2.25 2.25 0 016.75 3z" />
-                </svg>
+                <Copy className="w-4 h-4" strokeWidth={1.5} />
               </button>
             )}
 
@@ -614,13 +677,9 @@ export function MessageItem({
                 title={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
               >
                 {isPlaying ? (
-                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                  </svg>
+                  <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
                 ) : (
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
-                  </svg>
+                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
                 )}
               </button>
             )}

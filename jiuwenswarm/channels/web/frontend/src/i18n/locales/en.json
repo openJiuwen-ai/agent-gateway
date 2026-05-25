@@ -126,6 +126,7 @@
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",
+    "contextCompressionCompleted": "Completed context compression {{count}} time(s) this turn",
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",

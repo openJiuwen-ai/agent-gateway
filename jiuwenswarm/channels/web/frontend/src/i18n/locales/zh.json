@@ -126,6 +126,7 @@
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
+    "contextCompressionCompleted": "本轮完成上下文压缩 {{count}} 次",
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
       "loadingMore": "加载中…",

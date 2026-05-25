@@ -15,6 +15,8 @@ import {
   EvolutionStatusPayload,
   UsageSummary,
   FileDownloadItem,
+  ContextCompressionRuntime,
+  ContextCompressionSummary,
 } from '../types';
 import { useTodoStore } from './todoStore';
 
@@ -69,6 +71,8 @@ interface ChatState {
   toolExecutions: Map<string, ToolExecution>;
   toolExecutionOrder: string[];
   orphanResults: Map<string, ToolResult>;
+  contextCompressionRuntime?: ContextCompressionRuntime;
+  contextCompressionSummary?: ContextCompressionSummary;
   toolMetrics: {
     toolCallDedupDropped: number;
     toolResultDedupDropped: number;
@@ -114,6 +118,10 @@ interface ChatState {
   setUsageSummary: (messageId: string, usage: UsageSummary) => void;
   // File download items
   addFileItems: (files: FileDownloadItem[]) => void;
+  setContextCompressionStatus: (
+    runtime?: ContextCompressionRuntime,
+    summary?: ContextCompressionSummary
+  ) => void;
 }
 
 export const useChatStore = create<ChatState>((set, get) => ({
@@ -134,6 +142,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   toolExecutions: new Map(),
   toolExecutionOrder: [],
   orphanResults: new Map(),
+  contextCompressionRuntime: undefined,
+  contextCompressionSummary: undefined,
   toolMetrics: {
     toolCallDedupDropped: 0,
     toolResultDedupDropped: 0,
@@ -548,6 +558,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       toolExecutions: new Map(),
       toolExecutionOrder: [],
       orphanResults: new Map(),
+      contextCompressionRuntime: undefined,
+      contextCompressionSummary: undefined,
       toolMetrics: {
         toolCallDedupDropped: 0,
         toolResultDedupDropped: 0,
@@ -625,5 +637,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : msg
       ),
     }));
+  },
+
+  setContextCompressionStatus: (runtime, summary) => {
+    set({
+      contextCompressionRuntime: runtime,
+      contextCompressionSummary: summary,
+    });
   },
 }));

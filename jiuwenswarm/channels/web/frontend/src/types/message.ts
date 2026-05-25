@@ -29,6 +29,19 @@ export interface FileDownloadItem {
   download_token: string;
 }
 
+export interface ContextCompressionRuntime {
+  status: 'running' | 'completed' | 'unchanged' | 'failed';
+  summary: string;
+  operationId: string;
+  phase?: string;
+  processor?: string;
+}
+
+export interface ContextCompressionSummary {
+  count: number;
+  summaries: string[];
+}
+
 export interface Message {
   id: string;
   role: MessageRole;

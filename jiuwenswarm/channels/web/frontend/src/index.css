@@ -360,6 +360,21 @@ select {
   }
 }
 
+@keyframes text-muted-breath {
+  0% {
+    color: var(--text);
+    opacity: 0.78;
+  }
+  50% {
+    color: #e4e4e7;
+    opacity: 1;
+  }
+  100% {
+    color: var(--text);
+    opacity: 0.78;
+  }
+}
+
 @keyframes pulse-subtle {
   0%,
   100% {
@@ -859,6 +874,12 @@ select {
     color: var(--chat-text);
     font-size: 0.875rem;
     line-height: 1.7142857;
+  }
+
+  .context-compression-running-text {
+    display: inline-block;
+    color: var(--text);
+    animation: text-muted-breath 2.8s ease-in-out infinite;
   }
 
   /* Chat input task queue */

@@ -24,6 +24,8 @@ import {
   ToolCall,
   UsageSummary,
   FileDownloadItem,
+  ContextCompressionRuntime,
+  ContextCompressionSummary,
 } from '../types';
 import { useChatStore, useTodoStore, useSessionStore, useHarnessStore } from '../stores';
 import { webClient } from '../services/webClient';
@@ -89,6 +91,20 @@ interface UseWebSocketReturn {
   getInflightCount: () => number;
 }
 
+interface ContextCompressionStatePayload {
+  status: string;
+  summary: string;
+  operation_id: string;
+  phase: string;
+  processor: string;
+}
+
+interface PendingContextCompressionStart {
+  timer: ReturnType<typeof setTimeout>;
+  runtimeState: Omit<ContextCompressionRuntime, 'status'>;
+  shown: boolean;
+}
+
 function normalizeAgentMode(rawMode: unknown): AgentMode {
   if (typeof rawMode !== 'string') return 'agent.plan';
   const normalized = rawMode.trim().toLowerCase();
@@ -99,6 +115,7 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
 }
 
 const EVENT_DEDUP_WINDOW_MS = 1500;
+const CONTEXT_COMPRESSION_START_DELAY_MS = 300;
 
 function normalizeEventTimestampIso(value: unknown): string {
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -167,6 +184,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const sendMessageRef = useRef<typeof sendMessage>();
   const recentEventRef = useRef<Map<string, number>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
+  const contextCompressionSummaryRef = useRef<ContextCompressionSummary>({
+    count: 0,
+    summaries: [],
+  });
+  const pendingContextCompressionStartRef =
+    useRef<PendingContextCompressionStart | null>(null);
 
   // Stores
   const {
@@ -189,6 +212,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     setPendingQuestion,
     removeFromTaskQueue,
     addFileItems,
+    setContextCompressionStatus,
   } = useChatStore();
   const { setTodos, clearTodos } = useTodoStore();
   const {
@@ -348,11 +372,112 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, [updateMessage]);
 
+  const clearPendingContextCompressionStart = useCallback(() => {
+    const pending = pendingContextCompressionStartRef.current;
+    if (pending) {
+      clearTimeout(pending.timer);
+      pendingContextCompressionStartRef.current = null;
+    }
+  }, []);
+
+  const resetContextCompressionTurn = useCallback(() => {
+    clearPendingContextCompressionStart();
+    contextCompressionSummaryRef.current = { count: 0, summaries: [] };
+    setContextCompressionStatus(undefined);
+  }, [clearPendingContextCompressionStart, setContextCompressionStatus]);
+
+  const finishContextCompressionTurn = useCallback(() => {
+    clearPendingContextCompressionStart();
+    const summary = contextCompressionSummaryRef.current;
+    setContextCompressionStatus(undefined, summary.count > 0 ? summary : undefined);
+  }, [clearPendingContextCompressionStart, setContextCompressionStatus]);
+
+  const handleContextCompressionState = useCallback(
+    (payload: ContextCompressionStatePayload) => {
+      const status = payload.status.trim().toLowerCase();
+      const summary = payload.summary.trim();
+      if (!status || !summary) return;
+
+      const operationId = payload.operation_id.trim();
+      const phase = payload.phase.trim() || undefined;
+      const processor = payload.processor.trim() || undefined;
+      const runtimeState = {
+        summary,
+        operationId,
+        phase,
+        processor,
+      };
+
+      if (status === 'completed') {
+        clearPendingContextCompressionStart();
+        const current = contextCompressionSummaryRef.current;
+        const nextSummary = {
+          count: current.count + 1,
+          summaries: [...current.summaries, summary],
+        };
+        contextCompressionSummaryRef.current = nextSummary;
+        setContextCompressionStatus({
+          ...runtimeState,
+          status: 'completed',
+        });
+        return;
+      }
+
+      if (status === 'started' || status === 'running') {
+        clearPendingContextCompressionStart();
+        const pending: PendingContextCompressionStart = {
+          runtimeState,
+          shown: false,
+          timer: setTimeout(() => {
+            if (pendingContextCompressionStartRef.current !== pending) return;
+            pending.shown = true;
+            setContextCompressionStatus({
+              ...pending.runtimeState,
+              status: 'running',
+            });
+          }, CONTEXT_COMPRESSION_START_DELAY_MS),
+        };
+        pendingContextCompressionStartRef.current = pending;
+        return;
+      }
+
+      if (status === 'noop' || status === 'skipped') {
+        const pending = pendingContextCompressionStartRef.current;
+        if (pending && !pending.shown) {
+          clearPendingContextCompressionStart();
+          return;
+        }
+        if (pending) {
+          clearPendingContextCompressionStart();
+        }
+        setContextCompressionStatus({
+          ...runtimeState,
+          status: 'unchanged',
+        });
+        return;
+      }
+
+      if (status === 'failed' || status === 'error') {
+        clearPendingContextCompressionStart();
+        setContextCompressionStatus({
+          ...runtimeState,
+          status: 'failed',
+        });
+      }
+    },
+    [clearPendingContextCompressionStart, setContextCompressionStatus]
+  );
+
+  useEffect(() => {
+    return clearPendingContextCompressionStart;
+  }, [clearPendingContextCompressionStart]);
+
   // 发送聊天消息
   const sendMessage = useCallback(
     async (content: string, sessionId: string) => {
       if (!content.trim()) return;
 
+      resetContextCompressionTurn();
       userInputVersionRef.current += 1;
       stopAllTts();
 
@@ -401,7 +526,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }
     },
-    [addMessage, request, setProcessing, setThinking]
+    [addMessage, request, resetContextCompressionTurn, setProcessing, setThinking]
   );
 
   // 存储sendMessage函数到ref
@@ -418,6 +543,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     ) => {
       const newInput = options?.newInput;
       if (intent === 'supplement' && newInput) {
+        resetContextCompressionTurn();
         userInputVersionRef.current += 1;
         stopAllTts();
         if (useSessionStore.getState().mode === 'team') {
@@ -451,7 +577,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         onErrorRef.current?.(webError.message || i18n.t('network.interruptFailed'));
       }
     },
-    [addMessage, closeActiveTeamLeaderMessages, request, setConnectionStats]
+    [
+      addMessage,
+      closeActiveTeamLeaderMessages,
+      request,
+      resetContextCompressionTurn,
+      setConnectionStats,
+    ]
   );
 
   // 暂停 - 显式暂停当前任务
@@ -733,6 +865,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
         const currentMode = useSessionStore.getState().mode;
         const content = normalizeFinalContent(payload);
+        finishContextCompressionTurn();
 
         // team 模式下，将 chat.final 作为 team_leader 消息处理
         if (currentMode === 'team' && content) {
@@ -942,6 +1075,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           tokens_used: tokensUsed,
         });
       }),
+      webClient.on<ContextCompressionStatePayload>(
+        'context.compression_state',
+        ({ payload }) => {
+          if (!shouldHandleSessionEvent(payload)) return;
+          handleContextCompressionState(payload);
+        }
+      ),
       webClient.on('heartbeat.relay', ({ payload }) => {
         const heartbeatText =
           typeof payload.heartbeat === 'string' ? payload.heartbeat : '';
@@ -1412,7 +1552,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     addToolResult,
     appendStreamContent,
     clearSubtasks,
+    finishContextCompressionTurn,
     handleConnectionAck,
+    handleContextCompressionState,
     handleTtsPlayback,
     setMode,
     setPaused,
