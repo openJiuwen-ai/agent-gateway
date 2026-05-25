@@ -238,6 +238,13 @@ async function _handleAdd(ctx: CommandContext, raw: string): Promise<void> {
     return;
   }
 
+  if (kvPairs.delete_after_run && kvPairs.delete_after_run !== "true" && kvPairs.delete_after_run !== "false") {
+    ctx.addItem(
+      addError(ctx.sessionId, `Invalid delete_after_run: "${kvPairs.delete_after_run}". Valid: "true" or "false"`),
+    );
+    return;
+  }
+
   try {
     const payload = await ctx.request("cron.job.create", {
       name: kvPairs.name,
@@ -264,6 +271,7 @@ async function _handleAdd(ctx: CommandContext, raw: string): Promise<void> {
           { label: "targets", value: job.targets },
           { label: "mode", value: job.mode },
           { label: "enabled", value: String(job.enabled) },
+          { label: "delete_after_run", value: String(job.delete_after_run) },
         ],
       }),
     );
