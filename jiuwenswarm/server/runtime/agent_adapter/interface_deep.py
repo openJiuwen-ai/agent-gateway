@@ -3112,23 +3112,6 @@ class JiuWenClawDeepAdapter:
         )
         self._update_prompt_for_mode(runtime_config.mode, resolved_language)
 
-        # user_todos 工具注册（工具只注册一次，channel_id 每次请求由 ContextVar 更新）
-        try:
-            from jiuwenswarm.agents.harness.common.tools.user_todo_tool import (
-                get_decorated_tools as _get_user_todo_tools,
-                set_global_workspace_dir as _set_user_todo_workspace,
-                set_global_channel_id as _set_user_todo_channel_id,
-            )
-
-            _set_user_todo_workspace(self._workspace_dir)
-            _set_user_todo_channel_id(_CRON_TOOL_CHANNEL_ID.get())
-            for tool in _get_user_todo_tools():
-                if not Runner.resource_mgr.get_tool(tool.card.id):
-                    Runner.resource_mgr.add_tool(tool)
-                self._instance.ability_manager.add(tool.card)
-        except ImportError:
-            pass
-
         # 处理两种场景的记忆工具移除：
         # 1. 群聊数字分身模式（group_digital_avatar=True + avatar_mode=True）：移除写入工具，但保留读取工具
         # 2. 记忆完全禁用（enable_memory=False + group_digital_avatar=True + avatar_mode=True）：移除所有记忆工具（读取和写入）
