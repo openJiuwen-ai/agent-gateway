@@ -53,6 +53,8 @@ function connectionHint(status: ConnectionStatus): string | null {
       return "Backend unavailable · start jiuwenswarm-gateway or check --url";
     case "auth_failed":
       return "Authentication failed · check --token";
+    case "message_too_big":
+      return "消息过大，连接被断开 · 请缩短输入后重试";
     case "connected":
     default:
       return null;

@@ -87,6 +87,8 @@ function connectionStatusLabel(status: AppSnapshot["connectionStatus"]): string 
       return "backend unavailable · retrying";
     case "auth_failed":
       return "auth failed";
+    case "message_too_big":
+      return "消息过大 · 连接被断开";
     case "idle":
       return "backend unavailable";
     case "connected":

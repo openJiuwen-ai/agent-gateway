@@ -30,7 +30,8 @@ Options:
   process.exit(0);
 }
 
-if (!process.stdin.isTTY || !process.stdout.isTTY) {
+// 允许通过环境变量跳过 TTY 检查（用于自动化测试）
+if (!process.env.JIUWENSWARM_TUI_HEADLESS && (!process.stdin.isTTY || !process.stdout.isTTY)) {
   console.error("jiuwenswarm-tui requires an interactive TTY");
   process.exit(1);
 }
@@ -107,7 +108,7 @@ process.on("SIGTERM", () => {
 let lastInterruptTime = 0;
 process.on("SIGINT", () => {
   const now = Date.now();
-  if (now - lastInterruptTime < 1000) {
+  if (now - lastInterruptTime < 3000) {
     void closeUi(0);
     return;
   }

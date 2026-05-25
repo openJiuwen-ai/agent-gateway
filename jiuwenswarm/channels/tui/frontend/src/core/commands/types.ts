@@ -6,7 +6,7 @@ import type { ConfigItemSchema } from "./builtins/config.js";
 import type { ClientMode } from "../modes.js";
 import type { SessionUsageSummary } from "../../app-state.js";
 
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "auth_failed";
+export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "auth_failed" | "message_too_big";
 
 export type StatusViewTab = "status" | "usage" | "config";
 

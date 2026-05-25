@@ -3,7 +3,7 @@ import type { Frame, ReqFrame, ResFrame } from "./protocol.js";
 import { isResFrame } from "./protocol.js";
 
 export type FrameHandler = (frame: Frame) => void;
-export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "auth_failed";
+export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "auth_failed" | "message_too_big";
 
 interface PendingRequest {
   resolve: (frame: ResFrame) => void;
@@ -141,6 +141,12 @@ export class WsClient {
       if (code === 1008) {
         this.setStatus("auth_failed");
         this.rejectAllPending(new Error(`auth failed: ${this.closeReason}`));
+        return;
+      }
+
+      if (code === 1009) {
+        this.setStatus("message_too_big");
+        this.rejectAllPending(new Error("消息过大，服务器拒绝了连接。请缩短输入内容后重试。"));
         return;
       }
 

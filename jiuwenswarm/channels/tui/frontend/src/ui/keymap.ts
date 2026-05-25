@@ -15,6 +15,8 @@ export interface AppScreenKeymapDelegate {
   interruptTask(): void;
   /** Set local interrupt flag only (for long-running local commands like log streaming) */
   requestLocalInterrupt(): void;
+  /** Show a brief hint that pressing Ctrl+C again will exit */
+  showCtrlCExitHint(): void;
   exitApp(): void;
   toggleTodos(): void;
   toggleTeamPanel(): void;
@@ -40,7 +42,7 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBinding[] = [
     description: "中断任务；连按两次退出",
     run: (delegate) => {
       const now = Date.now();
-      if (now - lastInterruptTime < 1000) {
+      if (now - lastInterruptTime < 3000) {
         delegate.exitApp();
         return;
       }
@@ -58,6 +60,9 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBinding[] = [
         delegate.clearInput();
       }
 
+      // Show hint that pressing Ctrl+C again within 1s will exit
+      delegate.showCtrlCExitHint();
+
       lastInterruptTime = now;
     },
   },
@@ -67,12 +72,13 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBinding[] = [
     description: "中断任务；连按两次退出",
     run: (delegate) => {
       const now = Date.now();
-      if (now - lastInterruptTime < 1000) {
+      if (now - lastInterruptTime < 3000) {
         delegate.exitApp();
         return;
       }
       lastInterruptTime = now;
       delegate.interruptTask();
+      delegate.showCtrlCExitHint();
     },
   },
   {

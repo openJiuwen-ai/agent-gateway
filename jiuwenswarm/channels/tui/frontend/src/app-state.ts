@@ -371,6 +371,9 @@ export class CliPiAppState {
       if (status === "connected") {
         await this.fetchModelInfo();
       }
+      if (status === "message_too_big") {
+        this.addItem(addError(this.sessionId, "消息过大，服务器拒绝了连接。请缩短输入内容后重新发送。"));
+      }
     });
 
     this.unlistenFrames = this.wsClient.onFrame((frame) => {
@@ -863,6 +866,14 @@ export class CliPiAppState {
   ): string | null => {
     if (this.connectionStatus !== "connected") return null;
     const mode = modeOverride ?? this.mode;
+    // Pre-check: reject messages whose serialized frame exceeds 7 MB (gateway
+    // server max_size is 8 MB; leave 1 MB margin for JSON overhead).
+    const estimatedSize = JSON.stringify({ type: "req", method: "chat.send", params: { content, query: content, mode, ...(attachments?.length ? { attachments } : {}) } }).length;
+    if (estimatedSize > 7 * 1024 * 1024) {
+      this.addItem(addError(this.sessionId, `消息过大（约 ${Math.round(estimatedSize / 1024 / 1024)} MB），请缩短输入内容。`));
+      this.emitChange();
+      return null;
+    }
     if (this.streamingState !== StreamingState.Idle) {
       this.sendEventOnly("chat.interrupt", { intent: "cancel" });
     }
@@ -899,6 +910,13 @@ export class CliPiAppState {
     if (this.connectionStatus !== "connected") return null;
     const trimmed = content.trim();
     if (!trimmed) return null;
+    // Same pre-check as sendMessage: reject oversized frames.
+    const estimatedSize = JSON.stringify({ type: "req", method: "chat.interrupt", params: { intent: "supplement", new_input: trimmed, ...(attachments?.length ? { attachments } : {}) } }).length;
+    if (estimatedSize > 7 * 1024 * 1024) {
+      this.addItem(addError(this.sessionId, `消息过大（约 ${Math.round(estimatedSize / 1024 / 1024)} MB），请缩短输入内容。`));
+      this.emitChange();
+      return null;
+    }
     const requestId = this.sendEventOnly("chat.interrupt", {
       intent: "supplement",
       new_input: trimmed,

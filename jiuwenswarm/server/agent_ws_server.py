@@ -388,6 +388,8 @@ class AgentWebSocketServer:
 
         await ensure_persistent_checkpointer()
 
+        ws_max_size = 8 * 2**20  # 8 MB — matches Gateway → AgentServer link
+
         try:
             from websockets.legacy.server import serve as legacy_serve
             self._server = await legacy_serve(
@@ -397,6 +399,7 @@ class AgentWebSocketServer:
                 process_request=self._process_request,
                 ping_interval=self._ping_interval,
                 ping_timeout=self._ping_timeout,
+                max_size=ws_max_size,
             )
         except ImportError:
             import websockets
@@ -407,6 +410,7 @@ class AgentWebSocketServer:
                 process_request=self._process_request,
                 ping_interval=self._ping_interval,
                 ping_timeout=self._ping_timeout,
+                max_size=ws_max_size,
             )
         logger.info(
             "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port

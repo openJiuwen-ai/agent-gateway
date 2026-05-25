@@ -801,9 +801,7 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    // Ctrl+C double-press for pending questions (aligns with Claude Code behavior):
-    // First press: show "Press Ctrl+C again to exit" notice, don't cancel yet.
-    // Second press within 1s: actually cancel the question.
+    // Ctrl+C during pending question: first press shows hint, second press within 1s cancels
     if (pendingQuestion && matchesKey(data, "ctrl+c")) {
       if (this.ctrlCPendingForQuestion) {
         this.clearCtrlCPendingForQuestion();
@@ -818,7 +816,7 @@ export class AppScreen implements Component, Focusable {
         this.ctrlCPendingForQuestionTimer = null;
         this.transientNotice = null;
         this.tui.requestRender();
-      }, 1000);
+      }, 3000);
       this.tui.requestRender();
       return;
     }
@@ -867,6 +865,18 @@ export class AppScreen implements Component, Focusable {
       hasServerTask: () => this.state.hasServerTask(),
       requestLocalInterrupt: () => {
         this.state.requestLocalInterrupt();
+      },
+      showCtrlCExitHint: () => {
+        if (this.transientNoticeTimer) {
+          clearTimeout(this.transientNoticeTimer);
+        }
+        this.transientNotice = "Press Ctrl+C again to exit";
+        this.transientNoticeTimer = setTimeout(() => {
+          this.transientNotice = null;
+          this.transientNoticeTimer = null;
+          this.tui.requestRender();
+        }, 3000);
+        this.tui.requestRender();
       },
     });
     if (handled) {
@@ -3180,6 +3190,9 @@ export class AppScreen implements Component, Focusable {
           width,
         ),
       );
+    }
+    if (this.ctrlCPendingForQuestion) {
+      lines.push(padToWidth(palette.status.warning("Press Ctrl+C again to exit"), width));
     }
     return lines;
   }

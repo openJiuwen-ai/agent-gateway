@@ -237,6 +237,8 @@ class WebChannel(BaseChannel):
 
             ws_serve = websockets.serve
 
+        ws_max_size = 8 * 2**20  # 8 MB — matches AgentServer link
+
         self._server = await ws_serve(
             self._connection_handler,
             self.config.host,
@@ -244,6 +246,7 @@ class WebChannel(BaseChannel):
             process_request=self._process_request,
             ping_interval=20,
             ping_timeout=20,
+            max_size=ws_max_size,
         )
         self._running = True
         logger.info(
