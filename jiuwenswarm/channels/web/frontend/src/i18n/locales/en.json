@@ -635,7 +635,7 @@
       "thirdParty": { "label": "Third-Party Services", "hint": "API key settings" },
       "freeSearch": { "label": "Free Search Engines", "hint": "Enable free search engines" },
       "evolution": { "label": "Evolution Settings", "hint": "Online skill evolution settings" },
-      "agents": { "label": "Multi-Agent Configuration", "hint": "For cluster mode only" },
+      "agents": { "label": "Multi-Agent Configuration", "hint": "For cluster mode only, Team required" },
       "team": { "label": "Team Configuration", "hint": "Multi-agent team settings" },
       "contextEngine": { "label": "Context Compression", "hint": "Enable or disable dialogue context compression" },
       "permissions": { "label": "Tool Safety Guardrail", "hint": "Enable or disable permission checks for tool calls" },

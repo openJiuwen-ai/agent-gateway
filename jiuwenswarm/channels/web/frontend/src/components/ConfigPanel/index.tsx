@@ -2720,6 +2720,9 @@ export function ConfigPanel({
       if (!agent.model.api_key.trim()) return true;
       if (!agent.model.model.trim()) return true;
     }
+    if (draftAgents.length > 0 && draftTeams.length === 0) {
+      return true;
+    }
     for (const team of draftTeams) {
       if (!team.team_name.trim()) return true;
       if (!team.lifecycle?.trim()) return true;
