@@ -100,6 +100,9 @@ function showJsonInput(ctx: CommandContext): void {
     "usage.total_input_tokens — total input tokens",
     "usage.total_output_tokens — total output tokens",
     "usage.total_tokens — total tokens (input + output)",
+    "context_window.context_window_size — model max context tokens",
+    "context_window.used_percentage — context occupancy (0-100)",
+    "context_window.remaining_percentage — context remaining (0-100)",
   ];
   ctx.addItem(
     makeItem(ctx.sessionId, "info", `StatusLine — JSON input fields\n${fields.map((f) => `  ${f}`).join("\n")}`, "m"),

@@ -92,6 +92,8 @@ export interface AppEventDelegate {
   appendTeamMessageEvent(event: TeamMessageEvent): void;
   setEvolutionStatus(status: "idle" | "running"): void;
   setContextCompression(stats: ContextCompressionStats | null): void;
+  setContextWindowLimit(n: number | null): void;
+  setContextUsedPercentage(n: number | null): void;
   setSessionTitle(title: string): void;
   safeFetchSessionTitle(sessionId: string): void;
   addToolCallPayload(
@@ -1095,6 +1097,12 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
           : {},
         typeof payload.model === "string" ? payload.model : undefined,
       );
+      if (typeof payload.usage_percent === "number") {
+        delegate.setContextUsedPercentage(payload.usage_percent);
+      }
+      if (typeof payload.context_window_tokens === "number") {
+        delegate.setContextWindowLimit(payload.context_window_tokens);
+      }
       return true;
 
     case "harness.extension_ready": {

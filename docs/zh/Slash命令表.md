@@ -621,6 +621,9 @@
 | `usage.total_input_tokens` | 会话总输入 token |
 | `usage.total_output_tokens` | 会话总输出 token |
 | `usage.total_tokens` | 会话总 token |
+| `context_window.context_window_size` | 模型最大上下文窗口 token 数（如 200000） |
+| `context_window.used_percentage` | 上下文占用百分比（0-100） |
+| `context_window.remaining_percentage` | 上下文剩余百分比（0-100） |
 
 #### 命令编写模板
 
@@ -632,10 +635,10 @@
 /statusline set 'input=$(cat); 字段1=$(echo "$input" | jq -r '.字段1 // "默认值"'); 字段2=$(echo "$input" | jq -r '.字段2 // "默认值"'); echo "格式化字符串"'
 ```
 
-**推荐通用命令**（显示模式、模型、token、连接状态）：
+**推荐通用命令**（显示模式、模型、token、上下文占用、连接状态）：
 
 ```
-/statusline set 'input=$(cat); mode=$(echo "$input" | jq -r '.mode // "?"'); model=$(echo "$input" | jq -r '.model // "?"'); tokens=$(echo "$input" | jq -r '.usage.total_tokens // 0'); conn=$(echo "$input" | jq -r '.connection // "?"'); echo "$mode | $model | tokens:$tokens | $conn"'
+/statusline set 'input=$(cat); mode=$(echo "$input" | jq -r '.mode // "?"'); model=$(echo "$input" | jq -r '.model // "?"'); tokens=$(echo "$input" | jq -r '.usage.total_tokens // 0'); pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0'); conn=$(echo "$input" | jq -r '.connection // "?"'); echo "$mode | $model | ctx:${pct}% | tokens:$tokens | $conn"'
 ```
 
 **各字段提取速查**：
@@ -659,12 +662,17 @@
 | 总输入 token | `jq -r '.usage.total_input_tokens // 0'` |
 | 总输出 token | `jq -r '.usage.total_output_tokens // 0'` |
 | 总 token | `jq -r '.usage.total_tokens // 0'` |
+| 上下文窗口大小 | `jq -r '.context_window.context_window_size // 0'` |
+| 上下文占用 % | `jq -r '.context_window.used_percentage // 0'` |
+| 上下文剩余 % | `jq -r '.context_window.remaining_percentage // 0'` |
 
 #### 更多示例
 
 - `/statusline` — 查看当前配置
 - `/statusline set 'input=$(cat); model=$(echo "$input" | jq -r .model); echo "$model"'` — 只显示模型名
 - `/statusline set 'input=$(cat); proc=$(echo "$input" | jq -r .is_processing); model=$(echo "$input" | jq -r .model); echo "$proc | $model"'` — 显示是否在处理和模型名
+- `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r .context_window.used_percentage); rem=$(echo "$input" | jq -r .context_window.remaining_percentage); cw=$(echo "$input" | jq -r .context_window.context_window_size / 1000); echo "ctx:${pct}% used (${rem}% left, ${cw}K window)"'` — 显示上下文窗口占用百分比
+- `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r ".context_window.used_percentage // 0"); if [ "$pct" -ge 90 ]; then warn="⚠HIGH"; elif [ "$pct" -ge 70 ]; then warn="~MED"; else warn="OK"; fi; echo "ctx:${pct}% $warn"'` — 显示上下文占用百分比并带阈值警告（≥90% HIGH，≥70% MED）
 - `/statusline set 'input=$(cat); err=$(echo "$input" | jq -r .last_error); if [ "$err" != "null" ] && [ "$err" != "" ]; then echo "error: $err"; else echo "ok"; fi'` — 有错误时显示错误信息，无错误时显示 ok
 - `/statusline clear` — 清除状态栏配置
 - `/statusline help` — 查看 JSON 输入字段参考
@@ -685,7 +693,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "input=$(cat); mode=$(echo \"$input\" | jq -r '.mode // \"?\"'); model=$(echo \"$input\" | jq -r '.model // \"?\"'); tokens=$(echo \"$input\" | jq -r '.usage.total_tokens // 0'); echo \"$mode | $model | tokens:$tokens\"",
+    "command": "input=$(cat); mode=$(echo \"$input\" | jq -r '.mode // \"?\"'); model=$(echo \"$input\" | jq -r '.model // \"?\"'); pct=$(echo \"$input\" | jq -r '.context_window.used_percentage // 0'); tokens=$(echo \"$input\" | jq -r '.usage.total_tokens // 0'); echo \"$mode | $model | ctx:${pct}% | tokens:$tokens\"",
     "padding": 0
   }
 }

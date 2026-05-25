@@ -1721,13 +1721,22 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             for entry in models:
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
+                model_name = mcc.get("model_name", "")
+                # 解析模型的上下文窗口大小
+                context_window_tokens = 0
+                try:
+                    from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+                    context_window_tokens = ContextUtils.resolve_context_max(model_name=model_name)
+                except Exception:
+                    logger.debug("Failed to resolve context_window_tokens for model %s", model_name, exc_info=True)
                 result.append({
-                    "model_name": mcc.get("model_name", ""),
+                    "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature", 0.95),
                     "alias": entry.get("alias", ""),
+                    "context_window_tokens": context_window_tokens,
                 })
             active_model = result[0]["model_name"] if result else ""
             await channel.send_response(ws, req_id, ok=True, payload={

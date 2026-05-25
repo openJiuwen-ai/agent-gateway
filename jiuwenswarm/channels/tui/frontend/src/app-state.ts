@@ -110,6 +110,8 @@ export interface AppSnapshot {
   teamMessageEvents: TeamMessageEvent[];
   evolutionStatus: "idle" | "running";
   contextCompression: ContextCompressionStats | null;
+  contextWindowLimit: number | null;
+  contextUsedPercentage: number | null;
   modelInfo: { provider: string; model: string; version: string };
   sessionTitle: string;
   statusLineText: string | null;
@@ -163,6 +165,8 @@ export class CliPiAppState {
   private teamMessageEvents: TeamMessageEvent[] = [];
   private evolutionStatus: "idle" | "running" = "idle";
   private contextCompression: ContextCompressionStats | null = null;
+  private contextWindowLimit: number | null = null;
+  private contextUsedPercentage: number | null = null;
   private toolExecutions = new Map<string, ToolExecution>();
   private toolExecutionOrder: string[] = [];
   private orphanToolResults = new Map<
@@ -246,6 +250,12 @@ export class CliPiAppState {
     },
     setContextCompression: (stats) => {
       this.contextCompression = stats;
+    },
+    setContextWindowLimit: (n) => {
+      this.contextWindowLimit = n;
+    },
+    setContextUsedPercentage: (n) => {
+      this.contextUsedPercentage = n;
     },
     addToolCallPayload: (payload, sessionId, requestId, startedAt) => {
       this.addToolCallPayload(payload, sessionId, requestId, startedAt);
@@ -438,6 +448,11 @@ export class CliPiAppState {
         version: String(config.app_version ?? ""),
       };
 
+      // 从 models.list 的模型数据中提取上下文窗口大小（不需要agent初始化）
+      if (activeModel && typeof activeModel.context_window_tokens === "number") {
+        this.contextWindowLimit = activeModel.context_window_tokens;
+      }
+
       const memoryResult =
         memoryPayload.status === "fulfilled" &&
         memoryPayload.value &&
@@ -556,6 +571,8 @@ export class CliPiAppState {
       teamMessageEvents: [...this.teamMessageEvents],
       evolutionStatus: this.evolutionStatus,
       contextCompression: this.contextCompression ? { ...this.contextCompression } : null,
+      contextWindowLimit: this.contextWindowLimit,
+      contextUsedPercentage: this.contextUsedPercentage,
       modelInfo: this.modelInfo,
       sessionTitle: this.sessionTitle,
       statusLineText: this.statusLineText,
@@ -766,6 +783,8 @@ export class CliPiAppState {
     this.teamMessageEvents = [];
     this.evolutionStatus = "idle";
     this.contextCompression = null;
+    this.contextWindowLimit = null;
+    this.contextUsedPercentage = null;
     this.clearToolExecutionState();
     this.historyEntries = [];
     this.historyTotalPages = null;
@@ -1743,6 +1762,13 @@ export class CliPiAppState {
         total_input_tokens: usage.total_input_tokens,
         total_output_tokens: usage.total_output_tokens,
         total_tokens: usage.total_tokens,
+      },
+      context_window: {
+        context_window_size: snapshot.contextWindowLimit ?? 0,
+        used_percentage: snapshot.contextUsedPercentage ?? 0,
+        remaining_percentage: snapshot.contextUsedPercentage != null
+          ? Math.max(0, 100 - (snapshot.contextUsedPercentage ?? 0))
+          : 0,
       },
     };
   }

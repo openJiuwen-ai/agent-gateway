@@ -4841,16 +4841,52 @@ class JiuWenClawDeepAdapter:
             summary,
         )
 
+        # 从 DeepAgent 获取上下文窗口占用率与窗口大小
+        context_usage_percent: float | None = None
+        context_window_tokens: int | None = None
+        try:
+            if self._instance is not None:
+                da_usage = self._instance.get_context_usage(session_id=session_id)
+                if isinstance(da_usage, dict):
+                    raw_pct = da_usage.get("usage_percent", None)
+                    if raw_pct is not None:
+                        context_usage_percent = float(raw_pct)
+                    raw_cw = da_usage.get("context_window_tokens", None)
+                    if raw_cw is not None:
+                        context_window_tokens = int(raw_cw)
+        except Exception:
+            logger.debug("[JiuWenClaw] DeepAgent.get_context_usage in usage_summary failed", exc_info=True)
+
+        # 回退：DeepAgent 未返回 context_window_tokens 时，用 ContextUtils 解析模型上下文窗口上限
+        if context_window_tokens is None:
+            try:
+                from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+                model_name = (
+                    getattr(self._model_request_config, "model_name", "") or ""
+                    if self._model_request_config else ""
+                )
+                cw_fallback = ContextUtils.resolve_context_max(model_name=model_name)
+                if cw_fallback > 0:
+                    context_window_tokens = cw_fallback
+            except Exception:
+                logger.debug("[JiuWenClaw] ContextUtils.resolve_context_max fallback failed", exc_info=True)
+
         if usage_accumulator["total_tokens"] > 0:
+            payload: dict[str, Any] = {
+                "event_type": "chat.usage_summary",
+                "session_id": session_id,
+                "usage": summary,
+                "model": self._resolve_model_name(),
+            }
+            if context_usage_percent is not None:
+                payload["usage_percent"] = context_usage_percent
+            if context_window_tokens is not None:
+                payload["context_window_tokens"] = context_window_tokens
+
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={
-                    "event_type": "chat.usage_summary",
-                    "session_id": session_id,
-                    "usage": summary,
-                    "model": self._resolve_model_name(),
-                },
+                payload=payload,
                 is_complete=False,
             )
 

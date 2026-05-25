@@ -610,6 +610,9 @@ The command receives the following JSON data on each execution:
 | `usage.total_input_tokens` | Total input tokens for session |
 | `usage.total_output_tokens` | Total output tokens for session |
 | `usage.total_tokens` | Total tokens for session |
+| `context_window.context_window_size` | Model max context window tokens (e.g. 200000) |
+| `context_window.used_percentage` | Context occupancy percentage (0-100) |
+| `context_window.remaining_percentage` | Context remaining percentage (0-100) |
 
 #### Command Writing Template
 
@@ -621,10 +624,10 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 /statusline set 'input=$(cat); field1=$(echo "$input" | jq -r '.field1 // "default"'); field2=$(echo "$input" | jq -r '.field2 // "default"'); echo "format string"'
 ```
 
-**Recommended universal command** (shows mode, model, tokens, connection):
+**Recommended universal command** (shows mode, model, tokens, context %, connection):
 
 ```
-/statusline set 'input=$(cat); mode=$(echo "$input" | jq -r '.mode // "?"'); model=$(echo "$input" | jq -r '.model // "?"'); tokens=$(echo "$input" | jq -r '.usage.total_tokens // 0'); conn=$(echo "$input" | jq -r '.connection // "?"'); echo "$mode | $model | tokens:$tokens | $conn"'
+/statusline set 'input=$(cat); mode=$(echo "$input" | jq -r '.mode // "?"'); model=$(echo "$input" | jq -r '.model // "?"'); tokens=$(echo "$input" | jq -r '.usage.total_tokens // 0'); pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0'); conn=$(echo "$input" | jq -r '.connection // "?"'); echo "$mode | $model | ctx:${pct}% | tokens:$tokens | $conn"'
 ```
 
 **Field extraction quick reference**:
@@ -648,12 +651,17 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 | Total input tokens | `jq -r '.usage.total_input_tokens // 0'` |
 | Total output tokens | `jq -r '.usage.total_output_tokens // 0'` |
 | Total tokens | `jq -r '.usage.total_tokens // 0'` |
+| Context window size | `jq -r '.context_window.context_window_size // 0'` |
+| Context used % | `jq -r '.context_window.used_percentage // 0'` |
+| Context remaining % | `jq -r '.context_window.remaining_percentage // 0'` |
 
 #### More Examples
 
 - `/statusline` — View current configuration
 - `/statusline set 'input=$(cat); model=$(echo "$input" | jq -r .model); echo "$model"'` — Show model name only
 - `/statusline set 'input=$(cat); proc=$(echo "$input" | jq -r .is_processing); model=$(echo "$input" | jq -r .model); echo "$proc | $model"'` — Show processing state and model
+- `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r .context_window.used_percentage); rem=$(echo "$input" | jq -r .context_window.remaining_percentage); cw=$(echo "$input" | jq -r .context_window.context_window_size / 1000); echo "ctx:${pct}% used (${rem}% left, ${cw}K window)"'` — Show context window occupancy with percentage bar
+- `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r ".context_window.used_percentage // 0"); if [ "$pct" -ge 90 ]; then warn="⚠HIGH"; elif [ "$pct" -ge 70 ]; then warn="~MED"; else warn="OK"; fi; echo "ctx:${pct}% $warn"'` — Show context % with threshold warning (≥90% HIGH, ≥70% MED)
 - `/statusline set 'input=$(cat); err=$(echo "$input" | jq -r .last_error); if [ "$err" != "null" ] && [ "$err" != "" ]; then echo "error: $err"; else echo "ok"; fi'` — Show error when present, otherwise "ok"
 - `/statusline clear` — Remove status line configuration
 - `/statusline help` — View JSON input fields reference
@@ -674,7 +682,7 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 {
   "statusLine": {
     "type": "command",
-    "command": "input=$(cat); mode=$(echo \"$input\" | jq -r '.mode // \"?\"'); model=$(echo \"$input\" | jq -r '.model // \"?\"'); tokens=$(echo \"$input\" | jq -r '.usage.total_tokens // 0'); echo \"$mode | $model | tokens:$tokens\"",
+    "command": "input=$(cat); mode=$(echo \"$input\" | jq -r '.mode // \"?\"'); model=$(echo \"$input\" | jq -r '.model // \"?\"'); pct=$(echo \"$input\" | jq -r '.context_window.used_percentage // 0'); tokens=$(echo \"$input\" | jq -r '.usage.total_tokens // 0'); echo \"$mode | $model | ctx:${pct}% | tokens:$tokens\"",
     "padding": 0
   }
 }
