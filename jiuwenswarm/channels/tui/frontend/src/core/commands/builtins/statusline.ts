@@ -19,8 +19,24 @@ function showCurrentConfig(ctx: CommandContext): void {
   ctx.addItem(makeItem(ctx.sessionId, "info", `StatusLine\n  ${lines.join("\n  ")}`, "m"));
 }
 
+function stripOuterQuotes(s: string): string {
+  const trimmed = s.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  if ((first === "'" && last === "'") || (first === '"' && last === '"')) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/** Unescape JSON-style backslash sequences so users can type `\"` to mean `"`, aligning with Claude Code's JSON config behavior. */
+function unescapeCommand(s: string): string {
+  return s.replace(/\\(["\\])/g, "$1");
+}
+
 function setConfig(ctx: CommandContext, args: string): void {
-  const command = args.trim().replace(/^['"]|['"]$/g, "");
+  const command = unescapeCommand(stripOuterQuotes(args));
   if (!command) {
     ctx.addItem(makeItem(ctx.sessionId, "error", "usage: /statusline set <command>", "m"));
     return;

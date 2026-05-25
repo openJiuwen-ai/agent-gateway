@@ -1764,11 +1764,9 @@ export class CliPiAppState {
 
     try {
       if (isWindows) {
-        // On Windows, sh.exe from MSYS2/Git Bash can't read stdin in $(cat)
-        // inside sh -c. Solution: write JSON to a temp file and:
-        // 1. Replace $(cat) (no args) with $(cat "filepath") for inline commands
-        // 2. Export JIUWENSWARM_SL_FILE so script files can use it too:
-        //    input=$(cat "$JIUWENSWARM_SL_FILE")
+        // On Windows: pipe stdin (like POSIX) so `jq -r '.field'` works directly.
+        // Also write a temp file and export JIUWENSWARM_SL_FILE as a fallback for
+        // `$(cat "$JIUWENSWARM_SL_FILE")` style commands (sh -c can't $(cat) stdin).
         const tmpFile = join(tmpdir(), "jiuwenswarm-sl.json");
         writeFileSync(tmpFile, jsonInput, "utf8");
         const msysPath = tmpFile
@@ -1791,6 +1789,9 @@ export class CliPiAppState {
             }
           },
         );
+        // Pipe stdin so commands that read stdin directly (jq, python, etc.) work
+        // on Windows the same way they do on POSIX — aligning with Claude Code behavior.
+        child.stdin?.end(jsonInput);
       } else {
         // On POSIX, stdin piping works correctly in sh -c.
         const child = execFile(
