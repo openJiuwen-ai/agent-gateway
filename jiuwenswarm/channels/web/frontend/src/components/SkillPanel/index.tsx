@@ -217,8 +217,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
 
   const visibleSkills = useMemo(() => {
     // 只显示已安装的技能（需手动安装后才会显示）
+    // 本地/项目技能(source=local/project)不在 plugins 中，但已在 skills 目录下，属于已安装
     const installed = filteredSkills.filter((skill) =>
-      installedSkillMap.has(skill.name)
+      installedSkillMap.has(skill.name) || skill.source === "local" || skill.source === "project"
     );
     return [...installed].sort((a, b) => {
       const aSkillNet = a.source === "skillnet" ? 1 : 0;
