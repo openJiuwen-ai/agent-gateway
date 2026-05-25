@@ -426,6 +426,66 @@ class AgentManager:
         )
         return existing_modes
 
+    async def process_message(self, request: Any) -> Any:
+        """处理非流式请求.
+
+        Args:
+            request: AgentRequest 对象
+
+        Returns:
+            AgentResponse 对象
+        """
+        try:
+            channel_id = getattr(request, "channel_id", "")
+            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
+            mode_full = params.get("mode", "agent.plan")
+            mode = str(mode_full).split(".")[0] if mode_full else "agent"
+            workspace_dir = params.get("workspace_dir")
+
+            agent = await self.get_agent(
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=workspace_dir,
+            )
+            if agent is None:
+                raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
+
+            return await agent.process_message(request)
+        except Exception as e:
+            logger.error(f"[AgentManager] Error in process_message: {e}", exc_info=True)
+            raise
+
+    async def process_message_stream(self, request: Any):
+        """处理流式请求.
+
+        Args:
+            request: AgentRequest 对象
+
+        Yields:
+            AgentResponseChunk 对象
+        """
+        try:
+            channel_id = getattr(request, "channel_id", "")
+            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
+            mode_full = params.get("mode", "agent.plan")
+            mode = str(mode_full).split(".")[0] if mode_full else "agent"
+            workspace_dir = params.get("workspace_dir")
+
+            agent = await self.get_agent(
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=workspace_dir,
+            )
+            if agent is None:
+                raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
+
+            # 流式处理
+            async for chunk in agent.process_message_stream(request):
+                yield chunk
+        except Exception as e:
+            logger.error(f"[AgentManager] Error in process_message_stream: {e}", exc_info=True)
+            raise
+
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
         for key, agents in list(self.agents.items()):
