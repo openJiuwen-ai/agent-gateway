@@ -18,6 +18,7 @@ from jiuwenswarm.agents.harness.team import get_team_manager
 from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
     get_session_metadata,
+    increment_session_round_count,
     update_session_metadata,
 )
 from jiuwenswarm.agents.harness.team.monitor_handler import TeamMonitorHandler
@@ -219,6 +220,13 @@ def _approval_result_from_event_or_items(
 def _is_leader_output(chunk: Any) -> bool:
     """Return whether a team OutputSchema chunk should be shown to claw users."""
     chunk_type = getattr(chunk, "type", None)
+    payload = getattr(chunk, "payload", None)
+    # team.runtime_ready and team.completed are leader-level control events
+    # that carry no per-member content but must be forwarded to the frontend.
+    if chunk_type == "message" and isinstance(payload, dict):
+        event_type_str = payload.get("event_type")
+        if event_type_str in ("team.runtime_ready", "team.completed"):
+            return True
     if chunk_type == "team.runtime_ready":
         return True
 
@@ -717,12 +725,14 @@ async def process_team_message_stream(
                 session_id,
             )
 
+            round_id = increment_session_round_count(session_id)
             stream_task = asyncio.create_task(
                 _consume_stream_with_query(
                     channel_id,
                     session_id,
                     team_spec,
                     query,
+                    round_id=round_id,
                     hide_dm=hide_dm,
                 )
             )
@@ -837,15 +847,32 @@ async def _consume_stream_with_query(
     session_id: str,
     team_spec: Any,
     initial_query: str,
+    *,
+    round_id: int,
     hide_dm: bool = False,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     received_chunks = 0
     try:
         logger.info(
-            "[TeamHelpers] stream started: channel_id=%s session_id=%s",
+            "[TeamHelpers] stream started: channel_id=%s session_id=%s round_id=%s",
             _resolve_channel_id(channel_id),
             session_id,
+            round_id,
+        )
+        # Broadcast a round-start signal so the frontend can mark the
+        # current conversation turn as "processing" before any chunks
+        # arrive.  Pairs with ``chat.processing_status(is_complete=True)`` on completion.
+        _broadcast_event(
+            channel_id,
+            session_id,
+            {
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "rid": round_id,
+                "is_processing": True,
+                "is_complete": False,
+            },
         )
         async for chunk in Runner.run_agent_team_streaming(
             agent_team=team_spec,
@@ -859,6 +886,7 @@ async def _consume_stream_with_query(
                 continue
             parsed = parse_stream_chunk(chunk)
             if parsed is not None:
+                parsed["rid"] = round_id
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
                 if parsed.get("event_type") == "team.runtime_ready":
@@ -889,6 +917,23 @@ async def _consume_stream_with_query(
                         session_id,
                         source="runtime_ready",
                     )
+                elif parsed.get("event_type") == "team.completed":
+                    # Team completed this round — broadcast a single
+                    # round-complete signal that also carries team stats.
+                    _broadcast_event(
+                        channel_id,
+                        session_id,
+                        {
+                            "event_type": "chat.processing_status",
+                            "session_id": session_id,
+                            "rid": round_id,
+                            "is_processing": False,
+                            "is_complete": True,
+                            "member_count": parsed.get("member_count"),
+                            "task_count": parsed.get("task_count"),
+                        },
+                    )
+                    continue
                 _broadcast_event(channel_id, session_id, parsed)
 
         # If stream ended without any chunks, broadcast an error event

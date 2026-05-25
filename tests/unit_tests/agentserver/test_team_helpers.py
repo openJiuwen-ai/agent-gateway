@@ -107,7 +107,7 @@ class _TeamHelpersTestApi:
         query: str,
     ) -> None:
         consumer = getattr(team_helpers, "_consume_stream_with_query")
-        await consumer(channel_id, session_id, spec, query)
+        await consumer(channel_id, session_id, spec, query, round_id=1)
 
     @staticmethod
     async def consume_monitor_events(
@@ -1209,15 +1209,19 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
 
     assert ready_calls == [("sess-leader-only", "demo-team")]
     assert [event["event_type"] for event in broadcasted] == [
+        "chat.processing_status",
         "team.runtime_ready",
         "chat.final",
         "chat.final",
     ]
-    assert broadcasted[1]["content"] == "leader answer"
+    # All events before round_complete carry is_processing=True, is_complete=False
+    assert broadcasted[0]["is_processing"] is True
+    assert broadcasted[0]["is_complete"] is False
+    assert broadcasted[2]["content"] == "leader answer"
     # Teammate event includes role and member_name
-    assert broadcasted[2]["content"] == "teammate answer"
-    assert broadcasted[2]["role"] == TeamRole.TEAMMATE.value
-    assert broadcasted[2]["member_name"] == "analyst"
+    assert broadcasted[3]["content"] == "teammate answer"
+    assert broadcasted[3]["role"] == TeamRole.TEAMMATE.value
+    assert broadcasted[3]["member_name"] == "analyst"
 
 
 def test_extract_hide_dm_directive_strips_prefix_and_flags():
@@ -1303,6 +1307,7 @@ async def test_consume_stream_with_query_propagates_hide_dm_to_monitor(monkeypat
         "sess-hide-dm",
         SimpleNamespace(team_name="demo-team"),
         "hello",
+        round_id=1,
         hide_dm=True,
     )
 

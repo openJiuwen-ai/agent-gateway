@@ -289,7 +289,15 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
 
     if isinstance(payload, dict):
         if "event_type" in payload:
-            if payload.get("event_type") == "chat.tracer_agent":
+            inner_event = payload.get("event_type")
+            # Team-level control events (team.runtime_ready, team.completed)
+            # carry their own event_type namespace — pass through as-is
+            # rather than wrapping under "chat.{chunk_type}".
+            if isinstance(inner_event, str) and inner_event.startswith("team."):
+                return {
+                    **{k: _serialize_value(v) for k, v in payload.items()},
+                }
+            if inner_event == "chat.tracer_agent":
                 return {
                     "event_type": f"chat.{chunk_type}",
                     **{k: _serialize_chunk_recursive(v) if isinstance(v, (dict, list)) else _serialize_value(v)

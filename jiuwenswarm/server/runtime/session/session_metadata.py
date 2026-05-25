@@ -145,6 +145,7 @@ def init_session_metadata(
         "message_count": 0,
         "mode": mode,
         "team_name": team_name,
+        "round_id": 0,
     }
     _write_metadata_sync(session_id, metadata)
 
@@ -189,6 +190,7 @@ def update_session_metadata(
             "message_count": 1 if increment_message_count else 0,
             "mode": mode if mode is not None else "unknown",
             "team_name": team_name or "",
+            "round_id": 0,
         }
         # 首次创建时写入 channel_metadata
         if channel_metadata:
@@ -230,6 +232,21 @@ def update_session_metadata(
 def get_session_metadata(session_id: str) -> dict[str, Any]:
     """获取会话元数据"""
     return _read_metadata(session_id)
+
+
+def increment_session_round_count(session_id: str) -> int:
+    """递增并持久化 session 的 round_id，返回递增后的值。
+
+    - 首次调用时从 metadata 中读取 round_id（默认 0），先 ++ 再返回。
+    - 持久化到 session metadata，确保重启后 round_id 不丢失。
+    """
+    metadata = _read_metadata(session_id)
+    current_round = int(metadata.get("round_id", 0))
+    new_round = current_round + 1
+    metadata["round_id"] = new_round
+    metadata["last_message_at"] = _current_timestamp()
+    _enqueue_write(session_id, metadata)
+    return new_round
 
 
 def remove_session_metadata_cache(session_id: str) -> None:
@@ -285,6 +302,7 @@ def set_session_delivery_context(
             "title": "",
             "message_count": 0,
             "mode": "unknown",
+            "round_id": 0,
         }
     else:
         if normalized_channel_id:
