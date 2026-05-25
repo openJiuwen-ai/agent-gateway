@@ -1412,7 +1412,7 @@ function MultiAgentSection({
                     onChange={(e) => handleModelSelect(idx, e.target.value)}
                     className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                   >
-                    <option value="">-- Select Model --</option>
+                    <option value="" disabled>-- Select Model --</option>
                     {availableModels.map((m, mi) => {
                       const sameNameModels = availableModels.filter((x) => x.model_name === m.model_name);
                       const sameNameCount = sameNameModels.length;
@@ -1516,7 +1516,7 @@ function MultiAgentSection({
               }}
               className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
             >
-              <option value="">-- Select Model --</option>
+              <option value="" disabled>-- Select Model --</option>
               {availableModels.map((m, mi) => {
                 const sameNameModels = availableModels.filter((x) => x.model_name === m.model_name);
                 const sameNameCount = sameNameModels.length;
@@ -2340,15 +2340,6 @@ export function ConfigPanel({
     }
   }, [agentNameChangeWarning]);
 
-  useEffect(() => {
-    if (modelReferenceLostWarning) {
-      const timer = setTimeout(() => {
-        setModelReferenceLostWarning(null);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [modelReferenceLostWarning]);
-
   const handleDeleteAgent = (idx: number, agentName: string, references: string[]) => {
     setDeleteAgentConfirm({ idx, agentName, references });
   };
@@ -2716,6 +2707,8 @@ export function ConfigPanel({
   useEffect(() => {
     if (agentModelReferencesLost.length > 0) {
       setModelReferenceLostWarning({ agentNames: agentModelReferencesLost.map((r) => r.agentName) });
+    } else {
+      setModelReferenceLostWarning(null);
     }
   }, [agentModelReferencesLost]);
 
@@ -2992,16 +2985,9 @@ export function ConfigPanel({
         ) : null
         }
         {
-          !error && hasAgentsTeamsValidationError ? (
+          !error && hasAgentsTeamsChanges && hasAgentsTeamsValidationError ? (
             <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
               {t('config.agentsTeamsValidationError')}
-            </div>
-          ) : null
-        }
-        {
-          !error && agentModelReferencesLost.length > 0 ? (
-            <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-              {t('config.model.referenceLostWarning')}: {agentModelReferencesLost.map((r) => r.agentName).join(', ')}
             </div>
           ) : null
         }
