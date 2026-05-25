@@ -15,7 +15,7 @@ class CronTargetChannel(str, Enum):
     WECOM = "wecom"
     XIAOYI = "xiaoyi"
     WECHAT = "wechat"
-    # DINGTALK = "dingtalk"
+    DINGTALK = "dingtalk"
 
 
 def _feishu_enterprise_app_id(s: str) -> str:

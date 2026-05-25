@@ -543,7 +543,7 @@ class CronSchedulerService:
                             metadata["feishu_open_id"] = open_part
                     msg_session_id = chat_part
 
-        # 针对 feishu/xiaoyi/whatsapp：从 config.yaml 取最近一次可回发的平台身份，写入 metadata
+        # 针对 feishu/xiaoyi/whatsapp/dingtalk：从 config.yaml 取最近一次可回发的平台身份，写入 metadata
         # 这样即使 cron 推送没有 session_id，也能让 Channel.send 正常路由到对应会话。
         if metadata is None:
             channels_cfg: dict = {}
@@ -613,11 +613,30 @@ class CronSchedulerService:
                         if last_context_token:
                             metadata["wechat_context_token"] = last_context_token
                             metadata["context_token"] = last_context_token
+                elif channel_id == "dingtalk":
+                    last_sender_id = str(ch_cfg.get("last_sender_id") or "").strip()
+                    last_conversation_id = str(ch_cfg.get("last_conversation_id") or "").strip()
+                    last_conversation_type = str(ch_cfg.get("last_conversation_type") or "").strip()
+                    # 钉钉 send() 依赖 metadata 决定单聊/群聊（conversation_type + conversation_id）。
+                    # sender_id 作为单聊兜底接收者；群聊以 conversation_id 为主。
+                    if last_sender_id or last_conversation_id:
+                        metadata = {
+                            "dingtalk_sender_id": last_sender_id,
+                            "dingtalk_chat_id": last_conversation_id,
+                            "conversation_id": last_conversation_id,
+                            "conversation_type": last_conversation_type or "1",
+                        }
             except Exception:
                 metadata = None
 
         if metadata is None:
             metadata = {}
+        if channel_id == "dingtalk":
+            # 若作业创建时绑定了 session_id（一般是 sender_id），补给钉钉单聊路由兜底。
+            if routing_sid and not str(metadata.get("dingtalk_sender_id") or "").strip():
+                metadata["dingtalk_sender_id"] = routing_sid
+            if not str(metadata.get("conversation_type") or "").strip():
+                metadata["conversation_type"] = "1"
 
         # 获取 group_digital_avatar 和 my_user_id 配置
         _group_digital_avatar = False
