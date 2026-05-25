@@ -104,6 +104,46 @@ class _RailBuildInfo:
         self.params = self.params or {}
 
 
+def create_coding_memory_rail(
+    *,
+    project_dir: str | None,
+    agent_workspace_dir: str,
+    config: dict[str, Any] | None,
+) -> CodingMemoryRail:
+    """Create CodingMemoryRail, falling back when embedding config is incomplete."""
+    embed_config = config.get("embed") if isinstance(config, dict) else None
+    embed_config = embed_config if isinstance(embed_config, dict) else {}
+
+    embed_api_key = embed_config.get("embed_api_key") or None
+    embed_base_url = (
+        embed_config.get("embed_base_url")
+        or embed_config.get("embed_api_base")
+        or ""
+    )
+    embed_model = embed_config.get("embed_model") or "text-embedding-v3"
+    embedding_config_complete = bool(embed_api_key and embed_base_url and embed_model)
+    if not embedding_config_complete:
+        embed_api_key = None
+        logger.warning(
+            "[JiuwenClawCodeAdapter] CodingMemoryRail: incomplete embedding config; "
+            "registering tools with memory fallback provider"
+        )
+
+    project_name = os.path.basename(project_dir) if project_dir else "default"
+    coding_memory_dir = os.path.join(agent_workspace_dir, "coding_memory", project_name)
+    os.makedirs(coding_memory_dir, exist_ok=True)
+
+    return CodingMemoryRail(
+        coding_memory_dir=coding_memory_dir,
+        embedding_config=EmbeddingConfig(
+            model_name=embed_model,
+            base_url=embed_base_url,
+            api_key=embed_api_key,
+        ),
+        language="en",
+    )
+
+
 class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
     """Code 模式适配器 — 配置驱动注册 rails/tools.
 
@@ -466,28 +506,10 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             return self._coding_memory_rail
 
         try:
-            config = get_config()
-            embed_config = config.get("embed") if isinstance(config, dict) else None
-
-            has_api_key = embed_config.get("embed_api_key") if isinstance(embed_config, dict) else None
-            has_base_url = embed_config.get("embed_base_url") if isinstance(embed_config, dict) else None
-            has_model = embed_config.get("embed_model") if isinstance(embed_config, dict) else None
-            if not all([has_api_key, has_base_url, has_model]):
-                logger.warning("[JiuwenClawCodeAdapter] CodingMemoryRail: no embedding config, skipping")
-                return None
-
-            _project_name = os.path.basename(self._project_dir) if self._project_dir else "default"
-            coding_memory_dir = os.path.join(self._agent_workspace_dir, "coding_memory", _project_name)
-            os.makedirs(coding_memory_dir, exist_ok=True)
-
-            coding_memory_rail = CodingMemoryRail(
-                coding_memory_dir=coding_memory_dir,
-                embedding_config=EmbeddingConfig(
-                    model_name=embed_config.get("embed_model"),
-                    base_url=embed_config.get("embed_base_url"),
-                    api_key=embed_config.get("embed_api_key"),
-                ),
-                language="en",
+            coding_memory_rail = create_coding_memory_rail(
+                project_dir=self._project_dir,
+                agent_workspace_dir=self._agent_workspace_dir,
+                config=get_config(),
             )
             # 缓存实例，供 code_agent 复用
             self._coding_memory_rail = coding_memory_rail
