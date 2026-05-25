@@ -41,10 +41,30 @@ function setConfig(ctx: CommandContext, args: string): void {
     ctx.addItem(makeItem(ctx.sessionId, "error", "usage: /statusline set <command>", "m"));
     return;
   }
-  saveTuiConfig({ statusLine: { type: "command", command } });
+  const existing = loadTuiConfig().statusLine;
+  const padding = existing?.padding ?? 0;
+  saveTuiConfig({ statusLine: { type: "command", command, padding } });
   ctx.restartStatusLine?.();
   ctx.addItem(
-    makeItem(ctx.sessionId, "info", `StatusLine — Updated\n  command: '${command}'\n  padding: 0`, "m"),
+    makeItem(ctx.sessionId, "info", `StatusLine — Updated\n  command: '${command}'\n  padding: ${padding}`, "m"),
+  );
+}
+
+function setPadding(ctx: CommandContext, args: string): void {
+  const n = parseInt(args.trim(), 10);
+  if (isNaN(n) || n < 0) {
+    ctx.addItem(makeItem(ctx.sessionId, "error", "usage: /statusline padding <number> (0 or positive)", "m"));
+    return;
+  }
+  const existing = loadTuiConfig().statusLine;
+  if (!existing || existing.type !== "command" || !existing.command) {
+    ctx.addItem(makeItem(ctx.sessionId, "error", "StatusLine not configured. Use /statusline set <command> first.", "m"));
+    return;
+  }
+  saveTuiConfig({ statusLine: { ...existing, padding: n } });
+  ctx.restartStatusLine?.();
+  ctx.addItem(
+    makeItem(ctx.sessionId, "info", `StatusLine — Updated\n  command: '${existing.command}'\n  padding: ${n}`, "m"),
   );
 }
 
@@ -90,7 +110,7 @@ export function createStatusLineCommand(): SlashCommand {
   return {
     name: "statusline",
     description: "Configure custom status line footer",
-    usage: "/statusline <set|clear|help|json>",
+    usage: "/statusline <set|padding|clear|help|json>",
     example: "/statusline set 'echo $mode | $model'",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
@@ -103,6 +123,15 @@ export function createStatusLineCommand(): SlashCommand {
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: (ctx, args) => setConfig(ctx, args),
+      },
+      {
+        name: "padding",
+        description: "Set statusline padding (left & right spaces)",
+        usage: "/statusline padding <number>",
+        example: "/statusline padding 2",
+        kind: CommandKind.BUILT_IN,
+        takesArgs: true,
+        action: (ctx, args) => setPadding(ctx, args),
       },
       {
         name: "clear",
@@ -148,7 +177,7 @@ export function createStatusLineCommand(): SlashCommand {
         return;
       }
       ctx.addItem(
-        makeItem(ctx.sessionId, "error", `Unknown sub-command: ${sub}\nUsage: /statusline <set|clear|help|json>`, "m"),
+        makeItem(ctx.sessionId, "error", `Unknown sub-command: ${sub}\nUsage: /statusline <set|padding|clear|help|json>`, "m"),
       );
     },
   };

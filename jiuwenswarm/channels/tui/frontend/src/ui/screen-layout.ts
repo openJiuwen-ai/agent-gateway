@@ -165,7 +165,8 @@ function buildStatusLineBar(snapshot: AppSnapshot, width: number): string[] {
   const text = snapshot.statusLineText.length > paddedWidth
     ? snapshot.statusLineText.slice(0, paddedWidth)
     : snapshot.statusLineText;
-  return [padToWidth(palette.text.dim(text), paddedWidth)];
+  const inner = padToWidth(palette.text.dim(text), paddedWidth);
+  return [" ".repeat(paddingX) + inner + " ".repeat(paddingX)];
 }
 
 function buildShortcutLines(width: number): string[] {
@@ -188,12 +189,17 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
     options.animationPhase,
     options.runningElapsedMs,
   );
-  const shortcutLines = options.showShortcutHelp ? buildShortcutLines(options.width) : [];
   const statusLineBarLines = buildStatusLineBar(snapshot, options.width);
 
-  // When a custom statusline bar is active, replace the built-in status lines
-  // to avoid redundant information (both show session name, mode, etc.)
-  const effectiveStatusLines = statusLineBarLines.length > 0 ? [] : statusLines;
+  // When a custom statusline is active, hide shortcut hints (matching Claude Code).
+  const suppressShortcuts = statusLineBarLines.length > 0;
+  const shortcutLines = (!suppressShortcuts && options.showShortcutHelp)
+    ? buildShortcutLines(options.width)
+    : [];
+
+  // Built-in status lines are always shown alongside the custom statusline,
+  // matching Claude Code's approach (both render together).
+  const effectiveStatusLines = statusLines;
 
   const transcriptLines = buildTranscriptLines(
     snapshot,

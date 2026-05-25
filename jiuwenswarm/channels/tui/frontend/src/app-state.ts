@@ -1716,7 +1716,6 @@ export class CliPiAppState {
   private buildStatusLineJsonInput(): Record<string, unknown> {
     const snapshot = this.getSnapshot();
     const usage = this.getUsageSummary();
-    const trustedDirs = getTrustedDirs();
     const cwd = getCurrentCwd() || process.cwd();
     return {
       session_id: snapshot.sessionId,
@@ -1782,7 +1781,10 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240, cwd: getCurrentCwd() || process.cwd() },
           (err, stdout) => {
             if (err) return;
-            const text = stdout.trim();
+            // Take only the first line — statusline is a single-line bar;
+            // embedded \n would break layout (extra rendered lines beyond
+            // what fixedLines.length accounts for).
+            const text = stdout.trim().split("\n")[0]?.trim();
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();
@@ -1800,7 +1802,7 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240 },
           (err, stdout) => {
             if (err) return;
-            const text = stdout.trim();
+            const text = stdout.trim().split("\n")[0]?.trim();
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();
