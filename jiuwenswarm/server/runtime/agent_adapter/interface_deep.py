@@ -450,6 +450,14 @@ class JiuWenClawDeepAdapter:
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._agent_name: str = "main_agent"
+        # 是否是 code-agent 形态. 基类 (deep adapter) 默认 False, 由子类
+        # JiuwenClawCodeAdapter 在 __init__ 里改成 True. 该字段透传给
+        # sysop_builder 的 ``build_filesystem_policy`` / ``create_sandbox_
+        # sysop_card``, 决定沙箱挂的"主写入根"是用户工程目录 (project_dir,
+        # code-agent 场景) 还是 agent 自己的 workspace 目录 (deep agent
+        # 场景). 单点 source-of-truth, 避免分布在多个方法里靠 isinstance
+        # 或字符串嗅探 agent_name 反推。
+        self._is_code_agent: bool = False
         self._vision_tools_registered: bool = False
         self._audio_tools_registered: bool = False
         self._video_tool_registered: bool = False
@@ -1611,8 +1619,8 @@ class JiuWenClawDeepAdapter:
             rail = None
         return rail
 
-    @staticmethod
     def _create_sandbox_sys_operation(
+        self,
         sandbox_url: str,
         sandbox_type: str,
         *,
@@ -1624,14 +1632,24 @@ class JiuWenClawDeepAdapter:
         Delegates the actual construction to ``sysop_builder.py`` so that both
         ``interface_deep.py`` and ``interface_code.py`` share one implementation.
 
+        历史上这是 ``@staticmethod``——但 sysop_builder 现在需要知道适配器形态
+        (``is_code_agent`` 决定是否把 ``project_dir`` 挂为 rw bind), 这个信号是
+        instance state (``self._is_code_agent``, 基类默认 False, ``JiuwenClaw
+        CodeAdapter`` 子类 override 成 True), staticmethod 拿不到。 因此必须降
+        成 instance method 才能透传; 调用方相应把 ``JiuWenClawDeepAdapter
+        ._create_sandbox_sys_operation(...)`` 改成 ``self._create_sandbox_
+        sys_operation(...)``, 走类 MRO 让 Code 子类覆写时也能命中。
+
         Args:
             sandbox_url: jiuwenbox HTTP base url.
             sandbox_type: provider 名 (jiuwenbox).
-            runtime: ``sandbox`` 字段字典 (含 enabled / files / excluded_commands),
-                来自 ``get_sandbox_runtime``.
-            project_dir: 用户项目目录 (一般是 ``trusted_dirs[0]``); 透传给
-                :func:`create_sandbox_sysop_card` 让其作为 rw bind mount。``None``
-                时由下游 :func:`build_filesystem_policy` 回落到 cwd / env。
+            runtime: ``sandbox`` 字段字典 (含 enabled / files / excluded_commands
+                / idle_ttl_seconds / idle_check_interval), 来自
+                ``get_sandbox_runtime``.
+            project_dir: 用户项目目录 (一般是 ``trusted_dirs[0]``); 仅在
+                ``self._is_code_agent=True`` 时被 :func:`build_filesystem_policy`
+                消费作为 rw bind mount, 否则 (deep adapter 等通用形态) 完全
+                忽略——sysop_builder 不会有 cwd / env 之类的 fallback 接管。
         """
         runtime = runtime or {}
         return create_sandbox_sysop_card(
@@ -1639,7 +1657,10 @@ class JiuWenClawDeepAdapter:
             sandbox_type,
             files_runtime=runtime.get("files"),
             excluded_commands=runtime.get("excluded_commands"),
+            idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
+            idle_check_interval=runtime.get("idle_check_interval"),
             project_dir=project_dir,
+            is_code_agent=self._is_code_agent,
         )
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
@@ -1704,8 +1725,10 @@ class JiuWenClawDeepAdapter:
 
         是否走沙箱由 ``config.yaml::sandbox.enabled`` 决定（同时要求
         ``sandbox.url`` / ``sandbox.type`` 已配置）。其他 sandbox 字段
-        (``excluded_commands`` / ``files``) 透传给 ``create_sandbox_sysop_card``
-        写入 ``launcher_config.extra_params``。
+        (``excluded_commands`` / ``files`` / ``idle_ttl_seconds`` /
+        ``idle_check_interval``) 透传给 ``create_sandbox_sysop_card``,
+        分别写入 ``launcher_config.extra_params`` 与 ``launcher_config`` 上
+        的同名字段。
 
         注意: 每次都从 ``get_config()`` 读最新 sandbox.url/type, 因为
         ``/sandbox enable`` 会动态写入这两个字段。
@@ -1720,7 +1743,12 @@ class JiuWenClawDeepAdapter:
             runtime = get_sandbox_runtime()
             sysop_card: SysOperationCard | None
             if runtime.get("enabled") and sandbox_url and sandbox_type:
-                sysop_card = JiuWenClawDeepAdapter._create_sandbox_sys_operation(
+                # 走 ``self.`` 而不是 ``JiuWenClawDeepAdapter.``——_create_sandbox_
+                # sys_operation 已从 staticmethod 改成 instance method (要透传
+                # ``self._is_code_agent``), 用类名直接调会绕过 MRO 把 Code 子类
+                # 的 override (如果将来需要的话) 静默吃掉, 且 staticmethod 时代
+                # 的 caller 风格不再适用。
+                sysop_card = self._create_sandbox_sys_operation(
                     sandbox_url,
                     sandbox_type,
                     runtime=runtime,
@@ -1800,6 +1828,7 @@ class JiuWenClawDeepAdapter:
         new_policy, upload_list = build_filesystem_policy(
             runtime.get("files") or {},
             project_dir=self._resolve_project_dir_for_sandbox(),
+            is_code_agent=self._is_code_agent,
         )
         extra["policy"] = new_policy
         # provider 侧契约: 沙箱 sysop 永远带这两个 key, mode 固定 ``mount``,

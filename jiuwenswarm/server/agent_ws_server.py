@@ -2957,10 +2957,12 @@ class AgentWebSocketServer:
         校验失败时直接拒绝命令, 不让 yaml 进入"build 不出 policy"的死局。
         """
         project_dir = self._resolve_active_project_dir(channel_id, params)
+        is_code_agent = self._resolve_active_is_code_agent(channel_id)
         try:
             build_filesystem_policy(
                 files,
                 project_dir=project_dir,
+                is_code_agent=is_code_agent,
             )
         except FileNotFoundError as exc:
             raise ValueError(str(exc)) from exc
@@ -2991,9 +2993,11 @@ class AgentWebSocketServer:
         # project_dir`` 以便 TUI 通过 ``trusted_dirs`` / ``cwd`` 显式声明的
         # 项目目录也参与 auto 路径的判定。
         project_dir = self._resolve_active_project_dir(channel_id, params)
+        is_code_agent = self._resolve_active_is_code_agent(channel_id)
         match = find_auto_managed_match(
             path,
             project_dir=project_dir,
+            is_code_agent=is_code_agent,
         )
         if match is not None:
             matched_bucket, canonical = match
@@ -3062,9 +3066,11 @@ class AgentWebSocketServer:
         # 而不是让 /sandbox 默默地把同一个 auto-managed 名字从用户配置里抹掉
         # ——后者会让用户误以为他/她真的把 sandbox 自动条目摘掉了。
         project_dir = self._resolve_active_project_dir(channel_id, params)
+        is_code_agent = self._resolve_active_is_code_agent(channel_id)
         match = find_auto_managed_match(
             path,
             project_dir=project_dir,
+            is_code_agent=is_code_agent,
         )
         if match is not None:
             matched_bucket, canonical = match
@@ -3148,6 +3154,34 @@ class AgentWebSocketServer:
                     return first
         return None
 
+    def _resolve_active_is_code_agent(self, channel_id: str) -> bool:
+        """Look up whether ``channel_id``'s adapter is the code-agent flavor.
+
+        Mirrors :meth:`_resolve_active_project_dir`'s adapter lookup so the
+        three sandbox call sites (``_dry_run_files_policy``,
+        ``_handle_sandbox_files_set`` / ``_remove``'s ``find_auto_managed_
+        match``, ``_attach_effective_sandbox_files``'s
+        ``list_effective_sandbox_files``) all hand the same flag into
+        ``sysop_builder``. Without this, the dry-run / display side would
+        always assume non-code-agent and mismatch the actual mount layout
+        a Code adapter produces at sandbox-start time (project_dir vs
+        ``get_agent_workspace_dir``).
+
+        Returns ``False`` on any failure path (no agent, no adapter, attr
+        absent) — that matches the base class default and keeps the dry-run
+        / display strictly aligned with what :class:`JiuWenClawDeepAdapter`
+        emits when ``_is_code_agent`` was never set.
+        """
+        try:
+            agent = self._agent_manager.get_agent_nowait(channel_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[command.sandbox] is_code_agent lookup: get_agent_nowait failed: %s", exc)
+            return False
+        adapter = self._resolve_adapter(agent)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "_is_code_agent", False))
+
     def _attach_effective_sandbox_files(
         self,
         payload: dict[str, Any],
@@ -3188,9 +3222,11 @@ class AgentWebSocketServer:
             if files_runtime is None:
                 files_runtime = get_sandbox_runtime().get("files") or {}
             project_dir = self._resolve_active_project_dir(channel_id, params)
+            is_code_agent = self._resolve_active_is_code_agent(channel_id)
             payload["effective_files"] = list_effective_sandbox_files(
                 files_runtime,
                 project_dir=project_dir,
+                is_code_agent=is_code_agent,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[command.sandbox] attach effective_files failed: %s", exc)

@@ -134,6 +134,12 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         self._project_memory_rail: ProjectMemoryRail | None = None
         self._coding_memory_rail: CodingMemoryRail | None = None
         self._worktree_rail: WorktreeRail | None = None
+        # 单点 source-of-truth, 让 sysop_builder 的"主写入根"分支
+        # (project_dir vs get_agent_workspace_dir) 落到 code-agent 这一支。
+        # 父类默认 False (deep agent → workspace), Code adapter override 成
+        # True (code-agent → project_dir). 见
+        # ``sysop_builder.build_filesystem_policy`` 中 line 545 附近的分支。
+        self._is_code_agent: bool = True
 
     # ─── Language override ────────────────────────
 

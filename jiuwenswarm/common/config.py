@@ -8,7 +8,7 @@ import sys
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -1349,19 +1349,68 @@ def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | No
 #     enabled: true
 #     excluded_commands: [...]
 #     files: { allow: [...], deny: [...] }
+#     idle_ttl_seconds: 600         # 可选, 默认 None = 不进行 idle 驱逐
+#     idle_check_interval: 60       # 可选, 默认 None = 让 jiuwenbox 端用自身默认值
 #
 # ``get_sandbox_runtime`` 把这些 key 读出来填默认值;
 # ``update_sandbox_runtime`` 写回时也只动这几个 key, 不动 endpoint 字段。
+#
+# ``idle_ttl_seconds`` / ``idle_check_interval`` 透传给
+# ``create_sandbox_sysop_card`` 作为同名参数, 最终在 jiuwenbox provider 里通过
+# ``PUT /api/v1/timeout`` 写到 jiuwenbox server 根 policy 上 (per-sandbox policy
+# 的 ``timeout`` 子段不驱动 reaper, 必须改根 policy 才能让空闲淘汰生效)。
 # =====================================================================
 
 _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "excluded_commands": [],
     "files": {"allow": [], "deny": []},
+    "idle_ttl_seconds": None,
+    "idle_check_interval": None,
 }
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
 _SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
+
+
+def _coerce_optional_positive_int(
+    value: Any, *, field: str, allow_zero: bool = False
+) -> Optional[int]:
+    """把 yaml/json 来的 idle 配置值归一化为 ``Optional[int]``.
+
+    - ``None`` / 缺失 / 空字符串 → ``None``。
+    - ``int`` / 数字字符串 → ``int(value)``; ``allow_zero=False`` 时 ``<= 0``
+      也归一化为 ``None`` (避免后续负值流到 jiuwenbox 端引发歧义)。
+    - 其它 (``bool`` / 不可解析字符串等) → ``ValueError``。
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        # bool 是 int 子类, 必须先排掉; ``True`` -> 1 这种隐式转换在配置文件里
+        # 几乎肯定是误写, 不要静默放行。
+        raise ValueError(f"{field} must be a number, not a boolean")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = int(text)
+        except ValueError:
+            try:
+                number = int(float(text))
+            except ValueError as exc:
+                raise ValueError(
+                    f"{field} must parse as an integer of seconds, got {value!r}"
+                ) from exc
+    elif isinstance(value, (int, float)):
+        number = int(value)
+    else:
+        raise ValueError(
+            f"{field} must be number or string, got {type(value).__name__}"
+        )
+    if not allow_zero and number <= 0:
+        return None
+    return number
 
 
 def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
@@ -1386,6 +1435,16 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
             "allow": list(allow) if isinstance(allow, list) else [],
             "deny": list(deny) if isinstance(deny, list) else [],
         }
+    if "idle_ttl_seconds" in runtime:
+        # ``<= 0`` 归一化成 ``None`` (= 禁用淘汰), 与 jiuwenbox server 端
+        # ``TimeoutPolicy.idle_timeout`` 的语义对齐。
+        out["idle_ttl_seconds"] = _coerce_optional_positive_int(
+            runtime["idle_ttl_seconds"], field="sandbox.idle_ttl_seconds",
+        )
+    if "idle_check_interval" in runtime:
+        out["idle_check_interval"] = _coerce_optional_positive_int(
+            runtime["idle_check_interval"], field="sandbox.idle_check_interval",
+        )
     return out
 
 
@@ -1728,7 +1787,9 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
 
     Args:
         patch: 部分字段更新；支持顶层键 ``enabled`` / ``excluded_commands``
-            / ``files``。 ``files`` 字典若提供则整体替换；其余键按值合并。
+            / ``files`` / ``idle_ttl_seconds`` / ``idle_check_interval``。
+            ``files`` 字典若提供则整体替换；其余键按值合并。 ``idle_*`` 字段
+            接受整数秒数 (``<= 0`` 归一化为 ``None`` = 禁用淘汰) 或 ``None``。
     """
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
@@ -1755,6 +1816,14 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
             "allow": list(allow) if isinstance(allow, list) else merged["files"]["allow"],
             "deny": list(deny) if isinstance(deny, list) else merged["files"]["deny"],
         }
+    if "idle_ttl_seconds" in patch:
+        merged["idle_ttl_seconds"] = _coerce_optional_positive_int(
+            patch["idle_ttl_seconds"], field="sandbox.idle_ttl_seconds",
+        )
+    if "idle_check_interval" in patch:
+        merged["idle_check_interval"] = _coerce_optional_positive_int(
+            patch["idle_check_interval"], field="sandbox.idle_check_interval",
+        )
 
     data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
