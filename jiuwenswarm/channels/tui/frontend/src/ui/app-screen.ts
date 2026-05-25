@@ -3169,17 +3169,33 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.questionList !== null) {
-      lines.push(...this.questionList.render(width));
-      // Render details sub-lines for the currently highlighted option
+      const listLines = this.questionList.render(width);
+
+      // Insert details sub-lines right after the currently selected item
+      // instead of appending them after the entire list.
       const selectedItem = this.questionList.getSelectedItem();
       if (selectedItem && this.questionDetailsMap) {
         const details = this.questionDetailsMap.get(selectedItem.value);
         if (details && details.length > 0) {
-          for (const detail of details) {
-            lines.push(padToWidth(palette.text.dim(`              ${detail}`), width));
-          }
+          const detailLines = details.map((d) =>
+            padToWidth(palette.text.dim(`              ${d}`), width),
+          );
+          // SelectList.render() layout: [visible item 0..N-1, (scroll indicator?)]
+          // Replicate its scroll-window calculation to find where the selected
+          // item sits, then splice detail lines right after it.
+          const filteredLen: number = this.questionList["filteredItems"]?.length ?? 0;
+          const selectedIdx: number = this.questionList["selectedIndex"] ?? 0;
+          const maxVis: number = this.questionList["maxVisible"] ?? 6;
+          const scrollStart = Math.max(
+            0,
+            Math.min(selectedIdx - Math.floor(maxVis / 2), filteredLen - maxVis),
+          );
+          const insertAt = Math.max(0, Math.min(selectedIdx - scrollStart + 1, listLines.length));
+          listLines.splice(insertAt, 0, ...detailLines);
         }
       }
+
+      lines.push(...listLines);
       lines.push(
         padToWidth(
           palette.text.dim(
