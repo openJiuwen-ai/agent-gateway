@@ -88,6 +88,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.tool_call",
         "chat.tool_result",
         "chat.usage_summary",
+        "chat.file",
         "team.message",
     }
 )

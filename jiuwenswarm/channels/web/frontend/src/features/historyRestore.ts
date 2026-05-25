@@ -1,4 +1,4 @@
-import { Message, MessageRole, UsageSummary, WsEvent } from '../types';
+import { Message, MessageRole, UsageSummary, FileDownloadItem, WsEvent } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
 
@@ -11,6 +11,7 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.tool_call',
   'chat.tool_result',
   'chat.usage_summary',
+  'chat.file',
   'team.message',
   'harness.message',
   'harness.stage_result',
@@ -46,6 +47,7 @@ type HistoryTimelineEntry =
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
   | { kind: 'usage_summary'; at: string; usage: UsageSummary }
+  | { kind: 'file_items'; at: string; files: FileDownloadItem[] }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> };
 
@@ -306,6 +308,19 @@ function parseHistoryTimelineEntry(
     return null;
   }
 
+  if (eventType === 'chat.file') {
+    const rawFiles = payload.files;
+    if (!Array.isArray(rawFiles) || rawFiles.length === 0) {
+      return null;
+    }
+    const files = rawFiles as FileDownloadItem[];
+    return {
+      kind: 'file_items',
+      at,
+      files,
+    };
+  }
+
   if (eventType === 'harness.message') {
     const content = typeof payload.content === 'string' ? payload.content : '';
     const stage = typeof payload.stage === 'string' ? payload.stage : undefined;
@@ -473,8 +488,13 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     const messages: Message[] = [];
     const toolReplay: HistoryToolReplayItem[] = [];
     const harnessReplay: HistoryHarnessReplayItem[] = [];
+    let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
+        if (e.message.role === 'assistant' && pendingFileItems) {
+          e.message = { ...e.message, fileItems: pendingFileItems };
+          pendingFileItems = null;
+        }
         messages.push(e.message);
       } else if (e.kind === 'usage_summary') {
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -509,6 +529,8 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
             metrics: e.metrics,
           },
         });
+      } else if (e.kind === 'file_items') {
+        pendingFileItems = e.files;
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }
@@ -630,8 +652,13 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     const messages: Message[] = [];
     const toolReplay: HistoryToolReplayItem[] = [];
     const harnessReplay: HistoryHarnessReplayItem[] = [];
+    let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
+        if (e.message.role === 'assistant' && pendingFileItems) {
+          e.message = { ...e.message, fileItems: pendingFileItems };
+          pendingFileItems = null;
+        }
         messages.push(e.message);
       } else if (e.kind === 'usage_summary') {
         for (let i = messages.length - 1; i >= 0; i--) {
@@ -665,6 +692,8 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
             metrics: e.metrics,
           },
         });
+      } else if (e.kind === 'file_items') {
+        pendingFileItems = e.files;
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }

@@ -747,7 +747,16 @@ function FileDownloadList({
   files: FileDownloadItem[];
   className?: string;
 }) {
+  const { t } = useTranslation();
+
+  const isExpired = (file: FileDownloadItem): boolean => {
+    if (!file.expires_at) return false;
+    return Date.now() / 1000 > file.expires_at;
+  };
+
   const handleDownload = async (file: FileDownloadItem) => {
+    if (isExpired(file)) return;
+
     // 检查是否在 PyWebView 环境中（exe 模式）
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => Promise<boolean> | boolean } } }).pywebview?.api;
     if (pywebviewApi?.download_file) {
@@ -772,10 +781,16 @@ function FileDownloadList({
       {files.map((file, index) => {
         const typeConfig = getFileTypeConfig(file.mime_type, file.name);
         const ext = getFileExtension(file.name);
+        const expired = isExpired(file);
         return (
           <div
             key={`${file.name}-${index}`}
-            className="flex items-center gap-3 rounded-lg border border-border bg-card px-3 py-2.5 hover:shadow-md hover:border-border-hover transition-all duration-fast cursor-pointer group"
+            className={clsx(
+              'flex items-center gap-3 rounded-lg border px-3 py-2.5 transition-all duration-fast',
+              expired
+                ? 'border-border/50 bg-card/50 cursor-not-allowed opacity-60'
+                : 'border-border bg-card hover:shadow-md hover:border-border-hover cursor-pointer group'
+            )}
             onClick={() => handleDownload(file)}
           >
             <div className={`flex-shrink-0 w-10 h-10 rounded-lg ${typeConfig.bg} flex items-center justify-center`}>
@@ -792,14 +807,30 @@ function FileDownloadList({
                   {ext || typeConfig.label}
                 </span>
                 <span className="text-xs text-text-muted">{formatFileSize(file.size)}</span>
+                {expired && (
+                  <span className="inline-flex items-center px-1 py-px rounded text-[10px] font-mono font-medium text-danger bg-danger/10 leading-none">
+                    {t('chatUi.fileExpired')}
+                  </span>
+                )}
               </div>
             </div>
             <div
-              className="flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center text-text-muted group-hover:text-accent group-hover:bg-accent-subtle transition-colors duration-fast"
+              className={clsx(
+                'flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-fast',
+                expired
+                  ? 'text-text-muted/40'
+                  : 'text-text-muted group-hover:text-accent group-hover:bg-accent-subtle'
+              )}
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-              </svg>
+              {expired ? (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                </svg>
+              )}
             </div>
           </div>
         );

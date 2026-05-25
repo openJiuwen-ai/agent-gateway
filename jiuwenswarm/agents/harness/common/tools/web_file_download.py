@@ -174,10 +174,13 @@ def build_file_download_info(
     if guessed_type:
         mime_type = guessed_type
 
+    expires_at = int(time.time()) + expires_in
+
     return {
         "name": file_name,
         "size": file_size,
         "mime_type": mime_type,
         "download_url": download_url,
         "download_token": token,
+        "expires_at": expires_at,
     }

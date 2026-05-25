@@ -126,6 +126,7 @@ class SendFileToolkit:
                         "mime_type": download_info["mime_type"],
                         "download_url": download_info["download_url"],
                         "download_token": download_info["download_token"],
+                        "expires_at": download_info.get("expires_at"),
                     })
             except Exception as download_err:
                 logger.warning(
@@ -139,6 +140,21 @@ class SendFileToolkit:
                     }
                     for file_path in valid_files
                 ]
+
+            import time
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+            )
+            append_history_record(
+                session_id=self.session_id,
+                request_id=self.request_id,
+                channel_id=self.channel_id,
+                role="assistant",
+                event_type="chat.file",
+                content="",
+                timestamp=time.time(),
+                extra={"files": files_payload},
+            )
 
             msg = {
                 "request_id": self.request_id,
