@@ -188,7 +188,8 @@ async function _handleAdd(ctx: CommandContext, raw: string): Promise<void> {
   const kvPairs: Record<string, string> = {};
 
   // Handle quoted values like description="..." and cron_expr="0 9 * * *"
-  const quotedRegex = /(\w+)="([^"]+)"/g;
+  // Also capture empty quoted values like description="" (key="" means empty string)
+  const quotedRegex = /(\w+)="([^"]*)"/g;
   let m: RegExpExecArray | null;
   while ((m = quotedRegex.exec(addPart)) !== null) {
     kvPairs[m[1]] = m[2];
@@ -196,13 +197,13 @@ async function _handleAdd(ctx: CommandContext, raw: string): Promise<void> {
   // Handle unquoted key=value pairs (skip ones already captured by quoted regex)
   const unquotedRegex = /(\w+)=(\S+)/g;
   while ((m = unquotedRegex.exec(addPart)) !== null) {
-    if (!kvPairs[m[1]]) {
+    if (!(m[1] in kvPairs)) {
       kvPairs[m[1]] = m[2];
     }
   }
 
   const requiredFields = ["name", "cron_expr", "description"];
-  const missing = requiredFields.filter((f) => !kvPairs[f]);
+  const missing = requiredFields.filter((f) => !kvPairs[f] || kvPairs[f].trim() === "");
   if (missing.length > 0) {
     ctx.addItem(
       addError(
@@ -307,8 +308,8 @@ async function _handleUpdate(ctx: CommandContext, raw: string, parts: string[]):
 
   const patch: Record<string, unknown> = {};
 
-  // Handle quoted values like description="..."
-  const quotedRegex = /(\w+)="([^"]+)"/g;
+  // Handle quoted values like description="..." (also captures empty key="")
+  const quotedRegex = /(\w+)="([^"]*)"/g;
   let m: RegExpExecArray | null;
   while ((m = quotedRegex.exec(updatePart)) !== null) {
     patch[m[1]] = m[2];
@@ -316,7 +317,7 @@ async function _handleUpdate(ctx: CommandContext, raw: string, parts: string[]):
   // Handle unquoted key=value pairs
   const unquotedRegex = /(\w+)=(\S+)/g;
   while ((m = unquotedRegex.exec(updatePart)) !== null) {
-    if (!patch[m[1]]) {
+    if (!(m[1] in patch)) {
       patch[m[1]] = m[2];
     }
   }
@@ -416,6 +417,14 @@ async function _handlePreview(ctx: CommandContext, parts: string[]): Promise<voi
   const count = parseInt(parts[2] || "5", 10);
 
   try {
+    // Fetch job details to determine task type (one-shot vs recurring)
+    // delete_after_run=true means execute once then auto-delete = one-shot
+    const jobPayload = await ctx.request("cron.job.get", { id: jobId }) as { job: CronJobPayload } | null;
+    const job = jobPayload?.job;
+    const isOneShot = job?.delete_after_run === true;
+    const taskType = isOneShot ? "单次任务" : "周期任务";
+    const typeIcon = isOneShot ? "one-shot" : "recurring";
+
     const payload = await ctx.request("cron.job.preview", {
       id: jobId,
       count,
@@ -423,7 +432,7 @@ async function _handlePreview(ctx: CommandContext, parts: string[]): Promise<voi
     const nextRuns = payload.next ?? [];
 
     if (nextRuns.length === 0) {
-      ctx.addItem(addInfo(ctx.sessionId, `No upcoming runs for job ${jobId} (may be expired or disabled)`, "clock"));
+      ctx.addItem(addInfo(ctx.sessionId, `No upcoming runs for job ${jobId} (${taskType}, may be expired or disabled)`, "clock"));
       return;
     }
 
@@ -438,9 +447,9 @@ async function _handlePreview(ctx: CommandContext, parts: string[]): Promise<voi
     });
 
     ctx.addItem(
-      addInfo(ctx.sessionId, `Next ${nextRuns.length} runs for job ${jobId}`, "clock", {
+      addInfo(ctx.sessionId, `${taskType} · Next ${nextRuns.length} runs for job ${jobId}`, "clock", {
         view: "list",
-        title: "Cron Job Preview",
+        title: `Cron Job Preview [${typeIcon}]`,
         items,
       }),
     );

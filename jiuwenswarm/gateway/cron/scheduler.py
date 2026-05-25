@@ -525,10 +525,11 @@ class CronSchedulerService:
 
         # 企业飞书：优先用作业里绑定的 SessionMap session_id（feishu::chat_id::bot_id::...），
         # 避免多群共用 bot 时误用 config 中的 last_*（最近一条消息的会话）。
+        # TUI：不绑定 session_id，否则 TUI 重启后新 session_id 与旧不同，消息会被前端过滤。
         metadata: dict | None = None
         msg_session_id: str | None = None
         routing_sid = str(getattr(job, "session_id", None) or "").strip()
-        if routing_sid:
+        if routing_sid and channel_id != "tui":
             msg_session_id = routing_sid
         if channel_id.startswith("feishu_enterprise:") and routing_sid and "::" in routing_sid:
             parts = routing_sid.split("::")
