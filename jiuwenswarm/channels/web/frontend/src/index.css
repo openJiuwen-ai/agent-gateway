@@ -882,6 +882,19 @@ select {
     animation: text-muted-breath 2.8s ease-in-out infinite;
   }
 
+  .chat-content--team .context-compression-lines {
+    width: min(95%, 920px);
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+
+  .chat-content--team .context-compression-lines::before {
+    content: '';
+  }
+
   /* Chat input task queue */
   .chat-input-task-queue {
     margin-bottom: 12px;

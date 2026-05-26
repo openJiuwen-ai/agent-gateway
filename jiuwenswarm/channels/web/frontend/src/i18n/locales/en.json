@@ -70,10 +70,6 @@
     }
   },
   "statusBar": {
-    "cancel": "Cancel",
-    "pause": "Pause",
-    "resume": "Resume",
-    "processing": "Processing...",
     "evolving": "Checking whether skill evolution is needed...",
     "evolutionStages": {
       "collecting": "Preparing skill evolution check...",
@@ -87,9 +83,7 @@
       "completed": "Skill evolution completed",
       "timedOut": "Skill evolution timed out",
       "failed": "Skill evolution failed"
-    },
-    "paused": "Paused",
-    "pausedWithTask": "Paused: {{task}}..."
+    }
   },
   "chat": {
     "placeholder": "Enter to send, Shift+Enter for new line",
@@ -118,6 +112,7 @@
     "removeTask": "Remove task",
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
+    "stop": "Stop",
     "modelSelector": {
       "tooltip": "Switch the model used for chat"
     },

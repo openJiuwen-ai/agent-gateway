@@ -19,7 +19,6 @@ import { LogsPanel } from './components/LogsPanel';
 import { ChannelsPanel } from './components/ChannelsPanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { UpdatePanel } from './components/UpdatePanel';
-import { StatusBar } from './components/StatusBar';
 import { ExtensionsHubPanel } from './components/ExtensionsHubPanel';
 
 import { FEATURE_APP_UPDATER_UI } from './featureFlags';
@@ -233,7 +232,6 @@ function AppContent() {
     addToolResult,
     prependMessages,
     isProcessing,
-    isLoadingHistory,
     setProcessing,
     setThinking,
     setLoadingHistory,
@@ -1234,6 +1232,7 @@ for (let i = payload.team.length; i < 10; i++) {
                   <ChatPanel
                     onSendMessage={handleSendMessage}
                     onInterrupt={handleInterrupt}
+                    onCancel={handleCancel}
                     onSwitchMode={handleSwitchMode}
                     isProcessing={isProcessing}
                     onNewSession={handleNewSession}
@@ -1250,15 +1249,6 @@ for (let i = payload.team.length; i < 10; i++) {
                     }
                   />
                 </div>
-
-                {/* StatusBar - 仅在有右侧面板内容时显示 */}
-                {toolPanelHasContent && (
-                  <StatusBar
-                    onCancel={mode === 'team' ? undefined : handleCancel}
-                    teamMode={mode === 'team'}
-                    isLoadingHistory={isLoadingHistory}
-                  />
-                )}
               </div>
 
               {/* Tool Panel - 仅在有内容时显示 */}
@@ -1266,17 +1256,6 @@ for (let i = payload.team.length; i < 10; i++) {
                 <ToolPanel />
               )}
             </div>
-
-            {/* StatusBar - 当没有右侧面板时，单独显示在底部 */}
-            {!toolPanelHasContent && (
-              <div className={`transition-opacity duration-200 ${isLoadingHistory ? 'opacity-0 pointer-events-none' : ''}`}>
-                <StatusBar
-                  onCancel={mode === 'team' ? undefined : handleCancel}
-                  teamMode={mode === 'team'}
-                  isLoadingHistory={isLoadingHistory}
-                />
-              </div>
-            )}
           </>
         )}
         {activeNav === 'agents' && (

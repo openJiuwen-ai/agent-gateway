@@ -70,10 +70,6 @@
     }
   },
   "statusBar": {
-    "cancel": "取消",
-    "pause": "暂停",
-    "resume": "恢复",
-    "processing": "处理中...",
     "evolving": "正在检测是否需要技能演进...",
     "evolutionStages": {
       "collecting": "正在准备技能演进检测...",
@@ -87,9 +83,7 @@
       "completed": "技能演进已完成",
       "timedOut": "技能演进已超时",
       "failed": "技能演进失败"
-    },
-    "paused": "已暂停",
-    "pausedWithTask": "已暂停: {{task}}..."
+    }
   },
   "chat": {
     "placeholder": "Enter 发送，Shift+Enter 换行",
@@ -118,6 +112,7 @@
     "removeTask": "移除任务",
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",
+    "stop": "停止",
     "modelSelector": {
       "tooltip": "切换对话使用的模型"
     },

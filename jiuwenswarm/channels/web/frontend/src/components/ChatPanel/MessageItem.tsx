@@ -229,7 +229,7 @@ export function ContextCompressionLines({
     .join('\n');
 
   return (
-    <>
+    <div className="context-compression-lines">
       {showRuntime && (
         <div className={clsx(
           'mt-2 flex items-center gap-1.5 text-xs',
@@ -251,7 +251,7 @@ export function ContextCompressionLines({
           </span>
         </div>
       )}
-    </>
+    </div>
   );
 }
 

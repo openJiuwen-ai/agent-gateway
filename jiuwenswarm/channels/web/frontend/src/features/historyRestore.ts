@@ -176,6 +176,14 @@ function isTeamModeRecord(record: Record<string, unknown>): boolean {
   return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
 }
 
+function isTeamTeammateRecord(record: Record<string, unknown>): boolean {
+  return typeof record.role === 'string' && record.role.trim().toLowerCase() === 'teammate';
+}
+
+function shouldSkipTeamTeammateRecord(record: Record<string, unknown>): boolean {
+  return isTeamModeRecord(record) && isTeamTeammateRecord(record);
+}
+
 const _HISTORY_RECORD_META_KEYS = new Set([
   'id', 'role', 'request_id', 'channel_id', 'timestamp', 'event_type', 'event_payload', 'mode',
 ]);
@@ -265,6 +273,9 @@ function parseHistoryTimelineEntry(
     const id =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-final-${sessionId}-${at}`;
     if (isTeamModeRecord(record)) {
+      if (shouldSkipTeamTeammateRecord(record)) {
+        return null;
+      }
       return {
         kind: 'message',
         message: {
@@ -285,10 +296,16 @@ function parseHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.tool_call') {
+    if (shouldSkipTeamTeammateRecord(record)) {
+      return null;
+    }
     return { kind: 'tool_call', at, payload };
   }
 
   if (eventType === 'chat.tool_result') {
+    if (shouldSkipTeamTeammateRecord(record)) {
+      return null;
+    }
     return { kind: 'tool_result', at, payload };
   }
 

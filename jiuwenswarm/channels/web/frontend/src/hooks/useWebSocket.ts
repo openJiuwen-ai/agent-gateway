@@ -134,6 +134,14 @@ function normalizeEventTimestampIso(value: unknown): string {
   return new Date().toISOString();
 }
 
+function isTeamTeammatePayload(payload: Record<string, unknown>): boolean {
+  return typeof payload.role === 'string' && payload.role.trim().toLowerCase() === 'teammate';
+}
+
+function shouldHideTeamTeammatePayload(mode: AgentMode, payload: Record<string, unknown>): boolean {
+  return mode === 'team' && isTeamTeammatePayload(payload);
+}
+
 function stringifyPayloadForDedup(payload: Record<string, unknown>): string {
   try {
     const serialized = JSON.stringify(payload);
@@ -819,7 +827,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const currentMode = useSessionStore.getState().mode;
         const content = typeof payload.content === 'string' ? payload.content : '';
 
-        // team 模式下，累积 chat.delta 内容
+        // team 模式下，过滤成员输出，只保留外层 leader 回复。
+        if (shouldHideTeamTeammatePayload(currentMode, payload)) {
+          return;
+        }
         if (currentMode === 'team' && content) {
           clearThinkingForVisibleOutput();
           const existingMsg = findActiveTeamLeaderMessage();
@@ -867,7 +878,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const content = normalizeFinalContent(payload);
         finishContextCompressionTurn();
 
-        // team 模式下，将 chat.final 作为 team_leader 消息处理
+        // team 模式下，过滤成员输出，只保留外层 leader 回复。
+        if (shouldHideTeamTeammatePayload(currentMode, payload)) {
+          return;
+        }
         if (currentMode === 'team' && content) {
           clearThinkingForVisibleOutput();
           const existingMsg = findActiveTeamLeaderMessage();
@@ -1028,11 +1042,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
+        const currentMode = useSessionStore.getState().mode;
+        if (shouldHideTeamTeammatePayload(currentMode, payload)) return;
         clearThinkingForVisibleOutput();
         const toolCall = normalizeToolCallPayload(payload);
         const { currentStreamId, messages } = useChatStore.getState();
         const currentStreamMessage =
-          useSessionStore.getState().mode === 'team'
+          currentMode === 'team'
             ? findActiveTeamLeaderMessage()
             : currentStreamId
               ? messages.find((msg) => msg.id === currentStreamId)
@@ -1047,6 +1063,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_result', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
+        if (shouldHideTeamTeammatePayload(useSessionStore.getState().mode, payload)) return;
         addToolResult(normalizeToolResultPayload(payload));
       }),
       webClient.on('todo.updated', ({ payload }) => {

@@ -7,7 +7,7 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useChatStore } from '../../stores';
+import { useChatStore, useSessionStore } from '../../stores';
 import { AgentMode, UserAnswer } from '../../types';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
@@ -28,6 +28,7 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string) => void;
   onInterrupt: (newInput?: string) => void;
+  onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
   isProcessing: boolean;
   onNewSession: () => Promise<void>;
@@ -61,6 +62,24 @@ function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }
   );
 }
 
+function InterruptResultBubble() {
+  const { interruptResult } = useChatStore();
+  const message = interruptResult?.message?.trim();
+
+  if (!message || interruptResult?.success) {
+    return null;
+  }
+
+  return (
+    <div
+      className="chat-interrupt-bubble chat-interrupt-bubble--error"
+      role="alert"
+    >
+      {message}
+    </div>
+  );
+}
+
 function WelcomeHeading() {
   const { i18n } = useTranslation();
   const isZh = i18n.language.startsWith('zh');
@@ -84,6 +103,7 @@ function WelcomeHeading() {
 export function ChatPanel({
   onSendMessage,
   onInterrupt,
+  onCancel,
   onSwitchMode,
   isProcessing,
   onNewSession,
@@ -98,6 +118,7 @@ export function ChatPanel({
     contextCompressionRuntime,
     contextCompressionSummary,
   } = useChatStore();
+  const { mode } = useSessionStore();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const prependScrollSnapRef = useRef<{ sh: number; st: number } | null>(null);
@@ -105,6 +126,10 @@ export function ChatPanel({
   const suppressNextScrollToEndRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
+  const hasConversation = Boolean(historyPager || hasTimelineContent);
+  const chatContentClassName = hasConversation
+    ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
+    : 'chat-content chat-content--welcome';
   const suggestions = [
     t('chat.welcomeSuggestions.journey'),
     t('chat.welcomeSuggestions.skills'),
@@ -202,8 +227,6 @@ export function ChatPanel({
     (text: string) => handleSendMessage(text),
     [handleSendMessage],
   );
-  const hasConversation = Boolean(historyPager || hasTimelineContent);
-
   return (
     <div className="chat-panel-shell flex flex-col h-full" data-testid="chat-panel">
       {/* HarnessProgressBar - sticky header, doesn't scroll with messages */}
@@ -211,7 +234,7 @@ export function ChatPanel({
         <HarnessProgressBar />
       </div>
       <div ref={scrollContainerRef} className="chat-scroll flex-1 overflow-y-auto" onScroll={handleScroll} onWheel={handleWheel}>
-        <div className={hasConversation ? 'chat-content' : 'chat-content chat-content--welcome'}>
+        <div className={chatContentClassName}>
           {hasConversation ? (
             <>
               {historyPager && (
@@ -250,9 +273,11 @@ export function ChatPanel({
                 {t('chat.welcomeSubtext')}
               </p>
               <div className="chat-welcome__composer">
+                <InterruptResultBubble />
                 <InputArea
                   onSubmit={handleSendMessage}
                   onInterrupt={onInterrupt}
+                  onCancel={onCancel}
                   onSwitchMode={onSwitchMode}
                   isProcessing={isProcessing}
                   onNewSession={onNewSession}
@@ -271,9 +296,11 @@ export function ChatPanel({
 
       {hasConversation && (
         <div className="chat-compose">
+          <InterruptResultBubble />
           <InputArea
             onSubmit={handleSendMessage}
             onInterrupt={onInterrupt}
+            onCancel={onCancel}
             onSwitchMode={onSwitchMode}
             isProcessing={isProcessing}
             onNewSession={onNewSession}
