@@ -894,7 +894,7 @@ export class CliPiAppState {
       return null;
     }
     if (this.streamingState !== StreamingState.Idle) {
-      this.sendEventOnly("chat.interrupt", { intent: "cancel" });
+      this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     }
     const requestId = this.sendEventOnly(
       "chat.send",
@@ -939,6 +939,7 @@ export class CliPiAppState {
     const requestId = this.sendEventOnly("chat.interrupt", {
       intent: "supplement",
       new_input: trimmed,
+      mode: this.mode,
       ...(attachments?.length ? { attachments } : {}),
     });
     this.lastError = null;
@@ -978,11 +979,21 @@ export class CliPiAppState {
     // Set local interrupt flag immediately for long-running command detection
     this.interruptRequested = true;
     const hadLocalWork = this.getSnapshot().cancellableWork;
-    this.sendEventOnly("chat.interrupt", { intent: "cancel" });
+    this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     if (options?.showNotice !== false && hadLocalWork) {
       this.addItem(addInfo(this.sessionId, "Request Interrupted", "i"));
     }
     return true;
+  }
+
+  pause(): boolean {
+    if (this.connectionStatus !== "connected") {
+      return false;
+    }
+    this.interruptRequested = true;
+    const hadLocalWork = this.getSnapshot().cancellableWork;
+    this.sendEventOnly("chat.interrupt", { intent: "pause", mode: this.mode });
+    return hadLocalWork;
   }
 
   resume(): void {

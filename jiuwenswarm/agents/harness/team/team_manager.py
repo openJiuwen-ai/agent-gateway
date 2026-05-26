@@ -1678,7 +1678,8 @@ class TeamManager:
                 cleaned = await self._destroy_team(session_id)
             else:
                 cleaned = False
-                await self._cleanup_runtime_locals(session_id)
+
+            await self._cleanup_runtime_locals(session_id)
 
             self.clear_active_runtime(session_id)
             self.clear_pending_runtime(session_id)
@@ -1743,10 +1744,7 @@ class TeamManager:
                         exc,
                     )
 
-            if has_local_team_runtime:
-                cleaned = await self._destroy_team(session_id)
-            else:
-                cleaned = False
+            cleaned = False
 
             # Cleanup locals (watcher, stream, monitor, skill rails)
             await self._cleanup_runtime_locals(session_id)

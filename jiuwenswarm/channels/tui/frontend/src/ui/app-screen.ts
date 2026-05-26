@@ -791,7 +791,11 @@ export class AppScreen implements Component, Focusable {
       this.configEditorState !== null;
 
     if (!pendingQuestion && snapshot.cancellableWork && matchesKey(data, "escape") && !hasOverlay) {
-      this.state.cancel();
+      if (isTeamMode(snapshot.mode)) {
+        this.state.pause();
+      } else {
+        this.state.cancel();
+      }
       return;
     }
 
