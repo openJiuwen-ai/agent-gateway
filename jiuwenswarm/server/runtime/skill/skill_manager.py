@@ -100,6 +100,82 @@ def _get_state_file() -> "Path":
     return get_agent_skills_dir() / "skills_state.json"
 
 
+def normalize_skill_configs(raw_configs: Any) -> dict[str, dict[str, bool]]:
+    """Normalize per-skill config records."""
+    if not isinstance(raw_configs, dict):
+        return {}
+
+    normalized: dict[str, dict[str, bool]] = {}
+    for raw_name, raw_cfg in raw_configs.items():
+        if not isinstance(raw_name, str):
+            continue
+        name = raw_name.strip()
+        if not name:
+            continue
+        config = raw_cfg if isinstance(raw_cfg, dict) else {}
+        normalized[name] = {"enabled": bool(config.get("enabled", True))}
+    return normalized
+
+
+def get_registered_skill_names(state: dict[str, Any]) -> set[str]:
+    """Return all skill names recorded in installed/local state lists."""
+    names: set[str] = set()
+    for key in ("installed_plugins", "local_skills"):
+        items = state.get(key, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if name:
+                names.add(name)
+    return names
+
+
+def get_skill_enabled(state: dict[str, Any], skill_name: str) -> bool:
+    """Read a skill enabled flag with backward-compatible default true."""
+    if not skill_name:
+        return True
+
+    configs = state.get("skill_configs", {})
+    if not isinstance(configs, dict):
+        return True
+
+    config = configs.get(skill_name)
+    if not isinstance(config, dict):
+        return True
+    return bool(config.get("enabled", True))
+
+
+def set_skill_enabled(
+    state: dict[str, Any],
+    skill_name: str,
+    enabled: bool,
+) -> None:
+    """Persist a skill enabled flag into state."""
+    configs = state.setdefault("skill_configs", {})
+    if not isinstance(configs, dict):
+        configs = {}
+        state["skill_configs"] = configs
+    configs[skill_name] = {"enabled": bool(enabled)}
+
+
+def list_disabled_skills(state: dict[str, Any]) -> list[str]:
+    """Return sorted disabled skill names from canonical config."""
+    configs = state.get("skill_configs", {})
+    if not isinstance(configs, dict):
+        return []
+
+    disabled = []
+    for name, config in configs.items():
+        if not isinstance(name, str) or not isinstance(config, dict):
+            continue
+        if config.get("enabled") is False:
+            disabled.append(name)
+    return sorted(disabled)
+
+
 class SkillNetEmptyDownloadError(Exception):
     """skillnet-ai ``download()`` returned None; 前端用 detail_key 做多语言。"""
 
@@ -365,6 +441,7 @@ class SkillManager:
                 "version": p.get("version", ""),
                 "installed_at": p.get("installed_at", ""),
                 "git_commit": p.get("commit", ""),
+                "enabled": self.get_skill_enabled(name),
                 # skills 数组：通常一个 plugin 包含同名 skill
                 "skills": [name] if name else [],
             }
@@ -401,6 +478,7 @@ class SkillManager:
                 else:
                     meta["is_builtin_source"] = False
                 meta["has_evolutions"] = (child / _EVOLUTION_FILENAME).is_file()
+                self._apply_enabled_config(meta, meta.get("name", ""))
                 return meta
 
         # 再在 marketplace 目录中查找
@@ -425,9 +503,37 @@ class SkillManager:
                         meta["is_builtin"] = False
                         meta["is_builtin_source"] = False
                         meta["has_evolutions"] = False
+                        self._apply_enabled_config(meta, "", default_enabled=True)
                         return meta
 
         raise ValueError(f"未找到 skill: {name}")
+
+    async def handle_skills_toggle(self, params: dict) -> dict:
+        """切换已安装本地 skill 的 enabled 状态。"""
+        name = params.get("name", "")
+        enabled = params.get("enabled")
+        if not name:
+            return {"success": False, "detail": "缺少参数: name"}
+        if not isinstance(enabled, bool):
+            return {"success": False, "detail": "缺少参数: enabled (bool)"}
+        try:
+            name = _safe_path_name(name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.toggle", "skill", name, exc)
+            return {"success": False, "detail": str(exc)}
+
+        skill_dir = self._resolve_local_skill_dir(name)
+        if skill_dir is None or not skill_dir.exists():
+            return {"success": False, "detail": f"未找到已安装 skill: {name}"}
+
+        self.set_skill_enabled(name, enabled)
+        return {
+            "success": True,
+            "name": name,
+            "enabled": enabled,
+            "config": {"enabled": enabled},
+            "detail": "配置已更新；下次 reload / rebuild / 新会话后执行面生效。",
+        }
 
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
@@ -2323,6 +2429,7 @@ class SkillManager:
 
             meta["source"] = source
             meta["installed"] = True
+            meta["enabled"] = self.get_skill_enabled(meta.get("name", ""))
             # 判断是否为内置技能（传入 child 路径，通过实际路径判断）
             meta["is_builtin"] = self._is_builtin_skill(meta.get("name", ""), self._get_installed_plugins(), child)
             builtin_dir = get_builtin_skills_dir()
@@ -3470,7 +3577,9 @@ class SkillManager:
         state.setdefault("marketplaces", [])
         state.setdefault("installed_plugins", [])
         state.setdefault("local_skills", [])
+        state.setdefault("skill_configs", {})
         state["marketplaces"] = self.normalize_marketplaces(state.get("marketplaces"))
+        state["skill_configs"] = normalize_skill_configs(state.get("skill_configs"))
 
     def _get_installed_plugins(self) -> list[dict]:
         return self._state.get("installed_plugins", [])
@@ -3486,6 +3595,31 @@ class SkillManager:
     def get_local_skills(self) -> list[dict]:
         """返回本地技能安装记录的拷贝。"""
         return list(self._state.get("local_skills", []))
+
+    def _apply_enabled_config(
+        self,
+        payload: dict[str, Any],
+        skill_name: str,
+        *,
+        default_enabled: bool | None = None,
+    ) -> None:
+        enabled = (
+            default_enabled
+            if default_enabled is not None and not skill_name
+            else self.get_skill_enabled(skill_name)
+        )
+        payload["enabled"] = enabled
+        payload["config"] = {"enabled": enabled}
+
+    def get_skill_enabled(self, skill_name: str) -> bool:
+        return get_skill_enabled(self._state, skill_name)
+
+    def set_skill_enabled(self, skill_name: str, enabled: bool) -> None:
+        set_skill_enabled(self._state, skill_name, enabled)
+        self._save_state()
+
+    def list_disabled_skills(self) -> list[str]:
+        return list_disabled_skills(self._state)
 
     def get_skill_meta(self, skill_name: str) -> dict[str, Any] | None:
         """返回本地 skill 的解析元数据，附带目录与 skill 文件路径。"""

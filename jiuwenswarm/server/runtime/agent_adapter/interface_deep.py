@@ -1898,6 +1898,7 @@ class JiuWenClawDeepAdapter:
                 skills_dir=str(get_agent_skills_dir()),
                 skill_mode=skill_mode,
                 include_tools=include_tools,
+                disabled_skills=self._skill_manager.list_disabled_skills(),
             )
             logger.info("[JiuWenClawDeepAdapter] SkillUseRail create success")
         except Exception as exc:
@@ -3726,7 +3727,7 @@ class JiuWenClawDeepAdapter:
         assert rail is not None
         store = rail.store
 
-        skill_names = store.list_skill_names()
+        skill_names = self._filter_execution_visible_skill_names(store.list_skill_names())
 
         parts = query.split(maxsplit=1)
         skill_arg = parts[1].strip() if len(parts) > 1 else ""
@@ -3955,6 +3956,12 @@ class JiuWenClawDeepAdapter:
 
         return SkillEvolutionRail._parse_messages(raw_messages)
 
+    def _filter_execution_visible_skill_names(self, names: list[str]) -> list[str]:
+        disabled = set(self._skill_manager.list_disabled_skills())
+        if not disabled:
+            return names
+        return [name for name in names if name not in disabled]
+
     async def _handle_evolve_list_command(self, query: str) -> dict[str, Any]:
         """/evolve_list <skill_name> [--sort score] — show experiences with scores."""
         rail = self._skill_evolution_rail
@@ -3970,7 +3977,8 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+            available = ("、".join(self._filter_execution_visible_skill_names(store.list_skill_names()))
+                         or "（无可用 Skill）")
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
@@ -4032,7 +4040,8 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+            available = ("、".join(self._filter_execution_visible_skill_names(store.list_skill_names()))
+                         or "（无可用 Skill）")
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
@@ -4066,7 +4075,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+            available = "、".join(self._filter_execution_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
@@ -4103,7 +4112,7 @@ class JiuWenClawDeepAdapter:
 
         if not skill_name:
             archives_hint = ""
-            for name in store.list_skill_names():
+            for name in self._filter_execution_visible_skill_names(store.list_skill_names()):
                 archives = store.list_archives(name)
                 if archives:
                     body_versions = [a for a in archives if a.startswith("SKILL.v")]
@@ -4117,7 +4126,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+            available = "、".join(self._filter_execution_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
