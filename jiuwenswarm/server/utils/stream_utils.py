@@ -110,11 +110,40 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     payload = getattr(chunk, "payload", {})
 
     if isinstance(chunk_type, str) and "." in chunk_type:
+        if chunk_type == "context.compression_state":
+            if hasattr(payload, "model_dump"):
+                try:
+                    payload_dict = payload.model_dump(mode="json")
+                except Exception:
+                    payload_dict = payload.model_dump()
+            elif isinstance(payload, dict):
+                payload_dict = payload
+            else:
+                payload_dict = {}
+            if payload_dict:
+                return {
+                    "event_type": "context.compression_state",
+                    "status": payload_dict.get("status", ""),
+                    "phase": payload_dict.get("phase", ""),
+                    "processor": payload_dict.get("processor", ""),
+                    "summary": payload_dict.get("summary", ""),
+                    "operation_id": payload_dict.get("operation_id", ""),
+                }
         if isinstance(payload, dict):
             return {
                 "event_type": chunk_type,
                 **{k: _serialize_chunk_recursive(v) if isinstance(v, (dict, list)) else _serialize_value(v)
                    for k, v in payload.items()},
+            }
+        if hasattr(payload, "model_dump"):
+            try:
+                payload_dict = payload.model_dump(mode="json")
+            except Exception:
+                payload_dict = payload.model_dump()
+            return {
+                "event_type": chunk_type,
+                **{k: _serialize_chunk_recursive(v) if isinstance(v, (dict, list)) else _serialize_value(v)
+                   for k, v in payload_dict.items()},
             }
         return {"event_type": chunk_type, "content": str(payload)}
 
@@ -274,17 +303,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                 "rate": payload.get("rate", 0),
                 "context_max": payload.get("context_max") or 0,
                 "tokens_used": payload.get("tokens_used") or 0,
-            }
-
-    if chunk_type == "context.compression_state":
-        if isinstance(payload, dict):
-            return {
-                "event_type": "context.compression_state",
-                "status": payload.get("status", ""),
-                "phase": payload.get("phase", ""),
-                "processor": payload.get("processor", ""),
-                "summary": payload.get("summary", ""),
-                "operation_id": payload.get("operation_id", ""),
             }
 
     if isinstance(payload, dict):

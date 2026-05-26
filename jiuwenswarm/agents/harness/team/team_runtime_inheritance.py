@@ -23,6 +23,7 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
     TeamSkillCreateRail,
 )
+from openjiuwen.harness.rails.context_engineer import ContextProcessorRail
 
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
@@ -73,6 +74,7 @@ RAIL_WHITELIST = frozenset({
     "TeamSkillCreateRail",
     "SkillEvolutionRail",
     "TeamWorkspaceReportPathRail",
+    "ContextProcessorRail",
 })
 
 TOOL_WHITELIST = frozenset({
@@ -290,6 +292,12 @@ def build_member_rails(
         )
         if evo_rail is not None:
             rails_list.append(evo_rail)
+
+    # Context compression rail for all members (leader + teammates).
+    if get_context_engine_enabled(config):
+        rail = _build_context_processor_rail(config)
+        if rail is not None:
+            rails_list.append(rail)
 
     logger.info("[TeamRuntime] Total rails built: %d", len(rails_list))
     return rails_list
@@ -509,4 +517,69 @@ def build_skill_evolution_rail(
         return rail
     except Exception as exc:
         logger.warning("[TeamRuntime] SkillEvolutionRail creation failed: %s", exc, exc_info=True)
+        return None
+
+
+def get_context_engine_enabled(config: dict[str, Any] | None) -> bool:
+    """Check whether context compression is enabled in config.
+
+    Reads ``react.context_engine_config.enabled`` (default True).
+    """
+    if not isinstance(config, dict):
+        return True
+    react = config.get("react", {})
+    if isinstance(react, dict):
+        ctx_cfg = react.get("context_engine_config", {})
+        if isinstance(ctx_cfg, dict):
+            return ctx_cfg.get("enabled", True)
+    return True
+
+
+def _build_context_processor_rail(config: dict[str, Any] | None) -> ContextProcessorRail | None:
+    """Build a preset ContextProcessorRail for team members with user config thresholds.
+
+    Mirrors the logic in interface_deep._build_context_processor_rail:
+    reads processor configs from react.context_engine_config and passes
+    them as (name, dict) pairs to ContextProcessorRail.
+    """
+    try:
+        from typing import List, Tuple
+
+        user_processors: List[Tuple[str, dict]] = []
+        ctx_cfg: dict[str, Any] = {}
+        if isinstance(config, dict):
+            react = config.get("react", {})
+            if isinstance(react, dict):
+                ctx_cfg = react.get("context_engine_config", {})
+                if not isinstance(ctx_cfg, dict):
+                    ctx_cfg = {}
+
+        offloader_cfg = ctx_cfg.get("message_summary_offloader_config", {})
+        if isinstance(offloader_cfg, dict) and offloader_cfg:
+            user_processors.append(("MessageSummaryOffloader", offloader_cfg))
+
+        compressor_cfg = ctx_cfg.get("dialogue_compressor_config", {})
+        if isinstance(compressor_cfg, dict) and compressor_cfg:
+            user_processors.append(("DialogueCompressor", compressor_cfg))
+
+        current_round_cfg = ctx_cfg.get("current_round_compressor_config", {})
+        if isinstance(current_round_cfg, dict) and current_round_cfg:
+            user_processors.append(("CurrentRoundCompressor", current_round_cfg))
+
+        round_level_cfg = ctx_cfg.get("round_level_compressor_config", {})
+        if isinstance(round_level_cfg, dict) and round_level_cfg:
+            user_processors.append(("RoundLevelCompressor", round_level_cfg))
+
+        rail = ContextProcessorRail(
+            processors=user_processors if user_processors else None,
+            preset=True,
+        )
+        logger.info(
+            "[TeamRuntime] ContextProcessorRail created (preset=True), "
+            "user_processors=%s",
+            [p[0] for p in user_processors] if user_processors else "none",
+        )
+        return rail
+    except Exception as exc:
+        logger.warning("[TeamRuntime] ContextProcessorRail creation failed: %s", exc, exc_info=True)
         return None
