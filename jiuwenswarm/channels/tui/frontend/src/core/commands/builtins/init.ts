@@ -190,7 +190,7 @@ export function createInitCommand(): SlashCommand {
         ),
       };
 
-      const prompt = buildInitPrompt({ rootDir, scopeKey, language, existing });
+      const prompt = buildInitPrompt({ rootDir, scopeKey, existing });
 
       // ---- Send ----
       // The earlier guard 2 already called setMode("code.normal") if needed.
