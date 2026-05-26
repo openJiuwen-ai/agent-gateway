@@ -819,6 +819,19 @@
       "mySkills": "My Skills",
       "marketplace": "Marketplace"
     },
+    "mySkillsTabs": {
+      "all": "All",
+      "installed": "Installed",
+      "pending": "Pending",
+      "disabled": "Disabled"
+    },
+    "enable": "Enable",
+    "noDisabledSkills": "No disabled skills",
+    "noInstalledSkills": "No installed skills",
+    "noPendingSkills": "No pending skills",
+    "setEnabledError": "Failed to set skill enabled status",
+    "setEnabledSuccess": "Skill {name} enabled",
+    "setDisabledSuccess": "Skill {name} disabled",
     "marketplaceTabs": {
       "builtin": "Built-in"
     },
@@ -836,7 +849,9 @@
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "backToList": "Back to List",
-      "viewEvolution": "View Skill Experience"
+      "viewEvolution": "View Skill Experience",
+      "enabling": "Enabling...",
+      "disabling": "Disabling..."
     },
     "builtIn": "Built-in",
     "status": {

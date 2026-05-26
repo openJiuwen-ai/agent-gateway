@@ -818,6 +818,19 @@
       "mySkills": "我的技能",
       "marketplace": "技能广场"
     },
+    "mySkillsTabs": {
+      "all": "全部",
+      "installed": "已安装",
+      "pending": "待安装",
+      "disabled": "禁用"
+    },
+    "enable": "启用",
+    "noDisabledSkills": "暂无禁用的技能",
+    "noInstalledSkills": "暂无已安装的技能",
+    "noPendingSkills": "暂无待安装的技能",
+    "setEnabledError": "设置技能启用状态失败",
+    "setEnabledSuccess": "已启用技能 {name}",
+    "setDisabledSuccess": "已禁用技能 {name}",
     "marketplaceTabs": {
       "builtin": "预置"
     },
@@ -835,7 +848,9 @@
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "backToList": "返回列表",
-      "viewEvolution": "查看技能经验"
+      "viewEvolution": "查看技能经验",
+      "enabling": "启用中...",
+      "disabling": "禁用中..."
     },
     "builtIn": "内置",
     "status": {

@@ -12,6 +12,7 @@ import { ClawHubSearchModal } from "../../features/ClawHubSearchModal";
 import { TeamSkillsHubModal } from "../../features/TeamSkillsHubModal";
 import { SkillEvolutionModal } from "../../features/SkillEvolutionModal";
 import { normalizeSkillNetUrl } from "../../utils/skillNetUrl";
+import { Switch } from "../Switch";
 
 /** 刷新会 git pull marketplace，略放宽；普通进页单次 RPC 一般很快。 */
 const SKILLS_FETCH_TIMEOUT_REFRESH_MS = 60_000;
@@ -34,6 +35,8 @@ type SkillItem = {
   is_builtin_source?: boolean;
   /** 本地技能目录是否存在 evolutions.json */
   has_evolutions?: boolean;
+  /** 是否启用 */
+  enabled?: boolean;
 };
 
 type InstalledPluginItem = {
@@ -100,6 +103,7 @@ function normalizeSkillItem<T extends SkillItem>(raw: T): T {
 export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace">("my");
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "installed" | "pending" | "disabled">("all");
   const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
   const [onlineSource, setOnlineSource] = useState<"skillnet" | "clawhub">("skillnet");
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -198,7 +202,12 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const filteredSkills = useMemo(() => {
     let result = skills;
     if (activeTab === "my") {
-      result = result.filter((skill) => installedSkillMap.has(skill.name) || skill.source === "local");
+      result = result.filter((skill) => 
+        installedSkillMap.has(skill.name) || 
+        skill.source === "local" || 
+        skill.is_builtin === true || 
+        skill.is_builtin_source === true
+      );
     }
     const keyword = search.trim().toLowerCase();
     if (!keyword) return result;
@@ -216,12 +225,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   }, [skills, search, activeTab, installedSkillMap]);
 
   const visibleSkills = useMemo(() => {
-    // 只显示已安装的技能（需手动安装后才会显示）
-    // 本地/项目技能(source=local/project)不在 plugins 中，但已在 skills 目录下，属于已安装
-    const installed = filteredSkills.filter((skill) =>
-      installedSkillMap.has(skill.name) || skill.source === "local" || skill.source === "project"
-    );
-    return [...installed].sort((a, b) => {
+    // 显示所有技能
+    return [...filteredSkills].sort((a, b) => {
       const aSkillNet = a.source === "skillnet" ? 1 : 0;
       const bSkillNet = b.source === "skillnet" ? 1 : 0;
       if (aSkillNet !== bSkillNet) {
@@ -229,7 +234,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
       }
       return a.name.localeCompare(b.name);
     });
-  }, [filteredSkills, installedSkillMap]);
+  }, [filteredSkills]);
 
   const builtinSkills = useMemo(() => {
     let filtered = skills.filter((skill) => skill.is_builtin === true);
@@ -525,7 +530,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleInstall(skill.name);
           }}
-          className="w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap"
+          className="skill-action-btn"
           disabled={isLoading}
         >
           {isLoading ? t('skills.actions.installing') : t('skills.actions.install')}
@@ -542,7 +547,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(skill.name);
           }}
-          className="w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap"
+          className="skill-action-btn"
           disabled={isLoading}
         >
           {t('skills.actions.uninstall')}
@@ -560,7 +565,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(pluginName);
           }}
-          className="w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap"
+          className="skill-action-btn"
           disabled={isLoading}
         >
           {t('skills.actions.uninstall')}
@@ -577,7 +582,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleInstall(skill.name);
           }}
-          className="w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap"
+          className="skill-action-btn"
           disabled={isLoading}
         >
           {isLoading ? t('skills.actions.installing') : t('skills.actions.install')}
@@ -596,7 +601,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(skill.name);
           }}
-          className="w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap"
+          className="skill-action-btn"
           disabled={isLoading}
         >
           {t('skills.actions.uninstall')}
@@ -619,11 +624,69 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
     if (installedSkillMap.has(skill.name)) return t('skills.status.installed');
     if (skill.source === "local") return t('skills.status.installed');
     if (skill.is_builtin) {
-      // 未安装的内置技能
       return t('skills.status.notInstalled');
     }
     if (skill.source !== "project") return t('skills.status.notInstalled');
     return t('skills.status.builtIn');
+  };
+
+  const isSkillInstalled = (skill: SkillItem): boolean => {
+    return installedSkillMap.has(skill.name) || skill.source === "local" || skill.source === "project";
+  };
+
+  const getMySkillsFiltered = useCallback(() => {
+    let filtered = visibleSkills;
+    switch (mySkillsSubTab) {
+      case "installed":
+        filtered = visibleSkills.filter(s => isSkillInstalled(s) && s.enabled !== false);
+        break;
+      case "pending":
+        filtered = visibleSkills.filter(s => !isSkillInstalled(s) && s.enabled !== false);
+        break;
+      case "disabled":
+        filtered = visibleSkills.filter(s => s.enabled === false);
+        break;
+      default:
+        break;
+    }
+    return filtered;
+  }, [visibleSkills, mySkillsSubTab, installedSkillMap]);
+
+  const toggleSkillDisabled = async (skillName: string) => {
+    const skill = skills.find(s => s.name === skillName);
+    const newEnabled = skill?.enabled === false ? true : false;
+    
+    const toggleKey = `toggle:${skillName}`;
+    setActionTarget(toggleKey);
+    
+    try {
+      const result = await webRequest<{
+        success: boolean;
+        name: string;
+        enabled: boolean;
+        detail?: string;
+      }>(
+        "skills.toggle",
+        withSession({ name: skillName, enabled: newEnabled })
+      );
+      
+      if (!result.success) {
+        throw new Error(result.detail || 'Failed to toggle skill');
+      }
+      
+      setSkills((prev) => 
+        prev.map(s => 
+          s.name === skillName ? { ...s, enabled: newEnabled } : s
+        )
+      );
+      
+      showMessage('success', t(newEnabled ? 'skills.setEnabledSuccess' : 'skills.setDisabledSuccess', { name: skillName }));
+    } catch (error) {
+      console.error('Failed to toggle skill enabled:', error);
+      showMessage('error', t('skills.setEnabledError'));
+    } finally {
+      setActionTarget(null);
+    }
   };
 
   const renderEvolutionButton = (skill: SkillItem) => {
@@ -721,10 +784,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
               onClick={() => setActiveTab("my")}
               className={`px-4 text-sm font-medium transition-colors ${
                 activeTab === "my"
-                  ? "rounded-[8px]"
+                  ? "rounded-[8px] bg-secondary h-8 text-text"
                   : "text-text-muted hover:text-text"
               }`}
-              style={activeTab === "my" ? { backgroundColor: "#EAEAEB", height: "32px", color: "#191919" } : undefined}
             >
               {t('skills.tabs.mySkills')}
             </button>
@@ -732,10 +794,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
               onClick={() => setActiveTab("marketplace")}
               className={`px-4 text-sm font-medium transition-colors ${
                 activeTab === "marketplace"
-                  ? "rounded-[8px]"
+                  ? "rounded-[8px] bg-secondary h-8 text-text"
                   : "text-text-muted hover:text-text"
               }`}
-              style={activeTab === "marketplace" ? { backgroundColor: "#EAEAEB", height: "32px", color: "#191919" } : undefined}
             >
               {t('skills.tabs.marketplace')}
             </button>
@@ -782,10 +843,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                   }}
                   className={`px-4 text-sm font-medium transition-colors ${
                     marketplaceSubTab === "builtin"
-                      ? "rounded-[8px]"
+                      ? "rounded-[8px] bg-secondary h-8 text-text"
                       : "text-text-muted hover:text-text"
                   }`}
-                  style={marketplaceSubTab === "builtin" ? { backgroundColor: "#EAEAEB", height: "32px", color: "#191919" } : undefined}
                 >
                   {t('skills.marketplaceTabs.builtin')}
                 </button>
@@ -797,10 +857,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                 }}
                 className={`px-4 text-sm font-medium transition-colors ${
                   marketplaceSubTab === "swarmskills"
-                    ? "rounded-[8px]"
+                    ? "rounded-[8px] bg-secondary h-8 text-text"
                     : "text-text-muted hover:text-text"
                 }`}
-                style={marketplaceSubTab === "swarmskills" ? { backgroundColor: "#EAEAEB", height: "32px", color: "#191919" } : undefined}
               >
                 {t('skills.swarmskills.title')}
               </button>
@@ -812,10 +871,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                 }}
                 className={`px-4 text-sm font-medium transition-colors ${
                   marketplaceSubTab === "online"
-                    ? "rounded-[8px]"
+                    ? "rounded-[8px] bg-secondary h-8 text-text"
                     : "text-text-muted hover:text-text"
                 }`}
-                style={marketplaceSubTab === "online" ? { backgroundColor: "#EAEAEB", height: "32px", color: "#191919" } : undefined}
               >
                 {t('skills.onlineSearch.title')}
               </button>
@@ -1054,6 +1112,48 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             ) : (
               <div className="mt-4 flex flex-col flex-1 min-h-0">
                 <div className="flex items-center gap-3 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setMySkillsSubTab("all")}
+                      className={`px-4 text-sm font-medium transition-colors ${
+                        mySkillsSubTab === "all"
+                          ? "rounded-[8px] bg-secondary h-8 text-text"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      {t('skills.mySkillsTabs.all')}
+                    </button>
+                    <button
+                      onClick={() => setMySkillsSubTab("installed")}
+                      className={`px-4 text-sm font-medium transition-colors ${
+                        mySkillsSubTab === "installed"
+                          ? "rounded-[8px] bg-secondary h-8 text-text"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      {t('skills.mySkillsTabs.installed')}
+                    </button>
+                    <button
+                      onClick={() => setMySkillsSubTab("pending")}
+                      className={`px-4 text-sm font-medium transition-colors ${
+                        mySkillsSubTab === "pending"
+                          ? "rounded-[8px] bg-secondary h-8 text-text"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      {t('skills.mySkillsTabs.pending')}
+                    </button>
+                    <button
+                      onClick={() => setMySkillsSubTab("disabled")}
+                      className={`px-4 text-sm font-medium transition-colors ${
+                        mySkillsSubTab === "disabled"
+                          ? "rounded-[8px] bg-secondary h-8 text-text"
+                          : "text-text-muted hover:text-text"
+                      }`}
+                    >
+                      {t('skills.mySkillsTabs.disabled')}
+                    </button>
+                  </div>
                   <div className="flex-1 min-w-0">
                     <input
                       value={search}
@@ -1063,7 +1163,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                     />
                   </div>
                   <div className="text-xs text-text-muted flex-shrink-0">
-                    {t('skills.totalCount', { count: visibleSkills.length })}
+                    {t('skills.totalCount', { count: getMySkillsFiltered().length })}
                   </div>
                 </div>
 
@@ -1076,12 +1176,19 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                       {t('skills.listError')}
                     </div>
                   )}
-                  {listState === "success" && visibleSkills.length === 0 && (
-                    <div className="text-sm text-text-muted">{t('skills.noMatches')}</div>
+                  {listState === "success" && getMySkillsFiltered().length === 0 && (
+                    <div className="text-sm text-text-muted">
+                      {mySkillsSubTab === "disabled" ? t('skills.noDisabledSkills') : 
+                       mySkillsSubTab === "installed" ? t('skills.noInstalledSkills') :
+                       mySkillsSubTab === "pending" ? t('skills.noPendingSkills') :
+                       t('skills.noMatches')}
+                    </div>
                   )}
                   {listState === "success" &&
-                    visibleSkills.map((skill) => {
+                    getMySkillsFiltered().map((skill) => {
                       const avatar = getSkillAvatar(skill.name);
+                      const isDisabled = skill.enabled === false;
+                      const isToggling = actionTarget === `toggle:${skill.name}`;
                       return (
                         <button
                           key={skill.name}
@@ -1115,6 +1222,15 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                               <div className="flex flex-col items-end gap-2 flex-shrink-0">
                                 {renderActionButton(skill)}
                                 {renderEvolutionButton(skill)}
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-text-muted">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
+                                  <Switch
+                                    checked={!isDisabled}
+                                    onChange={() => toggleSkillDisabled(skill.name)}
+                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
+                                    disabled={isToggling}
+                                  />
+                                </div>
                               </div>
                             </div>
                           ) : (
@@ -1143,6 +1259,15 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                               <div className="flex items-center mt-auto pt-2 gap-2 flex-shrink-0" style={{ width: "100%" }}>
                                 <div className="flex gap-1.5 flex-1">
                                   {renderEvolutionButton(skill)}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-text-muted">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
+                                  <Switch
+                                    checked={!isDisabled}
+                                    onChange={() => toggleSkillDisabled(skill.name)}
+                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
+                                    disabled={isToggling}
+                                  />
                                 </div>
                                 <div className="flex-shrink-0 ml-auto">
                                   {renderActionButton(skill)}

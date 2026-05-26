@@ -1566,6 +1566,33 @@ select {
     margin-left: 2px;
     vertical-align: text-bottom;
   }
+
+  /* Skill action button - white/black in light mode, gray/white in dark mode */
+  .skill-action-btn {
+    width: 76px;
+    height: 28px;
+    border-radius: 24px;
+    font-size: var(--font-size-sm);
+    border: 1px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    transition: background var(--duration-fast) ease, border-color var(--duration-fast) ease;
+    white-space: nowrap;
+  }
+
+  .skill-action-btn:hover {
+    background: #f0f0f0;
+  }
+
+  :root:not([data-theme="light"]) .skill-action-btn {
+    border-color: #4b5563;
+    background: #374151;
+    color: #ffffff;
+  }
+
+  :root:not([data-theme="light"]) .skill-action-btn:hover {
+    background: #4b5563;
+  }
 }
 
 /* ===========================================
