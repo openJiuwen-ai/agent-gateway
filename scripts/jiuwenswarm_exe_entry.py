@@ -62,6 +62,13 @@ if getattr(sys, "frozen", False):
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
 
+# 子进程 flag 集合，这些模式下需要将错误写入日志文件，
+# 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
+_DESKTOP_INSTALL_UPDATE = "--desktop-install-update"
+
+_CHILD_FLAGS = {"--desktop-run-app", "--desktop-run-web",
+        _DESKTOP_RUN_AGENT, _DESKTOP_RUN_GATEWAY, _DESKTOP_INSTALL_UPDATE}
+
 # ── 单实例锁（在重量级 import 之前执行） ──────────────────────────
 _SINGLE_INSTANCE_LOCK_FD: int | None = None
 
@@ -199,6 +206,10 @@ def _dispatch() -> None:
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
         from jiuwenswarm.gateway.app_gateway import main as gateway_main
         gateway_main()
+        return
+    if _DESKTOP_INSTALL_UPDATE in sys.argv:
+        from jiuwenswarm.channels.desktop.desktop_app import main as desktop_main
+        desktop_main()
         return
     # 子命令：浏览器启动（供主进程 subprocess 调用）
     if "--browser-start-client" in sys.argv:

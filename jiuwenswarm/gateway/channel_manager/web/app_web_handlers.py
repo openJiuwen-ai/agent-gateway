@@ -1146,6 +1146,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         payload = service.start_download()
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
+    async def _updater_upgrade(ws, req_id, params, session_id):
+        service = updater_service or UpdaterService()
+        payload = await asyncio.to_thread(service.start_upgrade)
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
+
     async def _updater_get_conf(ws, req_id, params, session_id):
         service = updater_service or UpdaterService()
         await channel.send_response(ws, req_id, ok=True, payload=service.get_runtime_config())
@@ -1159,7 +1164,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if "enabled" in params:
             updates["enabled"] = bool(params.get("enabled"))
         for key in ("repo_owner", "repo_name", "release_api_url", "asset_name_pattern",
-                "sha256_name_pattern", "release_api_type", "pypi_mirror"):
+                "release_api_type", "pypi_mirror"):
             if key in params:
                 updates[key] = str(params.get(key) or "").strip()
         for plat in ("windows", "macos", "linux"):
@@ -2183,6 +2188,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("updater.get_status", _updater_get_status)
     channel.register_method("updater.check", _updater_check)
     channel.register_method("updater.download", _updater_download)
+    channel.register_method("updater.upgrade", _updater_upgrade)
     channel.register_method("updater.get_conf", _updater_get_conf)
     channel.register_method("updater.set_conf", _updater_set_conf)
     channel.register_method("heartbeat.get_conf", _heartbeat_get_conf)

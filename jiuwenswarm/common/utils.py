@@ -33,6 +33,7 @@ import re
 import sys
 import datetime
 import shutil
+import socket
 import time
 from pathlib import Path
 from dataclasses import dataclass
@@ -1629,6 +1630,71 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     stream_handler.addFilter(privacy_filter)
     root.addHandler(stream_handler)
     return root
+
+
+def wait_for_tcp_port(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 15.0,
+    max_attempts: int | None = None,
+    initial_delay: float = 0.1,
+    max_delay: float = 2.0,
+    connect_timeout: float = 1.0,
+    target_state: str = "connected",
+) -> bool:
+    """Wait for a TCP port to reach the desired state with exponential backoff.
+
+    Args:
+        host: Target host.
+        port: Target port.
+        timeout: Total wall-clock timeout in seconds.
+        max_attempts: Maximum number of connection attempts (None = unlimited within timeout).
+        initial_delay: Initial sleep interval between attempts (doubles each round).
+        max_delay: Maximum sleep interval cap.
+        connect_timeout: Per-attempt socket connect timeout.
+        target_state: ``"connected"`` — wait until the port accepts a connection;
+                      ``"disconnected"`` — wait until the port refuses connections.
+
+    Returns:
+        ``True`` if the target state is reached within limits, ``False`` otherwise.
+    """
+    deadline = time.monotonic() + timeout
+    delay = initial_delay
+    attempt = 0
+
+    while time.monotonic() < deadline:
+        if max_attempts is not None and attempt >= max_attempts:
+            return False
+        attempt += 1
+
+        try:
+            with socket.create_connection((host, port), timeout=connect_timeout):
+                if target_state == "connected":
+                    return True
+        except OSError:
+            if target_state == "disconnected":
+                return True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, max_delay)
+
+    return False
+
+
+def wait_for_pid_exit(pid: int, timeout: float = 60.0) -> None:
+    """Wait for a process to exit, with a timeout and warning on failure."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.5)
+    logger.warning("process %d did not exit within %.1f seconds", pid, timeout)
 
 
 setup_logger()
