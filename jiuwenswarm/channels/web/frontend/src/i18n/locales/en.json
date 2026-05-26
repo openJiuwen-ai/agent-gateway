@@ -78,12 +78,12 @@
     "evolutionStages": {
       "collecting": "Preparing skill evolution check...",
       "detecting": "Checking whether skill evolution is needed...",
-      "generating": "Signal detected, generating evolution experience...",
+      "generating": "Improvement signal found, generating evolution experience...",
       "awaitingApproval": "Evolution proposal ready, awaiting approval...",
-      "noEvolutionGenerated": "No evolution generated",
+      "noEvolutionGenerated": "No evolution experience generated",
       "noEvolutionNoSkill": "No evolution generated: no related skill found",
-      "noEvolutionNoSignal": "No evolution generated: no durable improvement found",
-      "noEvolutionNoRecords": "No evolution generated: no savable experience produced",
+      "noEvolutionNoSignal": "No improvement worth preserving found",
+      "noEvolutionNoRecords": "No evolution experience worth preserving",
       "completed": "Skill evolution completed",
       "timedOut": "Skill evolution timed out",
       "failed": "Skill evolution failed"
