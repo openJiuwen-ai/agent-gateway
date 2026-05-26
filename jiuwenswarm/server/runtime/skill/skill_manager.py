@@ -133,6 +133,25 @@ def get_registered_skill_names(state: dict[str, Any]) -> set[str]:
     return names
 
 
+def normalize_local_skills(
+    raw_local_skills: Any,
+    existing_local_skill_names: set[str],
+) -> list[dict[str, Any]]:
+    """Keep only local skill records that still exist under the local skills dir."""
+    if not isinstance(raw_local_skills, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw_local_skills:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        if not name or name not in existing_local_skill_names:
+            continue
+        normalized.append(item)
+    return normalized
+
+
 def get_skill_enabled(state: dict[str, Any], skill_name: str) -> bool:
     """Read a skill enabled flag with backward-compatible default true."""
     if not skill_name:
@@ -174,6 +193,17 @@ def list_disabled_skills(state: dict[str, Any]) -> list[str]:
         if config.get("enabled") is False:
             disabled.append(name)
     return sorted(disabled)
+
+
+def list_execution_disabled_skills(state: dict[str, Any]) -> list[str]:
+    """Return disabled skill names that are currently installed."""
+    registered = get_registered_skill_names(state)
+    if not registered:
+        return []
+    return [
+        name for name in list_disabled_skills(state)
+        if name in registered
+    ]
 
 
 class SkillNetEmptyDownloadError(Exception):
@@ -503,7 +533,7 @@ class SkillManager:
                         meta["is_builtin"] = False
                         meta["is_builtin_source"] = False
                         meta["has_evolutions"] = False
-                        self._apply_enabled_config(meta, "", default_enabled=True)
+                        self._apply_enabled_config(meta, meta.get("name", ""))
                         return meta
 
         raise ValueError(f"未找到 skill: {name}")
@@ -521,10 +551,6 @@ class SkillManager:
         except ValueError as exc:
             _log_rejected_name("skills.toggle", "skill", name, exc)
             return {"success": False, "detail": str(exc)}
-
-        skill_dir = self._resolve_local_skill_dir(name)
-        if skill_dir is None or not skill_dir.exists():
-            return {"success": False, "detail": f"未找到已安装 skill: {name}"}
 
         self.set_skill_enabled(name, enabled)
         return {
@@ -2479,6 +2505,7 @@ class SkillManager:
             meta["is_builtin_source"] = True
             meta["installed"] = False
             meta["has_evolutions"] = False
+            self._apply_enabled_config(meta, meta.get("name", ""))
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -2593,6 +2620,7 @@ class SkillManager:
                 meta["is_builtin"] = False
                 meta["installed"] = False
                 meta["has_evolutions"] = False
+                self._apply_enabled_config(meta, meta.get("name", ""))
                 meta.pop("body", None)
                 results.append(meta)
 
@@ -3579,6 +3607,10 @@ class SkillManager:
         state.setdefault("local_skills", [])
         state.setdefault("skill_configs", {})
         state["marketplaces"] = self.normalize_marketplaces(state.get("marketplaces"))
+        state["local_skills"] = normalize_local_skills(
+            state.get("local_skills"),
+            self._collect_existing_local_skill_names(),
+        )
         state["skill_configs"] = normalize_skill_configs(state.get("skill_configs"))
 
     def _get_installed_plugins(self) -> list[dict]:
@@ -3595,6 +3627,25 @@ class SkillManager:
     def get_local_skills(self) -> list[dict]:
         """返回本地技能安装记录的拷贝。"""
         return list(self._state.get("local_skills", []))
+
+    def _collect_existing_local_skill_names(self) -> set[str]:
+        names: set[str] = set()
+        if not self._skills_dir.exists():
+            return names
+
+        for child in self._skills_dir.iterdir():
+            if not child.is_dir() or child.name.startswith("_"):
+                continue
+            md = self._try_find_skill_file(child)
+            if md is None:
+                continue
+            meta = self._parse_skill_md(md)
+            if not isinstance(meta, dict):
+                continue
+            name = str(meta.get("name") or child.name).strip()
+            if name:
+                names.add(name)
+        return names
 
     def _apply_enabled_config(
         self,
@@ -3620,6 +3671,9 @@ class SkillManager:
 
     def list_disabled_skills(self) -> list[str]:
         return list_disabled_skills(self._state)
+
+    def list_execution_disabled_skills(self) -> list[str]:
+        return list_execution_disabled_skills(self._state)
 
     def get_skill_meta(self, skill_name: str) -> dict[str, Any] | None:
         """返回本地 skill 的解析元数据，附带目录与 skill 文件路径。"""

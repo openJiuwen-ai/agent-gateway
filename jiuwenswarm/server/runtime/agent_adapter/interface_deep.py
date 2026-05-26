@@ -1914,7 +1914,7 @@ class JiuWenClawDeepAdapter:
                 skills_dir=str(get_agent_skills_dir()),
                 skill_mode=skill_mode,
                 include_tools=include_tools,
-                disabled_skills=self._skill_manager.list_disabled_skills(),
+                disabled_skills=self._skill_manager.list_execution_disabled_skills(),
             )
             logger.info("[JiuWenClawDeepAdapter] SkillUseRail create success")
         except Exception as exc:
