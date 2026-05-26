@@ -679,8 +679,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
           s.name === skillName ? { ...s, enabled: newEnabled } : s
         )
       );
-      
-      showMessage('success', t(newEnabled ? 'skills.setEnabledSuccess' : 'skills.setDisabledSuccess', { name: skillName }));
     } catch (error) {
       console.error('Failed to toggle skill enabled:', error);
       showMessage('error', t('skills.setEnabledError'));
@@ -1223,7 +1221,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                 {renderActionButton(skill)}
                                 {renderEvolutionButton(skill)}
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs text-text-muted">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
+                                  <span className="text-xs text-text-muted min-w-[3.5em] text-center">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
@@ -1261,7 +1259,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   {renderEvolutionButton(skill)}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs text-text-muted">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
+                                  <span className="text-xs text-text-muted min-w-[3.5em] text-center">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
