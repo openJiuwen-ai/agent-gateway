@@ -1244,19 +1244,6 @@ function MultiAgentSection({
     return references;
   };
 
-  // 检查模型是否被Agent引用（包括当前agent）
-  const getModelReferences = (modelName: string, modelProvider: string, modelApiBase: string): string[] => {
-    const references: string[] = [];
-    agents.forEach((agent) => {
-      if (agent.model.model === modelName &&
-        agent.model.provider === modelProvider &&
-        agent.model.api_base === modelApiBase) {
-        references.push(agent.name);
-      }
-    });
-    return references;
-  };
-
   const handleRemoveAgent = (idx: number) => {
     const agentName = agents[idx]?.name;
     if (!agentName) return;
@@ -1420,11 +1407,9 @@ function MultiAgentSection({
                       const label = sameNameCount > 1
                         ? `${m.model_name} #${sameNameIdx + 1}`
                         : m.model_name;
-                      const modelRefs = getModelReferences(m.model_name, m.model_provider, m.api_base);
-                      const isReferenced = modelRefs.length > 0;
                       return (
                         <option key={`${m.model_name}#${mi}`} value={`${m.model_name}#${mi}`}>
-                          {label}{isReferenced ? ` (${t("config.model.referencedBy", { count: modelRefs.length })})` : ""}
+                          {label}
                         </option>
                       );
                     })}
@@ -2298,6 +2283,7 @@ export function ConfigPanel({
   const [initialAgents, setInitialAgents] = useState<AgentEntry[]>(cached?.agents || []);
   const [initialTeams, setInitialTeams] = useState<TeamEntry[]>(cached?.teams || []);
   const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(false);
+  const [agentsTeamsUserEdited, setAgentsTeamsUserEdited] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2308,10 +2294,10 @@ export function ConfigPanel({
   const [deleteTeamMemberConfirm, setDeleteTeamMemberConfirm] = useState<{ teamIdx: number; memberIdx: number; memberName: string } | null>(null);
   const [installedSkills, setInstalledSkills] = useState<string[]>([]);
   const [agentNameChangeWarning, setAgentNameChangeWarning] = useState<string | null>(null);
-  const [modelReferenceLostWarning, setModelReferenceLostWarning] = useState<{ agentNames: string[] } | null>(null);
 
   const markAgentsTeamsEdited = () => {
     setAgentsTeamsEdited(true);
+    setAgentsTeamsUserEdited(true);
     setError(null);
   };
 
@@ -2661,91 +2647,43 @@ export function ConfigPanel({
     [draftModels],
   );
 
-  const agentModelReferencesLost = useMemo(() => {
-    if (!hasModelChanges) return [];
-    const lostReferences: { agentName: string; originalModel: string; newModel: string; changedFields: string[] }[] = [];
+  const getAgentsTeamsValidationError = () => {
     for (const agent of draftAgents) {
-      const matchedModel = draftModels.find(
-        (m) => m.model_name === agent.model.model
-          && m.model_provider === agent.model.provider
-          && m.api_base === agent.model.api_base
-      );
-      const originalMatched = storeAvailableModels.find(
-        (m) => m.model_name === agent.model.model
-          && m.model_provider === agent.model.provider
-          && m.api_base === agent.model.api_base
-      );
-      if (!matchedModel) {
-        if (originalMatched) {
-          lostReferences.push({
-            agentName: agent.name,
-            originalModel: `${originalMatched.model_name} (${originalMatched.model_provider})`,
-            newModel: agent.model.model ? `${agent.model.model} (${agent.model.provider})` : t('config.model.notSelected'),
-            changedFields: ['model_removed'],
-          });
-        }
-      } else if (originalMatched) {
-        const changedFields: string[] = [];
-        if (matchedModel.api_key !== originalMatched.api_key) changedFields.push('api_key');
-        if (matchedModel.alias !== originalMatched.alias) changedFields.push('alias');
-        if (matchedModel.is_default !== originalMatched.is_default) changedFields.push('is_default');
-        if (matchedModel.temperature !== originalMatched.temperature) changedFields.push('temperature');
-        if (matchedModel.timeout !== originalMatched.timeout) changedFields.push('timeout');
-        if (changedFields.length > 0) {
-          lostReferences.push({
-            agentName: agent.name,
-            originalModel: `${originalMatched.model_name} (${originalMatched.model_provider})`,
-            newModel: `${matchedModel.model_name} (${matchedModel.model_provider}) - ${changedFields.join(', ')} changed`,
-            changedFields,
-          });
-        }
-      }
-    }
-    return lostReferences;
-  }, [hasModelChanges, draftAgents, draftModels, storeAvailableModels, t]);
-
-  useEffect(() => {
-    if (agentModelReferencesLost.length > 0) {
-      setModelReferenceLostWarning({ agentNames: agentModelReferencesLost.map((r) => r.agentName) });
-    } else {
-      setModelReferenceLostWarning(null);
-    }
-  }, [agentModelReferencesLost]);
-
-  const hasAgentsTeamsValidationError = useMemo(() => {
-    for (const agent of draftAgents) {
-      if (!agent.name.trim()) return true;
-      if (!agent.model.provider.trim()) return true;
-      if (!agent.model.api_base.trim()) return true;
-      if (!agent.model.api_key.trim()) return true;
-      if (!agent.model.model.trim()) return true;
+      if (!agent.name.trim()) return t('config.validation.agentNameRequired');
+      if (!agent.model.provider.trim()) return t('config.validation.agentModelProviderRequired');
+      if (!agent.model.api_base.trim()) return t('config.validation.agentModelApiBaseRequired');
+      if (!agent.model.api_key.trim()) return t('config.validation.agentModelApiKeyRequired');
+      if (!agent.model.model.trim()) return t('config.validation.agentModelNameRequired');
     }
     if (draftAgents.length > 0 && draftTeams.length === 0) {
-      return true;
+      return t('config.validation.teamRequired');
     }
     for (const team of draftTeams) {
-      if (!team.team_name.trim()) return true;
-      if (!team.lifecycle?.trim()) return true;
-      if (!team.teammate_mode?.trim()) return true;
-      if (!team.spawn_mode?.trim()) return true;
-      if (!team.leader?.member_name?.trim()) return true;
-      if (!/^[a-z][a-z0-9-]*$/.test(team.leader.member_name)) return true;
-      if (!team.leader?.display_name?.trim()) return true;
-      if (!team.leader?.persona?.trim()) return true;
-      if (!team.leader?.agent_key?.trim()) return true;
-      if (!team.teammate?.agent_key?.trim()) return true;
+      const teamLabel = team.team_name?.trim() || t('config.team.untitled');
+      if (!team.team_name.trim()) return t('config.validation.teamNameRequired', { team: teamLabel });
+      if (!team.lifecycle?.trim()) return t('config.validation.teamLifecycleRequired', { team: teamLabel });
+      if (!team.teammate_mode?.trim()) return t('config.validation.teamTeammateModeRequired', { team: teamLabel });
+      if (!team.spawn_mode?.trim()) return t('config.validation.teamSpawnModeRequired', { team: teamLabel });
+      if (!team.leader?.member_name?.trim()) return t('config.validation.leaderMemberNameRequired', { team: teamLabel });
+      if (!/^[a-z][a-z0-9-]*$/.test(team.leader.member_name)) return t('config.validation.leaderMemberNameInvalid', { team: teamLabel, name: team.leader.member_name });
+      if (!team.leader?.display_name?.trim()) return t('config.validation.leaderDisplayNameRequired', { team: teamLabel });
+      if (!team.leader?.persona?.trim()) return t('config.validation.leaderPersonaRequired', { team: teamLabel });
+      if (!team.leader?.agent_key?.trim()) return t('config.validation.leaderAgentKeyRequired', { team: teamLabel });
+      if (!team.teammate?.agent_key?.trim()) return t('config.validation.teammateAgentKeyRequired', { team: teamLabel });
       const leaderName = team.leader?.member_name?.trim() || '';
       for (const member of team.predefined_members || []) {
-        if (!member.member_name.trim()) return true;
-        if (!/^[a-z][a-z0-9-]*$/.test(member.member_name)) return true;
-        if (!member.display_name?.trim()) return true;
-        if (!member.persona?.trim()) return true;
-        if (!member.agent_key?.trim()) return true;
-        if (member.member_name.trim() === leaderName) return true;
+        if (!member.member_name.trim()) return t('config.validation.memberNameRequired', { team: teamLabel });
+        if (!/^[a-z][a-z0-9-]*$/.test(member.member_name)) return t('config.validation.memberNameInvalid', { team: teamLabel, name: member.member_name });
+        if (!member.display_name?.trim()) return t('config.validation.memberDisplayNameRequired', { team: teamLabel, name: member.member_name });
+        if (!member.persona?.trim()) return t('config.validation.memberPersonaRequired', { team: teamLabel, name: member.member_name });
+        if (!member.agent_key?.trim()) return t('config.validation.memberAgentKeyRequired', { team: teamLabel, name: member.member_name });
+        if (member.member_name.trim() === leaderName) return t('config.validation.memberNameConflictWithLeader', { team: teamLabel, name: member.member_name });
       }
     }
-    return false;
-  }, [draftAgents, draftTeams]);
+    return null;
+  };
+
+  const agentsTeamsValidationError = getAgentsTeamsValidationError();
 
   const handleFieldChange = (key: string, value: string) => {
     setDraftValues((prev) => ({ ...prev, [key]: value }));
@@ -2758,10 +2696,58 @@ export function ConfigPanel({
   };
 
   const handleModelsChange = (models: ModelEntry[]) => {
+    const oldModels = draftModels;
     setDraftModels(models);
     setModelError(null);
     if (error) {
       setError(null);
+    }
+
+    // 自动更新引用模型的agent
+    const updatedAgents = draftAgents.map((agent) => {
+      // 找到agent当前引用的模型在旧模型列表中的索引
+      const oldModelIndex = oldModels.findIndex(
+        (m) => m.model_name === agent.model.model
+          && m.model_provider === agent.model.provider
+          && m.api_base === agent.model.api_base
+      );
+      
+      if (oldModelIndex >= 0 && oldModelIndex < models.length) {
+        const newModel = models[oldModelIndex];
+        const oldModel = oldModels[oldModelIndex];
+        
+        // 检查模型是否有变化
+        const hasModelChanged = 
+          newModel.model_name !== oldModel.model_name ||
+          newModel.model_provider !== oldModel.model_provider ||
+          newModel.api_base !== oldModel.api_base ||
+          newModel.api_key !== oldModel.api_key;
+        
+        if (hasModelChanged) {
+          return {
+            ...agent,
+            model: {
+              provider: newModel.model_provider || "",
+              api_base: newModel.api_base || "",
+              api_key: newModel.api_key || "",
+              model: newModel.model_name || "",
+            },
+          };
+        }
+      }
+      return agent;
+    });
+
+    const hasAgentModelUpdated = updatedAgents.some((agent, idx) => 
+      agent.model.model !== draftAgents[idx].model.model ||
+      agent.model.provider !== draftAgents[idx].model.provider ||
+      agent.model.api_base !== draftAgents[idx].model.api_base ||
+      agent.model.api_key !== draftAgents[idx].model.api_key
+    );
+
+    if (hasAgentModelUpdated) {
+      setDraftAgents(updatedAgents);
+      setAgentsTeamsEdited(true);
     }
   };
 
@@ -2772,10 +2758,10 @@ export function ConfigPanel({
     setDraftAgents(initialAgents);
     setDraftTeams(initialTeams);
     setAgentsTeamsEdited(false);
+    setAgentsTeamsUserEdited(false);
     setError(null);
     setModelError(null);
     setAgentNameChangeWarning(null);
-    setModelReferenceLostWarning(null);
   };
 
   const buildAgentsTeamsPayload = (): AgentsTeamsPayload => {
@@ -2801,6 +2787,7 @@ export function ConfigPanel({
       console.error('Failed to clear agents/teams cache:', e);
     }
     setAgentsTeamsEdited(false);
+    setAgentsTeamsUserEdited(false);
   };
 
 
@@ -2869,9 +2856,9 @@ export function ConfigPanel({
       }
     }
 
-    if (hasAgentsTeamsChanges && hasAgentsTeamsValidationError) {
+    if (agentsTeamsUserEdited && agentsTeamsValidationError) {
       setConfigTab("agent");
-      setError(t('config.agentsTeamsValidationError'));
+      setError(agentsTeamsValidationError);
       return;
     }
 
@@ -2949,7 +2936,7 @@ export function ConfigPanel({
             <button
               type="button"
               onClick={() => void handleSaveAndRestart()}
-              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || hasDuplicateAgentNames || hasAgentsTeamsValidationError || agentModelReferencesLost.length > 0 || (isProcessing && mode !== 'team')}
+              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || hasDuplicateAgentNames || (agentsTeamsUserEdited && !!agentsTeamsValidationError) || (isProcessing && mode !== 'team')}
               className="btn primary !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? t('common.saving') : t('common.save')}
@@ -2971,11 +2958,6 @@ export function ConfigPanel({
             {t('config.modelList.apiBaseRequired')}
           </div>
         ) : null}
-        {!error && modelReferenceLostWarning ? (
-          <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-            {t('config.model.referenceLostWarning')}: {modelReferenceLostWarning.agentNames.join(', ')}
-          </div>
-        ) : null}
         {!error && agentNameChangeWarning ? (
           <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
             {agentNameChangeWarning}
@@ -2988,9 +2970,9 @@ export function ConfigPanel({
         ) : null
         }
         {
-          !error && hasAgentsTeamsChanges && hasAgentsTeamsValidationError ? (
+          !error && agentsTeamsUserEdited && agentsTeamsValidationError ? (
             <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
-              {t('config.agentsTeamsValidationError')}
+              {agentsTeamsValidationError}
             </div>
           ) : null
         }
