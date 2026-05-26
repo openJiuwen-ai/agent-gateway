@@ -378,6 +378,11 @@ class WebChannel(BaseChannel):
                     "session_id": msg.session_id,
                     "content": content,
                 }
+                # teammate 消息：保留 role 和 member_name 供前端区分成员
+                for _key in ("role", "member_name"):
+                    _val = msg.payload.get(_key)
+                    if _val is not None:
+                        payload[_key] = _val
                 # 定时任务推送：附带 cron 元数据，供前端识别并替换占位消息（避免误写入流式气泡）
                 if event_name == "chat.final":
                     cron_extra = msg.payload.get("cron")
