@@ -26,7 +26,10 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     resolve_sdk_choice,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode
-from jiuwenswarm.server.runtime.session.session_history import append_history_record
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_compact_history_records,
+    append_history_record,
+)
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.utils.utils import is_team_params
@@ -42,6 +45,45 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     reset_free_search_runtime_flags,
 )
+
+
+def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    for key in ("status", "phase", "processor", "model", "before", "after", "saved", "duration_ms"):
+        if key in payload:
+            stats[key] = payload.get(key)
+    return stats
+
+
+def _is_successful_compaction_payload(payload: dict[str, Any]) -> bool:
+    if payload.get("error"):
+        return False
+    status = str(payload.get("status") or "").strip().lower()
+    return status not in {"error", "failed", "skipped"}
+
+
+def _append_compact_history_from_payload(
+    *,
+    payload: dict[str, Any],
+    session_id: str,
+    request_id: str,
+    channel_id: str,
+    mode: str,
+) -> None:
+    summary_text = str(payload.get("compact_summary") or "").strip()
+    if not summary_text or not _is_successful_compaction_payload(payload):
+        return
+    append_compact_history_records(
+        session_id=session_id,
+        request_id=request_id,
+        channel_id=channel_id,
+        summary=summary_text,
+        timestamp=time.time(),
+        trigger="auto",
+        stats=_compact_stats_from_payload(payload),
+        mode=mode,
+    )
+
 
 load_dotenv(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
@@ -935,6 +977,14 @@ class JiuWenClaw:
                             should_record = et.startswith("chat.")
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
                                 should_record = True
+                            if et == "context_compression_state":
+                                _append_compact_history_from_payload(
+                                    payload=data.payload,
+                                    session_id=session_id,
+                                    request_id=rid,
+                                    channel_id=cid,
+                                    mode=request.params.get("mode", "unknown"),
+                                )
 
                             if should_record:
                                 payload_dict = dict(data.payload)
@@ -967,6 +1017,14 @@ class JiuWenClaw:
                         should_record = et.startswith("chat.")
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
+                        if et == "context_compression_state":
+                            _append_compact_history_from_payload(
+                                payload=data,
+                                session_id=session_id,
+                                request_id=rid,
+                                channel_id=cid,
+                                mode=request.params.get("mode", "unknown"),
+                            )
 
                         if should_record:
                             extra_fields = {k: v for k, v in data.items() if k not in ("event_type", "content")}
@@ -1027,7 +1085,13 @@ class JiuWenClaw:
     def get_instance(self):
         return self._adapter._instance
 
-    async def compress_context(self, session_id: str, session: Any = None) -> dict[str, Any]:
+    async def compress_context(
+            self,
+            session_id: str,
+            session: Any = None,
+            *,
+            return_state: bool = False,
+    ) -> dict[str, Any]:
         """主动触发上下文压缩。
 
         Args:
@@ -1045,6 +1109,7 @@ class JiuWenClaw:
         return await adapter.compress_context(
             session_id=session_id,
             session=session,
+            return_state=return_state,
         )
 
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:

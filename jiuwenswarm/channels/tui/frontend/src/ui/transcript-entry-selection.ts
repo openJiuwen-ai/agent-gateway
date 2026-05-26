@@ -69,7 +69,9 @@ export function selectTranscriptEntries(snapshot: AppSnapshot): SelectedTranscri
       .find((entry) => entry.kind === "thinking")?.id ?? undefined;
 
   if (snapshot.transcriptMode === "compact") {
-    entries = entries.filter((entry) => entry.kind !== "thinking");
+    entries = entries.filter(
+      (entry) => entry.kind !== "thinking" && !(entry.kind === "info" && entry.transcriptOnly),
+    );
   }
 
   return { entries, latestThinkingId };

@@ -39,6 +39,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist imp
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
+from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     find_auto_managed_match,
@@ -90,8 +91,18 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.usage_summary",
         "chat.file",
         "team.message",
+        "context.compact_boundary",
+        "context.compact_summary",
     }
 )
+
+
+def _extract_compact_summary_processor(summary: str) -> str:
+    for line in str(summary or "").splitlines():
+        key, sep, value = line.partition(":")
+        if sep and key.strip().lower() == "processor":
+            return value.strip()
+    return ""
 
 
 def _is_restorable_history_record(record: Any) -> bool:
@@ -1949,10 +1960,17 @@ class AgentWebSocketServer:
             if agent is None:
                 raise ValueError("Failed to get agent")
 
-            result_data = await agent.compress_context(session_id=session_id)
+            result_data = await agent.compress_context(session_id=session_id, return_state=True)
 
             result = result_data.get("result")
             stats = result_data.get("stats")
+            state = result_data.get("state") if isinstance(result_data.get("state"), dict) else {}
+            summary = str(
+                result_data.get("compact_summary")
+                or state.get("compact_summary")
+                or result_data.get("summary")
+                or ""
+            ).strip()
 
             if result == "compressed" and stats:
                 before_tokens = stats.get("raw_total_tokens", 0)
@@ -1961,6 +1979,10 @@ class AgentWebSocketServer:
                     rate = round((before_tokens - after_tokens) / before_tokens * 100, 1)
                 else:
                     rate = 0
+                stats_summary = (
+                    f"\u2713 Context compacted: {after_tokens / 1000:.1f}K/"
+                    f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
+                )
 
                 await self.send_push({
                     "channel_id": channel_id,
@@ -1972,6 +1994,37 @@ class AgentWebSocketServer:
                         "afterCompressed": after_tokens,
                     },
                 })
+                if summary:
+                    append_compact_history_records(
+                        session_id=session_id,
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        summary=summary,
+                        timestamp=_dt.datetime.now().timestamp(),
+                        trigger="manual",
+                        stats=stats,
+                        mode=params.get("mode", "agent.plan"),
+                    )
+                    compression_state_payload: dict[str, Any] = {
+                        **state,
+                        "event_type": "context.compression_state",
+                        "status": state.get("status") or "compressed",
+                        "phase": state.get("phase") or "active_compress",
+                        "processor": state.get("processor") or _extract_compact_summary_processor(summary),
+                        "before": state.get("before") or {"tokens": before_tokens},
+                        "after": state.get("after") or {"tokens": after_tokens},
+                        "saved": state.get("saved") or {
+                            "tokens": before_tokens - after_tokens,
+                            "percent": rate,
+                        },
+                        "summary": stats_summary,
+                        "compact_summary": summary,
+                    }
+                    await self.send_push({
+                        "channel_id": channel_id,
+                        "session_id": session_id,
+                        "payload": compression_state_payload,
+                    })
 
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -1980,6 +2033,8 @@ class AgentWebSocketServer:
                 payload={
                     "result": result,
                     "stats": stats,
+                    **({"summary": summary} if summary else {}),
+                    **({"compact_summary": summary} if summary else {}),
                 },
             )
         except Exception as e:  # noqa: BLE001

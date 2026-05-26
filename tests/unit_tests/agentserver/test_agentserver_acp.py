@@ -79,9 +79,10 @@ class FakeTeamManager:
 
 
 class FakeContextProcessorRail:
-    def __init__(self, *, processors=None, preset=None):
+    def __init__(self, *, processors=None, preset=None, session_memory=None):
         self.processors = processors
         self.preset = preset
+        self.session_memory = session_memory
 
 
 class FakeContextAssembleRail:
@@ -1230,6 +1231,34 @@ def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypat
     assert rail.processors == [
         ("MessageSummaryOffloader", {"tokens_threshold": 6000}),
     ]
+
+
+def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
+    monkeypatch.setattr(
+        interface_deep_module,
+        "ContextProcessorRail",
+        FakeContextProcessorRail,
+    )
+    adapter = DeepAdapterHarness()
+
+    rail = adapter.build_context_processor_rail_for_test(
+        {
+            "context_engine_config": {
+                "session_memory_config": {
+                    "trigger_tokens": 12000,
+                    "update_mode": "direct_replace",
+                },
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeContextProcessorRail)
+    assert rail.preset is True
+    assert rail.processors is None
+    assert rail.session_memory == {
+        "trigger_tokens": 12000,
+        "update_mode": "direct_replace",
+    }
 
 
 def test_build_context_assemble_rail_returns_context_assemble_rail_instance(monkeypatch):

@@ -6,6 +6,10 @@ import {
   isHistoryDonePayload,
 } from "./history-parser.js";
 import { normalizeFinalContent } from "./final-content.js";
+import {
+  formatCompressionStartedLine,
+  formatCompressionUsage,
+} from "./compression-formatters.js";
 import type { EventFrame } from "./protocol.js";
 import {
   StreamingState,
@@ -690,11 +694,13 @@ function handleContextCompressionState(
   const before = asRecord(payload.before);
   const after = asRecord(payload.after);
   const saved = asRecord(payload.saved);
+  const compressionUsage = asRecord(payload.compression_usage);
   const status = readString(payload.status, "unknown");
   const phase = readString(payload.phase, "unknown");
   const processor = readString(payload.processor, "unknown") || "unknown";
   const model = readString(payload.model);
-  const summary = readString(payload.summary);
+  const summary = readString(payload.compact_summary);
+  const statsSummary = readString(payload.summary);
   const error = readString(payload.error);
 
   const savedParts = [
@@ -703,32 +709,107 @@ function handleContextCompressionState(
     formatPercent(saved.percent),
   ].filter((part) => !part.startsWith("-"));
 
+  const normalizedStatus = status.trim().toLowerCase();
+  const hasAfterStats = readNumber(after.tokens) !== null;
+  const savedTokens = readNumber(saved.tokens) ?? 0;
+  const savedMessages = readNumber(saved.messages) ?? 0;
+  const shouldUpdateCompressionStats =
+    hasAfterStats && (normalizedStatus === "completed" || normalizedStatus === "compressed");
+  if (shouldUpdateCompressionStats) {
+    delegate.setContextCompression({
+      rate: readNumber(after.context_percent) ?? 0,
+      beforeCompressed: readNumber(before.tokens),
+      afterCompressed: readNumber(after.tokens),
+      ...(summary ? { summary } : {}),
+      trigger: "auto",
+    });
+  }
+
+  const isCompacted =
+    (Boolean(summary) || savedTokens > 0 || savedMessages > 0) &&
+    !error &&
+    normalizedStatus !== "error" &&
+    normalizedStatus !== "failed" &&
+    normalizedStatus !== "skipped";
+  const isError = Boolean(error) || normalizedStatus === "error" || normalizedStatus === "failed";
+  const detailItems = [
+    { label: "Processor", value: processor },
+    { label: "Phase", value: phase },
+    ...(model ? [{ label: "Model", value: model }] : []),
+    { label: "Messages", value: formatChange(before.messages, after.messages) },
+    { label: "Tokens", value: formatChange(before.tokens, after.tokens) },
+    {
+      label: "Context",
+      value: formatChange(before.context_percent, after.context_percent, formatPercent),
+    },
+    ...(savedParts.length ? [{ label: "Saved", value: savedParts.join(" | ") }] : []),
+    ...(Object.keys(compressionUsage).length
+      ? [{ label: "Compression usage", value: formatCompressionUsage(compressionUsage) }]
+      : []),
+    { label: "Duration", value: formatDuration(payload.duration_ms) },
+    ...(statsSummary ? [{ label: "Summary", description: statsSummary }] : []),
+    ...(error ? [{ label: "Error", description: error }] : []),
+  ];
+
+  if (!isCompacted && !isError) {
+    if (normalizedStatus === "started" || normalizedStatus === "noop") {
+      const detailEntry: HistoryItem = {
+        kind: "info",
+        id: createId("context-compression-detail"),
+        sessionId: activeSessionId,
+        content: `Context compression ${status}`,
+        icon: "i",
+        transcriptOnly: true,
+        meta: {
+          title: `Context compression ${status}`,
+          items: detailItems,
+        },
+        at: new Date().toISOString(),
+      };
+      if (normalizedStatus === "started") {
+        appendEntry(delegate, {
+          kind: "info",
+          id: createId("context-compression-started"),
+          sessionId: activeSessionId,
+          content: formatCompressionStartedLine(processor, phase, before),
+          icon: "i",
+          meta: { view: "dim" },
+          at: new Date().toISOString(),
+        });
+      }
+      appendEntry(delegate, detailEntry);
+    }
+    return true;
+  }
+
   appendEntry(delegate, {
     kind: "info",
     id: createId("context-compression"),
     sessionId: activeSessionId,
-    content: `Context compression ${status}`,
+    content: isCompacted ? "Conversation compacted" : `Context compression ${status}`,
     icon: "i",
     meta: {
-      title: `Context compression ${status}`,
-      items: [
-        { label: "Processor", value: processor },
-        { label: "Phase", value: phase },
-        ...(model ? [{ label: "Model", value: model }] : []),
-        { label: "Messages", value: formatChange(before.messages, after.messages) },
-        { label: "Tokens", value: formatChange(before.tokens, after.tokens) },
-        {
-          label: "Context",
-          value: formatChange(before.context_percent, after.context_percent, formatPercent),
-        },
-        ...(savedParts.length ? [{ label: "Saved", value: savedParts.join(" | ") }] : []),
-        { label: "Duration", value: formatDuration(payload.duration_ms) },
-        ...(summary ? [{ label: "Summary", description: summary }] : []),
-        ...(error ? [{ label: "Error", description: error }] : []),
-      ],
+      ...(isCompacted ? { view: "compact_boundary" as const } : {}),
+      title: isCompacted ? "Conversation compacted" : `Context compression ${status}`,
+      items: detailItems,
     },
     at: new Date().toISOString(),
   });
+  if (isCompacted) {
+    appendEntry(delegate, {
+      kind: "info",
+      id: createId("context-compact-summary"),
+      sessionId: activeSessionId,
+      content: summary,
+      icon: "i",
+      transcriptOnly: true,
+      meta: {
+        view: "compact_summary",
+        title: "Compaction summary",
+      },
+      at: new Date().toISOString(),
+    });
+  }
   return true;
 }
 

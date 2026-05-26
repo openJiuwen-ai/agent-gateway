@@ -155,6 +155,58 @@ def append_history_record(
         logger.warning("更新会话元数据失败: %s", exc)
 
 
+def append_compact_history_records(
+    *,
+    session_id: str,
+    request_id: str,
+    channel_id: str,
+    summary: str | None,
+    timestamp: float,
+    trigger: str = "auto",
+    stats: dict[str, Any] | None = None,
+    mode: str | None = None,
+) -> None:
+    """Persist a compact boundary and optional transcript-only summary."""
+    clean_summary = (summary or "").strip()
+    metadata = {
+        "compact_metadata": {
+            "trigger": trigger,
+            **(_serialize_value(stats) if isinstance(stats, dict) else {}),
+        },
+    }
+
+    append_history_record(
+        session_id=session_id,
+        request_id=request_id,
+        channel_id=channel_id,
+        role="assistant",
+        event_type="context.compact_boundary",
+        content="Conversation compacted",
+        timestamp=timestamp,
+        extra=metadata,
+        mode=mode,
+    )
+
+    if not clean_summary:
+        return
+
+    append_history_record(
+        session_id=session_id,
+        request_id=request_id,
+        channel_id=channel_id,
+        role="assistant",
+        event_type="context.compact_summary",
+        content=clean_summary,
+        timestamp=timestamp + 0.001,
+        extra={
+            **metadata,
+            "is_compact_summary": True,
+            "transcript_only": True,
+        },
+        mode=mode,
+    )
+
+
 def truncate_history_records(*, session_id: str, cut_index: int) -> dict[str, Any]:
     """截断会话历史到指定位置（线程安全）。
 

@@ -323,6 +323,18 @@ def _build_context_assemble_rail() -> ContextAssembleRail | None:
     return context_assemble_rail
 
 
+def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[str, Any] | None:
+    raw_config = (
+        context_engine_cfg.get("session_memory_config")
+        or context_engine_cfg.get("session_memory")
+    )
+    if raw_config is True:
+        return {}
+    if isinstance(raw_config, dict):
+        return raw_config
+    return None
+
+
 def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRail | None:
     """Build ContextProcessorRail with user config.
 
@@ -333,7 +345,9 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
     """
     try:
         user_processors: List[Tuple[str, dict]] = []
-        context_engine_cfg = config.get("context_engine_config", {})
+        raw_context_engine_cfg = config.get("context_engine_config", {})
+        context_engine_cfg = raw_context_engine_cfg if isinstance(raw_context_engine_cfg, dict) else {}
+        session_memory_cfg = _resolve_session_memory_config(context_engine_cfg)
 
         offloader_cfg = context_engine_cfg.get("message_summary_offloader_config", {})
         if isinstance(offloader_cfg, dict) and offloader_cfg:
@@ -354,11 +368,13 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
         context_rail = ContextProcessorRail(
             processors=user_processors if user_processors else None,
             preset=True,
+            session_memory=session_memory_cfg,
         )
         logger.info(
             "[JiuWenClawDeepAdapter] ContextProcessorRail create success for agent.plan mode, "
-            "user_processors=%s",
+            "user_processors=%s session_memory=%s",
             [p[0] for p in user_processors] if user_processors else "none",
+            "enabled" if isinstance(session_memory_cfg, dict) else "disabled",
         )
         return context_rail
     except Exception as exc:
@@ -5305,7 +5321,13 @@ class JiuWenClawDeepAdapter:
             self._external_memory_rail = None
             self._external_memory_rail_registered = False
 
-    async def compress_context(self, session_id: str, session: Any = None) -> dict[str, Any]:
+    async def compress_context(
+            self,
+            session_id: str,
+            session: Any = None,
+            *,
+            return_state: bool = False,
+    ) -> dict[str, Any]:
         """主动触发上下文压缩。
 
         Args:
@@ -5331,12 +5353,33 @@ class JiuWenClawDeepAdapter:
             context, react_agent, session_id
         )
 
-        result = await context_engine.compress_context(
+        compact_result = await context_engine.compress_context(
             session=session,
             session_id=session_id,
+            return_state=True,
         )
+        summary: str | None = None
+        state: dict[str, Any] | None = None
+        if isinstance(compact_result, dict):
+            result = compact_result.get("result") or compact_result.get("status")
+            raw_state = compact_result.get("state")
+            if isinstance(raw_state, dict):
+                state = raw_state
+            raw_summary = compact_result.get("compact_summary")
+            if raw_summary is None:
+                if isinstance(state, dict):
+                    raw_summary = state.get("compact_summary")
+            if isinstance(raw_summary, str) and raw_summary.strip():
+                summary = raw_summary.strip()
+        else:
+            result = compact_result
 
         response: dict[str, Any] = {"result": result}
+        if return_state and state:
+            response["state"] = state
+            compact_summary = state.get("compact_summary")
+            if isinstance(compact_summary, str) and compact_summary.strip():
+                response["compact_summary"] = compact_summary.strip()
 
         if result == "compressed":
             context = context_engine.get_context(session_id=session_id)
@@ -5351,6 +5394,9 @@ class JiuWenClawDeepAdapter:
                     "total_tokens": total_tokens,
                     "raw_total_tokens": raw_total_tokens,
                 }
+                if summary:
+                    response["summary"] = summary
+                    response.setdefault("compact_summary", summary)
 
         return response
 
