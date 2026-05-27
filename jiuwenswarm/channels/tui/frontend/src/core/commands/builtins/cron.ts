@@ -433,9 +433,10 @@ async function _handlePreview(ctx: CommandContext, parts: string[]): Promise<voi
     const taskType = isOneShot ? "单次任务" : "周期任务";
     const typeIcon = isOneShot ? "one-shot" : "recurring";
 
+    const previewCount = isOneShot ? 1 : count;
     const payload = await ctx.request("cron.job.preview", {
       id: jobId,
-      count,
+      count: previewCount,
     }) as { next: Array<{ wake_at: string; push_at: string } | string> };
     const nextRuns = payload.next ?? [];
 
