@@ -97,6 +97,7 @@ function showJsonInput(ctx: CommandContext): void {
     "evolution_status  — evolution status (idle/running)",
     "active_subtask_count — number of active subtasks",
     "todo_count        — number of todo items",
+    "trusted_dirs       — trusted workspace directories (array of paths)",
     "usage.total_input_tokens — total input tokens",
     "usage.total_output_tokens — total output tokens",
     "usage.total_tokens — total tokens (input + output)",

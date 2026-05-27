@@ -1769,6 +1769,7 @@ export class CliPiAppState {
       evolution_status: snapshot.evolutionStatus,
       active_subtask_count: snapshot.activeSubtasks.length,
       todo_count: snapshot.todos.length,
+      trusted_dirs: trustedDirs,
       usage: {
         total_input_tokens: usage.total_input_tokens,
         total_output_tokens: usage.total_output_tokens,

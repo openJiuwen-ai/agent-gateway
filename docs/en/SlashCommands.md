@@ -607,6 +607,7 @@ The command receives the following JSON data on each execution:
 | `evolution_status` | Evolution status (`idle` / `running`) |
 | `active_subtask_count` | Number of active subtasks |
 | `todo_count` | Number of todo items |
+| `trusted_dirs` | Trusted workspace directories (array of path strings) |
 | `usage.total_input_tokens` | Total input tokens for session |
 | `usage.total_output_tokens` | Total output tokens for session |
 | `usage.total_tokens` | Total tokens for session |
@@ -648,6 +649,7 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 | Evolution status | `jq -r '.evolution_status // "idle"'` |
 | Subtask count | `jq -r '.active_subtask_count // 0'` |
 | Todo count | `jq -r '.todo_count // 0'` |
+| Trusted dirs | `jq -r '(.trusted_dirs // []) | join(" ")'` |
 | Total input tokens | `jq -r '.usage.total_input_tokens // 0'` |
 | Total output tokens | `jq -r '.usage.total_output_tokens // 0'` |
 | Total tokens | `jq -r '.usage.total_tokens // 0'` |
@@ -663,6 +665,7 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 - `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r .context_window.used_percentage); rem=$(echo "$input" | jq -r .context_window.remaining_percentage); cw=$(echo "$input" | jq -r .context_window.context_window_size / 1000); echo "ctx:${pct}% used (${rem}% left, ${cw}K window)"'` — Show context window occupancy with percentage bar
 - `/statusline set 'input=$(cat); pct=$(echo "$input" | jq -r ".context_window.used_percentage // 0"); if [ "$pct" -ge 90 ]; then warn="⚠HIGH"; elif [ "$pct" -ge 70 ]; then warn="~MED"; else warn="OK"; fi; echo "ctx:${pct}% $warn"'` — Show context % with threshold warning (≥90% HIGH, ≥70% MED)
 - `/statusline set 'input=$(cat); err=$(echo "$input" | jq -r .last_error); if [ "$err" != "null" ] && [ "$err" != "" ]; then echo "error: $err"; else echo "ok"; fi'` — Show error when present, otherwise "ok"
+- `/statusline set 'input=$(cat); dirs=$(echo "$input" | jq -r '.trusted_dirs // [] | join(" ")'); mode=$(echo "$input" | jq -r '.mode // "?"'); echo "$mode | dirs:$dirs"'` — Show mode and trusted workspace directories
 - `/statusline clear` — Remove status line configuration
 - `/statusline help` — View JSON input fields reference
 
