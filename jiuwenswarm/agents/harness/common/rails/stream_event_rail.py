@@ -163,6 +163,26 @@ class JiuClawStreamEventRail(DeepAgentRail):
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
 
+    def _resolve_sid(self, ctx: AgentCallbackContext, session: Session | None = None) -> str:
+        """Resolve the per-session key used by this rail.
+
+        99aa04963 made pause/abort and conversation state per-session. Most
+        callbacks inherit ctx.extra from before_invoke, but tool callbacks can
+        arrive without that value depending on agent-core callback boundaries.
+        Fall back to the captured main session identity so main-agent tool calls
+        can still find their conversation_id while unrelated sessions remain
+        isolated.
+        """
+        sid = ctx.extra.get(self._SID_KEY, "")
+        if isinstance(sid, str) and sid:
+            return sid
+        if session is not None:
+            for known_sid, known_session in self._main_sessions.items():
+                if session is known_session:
+                    ctx.extra[self._SID_KEY] = known_sid
+                    return known_sid
+        return "default"
+
     # -- pause / resume / abort API for interface.py --
     # All methods accept session_id to scope state per-session on shared adapters.
 
@@ -299,7 +319,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        sid = ctx.extra.get(self._SID_KEY, "") or "default"
+        sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
@@ -315,7 +335,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        sid = ctx.extra.get(self._SID_KEY, "") or "default"
+        sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
         if self._abort_requested.get(sid, False):
             raise asyncio.CancelledError("Agent abort requested")
@@ -352,7 +372,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
         await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
 
         tool_name = ctx.inputs.tool_name
-        sid = ctx.extra.get(self._SID_KEY, "") or "default"
+        sid = self._resolve_sid(ctx, session)
         conv_id = self._conversation_ids.get(sid, "")
         if not conv_id:
             return
