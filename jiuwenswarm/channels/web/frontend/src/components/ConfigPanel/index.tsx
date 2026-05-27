@@ -1804,7 +1804,6 @@ function TeamItemSection({
               >
                 <option value=""></option>
                 <option value="build_mode">{t("config.team.teammateModeBuild")}</option>
-                <option value="plan_mode">{t("config.team.teammateModePlan")}</option>
               </select>
             ) : field === "spawn_mode" ? (
               <input

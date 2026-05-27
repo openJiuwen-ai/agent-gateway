@@ -1233,6 +1233,64 @@ def test_extract_query_directives_strips_hide_dm_prefix_and_flags():
     assert cleaned == "please summarize"
 
 
+@pytest.mark.anyio
+async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeypatch):
+    broadcasted: list[dict] = []
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "request_id": "tool-ask-1",
+                "questions": [{"question": "请选择", "header": "选择", "options": []}],
+            },
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "request_id": "tool-ask-1",
+                "questions": [{"question": "请选择", "header": "选择", "options": []}],
+            },
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager:
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        lambda channel_id, session_id, event: broadcasted.append(event),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-ask-dedupe",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    ask_events = [
+        event
+        for event in broadcasted
+        if event.get("event_type") == "chat.ask_user_question"
+    ]
+    assert len(ask_events) == 1
+    assert ask_events[0]["request_id"] == "tool-ask-1"
+
+
 def test_extract_query_directives_ignores_non_prefix():
     cleaned, hide_dm, debug = team_helpers._extract_query_directives(  # pylint: disable=protected-access
         "/hide_dmsomething else"

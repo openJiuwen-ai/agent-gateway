@@ -276,6 +276,21 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
     return parsed
 
 
+def _is_duplicate_ask_user_question(
+    parsed: dict[str, Any],
+    emitted_request_ids: set[str],
+) -> bool:
+    if parsed.get("event_type") != "chat.ask_user_question":
+        return False
+    request_id = str(parsed.get("request_id") or "").strip()
+    if not request_id:
+        return False
+    if request_id in emitted_request_ids:
+        return True
+    emitted_request_ids.add(request_id)
+    return False
+
+
 def _team_processing_done_chunk(
     request_id: str,
     channel_id: str | None,
@@ -603,6 +618,7 @@ async def process_team_message_stream(
 
     team_manager = get_team_manager(channel_id)
     query = inputs.get("query", "")
+    query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
             wait_for_pending_shutdown_cleanup_for_session,
@@ -635,7 +651,7 @@ async def process_team_message_stream(
     slash_result = await _handle_team_slash_command(
         channel_id,
         session_id,
-        str(query or ""),
+        query_text,
     )
     if slash_result is not None:
         approval_chunks = slash_result.get("approval_chunks")
@@ -681,12 +697,15 @@ async def process_team_message_stream(
     try:
         if deep_agent is None:
             raise RuntimeError("DeepAgent not initialized")
+        request_metadata = dict(request.metadata or {})
+        if isinstance(getattr(request, "params", None), dict):
+            request_metadata.setdefault("mode", request.params.get("mode"))
         team_spec = await team_manager.get_enriched_team_spec(
             session_id=session_id,
             deep_agent=deep_agent,
             request_id=rid,
             channel_id=channel_id,
-            request_metadata=request.metadata,
+            request_metadata=request_metadata,
         )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
@@ -709,7 +728,7 @@ async def process_team_message_stream(
     followup_prompt, rebuild_error = await _resolve_team_rebuild_followup(
         channel_id,
         session_id,
-        str(query or ""),
+        query_text,
     )
     if rebuild_error is not None:
         yield AgentResponseChunk(
@@ -878,6 +897,7 @@ async def _consume_stream_with_query(
     _envs = envs or {}
     hide_dm: bool = bool(_envs.get("hide_dm", False))
     received_chunks = 0
+    emitted_ask_user_request_ids: set[str] = set()
     try:
         logger.info(
             "[TeamHelpers] stream started: channel_id=%s session_id=%s round_id=%s",
@@ -921,6 +941,8 @@ async def _consume_stream_with_query(
                 continue
             parsed = parse_stream_chunk(chunk)
             if parsed is not None:
+                if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
+                    continue
                 parsed["rid"] = round_id
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)

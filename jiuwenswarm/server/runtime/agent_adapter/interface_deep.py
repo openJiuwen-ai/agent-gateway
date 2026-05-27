@@ -3531,7 +3531,7 @@ class JiuWenClawDeepAdapter:
         return False
 
     async def handle_user_answer(self, request: AgentRequest) -> AgentResponse:
-        """Handle chat.user_answer request, route user answer to evolution approval Future."""
+        """Handle chat.user_answer request."""
         request_id = (
             request.params.get("request_id", "") if isinstance(request.params, dict) else ""
         )
@@ -4509,7 +4509,7 @@ class JiuWenClawDeepAdapter:
         mode = request.params.get("mode", "agent.plan")
 
         # Team 模式处理
-        if mode in ("team", "code.team"):
+        if mode in ("team", "team.plan", "code.team"):
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import process_team_message_stream
 
             resolved_model = self._resolve_model_for_request(request)
@@ -4610,6 +4610,20 @@ class JiuWenClawDeepAdapter:
             "output_cost": 0.0,
             "total_cost": 0.0,
         }
+        emitted_ask_user_request_ids: set[str] = set()
+
+        def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
+            if not isinstance(parsed, dict):
+                return False
+            if parsed.get("event_type") != "chat.ask_user_question":
+                return False
+            request_id = str(parsed.get("request_id") or "").strip()
+            if not request_id:
+                return False
+            if request_id in emitted_ask_user_request_ids:
+                return True
+            emitted_ask_user_request_ids.add(request_id)
+            return False
 
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
@@ -4643,6 +4657,8 @@ class JiuWenClawDeepAdapter:
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = self._parse_stream_chunk(chunk)
                     if parsed is not None:
+                        if should_skip_duplicate_ask_user(parsed):
+                            continue
                         if accumulated_text:
                             yield AgentResponseChunk(
                                 request_id=rid,
@@ -4763,6 +4779,8 @@ class JiuWenClawDeepAdapter:
                     if has_streamed_content:
                         parsed = self._parse_stream_chunk(chunk, _has_streamed_content=True)
                         if parsed is not None:
+                            if should_skip_duplicate_ask_user(parsed):
+                                continue
                             yield AgentResponseChunk(
                                 request_id=rid,
                                 channel_id=cid,
@@ -4772,6 +4790,8 @@ class JiuWenClawDeepAdapter:
                         continue
                     parsed = self._parse_stream_chunk(chunk)
                     if parsed is not None:
+                        if should_skip_duplicate_ask_user(parsed):
+                            continue
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -4798,6 +4818,8 @@ class JiuWenClawDeepAdapter:
                     accumulated_reasoning = ""
                 parsed = self._parse_stream_chunk(chunk)
                 if parsed is not None:
+                    if should_skip_duplicate_ask_user(parsed):
+                        continue
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,

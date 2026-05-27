@@ -366,6 +366,10 @@ class TeamManager:
             spec,
             session_id=session_id,
         )
+        self.apply_team_plan_mode(
+            spec,
+            request_metadata=request_metadata,
+        )
         spec.agent_customizer = self.build_agent_customizer(
             spec,
             deep_agent,
@@ -375,6 +379,19 @@ class TeamManager:
             request_metadata=request_metadata,
         )
         return spec
+
+    @staticmethod
+    def apply_team_plan_mode(
+        spec: TeamAgentSpec,
+        *,
+        request_metadata: dict[str, Any] | None,
+    ) -> None:
+        mode = str((request_metadata or {}).get("mode") or "").strip().lower()
+        if mode == "team.plan":
+            try:
+                spec.enable_team_plan = True
+            except (AttributeError, ValueError):
+                object.__setattr__(spec, "enable_team_plan", True)
 
     async def prepare_runtime_activation(self, session_id: str, team_name: str) -> None:
         await self.prepare_session_switch(
@@ -1119,7 +1136,7 @@ class TeamManager:
                 request_metadata,
             )
 
-    async def interact(self, session_id: str, user_input: str) -> bool:
+    async def interact(self, session_id: str, user_input: Any) -> bool:
         try:
             if session_id != self._active_session_id or not self._active_team_name:
                 logger.warning(

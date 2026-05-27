@@ -228,6 +228,118 @@ def test_parse_stream_chunk_serializes_team_runtime_enum_kind():
     }
 
 
+def test_parse_stream_chunk_converts_interaction_to_ask_user_question():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="__interaction__",
+            payload={
+                "id": "tool-call-1",
+                "value": {
+                    "questions": [
+                        {
+                            "question": "Choose UI",
+                            "header": "UI",
+                            "options": [
+                                {"label": "CLI", "description": "Text UI"},
+                                {"label": "Web", "description": "Browser UI"},
+                            ],
+                        }
+                    ]
+                },
+            },
+        )
+    )
+
+    assert parsed is not None
+    assert parsed["event_type"] == "chat.ask_user_question"
+    assert parsed["request_id"] == "tool-call-1"
+    assert parsed["source"] == "ask_user_interrupt"
+    assert parsed["questions"][0]["question"] == "Choose UI"
+
+
+def test_parse_stream_chunk_unwraps_controller_output_interaction():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_completion",
+                "data": [
+                    {
+                        "type": "json",
+                        "data": {
+                            "result_type": "interrupt",
+                            "interaction": {
+                                "type": "__interaction__",
+                                "payload": {
+                                    "id": "ask-user-1",
+                                    "value": {
+                                        "questions": [
+                                            {
+                                                "question": "Need details?",
+                                                "header": "Details",
+                                                "options": [],
+                                            }
+                                        ]
+                                    },
+                                },
+                            },
+                        },
+                    }
+                ],
+            },
+        )
+    )
+
+    assert parsed is not None
+    assert parsed["event_type"] == "chat.ask_user_question"
+    assert parsed["request_id"] == "ask-user-1"
+    assert parsed["source"] == "ask_user_interrupt"
+    assert parsed["questions"][0]["question"] == "Need details?"
+
+
+def test_parse_stream_chunk_prefers_ask_user_when_controller_has_mixed_interactions():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="controller_output",
+            payload={
+                "data": [
+                    {
+                        "type": "__interaction__",
+                        "payload": {
+                            "id": "",
+                            "value": {
+                                "message": "工具 `` 需要授权才能执行",
+                                "tool_name": "",
+                            },
+                        },
+                    },
+                    {
+                        "type": "__interaction__",
+                        "payload": {
+                            "id": "ask-user-2",
+                            "value": {
+                                "questions": [
+                                    {
+                                        "question": "Choose algorithm details",
+                                        "header": "Details",
+                                        "options": [],
+                                    }
+                                ]
+                            },
+                        },
+                    },
+                ],
+            },
+        )
+    )
+
+    assert parsed is not None
+    assert parsed["event_type"] == "chat.ask_user_question"
+    assert parsed["request_id"] == "ask-user-2"
+    assert parsed["source"] == "ask_user_interrupt"
+    assert parsed["questions"][0]["question"] == "Choose algorithm details"
+
+
 def test_sync_team_identity_metadata_updates_only_for_create_kinds(monkeypatch):
     updates = []
 

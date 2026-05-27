@@ -228,6 +228,20 @@ def _build_transport_spec(team_raw: dict[str, Any]) -> dict[str, Any]:
     return transport_spec
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def _build_leader_spec(team_raw: dict[str, Any]) -> dict[str, Any]:
     leader_raw = team_raw.get("leader", {})
     leader_name = (
@@ -292,6 +306,10 @@ def load_team_spec_dict(config_base: dict[str, Any] | None = None) -> dict[str, 
 
     spec_dict["team_name"] = str(team_raw.get("team_name", "team")).strip() or "team"
     spec_dict["lifecycle"] = team_raw.get("lifecycle", "persistent")
+    spec_dict["enable_team_plan"] = _as_bool(
+        team_raw.get("enable_team_plan"),
+        True,
+    )
     spec_dict["teammate_mode"] = team_raw.get("teammate_mode", "build_mode")
     spec_dict["spawn_mode"] = team_raw.get("spawn_mode", "inprocess")
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)

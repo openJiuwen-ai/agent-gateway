@@ -288,6 +288,8 @@ class JiuWenClaw:
         raw_mode = params.get("mode", "")
         if isinstance(raw_mode, str):
             mode = raw_mode.strip().lower()
+            if mode == "team.plan":
+                return "code"
             if mode == "code" or mode.startswith("code."):
                 return "code"
         return "agent"
@@ -330,6 +332,10 @@ class JiuWenClaw:
             sm = self._session_manager
             asyncio.create_task(adapter.try_start_dreaming(
                 busy_checker=lambda: sm.has_active_tasks(),))
+
+    def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
+        """构建 adapter 所需的 inputs 字典（公共接口）."""
+        return self._build_inputs(request)
 
     def _build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
         """构建 adapter 所需的 inputs 字典."""
@@ -469,6 +475,9 @@ class JiuWenClaw:
                 request_id, {"answers": answers_dict}
             )
             return interactive_input
+
+        if source and source != "permission_interrupt":
+            return None
 
         answer = answers[0] if answers else {}
         selected_options = answer.get("selected_options", []) if isinstance(answer, dict) else []
@@ -840,7 +849,7 @@ class JiuWenClaw:
         mode = request.params.get("mode", "") if isinstance(request.params, dict) else ""
         team_flag = request.params.get("team", False) if isinstance(request.params, dict) else False
         is_team_mode = team_flag or (
-            isinstance(mode, str) and mode.strip().lower() in {"team", "code.team"}
+            isinstance(mode, str) and mode.strip().lower() in {"team", "team.plan", "code.team"}
         )
         is_auto_harness_resume = (
             isinstance(mode, str)
@@ -870,10 +879,13 @@ class JiuWenClaw:
 
         # Team 模式：使用原始 query，而不是 build_user_prompt 包装后的内容
         if is_team_mode:
-            inputs["query"] = raw_query
+            from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+            if not isinstance(inputs.get("query"), InteractiveInput):
+                inputs["query"] = raw_query
             logger.info(
                 "[JiuWenClaw] Team模式使用原始query: %s",
-                raw_query[:100] if raw_query else "",
+                raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
             )
 
         # cloud memory: before chat hook

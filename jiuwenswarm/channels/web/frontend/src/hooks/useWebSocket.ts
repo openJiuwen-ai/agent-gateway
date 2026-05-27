@@ -689,13 +689,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const sendUserAnswer = useCallback(
     async (sessionId: string, requestId: string, answers: UserAnswer[], source?: string) => {
       try {
-        // 如果是工具权限确认，发送 chat.send
+        // 如果是需要走 interrupt/interact 的确认，发送 chat.send
         if (source === 'permission_interrupt') {
           await request('chat.send', {
             session_id: sessionId,
             query: '',
             request_id: requestId,
             answers: answers,
+            source,
           });
         } else if (source === 'activate_confirm') {
           const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';

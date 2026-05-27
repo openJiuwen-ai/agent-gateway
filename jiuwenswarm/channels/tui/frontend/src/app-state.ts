@@ -1016,7 +1016,10 @@ export class CliPiAppState {
     }
     const source = this.pendingQuestion.source;
 
-    if (source === "permission_interrupt" || source === "ask_user_interrupt") {
+    if (
+      source === "permission_interrupt" ||
+      source === "ask_user_interrupt"
+    ) {
       this.sendEventOnly(
         "chat.send",
         {

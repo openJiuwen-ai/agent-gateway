@@ -150,11 +150,24 @@ export interface AppEventDelegate {
   autoActivateExtension(interactionId: string): void;
 }
 
-function _handleSwitchModeToolResult(
+function _handleAgentModeToolResult(
   delegate: AppEventDelegate,
   payload: Record<string, unknown>,
 ): void {
-  if (payload.tool_name !== "switch_mode") return;
+  const toolName = typeof payload.tool_name === "string" ? payload.tool_name : "";
+  if (toolName !== "switch_mode" && toolName !== "exit_plan_mode") return;
+
+  if (toolName === "exit_plan_mode") {
+    const existingMode = delegate.getMode();
+    if (existingMode === "code.plan") {
+      delegate.setMode("code.normal");
+    } else if (existingMode === "team.plan") {
+      delegate.setMode("code.team");
+    } else if (existingMode === "agent.plan") {
+      delegate.setMode("agent.fast");
+    }
+    return;
+  }
 
   const resultRaw = payload.result;
   let subMode: string | null = null;
@@ -1016,7 +1029,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       return true;
 
     case "chat.tool_result":
-      _handleSwitchModeToolResult(delegate, payload);
+      _handleAgentModeToolResult(delegate, payload);
       delegate.addToolResultPayload(
         payload,
         activeSessionId,

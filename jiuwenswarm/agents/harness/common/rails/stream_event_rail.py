@@ -32,6 +32,9 @@ from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    convert_interactions_to_ask_user_question,
+)
 from jiuwenswarm.common.utils import logger
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
@@ -41,6 +44,53 @@ def _structured_tool_result_payload(result: Any) -> Any | None:
     if isinstance(result, (dict, list)):
         return result
     return None
+
+
+def _parse_tool_call_arguments(tool_call: Any) -> dict[str, Any]:
+    raw_args = getattr(tool_call, "arguments", None) if tool_call else None
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_tool_interrupt(value: Any) -> Any | None:
+    if value is None:
+        return None
+    if value.__class__.__name__ == "ToolInterruptException" and hasattr(value, "request"):
+        return value
+
+    for attr_name in ("cause", "__cause__"):
+        cause = getattr(value, attr_name, None)
+        if cause is not None and cause is not value:
+            interrupt = _extract_tool_interrupt(cause)
+            if interrupt is not None:
+                return interrupt
+    return None
+
+
+def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) -> dict[str, Any] | None:
+    request_id = str(
+        getattr(getattr(interrupt, "request", None), "tool_call_id", None)
+        or getattr(tool_call, "id", "")
+        or ""
+    ).strip()
+    if not request_id:
+        return None
+
+    value_obj = getattr(interrupt, "request", None)
+    if value_obj is None:
+        args = _parse_tool_call_arguments(tool_call)
+        if not args:
+            return None
+        value_obj = {"tool_args": args, "questions": args.get("questions", [])}
+
+    return convert_interactions_to_ask_user_question([{"id": request_id, "value": value_obj}])
 
 
 def _boolish_false(value: Any) -> bool:
@@ -370,6 +420,13 @@ class JiuClawStreamEventRail(DeepAgentRail):
             self._inflight_tool_calls.pop(tc_id, None)
 
         await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
+        await self._emit_ask_user_question_if_interrupted(
+            session,
+            tc,
+            ctx.inputs.tool_name,
+            ctx.inputs.tool_result,
+            ctx.exception,
+        )
 
         tool_name = ctx.inputs.tool_name
         sid = self._resolve_sid(ctx, session)
@@ -443,6 +500,34 @@ class JiuClawStreamEventRail(DeepAgentRail):
             )
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
+
+    @staticmethod
+    async def _emit_ask_user_question_if_interrupted(
+        session: Session,
+        tool_call: Any,
+        tool_name: str,
+        result: Any,
+        exception: Any = None,
+    ) -> None:
+        if str(tool_name or "").strip() != "ask_user":
+            return
+        interrupt = _extract_tool_interrupt(result) or _extract_tool_interrupt(exception)
+        if interrupt is None:
+            return
+        payload = _ask_user_question_payload_from_interrupt(tool_call, interrupt)
+        if not payload:
+            logger.debug("[StreamEventRail] ask_user interrupt payload unavailable")
+            return
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type="chat.ask_user_question",
+                    index=0,
+                    payload=payload,
+                )
+            )
+        except Exception:
+            logger.debug("ask_user question emit failed", exc_info=True)
 
     @staticmethod
     async def _emit_tool_update(session: Session, tool_call: Any, *, status: str) -> None:

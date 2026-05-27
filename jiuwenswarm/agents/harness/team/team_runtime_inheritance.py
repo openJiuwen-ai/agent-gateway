@@ -93,7 +93,6 @@ TOOL_WHITELIST = frozenset({
     "search_skill",
     "install_skill",
     "uninstall_skill",
-    "task_tool",
     "user_todos",
     "get_user_location",
     "create_note",

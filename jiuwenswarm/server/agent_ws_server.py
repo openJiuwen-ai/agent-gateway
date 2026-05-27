@@ -161,7 +161,13 @@ def resolve_agent_request_mode(raw_mode: Any) -> tuple[str, str | None, str]:
     parts = mode_text.split(".")
     mode = parts[0] or "agent"
     if mode == "team":
-        return "team", None, "team"
+        sub_mode = parts[1] if len(parts) > 1 and parts[1] else None
+        if sub_mode not in {None, "plan"}:
+            sub_mode = None
+        canonical_mode = f"team.{sub_mode}" if sub_mode else "team"
+        if sub_mode == "plan":
+            return "code", "team", canonical_mode
+        return "team", sub_mode, canonical_mode
 
     default_sub_modes = {
         "agent": "plan",
