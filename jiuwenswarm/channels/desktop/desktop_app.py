@@ -644,7 +644,7 @@ transition:opacity .4s ease,transform .4s ease}
 <script>
 const tips=[
 "多智能体协作 —— 编排多个专业 Agent 协同工作，群体智能涌现",
-"多端接入 —— 支持 Web、飞书、微信、钉钉、Telegram 等多种交互方式",
+"多端接入 —— 支持 Web、飞书、钉钉、Telegram 等多种交互方式",
 "贴身任务管家 —— 精准理解复杂指令，智能排期，有条不紊完成任务",
 "自主演进 —— 根据你的反馈自动调整技能，持续进化，越用越懂你"
 ];
