@@ -1819,10 +1819,7 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240, cwd: getCurrentCwd() || process.cwd() },
           (err, stdout) => {
             if (err) return;
-            // Take only the first line — statusline is a single-line bar;
-            // embedded \n would break layout (extra rendered lines beyond
-            // what fixedLines.length accounts for).
-            const text = stdout.trim().split("\n")[0]?.trim();
+            const text = stdout.trim();
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();
@@ -1840,7 +1837,7 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240 },
           (err, stdout) => {
             if (err) return;
-            const text = stdout.trim().split("\n")[0]?.trim();
+            const text = stdout.trim();
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();

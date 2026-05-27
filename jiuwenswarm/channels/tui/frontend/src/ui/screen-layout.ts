@@ -162,11 +162,11 @@ function buildStatusLineBar(snapshot: AppSnapshot, width: number): string[] {
   const paddingX = sl?.padding ?? 0;
   const paddedWidth = width - paddingX * 2;
   if (paddedWidth <= 0) return [];
-  const text = snapshot.statusLineText.length > paddedWidth
-    ? snapshot.statusLineText.slice(0, paddedWidth)
-    : snapshot.statusLineText;
-  const inner = padToWidth(palette.text.dim(text), paddedWidth);
-  return [" ".repeat(paddingX) + inner + " ".repeat(paddingX)];
+  return snapshot.statusLineText.split("\n").map((line) => {
+    const truncated = line.length > paddedWidth ? line.slice(0, paddedWidth) : line;
+    const inner = padToWidth(palette.text.dim(truncated), paddedWidth);
+    return " ".repeat(paddingX) + inner + " ".repeat(paddingX);
+  });
 }
 
 function buildShortcutLines(width: number): string[] {
