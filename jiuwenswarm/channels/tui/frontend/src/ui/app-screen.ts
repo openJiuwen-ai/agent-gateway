@@ -33,6 +33,7 @@ import {
 } from "../core/commands/CommandService.js";
 import type { SlashCommand } from "../core/commands/types.js";
 import { addCommandEcho, addError, addInfo } from "../core/commands/helpers.js";
+import { CheckboxList, CheckboxGroup as CheckboxGroupType } from "./components/checkbox-list.js";
 import type { FileAttachment } from "../core/protocol.js";
 import {
   type ModelListPayload,
@@ -108,6 +109,16 @@ type ModelListState = {
   list: SelectList;
   models: string[];
   current: string;
+};
+
+type ToolSelectorState = {
+  list: CheckboxList;
+  name: string;
+  description: string;
+  when_to_use: string;
+  defaultPrompt: string;
+  location: string;
+  generate: boolean;
 };
 
 type ThemeListState = {
@@ -496,6 +507,7 @@ export class AppScreen implements Component, Focusable {
   private ctrlCPendingForQuestionTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeSessionList: ResumeSessionListState | null = null;
   private modelList: ModelListState | null = null;
+  private toolSelector: ToolSelectorState | null = null;
   private mcpList: McpListState | null = null;
   private mcpDetail: McpDetailState | null = null;
   private mcpTools: McpToolsState | null = null;
@@ -787,6 +799,7 @@ export class AppScreen implements Component, Focusable {
       this.mcpList !== null ||
       this.mcpTools !== null ||
       this.modelList !== null ||
+      this.toolSelector !== null ||
       this.themeList !== null ||
       this.configEditorState !== null;
 
@@ -1041,6 +1054,12 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
+    if (!snapshot.pendingQuestion && this.toolSelector !== null) {
+      this.toolSelector.list.handleInput(data);
+      this.tui.requestRender();
+      return;
+    }
+
     if (!snapshot.pendingQuestion && this.mcpList !== null) {
       this.mcpList.list.handleInput(data);
       this.tui.requestRender();
@@ -1178,6 +1197,7 @@ export class AppScreen implements Component, Focusable {
       ...(!this.statusViewState ? this.buildConfigEditorLines(width) : []),
       ...this.buildResumeSessionListLines(width),
       ...this.buildModelListLines(width),
+      ...this.buildToolSelectorLines(width),
       ...this.buildMcpListLines(width),
       ...this.buildMcpDetailLines(width),
       ...this.buildMcpToolsLines(width),
@@ -1265,6 +1285,62 @@ export class AppScreen implements Component, Focusable {
         this.state.answerQuestion(text);
       }
       this.editor.setText("");
+      return;
+    }
+
+    // Intercept /agents create to show tool selector
+    if (/^\/agents\s+create/.test(text)) {
+      const args = text.replace(/^\/agents\s+create\s*/, "").trim();
+      let location = "user";
+      let trimmed = args;
+      if (trimmed.startsWith("--project ")) {
+        location = "project";
+        trimmed = trimmed.slice("--project ".length).trim();
+      } else if (trimmed.startsWith("--local ")) {
+        location = "local";
+        trimmed = trimmed.slice("--local ".length).trim();
+      }
+
+      if (!trimmed) {
+        this.state.addItem(
+          addError(snapshot.sessionId, "用法: /agents create [--project|--local] <名称> <描述>"),
+        );
+        this.tui.requestRender();
+        return;
+      }
+
+      const spaceIdx = trimmed.indexOf(" ");
+      const rawName = spaceIdx > 0 ? trimmed.slice(0, spaceIdx).trim() : trimmed;
+      const name = rawName.replace(/[,，]+$/, "").trim();
+      const desc = spaceIdx > 0 ? trimmed.slice(spaceIdx + 1).trim() : (name || "");
+
+      const when_to_use = `当你需要${desc}时使用`;
+      const defaultPrompt = [
+        `你是 ${name}，专注于：${desc}。`,
+        "",
+        "## 工作流程",
+        "1. 理解任务：明确输入、目标和约束条件",
+        "2. 收集信息：利用搜索和文件读取工具获取必要的上下文",
+        "3. 分析处理：基于收集的信息进行系统性分析",
+        "4. 输出结果：提供清晰、可执行的结论或方案",
+        "",
+        "## 核心原则",
+        "- 先理解再行动，不盲目猜测",
+        "- 用代码和证据说话，不做空洞判断",
+        "- 不确定时主动说明，标注假设和风险",
+        "- 复杂问题分步骤推进，每步确认结果",
+        "",
+        "## 输出规范",
+        "- 关键结论前置，细节在后",
+        "- 使用结构化格式（列表、表格、代码块）",
+        "- 引用具体文件路径和行号",
+        "- 区分事实结论和推测判断",
+      ].join("\n");
+
+      await this.openToolSelector(name, desc, when_to_use, defaultPrompt, location, true);
+      this.editor.addToHistory(text);
+      this.editor.setText("");
+      this.state.addItem(addCommandEcho(snapshot.sessionId, text));
       return;
     }
 
@@ -1728,6 +1804,85 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
+  private async openToolSelector(
+    name: string,
+    description: string,
+    when_to_use: string,
+    defaultPrompt: string,
+    location: string,
+    generate: boolean,
+  ): Promise<void> {
+    const snapshot = this.state.getSnapshot();
+    try {
+      const payload = await this.state.request<{
+        tools?: Array<{ name: string; internal_name: string; description: string; group: string }>;
+        groups?: string[];
+        disallowed_for_subagents?: string[];
+      }>("agents.tools_list", {});
+
+      const toolDefs = payload.tools || [];
+      const groupsOrder = payload.groups || [];
+      const disallowed = new Set(payload.disallowed_for_subagents || []);
+
+      // Default checked groups: 核心, 搜索, 代码智能
+      const defaultCheckedGroups = new Set(["核心", "搜索", "代码智能"]);
+
+      // Build CheckboxGroups
+      const groups: CheckboxGroupType[] = [];
+      const groupMap = new Map<string, Array<{ label: string; value: string; checked: boolean; description?: string }>>();
+
+      for (const group of groupsOrder) {
+        groupMap.set(group, []);
+      }
+
+      for (const t of toolDefs) {
+        // Skip tools that are disallowed for subagents
+        if (disallowed.has(t.name) || disallowed.has(t.internal_name)) continue;
+
+        const items = groupMap.get(t.group) || groupMap.get("高级") || [];
+        items.push({
+          label: t.name,
+          value: t.name,
+          checked: defaultCheckedGroups.has(t.group),
+          description: t.description,
+        });
+        groupMap.set(t.group, items);
+      }
+
+      for (const group of groupsOrder) {
+        const items = groupMap.get(group) || [];
+        if (items.length > 0) {
+          groups.push({ name: group, items });
+        }
+      }
+
+      const list = new CheckboxList(groups, 10);
+      list.onSelect = (selectedTools) => {
+        this.handleToolSelection(selectedTools, name, description, when_to_use, defaultPrompt, location, generate);
+      };
+      list.onCancel = () => {
+        this.toolSelector = null;
+        this.tui.requestRender();
+      };
+
+      this.toolSelector = {
+        list,
+        name,
+        description,
+        when_to_use,
+        defaultPrompt,
+        location,
+        generate,
+      };
+      this.tui.requestRender();
+    } catch (e) {
+      this.state.addItem(
+        addError(snapshot.sessionId, `获取工具列表失败: ${e}`),
+      );
+      this.tui.requestRender();
+    }
+  }
+
   private async handleModelSelection(modelName: string): Promise<void> {
     if (!modelName) {
       return;
@@ -1765,6 +1920,63 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
+  private async handleToolSelection(
+    selectedTools: string[],
+    name: string,
+    description: string,
+    when_to_use: string,
+    defaultPrompt: string,
+    location: string,
+    generate: boolean,
+  ): Promise<void> {
+    this.toolSelector = null;
+    this.tui.requestRender();
+
+    try {
+      const payload = await this.state.request<{
+        agent?: { file_path?: string };
+        error?: string;
+        generated?: boolean;
+        applied?: boolean;
+        reload_error?: string | null;
+      }>(
+        "agents.create",
+        {
+          name,
+          description,
+          when_to_use,
+          prompt: defaultPrompt,
+          location,
+          tools: selectedTools.length > 0 ? selectedTools : ["*"],
+          generate,
+        },
+        60000,
+      );
+
+      const snapshot = this.state.getSnapshot();
+      if (payload.error) {
+        this.state.addItem(
+          addError(snapshot.sessionId, `创建失败: ${payload.error}`),
+        );
+      } else {
+        const generated = payload.generated ? " (LLM 生成)" : "";
+        const locLabel = location !== "user" ? ` (${location})` : "";
+        const toolsLabel = selectedTools.length > 0 ? ` | 工具: ${selectedTools.join(", ")}` : " | 工具: *";
+        this.state.addItem(
+          addInfo(
+            snapshot.sessionId,
+            `Agent 已创建: ${name}${generated}${locLabel}${toolsLabel}\n文件: ${payload.agent?.file_path ?? `~/.jiuwenswarm/agents/${name}.md`}\n使用 /agents get ${name} 查看详情`,
+          ),
+        );
+      }
+    } catch (e) {
+      this.state.addItem(
+        addError(this.state.getSnapshot().sessionId, `创建失败: ${e}`),
+      );
+    }
+    this.tui.requestRender();
+  }
+
   private buildModelListLines(width: number): string[] {
     if (!this.modelList) {
       return [];
@@ -1777,6 +1989,11 @@ export class AppScreen implements Component, Focusable {
       ...this.modelList.list.render(width),
       padToWidth(palette.text.dim("choose model · Enter switch · Esc cancel"), width),
     ];
+  }
+
+  private buildToolSelectorLines(width: number): string[] {
+    if (this.toolSelector === null) return [];
+    return this.toolSelector.list.render(width);
   }
 
   private async openMcpList(): Promise<void> {

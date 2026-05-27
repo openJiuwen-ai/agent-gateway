@@ -18,7 +18,7 @@ from ruamel.yaml import YAML
 from jiuwenswarm.common.utils import get_config_dir, get_config_file
 
 _CONFIG_MODULE_DIR = Path(__file__).parent
-_CONFIG_YAML_PATH = get_config_file()
+CONFIG_YAML_PATH = get_config_file()
 
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
@@ -114,16 +114,16 @@ def get_config():
 
 def get_config_raw():
     """读 config.yaml 原始内容（不解析环境变量），供局部更新后写回。"""
-    with open(_CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
+    with open(CONFIG_YAML_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def set_config(config):
-    with open(_CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
+    with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
 
-def _load_yaml_round_trip(config_path: Path):
+def load_yaml_round_trip(config_path: Path):
     """ruamel 加载 config，保留注释与格式。"""
     rt = YAML()
     rt.preserve_quotes = True
@@ -131,7 +131,7 @@ def _load_yaml_round_trip(config_path: Path):
         return rt.load(f)
 
 
-def _dump_yaml_round_trip(config_path: Path, data: Any) -> None:
+def dump_yaml_round_trip(config_path: Path, data: Any) -> None:
     """ruamel 写回 config，保留注释与格式。"""
     rt = YAML()
     rt.preserve_quotes = True
@@ -143,9 +143,15 @@ def _dump_yaml_round_trip(config_path: Path, data: Any) -> None:
         rt.dump(data, f)
 
 
+# Backward-compat aliases — downstream modules import the underscore-prefixed names
+_CONFIG_YAML_PATH = CONFIG_YAML_PATH
+_load_yaml_round_trip = load_yaml_round_trip
+_dump_yaml_round_trip = dump_yaml_round_trip
+
+
 def update_heartbeat_in_config(payload: dict[str, Any]) -> None:
     """只更新 heartbeat 段并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "heartbeat" not in data:
         data["heartbeat"] = {}
     hb = data["heartbeat"]
@@ -155,12 +161,12 @@ def update_heartbeat_in_config(payload: dict[str, Any]) -> None:
         hb["target"] = payload["target"]
     if "active_hours" in payload:
         hb["active_hours"] = payload["active_hours"]
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
     """只更新 channels[channel_id] 并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "channels" not in data:
         data["channels"] = {}
     channels = data["channels"]
@@ -169,7 +175,7 @@ def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
     section = channels[channel_id]
     for k, v in conf.items():
         section[k] = v
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_channel_subsection_in_config(
@@ -178,7 +184,7 @@ def update_channel_subsection_in_config(
     conf: dict[str, Any],
 ) -> None:
     """更新 channels[channel_id][subsection_id] 并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "channels" not in data:
         data["channels"] = {}
     channels = data["channels"]
@@ -190,7 +196,7 @@ def update_channel_subsection_in_config(
     subsection = section[subsection_id]
     for k, v in conf.items():
         subsection[k] = v
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_preferred_language_in_config(lang: str) -> None:
@@ -198,9 +204,9 @@ def update_preferred_language_in_config(lang: str) -> None:
     normalized = str(lang or "zh").strip().lower()
     if normalized not in ("zh", "en"):
         normalized = "zh"
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     data["preferred_language"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
@@ -210,64 +216,64 @@ def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
         lang = "zh"
     if not config_path.exists():
         return
-    data = _load_yaml_round_trip(config_path)
+    data = load_yaml_round_trip(config_path)
     data["preferred_language"] = lang
-    _dump_yaml_round_trip(config_path, data)
+    dump_yaml_round_trip(config_path, data)
 
 
 def update_browser_in_config(updates: dict[str, Any]) -> None:
     """只更新 browser 段（如 chrome_path）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "browser" not in data:
         data["browser"] = {}
     section = data["browser"]
     for k, v in updates.items():
         section[k] = v
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_context_engine_enabled_in_config(value: bool) -> None:
     """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "react" not in data:
         data["react"] = {}
     react = data["react"]
     if "context_engine_config" not in react:
         react["context_engine_config"] = {}
     react["context_engine_config"]["enabled"] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
     """更新 react.context_engine_config.enable_kv_cache_release（算力/KV 亲和释放）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "react" not in data:
         data["react"] = {}
     react = data["react"]
     if "context_engine_config" not in react:
         react["context_engine_config"] = {}
     react["context_engine_config"]["enable_kv_cache_release"] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
     """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     data["permissions"]["enabled"] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "updater" not in data:
         data["updater"] = {}
     section = data["updater"]
     for key, value in updates.items():
         section[key] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_memory_enabled_in_config(mode: str, value: bool) -> None:
@@ -281,7 +287,7 @@ def update_proactive_memory_in_config(mode: str, value: bool) -> None:
 
 
 def _update_memory_in_modes_config(mode: str, item: str, value: bool) -> None:
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "modes" not in data:
         data["modes"] = {}
     if "claw" not in data["modes"]:
@@ -291,7 +297,7 @@ def _update_memory_in_modes_config(mode: str, item: str, value: bool) -> None:
     if "memory" not in data["modes"]["claw"][mode]:
         data["modes"]["claw"][mode]["memory"] = {}
     data["modes"]["claw"][mode]["memory"][item] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 # ---------- 数字分身相关配置 ----------
@@ -311,13 +317,13 @@ def update_permissions_owner_scopes_in_config(
     deny_guidance_message: str | None = None,
 ) -> None:
     """更新 permissions.owner_scopes（及可选 deny_guidance_message）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     data["permissions"]["owner_scopes"] = owner_scopes
     if deny_guidance_message is not None:
         data["permissions"]["deny_guidance_message"] = deny_guidance_message
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def get_permissions_deny_guidance() -> str:
@@ -328,11 +334,11 @@ def get_permissions_deny_guidance() -> str:
 
 def update_permissions_deny_guidance_in_config(msg: str) -> None:
     """更新 permissions.deny_guidance_message 并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     data["permissions"]["deny_guidance_message"] = msg
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 # ---------- Web UI：permissions.tools / rules / approval_overrides ----------
@@ -354,11 +360,11 @@ def get_permissions_tools() -> dict[str, Any]:
 def replace_permissions_tools_in_config(tools: Any) -> None:
     """整表替换 ``permissions.tools``；值仅允许 ``allow|ask|deny``（或 legacy ``{\"*\": level}``）。"""
     normalized = _validate_tools_map(tools)
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     data["permissions"]["tools"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, Any]:
@@ -375,7 +381,7 @@ def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, A
     if not name:
         raise ValueError("tool name must be non-empty")
     piece = _validate_tools_map({name: level})
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     existing = data["permissions"].get("tools")
@@ -384,7 +390,7 @@ def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, A
     merged = {str(k): v for k, v in existing.items()}
     merged[name] = piece[name]
     data["permissions"]["tools"] = merged
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return {"tools": dict(merged)}
 
 
@@ -393,7 +399,7 @@ def delete_permissions_tool_in_config(tool_name: str) -> bool:
     name = str(tool_name).strip()
     if not name:
         raise ValueError("tool name must be non-empty")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         return False
     tools = data["permissions"].get("tools")
@@ -408,7 +414,7 @@ def delete_permissions_tool_in_config(tool_name: str) -> bool:
         return False
     new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
     data["permissions"]["tools"] = new_tools
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return True
 
 
@@ -469,7 +475,7 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(stored)
 
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     rules = data["permissions"].get("rules")
@@ -479,7 +485,7 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"rule id already exists: {rid}")
     rules.append(stored)
     data["permissions"]["rules"] = rules
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return stored
 
 
@@ -491,7 +497,7 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         data["permissions"] = {}
     rules = data["permissions"].get("rules")
@@ -527,7 +533,7 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     _normalize_rule_severity_action(merged)
     rules[idx] = merged
     data["permissions"]["rules"] = rules
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return merged
 
 
@@ -536,7 +542,7 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
     rid = str(rule_id or "").strip()
     if not rid:
         raise ValueError("id is required")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         return False
     rules = data["permissions"].get("rules")
@@ -546,7 +552,7 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
     if len(new_rules) == len(rules):
         return False
     data["permissions"]["rules"] = new_rules
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return True
 
 
@@ -555,7 +561,7 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     oid = str(override_id or "").strip()
     if not oid:
         raise ValueError("id is required")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "permissions" not in data:
         return False
     ov = data["permissions"].get("approval_overrides")
@@ -565,7 +571,7 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     if len(new_ov) == len(ov):
         return False
     data["permissions"]["approval_overrides"] = new_ov
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return True
 
 
@@ -727,13 +733,13 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
 
 def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
     """将默认模型列表写入 config.yaml 的 models.defaults 段。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "models" not in data:
         data["models"] = {}
     data["models"]["defaults"] = models_list
     if "default" in data["models"]:
         del data["models"]["default"]
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
@@ -742,7 +748,7 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
     如果不存在，将 models.default 单对象迁移为列表条目，
     并删除冗余的 models.default key。返回 defaults 列表。
     """
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     models = data.get("models") or {}
     defaults = models.get("defaults")
     if isinstance(defaults, list) and defaults:
@@ -769,7 +775,7 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
     data["models"]["defaults"] = defaults_list
     if "default" in data["models"]:
         del data["models"]["default"]
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return defaults_list
 
 
@@ -993,6 +999,8 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
     teams_raw = front_payload.get("team")
     data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
 
+    panel_cfg_modified = False
+    agent_registry = None
     if "agents" in front_payload:
         agent_registry = _build_front_agent_registry(front_payload)
         panel_cfg = data.get("web_config_panel")
@@ -1003,6 +1011,7 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             panel_cfg["agent_team_agents"] = agent_registry
         else:
             panel_cfg.pop("agent_team_agents", None)
+        panel_cfg_modified = True
 
     # 空数组：删除 modes.team 配置项
     if isinstance(teams_raw, list) and not teams_raw:
@@ -1014,10 +1023,19 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
     # 非空数组：正常构建并保存
     team_mapping = _build_modes_team_mapping(front_payload)
 
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    # Merge web_config_panel back into reloaded data (it was written earlier in this function)
+    if panel_cfg_modified:
+        if "web_config_panel" not in data or not isinstance(data.get("web_config_panel"), dict):
+            data["web_config_panel"] = {}
+        if agent_registry:
+            data["web_config_panel"]["agent_team_agents"] = agent_registry
+        else:
+            data.get("web_config_panel", {}).pop("agent_team_agents", None)
     if "modes" not in data or not isinstance(data["modes"], dict):
         data["modes"] = {}
     data["modes"]["team"] = team_mapping
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def get_mcp_servers() -> list[dict[str, Any]]:
@@ -1037,7 +1055,7 @@ def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any],
     name = str(server.get("name", "")).strip()
     if not name:
         raise ValueError("MCP server name is required")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "mcp" not in data or not isinstance(data["mcp"], dict):
         data["mcp"] = {}
     mcp_cfg = data["mcp"]
@@ -1057,7 +1075,7 @@ def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any],
         break
     else:
         servers.append(server)
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
     return server, created
 
 
@@ -1066,7 +1084,7 @@ def set_mcp_server_enabled_in_config(name: str, enabled: bool) -> dict[str, Any]
     target = str(name or "").strip()
     if not target:
         raise ValueError("MCP server name is required")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "mcp" not in data or not isinstance(data["mcp"], dict):
         raise KeyError(f"MCP server '{target}' not found")
     servers = data["mcp"].get("servers", [])
@@ -1078,7 +1096,7 @@ def set_mcp_server_enabled_in_config(name: str, enabled: bool) -> dict[str, Any]
         if str(item.get("name", "")).strip() != target:
             continue
         item["enabled"] = bool(enabled)
-        _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
         return dict(item)
     raise KeyError(f"MCP server '{target}' not found")
 
@@ -1099,7 +1117,7 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
     target = str(name or "").strip()
     if not target:
         raise ValueError("MCP server name is required")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     mcp_cfg = data.get("mcp")
     if not isinstance(mcp_cfg, dict):
         raise KeyError(f"MCP server '{target}' not found")
@@ -1113,25 +1131,76 @@ def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
             continue
         removed = dict(item)
         del servers[idx]
-        _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
         return removed
     raise KeyError(f"MCP server '{target}' not found")
 
 
+# ---------------------------------------------------------------------------
+# react.subagents 段操作
+# ---------------------------------------------------------------------------
+
+
+def upsert_subagent_in_config(name: str, enabled: bool = True) -> None:
+    """在 react.subagents.<name> 中添加或更新 agent 启用状态。
+
+    自动创建不存在的 react / subagents 段。
+    保留已有的其他 subagent 配置键（如 max_iterations 等）。
+    """
+    target = str(name or "").strip()
+    if not target:
+        raise ValueError("subagent name is required")
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "react" not in data or not isinstance(data["react"], dict):
+        data["react"] = {}
+    react = data["react"]
+    if "subagents" not in react or not isinstance(react["subagents"], dict):
+        react["subagents"] = {}
+    subagents = react["subagents"]
+    if target not in subagents or not isinstance(subagents[target], dict):
+        subagents[target] = {}
+    subagents[target]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def remove_subagent_from_config(name: str) -> bool:
+    """从 react.subagents.<name> 中删除 agent 条目。
+
+    Returns:
+        True: 找到并删除
+        False: 条目不存在
+    """
+    target = str(name or "").strip()
+    if not target:
+        raise ValueError("subagent name is required")
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    react = data.get("react")
+    if not isinstance(react, dict):
+        return False
+    subagents = react.get("subagents")
+    if not isinstance(subagents, dict):
+        return False
+    if target not in subagents:
+        return False
+    del subagents[target]
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    return True
+
+
 def update_memory_forbidden_enabled_in_config(value: bool) -> None:
     """更新 memory.forbidden_memory_definition.enabled（记忆系统敏感信息过滤开关）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "memory" not in data:
         data["memory"] = {}
     if "forbidden_memory_definition" not in data["memory"]:
         data["memory"]["forbidden_memory_definition"] = {}
     data["memory"]["forbidden_memory_definition"]["enabled"] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_memory_forbidden_description_in_config(description: dict[str, str]) -> None:
     """更新 memory.forbidden_memory_definition.description（禁止记忆内容描述）并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "memory" not in data:
         data["memory"] = {}
     if "forbidden_memory_definition" not in data["memory"]:
@@ -1144,12 +1213,12 @@ def update_memory_forbidden_description_in_config(description: dict[str, str]) -
         data["memory"]["forbidden_memory_definition"]["description"] = {**current_desc, **description}
     else:
         data["memory"]["forbidden_memory_definition"]["description"] = description
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
     """更新 memory.forbidden_memory_definition 并写回。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "memory" not in data:
         data["memory"] = {}
     if "forbidden_memory_definition" not in data["memory"]:
@@ -1160,7 +1229,7 @@ def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
             section["description"] = {**section["description"], **v}
         else:
             section[k] = v
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def _deep_merge(
@@ -1229,8 +1298,8 @@ def migrate_config_from_template(
     if not template_path.exists():
         return False
 
-    template_data = _load_yaml_round_trip(template_path)
-    user_data = _load_yaml_round_trip(user_config_path)
+    template_data = load_yaml_round_trip(template_path)
+    user_data = load_yaml_round_trip(user_config_path)
 
     if not isinstance(template_data, dict):
         return False
@@ -1247,7 +1316,7 @@ def migrate_config_from_template(
 
     # Only write if there are actual changes
     if merged_data != user_data:
-        _dump_yaml_round_trip(user_config_path, merged_data)
+        dump_yaml_round_trip(user_config_path, merged_data)
         return True
 
     return False
@@ -1284,7 +1353,7 @@ def get_model_names() -> list[str]:
 
 def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> None:
     """新增或更新一个模型配置，写入 config.yaml 的 models.<name> 节点。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "models" not in data:
         data["models"] = {}
     if name not in data["models"]:
@@ -1296,7 +1365,7 @@ def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> No
                 del existing[k]
             else:
                 existing[k] = v
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
@@ -1607,7 +1676,7 @@ def resolve_sandbox_policy_path(value: str | None) -> Path | None:
     - ``None`` / 空字符串 → 返回 None, 由调用方决定是否落到 jiuwenbox 自身默认 policy;
     - 仅文件名 (不含路径分隔符) → 在 ``jiuwenbox/configs/`` 下拼接;
       ``configs/`` 探测不到时返回 None (调用方应当报错并提示给绝对路径);
-    - 含 ``/`` ``\`` 或绝对路径 → 展开 ``~`` / ``$VAR`` 后按整路径返回 (不强校验是否存在,
+    - 含 ``/`` ``\\`` 或绝对路径 → 展开 ``~`` / ``$VAR`` 后按整路径返回 (不强校验是否存在,
       留给上游 ``_load_policy_file`` / jiuwenbox 自己做存在性检查并给出明确错误)。
     """
     if not value:

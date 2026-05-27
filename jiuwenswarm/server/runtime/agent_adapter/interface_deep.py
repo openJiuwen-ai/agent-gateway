@@ -944,6 +944,20 @@ class JiuWenClawDeepAdapter:
                 "skipping browser subagent registration"
             )
 
+        # ── 加载自定义 agent（.jiuwenclaw/agents/*.md）──
+        try:
+            subagents.extend(
+                _load_custom_subagents(
+                    self._workspace_dir, subagents_cfg, model, workspace,
+                    __name__, model_cache=self._model_cache,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "[JiuWenClawDeepAdapter] failed to load custom agents",
+                exc_info=True,
+            )
+
         return subagents or None, should_add_general_purpose
 
     @staticmethod
@@ -5921,3 +5935,85 @@ class JiuWenClawDeepAdapter:
             self._dreaming_started = False
         except Exception as exc:
             logger.warning("[JiuWenClawDeepAdapter] stop_dreaming failed: %s", exc)
+
+
+def _agent_def_to_subagent_config(
+    agent_def: AgentDefinition,
+    model: Any,
+    workspace: str,
+    model_cache: dict[str, Any] | None = None,
+) -> SubAgentConfig:
+    """将 AgentDefinition 转换为 SubAgentConfig，用于 SubagentRail 注册。
+
+    Args:
+        agent_def: 自定义 agent 定义（来自 .jiuwenswarm/agents/*.md）
+        model: 父 agent 的 Model 实例（作为默认模型）
+        workspace: 工作空间路径
+        model_cache: 模型缓存字典（用于按名称查找指定模型）
+    """
+    from openjiuwen.harness.schema.config import SubAgentConfig
+
+    # Resolve model: if agent_def specifies a model name, look it up in cache
+    resolved_model = model
+    if agent_def.model and isinstance(model_cache, dict):
+        resolved_model = model_cache.get(agent_def.model, model)
+
+    # Build tool list: merge allowed tools and disallowed_tools
+    tools: list[str] = list(agent_def.tools) if agent_def.tools else ["*"]
+    if agent_def.disallowed_tools and tools != ["*"]:
+        tools = [t for t in tools if t not in agent_def.disallowed_tools]
+
+    card = AgentCard(
+        name=agent_def.name,
+        description=agent_def.description,
+    )
+
+    return SubAgentConfig(
+        agent_card=card,
+        system_prompt=agent_def.prompt,
+        tools=tools,
+        model=resolved_model,
+        skills=agent_def.skills,
+        max_iterations=agent_def.max_iterations,
+        enable_task_loop=True,
+    )
+
+
+def _load_custom_subagents(
+    workspace_dir: str,
+    subagents_cfg: dict | None,
+    model: Any,
+    workspace: str,
+    logger_name: str,
+    **kwargs: Any,
+) -> list[Any]:
+    """从 AgentConfigService 加载自定义 agent 并转换为 SubAgentConfig 列表。
+
+    通用逻辑，同时被 JiuWenClawDeepAdapter 和 JiuWenClawCodeAdapter 使用。
+
+    Args:
+        workspace_dir: 工作空间目录路径
+        subagents_cfg: 子 agent 配置字典
+        model: 模型配置
+        workspace: 工作空间路径
+        logger_name: 日志记录器名称
+        **kwargs: 额外参数，支持 model_cache 等
+    """
+    from jiuwenswarm.server.runtime.agent_config_service import AgentConfigService
+
+    _logger = logging.getLogger(logger_name)
+    agent_service = AgentConfigService(workspace_dir)
+    model_cache: dict | None = kwargs.get("model_cache")
+    result: list[Any] = []
+    for agent_def in agent_service.list_agents():
+        if agent_def.source == "builtin":
+            continue
+        subagent_cfg = subagents_cfg.get(agent_def.name) if isinstance(subagents_cfg, dict) else None
+        # 只有显式 enabled: true 才加载
+        if not (isinstance(subagent_cfg, dict) and bool(subagent_cfg.get("enabled", False))):
+            continue
+        custom_spec = _agent_def_to_subagent_config(agent_def, model, workspace, model_cache)
+        custom_spec.factory_kwargs = {"auto_create_workspace": False}
+        result.append(custom_spec)
+        _logger.info("loaded custom agent '%s' from %s", agent_def.name, agent_def.source)
+    return result

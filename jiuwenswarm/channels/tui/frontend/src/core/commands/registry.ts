@@ -35,6 +35,7 @@ import { createStatusCommand } from "./builtins/status.js";
 import { createStatusLineCommand } from "./builtins/statusline.js";
 import { createSkillsCommand } from "./builtins/skills.js";
 import { createTeamSkillsCommand } from "./builtins/teamskills.js";
+import { createAgentsCommand } from "./builtins/agents.js";
 import { createAutoHarnessCommand } from "./builtins/auto-harness.js";
 import { createThemeCommand } from "./builtins/theme.js";
 import { createWorkspaceCommand } from "./builtins/workspace-dir.js";
@@ -42,6 +43,7 @@ import { createUsageCommand } from "./builtins/usage.js";
 
 export function createBuiltinCommands(): SlashCommand[] {
   const commands: SlashCommand[] = [
+    createAgentsCommand(),
     createHelpCommand(() => commands),
     createBranchCommand(),
     createClearCommand(),

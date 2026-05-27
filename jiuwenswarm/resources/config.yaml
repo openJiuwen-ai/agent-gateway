@@ -176,6 +176,56 @@ acp_agents:
      env:
        OPENAI_API_KEY: ${OPENAI_API_KEY}   # 仅由此 env 注入子进程（不读 workspace .env / 父进程）
 
+# ============================================================
+# Agent 配置（可被 team.agents / modes.team.<name>.agents 引用）
+# ============================================================
+# 每个 agent 定义一个可复用的 agent 配置模板，支持以下字段（均可选）：
+#
+#   model:                  # 不配则继承 models.default
+#     model_client_config:
+#       client_provider: OpenAI
+#       api_base: https://api.deepseek.com
+#       api_key: sk-xxx
+#       timeout: 1800
+#       verify_ssl: false
+#       custom_headers: {}
+#     model_request_config:
+#       model: deepseek-chat
+#   skills:                 # 不配则不自动填充
+#     - skill_a
+#     - skill_b
+#   workspace:              # 默认 {"stable_base": true}
+#     stable_base: true
+#   max_iterations: 200     # 默认 200
+#   completion_timeout: 600.0  # 默认 600.0
+#
+# 示例：给不同 agent 配置不同模型和技能
+#   agent_coder:
+#     model:
+#       model_client_config:
+#         client_provider: OpenAI
+#         api_base: https://api.deepseek.com
+#         api_key: sk-xxx
+#       model_request_config:
+#         model: deepseek-chat
+#     skills:
+#       - code_review
+#       - unit_test
+#     max_iterations: 300
+#
+agents:
+  agent_leader:
+    workspace:
+      stable_base: true
+    max_iterations: 200
+    completion_timeout: 600.0
+
+  agent_teammate:
+    workspace:
+      stable_base: true
+    max_iterations: 200
+    completion_timeout: 600.0
+
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
   exporter: otlp                    # otlp / console / none
@@ -670,16 +720,8 @@ team:
     persona: "天才项目管理专家，擅长任务分解和团队协调"
 
   agents:
-    leader:
-      workspace:
-        stable_base: true
-      max_iterations: 200
-      completion_timeout: 600.0
-    teammate:
-      workspace:
-        stable_base: true
-      max_iterations: 200
-      completion_timeout: 600.0
+    leader: $agent_leader
+    teammate: $agent_teammate
 
   workspace:
     enabled: true
@@ -765,11 +807,7 @@ modes:
         persona: "天才项目管理专家，擅长任务分解和团队协调"
 
       agents:
-        leader:
-          workspace:
-            stable_base: true
-          max_iterations: 200
-          completion_timeout: 600.0
+        leader: $agent_leader
 
       workspace:
         enabled: true

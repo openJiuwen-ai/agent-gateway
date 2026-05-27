@@ -217,6 +217,15 @@ _FORWARD_REQ_METHODS = frozenset({
     "extensions.delete",
     "extensions.toggle",
     "team.snapshot",
+    # Agent configuration
+    "agents.list",
+    "agents.get",
+    "agents.create",
+    "agents.update",
+    "agents.delete",
+    "agents.enable",
+    "agents.disable",
+    "agents.tools_list",
     # Schedule task management
     "schedule.check_config",
     "schedule.update_config",
@@ -271,6 +280,15 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "extensions.import",
     "extensions.delete",
     "extensions.toggle",
+    # Agent configuration
+    "agents.list",
+    "agents.get",
+    "agents.create",
+    "agents.update",
+    "agents.delete",
+    "agents.enable",
+    "agents.disable",
+    "agents.tools_list",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）

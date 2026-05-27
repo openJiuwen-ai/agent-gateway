@@ -178,9 +178,29 @@ def _build_agents_config(team_raw: dict[str, Any], config_base: dict[str, Any]) 
         logger.warning("[TeamConfigLoader] agents config is empty, using default leader/teammate")
         agents_raw = {"leader": {}, "teammate": {}}
 
+    top_agents = config_base.get("agents", {})
+    if not isinstance(top_agents, dict):
+        top_agents = {}
+
     agents: dict[str, Any] = {}
     for agent_key, raw_agent_config in agents_raw.items():
-        agent_config = dict(raw_agent_config) if isinstance(raw_agent_config, dict) else {}
+        if isinstance(raw_agent_config, str) and raw_agent_config.startswith("$"):
+            ref_name = raw_agent_config[1:]
+            if ref_name in top_agents:
+                agent_config = deepcopy(top_agents[ref_name])
+                logger.debug(
+                    "[TeamConfigLoader] resolved agent reference $%s -> agents.%s",
+                    ref_name,
+                    ref_name,
+                )
+            else:
+                logger.warning(
+                    "[TeamConfigLoader] agent reference '$%s' not found in top-level agents, using defaults",
+                    ref_name,
+                )
+                agent_config = {}
+        else:
+            agent_config = dict(raw_agent_config) if isinstance(raw_agent_config, dict) else {}
         # No longer auto-fill all skills from global into each member by default.
         # On spawn, team-shared skills are synced into member workspace/skills/.
         # ensure_team_shared_skills_initialized also mirrors team-shared skills to agent global.

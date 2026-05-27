@@ -219,6 +219,15 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "extensions.delete",
         "extensions.toggle",
         "session.fork",
+        # Agent configuration
+        "agents.list",
+        "agents.get",
+        "agents.create",
+        "agents.update",
+        "agents.delete",
+        "agents.enable",
+        "agents.disable",
+        "agents.tools_list",
         # Schedule task management
         "schedule.check_config",
         "schedule.update_config",
@@ -286,6 +295,15 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "extensions.delete",
         "extensions.toggle",
         "session.fork",
+        # Agent configuration
+        "agents.list",
+        "agents.get",
+        "agents.create",
+        "agents.update",
+        "agents.delete",
+        "agents.enable",
+        "agents.disable",
+        "agents.tools_list",
         # Schedule task management
         "schedule.check_config",
         "schedule.update_config",

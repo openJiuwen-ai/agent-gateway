@@ -46,6 +46,7 @@ from openjiuwen.harness.workspace.workspace import Workspace
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenClawDeepAdapter,
     _CRON_TOOL_CHANNEL_ID,
+    _agent_def_to_subagent_config,
     parse_int,
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
@@ -61,6 +62,7 @@ from jiuwenswarm.agents.harness.common.tools import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,7 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "ProjectMemoryRail": "_build_project_memory_rail",
     "CodingMemoryRail": "_build_coding_memory_rail",
     "WorktreeRail": "_build_worktree_rail_via_config",
+    "CodeAgentRail": "_build_code_agent_rail",
 }
 
 _TOOL_BUILD_NAMES: dict[str, str] = {
@@ -373,6 +376,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
                 {"tool_names": ["switch_mode"]},
             ),
             _RailBuildInfo("_context_processor_rail", self._build_context_processor_rail),
+            _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
         ]
 
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
@@ -737,6 +741,11 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
                 browser_spec.factory_kwargs = {"auto_create_workspace": False}
                 subagents.append(browser_spec)
 
+        # ── 自定义 agent 不加入 deep_config.subagents ──
+        # Code 模式下，自定义 agent 由 CodeAgentRail 的 Agent 工具管理，
+        # 不走 SubagentRail 的 task_tool 路径。
+        # （agent.plan / agent.fast 模式仍由 interface_deep.py 的 _load_custom_subagents 管理）
+
         return subagents or None, False
 
     # ─── Rail 生命周期(mode切换) ───────────────────
@@ -796,6 +805,30 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
                     "[JiuwenClawCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+    def _build_code_agent_rail(self) -> CodeAgentRail | None:
+        """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""
+        try:
+            rail = CodeAgentRail(workspace_dir=self._workspace_dir)
+            logger.info("[JiuwenClawCodeAdapter] CodeAgentRail created")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuwenClawCodeAdapter] CodeAgentRail create failed: %s", exc)
+            return None
+
+    def _get_current_agent_rails(
+        self, config: dict[str, Any], config_base: dict[str, Any] | None = None
+    ) -> list[Any]:
+        """扩展父类方法，将 CodeAgentRail 纳入热重载范围。
+
+        父类 _get_current_agent_rails 只返回 skill/context/memory 等 rail，
+        CodeAgentRail 不在其中。覆盖此方法确保 config reload 时
+        CodeAgentRail 被正确重新初始化。
+        """
+        rails_list = super()._get_current_agent_rails(config, config_base)
+        if self._code_agent_rail is not None:
+            rails_list.append(self._code_agent_rail)
+        return rails_list
 
     # ─── Runtime config ──────────────────────────
 

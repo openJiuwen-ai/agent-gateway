@@ -1307,7 +1307,7 @@ class MessageHandler(ABC):
         return sid
 
     @staticmethod
-    def _resolve_at_file_references(
+    def resolve_at_file_references(
         content: str,
         cwd: str | None = None,
         max_file_size: int | None = _DEFAULT_INLINE_FILE_SIZE_LIMIT,
@@ -1336,6 +1336,10 @@ class MessageHandler(ABC):
         def _replacer(m: re.Match[str]) -> str:
             raw = m.group("quoted") or m.group("plain") or ""
             if not raw:
+                return m.group(0)
+
+            # Skip @agent-xxx mentions (not file references)
+            if raw.startswith("agent-") or raw.startswith("agent:"):
                 return m.group(0)
 
             # Resolve path
@@ -1372,6 +1376,35 @@ class MessageHandler(ABC):
                 return m.group(0)
 
         return pattern.sub(_replacer, content)
+
+    @staticmethod
+    def extract_agent_mentions(content: str) -> list[str]:
+        """Parse ``@agent-xxx`` and ``@"xxx (agent)"`` mentions from content.
+
+        Returns list of agent type names (without "agent-" prefix), deduplicated.
+        """
+        if not content:
+            return []
+
+        results: list[str] = []
+
+        # Match quoted format: @"<type> (agent)"
+        for m in re.finditer(r'(^|\s)@"([\w:.@-]+)\s+\(agent\)"', content):
+            results.append(m.group(2))
+
+        # Match unquoted format: @agent-<type>
+        for m in re.finditer(r'(^|\s)@(agent-[\w:.@-]+)', content):
+            full = m.group(2)
+            results.append(full[len("agent-"):])
+
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for name in results:
+            if name not in seen:
+                seen.add(name)
+                unique.append(name)
+        return unique
 
     @staticmethod
     def _is_absolute_reference_path(raw: str) -> bool:
@@ -1417,7 +1450,7 @@ class MessageHandler(ABC):
         return normalized
 
     @classmethod
-    def _strip_attached_mentions(
+    def strip_attached_mentions(
         cls,
         content: str,
         attachments: list[dict[str, Any]],
@@ -1442,6 +1475,9 @@ class MessageHandler(ABC):
             raw = match.group("quoted") or match.group("plain") or ""
             if not raw:
                 return match.group(0)
+            # Skip @agent-xxx mentions (not file references)
+            if raw.startswith("agent-") or raw.startswith("agent:"):
+                return match.group(0)
             resolved = cls._resolve_reference_path(raw, cwd)
             if resolved not in attached_paths:
                 return match.group(0)
@@ -1461,9 +1497,9 @@ class MessageHandler(ABC):
             return content
 
         prefix = " ".join(f'@"{item["path"]}"' for item in normalized)
-        cleaned_content = cls._strip_attached_mentions(content, normalized, cwd)
+        cleaned_content = cls.strip_attached_mentions(content, normalized, cwd)
         merged_content = f"{prefix} {cleaned_content}".strip()
-        return cls._resolve_at_file_references(merged_content, cwd=cwd)
+        return cls.resolve_at_file_references(merged_content, cwd=cwd)
 
     @staticmethod
     def message_to_e2a(msg: "Message") -> "E2AEnvelope":
@@ -2389,14 +2425,36 @@ class MessageHandler(ABC):
                             cwd=cwd,
                         )
                     elif content and "@" in content:
-                        enriched = self._resolve_at_file_references(content, cwd=cwd)
+                        enriched = self.resolve_at_file_references(content, cwd=cwd)
+
+                    # ---- Resolve @agent-xxx mentions ----
+                    agent_mentions = self.extract_agent_mentions(content)
+                    if agent_mentions:
+                        hint_parts = []
+                        for agent_name in agent_mentions:
+                            hint_parts.append(
+                                f"用户表达了调用智能体 \"{agent_name}\" 的意图。"
+                                f"请按需调用该智能体，并向其传递所需的上下文。"
+                            )
+                        agent_hint = "\n".join(hint_parts)
+                        enriched = (
+                            enriched
+                            + "\n\n<system-reminder>\n"
+                            + agent_hint
+                            + "\n</system-reminder>"
+                        )
+                        logger.info(
+                            "[MessageHandler] Agent mentions detected: %s",
+                            agent_mentions,
+                        )
+
                     if enriched != content:
                         msg.params = dict(msg.params)
                         msg.params["query"] = enriched
                         if "content" in msg.params:
                             msg.params["content"] = enriched
                         logger.info(
-                            "[MessageHandler] attachments resolved in chat.send: id=%s",
+                            "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
                             msg.id,
                         )
 
