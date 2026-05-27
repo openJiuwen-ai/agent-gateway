@@ -19,6 +19,8 @@ from jiuwenswarm.common.version_source import (
     GitCodeReleasesSource,
     PyPIVersionSource,
     ReleaseInfo,
+    is_prerelease_version,
+    strip_prerelease_suffix,
 )
 
 DEFAULT_RELEASE_API_GITCODE = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
@@ -44,13 +46,52 @@ def _version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in numbers) or (0,)
 
 
+def _base_version_key(version: str) -> tuple[int, ...]:
+    """Numeric key for the *base* version with pre-release suffix removed.
+
+    ``0.2.0.beta1`` and ``0.2.0`` both yield ``(0, 2, 0)``.
+    """
+    return _version_key(strip_prerelease_suffix(version))
+
+
 def _is_newer_version(candidate: str, current: str) -> bool:
-    candidate_key = _version_key(candidate)
-    current_key = _version_key(current)
-    max_len = max(len(candidate_key), len(current_key))
-    candidate_padded = candidate_key + (0,) * (max_len - len(candidate_key))
-    current_padded = current_key + (0,) * (max_len - len(current_key))
-    return candidate_padded > current_padded
+    """Return True when *candidate* is a newer release than *current*.
+
+    Pre-release rules:
+    - A stable release is always newer than a pre-release with the same base version.
+      e.g. 0.2.0 > 0.2.0.beta1
+    - A pre-release is *never* considered newer than a stable release with the same
+      base version.  e.g. 0.2.0.rc1 is NOT newer than 0.2.0
+    - Between two pre-releases (or two stables) the numeric components decide.
+    """
+    candidate_base = _base_version_key(candidate)
+    current_base = _base_version_key(current)
+    max_len = max(len(candidate_base), len(current_base))
+    candidate_padded = candidate_base + (0,) * (max_len - len(candidate_base))
+    current_padded = current_base + (0,) * (max_len - len(current_base))
+
+    if candidate_padded > current_padded:
+        return True
+    if candidate_padded < current_padded:
+        return False
+
+    # Same base — pre-release vs stable decides
+    current_is_pre = is_prerelease_version(current)
+    candidate_is_pre = is_prerelease_version(candidate)
+    if current_is_pre and not candidate_is_pre:
+        return True   # stable > pre-release
+    if candidate_is_pre and not current_is_pre:
+        return False  # pre-release < stable
+
+    # Both pre-release (e.g. 0.2.0.beta2 vs 0.2.0.beta1) — full segments decide
+    if candidate_is_pre and current_is_pre:
+        candidate_full = _version_key(candidate)
+        current_full = _version_key(current)
+        max_full = max(len(candidate_full), len(current_full))
+        return (candidate_full + (0,) * (max_full - len(candidate_full))
+                > current_full + (0,) * (max_full - len(current_full)))
+
+    return False
 
 
 def _detect_install_mode() -> str:

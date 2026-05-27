@@ -150,7 +150,7 @@ class DesktopExecutor(UpgradeExecutor):
 setlocal
 set "SELF_PID={parent_pid}"
 :WAIT_PARENT
-tasklist /fi "pid eq %SELF_PID%" 2>nul | find "%SELF_PID%" >nul
+tasklist /fi "PID eq %SELF_PID%" 2>nul | find "%SELF_PID%" >nul
 if not errorlevel 1 (
     timeout /t 1 /nobreak >nul
     goto WAIT_PARENT
@@ -385,7 +385,7 @@ class PipExecutor(UpgradeExecutor):
         return None
 
     @staticmethod
-    def _resolve_uv_command() -> str | None:
+    def _find_uv_binary() -> str | None:
         uv_name = "uv.exe" if sys.platform == "win32" else "uv"
         python_dir = Path(sys.executable).parent
 
@@ -398,6 +398,38 @@ class PipExecutor(UpgradeExecutor):
             return uv_on_path
 
         return None
+
+    @staticmethod
+    def _is_uv_managed_venv() -> bool:
+        """Return True only when running inside a uv-managed virtual environment."""
+        # System Python (no venv active) — never use uv
+        if sys.prefix == sys.base_prefix:
+            return False
+
+        # Conda environment — use conda's own pip, not uv
+        if os.environ.get("CONDA_PREFIX") or (Path(sys.prefix) / "conda-meta").is_dir():
+            return False
+
+        # uv writes "uv = X.Y.Z" into pyvenv.cfg when creating a venv
+        venv_path = os.environ.get("VIRTUAL_ENV") or sys.prefix
+        cfg_file = Path(venv_path) / "pyvenv.cfg"
+        if cfg_file.is_file():
+            try:
+                text = cfg_file.read_text(encoding="utf-8")
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("uv ") or stripped == "uv":
+                        return True
+            except Exception:
+                pass
+
+        return False
+
+    @staticmethod
+    def _resolve_uv_command() -> str | None:
+        if not PipExecutor._is_uv_managed_venv():
+            return None
+        return PipExecutor._find_uv_binary()
 
     def _build_install_args(self, package: str, timeout: int) -> list[str]:
         pypi_mirror = self._config.get("pypi_mirror", "").strip()

@@ -27,6 +27,7 @@ Runtime layout:
 内置模板位于包内 ``jiuwenswarm/resources/``（含 ``agent/`` 下各技能模板以及 ``skills_state.json``）。
 """
 
+import ctypes
 import json
 import os
 import re
@@ -1686,14 +1687,36 @@ def wait_for_tcp_port(
 
 
 def wait_for_pid_exit(pid: int, timeout: float = 60.0) -> None:
-    """Wait for a process to exit, with a timeout and warning on failure."""
+    """Wait for a process to exit, with a timeout and warning on failure.
+
+    On Windows, ``os.kill(pid, 0)`` only checks PID existence via
+    ``OpenProcess`` — it does NOT check whether the process is still running.
+    We use ``WaitForSingleObject`` with a zero timeout instead, which
+    reliably detects exited processes.
+    """
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
-            return
-        time.sleep(0.5)
+    if sys.platform == "win32":
+        _synchronize = 0x00100000
+        _kernel32 = ctypes.windll.kernel32
+        _kernel32.OpenProcess.restype = ctypes.c_void_p
+        _kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+        _kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        while time.monotonic() < deadline:
+            handle = _kernel32.OpenProcess(_synchronize, False, pid)
+            if not handle:
+                return
+            exited = _kernel32.WaitForSingleObject(handle, 0) == 0
+            _kernel32.CloseHandle(handle)
+            if exited:
+                return
+            time.sleep(0.5)
+    else:
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
+            time.sleep(0.5)
     logger.warning("process %d did not exit within %.1f seconds", pid, timeout)
 
 
