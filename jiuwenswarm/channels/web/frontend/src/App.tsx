@@ -558,10 +558,12 @@ for (let i = payload.team.length; i < 10; i++) {
           };
         }
       }
-      if (payload.agents && payload.team) {
+      if (payload.agents !== undefined || payload.team !== undefined) {
+        const agents = payload.agents || {};
+        const team = payload.team || [];
         Object.assign(next, buildAgentsTeamsFlatConfig({
-          agents: payload.agents,
-          team: payload.team,
+          agents,
+          team,
         }));
       }
       return next;

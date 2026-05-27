@@ -2883,6 +2883,8 @@ export function ConfigPanel({
         if (hasModelChanges && onModelsRefresh) await onModelsRefresh();
         if (hasAgentsTeamsChanges) {
           clearAgentsTeamsCacheAfterSave();
+          setInitialAgents(draftAgents);
+          setInitialTeams(draftTeams);
         }
       } else {
         // 兼容旧后端：按旧接口顺序保存，但只在普通配置实际变化时调用 config.set。
