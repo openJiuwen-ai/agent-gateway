@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from jiuwenswarm.gateway.cron.cron_expr import validate_cron_expression
+
 
 class CronTargetChannel(str, Enum):
     """推送频道枚举。"""
@@ -151,7 +153,9 @@ class CronJob:
         if wake_offset_seconds < 0:
             wake_offset_seconds = 0
 
-        description = str(data.get("description") or "")
+        description = str(data.get("description") or "").strip()
+        if not description:
+            raise ValueError("description is required")
 
         # targets 新格式是字符串；旧格式是 list[dict]，此处做兼容。
         targets_raw = data.get("targets", "")
@@ -180,6 +184,7 @@ class CronJob:
             raise ValueError("cron_expr is required")
         if not timezone:
             raise ValueError("timezone is required")
+        validate_cron_expression(cron_expr, timezone=timezone)
         if not targets_str:
             raise ValueError("targets is required")
 

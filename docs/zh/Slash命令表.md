@@ -340,6 +340,7 @@
 | 命令 | 说明 |
 |---|---|
 | `/cron` 或 `/cron list` | 列出所有定时任务 |
+| `/cron show <job_id>` | 查看指定任务的详细信息 |
 | `/cron add name=<名称> cron_expr=<表达式> description=<描述> [其他参数]` | 新增定时任务 |
 | `/cron update <job_id> key=value ...` | 更新指定任务的部分字段 |
 | `/cron delete <job_id>` | 删除指定任务 |
@@ -354,7 +355,7 @@
 | `name` | 是 | 任务名称 |
 | `cron_expr` | 是 | Cron 表达式，支持两种格式：5 字段（分 时 日 月 周）或 7 字段 Quartz（秒 分 时 日 月 周 年）。5 字段会自动转换为 7 字段（补 second=0, year=*）。示例：每天 9 点 = `0 9 * * *`（5 字段）或 `0 0 9 * * ? *`（7 字段） |
 | `description` | 是 | 任务描述，即 Agent 执行时收到的输入指令 |
-| `targets` | 否 | 推送渠道，默认 `tui`；可选：`tui`、`web`、`feishu`、`whatsapp`、`wecom`、`xiaoyi`、`wechat` 或 `feishu_enterprise:<app_id>` |
+| `targets` | 否 | 推送渠道，默认 `tui`；可选：`tui`、`web`、`feishu`、`whatsapp`、`wecom`、`xiaoyi`、`wechat`、`dingtalk` 或 `feishu_enterprise:<app_id>` |
 | `timezone` | 否 | IANA 时区，默认 `Asia/Shanghai` |
 | `mode` | 否 | 执行模式：`agent`（默认，适用于简单提醒类任务）或 `plan`（较复杂的推理任务，让Agent先规划步骤再执行） |
 | `wake_offset_seconds` | 否 | 提前唤醒秒数，默认 300 |
@@ -367,6 +368,7 @@
   - `/cron add name=每周一报 cron_expr="0 9 * * 1" description="生成本周周报" targets=web`
 
 - `update` 用法：只需传入要修改的字段，如 `/cron update <id> name=新名称 enabled=false`
+- `show` 显示内容：以 key-value 格式展示任务全部字段（id、name、status、cron_expr、timezone、description、targets、mode、wake_offset_seconds、delete_after_run）
 - `list` 显示内容：序号、完整 job ID、名称、cron 表达式、启用状态、描述摘要
 - `preview` 显示内容：每次执行计划的唤醒时间和推送时间
 
