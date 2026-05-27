@@ -10,6 +10,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from openjiuwen.auto_harness.pipelines import META_EVOLVE_PIPELINE
@@ -20,6 +21,61 @@ if TYPE_CHECKING:
     from .task_store import TaskStore
 
 logger = logging.getLogger(__name__)
+
+
+_TOLERANT_STAGES = {"build_verify"}
+
+
+def _sync_append_log(log_path: Path, line: str) -> None:
+    """Synchronous append+flush for log file — called via asyncio.to_thread."""
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(line)
+        f.flush()
+
+
+def _determine_pipeline_status_from_log(log_path) -> dict[str, Any]:
+    """Parse a JSON Lines log file and determine whether the pipeline succeeded.
+
+    Rules:
+    - Each stage has a harness.stage_result event with scope="" (stage-level).
+    - All stages except those in _TOLERANT_STAGES must have status="success".
+    - Tolerant stages (build_verify) accept either "success" or "failed".
+
+    Returns:
+        {"failed": bool, "error": str}
+    """
+    pipeline_stages: list[str] = []
+    stage_results: dict[str, str] = {}
+
+    try:
+        with log_path.open("r", encoding="utf-8") as lf:
+            for line in lf:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("event_type") == "harness.message" and entry.get("stages") and entry.get("pipeline"):
+                    pipeline_stages = [s.get("slot") for s in entry["stages"]]
+                if entry.get("event_type") == "harness.stage_result" and not entry.get("scope"):
+                    slot = entry.get("stage")
+                    status = entry.get("status")
+                    if slot:
+                        stage_results[slot] = status
+    except Exception as exc:
+        logger.warning("[Scheduler] Failed to read log %s: %s", log_path, exc)
+        return {"failed": False, "error": ""}
+
+    for slot in pipeline_stages:
+        result = stage_results.get(slot)
+        if slot in _TOLERANT_STAGES:
+            continue
+        if result != "success":
+            return {
+                "failed": True,
+                "error": f"Stage '{slot}' {stage_results.get(slot, 'not completed')}",
+            }
+
+    return {"failed": False, "error": ""}
 
 
 class Scheduler:
@@ -204,7 +260,7 @@ class Scheduler:
             if not started_at_str:
                 started_at_str = completed_at.isoformat()
 
-            self._task_store.add_execution_record(task_id, {
+            await self._task_store.add_execution_record(task_id, {
                 "execution_id": execution_id,
                 "started_at": started_at_str,
                 "completed_at": completed_at.isoformat(),
@@ -214,7 +270,7 @@ class Scheduler:
             })
 
             # Update task status to cancelled
-            self._task_store.update_task(task_id, {
+            await self._task_store.update_task(task_id, {
                 "status": "cancelled",
                 "current_execution_id": None,
             })
@@ -295,7 +351,7 @@ class Scheduler:
         session_id = f"sched_{task_id}_{execution_id}"
 
         # Update status to running
-        self._task_store.update_task(task_id, {
+        await self._task_store.update_task(task_id, {
             "status": "running",
             "current_execution_id": execution_id,
         })
@@ -305,11 +361,7 @@ class Scheduler:
         final_status = "success"
         error_msg = ""
 
-        # Open log file for appending (JSON Lines format)
-        log_file = None
-
         try:
-            log_file = log_path.open("a", encoding="utf-8")
             # Agent should already be set on service by the request handler
             # (similar to how _handle_command_compact works)
             logger.info(
@@ -351,9 +403,9 @@ class Scheduler:
                     event_type = chunk.payload.get("event_type", "")
                     if event_type in ("context.usage", "context.compression_state"):
                         continue
-                    # Append log chunk immediately (JSON Lines format)
-                    log_file.write(json.dumps(chunk.payload, ensure_ascii=False) + "\n")
-                    log_file.flush()
+                    # Append log chunk via thread pool (avoids blocking event loop)
+                    line = json.dumps(chunk.payload, ensure_ascii=False) + "\n"
+                    await asyncio.to_thread(_sync_append_log, log_path, line)
 
             logger.info(
                 "[Scheduler] Task %s execution %s completed successfully",
@@ -370,13 +422,15 @@ class Scheduler:
             logger.exception("[Scheduler] Task %s execution %s failed: %s", task_id, execution_id, e)
 
         finally:
-            # Close log file
-            if log_file:
-                log_file.close()
+            if final_status == "success" and log_path.exists():
+                result = _determine_pipeline_status_from_log(log_path)
+                if result["failed"]:
+                    final_status = "failed"
+                    error_msg = result["error"]
 
             # Record execution
             completed_at = datetime.now(timezone.utc)
-            self._task_store.add_execution_record(task_id, {
+            await self._task_store.add_execution_record(task_id, {
                 "execution_id": execution_id,
                 "started_at": started_at.isoformat(),
                 "completed_at": completed_at.isoformat(),
@@ -387,25 +441,22 @@ class Scheduler:
 
             # Update next run time if not cancelled
             if final_status != "cancelled":
-                # Check if this is a one-time task
                 is_one_time = task.get("is_one_time", False)
                 if is_one_time:
-                    # One-time task: mark as completed (no rescheduling)
-                    self._task_store.update_task(task_id, {
-                        "status": "completed",
+                    await self._task_store.update_task(task_id, {
+                        "status": final_status,
                         "current_execution_id": None,
                     })
-                    logger.info("[Scheduler] One-time task %s completed", task_id)
+                    logger.info("[Scheduler] One-time task %s finished with status: %s", task_id, final_status)
                 else:
-                    # Recurring task: reschedule
                     next_run = completed_at + timedelta(hours=interval_hours)
-                    self._task_store.update_task(task_id, {
+                    await self._task_store.update_task(task_id, {
                         "status": "pending",
                         "current_execution_id": None,
                         "next_run_time": next_run.isoformat(),
                     })
             else:
-                self._task_store.update_task(task_id, {
+                await self._task_store.update_task(task_id, {
                     "status": "cancelled",
                     "current_execution_id": None,
                 })

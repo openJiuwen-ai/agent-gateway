@@ -121,7 +121,7 @@ function getPipelineCompletions(_partial: string, parts: string[]): string[] {
 function parseScheduleStartArgs(args: string): { interval: number; pipeline: string; query: string } {
   const parts = parseArgs(args);
 
-  let interval = 0;
+  let interval = -1;
   let pipeline = "";
   let queryParts: string[] = [];
   let i = 0;
@@ -130,7 +130,8 @@ function parseScheduleStartArgs(args: string): { interval: number; pipeline: str
     if (parts[i] === "--interval" || parts[i] === "-i") {
       i++;
       if (i < parts.length) {
-        interval = parseInt(parts[i], 10) || 0;
+        const parsed = parseInt(parts[i], 10);
+        interval = isNaN(parsed) ? -1 : parsed;
         i++;
       }
     } else if (parts[i] === "--pipeline" || parts[i] === "-p") {
@@ -262,9 +263,10 @@ const scheduleStartCommand: SlashCommand = {
   action: async (ctx, args) => {
     const parsed = parseScheduleStartArgs(args);
 
-    if (!parsed.interval || parsed.interval < 1) {
+    if (parsed.interval < 1) {
+      const hint = parsed.interval === 0 ? "间隔不能为 0，请设置至少 1 小时" : parsed.interval === -1 ? "请提供有效的 --interval 数值（小时）" : "间隔必须大于 0 小时";
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule start --interval <hours> [--pipeline <pipeline>] <query>\npipeline: optimize_expert_harness (生成扩展包), optimize_meta_harness (提交 PR)")
+        addError(ctx.sessionId, `${hint}`)
       );
       return;
     }
@@ -383,7 +385,9 @@ const scheduleListCommand: SlashCommand = {
     for (const task of tasks) {
       const statusEmoji = task.status === "running" ? "[运行中]" :
                          task.status === "pending" ? "[等待]" :
-                         task.status === "cancelled" ? "[已取消]" : "[已完成]";
+                         task.status === "cancelled" ? "[已取消]" :
+                         task.status === "failed" ? "[失败]" :
+                         task.status === "success" ? "[成功]" : "[已完成]";
       const isOneTime = task.is_one_time ? "[一次性]" : "";
       const queryPreview = task.query.length > 50 ? task.query.substring(0, 50) + "..." : task.query;
       const pipelineInfo = task.pipeline ? `Pipeline: ${pipelineDisplayLabel(task.pipeline)}` : "";
@@ -467,6 +471,7 @@ const scheduleStatusCommand: SlashCommand = {
       const recentHistory = history.slice(-5);
       for (const record of recentHistory) {
         const statusText = record.status === "success" ? "[成功]" :
+                           record.status === "failed" ? "[失败]" :
                            record.status === "cancelled" ? "[取消]" : "[异常]";
         lines.push(`${statusText} ${record.execution_id} - ${formatLocalTime(record.completed_at) || "进行中"}`);
       }
@@ -810,7 +815,7 @@ async function streamCurrentLogs(
   }
 
   if (pollCount >= maxPolls) {
-    ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪超时终止】`));
+    ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪退出，任务后台运行中，可再次调用 logs 指令查看。】`));
   } else {
     ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪完成: ${executionId}】`));
   }
@@ -1227,7 +1232,12 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
       const stageDisplayName = section.stages?.find((s) => s.slot === section.stage)?.display_name || section.stage || "?";
 
       if (section.status) {
-        const progressBar = formatStageProgress(section.stages, section.completed_stages, undefined, section.gap_count, section.extension_order?.length);
+        const activeStage = section.status !== 'success' && section.status !== 'failed' ? section.stage : undefined;
+        const effectiveCompleted = [...(section.completed_stages || [])];
+        if (section.status === 'success' && section.stage && !effectiveCompleted.includes(section.stage)) {
+          effectiveCompleted.push(section.stage);
+        }
+        const progressBar = formatStageProgress(section.stages, effectiveCompleted, activeStage, section.gap_count, section.extension_order?.length);
         const icon = section.status === "success" ? "✅" : section.status === "failed" ? "❌" : "⏸️";
         const color = section.status === "success" ? ANSI.green : section.status === "failed" ? ANSI.red : ANSI.yellow;
         const statusText = section.status === "success" ? "完成" : section.status === "failed" ? "失败" : section.status;
@@ -1252,8 +1262,9 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
             detailLines.push(`  🔄 修复循环: ${section.ci_fix_count} 次`);
           }
         }
-        // Extension status matrix shown AFTER stage-specific content, only when extensions have progress
-        if (section.extension_order && section.extensions_by_name && section.extension_order.length > 0) {
+        // Extension status matrix shown AFTER stage-specific content, only during build_verify
+        // (activate stage shows merge/activation info lines instead, not the matrix)
+        if (section.stage !== 'activate' && section.extension_order && section.extensions_by_name && section.extension_order.length > 0) {
           const hasProgress = Object.values(section.extensions_by_name).some(
             ext => ext.implementStatus !== 'pending' || ext.verifyStatus !== 'pending'
           );
@@ -1477,11 +1488,12 @@ function parseAndAggregateLogs(
         const extName = log.extension_name;
         const extStage = log.extension_stage || '';
 
-        // Handle merge_ext: merged_extensions is a container, not a design extension
-        // Show merge status as standalone info line, not full stage render
-        if (extStage === 'merge_ext' && extName === 'merged_extensions') {
+        // Handle merge_ext: show concise merge info highlighting N→1, no extension matrix
+        if (extStage === 'merge_ext') {
           const mergeStatus = log.status || 'pending';
-          const mergeText = mergeStatus === 'success' ? '✅ 合并扩展完成' : mergeStatus === 'failed' ? '❌ 合并扩展失败' : '⏳ 合并扩展进行中';
+          const extCount = extensionOrder.length;
+          const mergeLabel = extCount > 0 ? `${extCount} 个扩展 → 1 个运行时扩展` : '合并扩展';
+          const mergeText = mergeStatus === 'success' ? `✅ ${extName}: ${mergeLabel}完成` : mergeStatus === 'failed' ? `❌ ${extName}: ${mergeLabel}失败` : `⏳ ${extName}: ${mergeLabel}`;
           sections.push({
             type: "info",
             content: mergeText,
@@ -1502,6 +1514,22 @@ function parseAndAggregateLogs(
                 type: "info",
                 content: actText,
               });
+            }
+            break;
+          }
+
+          // Activate-stage extension events should not be added to the design extension
+          // matrix — they are runtime activations shown as separate info lines
+          if (extStage === 'activate_ext' || log.parent_stage === 'activate') {
+            const actText = extStatus === 'success' ? `✅ 激活 ${extName} 完成` : extStatus === 'failed' ? `❌ 激活 ${extName} 失败` : `⏳ 激活 ${extName}`;
+            sections.push({
+              type: "info",
+              content: actText,
+            });
+            // Still update activateStatus for extensions that were in the matrix from build_verify
+            const existing = extensionsByName[extName];
+            if (existing) {
+              existing.activateStatus = extStatus;
             }
             break;
           }
@@ -1551,9 +1579,12 @@ function parseAndAggregateLogs(
           break;
         }
 
-        // Track completed stage (only for stage-level events, deduplicate)
-        if (log.stage && !completedStages.includes(log.stage)) {
+        if (log.stage && !scope && (log.status === 'success' || log.status === 'failed') && !completedStages.includes(log.stage)) {
           completedStages.push(log.stage);
+        }
+        // Track current running stage (from any scope="" event)
+        if (log.stage && !scope && log.stage !== currentStage) {
+          currentStage = log.stage;
         }
 
         // For activate stage: skip "running" status (merge/interaction sub-events handle display)
@@ -1622,6 +1653,10 @@ function parseAndAggregateLogs(
         break;
 
       case "harness.session_finished":
+        // Mark the final stage as completed when session ends
+        if (currentStage && !completedStages.includes(currentStage)) {
+          completedStages.push(currentStage);
+        }
         sections.push({
           type: "session_finished",
           content: log.status === "success" ? "任务执行成功" : `任务执行${log.status || "完成"}`,
@@ -1880,7 +1915,7 @@ const runCommand: SlashCommand = {
     }
 
     ctx.addItem(
-      addInfo(ctx.sessionId, `\n一次性任务已创建并开始执行\nID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n状态: ${result.status}\n`)
+      addInfo(ctx.sessionId, `\n一次性任务已创建并开始执行\nID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n状态: ${result.status}\n任务后台运行，默认读取实时日志，可以通过 ctrl + c 中断查看\n`)
     );
 
     // Start streaming logs

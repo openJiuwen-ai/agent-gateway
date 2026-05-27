@@ -4583,12 +4583,12 @@ class AgentWebSocketServer:
                 payload = await self._scheduler_service.run_task(query, model, pipeline)
 
             elif action == "list":
-                tasks = self._scheduler_service.list_scheduled_tasks()
+                tasks = await self._scheduler_service.list_scheduled_tasks()
                 payload = {"tasks": tasks}
 
             elif action == "status":
                 task_id = params.get("task_id", "")
-                task = self._scheduler_service.get_scheduled_task_status(task_id)
+                task = await self._scheduler_service.get_scheduled_task_status(task_id)
                 payload = task if task else {"error": "任务不存在", "task_id": task_id}
 
             elif action == "logs":
@@ -4597,7 +4597,7 @@ class AgentWebSocketServer:
                 history_index = params.get("history_index", -1)
                 offset = params.get("offset", 0)
                 limit = params.get("limit", 500)
-                payload = self._scheduler_service.get_scheduled_task_logs(
+                payload = await self._scheduler_service.get_scheduled_task_logs(
                     task_id, log_type, history_index, offset, limit
                 )
 

@@ -48,7 +48,6 @@ _AUTO_HARNESS_CONFIG_FILE = _AUTO_HARNESS_CONFIG_DIR / "config.yaml"
 _AUTO_HARNESS_LOCAL_REPO = _AUTO_HARNESS_CONFIG_DIR / "repo" / "openJiuwen--agent-core"
 
 # Default values for ci_gate config
-_DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
 _DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
 
 
@@ -89,8 +88,8 @@ def _get_auto_harness_config() -> dict[str, Any]:
         config["local_repo"] = str(local_repo)
         needs_save = True
 
-    if not ci_gate.get("python_executable"):
-        ci_gate["python_executable"] = _DEFAULT_CI_GATE_PYTHON_EXECUTABLE
+    if ci_gate.get("python_executable"):
+        ci_gate["python_executable"] = ""
         needs_save = True
 
     if not ci_gate.get("install_command"):

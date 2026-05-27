@@ -75,7 +75,6 @@ _DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
 # Default local repo path
 _DEFAULT_LOCAL_REPO = _AUTO_HARNESS_DATA_DIR / "repo" / "openJiuwen--agent-core"
 # Default values for ci_gate config
-_DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
 _DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
 
 
@@ -266,8 +265,8 @@ class AutoHarnessService:
             needs_save = True
 
         ci_gate = config_dict.get("ci_gate") or {}
-        if not ci_gate.get("python_executable"):
-            ci_gate["python_executable"] = _DEFAULT_CI_GATE_PYTHON_EXECUTABLE
+        if ci_gate.get("python_executable"):
+            ci_gate["python_executable"] = ""
             needs_save = True
 
         if not ci_gate.get("install_command"):
@@ -344,6 +343,11 @@ class AutoHarnessService:
         """Start the scheduling loop (called by AgentWebSocketServer)."""
         if self._scheduler is None:
             self._init_scheduler()
+        # Reconcile legacy task statuses (async — requires file I/O)
+        if self._task_store is not None and self._task_store.has_legacy_completed_tasks():
+            corrected = await self._task_store.reconcile_task_statuses()
+            if corrected > 0:
+                logger.info("[AutoHarnessService] Reconciled %d legacy task statuses", corrected)
         if self._scheduler is not None:
             await self._scheduler.start()
             logger.info("[AutoHarnessService] Scheduler started")
@@ -607,7 +611,7 @@ class AutoHarnessService:
         # config.yaml so that GitOperations.push() uses a named remote instead
         # of a raw URL. The named remote is added in clone_or_update_repo().
         if not config.git_base_branch:
-            config.git_base_branch = "develop"
+            config.git_base_branch = "develop-auto-harness"
         if not config.git_remote:
             config.git_remote = "origin"
 
@@ -2441,7 +2445,7 @@ class AutoHarnessService:
             "pipeline": pipeline,  # Pipeline preference
         }
 
-        self._task_store.add_task(task_data)
+        await self._task_store.add_task(task_data)
 
         logger.info(
             "[AutoHarnessService] Created scheduled task: %s, interval=%sh, next_run=%s, run_immediately=%s",
@@ -2509,7 +2513,7 @@ class AutoHarnessService:
             "pipeline": pipeline,  # Pipeline preference
         }
 
-        self._task_store.add_task(task_data)
+        await self._task_store.add_task(task_data)
 
         logger.info(
             "[AutoHarnessService] Created one-time task: %s, will execute immediately",
@@ -2546,7 +2550,7 @@ class AutoHarnessService:
         await self._scheduler.cancel_execution(task_id)
 
         # Update status
-        self._task_store.update_task(task_id, {"status": "cancelled"})
+        await self._task_store.update_task(task_id, {"status": "cancelled"})
 
         logger.info("[AutoHarnessService] Cancelled scheduled task: %s", task_id)
 
@@ -2576,7 +2580,7 @@ class AutoHarnessService:
             await self._scheduler.cancel_execution(task_id)
 
         # Delete task from store (includes removing log files)
-        deleted = self._task_store.delete_task(task_id)
+        deleted = await self._task_store.delete_task(task_id)
         if not deleted:
             return {"error": "删除失败", "task_id": task_id}
 
@@ -2584,7 +2588,7 @@ class AutoHarnessService:
 
         return {"task_id": task_id}
 
-    def get_scheduled_task_status(self, task_id: str) -> Optional[dict[str, Any]]:
+    async def get_scheduled_task_status(self, task_id: str) -> Optional[dict[str, Any]]:
         """Get task status and details.
 
         Returns:
@@ -2594,7 +2598,7 @@ class AutoHarnessService:
             return None
         return self._task_store.get_task(task_id)
 
-    def list_scheduled_tasks(self) -> list[dict[str, Any]]:
+    async def list_scheduled_tasks(self) -> list[dict[str, Any]]:
         """List all scheduled tasks.
 
         Returns:
@@ -2604,7 +2608,7 @@ class AutoHarnessService:
             return []
         return self._task_store.list_tasks()
 
-    def get_scheduled_task_logs(
+    async def get_scheduled_task_logs(
         self,
         task_id: str,
         log_type: str = "current",
@@ -2626,4 +2630,4 @@ class AutoHarnessService:
         """
         if self._task_store is None:
             return {"error": "任务存储未初始化"}
-        return self._task_store.get_logs(task_id, log_type, history_index, offset, limit)
+        return await self._task_store.get_logs(task_id, log_type, history_index, offset, limit)
