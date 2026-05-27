@@ -6,11 +6,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Any, AsyncIterator
 
+from openjiuwen.agent_teams.paths import get_agent_teams_home
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.schema.team import TeamRole
+from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness import DeepAgent
 
@@ -59,20 +62,32 @@ _TEAM_CREATE_KINDS = {
     RunActionKind.NEW_TEAM_IN_SESSION.value,
 }
 _HIDE_DM_PREFIX = "/hide_dm"
+_STREAM_TRACE_ENV_KEY = "JIUWENSWARM_TEAM_STREAM_TRACE"
+_DEBUG_PREFIX = "/debug"
 
 
-def _extract_hide_dm_directive(query: str) -> tuple[str, bool]:
-    """Strip a leading ``/hide_dm`` directive from the first team query.
+def _strip_directive(query: str, prefix: str) -> tuple[str, bool]:
+    """Strip a leading slash directive from a query string.
 
     Returns the cleaned query and whether the directive was present.
     """
     stripped = query.lstrip()
-    if not stripped.startswith(_HIDE_DM_PREFIX):
+    if not stripped.startswith(prefix):
         return query, False
-    remainder = stripped[len(_HIDE_DM_PREFIX):]
+    remainder = stripped[len(prefix):]
     if remainder and not remainder[0].isspace():
         return query, False
     return remainder.lstrip(), True
+
+
+def _extract_query_directives(query: str) -> tuple[str, bool, bool]:
+    """Strip all leading slash directives from the first team query.
+
+    Returns (cleaned_query, hide_dm, debug).
+    """
+    query, hide_dm = _strip_directive(query, _HIDE_DM_PREFIX)
+    query, debug = _strip_directive(query, _DEBUG_PREFIX)
+    return query, hide_dm, debug
 
 
 def sync_team_identity_metadata(
@@ -604,14 +619,17 @@ async def process_team_message_stream(
     request_queue: asyncio.Queue | None = None
 
     hide_dm = False
+    debug = False
     if is_first_request:
-        query, hide_dm = _extract_hide_dm_directive(str(query or ""))
-        if hide_dm:
+        query, hide_dm, debug = _extract_query_directives(str(query or ""))
+        if hide_dm or debug:
             logger.info(
-                "[TeamHelpers] hide_dm directive captured for first team request: "
-                "channel_id=%s session_id=%s",
+                "[TeamHelpers] query directives captured for first team request: "
+                "channel_id=%s session_id=%s hide_dm=%s debug=%s",
                 _resolve_channel_id(channel_id),
                 session_id,
+                hide_dm,
+                debug,
             )
 
     slash_result = await _handle_team_slash_command(
@@ -725,6 +743,11 @@ async def process_team_message_stream(
                 session_id,
             )
 
+            stream_envs: dict[str, Any] = {}
+            if hide_dm:
+                stream_envs["hide_dm"] = True
+            if debug:
+                stream_envs[_STREAM_TRACE_ENV_KEY] = "1"
             round_id = increment_session_round_count(session_id)
             stream_task = asyncio.create_task(
                 _consume_stream_with_query(
@@ -733,7 +756,7 @@ async def process_team_message_stream(
                     team_spec,
                     query,
                     round_id=round_id,
-                    hide_dm=hide_dm,
+                    envs=stream_envs or None,
                 )
             )
             team_manager.register_stream_task(session_id, stream_task)
@@ -849,9 +872,11 @@ async def _consume_stream_with_query(
     initial_query: str,
     *,
     round_id: int,
-    hide_dm: bool = False,
+    envs: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
+    _envs = envs or {}
+    hide_dm: bool = bool(_envs.get("hide_dm", False))
     received_chunks = 0
     try:
         logger.info(
@@ -874,10 +899,20 @@ async def _consume_stream_with_query(
                 "is_complete": False,
             },
         )
+        stream_trace_enabled = bool(
+            _envs.get(_STREAM_TRACE_ENV_KEY) or os.environ.get(_STREAM_TRACE_ENV_KEY)
+        )
+        lg: TeamStreamLogger | None = None
+        if stream_trace_enabled:
+            traces_dir = get_agent_teams_home() / "traces"
+            traces_dir.mkdir(parents=True, exist_ok=True)
+            lg = TeamStreamLogger(file_path=str(traces_dir / f"dump-team-{session_id}.txt"))
         async for chunk in Runner.run_agent_team_streaming(
             agent_team=team_spec,
             inputs={"query": initial_query},
             session=session_id,
+            envs=envs,
+            stream_logger=lg,
         ):
             received_chunks += 1
             is_leader = _is_leader_output(chunk)

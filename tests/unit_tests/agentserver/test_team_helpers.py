@@ -1224,25 +1224,28 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     assert broadcasted[3]["member_name"] == "analyst"
 
 
-def test_extract_hide_dm_directive_strips_prefix_and_flags():
-    cleaned, hide_dm = team_helpers._extract_hide_dm_directive(  # pylint: disable=protected-access
+def test_extract_query_directives_strips_hide_dm_prefix_and_flags():
+    cleaned, hide_dm, debug = team_helpers._extract_query_directives(  # pylint: disable=protected-access
         "/hide_dm please summarize"
     )
     assert hide_dm is True
+    assert debug is False
     assert cleaned == "please summarize"
 
 
-def test_extract_hide_dm_directive_ignores_non_prefix():
-    cleaned, hide_dm = team_helpers._extract_hide_dm_directive(  # pylint: disable=protected-access
+def test_extract_query_directives_ignores_non_prefix():
+    cleaned, hide_dm, debug = team_helpers._extract_query_directives(  # pylint: disable=protected-access
         "/hide_dmsomething else"
     )
     assert hide_dm is False
+    assert debug is False
     assert cleaned == "/hide_dmsomething else"
 
 
-def test_extract_hide_dm_directive_handles_bare_directive():
-    cleaned, hide_dm = team_helpers._extract_hide_dm_directive("/hide_dm")  # pylint: disable=protected-access
+def test_extract_query_directives_handles_bare_hide_dm():
+    cleaned, hide_dm, debug = team_helpers._extract_query_directives("/hide_dm")  # pylint: disable=protected-access
     assert hide_dm is True
+    assert debug is False
     assert cleaned == ""
 
 
@@ -1308,7 +1311,7 @@ async def test_consume_stream_with_query_propagates_hide_dm_to_monitor(monkeypat
         SimpleNamespace(team_name="demo-team"),
         "hello",
         round_id=1,
-        hide_dm=True,
+        envs={"hide_dm": True},
     )
 
     assert captured == {

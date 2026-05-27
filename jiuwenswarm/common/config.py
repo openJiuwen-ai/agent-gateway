@@ -1602,7 +1602,7 @@ def _jiuwenbox_configs_dir() -> Path | None:
 
 
 def resolve_sandbox_policy_path(value: str | None) -> Path | None:
-    """把 ``sandbox.policy_file`` 的取值解析为宿主机绝对路径。
+    r"""把 ``sandbox.policy_file`` 的取值解析为宿主机绝对路径。
 
     - ``None`` / 空字符串 → 返回 None, 由调用方决定是否落到 jiuwenbox 自身默认 policy;
     - 仅文件名 (不含路径分隔符) → 在 ``jiuwenbox/configs/`` 下拼接;
