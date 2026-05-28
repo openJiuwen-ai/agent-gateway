@@ -19,7 +19,11 @@ from collections import Counter
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from shutil import which
-from typing import Any, AsyncIterator, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from openjiuwen.harness.schema.config import SubAgentConfig
+    from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
 
 import yaml
 from dotenv import load_dotenv
