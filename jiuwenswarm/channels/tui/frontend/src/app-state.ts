@@ -1823,7 +1823,7 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240, cwd: getCurrentCwd() || process.cwd() },
           (err, stdout) => {
             if (err) return;
-            const text = stdout.trim();
+            const text = stdout.trim().replace(/\r\n/g, "\n");
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();
@@ -1841,7 +1841,7 @@ export class CliPiAppState {
           { timeout: 3_000, maxBuffer: 10_240 },
           (err, stdout) => {
             if (err) return;
-            const text = stdout.trim();
+            const text = stdout.trim().replace(/\r\n/g, "\n");
             if (text !== this.statusLineText) {
               this.statusLineText = text || null;
               this.emitChange();
