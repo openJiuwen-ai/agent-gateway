@@ -243,6 +243,7 @@
     "teamBroadcastTarget": "@所有人",
     "contextCompressionCompleted": "本轮完成上下文压缩 {{count}} 次",
     "historyPager": {
+      "restoring": "正在恢复历史消息…",
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
       "loadingMore": "加载中…",
       "allLoaded": "已显示全部历史",
@@ -281,6 +282,7 @@
     "status": "状态",
     "contextCompression": "上下文窗口",
     "memoryUsage": "内存占用",
+    "restoringTeamHistory": "正在恢复团队历史…",
     "poweredBy": "Powered by openJiuwen",
     "noExtension": "暂无扩展文件",
     "refreshFiles": "刷新",

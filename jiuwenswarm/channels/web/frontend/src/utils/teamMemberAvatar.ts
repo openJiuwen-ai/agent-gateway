@@ -14,12 +14,43 @@ const TEAM_MEMBER_AVATARS = [
   teamAvatar6,
 ];
 
+const TEAM_MEMBER_BACKGROUND_COLORS = [
+  '#D7F4EE',
+  '#FCE0E0',
+  '#E2E8FF',
+  '#FFF0C9',
+  '#EADCF8',
+  '#DCEFFB',
+  '#F8DFEF',
+  '#E5F4D1',
+  '#FBE5D6',
+  '#DBF0FF',
+  '#F0E6CC',
+  '#DDEBDD',
+  '#F8D9D4',
+  '#D8E3F7',
+  '#EFE0F5',
+  '#E1F2C4',
+  '#FFE1B8',
+  '#D9F1F5',
+  '#F4D7E9',
+  '#E7E0CF',
+  '#D3E8DD',
+  '#E6DDFF',
+  '#F7E2B6',
+  '#D9E1EA',
+];
+
+const FNV_OFFSET_BASIS = 2166136261;
+const FNV_PRIME = 16777619;
+
 export type TeamMemberAvatarKind = 'leader' | 'user' | 'member';
 
 export interface ResolvedTeamMemberAvatar {
   src: string;
   kind: TeamMemberAvatarKind;
   normalizedId: string;
+  backgroundColor?: string;
 }
 
 export function normalizeTeamMemberId(member?: string): string {
@@ -43,6 +74,20 @@ function hashMemberKey(value: string): number {
   return hash;
 }
 
+function hashString(value: string): number {
+  let hash = FNV_OFFSET_BASIS;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, FNV_PRIME) >>> 0;
+  }
+  return hash;
+}
+
+function getMemberAvatarBackgroundColor(value: string): string {
+  const hash = hashString(`${value}:avatar-bg`);
+  return TEAM_MEMBER_BACKGROUND_COLORS[hash % TEAM_MEMBER_BACKGROUND_COLORS.length];
+}
+
 export function resolveTeamMemberAvatar(member?: string): ResolvedTeamMemberAvatar {
   const normalizedId = normalizeTeamMemberId(member);
 
@@ -63,10 +108,12 @@ export function resolveTeamMemberAvatar(member?: string): ResolvedTeamMemberAvat
   }
 
   const hashKey = normalizedId || 'unknown_member';
+  const hash = hashMemberKey(hashKey);
   return {
-    src: TEAM_MEMBER_AVATARS[hashMemberKey(hashKey) % TEAM_MEMBER_AVATARS.length],
+    src: TEAM_MEMBER_AVATARS[hash % TEAM_MEMBER_AVATARS.length],
     kind: 'member',
     normalizedId,
+    backgroundColor: getMemberAvatarBackgroundColor(hashKey),
   };
 }
 

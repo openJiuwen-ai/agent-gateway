@@ -24,6 +24,7 @@ export function TeamMemberAvatar({
         'shrink-0 overflow-hidden rounded-xl bg-transparent',
         className
       )}
+      style={avatar.backgroundColor ? { backgroundColor: avatar.backgroundColor } : undefined}
     >
       <img
         src={avatar.src}

@@ -243,6 +243,7 @@
     "teamBroadcastTarget": "@all",
     "contextCompressionCompleted": "Completed context compression {{count}} time(s) this turn",
     "historyPager": {
+      "restoring": "Restoring history...",
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
       "loadingMore": "Loading...",
       "allLoaded": "All history shown",
@@ -281,6 +282,7 @@
     "status": "Status",
     "contextCompression": "Context window",
     "memoryUsage": "Memory usage",
+    "restoringTeamHistory": "Restoring team history...",
     "poweredBy": "Powered by openJiuwen",
     "noExtension": "No extension files available",
     "refreshFiles": "Refresh",
