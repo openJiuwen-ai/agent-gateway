@@ -24,6 +24,8 @@ from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
 )
 from jiuwenswarm.extensions.hook_event import GatewayHookEvents
 from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
+from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.gateway.hooks.handler import GatewayHookHandler
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +158,23 @@ class MessageHandler(ABC):
         # IM Pipeline（数字分身）— None 时不执行，不影响原有逻辑
         self._inbound_pipeline = None   # type: Any  # IMInboundPipeline | None
         self._outbound_pipeline = None  # type: Any  # IMOutboundPipeline | None
+
+        # 初始化 Gateway hooks handler
+        try:
+            from jiuwenswarm.common.config import get_config
+            config_base = get_config()
+            self._gateway_hooks_config = load_hooks_config(config_base)
+            self._gateway_hook_handler = GatewayHookHandler(self._gateway_hooks_config)
+        except Exception as e:
+            logger.warning("[MessageHandler] Failed to init GatewayHookHandler: %s", e)
+            self._gateway_hook_handler = None
+
+    def trigger_session_start_hook(self, session_id: str, source: str = "startup") -> None:
+        """供 Channel 层调用，触发 SessionStart hook."""
+        if self._gateway_hook_handler:
+            asyncio.create_task(
+                self._gateway_hook_handler.on_session_start(session_id, source=source)
+            )
 
     def set_inbound_pipeline(self, pipeline: Any) -> None:
         self._inbound_pipeline = pipeline
@@ -641,6 +660,11 @@ class MessageHandler(ABC):
             else:
                 new_sid = self._generate_channel_session_id(channel_type)
             state.session_id = new_sid
+            # 触发 SessionStart hook
+            if self._gateway_hook_handler:
+                asyncio.create_task(
+                    self._gateway_hook_handler.on_session_start(new_sid, source=channel_type)
+                )
             asyncio.create_task(
                 self._new_session_cancel_and_notice(
                     NewSessionCancelParams(
@@ -2159,6 +2183,18 @@ class MessageHandler(ABC):
 
                 # 将当前 Channel 的控制状态应用到消息上
                 self._apply_channel_state(msg)
+
+                # Gateway hook: UserPromptSubmit
+                if self._gateway_hook_handler:
+                    try:
+                        params = msg.params if isinstance(msg.params, dict) else {}
+                        prompt_text = str(params.get("query") or params.get("content") or "")
+                        await self._gateway_hook_handler.on_user_prompt_submit(
+                            msg.session_id or "",
+                            prompt_text,
+                        )
+                    except Exception:
+                        logger.debug("Gateway hook UserPromptSubmit failed", exc_info=True)
 
                 # 检查是否是中断请求
                 if msg.req_method == ReqMethod.CHAT_ANSWER:

@@ -712,6 +712,60 @@ extensions:
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
 
 
+# ============================================================
+# Hooks 配置
+# 17 个事件类型，支持 command / prompt 两种 hook 类型
+# 字段说明：
+#   - disable_all_hooks: 全局关闭所有 hooks
+#   - <事件名>:
+#       - matcher: 匹配表达式（工具名|管道OR|正则|"*"）
+#       - hooks:
+#           - type: command | prompt
+#           - command / prompt: 执行的命令或 prompt 模板
+#             支持 $ARGUMENTS（hook input JSON）和 $TOOL_NAME 变量
+#           - timeout: 超时秒数（默认 30s）
+#           - shell: bash | sh | zsh（仅 command 类型）
+#           - model: LLM 模型名（仅 prompt 类型，空则用默认轻量模型）
+#           - status_message: 执行时显示的提示信息
+# 退出码语义（command 类型）：
+#   0 = 成功继续  2 = 阻止执行  其他 = 非阻塞错误
+# ============================================================
+hooks:
+  disable_all_hooks: false
+
+  # PreToolUse: 工具执行前拦截
+  # PreToolUse:
+  #   - matcher: "Write|Edit"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'about to write file'"
+  #         timeout: 30
+  #         shell: "bash"
+  #         status_message: "Running pre-write hook..."
+
+  # PostToolUse: 工具执行后拦截
+  # PostToolUse:
+  #   - matcher: "Bash"
+  #     hooks:
+  #       - type: prompt
+  #         prompt: "审查命令输出安全性: $ARGUMENTS"
+  #         timeout: 15
+
+  # SessionStart: 会话开始时
+  # SessionStart:
+  #   - matcher: "*"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'session started'"
+
+  # Stop: Agent 结束前
+  # Stop:
+  #   - matcher: "*"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'agent stopping'"
+
+
 team:
   # 默认：单机 local + inprocess。双机 pyzmq 示例见 tmp/team-leader.yaml、tmp/team-teammate.yaml（与 .tmp/leader_home、.tmp/teammate_home 内 config 同步）。
   runtime:

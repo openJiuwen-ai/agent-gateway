@@ -68,6 +68,7 @@ from jiuwenswarm.common.config import (
     upsert_subagent_in_config,
 )
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
@@ -903,6 +904,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.EXTENSIONS_TOGGLE:
                 await self._handle_extensions_toggle(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.HOOKS_LIST:
+                await self._handle_hooks_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.HARNESS_PACKAGES_GET:
                 await self._handle_harness_packages_get(ws, request, send_lock)
@@ -4261,6 +4265,32 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_hooks_list(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """获取当前 hooks 配置（供 TUI /hooks 命令浏览）."""
+        try:
+            config_base = get_config()
+            hooks_config = load_hooks_config(config_base)
+            summary = hooks_config.get_event_summary()
+
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={
+                    "events": summary,
+                    "disable_all_hooks": hooks_config.disable_all_hooks,
+                    "source": "config.yaml",
+                },
+            )
+        except Exception as e:
+            logger.exception("[AgentWebSocketServer] hooks.list failed: %s", e)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(e)},
+            )
 
     async def send_push(self, msg) -> None:
         """AgentServer 主动向 Gateway 推送消息。

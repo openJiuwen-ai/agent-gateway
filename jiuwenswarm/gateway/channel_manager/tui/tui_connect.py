@@ -1037,6 +1037,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             title=str(params.get("title") or "").strip(),
             mode=params.get("mode", "code.normal"),
         )
+        # 触发 SessionStart hook
+        mh = bind.message_handler
+        if mh:
+            mh.trigger_session_start_hook(target, source="tui")
         await channel.send_response(ws, req_id, ok=True, payload={"session_id": target})
 
     async def _session_delete(ws, req_id, params, session_id):
@@ -1796,6 +1800,23 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "chat.user_answer", _chat_user_answer)
     channel.register_local_handler(path, "history.get", _history_get)
     channel.register_local_handler(path, "command.model", _command_model)
+
+    # ── Hooks RPC handlers ─────────────────────────────────────────────
+    async def _hooks_list(ws, req_id, params, session_id):
+        from jiuwenswarm.common.hooks_config import load_hooks_config
+        try:
+            hooks_config = load_hooks_config(get_config())
+            summary = hooks_config.get_event_summary()
+            await channel.send_response(ws, req_id, ok=True,
+                                        payload={
+                                            "events": summary,
+                                            "disable_all_hooks": hooks_config.disable_all_hooks,
+                                            "source": "config.yaml",
+                                        })
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+
+    channel.register_local_handler(path, "hooks.list", _hooks_list)
 
     # ── Memory RPC handlers ────────────────────────────────────────────
     from jiuwenswarm.agents.harness.common.memory_rpc import (

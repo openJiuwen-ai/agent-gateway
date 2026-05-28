@@ -2206,7 +2206,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("path.get", _path_get)
     channel.register_method("path.set", _path_set)
 
+    async def _hooks_list(ws, req_id, params, session_id):
+        from jiuwenswarm.common.hooks_config import load_hooks_config
+        try:
+            hooks_config = load_hooks_config(get_config())
+            summary = hooks_config.get_event_summary()
+            await channel.send_response(ws, req_id, ok=True,
+                                        payload={
+                                            "events": summary,
+                                            "disable_all_hooks": hooks_config.disable_all_hooks,
+                                            "source": "config.yaml",
+                                        })
+        except Exception as e:
+            await channel.send_response(ws, req_id, ok=False,
+                                        error=str(e), code="INTERNAL_ERROR")
+
     channel.register_method("memory.compute", _memory_compute)
+    channel.register_method("hooks.list", _hooks_list)
 
     channel.register_method("chat.send", _chat_send)
     channel.register_method("chat.resume", _chat_resume)

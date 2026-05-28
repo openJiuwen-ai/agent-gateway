@@ -63,6 +63,9 @@ from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
+from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +446,18 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             len(rails_list),
             [type(r).__name__ for r in rails_list],
         )
+        # 用户配置的 hooks（UserHookRail）
+        try:
+            hooks_config = load_hooks_config(config_base)
+            if hooks_config.events:
+                user_hook_rail = UserHookRail(hooks_config)
+                rails_list.append(user_hook_rail)
+                logger.info(
+                    "[JiuwenClawCodeAdapter] UserHookRail loaded with %d event types",
+                    len(hooks_config.events),
+                )
+        except Exception as e:
+            logger.warning("[JiuwenClawCodeAdapter] Failed to load UserHookRail: %s", e)
         return rails_list
 
     # ─── Code 专属 Rail 构建 ────────────────

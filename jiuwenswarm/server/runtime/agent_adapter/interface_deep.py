@@ -115,6 +115,8 @@ from jiuwenswarm.agents.harness.common.rails import (
     ResponsePromptRail,
     RuntimePromptRail,
 )
+from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
@@ -2189,6 +2191,18 @@ class JiuWenClawDeepAdapter:
             len(rails_list),
             [type(r).__name__ for r in rails_list],
         )
+        # 用户配置的 hooks（UserHookRail）
+        try:
+            hooks_config = load_hooks_config(config_base)
+            if hooks_config.events:
+                user_hook_rail = UserHookRail(hooks_config)
+                rails_list.append(user_hook_rail)
+                logger.info(
+                    "[JiuWenClawDeepAdapter] UserHookRail loaded with %d event types",
+                    len(hooks_config.events),
+                )
+        except Exception as e:
+            logger.warning("[JiuWenClawDeepAdapter] Failed to load UserHookRail: %s", e)
         return rails_list
 
     @staticmethod
