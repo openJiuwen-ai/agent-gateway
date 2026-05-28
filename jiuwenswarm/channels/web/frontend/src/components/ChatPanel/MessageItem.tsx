@@ -28,100 +28,7 @@ import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { parseTeamEventMessage } from './teamEventUtils';
-import teamLeaderAvatar from '../../assets/teamleader.svg';
-import userInTeamAvatar from '../../assets/user-in-team.svg';
-import teamAvatar2 from '../../assets/Team-2.svg';
-import teamAvatar3 from '../../assets/Team-3.svg';
-import teamAvatar4 from '../../assets/Team-4.svg';
-import teamAvatar5 from '../../assets/Team-5.svg';
-import teamAvatar6 from '../../assets/Team-6.svg';
-
-const TEAM_MEMBER_AVATARS = [
-  teamAvatar2,
-  teamAvatar3,
-  teamAvatar4,
-  teamAvatar5,
-  teamAvatar6,
-];
-
-function normalizeMemberId(member?: string) {
-  return member?.trim().toLowerCase().replace(/[\s-]+/g, '_') ?? '';
-}
-
-function isTeamLeaderMember(member?: string) {
-  const normalized = normalizeMemberId(member);
-  return normalized === 'team_leader' || normalized === 'teamleader';
-}
-
-function isUserMember(member?: string) {
-  return normalizeMemberId(member) === 'user';
-}
-
-function hashMemberKey(value: string) {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 33 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash;
-}
-
-function getTeamMemberAvatar(member?: string) {
-  if (isTeamLeaderMember(member)) {
-    return {
-      src: teamLeaderAvatar,
-      containerClassName: 'bg-transparent',
-      imageClassName: 'h-full w-full rounded-2xl object-cover',
-    };
-  }
-
-  if (isUserMember(member)) {
-    return {
-      src: userInTeamAvatar,
-      containerClassName: 'bg-transparent',
-      imageClassName: 'h-full w-full rounded-xl object-cover',
-    };
-  }
-
-  const normalized = normalizeMemberId(member) || 'unknown_member';
-  const src = TEAM_MEMBER_AVATARS[
-    hashMemberKey(normalized) % TEAM_MEMBER_AVATARS.length
-  ];
-
-  return {
-    src,
-    containerClassName: 'bg-transparent',
-    imageClassName: 'h-full w-full rounded-2xl object-cover',
-  };
-}
-
-export function TeamMemberAvatar({ member }: { member?: string }) {
-  const avatar = getTeamMemberAvatar(member);
-
-  return (
-    <div className={clsx(
-      'h-9 w-9 shrink-0 overflow-hidden rounded-xl',
-      avatar.containerClassName
-    )}>
-      <img
-        src={avatar.src}
-        alt={`${formatMemberName(member)} avatar`}
-        className={avatar.imageClassName}
-      />
-    </div>
-  );
-}
-
-export function formatMemberName(member?: string) {
-  if (isTeamLeaderMember(member)) {
-    return 'TeamLeader';
-  }
-
-  if (isUserMember(member)) {
-    return 'User';
-  }
-
-  return member || 'Unknown';
-}
+import { TeamMemberAvatar } from '../TeamMemberAvatar';
 
 export function MarkdownMessageBody({
   content,
@@ -516,7 +423,7 @@ export function MessageItem({
 	                   )}
 	                   {event.isBroadcast && (
 	                     <span className="team-event-group-chip team-event-group-chip--broadcast">
-	                       @所有人
+	                       {t('chat.teamBroadcastTarget')}
 	                     </span>
 	                   )}
 	                   <MarkdownMessageBody

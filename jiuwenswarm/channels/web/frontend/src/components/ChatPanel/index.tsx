@@ -4,11 +4,11 @@
  * 聊天面板，包含消息列表和输入区域
  */
 
-import React, { useRef, useEffect, useLayoutEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useSessionStore } from '../../stores';
-import { AgentMode, UserAnswer } from '../../types';
+import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
+import { AgentMode, Message, UserAnswer } from '../../types';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea } from './InputArea';
@@ -16,6 +16,8 @@ import { SubtaskProgress } from './SubtaskProgress';
 import { InlineQuestionCard } from './InlineQuestionCard';
 import { HistoryPagerBar } from './HistoryPagerBar';
 import { HarnessProgressBar } from './HarnessProgressBar';
+import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
+import { isTeamActivityMessage, parseTeamEventMessage } from './teamEventUtils';
 import './ChatPanel.css';
 
 export interface ChatHistoryPagerProps {
@@ -78,6 +80,71 @@ function InterruptResultBubble() {
       {message}
     </div>
   );
+}
+
+function ActiveTeamGroupEntry({ isProcessing }: { isProcessing: boolean }) {
+  const { messages } = useChatStore();
+  const {
+    mode,
+    teamHistoryMessages,
+    teamMemberExecutionEvents,
+    teamTaskEvents,
+    teamTasks,
+  } = useSessionStore();
+  const { todos } = useTodoStore();
+  const activeTeamMessages = useMemo(
+    () => getActiveTeamMessages(teamHistoryMessages, messages),
+    [teamHistoryMessages, messages]
+  );
+  const hasTeamActivity = activeTeamMessages.length > 0
+    || teamTasks.length > 0
+    || teamTaskEvents.length > 0
+    || todos.some((todo) => Boolean(todo.claimedBy))
+    || teamMemberExecutionEvents.length > 0;
+
+  if (mode !== 'team' || !hasTeamActivity) {
+    return null;
+  }
+
+  return (
+    <AgentTeamActivityCard
+      messages={activeTeamMessages}
+      isProcessing={isProcessing}
+      tasks={teamTasks}
+      taskEvents={teamTaskEvents}
+      todos={todos}
+      executionEvents={teamMemberExecutionEvents}
+    />
+  );
+}
+
+function getActiveTeamMessages(historyMessages: Message[], messages: Message[]): Message[] {
+  const seen = new Set<string>();
+  return [...historyMessages, ...messages]
+    .filter(isTeamActivityMessage)
+    .filter((message) => {
+      const key = getTeamMessageIdentity(message);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+}
+
+function getTeamMessageIdentity(message: Message): string {
+  const event = parseTeamEventMessage(message);
+  if (!event) {
+    return message.id || `${message.timestamp}:${message.content}`;
+  }
+  return [
+    'team',
+    event.type,
+    event.fromMember,
+    event.toMember || '',
+    event.timestamp || '',
+    event.content,
+  ].join(':');
 }
 
 function WelcomeHeading() {
@@ -273,6 +340,7 @@ export function ChatPanel({
                 {t('chat.welcomeSubtext')}
               </p>
               <div className="chat-welcome__composer">
+                <ActiveTeamGroupEntry isProcessing={isProcessing} />
                 <InterruptResultBubble />
                 <InputArea
                   onSubmit={handleSendMessage}
@@ -296,6 +364,7 @@ export function ChatPanel({
 
       {hasConversation && (
         <div className="chat-compose">
+          <ActiveTeamGroupEntry isProcessing={isProcessing} />
           <InterruptResultBubble />
           <InputArea
             onSubmit={handleSendMessage}

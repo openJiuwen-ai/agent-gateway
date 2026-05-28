@@ -34,6 +34,9 @@
   },
   "team": {
     "members": "团队成员",
+    "membersTab": "Team成员",
+    "statusTab": "状态",
+    "filesTab": "文件",
     "taskEventLog": "任务事件日志",
     "task": "任务",
     "executing": "正在执行",
@@ -43,7 +46,123 @@
     "statusRestarting": "重启中",
     "statusShutdownRequested": "请求关闭",
     "statusShutdown": "已关闭",
-    "statusError": "错误"
+    "statusError": "错误",
+    "collapse": "收起",
+    "taskOverview": "任务概览",
+    "elapsedTime": "已花费时间: {{value}}",
+    "noTasks": "暂无任务",
+    "noMemberData": "暂无成员数据",
+    "selectMember": "请选择 Team 成员",
+    "detailTabs": {
+      "members": "成员",
+      "group": "群聊"
+    },
+    "leader": "Team leader",
+    "memberSeparator": "、",
+    "groupChat": "群聊",
+    "allMembers": "所有人",
+    "noGroupMessages": "暂无群聊消息",
+    "memberTasksTitle": "{{member}} 执行的任务",
+    "memberTasks": "Ta的任务",
+    "noMemberTasks": "暂无可归属到该成员的任务",
+    "noProcessData": "暂无该成员的执行过程数据",
+    "collapseView": "收起视图",
+    "expandView": "展开视图",
+    "expand": "展开",
+    "runningMode": "运行模式：{{mode}}",
+    "taskFallback": "任务 {{id}}",
+    "memberStatus": {
+      "running": "运行中",
+      "idle": "空闲",
+      "restarting": "重启中",
+      "shutdown": "已关闭",
+      "error": "异常",
+      "unstarted": "未启动",
+      "unknown": "未知"
+    },
+    "taskStatus": {
+      "completed": "已完成",
+      "in_progress": "进行中",
+      "cancelled": "已取消",
+      "error": "异常",
+      "pending": "等待中"
+    },
+    "taskEvents": {
+      "completed": "任务已完成",
+      "claimed": "任务已认领",
+      "created": "任务已创建",
+      "cancelled": "任务已取消",
+      "unblocked": "任务解除阻塞",
+      "updated": "任务状态更新"
+    },
+    "taskDetail": {
+      "sourcePrompt": "来源请求：{{prompt}}",
+      "noDetail": "后端未提供更详细的任务描述"
+    },
+    "elapsed": {
+      "daysHours": "{{days}}天{{hours}}小时",
+      "hoursMinutes": "{{hours}}h{{minutes}}m",
+      "minutesSeconds": "{{minutes}}min{{seconds}}s",
+      "seconds": "{{seconds}}s"
+    },
+    "process": {
+      "memberMessage": "成员协作消息",
+      "broadcastMessage": "广播消息",
+      "p2pMessage": "点对点消息",
+      "collaborationMessage": "协作消息",
+      "sentTo": "发给 {{member}}",
+      "sentMessage": "发送消息",
+      "receivedMessage": "接收消息",
+      "fields": {
+        "type": "类型",
+        "member": "成员",
+        "tool": "工具",
+        "content": "内容",
+        "call": "调用",
+        "result": "结果",
+        "sender": "发送方",
+        "receiver": "接收方",
+        "eventType": "事件类型",
+        "taskId": "任务 ID",
+        "taskStatus": "任务状态",
+        "description": "说明"
+      },
+      "execution": {
+        "final": "任务完成总结",
+        "toolCall": "工具调用",
+        "toolCallTitle": "调用 {{tool}}",
+        "toolResult": "工具结果",
+        "toolResultTitle": "{{tool}} 结果",
+        "file": "文件",
+        "sentFile": "发送文件",
+        "event": "执行事件"
+      }
+    },
+    "planning": {
+      "tab": "任务规划",
+      "progressTitle": "任务进度",
+      "token": "Token",
+      "elapsedTime": "已用时 {{value}}",
+      "taskList": "任务列表",
+      "taskListAria": "{{task}} 任务列表",
+      "resources": "任务资源",
+      "skills": "技能",
+      "files": "文件",
+      "unassigned": "未分配",
+      "unassignedAvatar": "未分配 avatar",
+      "views": {
+        "list": "列表视图",
+        "structure": "结构视图",
+        "board": "任务板视图"
+      },
+      "columns": {
+        "waiting": "等待中",
+        "running": "进行中",
+        "completed": "已完成",
+        "cancelled": "已取消",
+        "failed": "任务失败"
+      }
+    }
   },
   "teams": {
     "title": "团队管理",
@@ -121,6 +240,7 @@
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
+    "teamBroadcastTarget": "@所有人",
     "contextCompressionCompleted": "本轮完成上下文压缩 {{count}} 次",
     "historyPager": {
       "loadedOfTotal": "历史已加载 {{loaded}} / {{total}} 页",
@@ -1118,6 +1238,37 @@
       "pending": "{{pendingCount}} 个执行中",
       "timeout": "{{timeoutCount}} 个超时",
       "latest": "↓ 最新"
+    },
+    "teamActivity": {
+      "preparing": "Agent Team 正在准备",
+      "currentActivity": "{{member}} - {{summary}}",
+      "progress": {
+        "completed": "任务完成",
+        "inactive": "当前无进行中的活动",
+        "activeMembers": "活跃成员数： {{count}}"
+      },
+      "status": {
+        "completed": "任务完成",
+        "cancelled": "任务取消",
+        "thinking": "正在思考",
+        "message": "发送消息",
+        "file": "发送文件",
+        "executingTool": "执行工具",
+        "toolCall": "工具调用"
+      },
+      "summary": {
+        "task": "{{status}}：{{content}}",
+        "message": "发送消息：{{content}}",
+        "file": "发送文件：{{content}}",
+        "tool": "调用工具：{{content}}"
+      },
+      "counts": {
+        "tasks": "执行任务",
+        "messages": "发送消息",
+        "tools": "工具调用"
+      },
+      "openGroupChat": "展开群聊",
+      "openGroupChatTitle": "展开群聊消息"
     },
     "inlineQuestion": {
       "header": "演进审批",

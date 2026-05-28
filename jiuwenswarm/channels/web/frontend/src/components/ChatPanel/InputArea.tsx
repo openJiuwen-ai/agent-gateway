@@ -189,7 +189,7 @@ export function InputArea({
 
   const trimmedDraft = (inputValue + pendingVoiceText).trim();
   const hasDraft = trimmedDraft.length > 0 || isListening;
-  const showStop = isInterruptible && !hasDraft;
+  const showStop = isProcessing && !isPaused && !hasDraft;
   const canSubmit = hasDraft || showStop;
 
   const handleSendButtonClick = useCallback(() => {

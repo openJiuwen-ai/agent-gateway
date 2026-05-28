@@ -65,3 +65,7 @@ export function isTeamMemberCollaborationMessage(message: Message): boolean {
   }
   return !event.isLeaderToUser;
 }
+
+export function isTeamActivityMessage(message: Message): boolean {
+  return Boolean(parseTeamEventMessage(message));
+}

@@ -5,6 +5,7 @@
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ConnectionAckPayload,
   WebConnectOptions,
@@ -28,8 +29,8 @@ import {
   ContextCompressionSummary,
 } from '../types';
 import { useChatStore, useTodoStore, useSessionStore, useHarnessStore } from '../stores';
+import type { TeamTask, TeamTaskStatus } from '../stores/sessionStore';
 import { webClient } from '../services/webClient';
-import i18n from '../i18n';
 import {
   fetchTtsAudio,
   playAudioBase64,
@@ -43,6 +44,164 @@ import {
 } from '../features/tool-events/toolEventNormalizer';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
+
+const TEAM_TASK_STATUS_SET = new Set<TeamTaskStatus>([
+  'pending',
+  'blocked',
+  'claimed',
+  'plan_approved',
+  'completed',
+  'cancelled',
+]);
+
+function normalizeTeamTaskStatus(
+  status: unknown,
+  fallback: TeamTaskStatus = 'pending'
+): TeamTaskStatus {
+  return typeof status === 'string' && TEAM_TASK_STATUS_SET.has(status as TeamTaskStatus)
+    ? status as TeamTaskStatus
+    : fallback;
+}
+
+function pickString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getPayloadSessionId(payload: Record<string, unknown>): string | undefined {
+  const direct = pickString(payload.session_id);
+  if (direct) {
+    return direct;
+  }
+  const nestedPayload = payload.payload;
+  if (isRecord(nestedPayload)) {
+    const nested = pickString(nestedPayload.session_id);
+    if (nested) {
+      return nested;
+    }
+    const nestedEvent = nestedPayload.event;
+    if (isRecord(nestedEvent)) {
+      return pickString(nestedEvent.session_id);
+    }
+  }
+  const event = payload.event;
+  if (isRecord(event)) {
+    return pickString(event.session_id);
+  }
+  return undefined;
+}
+
+function normalizeStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = value.filter(
+    (item): item is string => typeof item === 'string' && item.trim().length > 0
+  );
+  return normalized.length ? normalized : undefined;
+}
+
+function statusFromTaskEventType(type: string, explicitStatus: unknown): TeamTaskStatus {
+  if (type === 'team.task.claimed') return normalizeTeamTaskStatus(explicitStatus, 'claimed');
+  if (type === 'team.task.completed') return normalizeTeamTaskStatus(explicitStatus, 'completed');
+  if (type === 'team.task.cancelled') return normalizeTeamTaskStatus(explicitStatus, 'cancelled');
+  if (type === 'team.task.unblocked') return normalizeTeamTaskStatus(explicitStatus, 'pending');
+  return normalizeTeamTaskStatus(explicitStatus);
+}
+
+function normalizeTaskEvent(value: unknown): TeamTask | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const taskId = pickString(raw.task_id, raw.id);
+  if (!taskId) {
+    return null;
+  }
+  const type = pickString(raw.type) || '';
+  const explicitTitle = pickString(raw.title, raw.name, raw.description);
+  const content = pickString(raw.content);
+  return {
+    task_id: taskId,
+    title: explicitTitle,
+    content,
+    status: statusFromTaskEventType(type, raw.status),
+    assignee: pickString(raw.assignee, raw.member_id, raw.claimed_by, raw.claimedBy, raw.from_member),
+    team_id: pickString(raw.team_id),
+    timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+    skills: normalizeStringArray(raw.skills),
+    files: normalizeStringArray(raw.files),
+  };
+}
+
+function normalizeTaskRecord(
+  value: unknown,
+  fallbackStatus: TeamTaskStatus = 'pending'
+): TeamTask | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const raw = value as Record<string, unknown>;
+  const taskId = pickString(raw.task_id, raw.id);
+  if (!taskId) {
+    return null;
+  }
+  const title = pickString(raw.title, raw.name, raw.description);
+  const content = pickString(raw.content);
+  return {
+    task_id: taskId,
+    title,
+    content,
+    status: normalizeTeamTaskStatus(raw.status, fallbackStatus),
+    assignee: pickString(raw.assignee, raw.member_id, raw.claimed_by, raw.claimedBy, raw.from_member),
+    team_id: pickString(raw.team_id),
+    timestamp: typeof raw.timestamp === 'number' ? raw.timestamp : Date.now(),
+    skills: normalizeStringArray(raw.skills),
+    files: normalizeStringArray(raw.files),
+  };
+}
+
+function upsertTaskRecords(values: unknown, fallbackStatus: TeamTaskStatus = 'pending') {
+  if (!Array.isArray(values)) {
+    const task = normalizeTaskRecord(values, fallbackStatus);
+    if (task) {
+      useSessionStore.getState().upsertTeamTask(task);
+    }
+    return;
+  }
+  values.forEach((item) => {
+    const task = normalizeTaskRecord(item, fallbackStatus);
+    if (task) {
+      useSessionStore.getState().upsertTeamTask(task);
+    }
+  });
+}
+
+function applyTeamTaskToolCall(toolCall: ToolCall) {
+  if (toolCall.name === 'create_task') {
+    upsertTaskRecords(Array.isArray(toolCall.arguments.tasks) ? toolCall.arguments.tasks : toolCall.arguments);
+    return;
+  }
+  if (toolCall.name === 'update_task') {
+    const taskId = pickString(toolCall.arguments.task_id, toolCall.arguments.id);
+    const existingStatus = taskId
+      ? useSessionStore.getState().teamTasks.find((task) => task.task_id === taskId)?.status
+      : undefined;
+    upsertTaskRecords(toolCall.arguments, existingStatus || 'pending');
+    return;
+  }
+  if (toolCall.name === 'claim_task') {
+    upsertTaskRecords({ ...toolCall.arguments, status: toolCall.arguments.status || 'claimed' }, 'claimed');
+  }
+}
 
 interface UseWebSocketOptions {
   activeSessionId?: string;
@@ -134,12 +293,50 @@ function normalizeEventTimestampIso(value: unknown): string {
   return new Date().toISOString();
 }
 
-function isTeamTeammatePayload(payload: Record<string, unknown>): boolean {
+function isTeamTeammateMessagePayload(payload: Record<string, unknown>): boolean {
   return typeof payload.role === 'string' && payload.role.trim().toLowerCase() === 'teammate';
 }
 
-function shouldHideTeamTeammatePayload(mode: AgentMode, payload: Record<string, unknown>): boolean {
-  return mode === 'team' && isTeamTeammatePayload(payload);
+function isHiddenTeamTeammateMessagePayload(mode: AgentMode, payload: Record<string, unknown>): boolean {
+  return mode === 'team' && isTeamTeammateMessagePayload(payload);
+}
+
+function getTeamPayloadMemberName(payload: Record<string, unknown>): string | undefined {
+  return pickString(payload.member_name, payload.member_id, payload.source_member);
+}
+
+function eventTimestampMs(payload: Record<string, unknown>): number {
+  const value = payload.timestamp;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1_000_000_000_000 ? value : value * 1000;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) {
+      return parsed;
+    }
+  }
+  return Date.now();
+}
+
+function stableEventId(...parts: unknown[]): string {
+  return parts
+    .map((part) => String(part ?? '').trim())
+    .filter(Boolean)
+    .join(':')
+    .replace(/[^a-zA-Z0-9:_-]+/g, '-')
+    .slice(0, 180);
+}
+
+function stringifyCompact(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value ?? '');
+  }
 }
 
 function stringifyPayloadForDedup(payload: Record<string, unknown>): string {
@@ -164,6 +361,7 @@ function makeEventDedupKey(eventName: string, payload: Record<string, unknown>):
 }
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  const { t } = useTranslation();
   const {
     activeSessionId,
     provider,
@@ -191,6 +389,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const onErrorRef = useRef(onError);
   const sendMessageRef = useRef<typeof sendMessage>();
   const recentEventRef = useRef<Map<string, number>>(new Map());
+  const teamToolCallMemberRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
   const contextCompressionSummaryRef = useRef<ContextCompressionSummary>({
     count: 0,
@@ -278,8 +477,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const shouldHandleSessionEvent = useCallback(
     (payload: Record<string, unknown>): boolean => {
-      const payloadSessionId = payload.session_id;
-      if (typeof payloadSessionId !== 'string' || !payloadSessionId) {
+      const payloadSessionId = getPayloadSessionId(payload);
+      if (!payloadSessionId) {
         return true;
       }
       const currentSessionId = activeSessionIdRef.current;
@@ -317,8 +516,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             execution_status?: string;
             mode?: string;
           }>;
-          team_id: string;
+team_id: string;
+          tasks?: Array<unknown>;
         }>('team.snapshot', { session_id: sessionId });
+
+        if (activeSessionIdRef.current !== sessionId) {
+          return;
+        }
 
         if (snapshot?.members) {
           useSessionStore.getState().setTeamMembers(
@@ -327,7 +531,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               member_id: m.member_id || '',
               status: m.status || '',
               timestamp: Date.now(),
+              name: m.name,
+              execution_status: m.execution_status,
+              mode: m.mode,
             }))
+          );
+        }
+        if (Array.isArray(snapshot?.tasks)) {
+          useSessionStore.getState().setTeamTasks(
+            snapshot.tasks
+              .map((task) => normalizeTaskRecord(task))
+              .filter((task): task is TeamTask => task !== null)
           );
         }
       } catch (error) {
@@ -524,17 +738,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setConnectionStats({ lastError: webError.message });
         setProcessing(false);
         setThinking(false);
-        const errorMsg = webError.message || i18n.t('network.sendMessageFailed');
+        const errorMsg = webError.message || t('network.sendMessageFailed');
         onErrorRef.current?.(errorMsg);
         addMessage({
           id: `error-${Date.now()}`,
           role: 'system',
-          content: i18n.t('network.errorPrefix', { message: errorMsg }),
+          content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
         });
       }
     },
-    [addMessage, request, resetContextCompressionTurn, setProcessing, setThinking]
+    [addMessage, request, resetContextCompressionTurn, setProcessing, setThinking, t]
   );
 
   // 存储sendMessage函数到ref
@@ -582,7 +796,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.interruptFailed'));
+        onErrorRef.current?.(webError.message || t('network.interruptFailed'));
       }
     },
     [
@@ -591,6 +805,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       request,
       resetContextCompressionTurn,
       setConnectionStats,
+      t,
     ]
   );
 
@@ -602,10 +817,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.pauseFailed'));
+        onErrorRef.current?.(webError.message || t('network.pauseFailed'));
       }
     },
-    [interrupt, setConnectionStats]
+    [interrupt, setConnectionStats, t]
   );
 
   const cancel = useCallback(
@@ -615,10 +830,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.cancelFailed'));
+        onErrorRef.current?.(webError.message || t('network.cancelFailed'));
       }
     },
-    [interrupt, setConnectionStats]
+    [interrupt, setConnectionStats, t]
   );
 
   const supplement = useCallback(
@@ -628,10 +843,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.supplementFailed'));
+        onErrorRef.current?.(webError.message || t('network.supplementFailed'));
       }
     },
-    [interrupt, setConnectionStats]
+    [interrupt, setConnectionStats, t]
   );
 
   // 恢复 - 恢复暂停的任务
@@ -643,10 +858,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.resumeFailed'));
+        onErrorRef.current?.(webError.message || t('network.resumeFailed'));
       }
     },
-    [interrupt, setConnectionStats, setPaused]
+    [interrupt, setConnectionStats, setPaused, t]
   );
 
   // 切换模式
@@ -727,10 +942,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         setConnectionStats({ lastError: webError.message });
-        onErrorRef.current?.(webError.message || i18n.t('network.submitAnswerFailed'));
+        onErrorRef.current?.(webError.message || t('network.submitAnswerFailed'));
       }
     },
-    [request, setConnectionStats, setPendingQuestion]
+    [request, setConnectionStats, setPendingQuestion, t]
   );
 
   // activeSessionIdRef 已在渲染阶段同步更新，无需额外 effect
@@ -828,8 +1043,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const currentMode = useSessionStore.getState().mode;
         const content = typeof payload.content === 'string' ? payload.content : '';
 
-        // team 模式下，过滤成员输出，只保留外层 leader 回复。
-        if (shouldHideTeamTeammatePayload(currentMode, payload)) {
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
           return;
         }
         if (currentMode === 'team' && content) {
@@ -880,7 +1094,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         finishContextCompressionTurn();
 
         // team 模式下，过滤成员输出，只保留外层 leader 回复。
-        if (shouldHideTeamTeammatePayload(currentMode, payload)) {
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
+          const memberId = getTeamPayloadMemberName(payload);
+          if (memberId && content.trim()) {
+            const timestamp = eventTimestampMs(payload);
+            useSessionStore.getState().addTeamMemberExecutionEvent({
+              id: stableEventId('final', payload.session_id, memberId, payload.rid, timestamp, content.slice(0, 48)),
+              member_id: memberId,
+              kind: 'final',
+              timestamp,
+              title: t('team.process.execution.final'),
+              content,
+            });
+          }
           return;
         }
         if (currentMode === 'team' && content) {
@@ -1020,7 +1246,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!shouldHandleSessionEvent(payload)) return;
         const files = (payload.files ?? []) as FileDownloadItem[];
         if (!files.length) return;
-        if (useSessionStore.getState().mode === 'team') {
+        const currentMode = useSessionStore.getState().mode;
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
+          const memberId = getTeamPayloadMemberName(payload);
+          if (memberId) {
+            const timestamp = eventTimestampMs(payload);
+            useSessionStore.getState().addTeamMemberExecutionEvent({
+              id: stableEventId('file', payload.session_id, memberId, timestamp, files.map((file) => file.name).join(',')),
+              member_id: memberId,
+              kind: 'file',
+              timestamp,
+              title: t('team.process.execution.sentFile'),
+              content: files.map((file) => file.name).join('\n'),
+              files: files.map((file) => ({
+                name: file.name,
+                size: file.size,
+                mime_type: file.mime_type,
+                download_url: file.download_url,
+              })),
+            });
+          }
+          return;
+        }
+        if (currentMode === 'team') {
           const target = findActiveTeamLeaderMessage();
           if (target) {
             updateMessage(target.id, {
@@ -1044,9 +1292,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         const currentMode = useSessionStore.getState().mode;
-        if (shouldHideTeamTeammatePayload(currentMode, payload)) return;
         clearThinkingForVisibleOutput();
         const toolCall = normalizeToolCallPayload(payload);
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
+          if (currentMode === 'team') {
+            applyTeamTaskToolCall(toolCall);
+          }
+          const memberId = getTeamPayloadMemberName(payload) || toolCall.memberName;
+          if (memberId) {
+            teamToolCallMemberRef.current.set(toolCall.id, memberId);
+            const timestamp = eventTimestampMs(payload);
+            useSessionStore.getState().addTeamMemberExecutionEvent({
+              id: stableEventId('tool-call', payload.session_id, memberId, toolCall.id, timestamp),
+              member_id: memberId,
+              kind: 'tool_call',
+              timestamp,
+              title: t('team.process.execution.toolCallTitle', { tool: toolCall.name }),
+              content: toolCall.description || toolCall.formatted_args || stringifyCompact(toolCall.arguments),
+              tool_name: toolCall.name,
+              tool_call_id: toolCall.id,
+            });
+          }
+          return;
+        }
         const { currentStreamId, messages } = useChatStore.getState();
         const currentStreamMessage =
           currentMode === 'team'
@@ -1060,12 +1328,35 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? { startedAt: currentStreamMessage.timestamp }
             : undefined
         );
+        if (currentMode === 'team') {
+          applyTeamTaskToolCall(toolCall);
+        }
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
-        if (shouldHideTeamTeammatePayload(useSessionStore.getState().mode, payload)) return;
-        addToolResult(normalizeToolResultPayload(payload));
+        const currentMode = useSessionStore.getState().mode;
+        const toolResult = normalizeToolResultPayload(payload);
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
+          const memberId =
+            getTeamPayloadMemberName(payload) ||
+            (toolResult.toolCallId ? teamToolCallMemberRef.current.get(toolResult.toolCallId) : undefined);
+          if (memberId) {
+            const timestamp = eventTimestampMs(payload);
+            useSessionStore.getState().addTeamMemberExecutionEvent({
+              id: stableEventId('tool-result', payload.session_id, memberId, toolResult.toolCallId, timestamp),
+              member_id: memberId,
+              kind: 'tool_result',
+              timestamp,
+              title: t('team.process.execution.toolResultTitle', { tool: toolResult.toolName }),
+              content: toolResult.summary || stringifyCompact(toolResult.result),
+              tool_name: toolResult.toolName,
+              tool_call_id: toolResult.toolCallId,
+            });
+          }
+          return;
+        }
+        addToolResult(toolResult);
       }),
       webClient.on('todo.updated', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
@@ -1132,6 +1423,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
         const isProcessingNow = Boolean(payload.is_processing);
+        if (isProcessingNow && useChatStore.getState().isPaused) {
+          return;
+        }
         setProcessing(isProcessingNow);
         if (!isProcessingNow) {
           setThinking(false);
@@ -1162,7 +1456,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         setThinking(false);
         const errorMsg =
-          typeof payload.error === 'string' ? payload.error : i18n.t('network.unknownError');
+          typeof payload.error === 'string' ? payload.error : t('network.unknownError');
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (errorMsg.includes('invalid page_idx or session history not found')) {
           useChatStore.getState().setLoadingHistory(false);
@@ -1172,7 +1466,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         addMessage({
           id: `error-${Date.now()}`,
           role: 'system',
-          content: i18n.t('network.errorPrefix', { message: errorMsg }),
+          content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
         });
       }),
@@ -1335,7 +1629,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const p = payload as { payload?: { event?: unknown }; event?: unknown };
         const event = p.payload?.event || p.event;
         if (event) {
-          const e = event as { type?: string; team_id?: string; task_id?: string; status?: string; timestamp?: number };
+          const e = event as {
+            type?: string;
+            team_id?: string;
+            task_id?: string;
+            status?: string;
+            timestamp?: number;
+            member_id?: string;
+            assignee?: string;
+            team_name?: string;
+            title?: string;
+            name?: string;
+            description?: string;
+            content?: string;
+            updated_at?: number | string | null;
+          };
           useSessionStore.getState().addTeamTaskEvent({
             id: `task-${Date.now()}`,
             type: e.type || '',
@@ -1343,7 +1651,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             task_id: e.task_id || '',
             status: e.status || '',
             timestamp: e.timestamp || Date.now(),
+            member_id: e.member_id,
+            assignee: e.assignee,
+            team_name: e.team_name,
+            title: e.title || e.name || e.description,
+            content: e.content,
+            updated_at: e.updated_at,
           });
+          const normalizedTask = normalizeTaskEvent(event);
+          if (normalizedTask) {
+            useSessionStore.getState().upsertTeamTask(normalizedTask);
+          }
         }
       }),
       webClient.on('team.member', ({ payload }) => {
@@ -1351,11 +1669,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('team.member', payload)) {
           return;
         }
-        clearThinkingForVisibleOutput();
         const p = payload as { payload?: { event?: unknown }; event?: unknown };
         const event = p.payload?.event || p.event;
         if (event) {
-          const e = event as { type?: string; member_id?: string; status?: string; new_status?: string; timestamp?: number };
+          const e = event as {
+            type?: string;
+            member_id?: string;
+            status?: string;
+            new_status?: string;
+            timestamp?: number;
+            name?: string;
+            execution_status?: string | null;
+            mode?: string;
+          };
           if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               e.member_id,
@@ -1368,6 +1694,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               member_id: e.member_id || '',
               status: e.status || '',
               timestamp: e.timestamp || Date.now(),
+              name: e.name,
+              execution_status: e.execution_status,
+              mode: e.mode,
             });
           }
         }
@@ -1591,6 +1920,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     shouldDropDuplicatedEvent,
     startStreaming,
     stopStreaming,
+    t,
     updateMessage,
     updateSubtask,
   ]);

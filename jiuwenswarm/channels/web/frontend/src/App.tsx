@@ -36,6 +36,7 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { useWebSocket } from './hooks';
 import { webRequest } from './services/webClient';
+import { useTeamPanelState } from './features/teamPanelState';
 import { AgentMode, UserAnswer, ModelEntry } from './types';
 import { useSessionStore, useChatStore, useTodoStore, useHarnessStore } from './stores';
 import { useTranslation } from 'react-i18next';
@@ -66,6 +67,15 @@ type ConfigSaveAllPayload = {
   agents?: AgentsTeamsSavePayload["agents"];
   team?: AgentsTeamsSavePayload["team"];
 };
+
+function clearTeamRuntimeState(): void {
+  const sessionStore = useSessionStore.getState();
+  sessionStore.setTeamMembers([]);
+  sessionStore.setTeamTaskEvents([]);
+  sessionStore.setTeamTasks([]);
+  sessionStore.setTeamMemberExecutionEvents([]);
+  sessionStore.setTeamHistoryMessages([]);
+}
 
 // 错误边界组件
 interface ErrorBoundaryState {
@@ -223,7 +233,33 @@ function AppContent() {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
 
-  const { setCurrentSession, setSessions, setAvailableModels, setMode, mode, heartbeatMessage, heartbeatUpdatedAt, teamTaskEvents, teamMembers } = useSessionStore();
+  const { setCurrentSession, setSessions, setAvailableModels, setMode, mode, heartbeatMessage, heartbeatUpdatedAt, teamTaskEvents, teamTasks, teamMembers, setTeamLeaderMemberIds } = useSessionStore();
+  const { teamAreaExpanded, setTeamAreaExpanded } = useTeamPanelState();
+  const [chatPanelWidthPct, setChatPanelWidthPct] = useState(33.33);
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startPct = chatPanelWidthPct;
+    const container = (e.currentTarget as HTMLElement).parentElement;
+    if (!container) return;
+    const containerWidth = container.getBoundingClientRect().width;
+
+    const onMouseMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - startX;
+      const newPct = Math.min(70, Math.max(20, startPct + (dx / containerWidth) * 100));
+      setChatPanelWidthPct(newPct);
+    };
+
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [chatPanelWidthPct]);
+
   const {
     clearMessages,
     clearSubtasks,
@@ -238,6 +274,18 @@ function AppContent() {
     setPaused,
     messages,
   } = useChatStore();
+
+  useEffect(() => {
+    if (!serverConfig) {
+      setTeamLeaderMemberIds([]);
+      return;
+    }
+    const leaderIds = Object.entries(serverConfig)
+      .filter(([key]) => /^team_leader_member_name_\d+$/.test(key) || /^team_\d+_leader_member_name$/.test(key))
+      .map(([, value]) => (typeof value === 'string' ? value.trim() : ''))
+      .filter(Boolean);
+    setTeamLeaderMemberIds(leaderIds);
+  }, [serverConfig, setTeamLeaderMemberIds]);
 
   const disposeInFlightHistoryHandles = useCallback(() => {
     historyLoadingMoreRef.current = false;
@@ -259,17 +307,19 @@ function AppContent() {
       case 'auto_harness':
         return Boolean(extensionReady?.runtimePath) || hasMessages || hasHeartbeat;
       case 'team':
-        return teamTaskEvents.length > 0 || teamMembers.length > 0 || hasMessages || hasHeartbeat;
+        return teamTaskEvents.length > 0 || teamTasks.length > 0 || teamMembers.length > 0 || hasMessages || hasHeartbeat;
       default:
         return todos.length > 0 || hasMessages || hasHeartbeat;
     }
-  }, [mode, todos.length, teamTaskEvents.length, teamMembers.length, extensionReady?.runtimePath, messages.length, heartbeatMessage]);
+  }, [mode, todos.length, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, heartbeatMessage]);
+  const isTeamAreaExpanded = mode === 'team' && teamAreaExpanded && toolPanelHasContent;
 
   // WebSocket 连接 - provider 由后端配置决定 - provider 由后端配置决定，前端默认不在 URL query 传递
   const {
     isConnected,
     request,
     sendMessage,
+    pause,
     cancel,
     supplement,
     switchMode,
@@ -737,6 +787,7 @@ for (let i = payload.team.length; i < 10; i++) {
                 arguments: n.arguments,
                 description: n.description,
                 formatted_args: n.formatted_args,
+                memberName: n.memberName,
               },
               { startedAt: item.at }
             );
@@ -862,8 +913,8 @@ for (let i = payload.team.length; i < 10; i++) {
     useChatStore.getState().setPaused(false);
     // 集群模式下新建会话时清空成员列表和事件列表
     if (mode === 'team') {
-      useSessionStore.getState().setTeamMembers([]);
-      useSessionStore.getState().setTeamTaskEvents([]);
+      clearTeamRuntimeState();
+      setTeamAreaExpanded(false);
     }
     disposeInFlightHistoryHandles();
     setHistoryPagerMeta(null);
@@ -932,6 +983,7 @@ for (let i = payload.team.length; i < 10; i++) {
     resetHarnessStore,
     sessionId,
     setCurrentSession,
+    setTeamAreaExpanded,
     setPaused,
     setProcessing,
     setThinking,
@@ -948,13 +1000,11 @@ for (let i = payload.team.length; i < 10; i++) {
     useChatStore.getState().setPaused(false);
     // 切换到集群模式时清空成员列表和事件列表
     if (mode === 'team') {
-      useSessionStore.getState().setTeamMembers([]);
-      useSessionStore.getState().setTeamTaskEvents([]);
+      clearTeamRuntimeState();
     }
     // 从集群模式切换到其他模式时，也需要清空成员列表和事件列表
     if (mode !== 'team' && useSessionStore.getState().mode === 'team') {
-      useSessionStore.getState().setTeamMembers([]);
-      useSessionStore.getState().setTeamTaskEvents([]);
+      clearTeamRuntimeState();
     }
     void switchMode(sessionId, mode);
   }, [sessionId, switchMode]);
@@ -976,8 +1026,12 @@ for (let i = payload.team.length; i < 10; i++) {
   const handleCancel = useCallback(() => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === 'new') return;
+    if (mode === 'team') {
+      void pause(currentSessionId);
+      return;
+    }
     void cancel(currentSessionId);
-  }, [cancel]);
+  }, [cancel, mode, pause]);
 
   const handleUserAnswer = useCallback((requestId: string, answers: UserAnswer[], source?: string) => {
     const currentSessionId = sessionIdRef.current;
@@ -1021,6 +1075,7 @@ for (let i = payload.team.length; i < 10; i++) {
                 arguments: n.arguments,
                 description: n.description,
                 formatted_args: n.formatted_args,
+                memberName: n.memberName,
               },
               { startedAt: item.at }
             );
@@ -1146,6 +1201,7 @@ for (let i = payload.team.length; i < 10; i++) {
       setProcessing(false);
       setThinking(false);
       setPaused(false);
+      clearTeamRuntimeState();
       clearMessages();
       clearTodos();
       clearSubtasks();
@@ -1197,7 +1253,7 @@ for (let i = payload.team.length; i < 10; i++) {
     : heartbeatToastPreviewRaw;
 
   return (
-    <div className={`shell ${sidebarCollapsed ? 'shell--collapsed' : ''}`} data-testid="app-shell" data-session-id={sessionId}>
+    <div className={`shell ${sidebarCollapsed || isTeamAreaExpanded ? 'shell--collapsed' : ''}`} data-testid="app-shell" data-session-id={sessionId}>
       {/* Navigation Sidebar - always rendered, 48px icon strip when collapsed */}
       <SessionSidebar
         activeNav={activeNav}
@@ -1206,13 +1262,13 @@ for (let i = payload.team.length; i < 10; i++) {
         appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : '0.1.7'}
         isConnected={isConnected}
         onNewSession={handleNewSession}
-        collapsed={sidebarCollapsed}
+        collapsed={sidebarCollapsed || isTeamAreaExpanded}
         onCollapse={() => setSidebarCollapsed(true)}
         onExpand={() => setSidebarCollapsed(false)}
       />
 
       {/* Main Content */}
-      <main className="content">
+      <main className={`content ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -1227,10 +1283,13 @@ for (let i = payload.team.length; i < 10; i++) {
 
         {activeNav === 'chat' && (
           <>
-            <div className="flex-1 flex min-h-0 overflow-hidden card">
-              {/* Chat Panel */}
-              <div className="flex-1 flex flex-col min-w-0 min-h-0">
-                <div className="flex-1 min-h-0">
+            <div className={`flex-1 flex min-h-0 overflow-hidden ${isTeamAreaExpanded ? '' : 'card'}`}>
+              {/* Chat Panel - 在展开时可拖拽调整宽度 */}
+              <div
+                className={`flex flex-col min-w-0 min-h-0 ${isTeamAreaExpanded ? '' : 'flex-1'}`}
+                style={isTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : undefined}
+              >
+                <div className={`flex-1 min-h-0 ${isTeamAreaExpanded ? 'card rounded-l-lg rounded-r-none' : ''}`}>
                   <ChatPanel
                     onSendMessage={handleSendMessage}
                     onInterrupt={handleInterrupt}
@@ -1253,9 +1312,21 @@ for (let i = payload.team.length; i < 10; i++) {
                 </div>
               </div>
 
-              {/* Tool Panel - 仅在有内容时显示 */}
+              {/* 可拖拽分割线 */}
+              {isTeamAreaExpanded && (
+                <div
+                  className="shrink-0 w-1 cursor-col-resize bg-[var(--bg)] hover:bg-gray-400 active:bg-gray-500 transition-colors"
+                  onMouseDown={handleDividerMouseDown}
+                />
+              )}
+
+              {/* Tool Panel / Expanded Team Panel */}
               {toolPanelHasContent && (
-                <ToolPanel />
+                <ToolPanel 
+                  sessionId={sessionId}
+                  teamAreaExpanded={teamAreaExpanded}
+                  setTeamAreaExpanded={setTeamAreaExpanded}
+                />
               )}
             </div>
           </>

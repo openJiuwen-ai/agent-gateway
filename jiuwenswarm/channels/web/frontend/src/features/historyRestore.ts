@@ -13,6 +13,8 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.usage_summary',
   'chat.file',
   'team.message',
+  'team.member',
+  'team.task',
   'harness.message',
   'harness.stage_result',
   'harness.extension_ready'
@@ -42,12 +44,22 @@ export interface HistoryHarnessReplayItem {
   };
 }
 
+export interface HistoryTeamReplayItem {
+  kind: 'team_member' | 'team_task';
+  at: string;
+  payload: {
+    event: Record<string, unknown>;
+  };
+}
+
 type HistoryTimelineEntry =
   | { kind: 'message'; message: Message }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
   | { kind: 'usage_summary'; at: string; usage: UsageSummary }
   | { kind: 'file_items'; at: string; files: FileDownloadItem[] }
+  | { kind: 'team_member'; at: string; payload: { event: Record<string, unknown> } }
+  | { kind: 'team_task'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> };
 
@@ -58,6 +70,8 @@ interface BeginHistoryRestoreOptions {
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 HarnessProgressBar */
   onHarnessReplay?: (items: HistoryHarnessReplayItem[]) => void;
+  /** 与消息同一时间线顺序，用于恢复 Team 成员/任务状态 */
+  onTeamReplay?: (items: HistoryTeamReplayItem[]) => void;
   /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
   onEmpty?: (totalPages: number | null) => void;
   onError?: (message: string) => void;
@@ -176,12 +190,12 @@ function isTeamModeRecord(record: Record<string, unknown>): boolean {
   return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
 }
 
-function isTeamTeammateRecord(record: Record<string, unknown>): boolean {
+function isTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
   return typeof record.role === 'string' && record.role.trim().toLowerCase() === 'teammate';
 }
 
-function shouldSkipTeamTeammateRecord(record: Record<string, unknown>): boolean {
-  return isTeamModeRecord(record) && isTeamTeammateRecord(record);
+function isHiddenTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
+  return isTeamModeRecord(record) && isTeamTeammateMessageRecord(record);
 }
 
 const _HISTORY_RECORD_META_KEYS = new Set([
@@ -206,6 +220,29 @@ function buildEventPayloadForRecord(record: Record<string, unknown>): Record<str
     base.content = record.content;
   }
   return base;
+}
+
+function extractTeamEventRecord(record: Record<string, unknown>): Record<string, unknown> | null {
+  if (isRecord(record.event)) {
+    return record.event;
+  }
+  if (isRecord(record.event_payload)) {
+    if (isRecord(record.event_payload.event)) {
+      return record.event_payload.event;
+    }
+    return record.event_payload;
+  }
+
+  const payload: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (!_HISTORY_RECORD_META_KEYS.has(key)) {
+      payload[key] = value;
+    }
+  }
+  if (isRecord(payload.event)) {
+    return payload.event;
+  }
+  return Object.keys(payload).length > 0 ? payload : null;
 }
 
 function parseHistoryTimelineEntry(
@@ -247,11 +284,12 @@ function parseHistoryTimelineEntry(
   }
 
   if (eventType === 'team.message') {
-    if (!isRecord(record.event)) {
+    const event = extractTeamEventRecord(record);
+    if (!event) {
       return null;
     }
-    const teamPayload = { event: record.event };
-    const id = pickFirstString(record.event, ['message_id'])!;
+    const teamPayload = { event };
+    const id = pickFirstString(event, ['message_id']) ?? `hist-team-message-${sessionId}-${at}`;
     return {
       kind: 'message',
       message: {
@@ -260,6 +298,18 @@ function parseHistoryTimelineEntry(
         content: `team.event:${JSON.stringify(teamPayload)}`,
         timestamp: at,
       },
+    };
+  }
+
+  if (eventType === 'team.member' || eventType === 'team.task') {
+    const event = extractTeamEventRecord(record);
+    if (!event) {
+      return null;
+    }
+    return {
+      kind: eventType === 'team.member' ? 'team_member' : 'team_task',
+      at,
+      payload: { event },
     };
   }
 
@@ -273,7 +323,7 @@ function parseHistoryTimelineEntry(
     const id =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-final-${sessionId}-${at}`;
     if (isTeamModeRecord(record)) {
-      if (shouldSkipTeamTeammateRecord(record)) {
+      if (isHiddenTeamTeammateMessageRecord(record)) {
         return null;
       }
       return {
@@ -296,16 +346,10 @@ function parseHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.tool_call') {
-    if (shouldSkipTeamTeammateRecord(record)) {
-      return null;
-    }
     return { kind: 'tool_call', at, payload };
   }
 
   if (eventType === 'chat.tool_result') {
-    if (shouldSkipTeamTeammateRecord(record)) {
-      return null;
-    }
     return { kind: 'tool_result', at, payload };
   }
 
@@ -505,6 +549,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     const messages: Message[] = [];
     const toolReplay: HistoryToolReplayItem[] = [];
     const harnessReplay: HistoryHarnessReplayItem[] = [];
+    const teamReplay: HistoryTeamReplayItem[] = [];
     let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
@@ -548,6 +593,8 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
         });
       } else if (e.kind === 'file_items') {
         pendingFileItems = e.files;
+      } else if (e.kind === 'team_member' || e.kind === 'team_task') {
+        teamReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }
@@ -555,7 +602,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
     dispose();
 
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0) {
+    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
       options.onEmpty?.(totalPages);
       return;
     }
@@ -565,6 +612,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
     if (harnessReplay.length > 0) {
       options.onHarnessReplay?.(harnessReplay);
+    }
+    if (teamReplay.length > 0) {
+      options.onTeamReplay?.(teamReplay);
     }
   }
 
@@ -577,6 +627,7 @@ export interface FetchHistoryPageResult {
   messages: Message[];
   toolReplay: HistoryToolReplayItem[];
   harnessReplay: HistoryHarnessReplayItem[];
+  teamReplay: HistoryTeamReplayItem[];
   totalPages: number | null;
 }
 
@@ -669,6 +720,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     const messages: Message[] = [];
     const toolReplay: HistoryToolReplayItem[] = [];
     const harnessReplay: HistoryHarnessReplayItem[] = [];
+    const teamReplay: HistoryTeamReplayItem[] = [];
     let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
@@ -711,6 +763,8 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
         });
       } else if (e.kind === 'file_items') {
         pendingFileItems = e.files;
+      } else if (e.kind === 'team_member' || e.kind === 'team_task') {
+        teamReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       } else {
         toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
       }
@@ -718,11 +772,11 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
 
     dispose();
 
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0) {
+    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
       options.onEmpty?.(totalPages);
       return;
     }
-    options.onReady({ messages, toolReplay, harnessReplay, totalPages });
+    options.onReady({ messages, toolReplay, harnessReplay, teamReplay, totalPages });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };

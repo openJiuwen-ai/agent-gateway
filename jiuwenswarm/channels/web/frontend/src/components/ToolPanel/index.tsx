@@ -6,16 +6,48 @@
 
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { webRequest } from '../../services/webClient';
 import { TodoList } from '../TodoList';
-import { TeamArea } from '../TeamArea';
-import { TeamTaskEvents } from '../TeamTaskEvents';
+import { TeamArea } from '../teamArea';
 import { HarnessExtensionTree } from './HarnessExtensionTree';
+import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
+import { useTeamPanelState } from '../../features/teamPanelState';
 import './ToolPanel.css';
 
-export function ToolPanel() {
+interface ToolPanelProps {
+  sessionId?: string;
+  teamAreaExpanded?: boolean;
+  setTeamAreaExpanded?: (expanded: boolean) => void;
+  sidebarCollapsed?: boolean;
+}
+
+function mergeById<T>(
+  historyItems: T[],
+  currentItems: T[],
+  getId: (item: T) => string
+): T[] {
+  const itemsById = new Map(historyItems.map((item) => [getId(item), item]));
+  currentItems.forEach((item) => {
+    itemsById.set(getId(item), item);
+  });
+  return Array.from(itemsById.values());
+}
+
+export function ToolPanel({
+  sessionId,
+}: ToolPanelProps) {
   const { t } = useTranslation();
+  const {
+    teamAreaExpanded,
+    teamAreaActiveTab,
+    teamAreaActiveDetailTab,
+    teamAreaSelectedMemberId,
+    setTeamAreaExpanded,
+    setTeamAreaActiveTab,
+    setTeamAreaActiveDetailTab,
+    setTeamAreaSelectedMemberId,
+  } = useTeamPanelState();
   const {
     contextCompressionRate,
     contextCompressionBefore,
@@ -24,9 +56,16 @@ export function ToolPanel() {
     memoryUsage,
     setMemoryUsage,
     mode,
-    teamTaskEvents,
     teamMembers,
+    setTeamMembers,
+    setTeamTaskEvents,
+    setTeamTasks,
+    setTeamMemberExecutionEvents,
+    teamHistoryMessages,
+    setTeamHistoryMessages,
   } = useSessionStore();
+  const hydratedTeamHistorySessionRef = useRef<string | null>(null);
+  const loadingTeamHistorySessionRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isConnected) {
@@ -72,6 +111,81 @@ export function ToolPanel() {
     };
   }, [isConnected, setMemoryUsage]);
 
+  useEffect(() => {
+    if (mode !== 'team' || !isConnected || !sessionId?.startsWith('sess_')) {
+      setTeamHistoryMessages([]);
+      hydratedTeamHistorySessionRef.current = null;
+      loadingTeamHistorySessionRef.current = null;
+      return;
+    }
+    if (hydratedTeamHistorySessionRef.current !== sessionId) {
+      setTeamHistoryMessages([]);
+    }
+    if (hydratedTeamHistorySessionRef.current === sessionId) {
+      return;
+    }
+    if (loadingTeamHistorySessionRef.current === sessionId) {
+      return;
+    }
+
+    const controller = new AbortController();
+    loadingTeamHistorySessionRef.current = sessionId;
+    void loadTeamHistoryPanelState(sessionId, controller.signal)
+      .then((historyState) => {
+        loadingTeamHistorySessionRef.current = null;
+        hydratedTeamHistorySessionRef.current = sessionId;
+        const current = useSessionStore.getState();
+        const mergedMembers = mergeById(
+          historyState.members,
+          current.teamMembers,
+          (member) => member.member_id
+        );
+        if (mergedMembers.length > 0) {
+          setTeamMembers(mergedMembers);
+        }
+
+        const mergedTaskEvents = mergeById(
+          historyState.taskEvents,
+          current.teamTaskEvents,
+          (event) => event.task_id
+        );
+        if (mergedTaskEvents.length > 0) {
+          setTeamTaskEvents(mergedTaskEvents);
+        }
+
+        const mergedTasks = mergeById(
+          historyState.tasks,
+          current.teamTasks,
+          (task) => task.task_id
+        );
+        if (mergedTasks.length > 0) {
+          setTeamTasks(mergedTasks);
+        }
+
+        const mergedExecutionEvents = mergeById(
+          historyState.executionEvents,
+          current.teamMemberExecutionEvents,
+          (event) => event.id
+        );
+        if (mergedExecutionEvents.length > 0) {
+          setTeamMemberExecutionEvents(mergedExecutionEvents);
+        }
+
+        setTeamHistoryMessages(historyState.messages);
+      })
+      .catch((error) => {
+        loadingTeamHistorySessionRef.current = null;
+        if (error instanceof DOMException && error.name === 'AbortError') {
+          return;
+        }
+        console.warn('[team.history.panel] restore failed:', error);
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [isConnected, mode, sessionId, setTeamHistoryMessages, setTeamMemberExecutionEvents, setTeamMembers, setTeamTaskEvents, setTeamTasks]);
+
   const memoryDisplay =
     memoryUsage.rssMb == null
       ? '--'
@@ -90,10 +204,39 @@ export function ToolPanel() {
   }
   const compressionDisplay = `${afterK}K/${beforeK}K (${compressionRateDisplay}%)`;
 
+  if (teamAreaExpanded && mode === 'team') {
+    // 展开模式 - 更宽的面板，只显示 TeamArea
+    return (
+      <div
+        data-testid="tool-panel"
+        className="bg-panel h-full overflow-hidden flex-1 flex flex-col rounded-r-lg"
+      >
+        <div className="h-full bg-panel flex flex-col overflow-hidden">
+          <TeamArea
+            members={teamMembers}
+            historyMessages={teamHistoryMessages}
+            expanded={true}
+            activeTab={teamAreaActiveTab}
+            activeDetailTab={teamAreaActiveDetailTab}
+            selectedMemberId={teamAreaSelectedMemberId}
+            onTabChange={setTeamAreaActiveTab}
+            onDetailTabChange={setTeamAreaActiveDetailTab}
+            onMemberSelect={setTeamAreaSelectedMemberId}
+            onCollapse={() => {
+              setTeamAreaExpanded(false);
+              setTeamAreaSelectedMemberId('');
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  // 收起模式 - 原始宽度
   return (
     <div
       data-testid="tool-panel"
-      className="bg-panel border-l border-border h-full overflow-hidden py-4 px-3 shrink-0"
+      className="bg-panel border-border h-full overflow-hidden py-4 px-3 shrink-0"
       style={{ width: 'var(--tool-panel-width)' }}
     >
       <div className="h-full bg-panel flex flex-col overflow-hidden">
@@ -105,10 +248,20 @@ export function ToolPanel() {
             </div>
           </div>
         ) : mode === 'team' ? (
-          /* 任务事件日志 */
-          <div className="flex-1 overflow-y-auto mb-4">
-            <div className="bg-card rounded-lg border border-border overflow-hidden h-full">
-              <TeamTaskEvents events={teamTaskEvents} />
+          /* 团队任务概览和成员列表 */
+          <div className="flex-1 overflow-hidden mb-4">
+            <div className="bg-card rounded-lg overflow-hidden h-full flex flex-col">
+              <TeamArea
+                members={teamMembers}
+                historyMessages={teamHistoryMessages}
+                expanded={false}
+                onExpand={(tab, memberId) => {
+                  setTeamAreaActiveTab(tab);
+                  setTeamAreaActiveDetailTab('members');
+                  setTeamAreaSelectedMemberId(memberId || '');
+                  setTeamAreaExpanded(true);
+                }}
+              />
             </div>
           </div>
         ) : (
@@ -120,48 +273,41 @@ export function ToolPanel() {
           </div>
         )}
 
-        {/* 团队区域 */}
-        {mode === 'team' && (
-          <div className="flex-1 overflow-y-auto">
-            <div className="bg-card rounded-lg border border-border overflow-hidden h-full">
-              <TeamArea 
-                members={teamMembers}
-              />
+        {/* 状态显示 - 只在收起模式下显示 */}
+        {!teamAreaExpanded && (
+          <div className="toolpanel-status-card">
+            <h3 className="toolpanel-status-card__title">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="8" width="3" height="7" rx="0.5" fill="currentColor" opacity="0.5" />
+                <rect x="6" y="4" width="3" height="11" rx="0.5" fill="currentColor" opacity="0.7" />
+                <rect x="11" y="1" width="3" height="14" rx="0.5" fill="currentColor" />
+              </svg>
+              {t('toolPanel.status')}
+            </h3>
+            <div className="space-y-2">
+              <div className="toolpanel-status-card__row">
+                <span className="text-text-muted">{t('toolPanel.contextCompression')}</span>
+                <span className="mono text-text">{compressionDisplay}</span>
+              </div>
+              <div className="toolpanel-status-card__row">
+                <span className="text-text-muted">{t('toolPanel.memoryUsage')}</span>
+                <span className="mono text-text">{memoryDisplay}</span>
+              </div>
             </div>
           </div>
         )}
 
-        {/* 状态显示 */}
-        <div className="toolpanel-status-card">
-          <h3 className="toolpanel-status-card__title">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="1" y="8" width="3" height="7" rx="0.5" fill="currentColor" opacity="0.5" />
-              <rect x="6" y="4" width="3" height="11" rx="0.5" fill="currentColor" opacity="0.7" />
-              <rect x="11" y="1" width="3" height="14" rx="0.5" fill="currentColor" />
-            </svg>
-            {t('toolPanel.status')}
-          </h3>
-          <div className="space-y-2">
-            <div className="toolpanel-status-card__row">
-              <span className="text-text-muted">{t('toolPanel.contextCompression')}</span>
-              <span className="mono text-text">{compressionDisplay}</span>
-            </div>
-            <div className="toolpanel-status-card__row">
-              <span className="text-text-muted">{t('toolPanel.memoryUsage')}</span>
-              <span className="mono text-text">{memoryDisplay}</span>
+        {/* 底部信息区：与左侧版本信息保持一致 - 只在收起模式下显示 */}
+        {!teamAreaExpanded && (
+          <div
+            className="shrink-0 pt-4 text-text-muted text-center"
+            style={{ fontSize: 'var(--font-size-xs)' }}
+          >
+            <div className="px-2.5">
+              <span>{t('toolPanel.poweredBy')}</span>
             </div>
           </div>
-        </div>
-
-        {/* 底部信息区：与左侧版本信息保持一致 */}
-        <div
-          className="shrink-0 pt-4 text-text-muted text-center"
-          style={{ fontSize: 'var(--font-size-xs)' }}
-        >
-          <div className="px-2.5">
-            <span>{t('toolPanel.poweredBy')}</span>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

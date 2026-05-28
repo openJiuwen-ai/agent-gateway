@@ -34,6 +34,9 @@
   },
   "team": {
     "members": "Team Members",
+    "membersTab": "Team Members",
+    "statusTab": "Status",
+    "filesTab": "Files",
     "taskEventLog": "Task Event Log",
     "task": "Task",
     "executing": "Executing",
@@ -43,7 +46,123 @@
     "statusRestarting": "Restarting",
     "statusShutdownRequested": "Shutdown Requested",
     "statusShutdown": "Shutdown",
-    "statusError": "Error"
+    "statusError": "Error",
+    "collapse": "Collapse",
+    "taskOverview": "Task Overview",
+    "elapsedTime": "Elapsed time: {{value}}",
+    "noTasks": "No tasks",
+    "noMemberData": "No member data",
+    "selectMember": "Select a team member",
+    "detailTabs": {
+      "members": "Members",
+      "group": "Group Chat"
+    },
+    "leader": "Team leader",
+    "memberSeparator": ", ",
+    "groupChat": "Group Chat",
+    "allMembers": "all",
+    "noGroupMessages": "No group messages",
+    "memberTasksTitle": "Tasks executed by {{member}}",
+    "memberTasks": "Their tasks",
+    "noMemberTasks": "No tasks assigned to this member",
+    "noProcessData": "No execution process data for this member",
+    "collapseView": "Collapse view",
+    "expandView": "Expand view",
+    "expand": "Expand",
+    "runningMode": "Mode: {{mode}}",
+    "taskFallback": "Task {{id}}",
+    "memberStatus": {
+      "running": "Running",
+      "idle": "Idle",
+      "restarting": "Restarting",
+      "shutdown": "Shutdown",
+      "error": "Error",
+      "unstarted": "Unstarted",
+      "unknown": "Unknown"
+    },
+    "taskStatus": {
+      "completed": "Completed",
+      "in_progress": "Running",
+      "cancelled": "Cancelled",
+      "error": "Error",
+      "pending": "Waiting"
+    },
+    "taskEvents": {
+      "completed": "Task completed",
+      "claimed": "Task claimed",
+      "created": "Task created",
+      "cancelled": "Task cancelled",
+      "unblocked": "Task unblocked",
+      "updated": "Task status updated"
+    },
+    "taskDetail": {
+      "sourcePrompt": "Source prompt: {{prompt}}",
+      "noDetail": "No detailed task description was provided"
+    },
+    "elapsed": {
+      "daysHours": "{{days}}d {{hours}}h",
+      "hoursMinutes": "{{hours}}h {{minutes}}m",
+      "minutesSeconds": "{{minutes}}m {{seconds}}s",
+      "seconds": "{{seconds}}s"
+    },
+    "process": {
+      "memberMessage": "Member collaboration message",
+      "broadcastMessage": "Broadcast message",
+      "p2pMessage": "Direct message",
+      "collaborationMessage": "Collaboration message",
+      "sentTo": "Sent to {{member}}",
+      "sentMessage": "Sent message",
+      "receivedMessage": "Received message",
+      "fields": {
+        "type": "Type",
+        "member": "Member",
+        "tool": "Tool",
+        "content": "Content",
+        "call": "Call",
+        "result": "Result",
+        "sender": "Sender",
+        "receiver": "Receiver",
+        "eventType": "Event type",
+        "taskId": "Task ID",
+        "taskStatus": "Task status",
+        "description": "Description"
+      },
+      "execution": {
+        "final": "Task completion summary",
+        "toolCall": "Tool call",
+        "toolCallTitle": "Calling {{tool}}",
+        "toolResult": "Tool result",
+        "toolResultTitle": "{{tool}} result",
+        "file": "File",
+        "sentFile": "Sent file",
+        "event": "Execution event"
+      }
+    },
+    "planning": {
+      "tab": "Task Planning",
+      "progressTitle": "Task Progress",
+      "token": "Token",
+      "elapsedTime": "Elapsed {{value}}",
+      "taskList": "Task List",
+      "taskListAria": "{{task}} task list",
+      "resources": "Task resources",
+      "skills": "Skills",
+      "files": "Files",
+      "unassigned": "Unassigned",
+      "unassignedAvatar": "Unassigned avatar",
+      "views": {
+        "list": "List view",
+        "structure": "Structure view",
+        "board": "Board view"
+      },
+      "columns": {
+        "waiting": "Waiting",
+        "running": "Running",
+        "completed": "Completed",
+        "cancelled": "Cancelled",
+        "failed": "Failed"
+      }
+    }
   },
   "teams": {
     "title": "Team Management",
@@ -121,6 +240,7 @@
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",
+    "teamBroadcastTarget": "@all",
     "contextCompressionCompleted": "Completed context compression {{count}} time(s) this turn",
     "historyPager": {
       "loadedOfTotal": "Loaded {{loaded}} / {{total}} pages",
@@ -1119,6 +1239,37 @@
       "pending": "{{pendingCount}} running",
       "timeout": "{{timeoutCount}} timed out",
       "latest": "↓ Latest"
+    },
+    "teamActivity": {
+      "preparing": "Agent Team is preparing",
+      "currentActivity": "{{member}} - {{summary}}",
+      "progress": {
+        "completed": "Task completed",
+        "inactive": "No activity",
+        "activeMembers": "Active members: {{count}}"
+      },
+      "status": {
+        "completed": "Task completed",
+        "cancelled": "Task cancelled",
+        "thinking": "Thinking",
+        "message": "Sent message",
+        "file": "Sent file",
+        "executingTool": "Running tool",
+        "toolCall": "Tool call"
+      },
+      "summary": {
+        "task": "{{status}}: {{content}}",
+        "message": "Sent message: {{content}}",
+        "file": "Sent file: {{content}}",
+        "tool": "Calling tool: {{content}}"
+      },
+      "counts": {
+        "tasks": "Tasks executed",
+        "messages": "Messages sent",
+        "tools": "Tool calls"
+      },
+      "openGroupChat": "Open group chat",
+      "openGroupChatTitle": "Open group chat messages"
     },
     "inlineQuestion": {
       "header": "Evolution approval",
