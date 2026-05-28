@@ -56,6 +56,7 @@ import {
 } from "../core/tui-trusted-dirs-store.js";
 import { handleAppScreenKeyInput } from "./keymap.js";
 import { buildAppScreenLines } from "./screen-layout.js";
+import { buildTranscriptLines } from "./transcript-renderer.js";
 import {
   isTeamWorking,
   orderedMemberIds,
@@ -65,6 +66,9 @@ import { padToWidth } from "./rendering/text.js";
 import { editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
 
 const END_CURSOR = "\x1b[7m \x1b[0m";
+const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
+const DISABLE_MOUSE_TRACKING = "\x1b[?1000l\x1b[?1006l";
+const TRANSCRIPT_WHEEL_SCROLL_LINES = 3;
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
 const PERMISSION_RISK_RE = /安全风险评估：\**\s*([^\s*]+)?\s*\**([^*\n]+?风险)\**/m;
 const PERMISSION_QUOTE_RE = /^>\s*(.+)$/gm;
@@ -89,6 +93,15 @@ function wrapText(text: string, maxWidth: number): string[] {
   return lines.length > 0 ? lines : [""];
 }
 const RUNNING_TIMER_RESET_GRACE_MS = 15_000;
+
+function getSgrMouseWheelOffset(data: string, currentOffset: number): number | null {
+  if (!data.startsWith("\x1b[<") || !data.endsWith("M")) return null;
+  const [buttonCode] = data.slice(3, -1).split(";");
+
+  if (buttonCode === "64") return currentOffset + TRANSCRIPT_WHEEL_SCROLL_LINES;
+  if (buttonCode === "65") return Math.max(0, currentOffset - TRANSCRIPT_WHEEL_SCROLL_LINES);
+  return null;
+}
 
 type PermissionSummary = {
   tool?: string;
@@ -532,6 +545,8 @@ export class AppScreen implements Component, Focusable {
   private pendingSubmittedBaseline = 0;
   private pendingSubmittedSessionId: string | null = null;
   private transcriptScrollOffset = 0;
+  private lastTranscriptLineCount = 0;
+  private lastTranscriptLineWidth = 0;
   /** Image attachments keyed by composer `@path` tokens (e.g. cached base64 for terminal preview). */
   private composerAttachments: FileAttachment[] = [];
   /** FileViewer state for viewing large content (e.g., formatted logs) */
@@ -579,6 +594,7 @@ export class AppScreen implements Component, Focusable {
     setCurrentCwd(process.cwd());
     // Initialize startup prompt for workspace trust
     this.initStartupPrompt();
+    this.tui.terminal.write(ENABLE_MOUSE_TRACKING);
   }
 
   private initStartupPrompt(): void {
@@ -635,6 +651,7 @@ export class AppScreen implements Component, Focusable {
       clearInterval(this.animationTimer);
       this.animationTimer = null;
     }
+    this.tui.terminal.write(DISABLE_MOUSE_TRACKING);
     this.unsubscribe();
   }
 
@@ -794,6 +811,9 @@ export class AppScreen implements Component, Focusable {
       : false;
 
     const hasOverlay =
+      this.startupPromptList !== null ||
+      this.resumeSessionList !== null ||
+      this.statusViewState !== null ||
       this.mcpDetail !== null ||
       this.mcpToolDetail !== null ||
       this.mcpList !== null ||
@@ -802,6 +822,10 @@ export class AppScreen implements Component, Focusable {
       this.toolSelector !== null ||
       this.themeList !== null ||
       this.configEditorState !== null;
+
+    if (!pendingQuestion && !hasOverlay && this.handleTranscriptScrollInput(data)) {
+      return;
+    }
 
     if (!pendingQuestion && snapshot.cancellableWork && matchesKey(data, "escape") && !hasOverlay) {
       if (isTeamMode(snapshot.mode)) {
@@ -1149,10 +1173,6 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    if (!snapshot.pendingQuestion && this.handleTranscriptScrollInput(data)) {
-      return;
-    }
-
     // Detect pasted file paths (drag-and-drop) in the terminal
     // When files are dragged in, they arrive as a pasted string.
     // Windows/PowerShell may not send bracketed paste markers,
@@ -1205,16 +1225,40 @@ export class AppScreen implements Component, Focusable {
       ...this.buildThemeListLines(width),
       ...this.buildPendingQuestionLines(snapshot, width),
     ];
+    const showFullThinking = snapshot.transcriptMode === "detailed";
+    const showToolDetails = snapshot.transcriptMode === "detailed";
+    const pendingInput = this.pendingSubmittedInput ?? undefined;
+    const pendingInputBaseline = this.pendingSubmittedInput
+      ? this.pendingSubmittedBaseline
+      : undefined;
+    const transcriptLineCount = buildTranscriptLines(
+      snapshot,
+      width,
+      showFullThinking,
+      showToolDetails,
+      this.animationPhase,
+      pendingInput,
+      pendingInputBaseline,
+    ).length;
+    if (
+      this.transcriptScrollOffset > 0 &&
+      this.lastTranscriptLineWidth === width &&
+      transcriptLineCount > this.lastTranscriptLineCount
+    ) {
+      this.transcriptScrollOffset += transcriptLineCount - this.lastTranscriptLineCount;
+    }
+    this.lastTranscriptLineCount = transcriptLineCount;
+    this.lastTranscriptLineWidth = width;
     return buildAppScreenLines(snapshot, {
       width,
       height: this.tui.terminal.rows,
       questionLines,
       editorLines,
       composerPreviewLines,
-      pendingInput: this.pendingSubmittedInput ?? undefined,
-      pendingInputBaseline: this.pendingSubmittedInput ? this.pendingSubmittedBaseline : undefined,
-      showFullThinking: snapshot.transcriptMode === "detailed",
-      showToolDetails: snapshot.transcriptMode === "detailed",
+      pendingInput,
+      pendingInputBaseline,
+      showFullThinking,
+      showToolDetails,
       showShortcutHelp: false,
       todosCollapsed: this.todosCollapsed,
       showTeamPanel: this.showTeamPanel,
@@ -1511,6 +1555,13 @@ export class AppScreen implements Component, Focusable {
   }
 
   private handleTranscriptScrollInput(data: string): boolean {
+    const wheelOffset = getSgrMouseWheelOffset(data, this.transcriptScrollOffset);
+    if (wheelOffset !== null) {
+      this.transcriptScrollOffset = wheelOffset;
+      this.tui.requestRender();
+      return true;
+    }
+
     const pageSize = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
     if (matchesKey(data, "pageUp") || matchesKey(data, "shift+pageUp")) {
       this.transcriptScrollOffset += pageSize;
