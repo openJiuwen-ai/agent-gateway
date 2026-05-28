@@ -147,6 +147,7 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     push_evolution_event,
     push_evolution_progress,
     push_evolution_status,
+    resolve_evolution_event_timeout_sec,
     team_evolution_terminal_progress,
     terminal_stage,
     visible_evolution_progress_from_events,
@@ -4300,12 +4301,6 @@ class JiuWenClawDeepAdapter:
         """
         stripped = query.strip()
 
-        if stripped.startswith("/evolve_rewrite"):
-            return {
-                "output": "`/evolve_rewrite` 已删除，请使用 `/evolve_rebuild <skill_name> [user_intent]`。",
-                "result_type": "error",
-            }
-
         if stripped.startswith("/evolve_simplify"):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
@@ -5738,7 +5733,7 @@ class JiuWenClawDeepAdapter:
                 build_server_push_message,
             )
 
-        async def _cleanup_rail() -> None:
+        async def _cleanup_evolution_rail() -> None:
             if self._skill_evolution_rail is None:
                 return
             try:
@@ -5760,6 +5755,10 @@ class JiuWenClawDeepAdapter:
 
             active = False
             last_event_at = time.monotonic()
+            event_timeout_sec = resolve_evolution_event_timeout_sec(
+                self._skill_evolution_rail,
+                fallback_sec=TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
+            )
 
             while True:
                 if self._skill_evolution_rail is None:
@@ -5767,13 +5766,13 @@ class JiuWenClawDeepAdapter:
                 if not getattr(self._skill_evolution_rail, "auto_scan", True):
                     if active:
                         await _push_status("end", "hidden", "")
-                    await _cleanup_rail()
+                    await _cleanup_evolution_rail()
                     return
 
                 events = await self._skill_evolution_rail.drain_pending_approval_events(wait=False) or []
                 if not events:
                     idle_for = time.monotonic() - last_event_at
-                    if idle_for >= TEAM_EVOLUTION_EVENT_TIMEOUT_SEC:
+                    if idle_for >= event_timeout_sec:
                         logger.warning(
                             "[JiuWenClawDeepAdapter] evolution watcher timed out: "
                             "request_id=%s session_id=%s idle_for=%.1fs",
@@ -5784,10 +5783,10 @@ class JiuWenClawDeepAdapter:
                         if active:
                             message = (
                                 f"Evolution analysis timed out after "
-                                f"{TEAM_EVOLUTION_EVENT_TIMEOUT_SEC:.0f}s without host events"
+                                f"{event_timeout_sec:.0f}s without host events"
                             )
                             await _push_status("end", "hidden", message)
-                        await _cleanup_rail()
+                        await _cleanup_evolution_rail()
                         return
                     await asyncio.sleep(TEAM_EVOLUTION_IDLE_SLEEP_SEC)
                     continue
@@ -5828,7 +5827,7 @@ class JiuWenClawDeepAdapter:
                     for evt in approval_events:
                         await _push_approval(evt)
                     await _push_status("end", "approval_required", "")
-                    await _cleanup_rail()
+                    await _cleanup_evolution_rail()
                     return
 
                 outcomes = [
@@ -5837,21 +5836,25 @@ class JiuWenClawDeepAdapter:
                     if is_evolution_outcome_event(evt)
                 ]
                 if outcomes:
-                    if not active:
-                        await _cleanup_rail()
-                        return
                     outcome = outcomes[-1]
                     stage = str(outcome.get("status") or "completed").strip().lower()
                     message = str(outcome.get("message") or "")
-                    if stage in {"failed", "timed_out"}:
-                        await _push_status("end", "hidden", message)
+                    if stage in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES:
+                        end_stage = "hidden"
                     else:
-                        await _push_status(
-                            "end",
-                            stage or "completed",
-                            message or "Evolution analysis completed",
-                        )
-                    await _cleanup_rail()
+                        end_stage = stage or "completed"
+                    if not active and end_stage == "hidden":
+                        await _cleanup_evolution_rail()
+                        return
+                    if not active:
+                        await _push_status("start", end_stage, message)
+                        active = True
+                    await _push_status(
+                        "end",
+                        end_stage,
+                        message or "Evolution analysis completed",
+                    )
+                    await _cleanup_evolution_rail()
                     return
 
                 terminal_progress = [
@@ -5865,7 +5868,7 @@ class JiuWenClawDeepAdapter:
                     if end_stage in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES:
                         end_stage = "hidden"
                     if not active and end_stage == "hidden":
-                        await _cleanup_rail()
+                        await _cleanup_evolution_rail()
                         return
                     if not active:
                         await _push_status(
@@ -5879,11 +5882,11 @@ class JiuWenClawDeepAdapter:
                         end_stage,
                         str(terminal.get("message") or ""),
                     )
-                    await _cleanup_rail()
+                    await _cleanup_evolution_rail()
                     return
         except asyncio.CancelledError:
             try:
-                await _cleanup_rail()
+                await _cleanup_evolution_rail()
             finally:
                 raise
         except Exception as exc:

@@ -32,6 +32,43 @@ def test_evolution_helpers_parse_approval_and_outcome_events():
     assert evolution_helpers.extract_evolution_request_id(approval) == "team_skill_evolve_req1"
 
 
+def test_evolution_helpers_parse_noop_outcome_status_from_sdk_metadata():
+    outcome = SimpleNamespace(
+        type="llm_reasoning",
+        payload={
+            "_evolution_meta": {
+                "event_kind": "outcome",
+                "rail_kind": "regular",
+                "status": "no_evolution_no_records",
+                "stage": "completed",
+                "skill_name": "powerpoint-pptx",
+                "source": "experience_updater",
+            },
+            "content": "[Evolution] no applied updates for skill=powerpoint-pptx\n",
+        },
+    )
+
+    assert evolution_helpers.evolution_outcome_from_event(outcome) == {
+        "status": "no_evolution_no_records",
+        "message": "[Evolution] no applied updates for skill=powerpoint-pptx\n",
+    }
+
+
+@pytest.mark.parametrize(
+    ("rail", "expected"),
+    [
+        (SimpleNamespace(evolution_total_timeout_secs=600), 605),
+        (object(), 900),
+    ],
+)
+def test_resolve_evolution_event_timeout_matches_sdk_budget(rail, expected):
+    assert evolution_helpers.resolve_evolution_event_timeout_sec(
+        rail,
+        fallback_sec=900,
+        grace_sec=5,
+    ) == expected
+
+
 def test_evolution_helpers_extract_request_id_from_evolution_meta():
     progress = SimpleNamespace(
         type="llm_reasoning",

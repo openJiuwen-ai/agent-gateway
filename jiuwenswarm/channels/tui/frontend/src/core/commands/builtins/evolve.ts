@@ -116,7 +116,6 @@ export function createEvolveRebuildCommand(): SlashCommand {
     example: "/evolve_rebuild pptx improve error handling",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
-    hidden: true,
     action: (ctx, args) => {
       const parsedArgs = parseArgs(args);
       const skillName = parsedArgs[0];
@@ -141,4 +140,3 @@ export function createEvolveRebuildCommand(): SlashCommand {
     },
   };
 }
-

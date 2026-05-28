@@ -11,6 +11,7 @@ import pytest
 from openjiuwen.agent_teams.schema.team import TeamRole
 
 from jiuwenswarm.agents.harness.team import TeamMonitorHandler
+from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
 
@@ -696,6 +697,38 @@ async def test_team_evolution_monitor_times_out_after_idle_progress(monkeypatch)
     assert status_pushes[0]["request_id"] == "team_skill_evolve_timeout"
     assert status_pushes[-1]["payload"]["stage"] == "hidden"
     assert "timed out" in status_pushes[-1]["payload"]["message"]
+    assert rail.cleanup_calls == 1
+
+
+@pytest.mark.anyio
+async def test_team_evolution_monitor_uses_sdk_timeout_before_legacy_fallback(monkeypatch):
+    class _SdkTimeoutProgressRail(_FakeProgressOnlyRail):
+        @property
+        def evolution_total_timeout_secs(self) -> float:
+            return 0.01
+
+    _FakeTransport.pushes = []
+    rail = _SdkTimeoutProgressRail()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+    monkeypatch.setattr(team_helpers, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(team_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0)
+    monkeypatch.setattr(evolution_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC", 0.001)
+
+    await asyncio.wait_for(
+        _TeamHelpersTestApi.watch_team_evolution_and_push("web", "sess-sdk-timeout", rail),
+        timeout=0.2,
+    )
+
+    status_pushes = [
+        push for push in _FakeTransport.pushes
+        if push["payload"]["event_type"] == "chat.evolution_status"
+    ]
+    assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
+    assert status_pushes[-1]["payload"]["stage"] == "hidden"
     assert rail.cleanup_calls == 1
 
 

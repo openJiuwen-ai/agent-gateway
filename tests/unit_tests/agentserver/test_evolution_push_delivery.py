@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
 
@@ -33,6 +35,23 @@ def _outcome_event(status: str, message: str) -> SimpleNamespace:
         payload={
             "_evolution_meta": {"event_kind": "outcome", "status": status},
             "content": message,
+        },
+    )
+
+
+def _sdk_noop_outcome_event(skill_name: str = "powerpoint-pptx") -> SimpleNamespace:
+    return SimpleNamespace(
+        type="llm_reasoning",
+        payload={
+            "_evolution_meta": {
+                "event_kind": "outcome",
+                "rail_kind": "regular",
+                "status": "no_evolution_no_records",
+                "stage": "completed",
+                "skill_name": skill_name,
+                "source": "experience_updater",
+            },
+            "content": f"[Evolution] no applied updates for skill={skill_name}\n",
         },
     )
 
@@ -166,6 +185,39 @@ async def test_normal_evolution_watcher_does_not_push_status_without_sdk_events(
 
 
 @pytest.mark.asyncio
+async def test_normal_evolution_watcher_uses_sdk_timeout_before_legacy_fallback(monkeypatch):
+    class _SdkTimeoutRail(_FakeEvolutionRail):
+        @property
+        def evolution_total_timeout_secs(self) -> float:
+            return 0.01
+
+    _FakeTransport.pushes = []
+    rail = _SdkTimeoutRail([[_progress_event("generating", stage="generating_updates")]])
+    adapter = _TestAdapter.build_with_rail(rail)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_IDLE_SLEEP_SEC", 0.001)
+    monkeypatch.setattr(interface_deep_module, "TEAM_EVOLUTION_EVENT_TIMEOUT_SEC", 100.0)
+    monkeypatch.setattr(evolution_helpers, "TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC", 0.001)
+
+    await asyncio.wait_for(
+        adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-timeout"),
+        timeout=0.2,
+    )
+
+    status_pushes = [
+        push for push in _FakeTransport.pushes
+        if push["payload"]["event_type"] == "chat.evolution_status"
+    ]
+    assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
+    assert status_pushes[-1]["payload"]["stage"] == "hidden"
+    assert rail.cleanup_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_normal_evolution_watcher_maps_sdk_progress_stages(monkeypatch):
     _FakeTransport.pushes = []
     rail = _FakeEvolutionRail(
@@ -267,6 +319,31 @@ async def test_normal_evolution_watcher_reads_outcome_status_from_metadata(monke
         if push["payload"]["event_type"] == "chat.evolution_status"
     ]
     assert status_pushes == []
+
+
+@pytest.mark.asyncio
+async def test_normal_evolution_watcher_ends_on_sdk_noop_outcome_without_prior_progress(monkeypatch):
+    _FakeTransport.pushes = []
+    rail = _FakeEvolutionRail([[_sdk_noop_outcome_event()]])
+    adapter = _TestAdapter.build_with_rail(rail)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.gateway_push.WebSocketGatewayPushTransport",
+        _FakeTransport,
+    )
+
+    await adapter.watch_evolution_and_push("stream-rid", "web", "sess-sdk-noop-only")
+
+    status_pushes = [
+        push for push in _FakeTransport.pushes
+        if push["payload"]["event_type"] == "chat.evolution_status"
+    ]
+    assert [push["payload"]["status"] for push in status_pushes] == ["start", "end"]
+    assert [push["payload"]["stage"] for push in status_pushes] == [
+        "no_evolution_no_records",
+        "no_evolution_no_records",
+    ]
+    assert rail.cleanup_calls == 1
 
 
 @pytest.mark.asyncio

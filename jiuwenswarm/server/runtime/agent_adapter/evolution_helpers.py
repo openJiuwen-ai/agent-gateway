@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 TEAM_EVOLUTION_IDLE_SLEEP_SEC = 1.0
 TEAM_EVOLUTION_EVENT_TIMEOUT_SEC = 900.0
+TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC = 5.0
 TEAM_EVOLUTION_START_STAGE = "collecting"
 TEAM_EVOLUTION_START_MESSAGE = "Running team skill evolution analysis..."
 TEAM_EVOLUTION_NOOP_STAGE = "no_evolution_generated"
@@ -109,6 +111,31 @@ def event_type(evt: Any) -> str:
     payload = event_payload_dict(evt)
     payload_type = payload.get("event_type")
     return payload_type if isinstance(payload_type, str) else ""
+
+
+def resolve_evolution_event_timeout_sec(
+    rail: Any,
+    *,
+    fallback_sec: float | None = None,
+    grace_sec: float | None = None,
+) -> float:
+    """Resolve host watcher timeout from the SDK rail's background evolution timeout."""
+    fallback = TEAM_EVOLUTION_EVENT_TIMEOUT_SEC if fallback_sec is None else fallback_sec
+    grace = TEAM_EVOLUTION_EVENT_TIMEOUT_GRACE_SEC if grace_sec is None else grace_sec
+
+    try:
+        sdk_timeout = getattr(rail, "evolution_total_timeout_secs", None)
+    except Exception as exc:
+        logger.debug("Failed to read SDK evolution timeout from property: %s", exc)
+        return fallback
+
+    try:
+        parsed_timeout = float(sdk_timeout)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(parsed_timeout) or parsed_timeout <= 0:
+        return fallback
+    return parsed_timeout + max(grace, 0.0)
 
 
 def is_evolution_approval_event(evt: Any) -> bool:

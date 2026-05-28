@@ -49,6 +49,7 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     progress_for_request,
     push_evolution_event,
     push_evolution_status,
+    resolve_evolution_event_timeout_sec,
     team_evolution_end_update,
     terminal_progress_from_events,
     terminal_stage,
@@ -1115,7 +1116,7 @@ async def _watch_team_evolution_and_push(
     fallback_cycle_index = 0
     active_cycle_request_id: str | None = None
 
-    async def _cleanup_rail() -> None:
+    async def _cleanup_evolution_rail() -> None:
         cleanup = getattr(rail, "cleanup_background_tasks", None)
         if cleanup is None:
             return
@@ -1156,6 +1157,10 @@ async def _watch_team_evolution_and_push(
 
     try:
         last_event_at = time.monotonic()
+        event_timeout_sec = resolve_evolution_event_timeout_sec(
+            rail,
+            fallback_sec=TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
+        )
         while True:
             if not getattr(rail, "auto_scan", True):
                 if active_cycle_request_id is not None:
@@ -1169,14 +1174,14 @@ async def _watch_team_evolution_and_push(
                         ),
                         build_server_push_message,
                     )
-                await _cleanup_rail()
+                await _cleanup_evolution_rail()
                 return
 
             events = await rail.drain_pending_approval_events(wait=False) or []
             if not events:
                 if active_cycle_request_id is not None:
                     idle_for = time.monotonic() - last_event_at
-                    if idle_for >= TEAM_EVOLUTION_EVENT_TIMEOUT_SEC:
+                    if idle_for >= event_timeout_sec:
                         logger.warning(
                             "[TeamHelpers] evolution monitor timed out: session_id=%s "
                             "request_id=%s idle_for=%.1fs",
@@ -1192,12 +1197,12 @@ async def _watch_team_evolution_and_push(
                                 stage=TEAM_EVOLUTION_HIDDEN_STAGE,
                                 message=(
                                     "Team skill evolution analysis timed out after "
-                                    f"{TEAM_EVOLUTION_EVENT_TIMEOUT_SEC:.0f}s without host events"
+                                    f"{event_timeout_sec:.0f}s without host events"
                                 ),
                             ),
                             build_server_push_message,
                         )
-                        await _cleanup_rail()
+                        await _cleanup_evolution_rail()
                         return
                 await asyncio.sleep(TEAM_EVOLUTION_IDLE_SLEEP_SEC)
                 continue
