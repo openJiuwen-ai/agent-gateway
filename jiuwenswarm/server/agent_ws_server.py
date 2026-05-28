@@ -2197,13 +2197,15 @@ class AgentWebSocketServer:
 
         try:
             session_id = request.session_id or "default"
+            project_dir = resolve_request_project_dir(request)
             diff_service = get_diff_service()
-            turns = diff_service.get_turn_diffs(session_id)
+            turns = diff_service.get_turn_diffs(session_id, project_dir)
 
             logger.info(
-                "[AgentWebSocketServer] command.diff response: session_id=%s turns=%s",
+                "[AgentWebSocketServer] command.diff response: session_id=%s turns=%s project_dir=%s",
                 session_id,
                 turns,
+                project_dir,
             )
 
             resp = AgentResponse(
