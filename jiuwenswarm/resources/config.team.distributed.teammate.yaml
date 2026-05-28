@@ -642,8 +642,7 @@ team:
 
   team_name: jiuwen_team
   lifecycle: persistent
-  enable_team_plan: true
-  teammate_mode: plan_mode
+  teammate_mode: build_mode
   spawn_mode: inprocess
 
   leader:
@@ -744,8 +743,7 @@ modes:
     jiuwen_team:
       team_name: jiuwen_team
       lifecycle: persistent
-      enable_team_plan: true
-      teammate_mode: plan_mode
+      teammate_mode: build_mode
       spawn_mode: inprocess
 
       leader:

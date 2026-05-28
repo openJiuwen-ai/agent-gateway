@@ -52,7 +52,7 @@ def test_team_plan_params_are_team_mode():
     assert is_team_params({"mode": "team.plan"})
 
 
-def test_team_config_loader_reads_enable_team_plan():
+def test_team_config_loader_ignores_yaml_enable_team_plan():
     from jiuwenswarm.agents.harness.team.config_loader import load_team_spec_dict
 
     spec = load_team_spec_dict(
@@ -72,7 +72,7 @@ def test_team_config_loader_reads_enable_team_plan():
         }
     )
 
-    assert spec["enable_team_plan"] is True
+    assert "enable_team_plan" not in spec
     assert spec["teammate_mode"] == "plan_mode"
 
 
@@ -96,6 +96,36 @@ def test_team_plan_mode_sets_spec_field_without_metadata_package():
     assert "team_plan" not in spec.metadata
 
 
+def test_team_mode_does_not_enable_team_plan():
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    spec = TeamAgentSpec.model_construct(
+        team_name="demo_team",
+        agents={},
+        enable_team_plan=False,
+    )
+
+    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "team"})
+
+    assert spec.enable_team_plan is False
+
+
+def test_code_team_mode_does_not_enable_team_plan():
+    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    spec = TeamAgentSpec.model_construct(
+        team_name="demo_team",
+        agents={},
+        enable_team_plan=False,
+    )
+
+    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": "code.team"})
+
+    assert spec.enable_team_plan is False
+
+
 def test_team_config_loader_defaults_teammate_mode_to_build_mode():
     from jiuwenswarm.agents.harness.team.config_loader import load_team_spec_dict
 
@@ -114,7 +144,7 @@ def test_team_config_loader_defaults_teammate_mode_to_build_mode():
         }
     )
 
-    assert spec["enable_team_plan"] is True
+    assert "enable_team_plan" not in spec
     assert spec["teammate_mode"] == "build_mode"
 
 

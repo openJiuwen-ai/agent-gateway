@@ -832,6 +832,21 @@ class TeamManager:
                         configure_code_team_member_agent,
                     )
 
+                    request_mode = str((request_metadata or {}).get("mode") or "").strip().lower()
+                    role_name = str(getattr(role, "value", role) or "").strip().lower()
+                    team_plan_enabled = (
+                        request_mode == "team.plan"
+                        or bool(getattr(spec, "enable_team_plan", False))
+                    )
+                    is_team_plan_leader = team_plan_enabled and role_name == "leader"
+                    team_plan_runtime_language = None
+                    if is_team_plan_leader:
+                        config_language = str(
+                            getattr(spec, "language", None)
+                            or get_config().get("preferred_language", "zh")
+                        )
+                        team_plan_runtime_language = config_language
+
                     configure_code_team_member_agent(
                         agent,
                         parent_agent=deep_agent,
@@ -841,6 +856,8 @@ class TeamManager:
                         session_id=session_id,
                         channel_id=resolved_channel,
                         project_dir=parent_project_dir or None,
+                        runtime_language=team_plan_runtime_language,
+                        force_english_runtime_prompt=not is_team_plan_leader,
                     )
                 except Exception as exc:
                     logger.warning(

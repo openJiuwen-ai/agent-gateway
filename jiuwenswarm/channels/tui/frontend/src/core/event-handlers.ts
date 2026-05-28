@@ -162,7 +162,7 @@ function _handleAgentModeToolResult(
     if (existingMode === "code.plan") {
       delegate.setMode("code.normal");
     } else if (existingMode === "team.plan") {
-      delegate.setMode("code.team");
+      delegate.setMode("team.plan");
     } else if (existingMode === "agent.plan") {
       delegate.setMode("agent.fast");
     }

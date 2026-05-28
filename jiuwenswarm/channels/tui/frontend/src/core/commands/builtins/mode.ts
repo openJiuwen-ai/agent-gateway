@@ -3,7 +3,7 @@ import type { ClientMode } from "../../modes.js";
 import { makeItem } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
-/** TUI `/mode` 树形展示；分组行 value 为 `agent`/`code`（与 modeAlias 默认一致），不修改 pi-tui。 */
+/** TUI `/mode` 树形展示；分组行 value 与 modeAlias 默认一致，不修改 pi-tui。 */
 export function buildModeAutocompleteItems(): AutocompleteItem[] {
   return [
     { value: "agent", label: "agent" },
@@ -14,6 +14,7 @@ export function buildModeAutocompleteItems(): AutocompleteItem[] {
     { value: "code.plan", label: "    plan" },
     { value: "code.team", label: "    team" },
     { value: "team", label: "team" },
+    { value: "team.normal", label: "    normal" },
     { value: "team.plan", label: "    plan" },
   ];
 }
@@ -28,6 +29,7 @@ export function createModeCommand(): SlashCommand {
     "code.normal",
     "code.team",
     "team",
+    "team.normal",
     "team.plan",
   ] as const;
   /** 用户输入的简写 → 实际会话模式（/mode agent → agent.plan，/mode code → code.normal）。 */
@@ -41,13 +43,14 @@ export function createModeCommand(): SlashCommand {
     "code.normal": "code.normal",
     "code.team": "code.team",
     team: "team",
+    "team.normal": "team",
     "team.plan": "team.plan",
   };
 
   return {
     name: "mode",
     description: "Switch chat mode",
-    usage: "/mode <agent|code|code.team|team|team.plan>",
+    usage: "/mode <agent|code|code.team|team|team.normal|team.plan>",
     example: "/mode team.plan",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
@@ -73,7 +76,7 @@ export function createModeCommand(): SlashCommand {
           makeItem(
             ctx.sessionId,
             "error",
-            "usage: /mode <agent|code|code.team|team|team.plan>",
+            "usage: /mode <agent|code|code.team|team|team.normal|team.plan>",
           ),
         );
         return;

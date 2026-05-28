@@ -25,6 +25,7 @@ from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.factory import create_deep_agent
+from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
     AgentModeRail,
     ConfirmInterruptRail,
@@ -186,6 +187,8 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         # True (code-agent → project_dir). 见
         # ``sysop_builder.build_filesystem_policy`` 中 line 545 附近的分支。
         self._is_code_agent: bool = True
+        self._runtime_language_override: str | None = None
+        self._force_english_runtime_prompt: bool = True
 
     # ─── Language override ────────────────────────
 
@@ -195,19 +198,18 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         return "en"
 
     def _resolve_runtime_language(self) -> str:
-        """Code mode always uses English for runtime language."""
-        return "en"
+        """Resolve runtime prompt language for code profile rails."""
+        return self._runtime_language_override or "en"
 
     def _resolve_output_language(self) -> str:
         """Resolve user's preferred output language for runtime_state display.
 
-        Distinct from prompt/runtime language (always "en" in code mode).
+        Distinct from prompt/runtime language, which defaults to "en" in code mode.
         Returns the normalized language code ("cn"/"en") based on
         config.yaml preferred_language, so the Language section injected
         by RuntimePromptRail can instruct the LLM to respond in the
         user's chosen language.
         """
-        from openjiuwen.harness.prompts import resolve_language
         config_base = get_config()
         raw = str(config_base.get("preferred_language", "zh")).strip().lower()
         if raw == "zh":
@@ -863,7 +865,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
                                self._resolve_prompt_channel(runtime_config.session_id) or "web").strip() or "web"
         if self._runtime_prompt_rail:
             self._runtime_prompt_rail.set_language(resolved_language)
-            self._runtime_prompt_rail.set_force_english(True)
+            self._runtime_prompt_rail.set_force_english(self._force_english_runtime_prompt)
             self._runtime_prompt_rail.set_channel(resolved_channel)
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
@@ -1080,10 +1082,22 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         session_id: str | None = None,
         channel_id: str | None = None,
         project_dir: str | None = None,
+        runtime_language: str | None = None,
+        force_english_runtime_prompt: bool = True,
     ) -> None:
         """Apply the code runtime profile to a team member DeepAgent."""
         if skill_manager is not None and hasattr(self, "set_skill_manager"):
             self.set_skill_manager(skill_manager)
+
+        normalized_runtime_language = str(runtime_language or "").strip().lower()
+        if normalized_runtime_language == "zh":
+            normalized_runtime_language = "cn"
+        self._runtime_language_override = (
+            resolve_language(normalized_runtime_language)
+            if normalized_runtime_language
+            else None
+        )
+        self._force_english_runtime_prompt = force_english_runtime_prompt
 
         config_base = get_config()
         self._refresh_multimodal_configs(config_base)
@@ -1294,6 +1308,8 @@ def configure_code_team_member_agent(
     session_id: str | None = None,
     channel_id: str | None = None,
     project_dir: str | None = None,
+    runtime_language: str | None = None,
+    force_english_runtime_prompt: bool = True,
 ) -> None:
     """Apply JiuwenClawCodeAdapter's runtime profile to a team member DeepAgent."""
 
@@ -1307,4 +1323,6 @@ def configure_code_team_member_agent(
         session_id=session_id,
         channel_id=channel_id,
         project_dir=project_dir,
+        runtime_language=runtime_language,
+        force_english_runtime_prompt=force_english_runtime_prompt,
     )
