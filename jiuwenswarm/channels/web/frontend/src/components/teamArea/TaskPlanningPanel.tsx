@@ -224,7 +224,7 @@ function BoardColumn({
 
   return (
     <section className="min-w-0">
-      <div className={`mb-3 inline-flex h-7 items-center rounded-full px-4 text-sm font-medium bg-card ${column.pillClassName}`}>
+      <div className={`mb-3 inline-flex h-7 items-center rounded-full px-4 text-sm font-medium shadow-[0_1px_2px_rgba(25,25,25,0.04)] ${column.pillClassName}`}>
         <span className={`mr-2 h-1.5 w-1.5 rounded-full ${column.dotClassName}`} />
         {t(column.labelKey)} {tasks.length}
       </div>
@@ -250,8 +250,8 @@ function BoardTaskCard({
   const content = getBoardTaskContent(task);
 
   return (
-    <article className="rounded-2xl border border-border bg-card p-1 shadow-sm">
-      <div className="rounded-2xl border border-border bg-card px-4 py-4">
+    <article className="rounded-2xl border border-border bg-[#fafafa] p-1 shadow-sm">
+      <div className="rounded-2xl border border-border bg-white px-4 py-4">
         <h3 className="truncate text-base font-medium leading-[18px] text-text-strong" title={title}>
           {title}
         </h3>
@@ -262,7 +262,7 @@ function BoardTaskCard({
         ) : null}
         <TaskResourcePanel skills={task.skills} files={task.files} />
       </div>
-      <div className="mt-3 flex h-8 items-center px-1 pb-1">
+      <div className="mt-3 flex h-8 items-center bg-[#fafafa] px-1 pb-1">
         {assigneeExists ? (
           <div title={assigneeName}>
             <TeamMemberAvatar
