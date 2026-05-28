@@ -81,6 +81,12 @@ export interface SessionUsageSummary {
   byModel: ModelUsageEntry[];
 }
 
+interface VisibleUserRequest {
+  requestId: string;
+  content: string;
+  sessionId: string;
+}
+
 export interface AppSnapshot {
   connectionStatus: ConnectionStatus;
   sessionId: string;
@@ -203,6 +209,7 @@ export class CliPiAppState {
   private suppressInterruptResult = false;
   /** 本地中断请求标志，cancel() 调用时立即置 true，用于 long-running 命令的中断检测。 */
   private interruptRequested = false;
+  private lastVisibleUserRequest: VisibleUserRequest | null = null;
   /** 当前回合的起始时间戳，用于在回合结束时计算执行耗时。 */
   private turnStartedAt: number | null = null;
   /** Harness extension ready info (for file tree display) */
@@ -214,6 +221,7 @@ export class CliPiAppState {
     getSessionId: () => this.sessionId,
     setSessionId: (sessionId) => {
       this.sessionId = sessionId;
+      this.lastVisibleUserRequest = null;
     },
     setMode: (mode) => {
       this.mode = mode;
@@ -735,6 +743,7 @@ export class CliPiAppState {
 
   readonly updateSession = (newId: string): void => {
     this.sessionId = newId;
+    this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
     this.emitChange();
   };
@@ -895,6 +904,7 @@ export class CliPiAppState {
       return null;
     }
     if (this.streamingState !== StreamingState.Idle) {
+      this.suppressInterruptResult = true;
       this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     }
     const requestId = this.sendEventOnly(
@@ -909,6 +919,7 @@ export class CliPiAppState {
     );
     this.lastError = null;
     if (options?.logAsUser !== false) {
+      this.lastVisibleUserRequest = { requestId, content, sessionId: this.sessionId };
       this.entries = [
         ...this.entries,
         {
@@ -919,6 +930,8 @@ export class CliPiAppState {
           at: new Date().toISOString(),
         },
       ];
+    } else {
+      this.lastVisibleUserRequest = null;
     }
     this.streamingState = StreamingState.Responding;
     this.turnStartedAt = Date.now();
@@ -1196,10 +1209,24 @@ export class CliPiAppState {
    */
   readonly tryAutoRestoreAfterCancel = async (): Promise<void> => {
     // 条件 1：输入框为空
-    if (this._getInputValueRef && this._getInputValueRef().trim() !== "") return;
+    if (this._getInputValueRef && this._getInputValueRef().trim() !== "") {
+      this.lastVisibleUserRequest = null;
+      return;
+    }
+
+    const visibleRequest = this.lastVisibleUserRequest;
+    if (!visibleRequest || visibleRequest.sessionId !== this.sessionId) return;
+    const clearVisibleRequest = () => {
+      if (this.lastVisibleUserRequest === visibleRequest) {
+        this.lastVisibleUserRequest = null;
+      }
+    };
 
     const entries = this.getSnapshot().entries;
-    if (!entries || entries.length === 0) return;
+    if (!entries || entries.length === 0) {
+      clearVisibleRequest();
+      return;
+    }
 
     // 找最后一个实质 user message
     const nonSyntheticTags = ["<local-command-stdout>", "<bash-stdout>", "<task-notification>"];
@@ -1212,7 +1239,20 @@ export class CliPiAppState {
       lastUserIdx = i;
       break;
     }
-    if (lastUserIdx < 0) return;
+    if (lastUserIdx < 0) {
+      clearVisibleRequest();
+      return;
+    }
+    const lastUser = entries[lastUserIdx];
+    if (
+      !lastUser ||
+      lastUser.kind !== "user" ||
+      lastUser.sessionId !== visibleRequest.sessionId ||
+      lastUser.content.trim() !== visibleRequest.content.trim()
+    ) {
+      clearVisibleRequest();
+      return;
+    }
 
     // 判断 lastUserIdx 之后是否只有合成/系统类消息
     const hasSubstantialAfter = entries.slice(lastUserIdx + 1).some((e) => {
@@ -1226,7 +1266,10 @@ export class CliPiAppState {
       return false;
     });
 
-    if (hasSubstantialAfter) return; // 有实质内容，不自动回退
+    if (hasSubstantialAfter) {
+      clearVisibleRequest();
+      return; // 有实质内容，不自动回退
+    }
 
     // 获取 turn 列表以确定 lastUserIdx 对应的 turn_index
     try {
@@ -1235,10 +1278,16 @@ export class CliPiAppState {
         total?: number;
       }>("history.list_turns", { session_id: this.sessionId });
       const turns = turnsPayload.turns ?? [];
-      if (turns.length === 0) return;
+      if (turns.length === 0) {
+        clearVisibleRequest();
+        return;
+      }
 
-      const lastTurn = turns[turns.length - 1];
-      if (!lastTurn) return;
+      const restoreTurn = this.findAutoRestoreTurn(turns, visibleRequest);
+      if (!restoreTurn) {
+        clearVisibleRequest();
+        return;
+      }
 
       const rewindPayload = await this.request<{
         content?: string;
@@ -1250,15 +1299,16 @@ export class CliPiAppState {
         restore_errors?: { file: string; error: string }[];
       }>("session.rewind_and_restore", {
         session_id: this.sessionId,
-        turn_index: lastTurn.turn_index,
+        turn_index: restoreTurn.turn_index,
       });
 
       this.entries = [];
       this.emitChange();
       await this.restoreHistory(this.sessionId);
 
-      const restoreText = rewindPayload.content ?? lastTurn.content_preview ?? "";
+      const restoreText = rewindPayload.content ?? restoreTurn.content_preview ?? "";
       this._setInputRef?.(restoreText);
+      clearVisibleRequest();
 
       this.addItem(
         addInfo(
@@ -1271,8 +1321,28 @@ export class CliPiAppState {
       );
     } catch {
       // 自动回退失败不影响 cancel 本身
+      clearVisibleRequest();
     }
   };
+
+  private findAutoRestoreTurn(
+    turns: { turn_index: number; content_preview: string; content?: string; request_id?: string }[],
+    visibleRequest: VisibleUserRequest,
+  ): { turn_index: number; content_preview: string; content?: string; request_id?: string } | null {
+    const byRequestId = turns.find((turn) => turn.request_id === visibleRequest.requestId);
+    if (byRequestId) return byRequestId;
+
+    const target = visibleRequest.content.trim();
+    if (!target) return null;
+    const targetPreview = target.slice(0, 80);
+    const matches = turns.filter((turn) => {
+      if (typeof turn.content === "string" && turn.content.trim()) {
+        return turn.content.trim() === target;
+      }
+      return turn.content_preview.trim() === targetPreview;
+    });
+    return matches.length === 1 ? matches[0]! : null;
+  }
 
   private applyHistoryEntriesToTranscript(): void {
     // AgentServer 为了让分页优先返回最新页，在 `_handle_history_get_stream` 中把整条历史做了
