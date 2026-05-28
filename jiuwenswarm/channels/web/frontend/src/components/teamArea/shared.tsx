@@ -427,7 +427,6 @@ export function buildProcessItems(
   // 将 tool_call 和 tool_result 配对合并
   const pairedExecutionItems: ProcessItem[] = [];
   const toolResultsByCallId = new Map<string, TeamMemberExecutionEvent>();
-  const consumedResultIds = new Set<string>();
 
   // 先收集所有 tool_result，按 tool_call_id 分组
   executionEvents
@@ -438,33 +437,13 @@ export function buildProcessItems(
       }
     });
 
-  // 处理 execution 事件
+  // 处理所有 execution 事件
   executionEvents
     .filter((event) => event.member_id === memberId && event.kind !== 'final')
     .forEach((event) => {
       // 如果是 tool_call，尝试关联其 tool_result
       if (event.kind === 'tool_call' && event.tool_call_id) {
         const linkedResult = toolResultsByCallId.get(event.tool_call_id);
-        if (linkedResult) {
-          // 配对成功：创建一个包含调用和结果的 item
-          pairedExecutionItems.push({
-            id: `execution-${event.id}`,
-            type: 'execution',
-            timestamp: event.timestamp,
-            title: getExecutionEventTitle(event, t),
-            subtitle: truncate(event.content || ''),
-            status: 'execution',
-            kind: event.kind,
-            execution: event,
-            linkedResult,
-          });
-          consumedResultIds.add(linkedResult.id);
-          return; // tool_call 已处理，不再单独添加
-        }
-      }
-
-      // 如果是独立的 tool_result（没有配对的 tool_call），单独添加
-      if (event.kind === 'tool_result' && !consumedResultIds.has(event.id)) {
         pairedExecutionItems.push({
           id: `execution-${event.id}`,
           type: 'execution',
@@ -474,6 +453,7 @@ export function buildProcessItems(
           status: 'execution',
           kind: event.kind,
           execution: event,
+          linkedResult: linkedResult || undefined,
         });
         return;
       }
