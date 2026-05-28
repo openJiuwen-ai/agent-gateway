@@ -666,11 +666,15 @@ class JiuWenClaw:
         # guard 能通过），再 cancel_session_task（其 finally 会把 session 从 _active_session_ids 移除）。
         # 顺序不能反，否则 process_interrupt 的 session guard 会误判为 "not active" 而跳过 abort。
         response = await adapter.process_interrupt(request)
-        await self._session_manager.cancel_session_task(session_id, f"interrupt(intent={intent}): ")
         await self._cancel_team_work_for_session(
             session_id,
             request.channel_id,
             log_prefix=f"interrupt(intent={intent}): ",
+        )
+        await self._session_manager.cancel_session_task(
+            session_id,
+            f"interrupt(intent={intent}): ",
+            wait_timeout=5.0,
         )
         return response
 
@@ -726,13 +730,22 @@ class JiuWenClaw:
             )
 
         if intent in {"pause", "cancel"}:
-            await self._session_manager.cancel_session_task(session_id, reason)
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                await self._session_manager.cancel_session_task(
+                    session_id,
+                    reason,
+                    wait_timeout=5.0,
+                )
                 message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
             else:
                 # Use cancel_session_runtime to remove from Runner pool
                 cancelled = await team_manager.cancel_session_runtime(session_id, reason=reason)
+                await self._session_manager.cancel_session_task(
+                    session_id,
+                    reason,
+                    wait_timeout=5.0,
+                )
                 message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
             success = paused if intent == "pause" else cancelled
             return self._build_interrupt_result_response(
