@@ -18,6 +18,7 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import get_team_manager
+from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
     get_session_metadata,
@@ -401,7 +402,7 @@ async def _resolve_team_rebuild_followup(
         return None, "请指定 Skill 名称：`/evolve_rebuild <skill_name> [user_intent]`"
 
     if not store.skill_exists(skill_name):
-        available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
         return None, f"未找到 Skill '{skill_name}'。当前可用：{available}"
 
     try:
@@ -444,7 +445,7 @@ async def _handle_team_evolve_list_command(
         }
 
     if not store.skill_exists(skill_name):
-        available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
         return {
             "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
             "result_type": "error",
@@ -529,7 +530,7 @@ async def _handle_team_slash_command(
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
@@ -567,7 +568,7 @@ async def _handle_team_slash_command(
     user_query = parts[2].strip() if len(parts) > 2 else ""
 
     if not store.skill_exists(skill_name):
-        available = "、".join(store.list_skill_names()) or "（无可用 Skill）"
+        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
         return {
             "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
             "result_type": "error",

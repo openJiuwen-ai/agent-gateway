@@ -131,6 +131,7 @@ from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_b
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
+from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EvolutionPushContext,
@@ -1951,6 +1952,7 @@ class JiuWenClawDeepAdapter:
                 model=model_name,
                 auto_scan=evolution_auto_scan,
                 auto_save=False,
+                disabled_skills=self._skill_manager.list_execution_disabled_skills(),
             )
             self._skill_evolution_rail = skill_evolution_rail
             logger.info("[JiuWenClaw] SkillEvolutionRail create success")
@@ -3757,7 +3759,7 @@ class JiuWenClawDeepAdapter:
         assert rail is not None
         store = rail.store
 
-        skill_names = self._filter_execution_visible_skill_names(store.list_skill_names())
+        skill_names = filter_visible_skill_names(store.list_skill_names())
 
         parts = query.split(maxsplit=1)
         skill_arg = parts[1].strip() if len(parts) > 1 else ""
@@ -3986,12 +3988,6 @@ class JiuWenClawDeepAdapter:
 
         return SkillEvolutionRail._parse_messages(raw_messages)
 
-    def _filter_execution_visible_skill_names(self, names: list[str]) -> list[str]:
-        disabled = set(self._skill_manager.list_disabled_skills())
-        if not disabled:
-            return names
-        return [name for name in names if name not in disabled]
-
     async def _handle_evolve_list_command(self, query: str) -> dict[str, Any]:
         """/evolve_list <skill_name> [--sort score] — show experiences with scores."""
         rail = self._skill_evolution_rail
@@ -4007,7 +4003,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = ("、".join(self._filter_execution_visible_skill_names(store.list_skill_names()))
+            available = ("、".join(filter_visible_skill_names(store.list_skill_names()))
                          or "（无可用 Skill）")
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
@@ -4070,7 +4066,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = ("、".join(self._filter_execution_visible_skill_names(store.list_skill_names()))
+            available = ("、".join(filter_visible_skill_names(store.list_skill_names()))
                          or "（无可用 Skill）")
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
@@ -4105,7 +4101,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(self._filter_execution_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
+            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",
@@ -4142,7 +4138,7 @@ class JiuWenClawDeepAdapter:
 
         if not skill_name:
             archives_hint = ""
-            for name in self._filter_execution_visible_skill_names(store.list_skill_names()):
+            for name in filter_visible_skill_names(store.list_skill_names()):
                 archives = store.list_archives(name)
                 if archives:
                     body_versions = [a for a in archives if a.startswith("SKILL.v")]
@@ -4156,7 +4152,7 @@ class JiuWenClawDeepAdapter:
             }
 
         if not store.skill_exists(skill_name):
-            available = "、".join(self._filter_execution_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
+            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
             return {
                 "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
                 "result_type": "error",

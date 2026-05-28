@@ -96,114 +96,16 @@ def _get_marketplace_dir() -> "Path":
     return get_agent_skills_dir() / "_marketplace"
 
 
-def _get_state_file() -> "Path":
-    return get_agent_skills_dir() / "skills_state.json"
-
-
-def normalize_skill_configs(raw_configs: Any) -> dict[str, dict[str, bool]]:
-    """Normalize per-skill config records."""
-    if not isinstance(raw_configs, dict):
-        return {}
-
-    normalized: dict[str, dict[str, bool]] = {}
-    for raw_name, raw_cfg in raw_configs.items():
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip()
-        if not name:
-            continue
-        config = raw_cfg if isinstance(raw_cfg, dict) else {}
-        normalized[name] = {"enabled": bool(config.get("enabled", True))}
-    return normalized
-
-
-def get_registered_skill_names(state: dict[str, Any]) -> set[str]:
-    """Return all skill names recorded in installed/local state lists."""
-    names: set[str] = set()
-    for key in ("installed_plugins", "local_skills"):
-        items = state.get(key, [])
-        if not isinstance(items, list):
-            continue
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name", "")).strip()
-            if name:
-                names.add(name)
-    return names
-
-
-def normalize_local_skills(
-    raw_local_skills: Any,
-    existing_local_skill_names: set[str],
-) -> list[dict[str, Any]]:
-    """Keep only local skill records that still exist under the local skills dir."""
-    if not isinstance(raw_local_skills, list):
-        return []
-
-    normalized: list[dict[str, Any]] = []
-    for item in raw_local_skills:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name", "")).strip()
-        if not name or name not in existing_local_skill_names:
-            continue
-        normalized.append(item)
-    return normalized
-
-
-def get_skill_enabled(state: dict[str, Any], skill_name: str) -> bool:
-    """Read a skill enabled flag with backward-compatible default true."""
-    if not skill_name:
-        return True
-
-    configs = state.get("skill_configs", {})
-    if not isinstance(configs, dict):
-        return True
-
-    config = configs.get(skill_name)
-    if not isinstance(config, dict):
-        return True
-    return bool(config.get("enabled", True))
-
-
-def set_skill_enabled(
-    state: dict[str, Any],
-    skill_name: str,
-    enabled: bool,
-) -> None:
-    """Persist a skill enabled flag into state."""
-    configs = state.setdefault("skill_configs", {})
-    if not isinstance(configs, dict):
-        configs = {}
-        state["skill_configs"] = configs
-    configs[skill_name] = {"enabled": bool(enabled)}
-
-
-def list_disabled_skills(state: dict[str, Any]) -> list[str]:
-    """Return sorted disabled skill names from canonical config."""
-    configs = state.get("skill_configs", {})
-    if not isinstance(configs, dict):
-        return []
-
-    disabled = []
-    for name, config in configs.items():
-        if not isinstance(name, str) or not isinstance(config, dict):
-            continue
-        if config.get("enabled") is False:
-            disabled.append(name)
-    return sorted(disabled)
-
-
-def list_execution_disabled_skills(state: dict[str, Any]) -> list[str]:
-    """Return disabled skill names that are currently installed."""
-    registered = get_registered_skill_names(state)
-    if not registered:
-        return []
-    return [
-        name for name in list_disabled_skills(state)
-        if name in registered
-    ]
+from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+    get_registered_skill_names,
+    get_skill_enabled,
+    get_state_file,
+    list_disabled_skills,
+    list_execution_disabled_skills,
+    normalize_local_skills,
+    normalize_skill_configs,
+    set_skill_enabled,
+)
 
 
 class SkillNetEmptyDownloadError(Exception):

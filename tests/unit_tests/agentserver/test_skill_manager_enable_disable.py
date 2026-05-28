@@ -1,41 +1,14 @@
 from __future__ import annotations
 
-import ast
-from pathlib import Path
-
-
-def _load_skill_state_helpers():
-    source_path = Path("jiuwenswarm/server/runtime/skill/skill_manager.py")
-    module = ast.parse(source_path.read_text(encoding="utf-8"))
-    target_names = {
-        "normalize_skill_configs",
-        "normalize_local_skills",
-        "get_registered_skill_names",
-        "get_skill_enabled",
-        "set_skill_enabled",
-        "list_disabled_skills",
-        "list_execution_disabled_skills",
-    }
-    selected_nodes = []
-    for node in module.body:
-        if isinstance(node, ast.FunctionDef) and node.name in target_names:
-            selected_nodes.append(node)
-
-    helper_module = ast.Module(body=selected_nodes, type_ignores=[])
-    ast.fix_missing_locations(helper_module)
-    namespace = {"Any": object}
-    exec(compile(helper_module, str(source_path), "exec"), namespace)
-    return namespace
-
-
-_HELPERS = _load_skill_state_helpers()
-normalize_skill_configs = _HELPERS["normalize_skill_configs"]
-normalize_local_skills = _HELPERS["normalize_local_skills"]
-get_registered_skill_names = _HELPERS["get_registered_skill_names"]
-get_skill_enabled = _HELPERS["get_skill_enabled"]
-set_skill_enabled = _HELPERS["set_skill_enabled"]
-list_disabled_skills = _HELPERS["list_disabled_skills"]
-list_execution_disabled_skills = _HELPERS["list_execution_disabled_skills"]
+from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+    get_registered_skill_names,
+    get_skill_enabled,
+    list_disabled_skills,
+    list_execution_disabled_skills,
+    normalize_local_skills,
+    normalize_skill_configs,
+    set_skill_enabled,
+)
 
 
 def test_normalize_skill_configs_defaults_enabled_true():
@@ -131,14 +104,3 @@ def test_get_skill_enabled_defaults_true_for_legacy_state():
 
     assert get_skill_enabled(legacy_state, "legacy-plugin") is True
     assert get_skill_enabled(legacy_state, "legacy-local") is True
-
-
-def test_skill_manager_source_wires_builtin_candidates_enabled():
-    source = Path(
-        "jiuwenswarm/server/runtime/skill/skill_manager.py"
-    ).read_text(encoding="utf-8")
-
-    assert 'meta["installed"] = False' in source
-    assert 'meta["source"] = "builtin"' in source
-    assert "self._apply_enabled_config(meta, meta.get(\"name\", \"\"))" in source
-    assert 'state["local_skills"] = normalize_local_skills(' in source

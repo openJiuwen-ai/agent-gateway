@@ -31,6 +31,7 @@ from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimeP
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuClawStreamEventRail
 from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail import TeamWorkspaceReportPathRail
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +251,7 @@ def build_member_rails(
                 auto_scan=evolution_auto_scan,
                 auto_save=False,
                 team_id=team_id,
+                disabled_skills=load_execution_disabled_skills(),
             )
             rails_list.append(team_skill_rail)
             logger.info(
@@ -499,6 +501,7 @@ def build_skill_evolution_rail(
             model=model_name,
             auto_scan=evolution_auto_scan,
             auto_save=True,
+            disabled_skills=load_execution_disabled_skills(),
         )
         if team_trajectory_sink is not None and team_id:
             rail.set_trajectory_sink(
