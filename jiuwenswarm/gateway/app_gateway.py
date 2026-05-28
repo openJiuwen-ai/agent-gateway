@@ -824,18 +824,25 @@ async def _run(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
+    # 从扩展注册表获取 AgentServerClient
     agent_server_ext = extension_registry.get_agent_server_client_extension()
     if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
         client = agent_server_ext.get_client()
     else:
         client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
-    await _connect_with_retry(
-        client,
-        agent_server_url,
-        max_retries=max_retries,
-        interval=retry_interval,
-    )
+
+    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    if isinstance(client, WebSocketAgentServerClient):
+        await _connect_with_retry(
+            client,
+            agent_server_url,
+            max_retries=max_retries,
+            interval=retry_interval,
+        )
+    else:
+        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
+        await client.connect("")
 
     message_handler = MessageHandler(client)
     await message_handler.start_forwarding()

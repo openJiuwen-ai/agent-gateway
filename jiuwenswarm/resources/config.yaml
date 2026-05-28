@@ -370,6 +370,16 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: per_chat_bot
 
+  # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
+  # type: websocket（默认，WebSocket 连接） | yuanrong（openYuanRong 函数调用）
+  agent_client:
+    type: websocket # websocket | yuanrong
+    # yuanrong 函数模式配置下面参数
+    frontend_endpoint:
+    function_version_urn:
+    concurrency: 1
+    invoke_timeout_s: 60
+
 heartbeat:
   # 心跳间隔（秒），默认 3600
   every: 3600
@@ -699,7 +709,7 @@ updater:
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"
-  extension_dirs: ${EXTENSION_DIRS:-}
+  extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
 
 
 team:
