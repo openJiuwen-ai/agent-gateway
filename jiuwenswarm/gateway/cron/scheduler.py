@@ -406,6 +406,9 @@ class CronSchedulerService:
                 state.error = str(exc)
             finally:
                 state.finished_at = self._now_fn()
+                # Ensure failed runs also produce result_text so push logic can deliver it
+                if not state.result_text and state.error:
+                    state.result_text = f"[cron] 任务执行失败: {state.error}"
                 # if placeholder already sent, push update immediately
                 if state.placeholder_sent and not state.pushed_final and state.result_text:
                     logger.info(
