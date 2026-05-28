@@ -356,16 +356,15 @@ class SkillManager:
     async def handle_skills_installed(self, params: dict) -> dict:
         """返回已安装的 marketplace 插件列表.
 
-        按前端期望格式返回：plugin_name, marketplace, spec, version, installed_at, git_commit, skills[]
+        按前端期望格式返回：plugin_name, marketplace, spec, version, installed_at, git_commit, skills[], enabled
         """
         raw_plugins = self._get_installed_plugins()
         plugins = []
         for p in raw_plugins:
+            p = self._normalize_plugin(p)
             name = p.get("name", "")
             marketplace = p.get("marketplace", "")
-            # 构造 spec (plugin_name@marketplace_name)
             spec = f"{name}@{marketplace}" if marketplace else name
-            # 转换字段名以符合前端期望
             plugin = {
                 "plugin_name": name,
                 "marketplace": marketplace,
@@ -374,7 +373,6 @@ class SkillManager:
                 "installed_at": p.get("installed_at", ""),
                 "git_commit": p.get("commit", ""),
                 "enabled": self.get_skill_enabled(name),
-                # skills 数组：通常一个 plugin 包含同名 skill
                 "skills": [name] if name else [],
             }
             plugins.append(plugin)
@@ -3405,6 +3403,156 @@ class SkillManager:
                 )
 
     # -----------------------------------------------------------------------
+    # Plugin handlers (plugins.*)
+    # -----------------------------------------------------------------------
+
+    async def handle_plugins_list(self, params: dict) -> dict:
+        """列出所有已安装插件（含启用/禁用状态）."""
+        raw = self._get_installed_plugins()
+        plugins = []
+        for p in raw:
+            p = self._normalize_plugin(p)
+            name = p.get("name", "")
+            marketplace = p.get("marketplace", "")
+            spec = f"{name}@{marketplace}" if marketplace else name
+            plugins.append({
+                "plugin_name": name,
+                "marketplace": marketplace,
+                "spec": spec,
+                "version": p.get("version", ""),
+                "installed_at": p.get("installed_at", ""),
+                "git_commit": p.get("commit", ""),
+                "skills": p.get("skills", [name] if name else []),
+                "enabled": p.get("enabled", True),
+            })
+        return {"plugins": plugins}
+
+    async def handle_plugins_install(self, params: dict) -> dict:
+        """安装插件，支持 marketplace spec 或本地路径/URL."""
+        spec = params.get("spec", "")
+        if not spec:
+            return {"success": False, "detail": "缺少参数: spec"}
+
+        # 检测本地路径或 URL
+        is_local = spec.startswith("/") or spec.startswith("./") or spec.startswith("../") or spec.startswith("~")
+        is_url = spec.startswith("http://") or spec.startswith("https://")
+
+        if is_local or is_url:
+            # 使用 import_local 流程，然后注册为 plugin
+            result = await self.handle_skills_import_local({"path": spec, "force": params.get("force", False)})
+            if result.get("success"):
+                # 从返回结果中提取 plugin name 并设为 enabled
+                skill_name = result.get("skill", {}).get("name", "") if isinstance(result.get("skill"), dict) else ""
+                if not skill_name:
+                    # fallback: 从路径提取名称
+                    skill_name = os.path.basename(spec.rstrip("/").rstrip(".git"))
+                # 确保在 installed_plugins 中有记录
+                existing = [p for p in self._get_installed_plugins() if p.get("name") == skill_name]
+                if not existing:
+                    self._add_installed_plugin({
+                        "name": skill_name,
+                        "marketplace": "",
+                        "version": "",
+                        "commit": "",
+                        "source": "local",
+                        "installed_at": datetime.now(timezone.utc).isoformat(),
+                        "skills": [skill_name],
+                    })
+                self._set_plugin_enabled(skill_name, True)
+            return result
+
+        # marketplace install
+        result = await self.handle_skills_install(params)
+        if result.get("success"):
+            plugin_name = spec.rsplit("@", 1)[0] if "@" in spec else spec
+            self._set_plugin_enabled(plugin_name, True)
+        return result
+
+    async def handle_plugins_uninstall(self, params: dict) -> dict:
+        """卸载插件，复用 skills.uninstall 逻辑."""
+        name = params.get("name", "")
+        if name:
+            try:
+                safe_name = _safe_path_name(name, "plugin")
+                disabled_dir = self._skills_dir / "_disabled_plugins" / safe_name
+                if disabled_dir.exists():
+                    _safe_rmtree(disabled_dir)
+            except ValueError:
+                pass
+        return await self.handle_skills_uninstall(params)
+
+    async def handle_plugins_enable(self, params: dict) -> dict:
+        """启用插件."""
+        name = params.get("name", "")
+        if not name:
+            return {"success": False, "detail": "缺少参数: name"}
+        ok = self._set_plugin_enabled(name, True)
+        if not ok:
+            return {"success": False, "detail": f"未找到插件: {name}"}
+        return {"success": True, "detail": f"插件 {name} 已启用，请执行 /reload-plugins 使其生效"}
+
+    async def handle_plugins_disable(self, params: dict) -> dict:
+        """禁用插件."""
+        name = params.get("name", "")
+        if not name:
+            return {"success": False, "detail": "缺少参数: name"}
+        ok = self._set_plugin_enabled(name, False)
+        if not ok:
+            return {"success": False, "detail": f"未找到插件: {name}"}
+        return {"success": True, "detail": f"插件 {name} 已禁用，请执行 /reload-plugins 使其生效"}
+
+    async def handle_plugins_reload(self, params: dict) -> dict:
+        """重载插件：根据 enabled 状态物理移动技能目录，然后统计摘要."""
+        # 规范化所有插件记录
+        for p in self._get_installed_plugins():
+            self._normalize_plugin(p)
+        self._save_state()
+
+        # 根据 enabled 状态物理移动技能目录
+        disabled_cache = self._skills_dir / "_disabled_plugins"
+        all_plugins = self._get_installed_plugins()
+
+        for p in all_plugins:
+            name = p.get("name", "")
+            if not name:
+                continue
+            skill_dir = self._skills_dir / name
+            cached_dir = disabled_cache / name
+
+            if p.get("enabled", True):
+                # 启用状态：从 disabled 缓存恢复
+                if cached_dir.exists() and not skill_dir.exists():
+                    disabled_cache.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(cached_dir), str(skill_dir))
+            else:
+                # 禁用状态：移动到 disabled 缓存
+                if skill_dir.exists():
+                    disabled_cache.mkdir(parents=True, exist_ok=True)
+                    if cached_dir.exists():
+                        _safe_rmtree(cached_dir)
+                    shutil.move(str(skill_dir), str(cached_dir))
+
+        # 统计
+        enabled_plugins = [p for p in all_plugins if p.get("enabled", True)]
+        disabled_plugins = [p for p in all_plugins if not p.get("enabled", True)]
+
+        total_skills = 0
+        for p in enabled_plugins:
+            skills = p.get("skills", [])
+            if not skills and p.get("name"):
+                skills = [p["name"]]
+            total_skills += len(skills)
+
+        return {
+            "success": True,
+            "plugins_count": len(enabled_plugins),
+            "disabled_count": len(disabled_plugins),
+            "skills_count": total_skills,
+            "detail": f"Reloaded: {len(enabled_plugins)} plugins · {total_skills} skills"
+            + (f" ({len(disabled_plugins)} disabled)" if disabled_plugins else ""),
+        }
+
+    # -----------------------------------------------------------------------
     # 状态持久化
     # -----------------------------------------------------------------------
 
@@ -3613,7 +3761,7 @@ class SkillManager:
 
     def _add_installed_plugin(self, plugin: dict) -> None:
         plugins = self._state.setdefault("installed_plugins", [])
-        # 更新已有记录
+        plugin = self._normalize_plugin(plugin)
         for i, p in enumerate(plugins):
             if p.get("name") == plugin.get("name"):
                 plugins[i] = plugin
@@ -3626,6 +3774,26 @@ class SkillManager:
         plugins = self._state.get("installed_plugins", [])
         self._state["installed_plugins"] = [p for p in plugins if p.get("name") != name]
         self._save_state()
+
+    def _set_plugin_enabled(self, name: str, enabled: bool) -> bool:
+        """设置插件的启用/禁用状态."""
+        plugins = self._state.get("installed_plugins", [])
+        updated = False
+        for p in plugins:
+            if p.get("name") == name:
+                p["enabled"] = bool(enabled)
+                updated = True
+                break
+        if not updated:
+            return False
+        self._save_state()
+        return True
+
+    @staticmethod
+    def _normalize_plugin(p: dict) -> dict:
+        """规范化插件记录，补全 enabled 字段."""
+        p.setdefault("enabled", True)
+        return p
 
     def _add_local_skill(self, skill: dict) -> None:
         local = self._state.setdefault("local_skills", [])

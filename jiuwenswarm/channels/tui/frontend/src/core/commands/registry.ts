@@ -23,6 +23,8 @@ import { createInitCommand } from "./builtins/init.js";
 import { createModelCommand } from "./builtins/model.js";
 import { createMcpCommand } from "./builtins/mcp.js";
 import { createMemoryCommand } from "./builtins/memory.js";
+import { createPluginCommand } from "./builtins/plugin.js";
+import { createReloadPluginsCommand } from "./builtins/reload-plugins.js";
 import { createModeCommand } from "./builtins/mode.js";
 import { createPermissionsCommand } from "./builtins/permissions.js";
 import { createPlanCommand } from "./builtins/plan.js";
@@ -81,6 +83,8 @@ export function createBuiltinCommands(): SlashCommand[] {
     createWorkspaceCommand(),
     createUsageCommand(),
     createMemoryCommand(),
+    createPluginCommand(),
+    createReloadPluginsCommand(),
   ];
 
   return commands;

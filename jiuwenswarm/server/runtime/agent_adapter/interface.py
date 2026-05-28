@@ -128,6 +128,15 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
 }
 
+_PLUGIN_ROUTES: dict[ReqMethod, str] = {
+    ReqMethod.PLUGINS_LIST: "handle_plugins_list",
+    ReqMethod.PLUGINS_INSTALL: "handle_plugins_install",
+    ReqMethod.PLUGINS_UNINSTALL: "handle_plugins_uninstall",
+    ReqMethod.PLUGINS_ENABLE: "handle_plugins_enable",
+    ReqMethod.PLUGINS_DISABLE: "handle_plugins_disable",
+    ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
+}
+
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
 )
@@ -575,6 +584,40 @@ class JiuWenClaw:
             metadata=request.metadata,
         )
 
+    async def _handle_plugins_request(self, request: AgentRequest) -> AgentResponse | None:
+        """处理 Plugin 相关请求，返回 None 表示不是 Plugin 请求."""
+        if request.req_method not in _PLUGIN_ROUTES:
+            return None
+
+        handler_name = _PLUGIN_ROUTES[request.req_method]
+        handler = getattr(self._skill_manager, handler_name)
+        try:
+            payload = await handler(request.params)
+            # install / uninstall / reload 之后重建 Agent 实例
+            _reload_after = handler_name in [
+                "handle_plugins_install",
+                "handle_plugins_uninstall",
+                "handle_plugins_reload",
+            ]
+            if _reload_after:
+                await self.create_instance()
+        except Exception as exc:
+            logger.error("[JiuWenClaw] plugins 请求处理失败: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc)},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -749,6 +792,10 @@ class JiuWenClaw:
         skills_response = await self._handle_skills_request(request)
         if skills_response is not None:
             return skills_response
+
+        plugins_response = await self._handle_plugins_request(request)
+        if plugins_response is not None:
+            return plugins_response
 
         session_id = self._session_manager.get_session_id(request.session_id)
         query = request.params.get("query", "")
