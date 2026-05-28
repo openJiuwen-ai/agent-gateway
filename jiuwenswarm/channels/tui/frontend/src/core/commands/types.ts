@@ -92,6 +92,8 @@ export interface CommandContext {
   /** Enter FileViewer mode to view large content (e.g., formatted logs) */
   enterFileViewer?: (content: string, title: string, source: string) => void;
   restartStatusLine?: () => void;
+  /** Get the current JSON data that would be piped to the statusline command */
+  getStatusLineJsonInput?: () => Record<string, unknown>;
 }
 
 export interface SlashCommand {

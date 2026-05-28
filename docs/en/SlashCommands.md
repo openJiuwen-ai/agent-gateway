@@ -574,11 +574,12 @@ Configure the TUI footer status bar with a custom shell command that dynamically
 | `/statusline` or `/statusline get` | View current status line configuration |
 | `/statusline set <shell-command>` | Set the status line command (its output will appear in the TUI footer) |
 | `/statusline clear` | Remove the status line configuration (footer bar will hide) |
-| `/statusline help` | Show the JSON input fields reference |
+| `/statusline help` | Show usage guide (writing patterns, practical examples, field list) |
+| `/statusline json` | Show the actual current JSON data values (useful for debugging jq expressions) |
 
 #### Concepts
 
-- **StatusLine**: A one-line text area at the bottom of the TUI that displays user-defined dynamic information. When a custom statusline is configured, the built-in status line is automatically hidden to avoid redundant information.
+- **StatusLine**: A text area at the bottom of the TUI that displays user-defined dynamic information, supporting multi-line output. When a custom statusline is configured, the built-in status line is automatically hidden to avoid redundant information.
 - **Shell command**: The configured shell command is automatically executed every 2 seconds; its stdout output is rendered as the status bar text.
 - **JSON input**: Each execution receives current session info as JSON, which can be parsed with `jq` or other tools. On POSIX (Linux/macOS), JSON is passed via stdin pipe; on Windows, due to MSYS2 pipe inheritance limitations, the system automatically writes JSON to a temp file and replaces `$(cat)` in the command with `$(cat "filepath")` — the user doesn't need to modify their command format.
 - **Prerequisites**: Requires `jq` (https://stedolan.github.io/jq/) for JSON parsing; Windows users also need to add Git Bash's `usr\bin` directory to the system PATH (e.g., `E:\Git\usr\bin`).
@@ -670,7 +671,8 @@ Use the following template to write commands. `input=$(cat)` reads JSON into a v
 - `/statusline set 'input=$(cat); err=$(echo "$input" | jq -r .last_error); if [ "$err" != "null" ] && [ "$err" != "" ]; then echo "error: $err"; else echo "ok"; fi'` — Show error when present, otherwise "ok"
 - `/statusline set 'input=$(cat); dirs=$(echo "$input" | jq -r '.trusted_dirs // [] | join(" ")'); mode=$(echo "$input" | jq -r '.mode // "?"'); echo "$mode | dirs:$dirs"'` — Show mode and trusted workspace directories
 - `/statusline clear` — Remove status line configuration
-- `/statusline help` — View JSON input fields reference
+- `/statusline help` — View usage guide (writing patterns, practical examples, available fields)
+- `/statusline json` — View actual current JSON data values (useful for debugging jq expressions)
 
 #### Behavior Details
 

@@ -585,11 +585,12 @@
 | `/statusline` 或 `/statusline get` | 查看当前状态栏配置 |
 | `/statusline set <shell-command>` | 设置状态栏命令（命令输出将显示在 TUI 底部） |
 | `/statusline clear` | 清除状态栏配置（底部栏将不再显示） |
-| `/statusline help` | 显示状态栏 JSON 输入字段参考 |
+| `/statusline help` | 显示使用指南（含写法模式、实用示例、字段列表） |
+| `/statusline json` | 显示当前实际的 JSON 数据值（方便调试 jq 表达式） |
 
 #### 概念说明
 
-- **状态栏（StatusLine）**：TUI 底部的一行文字区域，实时显示用户自定义的动态信息。配置了自定义状态栏后，内置状态栏会自动隐藏，避免信息冗余。
+- **状态栏（StatusLine）**：TUI 底部的文字区域，实时显示用户自定义的动态信息，支持多行输出。配置了自定义状态栏后，内置状态栏会自动隐藏，避免信息冗余。
 - **Shell 命令**：用户配置的 shell 命令每 2 秒自动执行一次，其 stdout 输出渲染为状态栏文字。
 - **JSON 输入**：每次执行时，系统将当前会话信息以 JSON 格式传入命令，用户可在命令中用 `jq` 等工具解析。POSIX（Linux/macOS）通过 stdin 管道传入；Windows 上因 MSYS2 管道继承限制，系统自动将 JSON 写入临时文件，并将命令中的 `$(cat)` 替换为 `$(cat "文件路径")`，用户无需修改命令格式。
 - **前置依赖**：需要 `jq`（https://stedolan.github.io/jq/）用于解析 JSON；Windows 用户还需将 Git Bash 的 `usr\bin` 目录加入系统 PATH（如 `E:\Git\usr\bin`）。
@@ -681,7 +682,8 @@
 - `/statusline set 'input=$(cat); err=$(echo "$input" | jq -r .last_error); if [ "$err" != "null" ] && [ "$err" != "" ]; then echo "error: $err"; else echo "ok"; fi'` — 有错误时显示错误信息，无错误时显示 ok
 - `/statusline set 'input=$(cat); dirs=$(echo "$input" | jq -r '.trusted_dirs // [] | join(" ")'); mode=$(echo "$input" | jq -r '.mode // "?"'); echo "$mode | dirs:$dirs"'` — 显示模式与可信工作目录
 - `/statusline clear` — 清除状态栏配置
-- `/statusline help` — 查看 JSON 输入字段参考
+- `/statusline help` — 查看使用指南（含写法模式、实用示例、可用字段）
+- `/statusline json` — 查看当前实际的 JSON 数据值（方便调试 jq 表达式）
 
 #### 行为细节
 

@@ -660,6 +660,7 @@ export class CliPiAppState {
       enterStatusView: undefined,
       getUsageSummary: () => this.getUsageSummary(),
       restartStatusLine: () => this.restartStatusLinePoll(),
+      getStatusLineJsonInput: () => this.buildStatusLineJsonInput(),
     };
   }
 
