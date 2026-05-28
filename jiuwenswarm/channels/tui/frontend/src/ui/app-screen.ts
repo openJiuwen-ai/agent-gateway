@@ -3472,7 +3472,7 @@ export class AppScreen implements Component, Focusable {
     // so the description starts sooner and details can align beneath it.
     const layout = detailsMap.size > 0
       ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
-      : {};
+      : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
     const list = new SelectList(
       items,
       Math.min(Math.max(items.length, 1), maxVisible),
