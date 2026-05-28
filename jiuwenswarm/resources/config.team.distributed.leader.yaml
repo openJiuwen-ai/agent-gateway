@@ -784,3 +784,16 @@ modes:
         type: postgresql
         params:
           connection_string: postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/jiuwen_team
+
+      # ============================================================
+      # Team 级共享记忆（TeamMemoryConfig）
+      # ============================================================
+      # 详见 config.yaml 中 modes.team.jiuwen_team.memory 的完整注释
+      # ============================================================
+      memory:
+        enabled: false
+        scenario: "general"
+        auto_extract: true
+        shared_memory: true
+        member_memory_prompt_mode: "proactive"
+        timezone_offset_hours: 8.0

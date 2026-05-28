@@ -827,3 +827,39 @@ modes:
 
       storage:
         type: sqlite
+
+      # ============================================================
+      # Team 级共享记忆（TeamMemoryConfig）
+      # ============================================================
+      # 与常规 Agent 的 per-session 记忆不同，Team 记忆是一个独立的、
+      # 跨成员的共享记忆系统，由 TeamMemoryManager 统一管理。
+      #
+      # 启用后，每个 Team 成员的记忆操作不再是孤立的个人记忆，
+      # 而是读写同一份 TEAM_MEMORY.md（位于 team_memory_dir 下）。
+      # 这允许成员之间通过记忆文件共享上下文（如项目背景、决策记录等）。
+      # ============================================================
+      memory:
+        # ---------- 总开关 ----------
+        # 关闭时 TeamMemoryManager 不创建，成员记忆回退到各自独立的 MemoryRail
+        enabled: false
+
+        # ---------- 场景标识 ----------
+        # "general" — 通用场景，记忆提取 prompt 偏重项目背景与决策
+        # "coding"  — 编码场景，记忆提取 prompt 偏重技术方案与架构决策
+        scenario: "general"
+
+        # ---------- 自动提取 ----------
+        # true  — 每轮对话结束后，后台自动总结并写入 TEAM_MEMORY.md
+        # false — 仅当 LLM 主动调用记忆工具时才写入
+        # 仅在 lifecycle=persistent 时生效；temporary 团队不触发自动提取
+        auto_extract: true
+
+        # ---------- 共享记忆 ----------
+        # true  — 所有成员共享同一份 TEAM_MEMORY.md（默认）
+        # false — 每个成员维护独立记忆文件（按 member_name 分目录）
+        shared_memory: true
+
+        # ---------- 记忆注入模式 ----------
+        # 控制记忆内容如何注入到每个成员的 system prompt 中：
+        #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
+        member_memory_prompt_mode: "proactive"
