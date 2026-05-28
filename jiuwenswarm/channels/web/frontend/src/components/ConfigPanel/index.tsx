@@ -70,7 +70,7 @@ function MultiSelectDropdown({
         )}
       </div>
       {isOpen && options.length > 0 && (
-        <div className="absolute z-10 mt-1 w-full max-h-48 overflow-auto rounded border border-border bg-card shadow-lg">
+        <div className="absolute z-10 mt-1 w-full max-h-60 overflow-auto rounded border border-border bg-card shadow-lg">
           {options.map((option) => (
             <label
               key={option}
@@ -749,8 +749,8 @@ function MultiModelSection({
   onClearExternalError?: () => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
-  const [validatingModel, setValidatingModel] = useState<string | null>(null);
-  const [validateResults, setValidateResults] = useState<Record<string, "ok" | "err">>({});
+  const [validatingModel, setValidatingModel] = useState<number | null>(null);
+  const [validateResults, setValidateResults] = useState<Record<number, "ok" | "err">>({});
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
   const [newModel, setNewModel] = useState<ModelEntry>({
@@ -795,19 +795,19 @@ function MultiModelSection({
     return references;
   };
 
-  const handleValidate = async (model: ModelEntry) => {
+  const handleValidate = async (model: ModelEntry, idx: number) => {
     if (!onModelValidate) return;
-    setValidatingModel(model.model_name);
-    setValidateResults((prev) => ({ ...prev, [model.model_name]: undefined as any }));
+    setValidatingModel(idx);
+    setValidateResults((prev) => ({ ...prev, [idx]: undefined as any }));
     try {
       await onModelValidate({
         api_base: model.api_base, api_key: model.api_key,
         model: model.model_name, model_provider: model.model_provider,
       });
-      setValidateResults((prev) => ({ ...prev, [model.model_name]: "ok" }));
+      setValidateResults((prev) => ({ ...prev, [idx]: "ok" }));
       setValidateToast({ show: true, success: true, message: t("config.validateModel.success") });
     } catch {
-      setValidateResults((prev) => ({ ...prev, [model.model_name]: "err" }));
+      setValidateResults((prev) => ({ ...prev, [idx]: "err" }));
       setValidateToast({ show: true, success: false, message: t("config.validateModel.notWorking") });
     } finally {
       setValidatingModel(null);
@@ -1020,7 +1020,7 @@ function MultiModelSection({
         )}
         {models.map((model, idx) => {
           const isExpanded = expandedIdx === idx;
-          const vr = validateResults[model.model_name];
+          const vr = validateResults[idx];
           const isDefault = model.is_default !== false;
           const isPrimaryDefault = idx === 0;
           // 同名模型计数，用于区分显示
@@ -1077,11 +1077,11 @@ function MultiModelSection({
                   )}
                   <button
                     type="button"
-                    onClick={() => handleValidate(model)}
-                    disabled={!isConnected || validatingModel === model.model_name}
+                    onClick={() => handleValidate(model, idx)}
+                    disabled={!isConnected || validatingModel === idx}
                     className="text-[11px] px-2 py-0.5 rounded border border-border hover:bg-secondary/60 disabled:opacity-40"
                   >
-                    {validatingModel === model.model_name ? "..." : t("config.validateModel.button")}
+                    {validatingModel === idx ? "..." : t("config.validateModel.button")}
                   </button>
                   <button
                     type="button"
@@ -3145,9 +3145,14 @@ export function ConfigPanel({
                         group={group}
                         draftValues={draftValues}
                         onChange={handleFieldChange}
-                        defaultOpen
+                        defaultOpen={initialExpandGroupTag != null && group.tag === initialExpandGroupTag}
                         alwaysExpanded
                         t={t}
+                        afterTable={
+                          group.tag === "permissions" ? (
+                            <PermissionsToolsEditor isConnected={isConnected} />
+                          ) : null
+                        }
                       />
                     ))
                   )}
@@ -3162,31 +3167,6 @@ export function ConfigPanel({
                       t={t}
                     />
                   ))}
-                </div>
-              ) : null}
-
-              {configTab === "security" ? (
-                <div role="tabpanel" aria-labelledby="config-tab-security" className="space-y-3 pb-2">
-                  {securityGroups.length === 0 ? (
-                    <p className="text-sm text-text-muted px-1">{t("config.tabEmpty.security")}</p>
-                  ) : (
-                    securityGroups.map((group) => (
-                      <GroupSection
-                        key={group.tag}
-                        group={group}
-                        draftValues={draftValues}
-                        onChange={handleFieldChange}
-                        defaultOpen={initialExpandGroupTag != null && group.tag === initialExpandGroupTag}
-                        alwaysExpanded
-                        t={t}
-                        afterTable={
-                          group.tag === "permissions" ? (
-                            <PermissionsToolsEditor isConnected={isConnected} />
-                          ) : null
-                        }
-                      />
-                    ))
-                  )}
                 </div>
               ) : null}
 
