@@ -390,6 +390,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const sendMessageRef = useRef<typeof sendMessage>();
   const recentEventRef = useRef<Map<string, number>>(new Map());
   const teamToolCallMemberRef = useRef<Map<string, string>>(new Map());
+  const teamMemberOutputEventRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
   const contextCompressionSummaryRef = useRef<ContextCompressionSummary>({
     count: 0,
@@ -1028,6 +1029,70 @@ team_id: string;
     setThinking(false);
   }, [setThinking]);
 
+  const getTeamMemberOutputKey = useCallback(
+    (payload: Record<string, unknown>, memberId: string): string => stableEventId(
+      'member-output-key',
+      getPayloadSessionId(payload),
+      memberId,
+      payload.rid,
+      payload.request_id
+    ),
+    []
+  );
+
+  const getOrCreateTeamMemberOutputEventId = useCallback(
+    (payload: Record<string, unknown>, memberId: string): string => {
+      const key = getTeamMemberOutputKey(payload, memberId);
+      const existing = teamMemberOutputEventRef.current.get(key);
+      if (existing) {
+        return existing;
+      }
+      const id = stableEventId(
+        'member-output',
+        getPayloadSessionId(payload),
+        memberId,
+        payload.rid,
+        payload.request_id,
+        Date.now()
+      );
+      teamMemberOutputEventRef.current.set(key, id);
+      return id;
+    },
+    [getTeamMemberOutputKey]
+  );
+
+  const takeTeamMemberOutputEventId = useCallback(
+    (payload: Record<string, unknown>, memberId: string): string | undefined => {
+      const key = getTeamMemberOutputKey(payload, memberId);
+      const id = teamMemberOutputEventRef.current.get(key);
+      if (id) {
+        teamMemberOutputEventRef.current.delete(key);
+      }
+      return id;
+    },
+    [getTeamMemberOutputKey]
+  );
+
+  const appendTeamMemberOutputDelta = useCallback(
+    (payload: Record<string, unknown>, memberId: string, content: string) => {
+      if (!content) {
+        return;
+      }
+      const id = getOrCreateTeamMemberOutputEventId(payload, memberId);
+      const existingContent =
+        useSessionStore.getState().teamMemberExecutionEvents.find((event) => event.id === id)?.content || '';
+      useSessionStore.getState().addTeamMemberExecutionEvent({
+        id,
+        member_id: memberId,
+        kind: 'final',
+        timestamp: eventTimestampMs(payload),
+        title: t('team.process.execution.final'),
+        content: `${existingContent}${content}`,
+      });
+    },
+    [getOrCreateTeamMemberOutputEventId, t]
+  );
+
   useEffect(() => {
     const unsubs = [
       webClient.on('connection.ack', ({ payload }) => {
@@ -1044,6 +1109,10 @@ team_id: string;
         const content = typeof payload.content === 'string' ? payload.content : '';
 
         if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
+          const memberId = getTeamPayloadMemberName(payload);
+          if (memberId) {
+            appendTeamMemberOutputDelta(payload, memberId, content);
+          }
           return;
         }
         if (currentMode === 'team' && content) {
@@ -1096,10 +1165,14 @@ team_id: string;
         // team 模式下，过滤成员输出，只保留外层 leader 回复。
         if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
           const memberId = getTeamPayloadMemberName(payload);
-          if (memberId && content.trim()) {
+          if (memberId) {
             const timestamp = eventTimestampMs(payload);
+            const outputEventId = takeTeamMemberOutputEventId(payload, memberId);
+            if (!content.trim()) {
+              return;
+            }
             useSessionStore.getState().addTeamMemberExecutionEvent({
-              id: stableEventId('final', payload.session_id, memberId, payload.rid, timestamp, content.slice(0, 48)),
+              id: outputEventId || stableEventId('final', payload.session_id, memberId, payload.rid, timestamp, content.slice(0, 48)),
               member_id: memberId,
               kind: 'final',
               timestamp,
@@ -1898,6 +1971,7 @@ team_id: string;
     addMessage,
     addToolCall,
     addToolResult,
+    appendTeamMemberOutputDelta,
     appendStreamContent,
     clearSubtasks,
     finishContextCompressionTurn,
@@ -1921,6 +1995,7 @@ team_id: string;
     startStreaming,
     stopStreaming,
     t,
+    takeTeamMemberOutputEventId,
     updateMessage,
     updateSubtask,
   ]);
