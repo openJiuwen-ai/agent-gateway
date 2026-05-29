@@ -548,6 +548,7 @@ class JiuWenClawDeepAdapter:
         self._auto_harness_service: Optional[AutoHarnessService] = None
         self._dreaming_started = False
         self._dreaming_mode: str = "agent"
+        self._send_file_toolkit: SendFileToolkit | None = None
 
     def set_skill_manager(self, skill_manager: SkillManager) -> None:
         """Inject shared SkillManager from facade for tool reuse."""
@@ -2995,19 +2996,29 @@ class JiuWenClawDeepAdapter:
             config_base.get("channels", {}).get(channel, {}).get("send_file_allowed", False)
         )
         if send_file_enabled and request_id and session_id:
-            # 先卸载上一次请求遗留的 send_file 工具
-            for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "").startswith("send_file_to_user"):
-                    self._instance.ability_manager.remove(existing.name)
-            send_file_toolkit = SendFileToolkit(
-                request_id=request_id,
-                session_id=session_id,
-                channel_id=_CRON_TOOL_CHANNEL_ID.get(),
-                metadata=_CRON_TOOL_METADATA.get(),
+            channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
+            metadata_for_tool = _CRON_TOOL_METADATA.get()
+            already_registered = any(
+                getattr(existing, "name", "").startswith("send_file_to_user")
+                for existing in (self._instance.ability_manager.list() or [])
             )
-            for sf_tool in send_file_toolkit.get_tools():
-                Runner.resource_mgr.add_tool(sf_tool)
-                self._instance.ability_manager.add(sf_tool.card)
+            if not already_registered:
+                self._send_file_toolkit = SendFileToolkit(
+                    request_id=request_id,
+                    session_id=session_id,
+                    channel_id=channel_for_tool,
+                    metadata=metadata_for_tool,
+                )
+                for sf_tool in self._send_file_toolkit.get_tools():
+                    Runner.resource_mgr.add_tool(sf_tool)
+                    self._instance.ability_manager.add(sf_tool.card)
+            else:
+                self._send_file_toolkit.update_runtime_context(
+                    request_id=request_id,
+                    session_id=session_id,
+                    channel_id=channel_for_tool,
+                    metadata=metadata_for_tool,
+                )
 
     def _refresh_acp_runtime_tools(
         self,
