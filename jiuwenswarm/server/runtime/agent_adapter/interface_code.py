@@ -485,7 +485,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
     def _build_structured_ask_user_rail(self) -> StructuredAskUserRail | None:
         """构建 StructuredAskUserRail."""
         try:
-            return StructuredAskUserRail()
+            return StructuredAskUserRail(language=self._resolve_runtime_language())
         except Exception as exc:
             logger.warning("[JiuwenClawCodeAdapter] StructuredAskUserRail create failed: %s", exc)
             return None

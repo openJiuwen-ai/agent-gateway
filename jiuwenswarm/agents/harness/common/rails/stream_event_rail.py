@@ -213,6 +213,19 @@ class JiuClawStreamEventRail(DeepAgentRail):
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
 
+    def _get_prompt_language(self) -> str:
+        """Get the current prompt language from the agent's system_prompt_builder."""
+        return getattr(
+            getattr(self._deep_agent, "system_prompt_builder", None),
+            "language", None,
+        ) or "cn"
+
+    def _tool_interrupted_message(self, tool_name: str) -> str:
+        """Build a language-aware tool interruption message."""
+        if self._get_prompt_language() == "en":
+            return f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result."
+        return f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。"
+
     def _resolve_sid(self, ctx: AgentCallbackContext, session: Session | None = None) -> str:
         """Resolve the per-session key used by this rail.
 
@@ -844,7 +857,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
                                 await context.add_messages(tool_message_cache[tool_call_id])
                             else:
                                 await context.add_messages(ToolMessage(
-                                        content=f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
+                                        content=self._tool_interrupted_message(tool_name),
                                         tool_call_id=tool_call_id,
                                 ))
                         tool_id_cache = []
@@ -879,7 +892,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
                             await context.add_messages(tool_message_cache[tool_call_id])
                         else:
                             await context.add_messages(ToolMessage(
-                                    content=f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
+                                    content=self._tool_interrupted_message(tool_name),
                                     tool_call_id=tool_call_id,
                             ))
                     tool_id_cache = []
@@ -893,7 +906,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
                         await context.add_messages(tool_message_cache[tool_call_id])
                     else:
                         await context.add_messages(ToolMessage(
-                                content=f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
+                                content=self._tool_interrupted_message(tool_name),
                                 tool_call_id=tool_call_id,
                         ))
         except Exception as e:
