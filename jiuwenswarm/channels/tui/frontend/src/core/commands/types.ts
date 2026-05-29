@@ -94,6 +94,8 @@ export interface CommandContext {
   restartStatusLine?: () => void;
   /** Get the current JSON data that would be piped to the statusline command */
   getStatusLineJsonInput?: () => Record<string, unknown>;
+  /** Check if there are running team-related tasks that would be interrupted by mode switch */
+  hasRunningTeamTasks?: () => boolean;
 }
 
 export interface SlashCommand {

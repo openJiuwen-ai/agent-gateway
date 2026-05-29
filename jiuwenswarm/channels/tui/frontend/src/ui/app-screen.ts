@@ -1389,6 +1389,63 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (text.startsWith("/")) {
+      // Check for mode switch when there's ongoing work
+      if (/^\/(?:mode|switch)\s/.test(text) && snapshot.cancellableWork) {
+        const currentMode = snapshot.mode;
+        const isTeamMode = currentMode === "code.team" || currentMode === "team";
+        // Parse the target mode from the command
+        const modeMatch = text.match(/^\/(?:mode|switch)\s+(\S+)/);
+        const targetMode = modeMatch?.[1] ?? "";
+        const targetIsTeamMode = targetMode === "code.team" || targetMode === "team";
+        // Only warn when leaving team mode
+        if (isTeamMode && !targetIsTeamMode) {
+          const answers = await this.state.askQuestions(
+            [
+              {
+                header: "模式切换",
+                question: `当前有任务正在运行，切换到 ${targetMode} 模式会中断这些任务。`,
+                options: [
+                  { label: "中断任务并切换", description: "停止当前任务，切换到新模式" },
+                  { label: "取消切换", description: "继续执行当前任务" },
+                ],
+              },
+            ],
+            "mode_switch_confirm",
+          );
+          const selected = answers[0]?.selected_options?.[0];
+          if (selected !== "中断任务并切换") {
+            this.state.addItem(addInfo(snapshot.sessionId, "模式切换已取消", "m"));
+            this.editor.addToHistory(text);
+            this.editor.setText("");
+            return;
+          }
+          // User confirmed, send cancel request and wait for it to complete
+          this.state.sendEventOnly("chat.interrupt", { intent: "cancel", mode: currentMode });
+          // Wait for the interrupt to complete: streamingState changes and entries are updated
+          // Since setStreamingState now calls emitChange, we just need to poll for state change
+          const waitForInterrupt = (timeoutMs = 10000): Promise<void> => {
+            return new Promise((resolve) => {
+              const startTime = Date.now();
+              const check = () => {
+                const elapsed = Date.now() - startTime;
+                if (elapsed >= timeoutMs) {
+                  resolve();
+                  return;
+                }
+                const snap = this.state.getSnapshot();
+                if (!snap.cancellableWork && snap.streamingState !== "responding") {
+                  // Give a brief delay to ensure termination entries are rendered
+                  setTimeout(resolve, 50);
+                } else {
+                  setTimeout(check, 100);
+                }
+              };
+              check();
+            });
+          };
+          await waitForInterrupt();
+        }
+      }
       if (/^\/(?:resume|continue)\s*$/.test(text)) {
         this.editor.addToHistory(text);
         this.editor.setText("");

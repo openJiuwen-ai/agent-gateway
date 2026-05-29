@@ -210,6 +210,8 @@ export class CliPiAppState {
   /** 本地中断请求标志，cancel() 调用时立即置 true，用于 long-running 命令的中断检测。 */
   private interruptRequested = false;
   private lastVisibleUserRequest: VisibleUserRequest | null = null;
+  /** 保存 askQuestions 之前的 streamingState，用于在对话框关闭后恢复。 */
+  private streamingStateBeforeQuestion: StreamingState | null = null;
   /** 当前回合的起始时间戳，用于在回合结束时计算执行耗时。 */
   private turnStartedAt: number | null = null;
   /** Harness extension ready info (for file tree display) */
@@ -233,6 +235,7 @@ export class CliPiAppState {
     },
     setStreamingState: (state) => {
       this.streamingState = state;
+      this.emitChange();
     },
     setPendingQuestion: (question) => {
       this.pendingQuestion = question;
@@ -669,6 +672,11 @@ export class CliPiAppState {
       getUsageSummary: () => this.getUsageSummary(),
       restartStatusLine: () => this.restartStatusLinePoll(),
       getStatusLineJsonInput: () => this.buildStatusLineJsonInput(),
+      hasRunningTeamTasks: () => {
+        const snapshot = this.getSnapshot();
+        // Use cancellableWork which covers all stages: processing, running tools, subtasks, team working
+        return snapshot.cancellableWork;
+      },
     };
   }
 
@@ -1023,7 +1031,9 @@ export class CliPiAppState {
       const resolver = this.localPendingQuestion;
       this.localPendingQuestion = null;
       this.pendingQuestion = null;
-      this.streamingState = StreamingState.Idle;
+      // 恢复之前的 streamingState
+      this.streamingState = this.streamingStateBeforeQuestion ?? StreamingState.Idle;
+      this.streamingStateBeforeQuestion = null;
       resolver.resolve(answers);
       this.emitChange();
       return;
@@ -1054,6 +1064,7 @@ export class CliPiAppState {
     }
     this.pendingQuestion = null;
     this.streamingState = StreamingState.Idle;
+    this.streamingStateBeforeQuestion = null;
     this.emitChange();
   }
 
@@ -1073,6 +1084,8 @@ export class CliPiAppState {
     }
 
     const requestId = `local_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 6)}`;
+    // 保存之前的 streamingState，用于在对话框关闭后恢复（如果之前是在运行状态）
+    this.streamingStateBeforeQuestion = this.streamingState;
     this.pendingQuestion = {
       requestId,
       source,

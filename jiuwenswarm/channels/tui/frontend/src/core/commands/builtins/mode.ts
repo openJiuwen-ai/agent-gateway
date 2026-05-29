@@ -1,5 +1,6 @@
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import type { ClientMode } from "../../modes.js";
+import { isTeamMode } from "../../modes.js";
 import { makeItem } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
@@ -81,6 +82,34 @@ export function createModeCommand(): SlashCommand {
         );
         return;
       }
+
+      // Check if leaving team mode with running tasks
+      const currentMode = ctx.mode;
+      const isLeavingTeamMode = isTeamMode(currentMode) && !isTeamMode(nextMode);
+      if (isLeavingTeamMode && ctx.hasRunningTeamTasks?.()) {
+        const answers = await ctx.askQuestions(
+          [
+            {
+              header: "模式切换",
+              question: `当前有 team 任务正在运行，切换到 ${nextMode} 模式会中断这些任务。`,
+              options: [
+                { label: "中断任务并切换", description: "停止当前任务，切换到新模式" },
+                { label: "取消切换", description: "继续执行当前任务" },
+              ],
+            },
+          ],
+          "mode_switch_confirm",
+        );
+
+        const selected = answers[0]?.selected_options?.[0];
+        if (selected !== "中断任务并切换") {
+          ctx.addItem(makeItem(ctx.sessionId, "info", "模式切换已取消", "m"));
+          return;
+        }
+        // User confirmed interrupt, send cancel request
+        ctx.sendEventOnly("chat.interrupt", { intent: "cancel", mode: currentMode });
+      }
+
       try {
         await ctx.request("mode.set", { mode: nextMode });
       } catch {
