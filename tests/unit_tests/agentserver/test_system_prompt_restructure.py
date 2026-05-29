@@ -53,7 +53,7 @@ async def test_runtime_time_section_participates_in_priority_order():
         "identity",
         "# 可用工具",
         "# 工作空间",
-        "# 当前日期与时间",
+        "# 时间说明",
         "# 运行时状态",
     ]
     positions = [prompt.index(marker) for marker in ordered_markers]

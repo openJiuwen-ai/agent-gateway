@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import yaml
@@ -21,8 +20,6 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.common.utils import get_config_dir, logger
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-
-_CN_WEEKDAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
 _LANGUAGE_NAMES = {"cn": "Chinese", "zh": "Chinese", "en": "English"}
 
@@ -42,7 +39,6 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder = None
         self._language = language
         self._channel = channel
-        self._tz = timezone(timedelta(hours=timezone_offset))
         self._trusted_dirs: list[str] | None = None
         self._cwd: str | None = None
         self._project_dir: str | None = None
@@ -130,24 +126,15 @@ class RuntimePromptRail(DeepAgentRail):
         if not self.system_prompt_builder:
             return
 
-        now = datetime.now(tz=self._tz)
-        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
-        current_year = now.strftime("%Y")
-        weekday_cn = _CN_WEEKDAYS[now.weekday()]
-
         if not self._force_english and self._language == "cn":
             time_content = (
-                f"# 当前日期与时间\n\n"
-                f"- 当前时间：{now_str}（{weekday_cn}）\n"
-                f"- 当前年份：{current_year}\n"
+                f"# 时间说明\n\n"
                 "- 当用户询问“最新、当前、今年、本年、实时、近期”等信息并需要搜索时，"
                 "搜索 query 必须优先使用当前年份或日期"
             )
         else:
             time_content = (
-                f"# Current Date & Time\n\n"
-                f"- Current time: {now_str} ({now.strftime('%A')})\n"
-                f"- Current year: {current_year}\n"
+                f"# Time Description\n\n"
                 "- When the user asks for latest/current/this-year/recent information and search is needed, "
                 "search queries must prefer the current year or date."
             )
