@@ -3161,14 +3161,17 @@ export class AppScreen implements Component, Focusable {
       }
       return;
     }
-    this.runningStoppedAtMs = null;
     if (snapshot.isProcessing) {
-      if (this.runningStartedAtMs === null) {
+      if (
+        this.runningStartedAtMs === null ||
+        this.runningStoppedAtMs !== null
+      ) {
         this.runningStartedAtMs = Date.now();
       }
     } else if (teamWorking) {
       this.runningStartedAtMs = teamStartedAt ?? this.runningStartedAtMs ?? Date.now();
     }
+    this.runningStoppedAtMs = null;
     if (this.animationTimer) {
       return;
     }
