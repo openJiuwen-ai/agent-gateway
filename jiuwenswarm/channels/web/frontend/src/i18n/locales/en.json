@@ -962,14 +962,12 @@
     },
     "mySkillsTabs": {
       "all": "All",
-      "installed": "Installed",
-      "pending": "Pending",
+      "enabled": "Enabled",
       "disabled": "Disabled"
     },
     "enable": "Enable",
     "noDisabledSkills": "No disabled skills",
-    "noInstalledSkills": "No installed skills",
-    "noPendingSkills": "No pending skills",
+    "noEnabledSkills": "No enabled skills",
     "setEnabledError": "Failed to set skill enabled status",
     "setEnabledSuccess": "Skill {name} enabled",
     "setDisabledSuccess": "Skill {name} disabled",

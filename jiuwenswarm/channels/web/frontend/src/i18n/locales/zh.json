@@ -961,14 +961,12 @@
     },
     "mySkillsTabs": {
       "all": "全部",
-      "installed": "已安装",
-      "pending": "待安装",
+      "enabled": "启用",
       "disabled": "禁用"
     },
     "enable": "启用",
     "noDisabledSkills": "暂无禁用的技能",
-    "noInstalledSkills": "暂无已安装的技能",
-    "noPendingSkills": "暂无待安装的技能",
+    "noEnabledSkills": "暂无启用的技能",
     "setEnabledError": "设置技能启用状态失败",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",

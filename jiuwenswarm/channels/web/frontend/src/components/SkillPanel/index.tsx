@@ -103,7 +103,7 @@ function normalizeSkillItem<T extends SkillItem>(raw: T): T {
 export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace">("my");
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "installed" | "pending" | "disabled">("all");
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled">("all");
   const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
   const [onlineSource, setOnlineSource] = useState<"skillnet" | "clawhub">("skillnet");
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -225,8 +225,16 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   }, [skills, search, activeTab, installedSkillMap]);
 
   const visibleSkills = useMemo(() => {
-    // 显示所有技能
-    return [...filteredSkills].sort((a, b) => {
+    let filtered = [...filteredSkills];
+    if (activeTab === "my") {
+      filtered = filtered.filter((skill) => {
+        if (skill.is_builtin_source && !installedSkillMap.has(skill.name) && skill.source !== "local") {
+          return false;
+        }
+        return true;
+      });
+    }
+    return filtered.sort((a, b) => {
       const aSkillNet = a.source === "skillnet" ? 1 : 0;
       const bSkillNet = b.source === "skillnet" ? 1 : 0;
       if (aSkillNet !== bSkillNet) {
@@ -234,7 +242,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
       }
       return a.name.localeCompare(b.name);
     });
-  }, [filteredSkills]);
+  }, [filteredSkills, activeTab, installedSkillMap]);
 
   const builtinSkills = useMemo(() => {
     let filtered = skills.filter((skill) => skill.is_builtin === true);
@@ -547,9 +555,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(skill.name);
           }}
-          className="skill-action-btn"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm whitespace-nowrap hover:bg-secondary transition-colors"
           disabled={isLoading}
+          style={{ color: '#191919' }}
         >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} style={{ color: '#191919' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
           {t('skills.actions.uninstall')}
         </button>
       );
@@ -565,9 +577,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(pluginName);
           }}
-          className="skill-action-btn"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm whitespace-nowrap hover:bg-secondary transition-colors"
           disabled={isLoading}
+          style={{ color: '#191919' }}
         >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} style={{ color: '#191919' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
           {t('skills.actions.uninstall')}
         </button>
       );
@@ -601,9 +617,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
             event.stopPropagation();
             handleUninstall(skill.name);
           }}
-          className="skill-action-btn"
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full text-sm whitespace-nowrap hover:bg-secondary transition-colors"
           disabled={isLoading}
+          style={{ color: '#191919' }}
         >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2} style={{ color: '#191919' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
           {t('skills.actions.uninstall')}
         </button>
       );
@@ -637,11 +657,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const getMySkillsFiltered = useCallback(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
-      case "installed":
+      case "enabled":
         filtered = visibleSkills.filter(s => isSkillInstalled(s) && s.enabled !== false);
-        break;
-      case "pending":
-        filtered = visibleSkills.filter(s => !isSkillInstalled(s) && s.enabled !== false);
         break;
       case "disabled":
         filtered = visibleSkills.filter(s => s.enabled === false);
@@ -679,6 +696,10 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
           s.name === skillName ? { ...s, enabled: newEnabled } : s
         )
       );
+      
+      if (selectedSkill && selectedSkill.name === skillName) {
+        setSelectedSkill({ ...selectedSkill, enabled: newEnabled });
+      }
     } catch (error) {
       console.error('Failed to toggle skill enabled:', error);
       showMessage('error', t('skills.setEnabledError'));
@@ -903,11 +924,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                   ) : (
                     builtinSkills.map((skill) => {
                       const avatar = getSkillAvatar(skill.name);
+                      const isDisabled = skill.enabled === false;
+                      const isToggling = actionTarget === `toggle:${skill.name}`;
                       return (
-                        <button
+                        <div
                           key={skill.name}
                           onClick={() => handleOpenSkill(skill.name)}
-                          className={`text-left border border-border bg-panel hover:bg-card transition-colors ${viewMode === "grid" ? "rounded-[8px] p-4 flex flex-col" : "w-full rounded-lg p-4"}`}
+                          className={`text-left border border-border bg-panel hover:bg-card transition-colors cursor-pointer ${viewMode === "grid" ? "rounded-[8px] p-4 flex flex-col" : "w-full rounded-lg p-4"}`}
                           style={viewMode === "grid" ? { width: "496px", height: "168px", flexShrink: 0 } : undefined}
                         >
                           {viewMode === "list" ? (
@@ -925,8 +948,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   </div>
                                 </div>
                               </div>
-                              <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                                {renderActionButton(skill)}
+                              <div className="flex items-center gap-4 flex-shrink-0">
+                                <Switch
+                                  checked={!isDisabled}
+                                  onChange={() => toggleSkillDisabled(skill.name)}
+                                  title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
+                                  disabled={isToggling}
+                                />
                               </div>
                             </div>
                           ) : (
@@ -959,7 +987,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                               </div>
                             </>
                           )}
-                        </button>
+                        </div>
                       );
                     })
                   )}
@@ -1072,7 +1100,18 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                     </div>
 
                     <div className="flex flex-col items-end gap-2">
-                      {renderActionButton(selectedSkill)}
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm whitespace-nowrap" style={{ color: '#191919' }}>{selectedSkill.enabled === false ? t('skills.mySkillsTabs.disabled') : t('skills.mySkillsTabs.enabled')}</span>
+                          <Switch
+                            checked={selectedSkill.enabled !== false}
+                            onChange={() => toggleSkillDisabled(selectedSkill.name)}
+                            title={selectedSkill.enabled === false ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
+                            disabled={actionTarget === `toggle:${selectedSkill.name}`}
+                          />
+                        </div>
+                        {renderActionButton(selectedSkill)}
+                      </div>
                       {renderEvolutionButton(selectedSkill)}
                     </div>
                   </div>
@@ -1122,24 +1161,14 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                       {t('skills.mySkillsTabs.all')}
                     </button>
                     <button
-                      onClick={() => setMySkillsSubTab("installed")}
+                      onClick={() => setMySkillsSubTab("enabled")}
                       className={`px-4 text-sm font-medium transition-colors ${
-                        mySkillsSubTab === "installed"
+                        mySkillsSubTab === "enabled"
                           ? "rounded-[8px] bg-secondary h-8 text-text"
                           : "text-text-muted hover:text-text"
                       }`}
                     >
-                      {t('skills.mySkillsTabs.installed')}
-                    </button>
-                    <button
-                      onClick={() => setMySkillsSubTab("pending")}
-                      className={`px-4 text-sm font-medium transition-colors ${
-                        mySkillsSubTab === "pending"
-                          ? "rounded-[8px] bg-secondary h-8 text-text"
-                          : "text-text-muted hover:text-text"
-                      }`}
-                    >
-                      {t('skills.mySkillsTabs.pending')}
+                      {t('skills.mySkillsTabs.enabled')}
                     </button>
                     <button
                       onClick={() => setMySkillsSubTab("disabled")}
@@ -1177,8 +1206,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                   {listState === "success" && getMySkillsFiltered().length === 0 && (
                     <div className="text-sm text-text-muted">
                       {mySkillsSubTab === "disabled" ? t('skills.noDisabledSkills') : 
-                       mySkillsSubTab === "installed" ? t('skills.noInstalledSkills') :
-                       mySkillsSubTab === "pending" ? t('skills.noPendingSkills') :
+                       mySkillsSubTab === "enabled" ? t('skills.noEnabledSkills') :
                        t('skills.noMatches')}
                     </div>
                   )}
@@ -1188,14 +1216,14 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                       const isDisabled = skill.enabled === false;
                       const isToggling = actionTarget === `toggle:${skill.name}`;
                       return (
-                        <button
+                        <div
                           key={skill.name}
                           onClick={() => handleOpenSkill(skill.name)}
-                          className={`text-left border border-border bg-panel hover:bg-card transition-colors ${viewMode === "grid" ? "rounded-[8px] p-4 flex flex-col" : "w-full rounded-lg p-4"}`}
+                          className={`text-left border border-border bg-panel hover:bg-card transition-colors cursor-pointer ${viewMode === "grid" ? "rounded-[8px] p-4 flex flex-col" : "w-full rounded-lg p-4"}`}
                           style={viewMode === "grid" ? { width: "496px", height: "168px", flexShrink: 0 } : undefined}
                         >
                           {viewMode === "list" ? (
-                            <div className="flex items-start justify-between gap-4">
+                            <div className="flex items-center justify-between gap-4">
                               <div className="flex items-center gap-3 min-w-0 flex-1">
                                 <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-white font-semibold`}>
                                   {avatar.firstChar}
@@ -1218,10 +1246,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                 </div>
                               </div>
                               <div className="flex flex-col items-end gap-2 flex-shrink-0">
-                                {renderActionButton(skill)}
                                 {renderEvolutionButton(skill)}
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs text-text-muted min-w-[3.5em] text-center">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
@@ -1259,7 +1285,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   {renderEvolutionButton(skill)}
                                 </div>
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs text-text-muted min-w-[3.5em] text-center">{isToggling ? (isDisabled ? t('skills.actions.enabling') : t('skills.actions.disabling')) : (isDisabled ? t('skills.mySkillsTabs.disabled') : t('skills.enable'))}</span>
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
@@ -1267,13 +1292,10 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                     disabled={isToggling}
                                   />
                                 </div>
-                                <div className="flex-shrink-0 ml-auto">
-                                  {renderActionButton(skill)}
-                                </div>
                               </div>
                             </>
                           )}
-                        </button>
+                        </div>
                       );
                     })}
                 </div>
