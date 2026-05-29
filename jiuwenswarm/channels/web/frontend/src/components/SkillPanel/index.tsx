@@ -926,6 +926,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                       const avatar = getSkillAvatar(skill.name);
                       const isDisabled = skill.enabled === false;
                       const isToggling = actionTarget === `toggle:${skill.name}`;
+                      const isInstalled = installedSkillMap.has(skill.name) || skill.source === "local";
+                      const isInstalling = actionTarget === `${skill.name}@builtin`;
                       return (
                         <div
                           key={skill.name}
@@ -934,7 +936,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                           style={viewMode === "grid" ? { width: "496px", height: "168px", flexShrink: 0 } : undefined}
                         >
                           {viewMode === "list" ? (
-                            <div className="flex items-start justify-between gap-4">
+                            <div className="flex items-center justify-between gap-4">
                               <div className="flex items-center gap-3 min-w-0 flex-1">
                                 <div className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-white font-semibold`}>
                                   {avatar.firstChar}
@@ -949,12 +951,26 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                 </div>
                               </div>
                               <div className="flex items-center gap-4 flex-shrink-0">
-                                <Switch
-                                  checked={!isDisabled}
-                                  onChange={() => toggleSkillDisabled(skill.name)}
-                                  title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
-                                  disabled={isToggling}
-                                />
+                                {skill.is_builtin_source && !isInstalled ? (
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleInstall(skill.name);
+                                    }}
+                                    className="px-3 py-1 text-sm rounded-full border border-black bg-white text-black hover:bg-gray-100 transition-colors"
+                                    style={{ width: '76px', height: '28px' }}
+                                    disabled={isInstalling}
+                                  >
+                                    {isInstalling ? t('skills.actions.installing') : t('skills.actions.install')}
+                                  </button>
+                                ) : (
+                                  <Switch
+                                    checked={!isDisabled}
+                                    onChange={() => toggleSkillDisabled(skill.name)}
+                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
+                                    disabled={isToggling}
+                                  />
+                                )}
                               </div>
                             </div>
                           ) : (

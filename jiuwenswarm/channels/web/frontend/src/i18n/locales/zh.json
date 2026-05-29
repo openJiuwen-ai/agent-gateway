@@ -1016,6 +1016,10 @@
     "totalCount": "共 {{count}} 个",
     "listError": "获取技能失败，请检查后端服务",
     "noMatches": "暂无匹配的技能",
+    "viewMode": {
+      "list": "列表模式",
+      "grid": "平铺模式"
+    },
     "detailLoading": "加载详情中...",
     "detailError": "加载详情失败",
     "evolution": {

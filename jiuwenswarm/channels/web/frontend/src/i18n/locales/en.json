@@ -1017,6 +1017,10 @@
     "totalCount": "{{count}} total",
     "listError": "Failed to load skills. Please check the backend service.",
     "noMatches": "No matching skills",
+    "viewMode": {
+      "list": "List view",
+      "grid": "Grid view"
+    },
     "detailLoading": "Loading details...",
     "detailError": "Failed to load details",
     "evolution": {
