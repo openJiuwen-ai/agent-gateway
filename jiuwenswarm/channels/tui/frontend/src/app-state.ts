@@ -62,7 +62,7 @@ import {
   getCurrentCwd,
 } from "./core/tui-trusted-dirs-store.js";
 import { loadTuiConfig, type StatusLineSetting } from "./core/tui-config-store.js";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -140,6 +140,26 @@ function formatElapsed(ms: number): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
+const LOCAL_FILE_SEARCH_TOOL_NAMES = new Set([
+  "grep",
+  "rg",
+  "ripgrep",
+  "search",
+]);
+
+function isLocalFileSearchTool(name: string): boolean {
+  return LOCAL_FILE_SEARCH_TOOL_NAMES.has(name.trim().toLowerCase());
+}
+
+function detectRipgrep(): boolean {
+  try {
+    const result = spawnSync("rg", ["--version"], { stdio: "ignore" });
+    return result.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 export class CliPiAppState {
   private listeners = new Set<() => void>();
   private entries: HistoryItem[] = [];
@@ -214,6 +234,8 @@ export class CliPiAppState {
   private streamingStateBeforeQuestion: StreamingState | null = null;
   /** 当前回合的起始时间戳，用于在回合结束时计算执行耗时。 */
   private turnStartedAt: number | null = null;
+  private ripgrepAvailable: boolean | null = null;
+  private ripgrepSearchTipShown = false;
   /** Harness extension ready info (for file tree display) */
   private harnessExtensionReady: HarnessExtensionReady | null = null;
   /** Harness activate interaction state (for user confirmation) */
@@ -1517,6 +1539,35 @@ export class CliPiAppState {
     return changed;
   }
 
+  private hasRipgrep(): boolean {
+    if (this.ripgrepAvailable === null) {
+      this.ripgrepAvailable = detectRipgrep();
+    }
+    return this.ripgrepAvailable;
+  }
+
+  private maybeAddRipgrepSearchTip(tool: ToolCallDisplay, sessionId: string): void {
+    if (
+      this.ripgrepSearchTipShown ||
+      !isLocalFileSearchTool(tool.name) ||
+      this.hasRipgrep()
+    ) {
+      return;
+    }
+    this.ripgrepSearchTipShown = true;
+    this.entries = [
+      ...this.entries,
+      addInfo(
+        sessionId,
+        "Tips: 未检测到 ripgrep (rg)，本次文件搜索可能较慢。" +
+          "建议安装 rg 以优化文件搜索效果。",
+        "i",
+        { view: "dim" },
+      ),
+    ];
+    this.lastError = null;
+  }
+
   private addToolCallPayload(
     payload: Record<string, unknown>,
     sessionId: string,
@@ -1532,6 +1583,7 @@ export class CliPiAppState {
       return;
     }
 
+    this.maybeAddRipgrepSearchTip(tool, sessionId);
     const started = startedAt ?? new Date().toISOString();
     const orphan = this.orphanToolResults.get(tool.callId);
     const nextTool = orphan
