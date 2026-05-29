@@ -554,9 +554,14 @@ export const useSessionStore = create<SessionState>((set) => ({
       );
       if (existingIndex >= 0) {
         const updatedMembers = [...state.teamMembers];
+        const existingMember = updatedMembers[existingIndex];
         updatedMembers[existingIndex] = {
-          ...updatedMembers[existingIndex],
+          ...existingMember,
           ...member,
+          status:
+            typeof member.status === 'string' && member.status.trim() !== ''
+              ? member.status
+              : existingMember.status,
         };
         return { teamMembers: updatedMembers };
       }

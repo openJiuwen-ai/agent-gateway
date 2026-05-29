@@ -366,8 +366,8 @@ function GroupChatDetail({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-card">
-      <div className="flex shrink-0 items-center justify-between gap-5 border-b border-border bg-card px-7 py-5">
-        <div className="w-[220px] shrink-0">
+      <div className="flex shrink-0 items-center justify-between gap-5 border-b border-border bg-card px-3 py-4">
+        <div className="w-[235px] shrink-0">
           <DetailTabSwitch activeTab={activeTab} onChange={onTabChange} />
         </div>
         <div className="flex min-w-0 items-center justify-end gap-3">

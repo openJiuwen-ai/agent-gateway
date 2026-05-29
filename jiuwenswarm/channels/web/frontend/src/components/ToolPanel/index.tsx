@@ -12,13 +12,19 @@ import { TodoList } from '../TodoList';
 import { TeamArea } from '../teamArea';
 import { HarnessExtensionTree } from './HarnessExtensionTree';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
-import { useTeamPanelState } from '../../features/teamPanelState';
+import { type TabType, type TeamDetailTab } from '../teamArea/shared';
 import './ToolPanel.css';
 
 interface ToolPanelProps {
   sessionId?: string;
-  teamAreaExpanded?: boolean;
-  setTeamAreaExpanded?: (expanded: boolean) => void;
+  teamAreaExpanded: boolean;
+  teamAreaActiveTab: TabType;
+  teamAreaActiveDetailTab: TeamDetailTab;
+  teamAreaSelectedMemberId?: string;
+  setTeamAreaExpanded: (expanded: boolean) => void;
+  setTeamAreaActiveTab: (tab: TabType) => void;
+  setTeamAreaActiveDetailTab: (detailTab: TeamDetailTab) => void;
+  setTeamAreaSelectedMemberId: (memberId: string) => void;
   sidebarCollapsed?: boolean;
 }
 
@@ -49,18 +55,16 @@ function mergeById<T>(
 
 export function ToolPanel({
   sessionId,
+  teamAreaExpanded,
+  teamAreaActiveTab,
+  teamAreaActiveDetailTab,
+  teamAreaSelectedMemberId,
+  setTeamAreaExpanded,
+  setTeamAreaActiveTab,
+  setTeamAreaActiveDetailTab,
+  setTeamAreaSelectedMemberId,
 }: ToolPanelProps) {
   const { t } = useTranslation();
-  const {
-    teamAreaExpanded,
-    teamAreaActiveTab,
-    teamAreaActiveDetailTab,
-    teamAreaSelectedMemberId,
-    setTeamAreaExpanded,
-    setTeamAreaActiveTab,
-    setTeamAreaActiveDetailTab,
-    setTeamAreaSelectedMemberId,
-  } = useTeamPanelState();
   const {
     contextCompressionRate,
     contextCompressionBefore,

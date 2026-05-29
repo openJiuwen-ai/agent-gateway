@@ -72,7 +72,7 @@
     "runningMode": "运行模式：{{mode}}",
     "taskFallback": "任务 {{id}}",
     "memberStatus": {
-      "running": "运行中",
+      "running": "进行中",
       "idle": "空闲",
       "restarting": "重启中",
       "shutdown": "已关闭",

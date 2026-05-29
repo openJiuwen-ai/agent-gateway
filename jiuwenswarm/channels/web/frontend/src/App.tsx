@@ -234,7 +234,16 @@ function AppContent() {
   }, [sessionId]);
 
   const { setCurrentSession, setSessions, setAvailableModels, setMode, mode, heartbeatMessage, heartbeatUpdatedAt, teamTaskEvents, teamTasks, teamMembers, setTeamLeaderMemberIds } = useSessionStore();
-  const { teamAreaExpanded, setTeamAreaExpanded } = useTeamPanelState();
+  const {
+    teamAreaExpanded,
+    teamAreaActiveTab,
+    teamAreaActiveDetailTab,
+    teamAreaSelectedMemberId,
+    setTeamAreaExpanded,
+    setTeamAreaActiveTab,
+    setTeamAreaActiveDetailTab,
+    setTeamAreaSelectedMemberId,
+  } = useTeamPanelState();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(33.33);
 
   const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1322,10 +1331,16 @@ for (let i = payload.team.length; i < 10; i++) {
 
               {/* Tool Panel / Expanded Team Panel */}
               {toolPanelHasContent && (
-                <ToolPanel 
+                <ToolPanel
                   sessionId={sessionId}
                   teamAreaExpanded={teamAreaExpanded}
+                  teamAreaActiveTab={teamAreaActiveTab}
+                  teamAreaActiveDetailTab={teamAreaActiveDetailTab}
+                  teamAreaSelectedMemberId={teamAreaSelectedMemberId}
                   setTeamAreaExpanded={setTeamAreaExpanded}
+                  setTeamAreaActiveTab={setTeamAreaActiveTab}
+                  setTeamAreaActiveDetailTab={setTeamAreaActiveDetailTab}
+                  setTeamAreaSelectedMemberId={setTeamAreaSelectedMemberId}
                 />
               )}
             </div>
