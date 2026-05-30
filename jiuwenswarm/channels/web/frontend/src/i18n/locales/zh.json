@@ -1164,7 +1164,7 @@
       "installed": "已安装：{{spec}}",
       "imported": "已导入：{{name}}",
       "uninstalled": "已卸载：{{pluginName}}",
-      "skillNetInstalled": "已从 SkillNet 安装：{{name}}"
+      "skillNetInstalled": "已安装：{{name}}"
     },
     "errors": {
       "installFailed": "安装失败",

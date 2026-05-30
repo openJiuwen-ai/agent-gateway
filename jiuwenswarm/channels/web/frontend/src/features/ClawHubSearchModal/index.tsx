@@ -264,9 +264,10 @@ export function ClawHubSearchModal({
         throw new Error(message);
       }
       const skillName = data.skill?.name || slug;
-      // 更新本地已安装状�?
+      const displayName = item.display_name || skillName;
+      // 更新本地已安装状态
       setInstalledSlugs(prev => new Set([...prev, slug]));
-      showMessage("success", t("skills.clawhub.messages.installed", { name: skillName }));
+      showMessage("success", t("skills.clawhub.messages.installed", { name: displayName }));
       // 通知父组件刷新技能列�?
       await onInstalled?.(skillName);
     } catch (err) {

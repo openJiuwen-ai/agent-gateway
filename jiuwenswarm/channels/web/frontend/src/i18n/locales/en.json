@@ -1165,7 +1165,7 @@
       "installed": "Installed: {{spec}}",
       "imported": "Imported: {{name}}",
       "uninstalled": "Uninstalled: {{pluginName}}",
-      "skillNetInstalled": "Installed from SkillNet: {{name}}"
+      "skillNetInstalled": "Installed: {{name}}"
     },
     "errors": {
       "installFailed": "Install failed",

@@ -363,7 +363,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
           if (!data.success) {
             throw new Error(data.detail || data.message || t('skills.errors.installFailed'));
           }
-          showMessage("success", t('skills.messages.installed', { spec }));
+          showMessage("success", t('skills.messages.installed', { spec: skillName }));
           await fetchSkills();
           if (selectedSkill) {
             await fetchSkillDetail(selectedSkill.name);
@@ -413,7 +413,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
         if (!data.success) {
           throw new Error(data.detail || data.message || t('skills.errors.installFailed'));
         }
-        showMessage("success", t('skills.messages.installed', { spec }));
+        showMessage("success", t('skills.messages.installed', { spec: skillName || spec.split('@')[0] }));
         await fetchSkills();
         if (selectedSkill) {
           await fetchSkillDetail(selectedSkill.name);
