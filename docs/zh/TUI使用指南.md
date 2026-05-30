@@ -72,7 +72,7 @@
 | `/evolve_simplify` | - | 整理、合并某技能的演进经验 | `/evolve_simplify myskill 合并重复经验` | `agent.plan` / `team` |
 | `/init` | - | 在 **Code 模式** 下初始化 `JIUWENSWARM.md` / `JIUWENSWARM.local.md` | `/init` | **仅 `code.*`** |
 | `/mcp` | - | 管理 MCP 服务 | `/mcp list`、`/mcp add ...` | 全部 |
-| `/mode` | - | 切换或查看模式 | `/mode`、`/mode code` | 全部 |
+| `/mode` | - | 切换或查看模式 | `/mode`、`/mode code`、`/mode team.plan` | 全部 |
 | `/permissions` | - | 设置 `permissions.tools` 中单工具的 allow/ask/deny | `/permissions ask write_file` | 全部 |
 | `/plan` | - | 进入当前模式族的 plan 子模式，或发送规划请求 | `/plan`、`/plan open`、`/plan 迁移步骤` | 非 `team` |
 | `/rename` | - | 查看/重命名/清空当前会话标题 | `/rename`、`/rename 标题`、`/rename clear` | 全部 |
@@ -101,9 +101,12 @@
 
 - **`/mode`**（`mode.ts`）  
   - 无参数：显示当前模式。  
-  - 有参数：映射为 `agent.plan`、`agent.fast`、`code.plan`、`code.normal`、`team` 之一，并尝试 `mode.set` RPC，同时更新本地 UI 状态。  
-  - 简写：`/mode agent` → `agent.plan`；`/mode code` → `code.normal`。
-- **同族子模式**：可用 **`/mode code.plan`**、**`/mode agent.fast`** 等直达；**`/switch plan|fast|normal`** 在 `switch.ts` 中实现，但 **默认构建未注册**，需要子模式时请用 `/mode` 直达或 **`/plan`**（见下）在 Agent/Code 族内进入 plan。
+  - TUI 当前接受：`agent`、`plan`、`agent.plan`、`agent.fast`、`code`、`code.normal`、`code.plan`、`code.team`、`team`、`team.normal`、`team.plan`。
+  - 实际映射：`agent` / `plan` → `agent.plan`；`code` → `code.normal`；`team.normal` → `team`；其它直达值保持不变。
+  - 切换时会尝试调用 `mode.set` RPC，同时更新本地 UI 状态；如果后端不支持 `mode.set`，TUI 仍会在后续发送消息时通过当前模式传递。
+  - 从 `team` / `team.plan` / `code.team` 离开 Team 族且当前有 Team 任务运行时，TUI 会先弹出确认，确认后发送 `chat.interrupt` 再切换。
+- **与 Gateway 受控通道的差异**：受控通道只接受 `/mode agent|code|team|agent.plan|agent.fast|code.plan|code.normal|code.team`；`/mode plan`、`/mode team.normal`、`/mode team.plan` 是 TUI 本地命令能力，不属于 Gateway slash 白名单。
+- **同族子模式**：可用 **`/mode code.plan`**、**`/mode agent.fast`** 等直达；**`/switch plan|fast|normal|team`** 在 `switch.ts` 中实现，但 **默认 TUI 注册表未注册**，需要子模式时请用 `/mode` 直达或 **`/plan`**（见下）在 Agent/Code 族内进入 plan。
 
 #### `/workspace`（可信目录）
 

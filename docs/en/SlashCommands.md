@@ -34,7 +34,7 @@ Executed locally in the terminal UI, not through Gateway control pipeline.
 | `/sandbox` | Set sandbox mode (see below) |
 | `/auto-harness` | Auto-Harness task management (`run`/`schedule`, see below) |
 
-> Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below.
+> Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below. The TUI local command additionally supports `/mode plan`, `/mode team.normal`, and `/mode team.plan`; see the TUI guide for details.
 
 ### Gateway / Agent Parsing (Controlled Channel)
 
@@ -110,10 +110,12 @@ Manages directories AI can access for file read, edit, and execute operations.
   - `/mode agent.fast` -> `agent.fast`
   - `/mode code.plan` -> `code.plan`
   - `/mode code.normal` -> `code.normal`
+  - `/mode code.team` -> `code.team`
 - Second-level switching:
   - agent family: `/switch plan` <-> `agent.plan`, `/switch fast` <-> `agent.fast`
-  - code family: `/switch plan` <-> `code.plan`, `/switch normal` <-> `code.normal`
+  - code family: `/switch plan` <-> `code.plan`, `/switch normal` <-> `code.normal`, `/switch team` <-> `code.team`
 - Invalid combinations (e.g., `/switch fast` under `code.*`) return: `Invalid command`.
+- Controlled channels do not accept `/mode plan`, `/mode team.normal`, or `/mode team.plan`.
 - Note: Standalone `/team` command removed, use `/mode team` instead.
 
 ### `/resume`
@@ -593,7 +595,7 @@ The command receives the following JSON data on each execution:
 | `session_id` | Current session ID |
 | `session_name` | Session title (set via `/rename`) |
 | `cwd` | Current working directory |
-| `mode` | Current mode (`agent.plan` / `agent.fast` / `code.plan` / `code.normal` / `team`) |
+| `mode` | Current mode (`agent.plan` / `agent.fast` / `code.plan` / `code.normal` / `code.team` / `team` / `team.plan`) |
 | `model` | Current model name |
 | `provider` | Model provider |
 | `version` | jiuwenswarm version |
