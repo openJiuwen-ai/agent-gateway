@@ -64,6 +64,8 @@ from jiuwenswarm.common.config import (
     resolve_sandbox_policy_path,
     remove_subagent_from_config,
     set_mcp_server_enabled_in_config,
+    update_sandbox_endpoint,
+    update_sandbox_runtime,
     upsert_mcp_server_in_config,
     upsert_subagent_in_config,
 )
