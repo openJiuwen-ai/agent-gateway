@@ -199,6 +199,8 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
 
   // Built-in status lines are always shown alongside the custom statusline,
   // matching Claude Code's approach (both render together).
+  // Custom statusline is placed ABOVE the built-in status lines so that the
+  // "Working" animation always stays at the screen bottom for visual prominence.
   const effectiveStatusLines = statusLines;
 
   const transcriptLines = buildTranscriptLines(
@@ -257,8 +259,8 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
     ...options.questionLines,
     ...options.editorLines,
     ...options.composerPreviewLines,
-    ...effectiveStatusLines,
     ...statusLineBarLines,
+    ...effectiveStatusLines,
     ...shortcutLines,
   ];
   const height = Math.floor(options.height ?? 0);
