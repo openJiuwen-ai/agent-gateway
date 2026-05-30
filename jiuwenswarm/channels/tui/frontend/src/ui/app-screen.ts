@@ -3024,6 +3024,8 @@ export class AppScreen implements Component, Focusable {
   }
 
   private closeStatusView(): void {
+    const sessionId = this.state.getSnapshot().sessionId;
+    this.state.addItem(addInfo(sessionId, "Status dialog dismissed", "✓"));
     this.statusViewState = null;
     this.configEditorState = null;
     this.tui.requestRender();
