@@ -39,7 +39,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist imp
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
-from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records
+from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records, read_team_history_records
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     find_auto_managed_match,
@@ -844,6 +844,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.TEAM_SNAPSHOT:
                 await self._handle_team_snapshot(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.TEAM_HISTORY_GET:
+                await self._handle_team_history_get(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.COMMAND_ADD_DIR:
                 await self._handle_command_add_dir(ws, request, send_lock)
@@ -1883,6 +1886,42 @@ class AgentWebSocketServer:
                 payload={"members": [], "tasks": [], "team_id": None},
             )
 
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_team_history_get(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """一次性返回 team 模式所需的全部历史数据，避免与 history.get 并发竞争。"""
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = params.get("session_id")
+        channel_id = request.channel_id or "web"
+
+        if not isinstance(session_id, str) or not session_id.strip():
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=False,
+                payload={"error": "session_id is required"},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await ws.send(json.dumps(wire, ensure_ascii=False))
+            return
+
+        session_id = session_id.strip()
+        try:
+            records = await asyncio.to_thread(read_team_history_records, session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[team.history.get] read failed: session_id=%s error=%s", session_id, exc)
+            records = []
+        logger.debug("[team.history.get] session_id=%s records=%d", session_id, len(records))
+
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=True,
+            payload={"records": records, "session_id": session_id},
+        )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))

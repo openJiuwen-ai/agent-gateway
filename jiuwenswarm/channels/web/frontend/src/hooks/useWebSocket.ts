@@ -517,7 +517,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             execution_status?: string;
             mode?: string;
           }>;
-team_id: string;
+          team_id: string;
           tasks?: Array<unknown>;
         }>('team.snapshot', { session_id: sessionId });
 
@@ -526,24 +526,39 @@ team_id: string;
         }
 
         if (snapshot?.members) {
-          useSessionStore.getState().setTeamMembers(
-            snapshot.members.map((m, idx) => ({
-              id: `member-${m.member_id || idx}`,
-              member_id: m.member_id || '',
-              status: m.status || '',
-              timestamp: Date.now(),
-              name: m.name,
-              execution_status: m.execution_status,
-              mode: m.mode,
-            }))
+          const snapshotMembers = snapshot.members.map((m, idx) => ({
+            id: `member-${m.member_id || idx}`,
+            member_id: m.member_id || '',
+            status: m.status || '',
+            timestamp: Date.now(),
+            name: m.name,
+            execution_status: m.execution_status,
+            mode: m.mode,
+          }));
+          const membersById = new Map(
+            useSessionStore.getState().teamMembers.map((member) => [member.member_id, member])
           );
+          snapshotMembers.forEach((member) => {
+            if (member.member_id) {
+              membersById.set(member.member_id, member);
+            }
+          });
+          useSessionStore.getState().setTeamMembers(Array.from(membersById.values()));
         }
         if (Array.isArray(snapshot?.tasks)) {
-          useSessionStore.getState().setTeamTasks(
-            snapshot.tasks
-              .map((task) => normalizeTaskRecord(task))
-              .filter((task): task is TeamTask => task !== null)
+          // 合并快照任务和历史任务（快照数据优先）
+          const snapshotTasks = snapshot.tasks
+            .map((task) => normalizeTaskRecord(task))
+            .filter((task): task is TeamTask => task !== null);
+          const tasksById = new Map(
+            useSessionStore.getState().teamTasks.map((task) => [task.task_id, task])
           );
+          snapshotTasks.forEach((task) => {
+            if (task.task_id) {
+              tasksById.set(task.task_id, task);
+            }
+          });
+          useSessionStore.getState().setTeamTasks(Array.from(tasksById.values()));
         }
       } catch (error) {
         console.error('[team.snapshot] restore failed:', error);
@@ -1105,6 +1120,11 @@ team_id: string;
       webClient.on('chat.delta', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
 
+        // 页面刷新后，如果收到活跃事件但 isProcessing=false，自动恢复执行状态
+        if (!useChatStore.getState().isProcessing && !useChatStore.getState().isLoadingHistory) {
+          setProcessing(true);
+        }
+
         const currentMode = useSessionStore.getState().mode;
         const content = typeof payload.content === 'string' ? payload.content : '';
 
@@ -1154,6 +1174,14 @@ team_id: string;
           startStreaming(assistantMsgId);
         }
         appendStreamContent(content);
+      }),
+      webClient.on('chat.reasoning', ({ payload }) => {
+        if (!shouldHandleSessionEvent(payload)) return;
+
+        // 页面刷新后，如果收到活跃事件但 isProcessing=false，自动恢复执行状态
+        if (!useChatStore.getState().isProcessing && !useChatStore.getState().isLoadingHistory) {
+          setProcessing(true);
+        }
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
@@ -1364,6 +1392,10 @@ team_id: string;
       webClient.on('chat.tool_call', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
+        // 页面刷新后，如果收到活跃事件但 isProcessing=false，自动恢复执行状态
+        if (!useChatStore.getState().isProcessing && !useChatStore.getState().isLoadingHistory) {
+          setProcessing(true);
+        }
         const currentMode = useSessionStore.getState().mode;
         clearThinkingForVisibleOutput();
         const toolCall = normalizeToolCallPayload(payload);

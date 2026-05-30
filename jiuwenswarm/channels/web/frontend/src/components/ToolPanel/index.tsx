@@ -41,14 +41,31 @@ function TeamHistoryLoading() {
   );
 }
 
+function isEmptyValue(value: unknown): boolean {
+  return value === undefined || value === null || value === '';
+}
+
 function mergeById<T>(
   historyItems: T[],
   currentItems: T[],
   getId: (item: T) => string
 ): T[] {
-  const itemsById = new Map(historyItems.map((item) => [getId(item), item]));
+  const itemsById = new Map<string, T>(historyItems.map((item) => [getId(item), item]));
   currentItems.forEach((item) => {
-    itemsById.set(getId(item), item);
+    const id = getId(item);
+    const existing = itemsById.get(id);
+    if (existing && typeof existing === 'object' && typeof item === 'object') {
+      // Partial WS state may omit fields — merge with persisted history to avoid data loss
+      const merged = { ...existing } as Record<string, unknown>;
+      for (const [key, value] of Object.entries(item as Record<string, unknown>)) {
+        if (!isEmptyValue(value) || isEmptyValue(merged[key])) {
+          merged[key] = value;
+        }
+      }
+      itemsById.set(id, merged as T);
+    } else {
+      itemsById.set(id, item);
+    }
   });
   return Array.from(itemsById.values());
 }

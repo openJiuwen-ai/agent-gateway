@@ -66,9 +66,9 @@ export function MemberListItem({
             {displayName}
           </span>
         </div>
-        {!compact && (
+        {!compact && member.mode && (
           <div className="mt-0.5 truncate text-xs text-text-muted">
-            {member.mode ? t('team.runningMode', { mode: member.mode }) : t('team.membersTab')}
+            {t('team.runningMode', { mode: member.mode })}
           </div>
         )}
       </div>

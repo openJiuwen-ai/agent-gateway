@@ -223,6 +223,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "extensions.delete",
     "extensions.toggle",
     "team.snapshot",
+    "team.history.get",
     # Agent configuration
     "agents.list",
     "agents.get",
@@ -252,6 +253,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.delete",
     "browser.start",
     "team.snapshot",
+    "team.history.get",
     "skills.marketplace.list",
     "skills.list",
     "skills.installed",

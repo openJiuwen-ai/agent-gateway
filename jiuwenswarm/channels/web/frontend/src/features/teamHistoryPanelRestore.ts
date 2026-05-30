@@ -1,8 +1,4 @@
 import { webClient } from '../services/webClient';
-import {
-  HISTORY_GET_METHOD,
-  HISTORY_MESSAGE_EVENT,
-} from './historyRestore';
 import type { Message } from '../types';
 import type {
   TeamTask,
@@ -108,25 +104,6 @@ function recordTimestamp(record: Record<string, unknown>): number {
     }
   }
   return Date.now();
-}
-
-function normalizeHistoryRecord(raw: unknown): Record<string, unknown> | null {
-  if (isRecord(raw)) {
-    return raw;
-  }
-  if (typeof raw !== 'string' || !raw.trim()) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function extractHistoryMessagePayload(payload: Record<string, unknown>): unknown {
-  return 'message' in payload ? payload.message : payload.content;
 }
 
 function extractTeamEvent(record: Record<string, unknown>): Record<string, unknown> | null {
@@ -629,96 +606,15 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   };
 }
 
-function shouldProcessPayload(
-  payload: Record<string, unknown>,
-  sessionId: string,
-  pageIdx: number
-): boolean {
-  return payload.session_id === sessionId && payload.page_idx === pageIdx;
-}
-
-function isDonePayload(payload: Record<string, unknown>): boolean {
-  return payload.status === 'done' || payload.done === true || payload.page_complete === true;
-}
-
-async function fetchHistoryPageRecords(
-  sessionId: string,
-  pageIdx: number,
-  signal?: AbortSignal
-): Promise<{ records: Record<string, unknown>[]; totalPages: number }> {
-  const records: Record<string, unknown>[] = [];
-  let totalPages = 1;
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let removeAbortListener: (() => void) | null = null;
-
-    const cleanup = () => {
-      unsubscribe();
-      removeAbortListener?.();
-      removeAbortListener = null;
-    };
-
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve({ records, totalPages });
-    };
-
-    const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, ({ payload }) => {
-      if (!shouldProcessPayload(payload, sessionId, pageIdx)) {
-        return;
-      }
-      if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-        totalPages = payload.total_pages;
-      }
-      if (isDonePayload(payload)) {
-        finish();
-        return;
-      }
-      const record = normalizeHistoryRecord(extractHistoryMessagePayload(payload));
-      if (record) {
-        records.push(record);
-      }
-    });
-
-    const abort = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(new DOMException('Aborted', 'AbortError'));
-    };
-
-    signal?.addEventListener('abort', abort, { once: true });
-    if (signal) {
-      removeAbortListener = () => signal.removeEventListener('abort', abort);
-    }
-
-    void webClient.request(HISTORY_GET_METHOD, {
-      session_id: sessionId,
-      page_idx: pageIdx,
-    }, { signal }).catch((error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    });
-  });
-}
-
 export async function loadTeamHistoryPanelState(
   sessionId: string,
   signal?: AbortSignal
 ): Promise<TeamHistoryPanelState> {
-  const allRecords: Record<string, unknown>[] = [];
-  const firstPage = await fetchHistoryPageRecords(sessionId, 1, signal);
-  allRecords.push(...firstPage.records);
-
-  for (let pageIdx = 2; pageIdx <= firstPage.totalPages; pageIdx += 1) {
-    const page = await fetchHistoryPageRecords(sessionId, pageIdx, signal);
-    allRecords.push(...page.records);
-  }
-
-  return collectTeamState(allRecords, sessionId);
+  const result = await webClient.request<{ records: Record<string, unknown>[]; session_id: string }>(
+    'team.history.get',
+    { session_id: sessionId },
+    { signal, timeoutMs: 30_000 }
+  );
+  const records = Array.isArray(result?.records) ? result.records : [];
+  return collectTeamState(records, sessionId);
 }

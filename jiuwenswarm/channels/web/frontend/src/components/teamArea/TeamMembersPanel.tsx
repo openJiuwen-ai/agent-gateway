@@ -415,7 +415,7 @@ function GroupAvatarStack({ memberIds }: { memberIds: string[] }) {
         <TeamMemberAvatar key={memberId} member={memberId} className="!h-7 !w-7 ring-2 ring-card" />
       ))}
       {hiddenCount > 0 && (
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent-subtle text-xs font-medium text-accent ring-2 ring-card">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#edf1ff] text-xs font-medium text-accent ring-2 ring-card">
           +{hiddenCount}
         </span>
       )}
