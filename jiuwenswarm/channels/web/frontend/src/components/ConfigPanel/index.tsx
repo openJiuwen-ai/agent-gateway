@@ -1792,7 +1792,6 @@ function TeamItemSection({
                 onChange={(e) => updateTeamField(field, e.target.value)}
                 className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
               >
-                <option value=""></option>
                 <option value="persistent">{t("config.team.lifecyclePersistent")}</option>
                 <option value="temporary">{t("config.team.lifecycleTemporary")}</option>
               </select>
@@ -1802,8 +1801,8 @@ function TeamItemSection({
                 onChange={(e) => updateTeamField(field, e.target.value)}
                 className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
               >
-                <option value=""></option>
                 <option value="build_mode">{t("config.team.teammateModeBuild")}</option>
+                <option value="plan_mode">{t("config.team.teammateModePlan")}</option>
               </select>
             ) : field === "spawn_mode" ? (
               <input
