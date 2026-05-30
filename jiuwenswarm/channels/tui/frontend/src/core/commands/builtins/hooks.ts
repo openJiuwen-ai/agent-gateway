@@ -165,6 +165,7 @@ export function createHooksCommand(): SlashCommand {
     usage: "/hooks",
     example: "/hooks",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: false,
     action: async (ctx) => {
       await showHooksBrowser(ctx);

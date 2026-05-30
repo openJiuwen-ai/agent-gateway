@@ -191,6 +191,7 @@ export function createPluginCommand(): SlashCommand {
       "/plugin disable my-plugin\n" +
       "/plugin marketplace list",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: async (ctx: CommandContext, args: string) => {
       const raw = args.trim();

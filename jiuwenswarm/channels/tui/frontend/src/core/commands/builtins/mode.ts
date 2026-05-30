@@ -54,6 +54,7 @@ export function createModeCommand(): SlashCommand {
     usage: "/mode <agent|code|code.team|team|team.normal|team.plan>",
     example: "/mode team.plan",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     completion: async () => [...directModes],
     action: async (ctx, args) => {

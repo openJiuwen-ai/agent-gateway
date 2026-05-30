@@ -12,7 +12,7 @@ const COMMAND_GROUPS: Record<string, { name: string; commands: string[] }> = {
   },
   model: {
     name: "Model",
-    commands: ["model", "mode", "theme", "color"],
+    commands: ["model", "theme", "color"],
   },
   evolution: {
     name: "Evolution",
@@ -28,7 +28,7 @@ const COMMAND_GROUPS: Record<string, { name: string; commands: string[] }> = {
   },
   config: {
     name: "Config",
-    commands: ["config", "permissions", "workspace", "diff", "plan", "usage"],
+    commands: ["config", "permissions", "workspace", "diff", "plan"],
   },
 };
 

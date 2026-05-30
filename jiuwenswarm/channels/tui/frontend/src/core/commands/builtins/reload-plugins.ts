@@ -16,6 +16,7 @@ export function createReloadPluginsCommand(): SlashCommand {
     usage: "/reload-plugins",
     example: "/reload-plugins",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: false,
     isSafeConcurrent: true,
     action: async (ctx: CommandContext) => {

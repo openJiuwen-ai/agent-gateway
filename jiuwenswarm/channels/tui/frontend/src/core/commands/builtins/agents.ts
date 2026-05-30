@@ -121,6 +121,7 @@ export function createAgentsCommand(): SlashCommand {
     usage: "/agents [list|get|create|update|enable|disable|delete]",
     example: "/agents list  |  /agents get Explore",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     action: async (ctx) => {
       await listAgents(ctx);
     },

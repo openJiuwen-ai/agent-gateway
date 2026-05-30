@@ -109,6 +109,7 @@ export function createSandboxCommand(): SlashCommand {
     usage: "/sandbox <enable|disable|exclude|files> ...",
     example: "/sandbox enable",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: async (ctx, args) => {
       const raw = (args ?? "").trim();
