@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useRef, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { ModelEntry } from '../../types';
@@ -19,16 +20,32 @@ function MultiSelectDropdown({
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const clickedInContainer = containerRef.current && containerRef.current.contains(target);
+      const clickedInDropdown = dropdownRef.current && dropdownRef.current.contains(target);
+      if (!clickedInContainer && !clickedInDropdown) {
         setIsOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (isOpen && containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + window.scrollY,
+        left: rect.left + window.scrollX,
+        width: rect.width,
+      });
+    }
+  }, [isOpen]);
 
   const toggleOption = (option: string) => {
     if (selected.includes(option)) {
@@ -69,8 +86,16 @@ function MultiSelectDropdown({
           ))
         )}
       </div>
-      {isOpen && options.length > 0 && (
-        <div className="absolute z-10 mt-1 w-full max-h-60 overflow-auto rounded border border-border bg-card shadow-lg">
+      {isOpen && options.length > 0 && createPortal(
+        <div
+          ref={dropdownRef}
+          className="fixed z-[9999] max-h-60 overflow-auto rounded border border-border bg-card shadow-lg"
+          style={{
+            top: dropdownPosition.top,
+            left: dropdownPosition.left,
+            width: dropdownPosition.width,
+          }}
+        >
           {options.map((option) => (
             <label
               key={option}
@@ -85,7 +110,8 @@ function MultiSelectDropdown({
               <span className="text-text">{option}</span>
             </label>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -1210,7 +1236,7 @@ function MultiAgentSection({
   teams: TeamEntry[];
   onTeamsChange: (teams: TeamEntry[]) => void;
   availableModels: ModelEntry[];
-  installedSkills?: string[];
+  installedSkills?: { name: string; installed?: boolean }[];
   onDeleteAgent?: (idx: number, agentName: string, references: string[]) => void;
   onAgentNameChangeWarning: (warning: string | null) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
@@ -1423,7 +1449,7 @@ function MultiAgentSection({
                     </label>
                     {field === "skills" ? (
                       <MultiSelectDropdown
-                        options={installedSkills || []}
+                        options={(installedSkills || []).map((s) => s.name)}
                         selected={agent.skills || []}
                         onChange={(selected) => {
                           const copy = [...agents];
@@ -1525,7 +1551,7 @@ function MultiAgentSection({
               </label>
               {field === "skills" ? (
                 <MultiSelectDropdown
-                  options={installedSkills || []}
+                  options={(installedSkills || []).map((s) => s.name)}
                   selected={newAgent.skills || []}
                   onChange={(selected) => setNewAgent((p) => ({ ...p, skills: selected }))}
                   placeholder={t("config.keys.agentSkillsPlaceholder")}
@@ -2290,7 +2316,7 @@ export function ConfigPanel({
   const [deleteModelConfirm, setDeleteModelConfirm] = useState<{ idx: number; modelName: string; references: string[] } | null>(null);
   const [deleteTeamConfirm, setDeleteTeamConfirm] = useState<{ idx: number; teamName: string } | null>(null);
   const [deleteTeamMemberConfirm, setDeleteTeamMemberConfirm] = useState<{ teamIdx: number; memberIdx: number; memberName: string } | null>(null);
-  const [installedSkills, setInstalledSkills] = useState<string[]>([]);
+  const [installedSkills, setInstalledSkills] = useState<{ name: string; installed?: boolean }[]>([]);
   const [agentNameChangeWarning, setAgentNameChangeWarning] = useState<string | null>(null);
 
   const markAgentsTeamsEdited = () => {
@@ -2302,12 +2328,14 @@ export function ConfigPanel({
   useEffect(() => {
     const fetchSkills = async () => {
       try {
-        const data = await webRequest<{ skills?: { name: string }[] }>(
+        const data = await webRequest<{ skills?: { name: string; installed?: boolean }[] }>(
           "skills.list",
           { with_installed: true }
         );
-        const skillNames = (data.skills || []).map((s) => s.name).sort();
-        setInstalledSkills(skillNames);
+        const filteredSkills = (data.skills || [])
+          .filter((s) => s.installed !== false)
+          .sort((a, b) => a.name.localeCompare(b.name));
+        setInstalledSkills(filteredSkills);
       } catch (error) {
         console.error("Failed to fetch skills:", error);
       }
