@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
+
         try:
             with urllib.request.urlopen(req, timeout=self._invoke_timeout_s) as resp:
                 status = int(getattr(resp, "status", 200))
@@ -181,14 +182,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         reader_task = asyncio.create_task(
             asyncio.to_thread(self._do_invoke_stream, payload, session_id, queue, loop)
         )
-        sse_buffer = ""
         try:
             while True:
                 item_type, text = await queue.get()
                 if item_type == "chunk" and text:
-                    sse_buffer += text
-                    if "[DONE]" in text:
-                        break
+                    # SSE 解析已完成，这里直接解析 JSON
                     try:
                         parsed = json.loads(text)
                     except Exception:
@@ -250,21 +248,47 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         }
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
+
         try:
             with urllib.request.urlopen(req, timeout=self._invoke_timeout_s) as resp:
                 status = int(getattr(resp, "status", 200))
+
                 if not (200 <= status < 300):
                     text = resp.read().decode("utf-8", errors="replace")
+                    logger.error("[YuanrontFrontendAgentClient] HTTP错误状态码: %d, 响应: %s", status, text[:500])
                     loop.call_soon_threadsafe(
                         out_queue.put_nowait,
                         ("error", json.dumps({"http_status": status, "body": text}, ensure_ascii=False)),
                     )
                     return
+
+                # SSE 解析：按行处理
+                chunk_count = 0
+                total_bytes = 0
+                sse_line_buffer = ""
                 while True:
                     chunk = resp.read(1024)
                     if not chunk:
+                        # 处理缓冲区中剩余的数据
+                        if sse_line_buffer.strip():
+                            self._process_sse_chunk(sse_line_buffer, out_queue, loop)
                         break
-                    loop.call_soon_threadsafe(out_queue.put_nowait, ("chunk", chunk.decode("utf-8", errors="replace")))
+
+                    chunk_text = chunk.decode("utf-8", errors="replace")
+                    total_bytes += len(chunk)
+                    chunk_count += 1
+
+                    # SSE 解析：按行处理
+                    sse_line_buffer += chunk_text
+                    lines = sse_line_buffer.split('\n')
+                    # 保留最后一个可能不完整的行
+                    sse_line_buffer = lines[-1] if lines else ""
+
+                    for line in lines[:-1]:
+                        line_stripped = line.strip()
+                        if line_stripped.startswith('data: '):
+                            data_content = line_stripped[6:]  # 去掉 "data: " 前缀
+                            self._process_sse_chunk(data_content, out_queue, loop)
         except urllib.error.HTTPError as err:
             text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
             logger.error(
@@ -291,3 +315,26 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             loop.call_soon_threadsafe(out_queue.put_nowait, ("exception", str(err)))
         finally:
             loop.call_soon_threadsafe(out_queue.put_nowait, ("done", None))
+
+    def _process_sse_chunk(
+        self,
+        data_content: str,
+        out_queue: asyncio.Queue,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """处理 SSE 数据块.
+
+        Args:
+            data_content: data: 后的内容（已去掉前缀）
+            out_queue: 输出队列
+            loop: 事件循环
+        """
+        data_content_stripped = data_content.strip()
+
+        # 检查是否是结束标记
+        if data_content_stripped == "[DONE]":
+            loop.call_soon_threadsafe(out_queue.put_nowait, ("done", None))
+            return
+
+        # 发送 JSON 数据
+        loop.call_soon_threadsafe(out_queue.put_nowait, ("chunk", data_content_stripped))
