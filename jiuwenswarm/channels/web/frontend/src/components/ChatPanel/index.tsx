@@ -53,20 +53,6 @@ function ThinkingIndicator() {
   );
 }
 
-function HistoryLoadingState() {
-  const { t } = useTranslation();
-
-  return (
-    <div className="chat-history-loading" role="status" aria-live="polite">
-      <div className="chat-history-loading__spinner" />
-      <div className="chat-history-loading__text">
-        {t('chat.historyPager.restoring')}
-      </div>
-    </div>
-  );
-}
-
-
 function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
   return (
     <button className="chat-suggestion-card" onClick={onClick}>
@@ -194,7 +180,6 @@ export function ChatPanel({
   const {
     messages,
     isThinking,
-    isLoadingHistory,
     toolExecutionOrder,
     contextCompressionRuntime,
     contextCompressionSummary,
@@ -207,8 +192,7 @@ export function ChatPanel({
   const suppressNextScrollToEndRef = useRef(false);
   const [isSending, setIsSending] = React.useState(false);
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
-  const isInitialHistoryLoading = isLoadingHistory && !hasTimelineContent && !historyPager;
-  const hasConversation = Boolean(historyPager || hasTimelineContent || isInitialHistoryLoading);
+  const hasConversation = Boolean(historyPager || hasTimelineContent);
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
@@ -340,8 +324,6 @@ export function ChatPanel({
                     summary={contextCompressionSummary}
                   />
                 </>
-              ) : isInitialHistoryLoading ? (
-                <HistoryLoadingState />
               ) : (
                 <div className="flex items-center justify-center h-32">
                   <div className="text-text-muted text-sm">

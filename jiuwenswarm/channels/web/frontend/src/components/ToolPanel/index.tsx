@@ -6,7 +6,7 @@
 
 import { useTranslation } from 'react-i18next';
 import { useSessionStore } from '../../stores';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { webRequest } from '../../services/webClient';
 import { TodoList } from '../TodoList';
 import { TeamArea } from '../teamArea';
@@ -26,19 +26,6 @@ interface ToolPanelProps {
   setTeamAreaActiveDetailTab: (detailTab: TeamDetailTab) => void;
   setTeamAreaSelectedMemberId: (memberId: string) => void;
   sidebarCollapsed?: boolean;
-}
-
-function TeamHistoryLoading() {
-  const { t } = useTranslation();
-
-  return (
-    <div className="toolpanel-team-loading" role="status" aria-live="polite">
-      <div className="toolpanel-team-loading__spinner" />
-      <div className="toolpanel-team-loading__text">
-        {t('toolPanel.restoringTeamHistory')}
-      </div>
-    </div>
-  );
 }
 
 function isEmptyValue(value: unknown): boolean {
@@ -100,7 +87,6 @@ export function ToolPanel({
   } = useSessionStore();
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
-  const [isTeamHistoryRestoring, setTeamHistoryRestoring] = useState(false);
 
   useEffect(() => {
     if (!isConnected) {
@@ -151,14 +137,12 @@ export function ToolPanel({
       setTeamHistoryMessages([]);
       hydratedTeamHistorySessionRef.current = null;
       loadingTeamHistorySessionRef.current = null;
-      setTeamHistoryRestoring(false);
       return;
     }
     if (hydratedTeamHistorySessionRef.current !== sessionId) {
       setTeamHistoryMessages([]);
     }
     if (hydratedTeamHistorySessionRef.current === sessionId) {
-      setTeamHistoryRestoring(false);
       return;
     }
     if (loadingTeamHistorySessionRef.current === sessionId) {
@@ -166,14 +150,9 @@ export function ToolPanel({
     }
 
     const controller = new AbortController();
-    let disposed = false;
     loadingTeamHistorySessionRef.current = sessionId;
-    setTeamHistoryRestoring(true);
     void loadTeamHistoryPanelState(sessionId, controller.signal)
       .then((historyState) => {
-        if (disposed) {
-          return;
-        }
         loadingTeamHistorySessionRef.current = null;
         hydratedTeamHistorySessionRef.current = sessionId;
         const current = useSessionStore.getState();
@@ -214,14 +193,9 @@ export function ToolPanel({
         }
 
         setTeamHistoryMessages(historyState.messages);
-        setTeamHistoryRestoring(false);
       })
       .catch((error) => {
-        if (disposed) {
-          return;
-        }
         loadingTeamHistorySessionRef.current = null;
-        setTeamHistoryRestoring(false);
         if (error instanceof DOMException && error.name === 'AbortError') {
           return;
         }
@@ -229,11 +203,6 @@ export function ToolPanel({
       });
 
     return () => {
-      disposed = true;
-      if (loadingTeamHistorySessionRef.current === sessionId) {
-        loadingTeamHistorySessionRef.current = null;
-        setTeamHistoryRestoring(false);
-      }
       controller.abort();
     };
   }, [isConnected, mode, sessionId, setTeamHistoryMessages, setTeamMemberExecutionEvents, setTeamMembers, setTeamTaskEvents, setTeamTasks]);
@@ -264,25 +233,21 @@ export function ToolPanel({
         className="bg-panel h-full overflow-hidden flex-1 flex flex-col rounded-r-lg"
       >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
-          {isTeamHistoryRestoring ? (
-            <TeamHistoryLoading />
-          ) : (
-            <TeamArea
-              members={teamMembers}
-              historyMessages={teamHistoryMessages}
-              expanded={true}
-              activeTab={teamAreaActiveTab}
-              activeDetailTab={teamAreaActiveDetailTab}
-              selectedMemberId={teamAreaSelectedMemberId}
-              onTabChange={setTeamAreaActiveTab}
-              onDetailTabChange={setTeamAreaActiveDetailTab}
-              onMemberSelect={setTeamAreaSelectedMemberId}
-              onCollapse={() => {
-                setTeamAreaExpanded(false);
-                setTeamAreaSelectedMemberId('');
-              }}
-            />
-          )}
+          <TeamArea
+            members={teamMembers}
+            historyMessages={teamHistoryMessages}
+            expanded={true}
+            activeTab={teamAreaActiveTab}
+            activeDetailTab={teamAreaActiveDetailTab}
+            selectedMemberId={teamAreaSelectedMemberId}
+            onTabChange={setTeamAreaActiveTab}
+            onDetailTabChange={setTeamAreaActiveDetailTab}
+            onMemberSelect={setTeamAreaSelectedMemberId}
+            onCollapse={() => {
+              setTeamAreaExpanded(false);
+              setTeamAreaSelectedMemberId('');
+            }}
+          />
         </div>
       </div>
     );
@@ -307,21 +272,17 @@ export function ToolPanel({
           /* 团队任务概览和成员列表 */
           <div className="flex-1 overflow-hidden mb-4">
             <div className="bg-card rounded-lg overflow-hidden h-full flex flex-col">
-              {isTeamHistoryRestoring ? (
-                <TeamHistoryLoading />
-              ) : (
-                <TeamArea
-                  members={teamMembers}
-                  historyMessages={teamHistoryMessages}
-                  expanded={false}
-                  onExpand={(tab, memberId) => {
-                    setTeamAreaActiveTab(tab);
-                    setTeamAreaActiveDetailTab('members');
-                    setTeamAreaSelectedMemberId(memberId || '');
-                    setTeamAreaExpanded(true);
-                  }}
-                />
-              )}
+              <TeamArea
+                members={teamMembers}
+                historyMessages={teamHistoryMessages}
+                expanded={false}
+                onExpand={(tab, memberId) => {
+                  setTeamAreaActiveTab(tab);
+                  setTeamAreaActiveDetailTab('members');
+                  setTeamAreaSelectedMemberId(memberId || '');
+                  setTeamAreaExpanded(true);
+                }}
+              />
             </div>
           </div>
         ) : (

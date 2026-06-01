@@ -199,7 +199,7 @@ function applyTeamTaskToolCall(toolCall: ToolCall) {
     return;
   }
   if (toolCall.name === 'claim_task') {
-    upsertTaskRecords({ ...toolCall.arguments, status: toolCall.arguments.status || 'claimed' }, 'claimed');
+    return;
   }
 }
 

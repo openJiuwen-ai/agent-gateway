@@ -513,11 +513,8 @@ function AgentTeamHeader({
         </span>
       </span>
       {isProcessing && (
-        <span className="team-event-group-summary__spinner" aria-hidden="true" />
-      )}
-      {isProcessing && (
         <span className="team-event-group-summary__activity">
-          {buildActivityText(currentActivity, t)}
+          ｜ {buildActivityText(currentActivity, t)}
         </span>
       )}
       <span

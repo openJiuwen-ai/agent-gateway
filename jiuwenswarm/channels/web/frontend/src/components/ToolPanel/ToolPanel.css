@@ -41,42 +41,6 @@
   font-size: 0.75rem;
 }
 
-.toolpanel-team-loading {
-  height: 100%;
-  min-height: 220px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--card);
-  color: var(--muted);
-}
-
-.toolpanel-team-loading__spinner {
-  width: 22px;
-  height: 22px;
-  border-radius: var(--radius-full);
-  border: 2px solid color-mix(in srgb, var(--muted) 20%, transparent);
-  border-top-color: var(--accent);
-  animation: toolpanel-team-loading-spin 0.9s linear infinite;
-}
-
-.toolpanel-team-loading__text {
-  max-width: 160px;
-  font-size: var(--font-size-sm);
-  line-height: 20px;
-  text-align: center;
-}
-
-@keyframes toolpanel-team-loading-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* ===========================
    Harness Extension Tree
    =========================== */
