@@ -680,7 +680,11 @@ class JiuClawStreamEventRail(DeepAgentRail):
         try:
             # raw_total_tokens: model max context window — use agent-core's resolver
             # with built-in dict + 200000 fallback (never returns 0)
-            raw_total_tokens = ContextUtils.resolve_context_max(model_name=model_name)
+            raw_total_tokens = ContextUtils.resolve_context_max(
+                model_name=model_name,
+                fallback_context_window_tokens=getattr(context, "_context_window_tokens", None),
+                model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
+            )
 
             # current_context_tokens: actual usage from usage_metadata
             response = ctx.inputs.response
