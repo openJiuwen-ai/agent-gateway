@@ -503,6 +503,7 @@ export function mergeUniqueMessages(messages: Message[]): Message[] {
       ? [
           'team',
           event.type,
+          event.messageId,
           event.fromMember,
           event.toMember || '',
           event.timestamp || '',

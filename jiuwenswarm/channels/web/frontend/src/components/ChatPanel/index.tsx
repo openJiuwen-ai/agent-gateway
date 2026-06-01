@@ -139,6 +139,7 @@ function getTeamMessageIdentity(message: Message): string {
   return [
     'team',
     event.type,
+    event.messageId,
     event.fromMember,
     event.toMember || '',
     event.timestamp || '',
