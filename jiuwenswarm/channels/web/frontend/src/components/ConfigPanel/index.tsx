@@ -3155,17 +3155,6 @@ export function ConfigPanel({
                       />
                     ))
                   )}
-                  {embedGroups.map((group) => (
-                    <GroupSection
-                      key={group.tag}
-                      group={group}
-                      draftValues={draftValues}
-                      onChange={handleFieldChange}
-                      defaultOpen
-                      alwaysExpanded
-                      t={t}
-                    />
-                  ))}
                 </div>
               ) : null}
 

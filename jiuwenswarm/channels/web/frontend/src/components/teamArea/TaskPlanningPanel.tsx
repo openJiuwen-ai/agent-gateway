@@ -70,33 +70,6 @@ export function TaskPlanningPanel({
       cancelled: t('team.planning.columns.failed'),
     };
 
-    const taskTimestamps = tasks
-      .map((task) => task.timestamp)
-      .filter((timestamp): timestamp is number => typeof timestamp === 'number');
-    const firstTaskTimestamp = taskTimestamps.length > 0
-      ? Math.min(...taskTimestamps)
-      : null;
-
-    const allDone = totalTasks > 0 && completedTasks >= totalTasks;
-    const lastTaskTimestamp = taskTimestamps.length > 0
-      ? Math.max(...taskTimestamps)
-      : null;
-
-    const endTime = allDone && lastTaskTimestamp ? lastTaskTimestamp : Date.now();
-    const elapsedTime = firstTaskTimestamp ? endTime - firstTaskTimestamp : 0;
-
-    const formatElapsedTime = (ms: number) => {
-      if (ms === 0) return '--';
-      const seconds = Math.floor(ms / 1000);
-      const minutes = Math.floor(seconds / 60);
-      const hours = Math.floor(minutes / 60);
-      const days = Math.floor(hours / 24);
-      if (days > 0) return t('team.elapsed.daysHours', { days, hours: hours % 24 });
-      if (hours > 0) return t('team.elapsed.hoursMinutes', { hours, minutes: minutes % 60 });
-      if (minutes > 0) return t('team.elapsed.minutesSeconds', { minutes, seconds: seconds % 60 });
-      return t('team.elapsed.seconds', { seconds });
-    };
-
     return (
       <div className="mb-3 flex flex-[2] flex-col overflow-hidden rounded-lg border border-border bg-card min-h-0">
         <div className="flex w-full shrink-0 items-center justify-between bg-card px-4 py-3 border-b border-border">
@@ -114,12 +87,11 @@ export function TaskPlanningPanel({
         <div className="px-4 py-3 shrink-0">
           {allTasks.length > 0 && (
             <div className="mb-4">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-start mb-2">
                 <div className="flex items-baseline gap-1">
                   <span className="text-lg font-semibold text-text-strong">{completedTasks}</span>
                   <span className="text-sm text-text-muted">/ {totalTasks}</span>
                 </div>
-                <span className="text-sm text-text-muted">{t('team.elapsedTime', { value: formatElapsedTime(elapsedTime) })}</span>
               </div>
               <div className="h-2 bg-secondary rounded-full overflow-hidden">
                 <div
