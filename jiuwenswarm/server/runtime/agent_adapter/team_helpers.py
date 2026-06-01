@@ -68,6 +68,15 @@ _HIDE_DM_PREFIX = "/hide_dm"
 _STREAM_TRACE_ENV_KEY = "JIUWENSWARM_TEAM_STREAM_TRACE"
 _DEBUG_PREFIX = "/debug"
 
+_INTERACT_REASON_ERROR_MAP: dict[str, str] = {
+    "not_active": "Team is initializing, please try again later",
+    "session_mismatch": "Session state mismatch, please refresh and retry",
+    "gate_closed": "Team is shutting down, please try again later",
+    "unknown_human_agent": "Member not found, please check the name",
+    "human_agent_not_enabled": "Human agent is not yet available, please try again later",
+    "no_team_backend": "Team backend not ready, please try again later",
+}
+
 
 def _strip_directive(query: str, prefix: str) -> tuple[str, bool]:
     """Strip a leading slash directive from a query string.
@@ -789,14 +798,23 @@ async def process_team_message_stream(
                 session_id,
             )
             if query:
-                success = await team_manager.interact(session_id, query)
+                success, reason = await team_manager.interact(session_id, query)
                 if not success:
+                    logger.warning(
+                        "[TeamHelpers] interact failed: channel_id=%s session_id=%s reason=%s query=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                        reason,
+                        query[:200],
+                    )
+                    error_msg = _INTERACT_REASON_ERROR_MAP.get(reason or "",
+                        "Failed to send message, please try again later")
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=channel_id,
                         payload={
                             "event_type": "chat.error",
-                            "error": "interact failed",
+                            "error": error_msg,
                         },
                         is_complete=False,
                     )

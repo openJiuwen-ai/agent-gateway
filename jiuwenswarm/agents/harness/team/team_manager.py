@@ -1153,34 +1153,39 @@ class TeamManager:
                 request_metadata,
             )
 
-    async def interact(self, session_id: str, user_input: Any) -> bool:
+    async def interact(self, session_id: str, user_input: Any) -> tuple[bool, str | None]:
         try:
             if session_id != self._active_session_id or not self._active_team_name:
+                reason = "not_active" if not self._active_team_name else "session_mismatch"
                 logger.warning(
                     "[TeamManager] interact ignored for non-active team session: "
-                    "session_id=%s active_session_id=%s active_team_name=%s",
+                    "session_id=%s active_session_id=%s active_team_name=%s reason=%s",
                     session_id,
                     self._active_session_id,
                     self._active_team_name,
+                    reason,
                 )
-                return False
+                return False, reason
 
             team_name = self._active_team_name
-            success = await Runner.interact_agent_team(
+            result = await Runner.interact_agent_team(
                 user_input,
                 team_name=team_name,
                 session_id=session_id,
             )
-            if not success:
+            if not result:
+                reason = getattr(result, "reason", None) or "runner_failed"
                 logger.warning(
-                    "[TeamManager] interact failed against runner runtime: session_id=%s team=%s",
+                    "[TeamManager] interact failed against runner runtime: session_id=%s team=%s reason=%s",
                     session_id,
                     team_name,
+                    reason,
                 )
-            return success
+                return False, reason
+            return True, None
         except Exception as exc:
             logger.error("[TeamManager] interact failed: session_id=%s, error=%s", session_id, exc)
-            return False
+            return False, "exception"
 
     # TeamSkillEvolutionRail accessors.
 

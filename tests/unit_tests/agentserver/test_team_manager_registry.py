@@ -777,9 +777,10 @@ async def test_interact_uses_runner_only_for_active_session(
         fake_interact_agent_team,
     )
 
-    success = await manager.interact("sess-1", "hello team")
+    success, reason = await manager.interact("sess-1", "hello team")
 
     assert success is True
+    assert reason is None
     assert interact_calls == [("hello team", "demo-team", "sess-1")]
 
 
@@ -801,9 +802,10 @@ async def test_interact_returns_false_for_non_active_session(
         fake_interact_agent_team,
     )
 
-    success = await manager.interact("sess-other", "hello team")
+    success, reason = await manager.interact("sess-other", "hello team")
 
     assert success is False
+    assert reason == "session_mismatch"
     assert interact_calls == []
 
 
