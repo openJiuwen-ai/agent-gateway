@@ -280,6 +280,18 @@ def _get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
     return (config or {}).get("evolution", {}).get("skill_create", False)
 
 
+def _clean_heartbeat_content(content: str) -> str:
+    """Remove HTML comments and blank lines from HEARTBEAT.md content."""
+    cleaned_lines: list[str] = []
+    for line in content.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith("<!--") and stripped_line.endswith("-->"):
+            continue
+        if stripped_line:
+            cleaned_lines.append(stripped_line)
+    return "\n".join(cleaned_lines)
+
+
 def init_permission_engine(*_args: Any, **_kwargs: Any) -> None:
     """Legacy shim for tests/older call sites.
 
@@ -3620,7 +3632,29 @@ class JiuWenClawDeepAdapter:
         if not sid.startswith("heartbeat"):
             return None
 
-        request.params["query"] = "这是一次心跳请求任务，请根据</heartbeat_user_task>标签中的内容进行回复"
+        content = ""
+        try:
+            deep_config = getattr(self._instance, "deep_config", None) if self._instance else None
+            workspace = getattr(deep_config, "workspace", None)
+            sys_operation = getattr(deep_config, "sys_operation", None) or self._sys_operation
+            if workspace is not None and sys_operation is not None:
+                heartbeat_path = str(workspace.get_node_path(WorkspaceNode.HEARTBEAT_MD))
+                read_res = await sys_operation.fs().read_file(heartbeat_path, mode="text")
+                if read_res.code == 0:
+                    content = _clean_heartbeat_content(read_res.data.content)
+                else:
+                    logger.warning("[JiuWenClawDeepAdapter] heartbeat failed to read HEARTBEAT.md")
+            else:
+                logger.warning("[JiuWenClawDeepAdapter] heartbeat workspace/sys_operation not available")
+        except Exception as exc:
+            logger.warning("[JiuWenClawDeepAdapter] heartbeat failed to prepare HEARTBEAT.md content: %s", exc)
+
+        request.params["query"] = (
+            "这是一次心跳请求任务，请根据 <heartbeat_user_task> 标签中的内容进行回复。\n"
+            "<heartbeat_user_task>\n"
+            f"{content}\n"
+            "</heartbeat_user_task>"
+        )
         logger.info(
             "[JiuWenClawDeepAdapter] heartbeat query injected:" " request_id=%s session_id=%s",
             request.request_id,
