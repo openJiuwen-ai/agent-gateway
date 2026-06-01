@@ -3,6 +3,8 @@ import type { ConnectionStatus } from "../core/ws-client.js";
 import { padToWidth } from "./rendering/text.js";
 import { chalk } from "./theme.js";
 
+type PreferredLanguage = "zh" | "en";
+
 const ART_TITLE_RAW = [
   "",
   "     ██╗██╗██╗   ██╗██╗    ██╗███████╗███╗   ██╗    ███████╗██╗    ██╗ █████╗ ██████╗ ███╗   ███╗",
@@ -42,7 +44,7 @@ function centerLine(line: string, width: number): string {
   return " ".repeat(leftPadding) + line + " ".repeat(rightPadding);
 }
 
-function connectionHint(status: ConnectionStatus): string | null {
+function connectionHint(status: ConnectionStatus, language: PreferredLanguage): string | null {
   switch (status) {
     case "connecting":
       return "Connecting to backend…";
@@ -53,11 +55,19 @@ function connectionHint(status: ConnectionStatus): string | null {
     case "auth_failed":
       return "Authentication failed · check --token";
     case "message_too_big":
-      return "消息过大，连接被断开 · 请缩短输入后重试";
+      return language === "en"
+        ? "Message too large; connection closed · shorten the input and retry"
+        : "消息过大，连接被断开 · 请缩短输入后重试";
     case "connected":
     default:
       return null;
   }
+}
+
+function narrowCommandLine(label: string, width: number): string {
+  const content = `  ${label}`;
+  const padding = Math.max(0, 60 - visibleWidth(content));
+  return padToWidth(chalk.hex("#FFFFFF")("│") + chalk.hex("#FFFFFF")(content) + " ".repeat(padding) + chalk.hex("#FFFFFF")("│"), width);
 }
 
 export function buildWelcomeLines(
@@ -66,9 +76,11 @@ export function buildWelcomeLines(
   modelInfo: { provider: string; model: string; version: string } = { provider: "", model: "", version: "" },
   mode: string = "",
   memoryWarnings: { path: string; kind: string; char_count: number; threshold: number; message: string }[] = [],
+  preferredLanguage: PreferredLanguage = "zh",
 ): string[] {
   const artWidth = Math.max(...ART_TITLE_RAW.map((line) => visibleWidth(line)));
-  const hint = connectionHint(connectionStatus);
+  const hint = connectionHint(connectionStatus, preferredLanguage);
+  const isEnglish = preferredLanguage === "en";
   const version = modelInfo.version || "0.1.0";
   const provider = modelInfo.provider || "";
   const model = modelInfo.model || "";
@@ -87,7 +99,7 @@ export function buildWelcomeLines(
       const right = padding - left;
       return chalk.hex("#FFFFFF")("│") + " ".repeat(left) + chalk.hex("#FFFFFF")(content) + " ".repeat(right) + chalk.hex("#FFFFFF")(" │");
     };
-    const shortCmdTitle = chalk.hex("#FFFFFF")(" 快捷命令 ");
+    const shortCmdTitle = chalk.hex("#FFFFFF")(isEnglish ? " Shortcuts " : " 快捷命令 ");
     const titleWithBorder = "───────" + shortCmdTitle + "───────";
     const titleLineWidth = visibleWidth(titleWithBorder);
     const topPadding = Math.max(0, cmdBoxWidth - 2 - titleLineWidth);
@@ -95,7 +107,9 @@ export function buildWelcomeLines(
     const topRight = topPadding - topLeft;
     const cmdTop = chalk.hex("#FFFFFF")("┌") + "─".repeat(topLeft) + titleWithBorder + "─".repeat(topRight) + chalk.hex("#FFFFFF")("┐");
     const cmdBottom = chalk.hex("#FFFFFF")("└") + "─".repeat(cmdBoxWidth - 2) + chalk.hex("#FFFFFF")("┘");
-    const commands = " /help - 查看帮助    /mode - 切换模式    /skills - 可用技能    /exit - 退出  ";
+    const commands = isEnglish
+      ? " /help - Help    /mode - Switch mode    /skills - Skills    /exit - Exit "
+      : " /help - 查看帮助    /mode - 切换模式    /skills - 可用技能    /exit - 退出  ";
     return [
       ...coloredArt,
       "",
@@ -112,6 +126,9 @@ export function buildWelcomeLines(
     ];
   }
 
+  const narrowTitle = isEnglish
+    ? "│                         Shortcuts                          │"
+    : "│                    快捷命令                    │";
   return [
     padToWidth(chalk.hex("#FFD700")("JIUWEN SWARM"), width),
     "",
@@ -120,12 +137,12 @@ export function buildWelcomeLines(
     padToWidth(chalk.hex("#3a7378")("https://gitcode.com/openJiuwen/agent-core"), width),
     "",
     padToWidth(chalk.hex("#FFFFFF")("┌────────────────────────────────────────────────────────────┐"), width),
-    padToWidth(chalk.hex("#FFFFFF")("│                    ") + chalk.hex("#FFFFFF")(" 快捷命令 ") + chalk.hex("#FFFFFF")("                    │"), width),
+    padToWidth(chalk.hex("#FFFFFF")(narrowTitle), width),
     padToWidth(chalk.hex("#FFFFFF")("├────────────────────────────────────────────────────────────┤"), width),
-    padToWidth(chalk.hex("#FFFFFF")("│  ") + chalk.hex("#FFFFFF")("/help - 查看帮助                                            ") + chalk.hex("#FFFFFF")("│"), width),
-    padToWidth(chalk.hex("#FFFFFF")("│  ") + chalk.hex("#FFFFFF")("/mode - 切换模式                                           ") + chalk.hex("#FFFFFF")("│"), width),
-    padToWidth(chalk.hex("#FFFFFF")("│  ") + chalk.hex("#FFFFFF")("/skills - 可用技能                                         ") + chalk.hex("#FFFFFF")("│"), width),
-    padToWidth(chalk.hex("#FFFFFF")("│  ") + chalk.hex("#FFFFFF")("/exit - 退出                                               ") + chalk.hex("#FFFFFF")("│"), width),
+    narrowCommandLine(isEnglish ? "/help - Help" : "/help - 查看帮助", width),
+    narrowCommandLine(isEnglish ? "/mode - Switch mode" : "/mode - 切换模式", width),
+    narrowCommandLine(isEnglish ? "/skills - Skills" : "/skills - 可用技能", width),
+    narrowCommandLine(isEnglish ? "/exit - Exit" : "/exit - 退出", width),
     padToWidth(chalk.hex("#FFFFFF")("└────────────────────────────────────────────────────────────┘"), width),
     ...(hint ? [padToWidth(chalk.hex("#FFFFFF")(hint), width)] : []),
     ...(memoryWarnings.length > 0

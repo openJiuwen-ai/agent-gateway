@@ -1,5 +1,5 @@
 import { addError, addInfo } from "./core/commands/helpers.js";
-import type { CommandContext } from "./core/commands/types.js";
+import type { CommandContext, PreferredLanguage } from "./core/commands/types.js";
 import {
   computeTimeoutAt,
   isIgnorableHistoryRestoreError,
@@ -119,6 +119,7 @@ export interface AppSnapshot {
   contextWindowLimit: number | null;
   contextUsedPercentage: number | null;
   modelInfo: { provider: string; model: string; version: string };
+  preferredLanguage: PreferredLanguage;
   sessionTitle: string;
   statusLineText: string | null;
   memoryWarnings: {
@@ -138,6 +139,10 @@ function formatElapsed(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function normalizePreferredLanguage(value: unknown): PreferredLanguage {
+  return typeof value === "string" && value.trim().toLowerCase() === "en" ? "en" : "zh";
 }
 
 const LOCAL_FILE_SEARCH_TOOL_NAMES = new Set([
@@ -217,6 +222,7 @@ export class CliPiAppState {
     model: "",
     version: "",
   };
+  private preferredLanguage: PreferredLanguage = "zh";
   private memoryWarnings: {
     path: string;
     kind: string;
@@ -251,6 +257,7 @@ export class CliPiAppState {
       this.mode = mode;
     },
     getMode: () => this.mode,
+    getPreferredLanguage: () => this.preferredLanguage,
     getEntries: () => this.entries,
     setEntries: (entries) => {
       this.entries = entries;
@@ -475,6 +482,7 @@ export class CliPiAppState {
       const activeModel = activeModelName
         ? models.find((m) => m.model_name === activeModelName)
         : models[0];
+      this.preferredLanguage = normalizePreferredLanguage(config.preferred_language);
       this.modelInfo = {
         provider: String(activeModel?.model_provider ?? config.model_provider ?? ""),
         model: activeModelName || String(config.model ?? ""),
@@ -607,6 +615,7 @@ export class CliPiAppState {
       contextWindowLimit: this.contextWindowLimit,
       contextUsedPercentage: this.contextUsedPercentage,
       modelInfo: this.modelInfo,
+      preferredLanguage: this.preferredLanguage,
       sessionTitle: this.sessionTitle,
       statusLineText: this.statusLineText,
       memoryWarnings: [...this.memoryWarnings],
@@ -645,6 +654,7 @@ export class CliPiAppState {
       askQuestions: this.askQuestions,
       sendMessage: this.sendMessage,
       sessionId: snapshot.sessionId,
+      preferredLanguage: snapshot.preferredLanguage,
       entries: snapshot.entries,
       themeName: snapshot.themeName,
       accentColor: snapshot.accentColor,
@@ -664,6 +674,7 @@ export class CliPiAppState {
       mode: snapshot.mode,
       setMode: this.setMode,
       setModel: this.setModel,
+      setPreferredLanguage: this.setPreferredLanguage,
       setThemeName: this.setThemeName,
       setAccentColor: this.setAccentColor,
       transcriptMode: snapshot.transcriptMode,
@@ -845,6 +856,13 @@ export class CliPiAppState {
     const trimmed = name.trim();
     if (trimmed && this.modelInfo.model !== trimmed) {
       this.modelInfo = { ...this.modelInfo, model: trimmed };
+      this.emitChange();
+    }
+  };
+
+  readonly setPreferredLanguage = (language: PreferredLanguage): void => {
+    if (this.preferredLanguage !== language) {
+      this.preferredLanguage = language;
       this.emitChange();
     }
   };
@@ -1894,6 +1912,7 @@ export class CliPiAppState {
       model: snapshot.modelInfo.model,
       provider: snapshot.modelInfo.provider,
       version: snapshot.modelInfo.version,
+      preferred_language: snapshot.preferredLanguage,
       connection: snapshot.connectionStatus,
       theme: snapshot.themeName,
       accent_color: snapshot.accentColor,

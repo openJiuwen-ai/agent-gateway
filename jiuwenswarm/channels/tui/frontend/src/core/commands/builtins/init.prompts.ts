@@ -23,8 +23,10 @@ export interface BuildInitPromptArgs {
 // Language resolution
 // ---------------------------------------------------------------------------
 
-export function resolveLanguage(_ctx: CommandContext): "zh" | "en" {
-  // 当前方案：best-effort from LANG env; 后续可读 config.
+export function resolveLanguage(ctx: CommandContext): "zh" | "en" {
+  if (ctx.preferredLanguage === "en" || ctx.preferredLanguage === "zh") {
+    return ctx.preferredLanguage;
+  }
   const lang =
     typeof process !== "undefined" ? (process.env.LANG ?? "") : "";
   return /^zh/i.test(lang) || /CN$/i.test(lang) ? "zh" : "en";

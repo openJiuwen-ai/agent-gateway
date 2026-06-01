@@ -8,6 +8,8 @@ import type { SessionUsageSummary } from "../../app-state.js";
 
 export type ConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "auth_failed" | "message_too_big";
 
+export type PreferredLanguage = "zh" | "en";
+
 export type StatusViewTab = "status" | "usage" | "config";
 
 export enum CommandKind {
@@ -42,6 +44,7 @@ export interface CommandContext {
     options?: { logAsUser?: boolean },
   ) => string | null;
   sessionId: string;
+  preferredLanguage: PreferredLanguage;
   entries: HistoryItem[];
   themeName: ThemeName;
   accentColor: AccentColorName;
@@ -59,6 +62,7 @@ export interface CommandContext {
   mode: ClientMode;
   setMode: (mode: ClientMode) => void;
   setModel: (name: string) => void;
+  setPreferredLanguage: (language: PreferredLanguage) => void;
   setThemeName: (theme: ThemeName) => void;
   setAccentColor: (color: AccentColorName) => void;
   transcriptMode: "compact" | "detailed";

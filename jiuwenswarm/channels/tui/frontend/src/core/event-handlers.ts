@@ -27,6 +27,8 @@ import type { ConnectionStatus } from "./ws-client.js";
 import { createId, findLastIndex, isIgnorableHistoryRestoreError } from "./app-state-helpers.js";
 import { isClientMode, type ClientMode } from "./modes.js";
 
+type PreferredLanguage = "zh" | "en";
+
 export interface PendingQuestion {
   requestId: string;
   source?: string;
@@ -84,6 +86,7 @@ export interface AppEventDelegate {
   setSessionId(sessionId: string): void;
   setMode(mode: ClientMode): void;
   getMode(): ClientMode;
+  getPreferredLanguage(): PreferredLanguage;
   getEntries(): HistoryItem[];
   setEntries(entries: HistoryItem[]): void;
   setStreamingState(state: StreamingState): void;
@@ -320,6 +323,35 @@ function _handleWorktreeToolResult(
 
 function appendEntry(delegate: AppEventDelegate, entry: HistoryItem): void {
   delegate.setEntries([...delegate.getEntries(), entry]);
+}
+
+function formatInterruptResultMessage(language: PreferredLanguage, intent: string, success: boolean, payloadMessage: unknown): string {
+  const rawMessage = typeof payloadMessage === "string" ? payloadMessage.trim() : "";
+  if (language !== "en") {
+    if (rawMessage) return rawMessage;
+    return success ? "当前会话任务已终止" : "当前会话任务终止失败";
+  }
+  const englishDefaults: Record<string, { success: string; failure: string }> = {
+    cancel: { success: "Task cancelled", failure: "Failed to cancel task" },
+    pause: { success: "Task paused", failure: "Failed to pause task" },
+    resume: { success: "Task resumed", failure: "Failed to resume task" },
+    switch: { success: "Task switched", failure: "Failed to switch task" },
+  };
+  const defaults = englishDefaults[intent] ?? englishDefaults.cancel!;
+  if (!rawMessage) return success ? defaults.success : defaults.failure;
+  const knownChineseMessages: Record<string, string> = {
+    "任务已取消": "Task cancelled",
+    "当前会话任务已终止": "Task cancelled",
+    "当前会话任务终止失败": "Failed to cancel task",
+    "任务中断失败": "Failed to interrupt task",
+    "任务暂停失败": "Failed to pause task",
+    "任务恢复失败": "Failed to resume task",
+    "任务切换失败": "Failed to switch task",
+    "已切换到新任务": "Switched to new task",
+  };
+  if (knownChineseMessages[rawMessage]) return knownChineseMessages[rawMessage];
+  if (/[\u4e00-\u9fff]/.test(rawMessage)) return success ? defaults.success : defaults.failure;
+  return rawMessage;
 }
 
 function appendThinkingChunk(
@@ -1059,12 +1091,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
           return true;
         }
         const success = payload.success !== false;
-        const message =
-          typeof payload.message === "string" && payload.message.trim()
-            ? payload.message
-            : success
-              ? "当前会话任务已终止"
-              : "当前会话任务终止失败";
+        const message = formatInterruptResultMessage(delegate.getPreferredLanguage(), intent, success, payload.message);
         if (success) {
           delegate.setStreamingState(StreamingState.Interrupted);
           delegate.getActiveSubtasks().clear();

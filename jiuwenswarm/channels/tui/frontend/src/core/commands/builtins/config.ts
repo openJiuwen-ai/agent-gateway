@@ -127,6 +127,9 @@ async function applyConfigSet(
         },
       ),
     );
+    if (key === "preferred_language" && (value === "en" || value === "zh")) {
+      ctx.setPreferredLanguage(value);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     ctx.addItem(addError(ctx.sessionId, `config.set failed: ${message}`));
