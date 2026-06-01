@@ -1262,7 +1262,7 @@ for (let i = payload.team.length; i < 10; i++) {
     : heartbeatToastPreviewRaw;
 
   return (
-    <div className={`shell ${sidebarCollapsed || isTeamAreaExpanded ? 'shell--collapsed' : ''}`} data-testid="app-shell" data-session-id={sessionId}>
+    <div className={`shell ${sidebarCollapsed ? 'shell--collapsed' : ''}`} data-testid="app-shell" data-session-id={sessionId}>
       {/* Navigation Sidebar - always rendered, 48px icon strip when collapsed */}
       <SessionSidebar
         activeNav={activeNav}
@@ -1271,7 +1271,7 @@ for (let i = payload.team.length; i < 10; i++) {
         appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : '0.1.7'}
         isConnected={isConnected}
         onNewSession={handleNewSession}
-        collapsed={sidebarCollapsed || isTeamAreaExpanded}
+        collapsed={sidebarCollapsed}
         onCollapse={() => setSidebarCollapsed(true)}
         onExpand={() => setSidebarCollapsed(false)}
       />
