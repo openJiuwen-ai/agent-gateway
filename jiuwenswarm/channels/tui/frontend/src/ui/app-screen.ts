@@ -3219,7 +3219,7 @@ export class AppScreen implements Component, Focusable {
       return null;
     }
 
-    const parsed = parseSlashCommand(text, this.commands.getAll());
+    const parsed = parseSlashCommand(text, this.commands.getAll(true));
     if (!parsed.command) {
       return null;
     }
@@ -3317,7 +3317,7 @@ export class AppScreen implements Component, Focusable {
   ): ComposerAutocompleteProvider {
     // Convert each installed skill to a TuiSlashCommand so CombinedAutocompleteProvider
     // treats /<skillName> exactly like any other slash command for name completion.
-    const registeredNames = new Set(this.commands.getAll().map((c) => c.name));
+    const registeredNames = new Set(this.commands.getAll(true).map((c) => c.name));
     const skillCommands: TuiSlashCommand[] = skills
       .filter((skill) => !registeredNames.has(skill.name))
       .map((skill) => ({
@@ -3338,7 +3338,7 @@ export class AppScreen implements Component, Focusable {
   private buildSlashCommands(): TuiSlashCommand[] {
     const hasAnyCompletion = (cmd: SlashCommand): boolean =>
       !!cmd.completion || (cmd.subCommands?.some(hasAnyCompletion) ?? false);
-    return this.commands.getAll().map((command) => ({
+    return this.commands.getAll(true).map((command) => ({
       name: command.name,
       description: command.description,
       getArgumentCompletions: hasAnyCompletion(command)

@@ -115,6 +115,7 @@ export interface SlashCommand {
    * e.g.  "name=任务名 cron_expr=\"时间\" description=\"让Agent做什么\""
    */
   argGuide?: string;
+  /** 在/help中隐藏，但仍可执行 */
   hidden?: boolean;
   isSafeConcurrent?: boolean;
   kind: CommandKind;
