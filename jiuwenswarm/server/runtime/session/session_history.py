@@ -53,6 +53,9 @@ def _read_history(path: Path) -> list[dict[str, Any]]:
 
 _TEAM_RELEVANT_EVENT_TYPES = frozenset({
     "team.message",
+    "team.member",
+    "team.task",
+    "team.event",
     "chat.tool_call", "chat.tracer_agent",
     "chat.final", "chat.tool_result", "chat.file",
 })

@@ -25,6 +25,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     increment_session_round_count,
     update_session_metadata,
 )
+from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.agents.harness.team.monitor_handler import TeamMonitorHandler
 from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
@@ -1060,6 +1061,7 @@ async def _consume_monitor_events(
             session_id,
         )
         async for event in monitor_handler.events():
+            _persist_team_member_status_event(channel_id, session_id, event)
             _broadcast_event(channel_id, session_id, event)
 
         logger.info(
@@ -1081,6 +1083,43 @@ async def _consume_monitor_events(
             session_id,
             exc,
         )
+
+
+def _persist_team_member_status_event(
+    channel_id: str | None,
+    session_id: str,
+    event: dict[str, Any],
+) -> None:
+    """Persist member status changes so team.history.get can restore refresh state."""
+    if event.get("event_type") != "team.member":
+        return
+
+    payload = event.get("event")
+    if not isinstance(payload, dict):
+        return
+    if payload.get("type") != "team.member.status_changed":
+        return
+
+    member_id = str(payload.get("member_id") or "").strip()
+    new_status = str(payload.get("new_status") or "").strip()
+    if not member_id or not new_status:
+        return
+
+    timestamp = time.time()
+    append_history_record(
+        session_id=session_id,
+        request_id=f"team-status-{member_id}-{int(timestamp * 1000)}",
+        channel_id=_resolve_channel_id(channel_id),
+        role="assistant",
+        content="",
+        timestamp=timestamp,
+        event_type="team.member",
+        extra={
+            "session_id": session_id,
+            "event": dict(payload),
+        },
+        mode="team",
+    )
 
 
 def _on_team_watcher_done(task: asyncio.Task) -> None:

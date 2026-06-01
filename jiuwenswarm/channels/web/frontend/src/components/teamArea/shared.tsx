@@ -175,12 +175,12 @@ export const getBoardTaskContent = (task: SessionTeamTask): string => {
 };
 
 const normalizeMemberRuntimeState = (member: TeamMember): string => {
-  return `${member.execution_status || ''} ${member.status || ''}`.toLowerCase();
+  return `${member.status || ''}`.toLowerCase();
 };
 
 export const getMemberStatusLabel = (member: TeamMember): string => {
   const key = getMemberStatusKey(member);
-  if (key === 'unknown') return member.execution_status || member.status || i18n.t('team.memberStatus.unknown');
+  if (key === 'unknown') return member.status || i18n.t('team.memberStatus.unknown');
   return i18n.t(`team.memberStatus.${key}`);
 };
 

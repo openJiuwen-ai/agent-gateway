@@ -503,70 +503,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     [setAvailableTools, setConnected]
   );
 
-  const restoreTeamMembersOnReconnect = useCallback(
-    async (sessionId: string) => {
-      if (!sessionId || sessionId === 'new') {
-        return;
-      }
-      try {
-        const snapshot = await webClient.request<{
-          members: Array<{
-            member_id: string;
-            name?: string;
-            status: string;
-            execution_status?: string;
-            mode?: string;
-          }>;
-          team_id: string;
-          tasks?: Array<unknown>;
-        }>('team.snapshot', { session_id: sessionId });
-
-        if (activeSessionIdRef.current !== sessionId) {
-          return;
-        }
-
-        if (snapshot?.members) {
-          const snapshotMembers = snapshot.members.map((m, idx) => ({
-            id: `member-${m.member_id || idx}`,
-            member_id: m.member_id || '',
-            status: m.status || '',
-            timestamp: Date.now(),
-            name: m.name,
-            execution_status: m.execution_status,
-            mode: m.mode,
-          }));
-          const membersById = new Map(
-            useSessionStore.getState().teamMembers.map((member) => [member.member_id, member])
-          );
-          snapshotMembers.forEach((member) => {
-            if (member.member_id) {
-              membersById.set(member.member_id, member);
-            }
-          });
-          useSessionStore.getState().setTeamMembers(Array.from(membersById.values()));
-        }
-        if (Array.isArray(snapshot?.tasks)) {
-          // 合并快照任务和历史任务（快照数据优先）
-          const snapshotTasks = snapshot.tasks
-            .map((task) => normalizeTaskRecord(task))
-            .filter((task): task is TeamTask => task !== null);
-          const tasksById = new Map(
-            useSessionStore.getState().teamTasks.map((task) => [task.task_id, task])
-          );
-          snapshotTasks.forEach((task) => {
-            if (task.task_id) {
-              tasksById.set(task.task_id, task);
-            }
-          });
-          useSessionStore.getState().setTeamTasks(Array.from(tasksById.values()));
-        }
-      } catch (error) {
-        console.error('[team.snapshot] restore failed:', error);
-      }
-    },
-    []
-  );
-
   // 断开连接
   const disconnect = useCallback(() => {
     webClient.disconnect();
@@ -1112,7 +1048,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const unsubs = [
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
-        void restoreTeamMembersOnReconnect(activeSessionIdRef.current || '');
       }),
       webClient.on('hello', ({ payload }) => {
         handleConnectionAck(payload);

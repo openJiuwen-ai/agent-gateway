@@ -93,7 +93,10 @@ function stringList(value: unknown): string[] | undefined {
 }
 
 function recordTimestamp(record: Record<string, unknown>): number {
-  const value = record.timestamp;
+  return normalizeTimestamp(record.timestamp, Date.now());
+}
+
+function normalizeTimestamp(value: unknown, fallback: number): number {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value > 1_000_000_000_000 ? value : value * 1000;
   }
@@ -103,7 +106,11 @@ function recordTimestamp(record: Record<string, unknown>): number {
       return parsed;
     }
   }
-  return Date.now();
+  return fallback;
+}
+
+function taskTimestamp(rawTask: Record<string, unknown>, fallback: number): number {
+  return normalizeTimestamp(rawTask.updated_at, fallback);
 }
 
 function extractTeamEvent(record: Record<string, unknown>): Record<string, unknown> | null {
@@ -324,20 +331,30 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     if (!existing && !allowCreate) {
       return;
     }
+    const nextTimestamp = taskTimestamp(rawTask, timestamp);
     const title = pickString(rawTask, ['title', 'name', 'description']);
     const content = pickString(rawTask, ['content']);
     const assignee = pickString(rawTask, ['assignee', 'member_id', 'claimed_by', 'claimedBy', 'from_member']);
     const teamId = pickString(rawTask, ['team_id']);
     const skills = stringList(rawTask.skills);
     const files = stringList(rawTask.files);
+    const existingTimestamp = existing?.timestamp || 0;
+    const isStaleTaskVersion = nextTimestamp < existingTimestamp;
+    let status: TeamTaskStatus;
+    if (isStaleTaskVersion) {
+      status = existing?.status || fallbackStatus;
+    } else {
+      status = resolveTaskStatus(rawTask.status, existing, fallbackStatus);
+    }
+
     tasks.set(taskId, {
       task_id: taskId,
       title: title || existing?.title || `任务 ${taskId}`,
       content: content || existing?.content,
-      status: resolveTaskStatus(rawTask.status, existing, fallbackStatus),
+      status,
       assignee: assignee || existing?.assignee,
       team_id: teamId || existing?.team_id,
-      timestamp,
+      timestamp: Math.max(existing?.timestamp || 0, nextTimestamp),
       skills: skills || existing?.skills,
       files: files || existing?.files,
     });
