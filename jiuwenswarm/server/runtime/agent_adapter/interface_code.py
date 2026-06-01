@@ -54,6 +54,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
+from jiuwenswarm.agents.harness.code.rails import CodeTaskPlanningRail
 from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
@@ -285,7 +286,6 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             ),
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
-            enable_task_planning=True,
             auto_create_workspace=False
         )
 
@@ -381,6 +381,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
                 {"tool_names": ["switch_mode"]},
             ),
             _RailBuildInfo("_context_processor_rail", self._build_context_processor_rail),
+            _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
         ]
 
@@ -480,6 +481,15 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             return AgentModeRail()
         except Exception as exc:
             logger.warning("[JiuwenClawCodeAdapter] AgentModeRail create failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_code_task_planning_rail() -> CodeTaskPlanningRail | None:
+        """Register todo tools without openjiuwen todo system prompt injection."""
+        try:
+            return CodeTaskPlanningRail()
+        except Exception as exc:
+            logger.warning("[JiuwenClawCodeAdapter] CodeTaskPlanningRail create failed: %s", exc)
             return None
 
     def _build_structured_ask_user_rail(self) -> StructuredAskUserRail | None:
