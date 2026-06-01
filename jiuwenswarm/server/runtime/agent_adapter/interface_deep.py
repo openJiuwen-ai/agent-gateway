@@ -3010,8 +3010,11 @@ class JiuWenClawDeepAdapter:
             str(channel_id or self._resolve_prompt_channel(session_id) or "web").strip() or "web"
         )
         send_file_enabled = (
-            config_base.get("channels", {}).get(channel, {}).get("send_file_allowed", False)
+            config_base.get("channels", {}).get(channel, {}).get("send_file_allowed")
         )
+        # web channel defaults to True, others default to False
+        if send_file_enabled is None:
+            send_file_enabled = (channel == "web")
         if send_file_enabled and request_id and session_id:
             channel_for_tool = _CRON_TOOL_CHANNEL_ID.get()
             metadata_for_tool = _CRON_TOOL_METADATA.get()

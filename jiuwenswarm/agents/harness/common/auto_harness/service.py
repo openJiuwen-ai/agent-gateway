@@ -75,6 +75,7 @@ _DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
 # Default local repo path
 _DEFAULT_LOCAL_REPO = _AUTO_HARNESS_DATA_DIR / "repo" / "openJiuwen--agent-core"
 # Default values for ci_gate config
+_DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
 _DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
 
 
@@ -265,12 +266,18 @@ class AutoHarnessService:
             needs_save = True
 
         ci_gate = config_dict.get("ci_gate") or {}
-        if ci_gate.get("python_executable"):
-            ci_gate["python_executable"] = ""
+        if not ci_gate.get("python_executable"):
+            ci_gate["python_executable"] = str(_DEFAULT_CI_GATE_PYTHON_EXECUTABLE)
             needs_save = True
 
         if not ci_gate.get("install_command"):
             ci_gate["install_command"] = _DEFAULT_CI_GATE_INSTALL_COMMAND
+            needs_save = True
+
+        budget = config_dict.get("budget", {})
+        max_tasks_per_session = budget.get("max_tasks_per_session", 5)
+        if max_tasks_per_session > 5:
+            budget["max_tasks_per_session"] = 5
             needs_save = True
 
         if needs_save:
@@ -612,6 +619,8 @@ class AutoHarnessService:
         # of a raw URL. The named remote is added in clone_or_update_repo().
         if not config.git_base_branch:
             config.git_base_branch = "develop-auto-harness"
+        if config.pipeline_preference == EXTENDED_EVOLVE_PIPELINE:
+            config.git_base_branch = "develop"
         if not config.git_remote:
             config.git_remote = "origin"
 
@@ -1793,7 +1802,11 @@ class AutoHarnessService:
         logger.info("[AutoHarnessService] Cancelling run for session %s", session_id)
         active_run.cancelled = True
 
-        # Cancel the task
+        # Signal the orchestrator to stop (pipelines check should_cancel)
+        if active_run.orchestrator is not None:
+            active_run.orchestrator.cancel()
+
+        # Cancel the asyncio task
         if not active_run.task.done():
             active_run.task.cancel()
 

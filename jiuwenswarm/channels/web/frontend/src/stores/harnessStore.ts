@@ -85,6 +85,16 @@ export interface ActivateInteractionState {
 }
 
 /**
+ * File tree entry for caching
+ */
+export interface CachedFileTreeEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children?: CachedFileTreeEntry[];
+}
+
+/**
  * Harness state interface
  */
 interface HarnessState {
@@ -124,6 +134,11 @@ interface HarnessState {
   // Deactivating state
   deactivatingPackage: boolean;
 
+  // File tree cache by runtime path (key: runtimePath, value: file tree)
+  extensionFileTreeCache: Record<string, CachedFileTreeEntry[]>;
+  // Loading state for file tree by path
+  fileTreeLoadingPaths: Record<string, boolean>;
+
   // Actions
   setStageDefinitions: (stages: HarnessStageDefinition[]) => void;
   addHarnessMessage: (content: string, stage?: string) => void;
@@ -149,6 +164,13 @@ interface HarnessState {
   setLoadingPackages: (loading: boolean) => void;
   setActivatingPackage: (activating: boolean) => void;
   setDeactivatingPackage: (deactivating: boolean) => void;
+
+  // File tree cache actions
+  setFileTreeCache: (runtimePath: string, files: CachedFileTreeEntry[]) => void;
+  getFileTreeCache: (runtimePath: string) => CachedFileTreeEntry[] | undefined;
+  clearFileTreeCache: (runtimePath?: string) => void;
+  setFileTreeLoading: (runtimePath: string, loading: boolean) => void;
+  isFileTreeLoading: (runtimePath: string) => boolean;
 }
 
 /**
@@ -228,6 +250,9 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
   loadingPackages: false,
   activatingPackage: false,
   deactivatingPackage: false,
+
+  extensionFileTreeCache: {},
+  fileTreeLoadingPaths: {},
 
   setStageDefinitions: (stages) => {
     // Only set stages once - ignore subsequent updates
@@ -453,6 +478,8 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
       loadingPackages: false,
       activatingPackage: false,
       deactivatingPackage: false,
+      extensionFileTreeCache: {},
+      fileTreeLoadingPaths: {},
     });
   },
 
@@ -487,5 +514,56 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
 
   setDeactivatingPackage: (deactivating) => {
     set({ deactivatingPackage: deactivating });
+  },
+
+  // File tree cache actions
+  setFileTreeCache: (runtimePath, files) => {
+    set((state) => ({
+      extensionFileTreeCache: {
+        ...state.extensionFileTreeCache,
+        [runtimePath]: files,
+      },
+      fileTreeLoadingPaths: {
+        ...state.fileTreeLoadingPaths,
+        [runtimePath]: false,
+      },
+    }));
+  },
+
+  getFileTreeCache: (runtimePath) => {
+    return get().extensionFileTreeCache[runtimePath];
+  },
+
+  clearFileTreeCache: (runtimePath) => {
+    if (runtimePath) {
+      set((state) => {
+        const newCache = { ...state.extensionFileTreeCache };
+        delete newCache[runtimePath];
+        const newLoading = { ...state.fileTreeLoadingPaths };
+        delete newLoading[runtimePath];
+        return {
+          extensionFileTreeCache: newCache,
+          fileTreeLoadingPaths: newLoading,
+        };
+      });
+    } else {
+      set({
+        extensionFileTreeCache: {},
+        fileTreeLoadingPaths: {},
+      });
+    }
+  },
+
+  setFileTreeLoading: (runtimePath, loading) => {
+    set((state) => ({
+      fileTreeLoadingPaths: {
+        ...state.fileTreeLoadingPaths,
+        [runtimePath]: loading,
+      },
+    }));
+  },
+
+  isFileTreeLoading: (runtimePath) => {
+    return get().fileTreeLoadingPaths[runtimePath] || false;
   },
 }));

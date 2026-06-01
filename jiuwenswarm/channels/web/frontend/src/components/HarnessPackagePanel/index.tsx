@@ -275,26 +275,40 @@ export function HarnessPackagePanel({ sessionId }: HarnessPackagePanelProps) {
     setExportSuccess(null);
 
     try {
-      // Send via WebSocket
-      const result = await webRequest<{ file_content: string; filename: string }>('harness.export', {
+      // Send via WebSocket - now returns download URL instead of base64 content
+      const result = await webRequest<{
+        download_url?: string;  // new format - HTTP download URL
+        file_content?: string;  // legacy format - base64 encoded
+        filename: string;
+      }>('harness.export', {
         package_id: selectedPackageId,
       });
 
-      // Decode base64 content and download
-      const binaryString = atob(result.file_content);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+      if (result.download_url) {
+        // New format: direct HTTP download (avoids WebSocket size limits)
+        const a = document.createElement('a');
+        a.href = result.download_url;
+        a.download = result.filename || `${selectedPackage?.extension_name || 'package'}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } else if (result.file_content) {
+        // Legacy format: decode base64 and download (for backwards compatibility)
+        const binaryString = atob(result.file_content);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        const blob = new Blob([bytes], { type: 'application/zip' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = result.filename || `${selectedPackage?.extension_name || 'package'}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
       }
-      const blob = new Blob([bytes], { type: 'application/zip' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = result.filename || `${selectedPackage?.extension_name || 'package'}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
 
       setExportSuccess(t('harnessPackage.exportSuccess'));
     } catch (err) {

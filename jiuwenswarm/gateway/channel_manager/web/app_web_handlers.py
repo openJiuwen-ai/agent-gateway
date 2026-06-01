@@ -48,6 +48,7 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir
 )
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
+from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
 from jiuwenswarm.common.version import __version__
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
@@ -2572,8 +2573,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.import", _harness_import_handler)
 
     async def _harness_export_handler(ws, req_id, params, session_id):
-        """Export a harness package via WebSocket (returns base64 encoded zip content)."""
-        # Get package_id
+        """Export a harness package - returns download URL instead of base64 content.
+
+        Uses HTTP download endpoint to avoid WebSocket message size limits.
+        The temporary zip file will be cleaned up after download or token expiry.
+        """
         package_id = params.get("package_id")
         if not package_id:
             await channel.send_response(ws, req_id, ok=False, error="Missing package_id", code="BAD_REQUEST")
@@ -2582,23 +2586,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             service = AutoHarnessService(rail=None, agent=None)
             zip_path = service.export_package(package_id)
-            # Read zip file and encode as base64
-            zip_content = zip_path.read_bytes()
-            zip_content_b64 = base64.b64encode(zip_content).decode("utf-8")
-            filename = zip_path.name
+
+            download_info = build_file_download_info(
+                str(zip_path),
+                zip_path.name,
+                session_id,
+                expires_in=600,  # 10 minutes
+            )
 
             await channel.send_response(ws, req_id, ok=True, payload={
                 "ok": True,
-                "file_content": zip_content_b64,
-                "filename": filename,
+                "download_url": download_info["download_url"],
+                "download_token": download_info["download_token"],
+                "filename": download_info["name"],
+                "file_size": download_info["size"],
+                "expires_at": download_info["expires_at"],
                 "message": "Package exported successfully",
             })
-
-            # Cleanup temp zip file
-            try:
-                zip_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            # No cleanup here - file will be served via HTTP download endpoint
+            # and cleaned up after download or when token expires
         except ValueError as exc:
             msg = str(exc)
             if "not found" in msg.lower():

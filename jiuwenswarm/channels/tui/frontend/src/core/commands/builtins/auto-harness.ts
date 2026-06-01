@@ -264,7 +264,7 @@ const scheduleStartCommand: SlashCommand = {
     const parsed = parseScheduleStartArgs(args);
 
     if (parsed.interval < 1) {
-      const hint = parsed.interval === 0 ? "间隔不能为 0，请设置至少 1 小时" : parsed.interval === -1 ? "请提供有效的 --interval 数值（小时）" : "间隔必须大于 0 小时";
+      const hint = parsed.interval === 0 ? "间隔不能为 0，请设置至少 1 小时\n示例: /auto-harness schedule start --interval 4 优化上下文压缩能力" : parsed.interval === -1 ? "请提供有效的 --interval 数值（小时）\n示例: /auto-harness schedule start --interval 4 优化上下文压缩能力" : "间隔必须大于 0 小时";
       ctx.addItem(
         addError(ctx.sessionId, `${hint}`)
       );
@@ -273,7 +273,7 @@ const scheduleStartCommand: SlashCommand = {
 
     if (!parsed.query) {
       ctx.addItem(
-        addError(ctx.sessionId, "请提供执行目标 query")
+        addError(ctx.sessionId, "请提供执行目标 query\n示例: /auto-harness schedule start --interval 4 优化上下文压缩能力")
       );
       return;
     }
@@ -359,7 +359,7 @@ const scheduleStartCommand: SlashCommand = {
     ctx.addItem(
       addInfo(
         ctx.sessionId,
-        `\n定时任务已创建\nID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n下次执行: ${formatLocalTime(result.next_run_time)}\n间隔: 每 ${parsed.interval} 小时${run_immediately ? "\n(已立即执行一次)" : ""}\n`
+        `\n⏰ 定时任务已创建\n━━━━━━━━━━━━━━━━━━━━━━\n任务ID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n执行间隔: 每 ${parsed.interval} 小时\n下次执行: ${formatLocalTime(result.next_run_time)}${run_immediately ? "\n备注: 已立即执行一次" : ""}\n━━━━━━━━━━━━━━━━━━━━━━\n💡 使用 /auto-harness schedule list 查看所有任务\n   使用 /auto-harness schedule logs ${result.task_id} 查看执行日志\n`
       )
     );
   },
@@ -371,32 +371,33 @@ const scheduleListCommand: SlashCommand = {
   kind: CommandKind.BUILT_IN,
   takesArgs: false,
   action: async (ctx, _args) => {
-    ctx.addItem(addInfo(ctx.sessionId, "\n正在查询任务...\n", "i"));
+    ctx.addItem(addInfo(ctx.sessionId, "\n🔍 正在查询任务...\n", "i"));
 
     const result = await ctx.request<{ tasks?: Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string }> }>("schedule.list", {});
 
     const tasks = result.tasks as Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string }> | undefined;
     if (!tasks || tasks.length === 0) {
-      ctx.addItem(addInfo(ctx.sessionId, "\n暂无任务\n", "i"));
+      ctx.addItem(addInfo(ctx.sessionId, "\n📭 暂无任务\n💡 使用 /auto-harness schedule start 创建定时任务\n   使用 /auto-harness run 创建一次性任务\n", "i"));
       return;
     }
 
-    const lines = ["\n【任务列表】"];
+    const lines = ["\n📋 任务列表\n━━━━━━━━━━━━━━━━━━━━━━"];
     for (const task of tasks) {
-      const statusEmoji = task.status === "running" ? "[运行中]" :
-                         task.status === "pending" ? "[等待]" :
-                         task.status === "cancelled" ? "[已取消]" :
-                         task.status === "failed" ? "[失败]" :
-                         task.status === "success" ? "[成功]" : "[已完成]";
-      const isOneTime = task.is_one_time ? "[一次性]" : "";
+      const statusIcon = task.status === "running" ? "🔄" :
+                         task.status === "pending" ? "⏳" :
+                         task.status === "cancelled" ? "🛑" :
+                         task.status === "failed" ? "❌" :
+                         task.status === "success" ? "✅" : "📦";
+      const isOneTime = task.is_one_time ? " [一次性]" : " [定时]";
       const queryPreview = task.query.length > 50 ? task.query.substring(0, 50) + "..." : task.query;
       const pipelineInfo = task.pipeline ? `Pipeline: ${pipelineDisplayLabel(task.pipeline)}` : "";
       lines.push(
-        `${statusEmoji}${isOneTime} ${task.task_id} - ${queryPreview}`
+        `${statusIcon}${isOneTime} ${task.task_id}`
       );
+      lines.push(`   目标: ${queryPreview}`);
       // Show interval only for recurring tasks
       if (task.is_one_time) {
-        lines.push(`   状态: ${task.status} | 类型: 一次性${pipelineInfo ? ` | ${pipelineInfo}` : ""}`);
+        lines.push(`   状态: ${task.status}${pipelineInfo ? ` | ${pipelineInfo}` : ""}`);
       } else {
         lines.push(`   状态: ${task.status} | 间隔: ${task.interval_hours}h | 下次执行: ${formatLocalTime(task.next_run_time)}${pipelineInfo ? ` | ${pipelineInfo}` : ""}`);
       }
@@ -404,6 +405,7 @@ const scheduleListCommand: SlashCommand = {
       lines.push("");
     }
 
+    lines.push("💡 使用 /auto-harness schedule logs <task_id> 查看执行日志");
     lines.push("");
     ctx.addItem(addInfo(ctx.sessionId, lines.join("\n")));
   },
@@ -432,7 +434,7 @@ const scheduleStatusCommand: SlashCommand = {
 
     if (!task_id) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule status <task_id>")
+        addError(ctx.sessionId, "用法: /auto-harness schedule status <task_id>\n示例: /auto-harness schedule status sch_abc123")
       );
       return;
     }
@@ -447,36 +449,44 @@ const scheduleStatusCommand: SlashCommand = {
     }
 
     const isOneTime = result.is_one_time;
-    const lines = [`\n【任务详情: ${result.task_id}】`];
+    const statusIcon = result.status === "running" ? "🔄" :
+                       result.status === "pending" ? "⏳" :
+                       result.status === "cancelled" ? "🛑" :
+                       result.status === "failed" ? "❌" :
+                       result.status === "success" ? "✅" : "📦";
+    const lines = [`\n📄 任务详情\n━━━━━━━━━━━━━━━━━━━━━━`];
+    lines.push(`任务ID: ${result.task_id}`);
     lines.push(`目标: ${result.query}`);
-    lines.push(`状态: ${result.status}`);
+    lines.push(`状态: ${statusIcon} ${result.status}`);
     if (result.pipeline) {
       lines.push(`Pipeline: ${pipelineDisplayLabel(result.pipeline)}`);
     }
     if (isOneTime) {
-      lines.push(`类型: 一次性任务`);
+      lines.push(`类型: 🎯 一次性任务`);
     } else {
-      lines.push(`类型: 定时任务 | 间隔: 每 ${result.interval_hours} 小时`);
+      lines.push(`类型: ⏰ 定时任务 | 间隔: 每 ${result.interval_hours} 小时`);
       lines.push(`下次执行: ${formatLocalTime(result.next_run_time) || "已取消"}`);
     }
     lines.push(`创建时间: ${formatLocalTime(result.created_at)}`);
 
     if (result.current_execution_id) {
-      lines.push(`当前执行: ${result.current_execution_id}`);
+      lines.push(`\n🔄 当前执行: ${result.current_execution_id}`);
+      lines.push(`💡 使用 /auto-harness schedule logs ${result.task_id} 查看实时日志`);
     }
 
     const history = result.execution_history as Array<{ execution_id: string; status: string; completed_at?: string }> | undefined;
     if (history && history.length > 0) {
-      lines.push(`\n【执行历史】(${history.length} 次)`);
+      lines.push(`\n📜 执行历史 (${history.length} 次)`);
       const recentHistory = history.slice(-5);
       for (const record of recentHistory) {
-        const statusText = record.status === "success" ? "[成功]" :
-                           record.status === "failed" ? "[失败]" :
-                           record.status === "cancelled" ? "[取消]" : "[异常]";
-        lines.push(`${statusText} ${record.execution_id} - ${formatLocalTime(record.completed_at) || "进行中"}`);
+        const histIcon = record.status === "success" ? "✅" :
+                           record.status === "failed" ? "❌" :
+                           record.status === "cancelled" ? "🛑" : "⚠️";
+        lines.push(`  ${histIcon} ${record.execution_id} - ${formatLocalTime(record.completed_at) || "进行中"}`);
       }
     }
 
+    lines.push("\n━━━━━━━━━━━━━━━━━━━━━━");
     lines.push("");
     ctx.addItem(
       addInfo(ctx.sessionId, lines.join("\n"))
@@ -486,7 +496,7 @@ const scheduleStatusCommand: SlashCommand = {
 
 const scheduleLogsCommand: SlashCommand = {
   name: "logs",
-  description: "查看任务执行日志（默认显示当前运行日志，--history 查看历史日志）",
+  description: "查看任务日志（自动适配：运行中则实时跟踪，已完成则显示历史）",
   usage: "/auto-harness schedule logs <task_id> [--history <n>]",
   example: "/auto-harness schedule logs sch_abc123 --history 0",
   kind: CommandKind.BUILT_IN,
@@ -594,14 +604,34 @@ const scheduleLogsCommand: SlashCommand = {
 
     if (!parsed.task_id) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule logs <task_id> [--history <n>]")
+        addError(ctx.sessionId, "用法: /auto-harness schedule logs <task_id> [--history <n>]\n功能:\n  不带 --history: 自动适配 - 运行中则实时跟踪，已完成则显示最近历史日志\n  --history <n>: 查看指定历史执行日志（0=最近一次，1=上一次...）\n示例:\n  /auto-harness schedule logs sch_abc123              # 自动适配模式\n  /auto-harness schedule logs sch_abc123 --history 0  # 查看最近一次历史日志")
       );
       return;
     }
 
     if (parsed.log_type === "current") {
-      // Tail -f style streaming for current running task
-      await streamCurrentLogs(ctx, parsed.task_id);
+      // Try current logs first, auto-fallback to history if task is not running
+      // First, check if task has a current execution (running)
+      const statusResult = await ctx.request<{ error?: string; status?: string; current_execution_id?: string; execution_history?: Array<{ execution_id: string }> }>("schedule.status", { task_id: parsed.task_id });
+
+      if (statusResult.error) {
+        ctx.addItem(addError(ctx.sessionId, statusResult.error));
+        return;
+      }
+
+      // If task is running and has current_execution_id, stream current logs
+      if (statusResult.status === "running" && statusResult.current_execution_id) {
+        await streamCurrentLogs(ctx, parsed.task_id);
+      } else {
+        // Task is not running, auto-switch to history mode (most recent)
+        const history = statusResult.execution_history as Array<{ execution_id: string }> | undefined;
+        if (history && history.length > 0) {
+          ctx.addItem(addInfo(ctx.sessionId, `\n💡 任务已完成，自动显示最近一次历史日志\n任务状态: ${statusResult.status}\n`, "i"));
+          await readFullHistoryLogs(ctx, parsed.task_id, 0);  // Show most recent history
+        } else {
+          ctx.addItem(addInfo(ctx.sessionId, `\n📭 任务无执行历史\n任务状态: ${statusResult.status}\n`));
+        }
+      }
     } else {
       // History mode: read full log in batches
       await readFullHistoryLogs(ctx, parsed.task_id, parsed.history_index);
@@ -689,13 +719,13 @@ async function streamCurrentLogs(
   // Clear any previous interrupt flag before starting new stream
   ctx.clearInterruptRequested();
 
-  ctx.addItem(addInfo(ctx.sessionId, `\n【实时日志跟踪: ${task_id}】\n正在连接...\n`));
+  ctx.addItem(addInfo(ctx.sessionId, `\n📋 实时日志跟踪: ${task_id}\n正在连接...\n💡 按 Ctrl+C 可中断日志查看，任务将继续后台运行\n`));
 
   // Helper: check interrupt and exit if requested
   const checkInterrupt = (): boolean => {
     if (ctx.isInterruptRequested()) {
       ctx.clearInterruptRequested();
-      ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪已中断】`));
+      ctx.addItem(addInfo(ctx.sessionId, `\n⏸️ 日志跟踪已中断\n💡 任务仍在后台运行，可使用 /auto-harness schedule logs ${task_id} 继续查看\n`));
       return true;
     }
     return false;
@@ -758,7 +788,7 @@ async function streamCurrentLogs(
       if (result.error) {
         // Execution finished - show completion message
         if (result.error.includes("当前无正在执行的日志") || result.error.includes("不存在")) {
-          ctx.addItem(addInfo(ctx.sessionId, `\n【任务执行完成】`));
+          ctx.addItem(addInfo(ctx.sessionId, `\n✅ 任务执行完成\n`));
           return;
         }
         ctx.addItem(addError(ctx.sessionId, result.error));
@@ -809,15 +839,15 @@ async function streamCurrentLogs(
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     } catch (e) {
-      ctx.addItem(addError(ctx.sessionId, `日志流错误: ${e}`));
+      ctx.addItem(addError(ctx.sessionId, `⚠️ 日志流错误: ${e}\n💡 请稍后重试，或使用 /auto-harness schedule logs ${task_id} 查看日志`));
       return;
     }
   }
 
   if (pollCount >= maxPolls) {
-    ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪退出，任务后台运行中，可再次调用 logs 指令查看。】`));
+    ctx.addItem(addInfo(ctx.sessionId, `\n⏱️ 日志跟踪已超时退出 \n💡 任务仍在后台运行，可使用 /auto-harness schedule logs ${task_id} 继续查看\n`));
   } else {
-    ctx.addItem(addInfo(ctx.sessionId, `\n【日志跟踪完成: ${executionId}】`));
+    ctx.addItem(addInfo(ctx.sessionId, `\n✅ 任务执行完成\n执行ID: ${executionId}\n`));
   }
 }
 
@@ -827,7 +857,7 @@ async function readFullHistoryLogs(
   task_id: string,
   history_index: number
 ): Promise<void> {
-  ctx.addItem(addInfo(ctx.sessionId, `\n正在读取完整日志...\n`, "i"));
+  ctx.addItem(addInfo(ctx.sessionId, `\n📜 正在读取历史日志...\n`, "i"));
 
   let allLogs: Array<LogEntry> = [];
   let offset = 0;
@@ -881,15 +911,19 @@ async function readFullHistoryLogs(
 
   // Display full aggregated logs
   if (allLogs.length === 0) {
-    ctx.addItem(addInfo(ctx.sessionId, "日志为空"));
+    ctx.addItem(addInfo(ctx.sessionId, "\n📭 日志为空\n"));
     return;
   }
 
   const result = parseAndAggregateLogs(allLogs);
-  const lines: string[] = [`【执行日志: ${executionId}】`];
+  const lines: string[] = [`\n📜 执行日志\n━━━━━━━━━━━━━━━━━━━━━━\n执行ID: ${executionId}`];
   if (completedAt) {
-    lines.push(`完成时间: ${formatLocalTime(completedAt)} | 状态: ${status}`);
+    const statusIcon = status === "success" ? "✅" :
+                       status === "failed" ? "❌" :
+                       status === "cancelled" ? "🛑" : "⚠️";
+    lines.push(`完成时间: ${formatLocalTime(completedAt)} | 状态: ${statusIcon} ${status}`);
   }
+  lines.push("━━━━━━━━━━━━━━━━━━━━━━\n");
   lines.push("");
   lines.push("=" .repeat(80));
 
@@ -1410,6 +1444,7 @@ interface ParseState {
   extensionsByName: Record<string, ExtensionProgressInfo>;
   gapCount: number;
   ciFixCount: number;
+  hasFailure: boolean;  // Track if any stage or extension failed during execution
 }
 
 function parseAndAggregateLogs(
@@ -1426,6 +1461,7 @@ function parseAndAggregateLogs(
   const extensionsByName: Record<string, ExtensionProgressInfo> = initialState?.extensionsByName ?? {};
   let gapCount = initialState?.gapCount ?? 0;
   let ciFixCount = initialState?.ciFixCount ?? 0;
+  let hasFailure = initialState?.hasFailure ?? false;  // Track if any stage/extension failed
 
   // Note: pipeline type is determined dynamically in the loop when pipelineInfo is set
 
@@ -1450,6 +1486,7 @@ function parseAndAggregateLogs(
 
       case "chat.error":
         const errorMsg = log.error || content || "未知错误";
+        hasFailure = true;  // Chat error indicates execution failure
         sections.push({ type: "error", content: errorMsg });
         break;
 
@@ -1494,6 +1531,7 @@ function parseAndAggregateLogs(
           const extCount = extensionOrder.length;
           const mergeLabel = extCount > 0 ? `${extCount} 个扩展 → 1 个运行时扩展` : '合并扩展';
           const mergeText = mergeStatus === 'success' ? `✅ ${extName}: ${mergeLabel}完成` : mergeStatus === 'failed' ? `❌ ${extName}: ${mergeLabel}失败` : `⏳ ${extName}: ${mergeLabel}`;
+          if (mergeStatus === 'failed') hasFailure = true;
           sections.push({
             type: "info",
             content: mergeText,
@@ -1504,6 +1542,11 @@ function parseAndAggregateLogs(
         if (scope === 'extension' && extName) {
           // Extension-level progress update
           const extStatus = (log.status || 'pending') as ExtensionProgressStatus;
+
+          // Track extension failures
+          if (extStatus === 'failed' || extStatus === 'timeout' || extStatus === 'rejected') {
+            hasFailure = true;
+          }
 
           // Skip merged_extensions from extension matrix (it's a merge container)
           // Show activation status as info line, not full stage render
@@ -1581,6 +1624,7 @@ function parseAndAggregateLogs(
 
         if (log.stage && !scope && (log.status === 'success' || log.status === 'failed') && !completedStages.includes(log.stage)) {
           completedStages.push(log.stage);
+          if (log.status === 'failed') hasFailure = true;
         }
         // Track current running stage (from any scope="" event)
         if (log.stage && !scope && log.stage !== currentStage) {
@@ -1657,10 +1701,21 @@ function parseAndAggregateLogs(
         if (currentStage && !completedStages.includes(currentStage)) {
           completedStages.push(currentStage);
         }
+
+        let finalStatus: string;
+        const pipelineType = pipelineInfo?.pipeline || log.pipeline || "";
+
+        if (pipelineType === "extended_evolve_pipeline") {
+          finalStatus = completedStages.includes("activate") ? "success" : "failed";
+        } else {
+          // For other pipelines (meta_evolve_pipeline etc): any failure means task failed
+          finalStatus = hasFailure ? "failed" : (log.status || "success");
+        }
+
         sections.push({
           type: "session_finished",
-          content: log.status === "success" ? "任务执行成功" : `任务执行${log.status || "完成"}`,
-          status: log.status,
+          content: finalStatus === "success" ? "任务执行成功" : `任务执行${finalStatus}`,
+          status: finalStatus,
           pipeline: log.pipeline,
         });
         break;
@@ -1713,7 +1768,7 @@ function parseAndAggregateLogs(
     }
   }
 
-  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount } };
+  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount, hasFailure } };
 }
 
 // Format log section for history display (detailed with colors)
@@ -1742,7 +1797,7 @@ const scheduleCancelCommand: SlashCommand = {
 
     if (!task_id) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule cancel <task_id>")
+        addError(ctx.sessionId, "用法: /auto-harness schedule cancel <task_id>\n示例: /auto-harness schedule cancel sch_abc123")
       );
       return;
     }
@@ -1757,7 +1812,7 @@ const scheduleCancelCommand: SlashCommand = {
     }
 
     ctx.addItem(
-      addInfo(ctx.sessionId, `\n任务已取消: ${result.task_id}\n`)
+      addInfo(ctx.sessionId, `\n🛑 任务已取消: ${result.task_id}\n💡 使用 /auto-harness schedule list 查看所有任务\n`)
     );
   },
 };
@@ -1785,7 +1840,7 @@ const scheduleDeleteCommand: SlashCommand = {
 
     if (!task_id) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule delete <task_id>")
+        addError(ctx.sessionId, "用法: /auto-harness schedule delete <task_id>\n示例: /auto-harness schedule delete sch_abc123")
       );
       return;
     }
@@ -1800,7 +1855,7 @@ const scheduleDeleteCommand: SlashCommand = {
     }
 
     ctx.addItem(
-      addInfo(ctx.sessionId, `\n任务已删除: ${result.task_id}\n`)
+      addInfo(ctx.sessionId, `\n🗑️ 任务已删除: ${result.task_id}\n`)
     );
   },
 };
@@ -1824,7 +1879,7 @@ const scheduleCommand: SlashCommand = {
     const subcommand = args.trim().split(/\s+/)[0];
     if (!subcommand) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness schedule <subcommand>\n子命令: start, list, status, logs, cancel, delete")
+        addError(ctx.sessionId, "用法: /auto-harness schedule <子命令> [参数]\n子命令:\n  start   创建定时任务\n  list    列出所有任务\n  status  查看任务详情\n  logs    查看执行日志（实时跟踪或历史）\n  cancel  取消任务\n  delete  删除任务\n示例:\n  /auto-harness schedule list\n  /auto-harness schedule logs sch_abc123")
       );
     }
   },
@@ -1849,7 +1904,7 @@ const runCommand: SlashCommand = {
 
     if (!parsed.query) {
       ctx.addItem(
-        addError(ctx.sessionId, "用法: /auto-harness run [--pipeline <pipeline>] <query>\npipeline: optimize_expert_harness (生成扩展包), optimize_meta_harness (提交 PR)")
+        addError(ctx.sessionId, "用法: /auto-harness run [--pipeline <类型>] <目标>\nPipeline类型:\n  optimize_expert_harness  - 生成扩展包（本地harness package）\n  optimize_meta_harness    - 提交PR（需配置git）\n示例:\n  /auto-harness run 优化数据库查询性能\n  /auto-harness run --pipeline optimize_expert_harness 优化上下文压缩能力")
       );
       return;
     }
@@ -1899,7 +1954,7 @@ const runCommand: SlashCommand = {
       }
     }
 
-    ctx.addItem(addInfo(ctx.sessionId, `\n正在创建一次性任务...\nPipeline: ${pipelineDisplayLabel(pipeline)}\n`, "i"));
+    ctx.addItem(addInfo(ctx.sessionId, `\n🚀 正在创建一次性任务...\nPipeline: ${pipelineDisplayLabel(pipeline)}\n`, "i"));
 
     // Create and execute one-time task
     const result = await ctx.request<{ error?: string; task_id?: string; status?: string; message?: string }>("schedule.run", {
@@ -1915,7 +1970,7 @@ const runCommand: SlashCommand = {
     }
 
     ctx.addItem(
-      addInfo(ctx.sessionId, `\n一次性任务已创建并开始执行\nID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n状态: ${result.status}\n任务后台运行，默认读取实时日志，可以通过 ctrl + c 中断查看\n`)
+      addInfo(ctx.sessionId, `\n🚀 任务已创建并开始执行\n━━━━━━━━━━━━━━━━━━━━━━\n任务ID: ${result.task_id}\nPipeline: ${pipelineDisplayLabel(pipeline)}\n状态: ${result.status}\n━━━━━━━━━━━━━━━━━━━━━━\n💡 正在进入实时日志跟踪模式...\n   按 Ctrl+C 可中断日志查看，任务将继续后台运行\n`)
     );
 
     // Start streaming logs
@@ -1945,7 +2000,7 @@ export function createAutoHarnessCommand(): SlashCommand {
       const text = args.trim();
       if (!text) {
         ctx.addItem(
-          addError(ctx.sessionId, "用法: /auto-harness <run|schedule>\n子命令: run, schedule")
+          addError(ctx.sessionId, "用法: /auto-harness <run|schedule> [参数]\n子命令:\n  run       创建并执行一次性任务\n  schedule  管理定时任务\n示例:\n  /auto-harness run 优化上下文压缩能力\n  /auto-harness schedule list\n  /auto-harness schedule logs <task_id>")
         );
       }
     },
