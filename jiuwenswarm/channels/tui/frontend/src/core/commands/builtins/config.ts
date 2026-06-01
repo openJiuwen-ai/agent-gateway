@@ -407,45 +407,69 @@ export function createConfigCommand(): SlashCommand {
       },
       {
         name: "list",
-        description: "List all configurable items",
+        description: "Interactive configuration editor",
         kind: CommandKind.BUILT_IN,
         takesArgs: false,
         action: async (ctx) => {
-          let payload: Record<string, unknown> & { schema?: ConfigItemSchema[] };
-          try {
-            payload = await ctx.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
-              "config.get",
-              {},
-            );
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            ctx.addItem(addError(ctx.sessionId, `failed to load config: ${message}`));
-            return;
-          }
-          const schemaList = payload.schema ?? [];
-          const groups = groupConfigSchemaByGroup(schemaList);
-          const items: Array<{ label: string; value?: string; description?: string }> = [];
-          for (const [groupName, schemas] of Object.entries(groups)) {
-            items.push({ label: `── ${groupName} ──`, description: "" });
-            for (const schema of schemas) {
-              const currentValue = String(payload[schema.key] ?? "");
+          if (ctx.enterConfigEditor) {
+            let payload: Record<string, unknown> & { schema?: ConfigItemSchema[] };
+            try {
+              payload = await ctx.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
+                "config.get",
+                {},
+              );
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              ctx.addItem(addError(ctx.sessionId, `failed to load config: ${message}`));
+              return;
+            }
+            const mergedPayload: Record<string, unknown> & { schema?: ConfigItemSchema[] } = {
+              ...payload,
+              schema: [...(payload.schema ?? []), ...FRONTEND_SCHEMAS],
+            };
+            for (const schema of FRONTEND_SCHEMAS) {
+              if (mergedPayload[schema.key] === undefined) {
+                mergedPayload[schema.key] = getFrontendValue(ctx, schema.key);
+              }
+            }
+            ctx.enterConfigEditor(undefined, mergedPayload);
+          } else {
+            // Fallback: show text-based config list
+            let payload: Record<string, unknown> & { schema?: ConfigItemSchema[] };
+            try {
+              payload = await ctx.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
+                "config.get",
+                {},
+              );
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              ctx.addItem(addError(ctx.sessionId, `failed to load config: ${message}`));
+              return;
+            }
+            const schemaList = payload.schema ?? [];
+            const groups = groupConfigSchemaByGroup(schemaList);
+            const items: Array<{ label: string; value?: string; description?: string }> = [];
+            for (const [groupName, schemas] of Object.entries(groups)) {
+              items.push({ label: `── ${groupName} ──`, description: "" });
+              for (const schema of schemas) {
+                const currentValue = String(payload[schema.key] ?? "");
+                items.push({
+                  label: schema.key,
+                  value: schema.sensitive ? maskSensitive(currentValue) : currentValue,
+                  description: schema.description ?? schema.label,
+                });
+              }
+            }
+            items.push({ label: "── Theme ──", description: "" });
+            for (const schema of FRONTEND_SCHEMAS) {
               items.push({
                 label: schema.key,
-                value: schema.sensitive ? maskSensitive(currentValue) : currentValue,
+                value: getFrontendValue(ctx, schema.key),
                 description: schema.description ?? schema.label,
               });
             }
+            ctx.addItem(addInfo(ctx.sessionId, "All config items", "c", { view: "kv", title: "Config Items", items }));
           }
-          // Append frontend-only items
-          items.push({ label: "── Theme ──", description: "" });
-          for (const schema of FRONTEND_SCHEMAS) {
-            items.push({
-              label: schema.key,
-              value: getFrontendValue(ctx, schema.key),
-              description: schema.description ?? schema.label,
-            });
-          }
-          ctx.addItem(addInfo(ctx.sessionId, "All config items", "c", { view: "kv", title: "Config Items", items }));
         },
       },
       {
@@ -536,7 +560,32 @@ export function createConfigCommand(): SlashCommand {
     ],
     action: async (ctx, args) => {
       if (!args.trim()) {
-        await showConfigOverview(ctx);
+        // Open interactive config editor (like /config edit) instead of just showing text
+        if (ctx.enterConfigEditor) {
+          let payload: Record<string, unknown> & { schema?: ConfigItemSchema[] };
+          try {
+            payload = await ctx.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
+              "config.get",
+              {},
+            );
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            ctx.addItem(addError(ctx.sessionId, `failed to load config: ${message}`));
+            return;
+          }
+          const mergedPayload: Record<string, unknown> & { schema?: ConfigItemSchema[] } = {
+            ...payload,
+            schema: [...(payload.schema ?? []), ...FRONTEND_SCHEMAS],
+          };
+          for (const schema of FRONTEND_SCHEMAS) {
+            if (mergedPayload[schema.key] === undefined) {
+              mergedPayload[schema.key] = getFrontendValue(ctx, schema.key);
+            }
+          }
+          ctx.enterConfigEditor(undefined, mergedPayload);
+        } else {
+          await showConfigOverview(ctx);
+        }
         return;
       }
       const key = args.trim();
