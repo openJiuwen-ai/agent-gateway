@@ -165,7 +165,7 @@ function _handleAgentModeToolResult(
     if (existingMode === "code.plan") {
       delegate.setMode("code.normal");
     } else if (existingMode === "team.plan") {
-      delegate.setMode("team.plan");
+      delegate.setMode("team");
     } else if (existingMode === "agent.plan") {
       delegate.setMode("agent.fast");
     }
@@ -206,7 +206,7 @@ function _handleAgentModeToolResult(
   const existingMode = delegate.getMode();
   let newMode: ClientMode | null = null;
   if (existingMode.startsWith("code.")) {
-    newMode = subMode === "plan" ? "code.plan" : subMode === "team" ? "code.team" : "code.normal";
+    newMode = subMode === "team" ? "code.team" : "code.normal";
   } else if (existingMode.startsWith("agent.")) {
     newMode = subMode === "plan" ? "agent.plan" : "agent.fast";
   }
@@ -222,6 +222,12 @@ function _getToolResultPayload(payload: Record<string, unknown>): Record<string,
     return nested as Record<string, unknown>;
   }
   return payload;
+}
+
+function normalizeVisibleMode(mode: ClientMode): ClientMode {
+  if (mode === "code.plan") return "code.normal";
+  if (mode === "team.plan") return "team";
+  return mode;
 }
 
 function _extractPathFromToolResult(
@@ -1194,7 +1200,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
     case "session.updated": {
       const mode = typeof payload.mode === "string" ? payload.mode : "";
       if (isClientMode(mode)) {
-        delegate.setMode(mode);
+        delegate.setMode(normalizeVisibleMode(mode));
       }
       if (typeof payload.title === "string") {
         delegate.setSessionTitle(payload.title);

@@ -34,7 +34,7 @@ Executed locally in the terminal UI, not through Gateway control pipeline.
 | `/sandbox` | Set sandbox mode (see below) |
 | `/auto-harness` | Auto-Harness task management (`run`/`schedule`, see below) |
 
-> Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below. The TUI local command additionally supports `/mode plan`, `/mode team.normal`, and `/mode team.plan`; see the TUI guide for details.
+> Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below. The TUI local command additionally supports `/mode plan` and `/mode team.normal`; see the TUI guide for details.
 
 ### Gateway / Agent Parsing (Controlled Channel)
 
@@ -108,14 +108,13 @@ Manages directories AI can access for file read, edit, and execute operations.
 - Direct syntax:
   - `/mode agent.plan` -> `agent.plan`
   - `/mode agent.fast` -> `agent.fast`
-  - `/mode code.plan` -> `code.plan`
   - `/mode code.normal` -> `code.normal`
   - `/mode code.team` -> `code.team`
 - Second-level switching:
   - agent family: `/switch plan` <-> `agent.plan`, `/switch fast` <-> `agent.fast`
-  - code family: `/switch plan` <-> `code.plan`, `/switch normal` <-> `code.normal`, `/switch team` <-> `code.team`
+  - code family: `/switch normal` <-> `code.normal`, `/switch team` <-> `code.team`
 - Invalid combinations (e.g., `/switch fast` under `code.*`) return: `Invalid command`.
-- Controlled channels do not accept `/mode plan`, `/mode team.normal`, or `/mode team.plan`.
+- Controlled channels do not accept `/mode plan` or `/mode team.normal`.
 - Note: Standalone `/team` command removed, use `/mode team` instead.
 
 ### `/resume`
@@ -176,7 +175,7 @@ Manages directories AI can access for file read, edit, and execute operations.
   1. Select scope: `Team-shared` (JIUWENSWARM.md), `Personal` (JIUWENSWARM.local.md), or `Both`.
   2. Detect existing configs: Auto-detect `CLAUDE.md`, `.cursorrules`, `copilot-instructions.md` etc.
   3. Generate configs: Create project config files based on selection.
-- Auto mode switch: If in `code.plan`, auto-switches to `code.normal` for write permission.
+- Auto mode switch: Code initialization runs in `code.normal` for write permission.
 
 ### `/mcp` (MCP Server Management)
 
@@ -595,7 +594,7 @@ The command receives the following JSON data on each execution:
 | `session_id` | Current session ID |
 | `session_name` | Session title (set via `/rename`) |
 | `cwd` | Current working directory |
-| `mode` | Current mode (`agent.plan` / `agent.fast` / `code.plan` / `code.normal` / `code.team` / `team` / `team.plan`) |
+| `mode` | Current mode (`agent.plan` / `agent.fast` / `code.normal` / `code.team` / `team`) |
 | `model` | Current model name |
 | `provider` | Model provider |
 | `version` | jiuwenswarm version |

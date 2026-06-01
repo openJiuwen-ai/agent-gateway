@@ -34,7 +34,7 @@
 | `/sandbox` | 设置沙箱模式（见下文） |
 | `/auto-harness` | Auto-Harness 任务管理（`run`/`schedule`，见下文） |
 
-> 说明：本页的 `/mode` 与 `/switch` 以 Gateway 受控通道行为为主。TUI 本地命令另支持 `/mode plan`、`/mode team.normal`、`/mode team.plan`，详见 [TUI 使用指南](TUI使用指南.md)。
+> 说明：本页的 `/mode` 与 `/switch` 以 Gateway 受控通道行为为主。TUI 本地命令另支持 `/mode plan`、`/mode team.normal`，详见 [TUI 使用指南](TUI使用指南.md)。
 
 ### Gateway / Agent 侧解析（受控通道）
 
@@ -108,14 +108,13 @@
 - 直达写法：
   - `/mode agent.plan` -> `agent.plan`
   - `/mode agent.fast` -> `agent.fast`
-  - `/mode code.plan` -> `code.plan`
   - `/mode code.normal` -> `code.normal`
   - `/mode code.team` -> `code.team`
 - 二级切换：
   - agent 族：`/switch plan` <-> `agent.plan`，`/switch fast` <-> `agent.fast`
-  - code 族：`/switch plan` <-> `code.plan`，`/switch normal` <-> `code.normal`，`/switch team` <-> `code.team`
+  - code 族：`/switch normal` <-> `code.normal`，`/switch team` <-> `code.team`
 - 非法组合（如在 `code.*` 下执行 `/switch fast`）返回：`非法指令`。
-- 受控通道不接受 `/mode plan`、`/mode team.normal`、`/mode team.plan`。
+- 受控通道不接受 `/mode plan`、`/mode team.normal`。
 - 备注：独立 `/team` 命令已移除，请统一使用 `/mode team`。
 
 ### `/resume`
@@ -176,7 +175,7 @@
   1. 选择范围：`团队共享`（JIUWENSWARM.md）、`个人私有`（JIUWENSWARM.local.md）或 `都要`。
   2. 检测已有配置：自动检测 `CLAUDE.md`、`.cursorrules`、`copilot-instructions.md` 等文件。
   3. 生成配置：根据选择生成项目配置文件。
-- 自动模式切换：若当前处于 `code.plan` 模式，会自动切换到 `code.normal` 以便写入文件。
+- 自动模式切换：Code 初始化会使用 `code.normal` 以便写入文件。
 
 ### `/mcp`（MCP 服务管理）
 
@@ -606,7 +605,7 @@
 | `session_id` | 当前会话 ID |
 | `session_name` | 会话标题（通过 `/rename` 设置） |
 | `cwd` | 当前工作目录 |
-| `mode` | 当前模式（`agent.plan` / `agent.fast` / `code.plan` / `code.normal` / `code.team` / `team` / `team.plan`） |
+| `mode` | 当前模式（`agent.plan` / `agent.fast` / `code.normal` / `code.team` / `team`） |
 | `model` | 当前模型名称 |
 | `provider` | 模型提供商 |
 | `version` | jiuwenswarm 版本号 |
