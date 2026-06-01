@@ -252,6 +252,27 @@ function extractToolCallInput(record: Record<string, unknown>): {
   };
 }
 
+function parseShutdownMemberName(value: unknown): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+  const match = value.match(/Member shutdown:\s*member_name=([^\s,]+)/);
+  return match?.[1]?.trim() || '';
+}
+
+function extractShutdownMemberFromToolResult(record: Record<string, unknown>): string {
+  if (record.event_type !== 'chat.tool_result' || !isTeamModeRecord(record)) {
+    return '';
+  }
+  const payload = extractTeamEvent(record) || record;
+  const toolResult = isRecord(payload.tool_result) ? payload.tool_result : payload;
+  const toolName = pickString(toolResult, ['tool_name', 'name']) || pickString(payload, ['tool_name', 'name']);
+  if (toolName !== 'shutdown_member') {
+    return parseShutdownMemberName(toolResult.result);
+  }
+  return parseShutdownMemberName(toolResult.result) || parseShutdownMemberName(toolResult.summary);
+}
+
 function extractTracerInput(record: Record<string, unknown>): {
   name: string;
   args: Record<string, unknown>;
@@ -300,11 +321,17 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   const tasks = new Map<string, TeamTask>();
   const executionEvents = new Map<string, TeamMemberExecutionEvent>();
   const messages: Message[] = [];
+  const shutdownMembers = new Set<string>();
+  let hasSeenMember = false;
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
       return;
     }
+    if (shutdownMembers.has(memberId)) {
+      return;
+    }
+    hasSeenMember = true;
     const existing = members.get(memberId);
     members.set(memberId, {
       id: `hist-member-${memberId}`,
@@ -315,6 +342,14 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       execution_status: existing?.execution_status || 'idle',
       mode: existing?.mode,
     });
+  };
+
+  const applyMemberShutdown = (memberId: string) => {
+    if (!shouldKeepMember(memberId)) {
+      return;
+    }
+    shutdownMembers.add(memberId);
+    members.delete(memberId);
   };
 
   const upsertTask = (
@@ -367,8 +402,14 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     timestamp: number,
     memberId: string
   ) => {
+    if (name === 'shutdown_member') {
+      applyMemberShutdown(pickString(args, ['member_name', 'member_id', 'name']) || memberId);
+      return;
+    }
     if (name === 'spawn_member') {
-      addMember(pickString(args, ['member_name', 'member_id', 'name']) || memberId, timestamp);
+      const spawnedMemberId = pickString(args, ['member_name', 'member_id', 'name']) || memberId;
+      shutdownMembers.delete(spawnedMemberId);
+      addMember(spawnedMemberId, timestamp);
       return;
     }
     if (name === 'create_task') {
@@ -533,6 +574,11 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       applyToolInput(toolCall.name, toolCall.args, timestamp, memberId);
       continue;
     }
+    const shutdownMember = extractShutdownMemberFromToolResult(record);
+    if (shutdownMember) {
+      applyMemberShutdown(shutdownMember);
+      continue;
+    }
     const tracerInput = extractTracerInput(record);
     if (tracerInput) {
       applyToolInput(tracerInput.name, tracerInput.args, timestamp, memberId);
@@ -574,6 +620,22 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       if (!memberId) {
         continue;
       }
+      if (pickString(event, ['type']) === 'team.member.shutdown') {
+        applyMemberShutdown(memberId);
+        continue;
+      }
+      const memberEventType = pickString(event, ['type']);
+      if (
+        shutdownMembers.has(memberId) &&
+        memberEventType !== 'team.member.spawned' &&
+        memberEventType !== 'team.member.restarted'
+      ) {
+        continue;
+      }
+      shutdownMembers.delete(memberId);
+      if (shouldKeepMember(memberId)) {
+        hasSeenMember = true;
+      }
       members.set(memberId, {
         id: `hist-member-${memberId}`,
         member_id: memberId,
@@ -612,6 +674,16 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       updated_at: (event.updated_at as number | string | null | undefined) ?? eventTimestamp,
     });
     upsertTask(event, eventTimestamp, status);
+  }
+
+  if (hasSeenMember && members.size === 0) {
+    return {
+      members: [],
+      tasks: [],
+      taskEvents: [],
+      executionEvents: [],
+      messages: [],
+    };
   }
 
   return {

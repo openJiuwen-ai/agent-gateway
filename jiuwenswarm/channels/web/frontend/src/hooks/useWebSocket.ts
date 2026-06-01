@@ -169,6 +169,32 @@ function normalizeTaskRecord(
   };
 }
 
+function parseShutdownMemberName(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const match = value.match(/Member shutdown:\s*member_name=([^\s,]+)/);
+  return match?.[1]?.trim() || undefined;
+}
+
+function getShutdownMemberFromToolCall(toolCall: ToolCall): string | undefined {
+  if (toolCall.name !== 'shutdown_member') {
+    return undefined;
+  }
+  return pickString(
+    toolCall.arguments.member_name,
+    toolCall.arguments.member_id,
+    toolCall.arguments.name
+  );
+}
+
+function getShutdownMemberFromToolResult(toolResult: ToolResult): string | undefined {
+  if (toolResult.toolName !== 'shutdown_member') {
+    return parseShutdownMemberName(toolResult.result);
+  }
+  return parseShutdownMemberName(toolResult.result) || parseShutdownMemberName(toolResult.summary);
+}
+
 function upsertTaskRecords(values: unknown, fallbackStatus: TeamTaskStatus = 'pending') {
   if (!Array.isArray(values)) {
     const task = normalizeTaskRecord(values, fallbackStatus);
@@ -390,6 +416,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const sendMessageRef = useRef<typeof sendMessage>();
   const recentEventRef = useRef<Map<string, number>>(new Map());
   const teamToolCallMemberRef = useRef<Map<string, string>>(new Map());
+  const shutdownMemberToolCallRef = useRef<Map<string, string>>(new Map());
+  const clearedTeamPanelSessionRef = useRef<string | null>(null);
   const teamMemberOutputEventRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
   const contextCompressionSummaryRef = useRef<ContextCompressionSummary>({
@@ -676,6 +704,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useHarnessStore.getState().reset();
       }
       if (currentMode === 'team') {
+        if (clearedTeamPanelSessionRef.current === sessionId) {
+          clearedTeamPanelSessionRef.current = null;
+        }
         setPaused(false);
       }
       try {
@@ -1045,6 +1076,36 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   );
 
   useEffect(() => {
+    const applyTeamMemberShutdown = (memberId: string, sessionId?: string) => {
+      const normalizedMemberId = memberId.trim();
+      if (!normalizedMemberId) {
+        return;
+      }
+      const sessionStore = useSessionStore.getState();
+      const nextMembers = sessionStore.teamMembers.filter(
+        (member) => member.member_id !== normalizedMemberId
+      );
+      if (nextMembers.length === sessionStore.teamMembers.length) {
+        return;
+      }
+      sessionStore.setTeamMembers(nextMembers);
+      if (nextMembers.length === 0) {
+        clearedTeamPanelSessionRef.current = sessionId || null;
+        clearTodos();
+        const currentSessionStore = useSessionStore.getState();
+        currentSessionStore.setTeamMembers([]);
+        currentSessionStore.setTeamTaskEvents([]);
+        currentSessionStore.setTeamTasks([]);
+        currentSessionStore.setTeamMemberExecutionEvents([]);
+        currentSessionStore.setTeamHistoryMessages([]);
+      }
+    };
+
+    const isTeamPanelClearedForPayload = (payload: Record<string, unknown>) => {
+      const sessionId = getPayloadSessionId(payload) || activeSessionIdRef.current || undefined;
+      return Boolean(sessionId && clearedTeamPanelSessionRef.current === sessionId);
+    };
+
     const unsubs = [
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
@@ -1334,8 +1395,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const currentMode = useSessionStore.getState().mode;
         clearThinkingForVisibleOutput();
         const toolCall = normalizeToolCallPayload(payload);
+        const shutdownMemberId = getShutdownMemberFromToolCall(toolCall);
+        if (shutdownMemberId) {
+          shutdownMemberToolCallRef.current.set(toolCall.id, shutdownMemberId);
+        }
         if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
-          if (currentMode === 'team') {
+          if (currentMode === 'team' && !isTeamPanelClearedForPayload(payload)) {
             applyTeamTaskToolCall(toolCall);
           }
           const memberId = getTeamPayloadMemberName(payload) || toolCall.memberName;
@@ -1368,7 +1433,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? { startedAt: currentStreamMessage.timestamp }
             : undefined
         );
-        if (currentMode === 'team') {
+        if (currentMode === 'team' && !isTeamPanelClearedForPayload(payload)) {
           applyTeamTaskToolCall(toolCall);
         }
       }),
@@ -1377,6 +1442,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().mode;
         const toolResult = normalizeToolResultPayload(payload);
+        const activeSessionId = getPayloadSessionId(payload) || activeSessionIdRef.current || undefined;
+        const shutdownMemberId =
+          (toolResult.toolCallId
+            ? shutdownMemberToolCallRef.current.get(toolResult.toolCallId)
+            : undefined) ||
+          getShutdownMemberFromToolResult(toolResult);
         if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) {
           const memberId =
             getTeamPayloadMemberName(payload) ||
@@ -1394,13 +1465,34 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               tool_call_id: toolResult.toolCallId,
             });
           }
+          if (shutdownMemberId) {
+            if (toolResult.toolCallId) {
+              shutdownMemberToolCallRef.current.delete(toolResult.toolCallId);
+            }
+            applyTeamMemberShutdown(
+              shutdownMemberId,
+              activeSessionId
+            );
+          }
           return;
+        }
+        if (shutdownMemberId) {
+          if (toolResult.toolCallId) {
+            shutdownMemberToolCallRef.current.delete(toolResult.toolCallId);
+          }
+          applyTeamMemberShutdown(
+            shutdownMemberId,
+            activeSessionId
+          );
         }
         addToolResult(toolResult);
       }),
       webClient.on('todo.updated', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
         if (shouldDropDuplicatedEvent('todo.updated', payload)) return;
+        if (isTeamPanelClearedForPayload(payload)) {
+          return;
+        }
         const todos = Array.isArray(payload.todos) ? payload.todos : [];
         setTodos(todos as Parameters<typeof setTodos>[0]);
       }),
@@ -1665,6 +1757,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('team.task', payload)) {
           return;
         }
+        if (isTeamPanelClearedForPayload(payload)) {
+          return;
+        }
         clearThinkingForVisibleOutput();
         const p = payload as { payload?: { event?: unknown }; event?: unknown };
         const event = p.payload?.event || p.event;
@@ -1722,13 +1817,33 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             execution_status?: string | null;
             mode?: string;
           };
-          if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
+          const activeSessionId = getPayloadSessionId(payload) || activeSessionIdRef.current || undefined;
+          if (e.type === 'team.member.shutdown' && e.member_id) {
+            applyTeamMemberShutdown(e.member_id, activeSessionId);
+          } else if (activeSessionId && clearedTeamPanelSessionRef.current === activeSessionId) {
+            return;
+          } else if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               e.member_id,
               e.new_status,
               e.timestamp
             );
-          } else {
+          } else if (e.type === 'team.member.execution_changed' && e.member_id) {
+            const existingMember = useSessionStore.getState().teamMembers.some(
+              (member) => member.member_id === e.member_id
+            );
+            if (existingMember) {
+              useSessionStore.getState().addTeamMember({
+                id: `member-${Date.now()}`,
+                member_id: e.member_id,
+                status: e.status || '',
+                timestamp: e.timestamp || Date.now(),
+                name: e.name,
+                execution_status: e.execution_status || e.new_status,
+                mode: e.mode,
+              });
+            }
+          } else if (!e.type || e.type === 'team.member.spawned' || e.type === 'team.member.restarted') {
             useSessionStore.getState().addTeamMember({
               id: `member-${Date.now()}`,
               member_id: e.member_id || '',
@@ -1941,6 +2056,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     appendTeamMemberOutputDelta,
     appendStreamContent,
     clearSubtasks,
+    clearTodos,
     finishContextCompressionTurn,
     handleConnectionAck,
     handleContextCompressionState,
