@@ -17,6 +17,7 @@ import yaml
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import get_config_dir, logger
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
@@ -210,6 +211,8 @@ class RuntimePromptRail(DeepAgentRail):
         shell_name = os.path.basename(shell_path) if shell_path else "unknown"
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
+        env_language = "cn" if not self._force_english and self._language == "cn" else "en"
+        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
 
         if not self._force_english and self._language == "cn":
             env_content = (
@@ -217,6 +220,7 @@ class RuntimePromptRail(DeepAgentRail):
                 f"- 当前运行平台：`{os_type}`\n"
                 f"- Shell：{shell_name}\n"
                 f"- OS 版本：{os_version}\n\n"
+                f"{shell_env_prompt}\n\n"
                 "## 平台命令差异（仅在必须使用 shell 时参考）\n\n"
                 "以下命令差异仅适用于测试、构建、git、包管理、运行脚本等必须调用 shell 的场景。"
                 "文件读取、编辑、搜索仍应优先使用专用工具。\n\n"
@@ -230,9 +234,11 @@ class RuntimePromptRail(DeepAgentRail):
                 "| 查找文件 | `dir /s pattern` 或 PowerShell "
                 "`Get-ChildItem -Recurse -Filter pattern` "
                 "| `find . -name pattern` |\n\n"
-                "**特别注意**：Windows 的 `mkdir` 不支持 `-p` 参数！"
-                "在 Windows 上使用 `mkdir -p folder` 会错误创建名为 `-p` 的目录。"
-                "如需创建嵌套目录，请使用 PowerShell `New-Item -ItemType Directory -Path \"parent/child\" -Force`，"
+                "**特别注意**：Windows 的 cmd/PowerShell `mkdir` 不支持 `-p` 参数；"
+                "只有在 Shell 能力显示 Git Bash/PATH bash 可用且实际使用 bash/Git Bash 时，"
+                "`mkdir -p` 才是合适的。"
+                "如需在 cmd/PowerShell 中创建嵌套目录，请使用 PowerShell "
+                "`New-Item -ItemType Directory -Path \"parent/child\" -Force`，"
                 "或使用 cmd 分步创建 `mkdir parent && mkdir parent\\child`。"
             )
         else:
@@ -241,6 +247,7 @@ class RuntimePromptRail(DeepAgentRail):
                 f"- Current platform: `{os_type}`\n"
                 f"- Shell: {shell_name}\n"
                 f"- OS Version: {os_version}\n\n"
+                f"{shell_env_prompt}\n\n"
                 "## Platform Command Differences (only when shell is required)\n\n"
                 "The following command differences apply only to scenarios where shell execution is required "
                 "(testing, builds, git, package management, running scripts). "
@@ -255,9 +262,10 @@ class RuntimePromptRail(DeepAgentRail):
                 "| Find file | `dir /s pattern` or PowerShell "
                 "`Get-ChildItem -Recurse -Filter pattern` "
                 "| `find . -name pattern` |\n\n"
-                "**WARNING**: Windows `mkdir` does NOT support the `-p` flag! "
-                "Using `mkdir -p folder` on Windows will incorrectly create a directory named `-p`. "
-                "To create nested directories on Windows, use either PowerShell "
+                "**WARNING**: Windows cmd/PowerShell `mkdir` does NOT support the `-p` flag; "
+                "`mkdir -p` is appropriate only when Shell capabilities show Git Bash/PATH bash "
+                "is available and you are actually using bash/Git Bash. "
+                "To create nested directories in cmd/PowerShell, use either PowerShell "
                 "`New-Item -ItemType Directory -Path \"parent/child\" -Force` "
                 "or cmd with step-by-step creation `mkdir parent && mkdir parent\\\\child`."
             )

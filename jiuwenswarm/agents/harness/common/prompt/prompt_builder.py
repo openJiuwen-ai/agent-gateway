@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+import sys
 from enum import IntEnum
 from typing import Optional
-import sys
 
 from openjiuwen.harness.prompts import SystemPromptBuilder, PromptSection, resolve_language
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import logger
 
 from jiuwenswarm.common.utils import (
@@ -115,6 +116,7 @@ def _identity_prompt(language: str) -> PromptSection:
     skills_dir = get_agent_skills_dir()
     todo_dir = get_deepagent_todo_dir()
     os_type = sys.platform
+    shell_env_prompt = build_shell_environment_prompt(language, os_type)
 
     if language == "cn":
         content = f"""你是一个私人智能体，由 JiuwenSwarm 创建。像一个有温度的人类助手一样与用户互动。
@@ -146,6 +148,8 @@ def _identity_prompt(language: str) -> PromptSection:
 
 当前运行平台：`{os_type}`
 
+{shell_env_prompt}
+
 **重要提示**：必须严格使用与当前平台匹配的命令语法，切勿使用其他平台的命令格式。
 
 常见命令差异对照：
@@ -159,7 +163,7 @@ def _identity_prompt(language: str) -> PromptSection:
 | 删除目录 | `rmdir folder` 或 PowerShell `Remove-Item -Recurse folder` | `rm -rf folder` |
 | 查找文件 | `dir /s pattern` 或 PowerShell `Get-ChildItem -Recurse -Filter pattern` | `find . -name pattern` |
 
-**特别注意**：Windows 的 `mkdir` 不支持 `-p` 参数！在 Windows 上使用 `mkdir -p folder` 会错误创建名为 `-p` 的目录。如需创建嵌套目录，请使用 PowerShell `New-Item -ItemType Directory -Path "parent/child" -Force`，或使用 cmd 分步创建 `mkdir parent && mkdir parent\\child`。
+**特别注意**：Windows 的 cmd/PowerShell `mkdir` 不支持 `-p` 参数；只有在 Shell 能力显示 Git Bash/PATH bash 可用且实际使用 bash/Git Bash 时，`mkdir -p` 才是合适的。如需在 cmd/PowerShell 中创建嵌套目录，请使用 PowerShell `New-Item -ItemType Directory -Path "parent/child" -Force`，或使用 cmd 分步创建 `mkdir parent && mkdir parent\\child`。
 
 ## 输出文件放置规范
 执行用户任务时产生的生成产物（如代码文件、文档、数据文件等），若用户未指定存放位置，请遵循以下规则：
@@ -206,6 +210,8 @@ Be careful with your configuration. If changes are required, remember to restart
 
 Current platform: `{os_type}`
 
+{shell_env_prompt}
+
 **Important**: You MUST strictly use command syntax matching the current platform. Never use command formats from other platforms.
 
 Common command differences:
@@ -219,7 +225,7 @@ Common command differences:
 | Delete directory | `rmdir folder` or PowerShell `Remove-Item -Recurse folder` | `rm -rf folder` |
 | Find file | `dir /s pattern` or PowerShell `Get-ChildItem -Recurse -Filter pattern` | `find . -name pattern` |
 
-**WARNING**: Windows `mkdir` does NOT support the `-p` flag! Using `mkdir -p folder` on Windows will incorrectly create a directory named `-p`. To create nested directories on Windows, use either PowerShell `New-Item -ItemType Directory -Path "parent/child" -Force` or cmd with step-by-step creation `mkdir parent && mkdir parent\\child`.
+**WARNING**: Windows cmd/PowerShell `mkdir` does NOT support the `-p` flag; `mkdir -p` is appropriate only when Shell capabilities show Git Bash/PATH bash is available and you are actually using bash/Git Bash. To create nested directories in cmd/PowerShell, use either PowerShell `New-Item -ItemType Directory -Path "parent/child" -Force` or cmd with step-by-step creation `mkdir parent && mkdir parent\\child`.
 
 ## Output File Placement
 Generated artifacts (code files, documents, data files, etc.) produced during user task execution should follow these placement rules unless the user specifies otherwise:
