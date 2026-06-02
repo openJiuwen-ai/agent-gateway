@@ -3364,7 +3364,7 @@ export class AppScreen implements Component, Focusable {
       return null;
     }
 
-    const parsed = parseSlashCommand(text, this.commands.getAll(true));
+    const parsed = parseSlashCommand(text, this.commands.getAll());
     if (!parsed.command) {
       return null;
     }
@@ -3483,7 +3483,7 @@ export class AppScreen implements Component, Focusable {
   private buildSlashCommands(): TuiSlashCommand[] {
     const hasAnyCompletion = (cmd: SlashCommand): boolean =>
       !!cmd.completion || (cmd.subCommands?.some(hasAnyCompletion) ?? false);
-    return this.commands.getAll(true).map((command) => ({
+    return this.commands.getAll().map((command) => ({
       name: command.name,
       description: command.description,
       getArgumentCompletions: hasAnyCompletion(command)
