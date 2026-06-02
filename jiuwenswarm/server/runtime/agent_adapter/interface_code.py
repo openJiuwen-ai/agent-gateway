@@ -77,7 +77,6 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "SysOperationRail": "_build_filesystem_rail",
     "FileSystemRail": "_build_filesystem_rail",     # 别名映射
     "SkillUseRail": "_build_skill_rail_via_config",
-    "LspRail": "_build_lsp_rail_via_config",
     "HeartbeatRail": "_build_heartbeat_rail",
     "AvatarPromptRail": "_build_avatar_rail",
     "TaskPlanningRail": "_build_task_planning_rail",
@@ -521,8 +520,17 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         try:
             lsp_rail = LspRail(InitializeOptions(cwd=workspace_dir))
             logger.info("[JiuwenClawCodeAdapter] LspRail create success")
+        except ImportError as exc:
+            logger.warning("[JiuwenClawCodeAdapter] LspRail create failed: [config_error] %s", exc)
+            lsp_rail = None
+        except FileNotFoundError as exc:
+            logger.warning("[JiuwenClawCodeAdapter] LspRail create failed: [server_start_failed] %s", exc)
+            lsp_rail = None
+        except OSError as exc:
+            logger.warning("[JiuwenClawCodeAdapter] LspRail create failed: [server_start_failed] %s", exc)
+            lsp_rail = None
         except Exception as exc:
-            logger.warning("[JiuwenClawCodeAdapter] LspRail create failed: %s", exc)
+            logger.warning("[JiuwenClawCodeAdapter] LspRail create failed: [unknown] %s", exc)
             lsp_rail = None
         return lsp_rail
 
