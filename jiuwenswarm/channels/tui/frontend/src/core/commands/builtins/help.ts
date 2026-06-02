@@ -14,10 +14,6 @@ const COMMAND_GROUPS: Record<string, { name: string; commands: string[] }> = {
     name: "Model",
     commands: ["model", "theme", "color"],
   },
-  evolution: {
-    name: "Evolution",
-    commands: ["evolve", "evolve_list", "evolve_rebuild", "evolve_simplify"],
-  },
   mcp: {
     name: "MCP",
     commands: ["mcp"],
@@ -28,7 +24,7 @@ const COMMAND_GROUPS: Record<string, { name: string; commands: string[] }> = {
   },
   config: {
     name: "Config",
-    commands: ["config", "permissions", "workspace", "diff", "plan"],
+    commands: ["config", "workspace", "diff", "plan"],
   },
 };
 

@@ -17,6 +17,7 @@ export function createRecapCommand(): SlashCommand {
     usage: "/recap",
     example: "/recap",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: false,
     action: async (ctx) => {
       ctx.addItem(addInfo(ctx.sessionId, "Recaping...", "⏳"));

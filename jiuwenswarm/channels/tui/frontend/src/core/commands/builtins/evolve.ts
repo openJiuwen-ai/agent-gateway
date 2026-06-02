@@ -12,6 +12,7 @@ export function createEvolveCommand(): SlashCommand {
     usage: "/evolve [list | <skill_name> [<user_query>...]]",
     example: "/evolve pptx improve error handling",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: (ctx, args) => {
       const skillArg = args.trim();
@@ -39,6 +40,7 @@ export function createEvolveListCommand(): SlashCommand {
     usage: "/evolve_list <skill_name> [--sort score]",
     example: "/evolve_list pptx --sort score",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: (ctx, args) => {
       const parsedArgs = parseArgs(args);
@@ -77,6 +79,7 @@ export function createEvolveSimplifyCommand(): SlashCommand {
     usage: "/evolve_simplify <skill_name> [--dry-run]",
     example: "/evolve_simplify pptx --dry-run",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: (ctx, args) => {
       const parsedArgs = parseArgs(args);
@@ -115,6 +118,7 @@ export function createEvolveRebuildCommand(): SlashCommand {
     usage: "/evolve_rebuild <skill_name> [<user_query>...]",
     example: "/evolve_rebuild pptx improve error handling",
     kind: CommandKind.BUILT_IN,
+    hidden: true,
     takesArgs: true,
     action: (ctx, args) => {
       const parsedArgs = parseArgs(args);
