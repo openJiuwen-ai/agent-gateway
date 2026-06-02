@@ -531,7 +531,26 @@ nohup "{install_dir}/jiuwenswarm" >/dev/null 2>&1 &
 
         self.processes.clear()
 
+    @staticmethod
+    def _clear_wkwebview_system_cache() -> None:
+        """Clear WKWebView HTTP cache directory.
+
+        On macOS, WKWebView caches HTTP responses (JS/CSS etc.) in
+        ~/Library/Caches/<bundle_id>/, independent of pywebview's storage_path.
+        These cached frontend assets can persist across different DMG versions,
+        causing stale UI. Only Caches is cleared to preserve localStorage/IndexedDB
+        stored in ~/Library/WebKit/<bundle_id>/.
+        """
+        if sys.platform != "darwin":
+            return
+        cache_dir = Path.home() / "Library" / "Caches" / "com.jiuwenswarm.desktop"
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            logger.info("[desktop] cleared WKWebView HTTP cache: %s", cache_dir)
+
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
+        self._clear_wkwebview_system_cache()
+
         storage_path = get_user_workspace_dir() / "tmp" / "webview"
         if storage_path.exists():
             shutil.rmtree(storage_path)
