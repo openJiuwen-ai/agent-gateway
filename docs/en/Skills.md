@@ -54,13 +54,13 @@ User request → agent identifies need → load matched skill → execute workfl
 
 JiuwenSwarm supports multiple sources:
 
-| Source | Description | Characteristics |
-|------|------|------|
+| Source | Description                                                                     | Characteristics |
+|------|---------------------------------------------------------------------------------|------|
 | **Built-in skills** | Core skills shipped with the product; you still install them from the Skills UI | Matches the product release |
-| **SkillNet** | A general AI skill management and connection platform | Anonymous usage allowed; configuring a GitHub token improves API quota and stability |
-| **ClawHub** | Skill “app store” in the OpenClaw ecosystem | Search and install in the web UI; https://clawhub.ai/skills |
-| **Marketplace** | Third-party marketplace sources | Add the source URL first; community-contributed |
-| **Local import** | User-authored skill files | Fully customizable; ideal for development/debug |
+| **SkillNet** | A general AI skill management and connection platform                           | Anonymous usage allowed; configuring a GitHub token improves API quota and stability |
+| **ClawHub** | Skill “app store” in the JiuwenSwarm ecosystem                                  | Search and install in the web UI; https://clawhub.ai/skills |
+| **Marketplace** | Third-party marketplace sources                                                 | Add the source URL first; community-contributed |
+| **Local import** | User-authored skill files                                                       | Fully customizable; ideal for development/debug |
 
 > **Security notice:** Skills may involve file modification, command execution, or external service calls. Always check source and description first; prefer trusted sources.
 
