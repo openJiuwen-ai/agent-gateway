@@ -105,8 +105,8 @@ export function HarnessPackagePanel({ sessionId }: HarnessPackagePanelProps) {
 
   // Initial load - scan packages directory (refresh) on mount
   useEffect(() => {
-    scanPackages();
-  }, [scanPackages]);
+    fetchPackages();
+  }, [fetchPackages]);
 
   // Get selected package info
   const getSelectedPackage = useCallback((): PackageInfo | null => {
