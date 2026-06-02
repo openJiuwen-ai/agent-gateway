@@ -1876,6 +1876,7 @@ function TeamItemSection({
                     onChange={(e) => updateLeader(field, e.target.value)}
                     className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                   >
+                    <option value="" disabled hidden>-- Select Agent --</option>
                     <option value="" disabled>-- Select Agent --</option>
                     {agents.map((agent) => {
                       const refs = getAgentTeamReferences(agent.name);
@@ -1933,6 +1934,7 @@ function TeamItemSection({
                     onChange={(e) => updateTeammate(field, e.target.value)}
                     className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                   >
+                    <option value="" disabled hidden>-- Select Agent --</option>
                     <option value="" disabled>-- Select Agent --</option>
                     {agents.map((agent) => {
                       const refs = getAgentTeamReferences(agent.name);
@@ -2012,6 +2014,7 @@ function TeamItemSection({
                               onChange={(e) => updateMember(idx, field, e.target.value)}
                               className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                             >
+                              <option value="" disabled hidden>-- Select Agent --</option>
                               <option value="" disabled>-- Select Agent --</option>
                               {agents.map((agent) => {
                                 const refs = getAgentTeamReferences(agent.name);
@@ -2058,6 +2061,7 @@ function TeamItemSection({
                         onChange={(e) => updateNewMember(field, e.target.value)}
                         className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                       >
+                        <option value="" disabled hidden>-- Select Agent --</option>
                         <option value="" disabled>-- Select Agent --</option>
                         {agents.map((agent) => {
                           const refs = getAgentTeamReferences(agent.name);
@@ -2272,7 +2276,7 @@ export function ConfigPanel({
   const [draftModels, setDraftModels] = useState<ModelEntry[]>(() => storeAvailableModels.map((m) => ({ ...m })));
 
   // 从 localStorage 加载缓存的 agents 和 teams
-  const loadCachedAgentsTeams = (): { agents: AgentEntry[]; teams: TeamEntry[] } | null => {
+  const loadCachedAgentsTeams = (): { agents: AgentEntry[]; teams: TeamEntry[]; edited?: boolean } | null => {
     try {
       const cached = localStorage.getItem('jiuwenclaw_agents_teams_cache');
       if (cached) {
@@ -2287,7 +2291,7 @@ export function ConfigPanel({
   // 仅缓存当前页面未保存的 agents 和 teams 草稿；后端配置始终是页面初始化来源。
   const saveCachedAgentsTeams = (agents: AgentEntry[], teams: TeamEntry[]) => {
     try {
-      localStorage.setItem('jiuwenclaw_agents_teams_cache', JSON.stringify({ agents, teams }));
+      localStorage.setItem('jiuwenclaw_agents_teams_cache', JSON.stringify({ agents, teams, edited: true }));
     } catch (e) {
       console.error('Failed to save agents/teams cache:', e);
     }
@@ -2306,7 +2310,7 @@ export function ConfigPanel({
   const [draftTeams, setDraftTeams] = useState<TeamEntry[]>(cached?.teams || []);
   const [initialAgents, setInitialAgents] = useState<AgentEntry[]>(cached?.agents || []);
   const [initialTeams, setInitialTeams] = useState<TeamEntry[]>(cached?.teams || []);
-  const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(false);
+  const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(cached?.edited ?? false);
   const [agentsTeamsUserEdited, setAgentsTeamsUserEdited] = useState(false);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
@@ -2411,8 +2415,10 @@ export function ConfigPanel({
 
   const confirmDeleteTeam = () => {
     if (!deleteTeamConfirm) return;
-    setDraftTeams((prev) => prev.filter((_, i) => i !== deleteTeamConfirm.idx));
-    markAgentsTeamsEdited();
+    const newTeams = draftTeams.filter((_, i) => i !== deleteTeamConfirm.idx);
+    setDraftTeams(newTeams);
+    saveCachedAgentsTeams(draftAgents, newTeams);
+    setAgentsTeamsEdited(true);
     setDeleteTeamConfirm(null);
   };
 
@@ -2483,6 +2489,11 @@ export function ConfigPanel({
 
   const teamsFromConfig = useMemo<TeamEntry[]>(() => {
     const teams: TeamEntry[] = [];
+    const validAgentKeys = new Set<string>();
+    for (let i = 0; i < 10; i++) {
+      const name = normalizedConfig[`agent_name_${i}`] || normalizedConfig[`agent_${i}_name`];
+      if (name) validAgentKeys.add(name);
+    }
     for (let i = 0; i < 10; i++) {
       const teamName = normalizedConfig[`team_name_${i}`] || normalizedConfig[`team_${i}_name`];
       if (!teamName) continue;
@@ -2496,6 +2507,8 @@ export function ConfigPanel({
           console.error('[ConfigPanel] Failed to parse predefined_members:', e);
         }
       }
+      const leaderAgentKey = normalizedConfig[`team_leader_agent_key_${i}`] || normalizedConfig[`team_${i}_leader_agent_key`] || "";
+      const teammateAgentKey = normalizedConfig[`team_teammate_agent_key_${i}`] || normalizedConfig[`team_${i}_teammate_agent_key`] || "";
       teams.push({
         team_name: teamName,
         lifecycle: normalizedConfig[`team_lifecycle_${i}`] || normalizedConfig[`team_${i}_lifecycle`] || "",
@@ -2505,34 +2518,28 @@ export function ConfigPanel({
           member_name: normalizedConfig[`team_leader_member_name_${i}`] || normalizedConfig[`team_${i}_leader_member_name`] || "",
           display_name: normalizedConfig[`team_leader_display_name_${i}`] || normalizedConfig[`team_${i}_leader_display_name`] || "",
           persona: normalizedConfig[`team_leader_persona_${i}`] || normalizedConfig[`team_${i}_leader_persona`] || "",
-          agent_key: normalizedConfig[`team_leader_agent_key_${i}`] || normalizedConfig[`team_${i}_leader_agent_key`] || "",
+          agent_key: validAgentKeys.has(leaderAgentKey) ? leaderAgentKey : "",
         },
         teammate: {
-          agent_key: normalizedConfig[`team_teammate_agent_key_${i}`] || normalizedConfig[`team_${i}_teammate_agent_key`] || "",
+          agent_key: validAgentKeys.has(teammateAgentKey) ? teammateAgentKey : "",
         },
-        predefined_members: predefinedMembers,
+        predefined_members: predefinedMembers.map((m) => ({
+          ...m,
+          agent_key: validAgentKeys.has(m.agent_key || "") ? m.agent_key : "",
+        })),
       });
     }
     return teams;
   }, [normalizedConfig]);
 
   useEffect(() => {
-    if (!agentsTeamsEdited) {
-      setDraftAgents(agentsFromConfig);
-      if (agentsFromConfig.length === 0) {
-        clearCachedAgentsTeams();
-      }
+    if (agentsTeamsEdited) return;
+    setDraftAgents(agentsFromConfig);
+    setDraftTeams(teamsFromConfig);
+    if (agentsFromConfig.length === 0 && teamsFromConfig.length === 0) {
+      clearCachedAgentsTeams();
     }
-  }, [agentsFromConfig, agentsTeamsEdited]);
-
-  useEffect(() => {
-    if (!agentsTeamsEdited) {
-      setDraftTeams(teamsFromConfig);
-      if (teamsFromConfig.length === 0) {
-        clearCachedAgentsTeams();
-      }
-    }
-  }, [teamsFromConfig, agentsTeamsEdited]);
+  }, [agentsFromConfig, teamsFromConfig, agentsTeamsEdited]);
 
   // 自动保存 agents 和 teams 到 localStorage
   useEffect(() => {
@@ -2800,19 +2807,30 @@ export function ConfigPanel({
         completion_timeout: agent.completion_timeout,
       };
     }
+    const validAgentKeys = new Set(Object.keys(agentsPayload));
     return {
       agents: agentsPayload,
-      team: draftTeams.map((t) => ({ ...t })),
+      team: draftTeams.map((t) => ({
+        ...t,
+        leader: {
+          ...t.leader,
+          agent_key: validAgentKeys.has(t.leader?.agent_key || "") ? t.leader?.agent_key : "",
+        },
+        teammate: {
+          ...t.teammate,
+          agent_key: validAgentKeys.has(t.teammate?.agent_key || "") ? t.teammate?.agent_key : "",
+        },
+        predefined_members: (t.predefined_members || [])
+          .filter((m) => m.agent_key && validAgentKeys.has(m.agent_key))
+          .map((m) => ({
+            ...m,
+          })),
+      })),
     };
   };
 
-  const clearAgentsTeamsCacheAfterSave = () => {
-    try {
-      localStorage.removeItem('jiuwenclaw_agents_teams_cache');
-    } catch (e) {
-      console.error('Failed to clear agents/teams cache:', e);
-    }
-    setAgentsTeamsEdited(false);
+  const updateCacheAfterSave = () => {
+    saveCachedAgentsTeams(draftAgents, draftTeams);
     setAgentsTeamsUserEdited(false);
   };
 
@@ -2908,7 +2926,7 @@ export function ConfigPanel({
         await onSaveAllConfig(payload);
         if (hasModelChanges && onModelsRefresh) await onModelsRefresh();
         if (hasAgentsTeamsChanges) {
-          clearAgentsTeamsCacheAfterSave();
+          updateCacheAfterSave();
           setInitialAgents(draftAgents);
           setInitialTeams(draftTeams);
         }
@@ -2922,7 +2940,7 @@ export function ConfigPanel({
           const agentsTeamsPayload = buildAgentsTeamsPayload();
           const showRestartModal = !(hasConfigChanges || hasModelChanges);
           await onAgentsTeamsSave(agentsTeamsPayload, showRestartModal);
-          clearAgentsTeamsCacheAfterSave();
+          updateCacheAfterSave();
         }
         if (hasConfigChanges) {
           await onSaveConfig(configUpdates);
