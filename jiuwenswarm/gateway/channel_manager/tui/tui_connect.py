@@ -122,11 +122,19 @@ def _save_auto_harness_config(config: dict[str, Any]) -> None:
 
 
 def _update_auto_harness_git_user_name(value: str) -> None:
-    """Update git.user_name in auto-harness config."""
+    """Update git.user_name, fork_owner, and gitcode.username in auto-harness config.
+    - git.user_name: 用于 git commit
+    - git.fork_owner: 用于创建 PR
+    - gitcode.username: GitCode 登录用户名
+    """
     config = _get_auto_harness_config()
     if "git" not in config:
         config["git"] = {}
     config["git"]["user_name"] = value
+    config["git"]["fork_owner"] = value  # 合并：用户名同时作为 fork_owner
+    if "gitcode" not in config:
+        config["gitcode"] = {}
+    config["gitcode"]["username"] = value  # 合并：用户名同时作为 gitcode.username
     _save_auto_harness_config(config)
 
 
@@ -139,30 +147,12 @@ def _update_auto_harness_git_user_email(value: str) -> None:
     _save_auto_harness_config(config)
 
 
-def _update_auto_harness_git_fork_owner(value: str) -> None:
-    """Update git.fork_owner in auto-harness config."""
-    config = _get_auto_harness_config()
-    if "git" not in config:
-        config["git"] = {}
-    config["git"]["fork_owner"] = value
-    _save_auto_harness_config(config)
-
-
 def _update_auto_harness_gitcode_access_token(value: str) -> None:
     """Update gitcode.access_token in auto-harness config."""
     config = _get_auto_harness_config()
     if "gitcode" not in config:
         config["gitcode"] = {}
     config["gitcode"]["access_token"] = value
-    _save_auto_harness_config(config)
-
-
-def _update_auto_harness_gitcode_username(value: str) -> None:
-    """Update gitcode.username in auto-harness config."""
-    config = _get_auto_harness_config()
-    if "gitcode" not in config:
-        config["gitcode"] = {}
-    config["gitcode"]["username"] = value
     _save_auto_harness_config(config)
 
 # ── 需要转发到 Agent 的方法集合 ──────────────────────────────
@@ -408,11 +398,10 @@ _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
     "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
     "preferred_language": update_preferred_language_in_config,
     # Auto-Harness config items (stored in ~/.jiuwenswarm/auto-harness/config.yaml)
+    # 用户名同时设置 git.user_name, fork_owner, gitcode.username（三者合一）
     "auto_harness_git_user_name": _update_auto_harness_git_user_name,
     "auto_harness_git_user_email": _update_auto_harness_git_user_email,
-    "auto_harness_git_fork_owner": _update_auto_harness_git_fork_owner,
     "auto_harness_gitcode_access_token": _update_auto_harness_gitcode_access_token,
-    "auto_harness_gitcode_username": _update_auto_harness_gitcode_username,
 }
 
 _CLI_CONFIG_YAML_KEYS = frozenset(_CLI_CONFIG_YAML_SETTERS.keys())
@@ -513,22 +502,16 @@ def _build_config_schema() -> list[dict]:
          "options": ["zh", "en"], "source": "yaml", "default": "zh"},
         {"key": "evolution_auto_scan", "label": "自动扫描技能", "group": "Features",
          "type": "toggle", "source": "env", "default": "false"},
-        # Auto-Harness (定时任务配置) 
-        {"key": "auto_harness_git_user_name", "label": "Git 用户名", "group": "Auto-Harness", 
-         "type": "string", "source": "yaml", "default": empty, 
-         "description": "用于定时任务执行时的 git commit"}, 
-        {"key": "auto_harness_git_user_email", "label": "Git 邮箱", "group": "Auto-Harness", 
-         "type": "string", "source": "yaml", "default": empty, 
-         "description": "用于定时任务执行时的 git commit"}, 
-        {"key": "auto_harness_git_fork_owner", "label": "Fork 仓库所有者", "group": "Auto-Harness", 
-         "type": "string", "source": "yaml", "default": empty, 
-         "description": "如 'auto-harness'，用于创建 PR"}, 
-        {"key": "auto_harness_gitcode_access_token", "label": "GitCode Access Token", "group": "Auto-Harness", 
-         "type": "password", "sensitive": True, "source": "yaml", "default": empty, 
-         "description": "也可通过环境变量 GITCODE_ACCESS_TOKEN 配置"}, 
-        {"key": "auto_harness_gitcode_username", "label": "GitCode 用户名", "group": "Auto-Harness", 
-         "type": "string", "source": "yaml", "default": empty, 
-         "description": "GitCode 登录用户名；为空时回退到 git.fork_owner"},
+        # Auto-Harness (定时任务配置) - 合并为三项
+        {"key": "auto_harness_git_user_name", "label": "用户名", "group": "Auto-Harness",
+         "type": "string", "source": "yaml", "default": empty,
+         "description": "GitCode用户名，用于 git commit、创建 PR"},
+        {"key": "auto_harness_git_user_email", "label": "邮箱", "group": "Auto-Harness",
+         "type": "string", "source": "yaml", "default": empty,
+         "description": "GitCode用户邮箱，用于 git commit"},
+        {"key": "auto_harness_gitcode_access_token", "label": "GitCode Access Token", "group": "Auto-Harness",
+         "type": "password", "sensitive": True, "source": "yaml", "default": empty,
+         "description": "GitCode Access token，也可通过环境变量 GITCODE_ACCESS_TOKEN 配置"},
     ]
 
 
@@ -716,24 +699,21 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("preferred_language", "zh")
         
-        # Auto-Harness config values (from ~/.jiuwenclaw/auto-harness/config.yaml) 
-        try: 
-            ah_config = _get_auto_harness_config() 
-            git_cfg = ah_config.get("git") or {} 
-            gitcode_cfg = ah_config.get("gitcode") or {} 
-            payload["auto_harness_git_user_name"] = git_cfg.get("user_name") or "" 
-            payload["auto_harness_git_user_email"] = git_cfg.get("user_email") or "" 
-            payload["auto_harness_git_fork_owner"] = git_cfg.get("fork_owner") or "" 
-            # Check env var first for access_token 
-            ah_token = os.getenv("GITCODE_ACCESS_TOKEN") or gitcode_cfg.get("access_token") or "" 
-            payload["auto_harness_gitcode_access_token"] = ah_token 
-            payload["auto_harness_gitcode_username"] = gitcode_cfg.get("username") or "" 
-        except Exception: 
-            payload.setdefault("auto_harness_git_user_name", "") 
-            payload.setdefault("auto_harness_git_user_email", "") 
-            payload.setdefault("auto_harness_git_fork_owner", "") 
-            payload.setdefault("auto_harness_gitcode_access_token", "") 
-            payload.setdefault("auto_harness_gitcode_username", "")
+        # Auto-Harness config values (from ~/.jiuwenclaw/auto-harness/config.yaml)
+        # 合并显示：用户名、邮箱、Access Token 三项
+        try:
+            ah_config = _get_auto_harness_config()
+            git_cfg = ah_config.get("git") or {}
+            gitcode_cfg = ah_config.get("gitcode") or {}
+            payload["auto_harness_git_user_name"] = git_cfg.get("user_name") or ""
+            payload["auto_harness_git_user_email"] = git_cfg.get("user_email") or ""
+            # Check env var first for access_token
+            ah_token = os.getenv("GITCODE_ACCESS_TOKEN") or gitcode_cfg.get("access_token") or ""
+            payload["auto_harness_gitcode_access_token"] = ah_token
+        except Exception:
+            payload.setdefault("auto_harness_git_user_name", "")
+            payload.setdefault("auto_harness_git_user_email", "")
+            payload.setdefault("auto_harness_gitcode_access_token", "")
 
         payload["schema"] = _build_config_schema()
         await channel.send_response(ws, req_id, ok=True, payload=payload)
