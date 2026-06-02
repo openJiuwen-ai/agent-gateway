@@ -1445,6 +1445,10 @@ interface ParseState {
   gapCount: number;
   ciFixCount: number;
   hasFailure: boolean;  // Track if any stage or extension failed during execution
+  // Track stages that have reported success via harness.stage_result
+  stagesWithSuccessResult: Set<string>;
+  // Track stages that have appeared (reported any result, including running/success/failed)
+  stagesAppeared: Set<string>;
 }
 
 function parseAndAggregateLogs(
@@ -1462,6 +1466,10 @@ function parseAndAggregateLogs(
   let gapCount = initialState?.gapCount ?? 0;
   let ciFixCount = initialState?.ciFixCount ?? 0;
   let hasFailure = initialState?.hasFailure ?? false;  // Track if any stage/extension failed
+  // Track stages that have explicitly reported success via harness.stage_result (scope="")
+  const stagesWithSuccessResult: Set<string> = initialState?.stagesWithSuccessResult ?? new Set<string>();
+  // Track stages that have appeared (reported any result, including running/success/failed)
+  const stagesAppeared: Set<string> = initialState?.stagesAppeared ?? new Set<string>();
 
   // Note: pipeline type is determined dynamically in the loop when pipelineInfo is set
 
@@ -1625,6 +1633,14 @@ function parseAndAggregateLogs(
         if (log.stage && !scope && (log.status === 'success' || log.status === 'failed') && !completedStages.includes(log.stage)) {
           completedStages.push(log.stage);
           if (log.status === 'failed') hasFailure = true;
+          // Track stages that have explicitly reported success (scope="", status="success")
+          if (log.status === 'success') {
+            stagesWithSuccessResult.add(log.stage);
+          }
+        }
+        // Track all stages that have appeared (any status including running)
+        if (log.stage && !scope) {
+          stagesAppeared.add(log.stage);
         }
         // Track current running stage (from any scope="" event)
         if (log.stage && !scope && log.stage !== currentStage) {
@@ -1706,9 +1722,21 @@ function parseAndAggregateLogs(
         const pipelineType = pipelineInfo?.pipeline || log.pipeline || "";
 
         if (pipelineType === "extended_evolve_pipeline") {
-          finalStatus = completedStages.includes("activate") ? "success" : "failed";
+          // Rule: build_verify just needs to appear (presence check), check if activate has success result
+          // activate stage must have success status for the pipeline to be successful
+          const hasBuildVerifyAppeared = stagesAppeared.has('build_verify');
+          const hasActivateSuccess = stagesWithSuccessResult.has('activate');
+          finalStatus = hasBuildVerifyAppeared && hasActivateSuccess ? "success" : "failed";
+        } else if (pipelineType === "meta_evolve_pipeline") {
+          // Rule: every stage must have harness.stage_result with success status
+          // Get all expected stages from pipelineInfo
+          const expectedStages = pipelineInfo?.stages?.map(s => s.slot) || [];
+          // Check if all expected stages have reported success
+          const allStagesSuccessful = expectedStages.length > 0 &&
+            expectedStages.every(stage => stagesWithSuccessResult.has(stage));
+          finalStatus = allStagesSuccessful && !hasFailure ? "success" : "failed";
         } else {
-          // For other pipelines (meta_evolve_pipeline etc): any failure means task failed
+          // For other pipelines: any failure means task failed
           finalStatus = hasFailure ? "failed" : (log.status || "success");
         }
 
@@ -1768,7 +1796,7 @@ function parseAndAggregateLogs(
     }
   }
 
-  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount, hasFailure } };
+  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount, hasFailure, stagesWithSuccessResult, stagesAppeared } };
 }
 
 // Format log section for history display (detailed with colors)

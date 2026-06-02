@@ -23,9 +23,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_TOLERANT_STAGES = {"build_verify"}
-
-
 def _sync_append_log(log_path: Path, line: str) -> None:
     """Synchronous append+flush for log file — called via asyncio.to_thread."""
     with log_path.open("a", encoding="utf-8") as f:
@@ -37,13 +34,13 @@ def _determine_pipeline_status_from_log(log_path) -> dict[str, Any]:
     """Parse a JSON Lines log file and determine whether the pipeline succeeded.
 
     Rules:
-    - Each stage has a harness.stage_result event with scope="" (stage-level).
-    - All stages except those in _TOLERANT_STAGES must have status="success".
-    - Tolerant stages (build_verify) accept either "success" or "failed".
+    - meta_evolve_pipeline: every stage must have harness.stage_result with status="success".
+    - extended_evolve_pipeline: build_verify must appear (any status), activate must be "success".
 
     Returns:
         {"failed": bool, "error": str}
     """
+    pipeline_type: str = ""
     pipeline_stages: list[str] = []
     stage_results: dict[str, str] = {}
 
@@ -56,6 +53,7 @@ def _determine_pipeline_status_from_log(log_path) -> dict[str, Any]:
                     continue
                 if entry.get("event_type") == "harness.message" and entry.get("stages") and entry.get("pipeline"):
                     pipeline_stages = [s.get("slot") for s in entry["stages"]]
+                    pipeline_type = entry.get("pipeline", "")
                 if entry.get("event_type") == "harness.stage_result" and not entry.get("scope"):
                     slot = entry.get("stage")
                     status = entry.get("status")
@@ -65,10 +63,15 @@ def _determine_pipeline_status_from_log(log_path) -> dict[str, Any]:
         logger.warning("[Scheduler] Failed to read log %s: %s", log_path, exc)
         return {"failed": False, "error": ""}
 
+    if pipeline_type == "extended_evolve_pipeline":
+        if "build_verify" not in stage_results:
+            return {"failed": True, "error": "Stage 'build_verify' not appeared"}
+        if stage_results.get("activate") != "success":
+            return {"failed": True, "error": f"Stage 'activate' {stage_results.get('activate', 'not completed')}"}
+        return {"failed": False, "error": ""}
+
     for slot in pipeline_stages:
         result = stage_results.get(slot)
-        if slot in _TOLERANT_STAGES:
-            continue
         if result != "success":
             return {
                 "failed": True,
