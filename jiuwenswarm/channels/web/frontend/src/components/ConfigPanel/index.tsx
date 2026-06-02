@@ -2379,6 +2379,27 @@ export function ConfigPanel({
             next[i] = { ...next[i], is_default: false };
           }
         }
+        const mainModel = next[0];
+        setDraftAgents((prev) =>
+          prev.map((agent) => {
+            if (
+              agent.model.model === model.model_name &&
+              (agent.model.provider || "") === (model.model_provider || "") &&
+              (agent.model.api_base || "") === (model.api_base || "")
+            ) {
+              return {
+                ...agent,
+                model: {
+                  provider: mainModel.model_provider || "",
+                  api_base: mainModel.api_base || "",
+                  api_key: mainModel.api_key || "",
+                  model: mainModel.model_name || "",
+                },
+              };
+            }
+            return agent;
+          })
+        );
       }
       handleModelsChange(next);
     }
