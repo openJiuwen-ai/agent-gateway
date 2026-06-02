@@ -121,7 +121,7 @@ function buildStatusLines(
     isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
 
   const right = snapshot.lastError
-    ? `error:${snapshot.lastError}`
+    ? `error:${snapshot.lastError.split('\n')[0].slice(0, 50)}`
     : snapshot.isInterrupted
       ? renderInterruptedStatus()
     : snapshot.isPaused

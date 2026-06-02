@@ -1269,7 +1269,9 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
         const activeStage = section.status !== 'success' && section.status !== 'failed' ? section.stage : undefined;
         const effectiveCompleted = [...(section.completed_stages || [])];
         if (section.status === 'success' && section.stage && !effectiveCompleted.includes(section.stage)) {
-          effectiveCompleted.push(section.stage);
+          if (section.pipeline !== 'extended_evolve_pipeline' || section.stage !== 'build_verify') {
+            effectiveCompleted.push(section.stage);
+          }
         }
         const progressBar = formatStageProgress(section.stages, effectiveCompleted, activeStage, section.gap_count, section.extension_order?.length);
         const icon = section.status === "success" ? "✅" : section.status === "failed" ? "❌" : "⏸️";
@@ -1523,6 +1525,7 @@ function parseAndAggregateLogs(
           content: content,
           stage: stage,
           stages: pipelineInfo?.stages,
+          pipeline: pipelineInfo?.pipeline,
           completed_stages: [...completedStages],
         });
         break;
@@ -1622,6 +1625,7 @@ function parseAndAggregateLogs(
             stage: log.stage || log.parent_stage || currentStage || "",
             status: extStatus,
             stages: pipelineInfo?.stages,
+            pipeline: pipelineInfo?.pipeline,
             completed_stages: [...completedStages],
             extension_order: [...extensionOrder],
             extensions_by_name: extensionsSnapshot,
@@ -1631,7 +1635,12 @@ function parseAndAggregateLogs(
         }
 
         if (log.stage && !scope && (log.status === 'success' || log.status === 'failed') && !completedStages.includes(log.stage)) {
-          completedStages.push(log.stage);
+          // extended_evolve_pipeline: build_verify 不在此处计入完成，等 activate 出现后再计入
+          if (pipelineInfo?.pipeline === 'extended_evolve_pipeline' && log.stage === 'build_verify') {
+            // 跳过，不加入 completedStages
+          } else {
+            completedStages.push(log.stage);
+          }
           if (log.status === 'failed') hasFailure = true;
           // Track stages that have explicitly reported success (scope="", status="success")
           if (log.status === 'success') {
@@ -1645,6 +1654,13 @@ function parseAndAggregateLogs(
         // Track current running stage (from any scope="" event)
         if (log.stage && !scope && log.stage !== currentStage) {
           currentStage = log.stage;
+        }
+
+        // extended_evolve_pipeline: 当 activate 出现时，将 build_verify 计入完成
+        if (pipelineInfo?.pipeline === 'extended_evolve_pipeline' && log.stage === 'activate' && !scope) {
+          if (!completedStages.includes('build_verify') && stagesWithSuccessResult.has('build_verify')) {
+            completedStages.push('build_verify');
+          }
         }
 
         // For activate stage: skip "running" status (merge/interaction sub-events handle display)
@@ -1701,6 +1717,7 @@ function parseAndAggregateLogs(
           stage: log.stage,
           status: log.status,
           stages: pipelineInfo?.stages,
+          pipeline: pipelineInfo?.pipeline,
           completed_stages: [...completedStages],
           // Include extension info for display (snapshot at this point)
           extension_order: [...extensionOrder],
