@@ -27,7 +27,6 @@ export interface FileDownloadItem {
   mime_type: string;
   download_url: string;
   download_token: string;
-  expires_at?: number;
 }
 
 export interface ContextCompressionRuntime {

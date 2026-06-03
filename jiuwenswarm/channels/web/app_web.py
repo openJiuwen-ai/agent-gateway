@@ -842,6 +842,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "method not allowed")
 
     def do_HEAD(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if self._is_file_api_route():
+            self._handle_file_api_get(parsed)
+            return
         if self._dispatch_proxy():
             return
         super().do_HEAD()

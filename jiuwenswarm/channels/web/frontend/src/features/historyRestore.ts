@@ -566,7 +566,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
-        if (e.message.role === 'assistant' && pendingFileItems) {
+        if (pendingFileItems && (
+          e.message.role === 'assistant' ||
+          (e.message.role === 'system' && e.message.id?.startsWith('team-leader-'))
+        )) {
           e.message = { ...e.message, fileItems: pendingFileItems };
           pendingFileItems = null;
         }
@@ -748,7 +751,10 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     let pendingFileItems: FileDownloadItem[] | null = null;
     for (const e of entries) {
       if (e.kind === 'message') {
-        if (e.message.role === 'assistant' && pendingFileItems) {
+        if (pendingFileItems && (
+          e.message.role === 'assistant' ||
+          (e.message.role === 'system' && e.message.id?.startsWith('team-leader-'))
+        )) {
           e.message = { ...e.message, fileItems: pendingFileItems };
           pendingFileItems = null;
         }

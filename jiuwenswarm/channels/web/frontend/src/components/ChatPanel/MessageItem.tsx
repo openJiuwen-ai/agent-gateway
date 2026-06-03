@@ -655,14 +655,28 @@ function FileDownloadList({
   className?: string;
 }) {
   const { t } = useTranslation();
+  const [expiredSet, setExpiredSet] = useState<Set<number>>(new Set());
 
-  const isExpired = (file: FileDownloadItem): boolean => {
-    if (!file.expires_at) return false;
-    return Date.now() / 1000 > file.expires_at;
-  };
+  useEffect(() => {
+    let cancelled = false;
+    files.forEach((file, index) => {
+      fetch(file.download_url, { method: 'HEAD' })
+        .then((res) => {
+          if (!cancelled && !res.ok) {
+            setExpiredSet((prev) => new Set(prev).add(index));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setExpiredSet((prev) => new Set(prev).add(index));
+          }
+        });
+    });
+    return () => { cancelled = true; };
+  }, [files]);
 
-  const handleDownload = async (file: FileDownloadItem) => {
-    if (isExpired(file)) return;
+  const handleDownload = async (file: FileDownloadItem, index: number) => {
+    if (expiredSet.has(index)) return;
 
     // 检查是否在 PyWebView 环境中（exe 模式）
     const pywebviewApi = (window as Window & { pywebview?: { api?: { download_file?: (url: string, filename: string) => Promise<boolean> | boolean } } }).pywebview?.api;
@@ -688,7 +702,7 @@ function FileDownloadList({
       {files.map((file, index) => {
         const typeConfig = getFileTypeConfig(file.mime_type, file.name);
         const ext = getFileExtension(file.name);
-        const expired = isExpired(file);
+        const expired = expiredSet.has(index);
         return (
           <div
             key={`${file.name}-${index}`}
@@ -698,7 +712,7 @@ function FileDownloadList({
                 ? 'border-border/50 bg-card/50 cursor-not-allowed opacity-60'
                 : 'border-border bg-card hover:shadow-md hover:border-border-hover cursor-pointer group'
             )}
-            onClick={() => handleDownload(file)}
+            onClick={() => handleDownload(file, index)}
           >
             <div className={`flex-shrink-0 w-10 h-10 rounded-lg ${typeConfig.bg} flex items-center justify-center`}>
               {typeof typeConfig.icon === 'string' ? (
