@@ -24,6 +24,8 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
 const HISTORY_RESTORE_DONE_CONTENT = 'done';
 /** 流式 chunk 之间的兜底：正常情况由 `done` / `page_complete` 等结束帧关闭；仅当缺少明确结束标记时使用 */
 const HISTORY_RESTORE_IDLE_MS = 500;
+/** 首帧兜底：订阅已建立但后端未发任何 history.message 时，避免 UI 一直 loading */
+const HISTORY_RESTORE_FIRST_FRAME_MS = 10_000;
 
 export interface HistoryToolReplayItem {
   kind: 'tool_call' | 'tool_result';
@@ -483,12 +485,21 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   const entries: HistoryTimelineEntry[] = [];
   let totalPages: number | null = null;
   let idleTimer: number | null = null;
+  let firstFrameTimer: number | null = window.setTimeout(() => {
+    finalize();
+  }, HISTORY_RESTORE_FIRST_FRAME_MS);
   let disposed = false;
 
   const clearIdleTimer = () => {
     if (idleTimer !== null) {
       window.clearTimeout(idleTimer);
       idleTimer = null;
+    }
+  };
+  const clearFirstFrameTimer = () => {
+    if (firstFrameTimer !== null) {
+      window.clearTimeout(firstFrameTimer);
+      firstFrameTimer = null;
     }
   };
 
@@ -501,6 +512,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     if (!shouldProcessHistoryPayload(payload, options.sessionId)) {
       return;
     }
+    clearFirstFrameTimer();
 
     if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
       totalPages = payload.total_pages;
@@ -537,6 +549,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     if (disposed) return;
     disposed = true;
     clearIdleTimer();
+    clearFirstFrameTimer();
     unsubscribe();
     if (activeRestore?.generation === generation) {
       activeRestore = null;
@@ -653,12 +666,21 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
   const entries: HistoryTimelineEntry[] = [];
   let totalPages: number | null = null;
   let idleTimer: number | null = null;
+  let firstFrameTimer: number | null = window.setTimeout(() => {
+    finalize();
+  }, HISTORY_RESTORE_FIRST_FRAME_MS);
   let disposed = false;
 
   const clearIdleTimer = () => {
     if (idleTimer !== null) {
       window.clearTimeout(idleTimer);
       idleTimer = null;
+    }
+  };
+  const clearFirstFrameTimer = () => {
+    if (firstFrameTimer !== null) {
+      window.clearTimeout(firstFrameTimer);
+      firstFrameTimer = null;
     }
   };
 
@@ -671,6 +693,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     if (!shouldProcessHistoryPayload(payload, options.sessionId, options.pageIdx)) {
       return;
     }
+    clearFirstFrameTimer();
 
     if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
       totalPages = payload.total_pages;
@@ -707,6 +730,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     if (disposed) return;
     disposed = true;
     clearIdleTimer();
+    clearFirstFrameTimer();
     unsubscribe();
     activePageFetchDispose = null;
     if (activeRestore?.generation === generation) {

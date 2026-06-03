@@ -166,6 +166,7 @@ function storeSessionId(sessionId: string | null) {
 
 function AppContent() {
   const { t, i18n } = useTranslation();
+  const tRef = useRef(t);
   // 优先使用存储的会话 ID，避免每次刷新创建新会话
   const [sessionId, setSessionId] = useState<string>(() => {
     const stored = getStoredSessionId();
@@ -192,6 +193,11 @@ function AppContent() {
   const startupUpdateCheckRef = useRef(false);
   /** 从 SkillNet 等入口跳转配置页时，首次展开对应配置分组（如第三方服务） */
   const [configInitialExpandGroup, setConfigInitialExpandGroup] = useState<string | null>(null);
+
+  useEffect(() => {
+    tRef.current = t;
+  }, [t]);
+
   useEffect(() => {
     if (activeNav !== 'configpanel') {
       setConfigInitialExpandGroup(null);
@@ -774,7 +780,7 @@ for (let i = payload.team.length; i < 10; i++) {
           addMessage({
             id: `history-restore-empty-${Date.now()}`,
             role: 'system',
-            content: t('sessions.restoreEmpty'),
+            content: tRef.current('sessions.restoreEmpty'),
             timestamp: new Date().toISOString(),
           });
         }
@@ -887,7 +893,7 @@ for (let i = payload.team.length; i < 10; i++) {
           addMessage({
             id: `history-load-failed-${Date.now()}`,
             role: 'system',
-            content: t('sessions.errors.restoreFailed', { sessionId }),
+            content: tRef.current('sessions.errors.restoreFailed', { sessionId }),
             timestamp: new Date().toISOString(),
           });
         }
@@ -898,7 +904,6 @@ for (let i = payload.team.length; i < 10; i++) {
     sessionId,
     historyBootstrapKey,
     request,
-    t,
     addMessage,
     addToolCall,
     addToolResult,
