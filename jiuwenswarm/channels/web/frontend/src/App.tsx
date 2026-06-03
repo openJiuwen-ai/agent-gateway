@@ -937,6 +937,12 @@ for (let i = payload.team.length; i < 10; i++) {
     setThinking(false);
     setPaused(false);
     clearMessages();
+    const { setContextCompressionStats } = useSessionStore.getState();
+    setContextCompressionStats({
+      rate: 0,
+      beforeCompressed: 0,
+      afterCompressed: 0,
+    });
     clearTodos();
     resetHarnessStore();
     const newSid = generateSessionId();

@@ -1036,8 +1036,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
                 is_default = entry.get("is_default", False)
+                model_name = mcc.get("model_name", "")
+                context_window_tokens = 0
+                try:
+                    from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+                    context_window_tokens = ContextUtils.resolve_context_max(model_name=model_name)
+                except Exception:
+                    logger.debug(
+                        "Failed to resolve context_window_tokens for model %s",
+                        model_name,
+                        exc_info=True,
+                    )
                 result.append({
-                    "model_name": mcc.get("model_name", ""),
+                    "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
@@ -1045,6 +1056,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "is_default": is_default,
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
+                    "context_window_tokens": context_window_tokens,
                 })
                 # active_model 为列表首位的模型（主对话默认）
             active_model = result[0]["model_name"] if result else ""

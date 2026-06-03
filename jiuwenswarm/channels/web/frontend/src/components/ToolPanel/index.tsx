@@ -5,7 +5,7 @@
  */
 
 import { useTranslation } from 'react-i18next';
-import { useSessionStore } from '../../stores';
+import { useChatStore, useSessionStore } from '../../stores';
 import { useEffect, useRef } from 'react';
 import { webRequest } from '../../services/webClient';
 import { TodoList } from '../TodoList';
@@ -85,6 +85,7 @@ export function ToolPanel({
     teamHistoryMessages,
     setTeamHistoryMessages,
   } = useSessionStore();
+  const { isProcessing, messages } = useChatStore();
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
 
@@ -211,12 +212,35 @@ export function ToolPanel({
     memoryUsage.rssMb == null
       ? '--'
       : `${memoryUsage.rssMb.toFixed(1)} MB${memoryUsage.usedPercent == null ? '' : ` (${memoryUsage.usedPercent.toFixed(1)}%)`}`;
-  const beforeK = ((contextCompressionBefore ?? 0) / 1000).toFixed(1);
-  const afterK = ((contextCompressionAfter ?? 0) / 1000).toFixed(1);
+  let latestUserMessageIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role === 'user') {
+      latestUserMessageIndex = i;
+      break;
+    }
+  }
+  const hasVisibleReplyAfterLatestUser = messages
+    .slice(latestUserMessageIndex + 1)
+    .some(
+      (message) =>
+        (message.role === 'assistant' || message.id.startsWith('team-leader-')) &&
+        Boolean(message.content.trim())
+    );
+  const shouldMaskContextUsage =
+    isProcessing && latestUserMessageIndex >= 0 && !hasVisibleReplyAfterLatestUser;
+  const visibleContextCompressionBefore = shouldMaskContextUsage ? 0 : contextCompressionBefore;
+  const visibleContextCompressionAfter = shouldMaskContextUsage ? 0 : contextCompressionAfter;
+  const beforeK = ((visibleContextCompressionBefore ?? 0) / 1000).toFixed(1);
+  const afterK = ((visibleContextCompressionAfter ?? 0) / 1000).toFixed(1);
   let compressionRateDisplay;
-  if (contextCompressionBefore === 0 || contextCompressionBefore === null) {
+  if (
+    visibleContextCompressionBefore === 0 ||
+    visibleContextCompressionBefore === null ||
+    visibleContextCompressionAfter === 0 ||
+    visibleContextCompressionAfter === null
+  ) {
     compressionRateDisplay = '--';
-  } else if (contextCompressionAfter === contextCompressionBefore) {
+  } else if (visibleContextCompressionAfter === visibleContextCompressionBefore) {
     compressionRateDisplay = '100.0';
   } else {
     compressionRateDisplay = Number.isFinite(contextCompressionRate)

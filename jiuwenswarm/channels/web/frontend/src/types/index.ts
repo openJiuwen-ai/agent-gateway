@@ -36,6 +36,7 @@ export interface ModelEntry {
   model_provider: string;
   timeout?: number;
   temperature?: number;
+  context_window_tokens?: number;
   /** 同 model_name 组内的默认勾选标识 */
   is_default?: boolean;
   /** 可选别名，用于快捷切换模型（如 "mimo" → "xiaomi/mimo-v2-omni"） */

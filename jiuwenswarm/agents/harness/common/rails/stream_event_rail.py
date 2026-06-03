@@ -686,12 +686,19 @@ class JiuClawStreamEventRail(DeepAgentRail):
                 model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
             )
 
-            # current_context_tokens: actual usage from usage_metadata
+            # The context window contains model input, not the generated reply.
+            # Some providers only expose total_tokens, so keep it as a fallback.
             response = ctx.inputs.response
             usage_metadata = {}
             if response and hasattr(response, 'usage_metadata') and response.usage_metadata:
                 usage_metadata = response.usage_metadata.model_dump()
-            current_context_tokens = usage_metadata.get("total_tokens", 0) if isinstance(usage_metadata, dict) else 0
+            current_context_tokens = 0
+            if isinstance(usage_metadata, dict):
+                for token_key in ("input_tokens", "prompt_tokens", "total_tokens"):
+                    token_value = usage_metadata.get(token_key)
+                    if token_value is not None:
+                        current_context_tokens = token_value
+                        break
 
             if raw_total_tokens != 0:
                 rate = current_context_tokens / raw_total_tokens * 100

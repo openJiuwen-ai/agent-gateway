@@ -43,6 +43,9 @@ class _TestRail(JiuClawStreamEventRail):
             exception,
         )
 
+    async def emit_context_usage(self, ctx):
+        await self._emit_context_usage(ctx)
+
 
 @pytest.mark.asyncio
 async def test_empty_todo_list_is_emitted_to_clear_frontend():
@@ -56,6 +59,98 @@ async def test_empty_todo_list_is_emitted_to_clear_frontend():
     output = session.outputs[0]
     assert output.type == "todo.updated"
     assert output.payload == {"todos": []}
+
+
+@pytest.mark.asyncio
+async def test_context_usage_reports_input_tokens_instead_of_reply_total(monkeypatch):
+    class _UsageMetadata:
+        @staticmethod
+        def model_dump():
+            return {
+                "input_tokens": 1200,
+                "output_tokens": 800,
+                "total_tokens": 2000,
+            }
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        lambda **_kwargs: 10000,
+    )
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        agent=None,
+        inputs=SimpleNamespace(
+            response=SimpleNamespace(usage_metadata=_UsageMetadata()),
+        ),
+    )
+
+    await _TestRail().emit_context_usage(ctx)
+
+    assert len(session.outputs) == 1
+    output = session.outputs[0]
+    assert output.type == "context.usage"
+    assert output.payload == {
+        "rate": 12.0,
+        "context_max": 10000,
+        "tokens_used": 1200,
+    }
+
+
+@pytest.mark.asyncio
+async def test_context_usage_keeps_zero_input_tokens_instead_of_falling_back(monkeypatch):
+    class _UsageMetadata:
+        @staticmethod
+        def model_dump():
+            return {
+                "input_tokens": 0,
+                "total_tokens": 800,
+            }
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        lambda **_kwargs: 10000,
+    )
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(),
+        agent=None,
+        inputs=SimpleNamespace(
+            response=SimpleNamespace(usage_metadata=_UsageMetadata()),
+        ),
+    )
+
+    await _TestRail().emit_context_usage(ctx)
+
+    assert session.outputs[0].payload["tokens_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
+    captured_kwargs = {}
+
+    def _resolve_context_max(**kwargs):
+        captured_kwargs.update(kwargs)
+        return 1000000
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        _resolve_context_max,
+    )
+    session = _FakeSession()
+    ctx = SimpleNamespace(
+        session=session,
+        context=SimpleNamespace(_context_window_tokens=1048576),
+        agent=None,
+        inputs=SimpleNamespace(response=None),
+    )
+
+    await _TestRail().emit_context_usage(ctx)
+
+    assert captured_kwargs["fallback_context_window_tokens"] == 1048576
+    assert session.outputs[0].payload["context_max"] == 1000000
 
 
 @pytest.mark.asyncio

@@ -426,6 +426,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   });
   const pendingContextCompressionStartRef =
     useRef<PendingContextCompressionStart | null>(null);
+  const holdContextUsageUntilVisibleReplyRef = useRef(false);
+  const contextUsageHoldSessionIdRef = useRef<string | null>(null);
+  const pendingContextUsageRef = useRef<{
+    rate: number;
+    beforeCompressed: number | null;
+    afterCompressed: number | null;
+  } | null>(null);
 
   // Stores
   const {
@@ -679,6 +686,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     async (content: string, sessionId: string) => {
       if (!content.trim()) return;
 
+      const isInitialUserMessage = !useChatStore
+        .getState()
+        .messages.some((message) => message.role === 'user');
+      if (isInitialUserMessage) {
+        holdContextUsageUntilVisibleReplyRef.current = true;
+        contextUsageHoldSessionIdRef.current = sessionId;
+        pendingContextUsageRef.current = null;
+        setContextCompressionStats({
+          rate: 0,
+          beforeCompressed: 0,
+          afterCompressed: 0,
+        });
+      }
+
       resetContextCompressionTurn();
       userInputVersionRef.current += 1;
       stopAllTts();
@@ -731,7 +752,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
       }
     },
-    [addMessage, request, resetContextCompressionTurn, setProcessing, setThinking, t]
+    [
+      addMessage,
+      request,
+      resetContextCompressionTurn,
+      setContextCompressionStats,
+      setProcessing,
+      setThinking,
+      t,
+    ]
   );
 
   // 存储sendMessage函数到ref
@@ -956,7 +985,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
+    if (contextUsageHoldSessionIdRef.current !== activeSessionId) {
+      holdContextUsageUntilVisibleReplyRef.current = false;
+      contextUsageHoldSessionIdRef.current = null;
+      pendingContextUsageRef.current = null;
+    }
   }, [activeSessionId]);
+
+  const revealPendingContextUsage = useCallback(() => {
+    holdContextUsageUntilVisibleReplyRef.current = false;
+    contextUsageHoldSessionIdRef.current = null;
+    const pending = pendingContextUsageRef.current;
+    pendingContextUsageRef.current = null;
+    if (pending) {
+      setContextCompressionStats(pending);
+    }
+  }, [setContextCompressionStats]);
 
   // 会话切换时不再重置上下文压缩信息，保持本地存储的状态
   // useEffect(() => {
@@ -1131,6 +1175,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
           return;
         }
+        if (content) {
+          revealPendingContextUsage();
+        }
         if (currentMode === 'team' && content) {
           clearThinkingForVisibleOutput();
           const existingMsg = findActiveTeamLeaderMessage();
@@ -1205,6 +1252,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             });
           }
           return;
+        }
+        if (content) {
+          revealPendingContextUsage();
         }
         if (currentMode === 'team' && content) {
           clearThinkingForVisibleOutput();
@@ -1508,7 +1558,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           typeof payload.tokens_used === 'number' && Number.isFinite(payload.tokens_used)
             ? payload.tokens_used
             : null;
-        setContextCompressionStats({ rate, beforeCompressed: contextMax, afterCompressed: tokensUsed });
+        const stats = { rate, beforeCompressed: contextMax, afterCompressed: tokensUsed };
+        if (holdContextUsageUntilVisibleReplyRef.current) {
+          pendingContextUsageRef.current = stats;
+          setContextCompressionStats({
+            rate: 0,
+            beforeCompressed: 0,
+            afterCompressed: 0,
+          });
+        } else {
+          setContextCompressionStats(stats);
+        }
         console.debug('[ws] context.usage', {
           session_id: payload.session_id,
           rate,
@@ -2061,6 +2121,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     handleConnectionAck,
     handleContextCompressionState,
     handleTtsPlayback,
+    revealPendingContextUsage,
     setMode,
     setPaused,
     setPendingQuestion,
