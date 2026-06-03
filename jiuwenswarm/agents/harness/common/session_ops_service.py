@@ -462,11 +462,12 @@ async def rewind_session_context(
         logger.warning("rewind_session_context: pre_run failed for %s: %s", session_id, exc)
         return False
 
-    # Wipe stale context / deep_agent_state in the checkpointer so
+    # Wipe stale context / deepagent state in the checkpointer so
     # _load_state_from_session + the agent loop start from our rebuild.
+    from openjiuwen.harness.schema.state import _SESSION_STATE_KEY
     try:
         session.update_state({"context": None})
-        session.update_state({"deep_agent_state": None})
+        session.update_state({_SESSION_STATE_KEY: None})
     except Exception as exc:
         logger.warning("rewind_session_context: state wipe failed for %s: %s", session_id, exc)
 

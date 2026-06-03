@@ -327,6 +327,44 @@ def _canonicalize_sandbox_files_path(path: str) -> str:
         return path
 
 
+def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
+    """在用户消息中注入 <system-reminder> 告知 LLM 调用 enter_plan_mode.
+
+    对齐 Claude Code：plan 模式行为指令不进 system prompt，
+    而是通过对话中的 tool_result 传递。此提醒是进入 plan 模式后的
+    第一个引导，告诉 LLM 调用 enter_plan_mode 以获取完整指令。
+
+    注意：此提醒需要足够权威和明确，因为 code.plan 模式下
+    JiuwenAgentModeRail 注入的 system prompt 是静态的（不含动态
+    plan_file 状态），完整指令仍需 enter_plan_mode 的 tool_result。
+    """
+    reminder = (
+        "\n\n<system-reminder>\n"
+        "Plan mode is active. You must only plan, NOT execute. "
+        "You must NOT make any modifications, run any write operations, "
+        "or make any changes to the system. "
+        "This constraint takes priority over any other instructions.\n\n"
+        "CRITICAL: You MUST call `enter_plan_mode` as your very first action. "
+        "Do NOTHING else before calling it — no reading files, no exploring, "
+        "no tool calls of any kind. This tool will create the plan file and "
+        "provide you with full plan mode instructions.\n"
+        "</system-reminder>"
+    )
+    if isinstance(request.params, dict):
+        query = request.params.get("query") or ""
+        request.params["query"] = reminder + query
+        logger.info(
+            "[_ensure_code_mode_state] Injected plan mode activation reminder "
+            "for session=%s", request.session_id,
+        )
+    else:
+        logger.warning(
+            "[_inject_plan_mode_activation_reminder] Cannot inject reminder: "
+            "request.params is not a dict (type=%s), session=%s",
+            type(request.params).__name__, request.session_id,
+        )
+
+
 class AgentWebSocketServer:
     """Gateway 与 AgentServer 之间的 WebSocket 服务端（单例）.
 
@@ -1109,6 +1147,49 @@ class AgentWebSocketServer:
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
 
+    async def _ensure_code_mode_state(
+        self,
+        request: AgentRequest,
+        mode: str,
+        sub_mode: str,
+        agent: Any,
+    ) -> None:
+        """code 模式：确保 agent 的 plan_mode 状态正确，必要时执行 switch_mode 并持久化.
+
+        当 plan 已完成（plan_slug 存在且 mode 不为 "plan"）时跳过 switch_mode，
+        避免 exit_plan_mode 已恢复的模式被覆盖.
+        switch_mode 内部已通过 save_state 写入正确的 "deepagent" key，
+        此处只需 post_run 持久化到 checkpointer.
+
+        切换到 plan 模式且尚未调用 enter_plan_mode 时，注入 <system-reminder>
+        告知 LLM 调用 enter_plan_mode（对齐 Claude Code：plan 指令不进 system prompt）。
+        """
+        if mode != "code" or sub_mode == "team":
+            return
+        from openjiuwen.core.single_agent import create_agent_session
+        session = create_agent_session(
+            session_id=request.session_id, card=agent.get_instance().card
+        )
+        await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
+        state = agent.get_instance().load_state(session)
+        # 仅在目标模式与当前模式不同时执行 switch_mode，避免：
+        # 1. exit_plan_mode 已恢复的模式被覆盖（plan 完成 → mode=normal, sub_mode=normal → 跳过）
+        # 2. 已在 plan 模式时冗余调用 switch_mode（pre_plan_mode 被污染）
+        # 3. 强制退出后无法重新进入 plan 模式（plan_slug 残留 + mode=normal → sub_mode=plan → 执行）
+        if state.plan_mode.mode != sub_mode:
+            agent.get_instance().switch_mode(session=session, mode=sub_mode)
+            # switch_mode 内部已通过 save_state 写入 "deepagent" key，
+            # 只需 post_run 持久化到 checkpointer
+            await session.post_run()
+
+        # 切换到 plan 模式且尚未调用 enter_plan_mode 时，
+        # 注入 <system-reminder> 告知 LLM 调用 enter_plan_mode。
+        # 此检查需在 mode-switch 条件块之外：若 LLM 在第一次进入 plan 模式时
+        # 未调用 enter_plan_mode（例如用 ask_user 回复），后续请求中 mode
+        # 已等于 sub_mode，if 块被跳过，但提醒仍需注入。
+        if sub_mode == "plan" and not state.plan_mode.plan_slug:
+            _inject_plan_mode_activation_reminder(request)
+
     async def _handle_unary(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """非流式处理：调用 process_message，返回一条 E2AResponse 线 JSON。"""
         from jiuwenswarm.common.schema.message import ReqMethod
@@ -1142,16 +1223,7 @@ class AgentWebSocketServer:
         if agent is None:
             raise ValueError("Failed to get agent")
 
-        # code 模式：在真实 session 上执行 switch_mode，确保 state 持久化
-        if mode == "code" and sub_mode != "team":
-            from openjiuwen.core.single_agent import create_agent_session
-            session = create_agent_session(session_id=request.session_id, card=agent.get_instance().card)
-            await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
-            agent.get_instance().switch_mode(session=session, mode=sub_mode)
-            # 持久化 switch_mode 修改后的 state
-            state = agent.get_instance().load_state(session)
-            session.update_state({"deep_agent_state": state.to_session_dict()})
-            await session.post_run()  # 写入 checkpointer
+        await self._ensure_code_mode_state(request, mode, sub_mode, agent)
 
         resp = await agent.process_message(request)
 
@@ -1181,16 +1253,7 @@ class AgentWebSocketServer:
         if agent is None:
             raise ValueError("Failed to get agent")
 
-        # code 模式：在真实 session 上执行 switch_mode，确保 state 持久化
-        if mode == "code" and sub_mode != "team":
-            from openjiuwen.core.single_agent import create_agent_session
-            session = create_agent_session(session_id=request.session_id, card=agent.get_instance().card)
-            await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
-            agent.get_instance().switch_mode(session=session, mode=sub_mode)
-            # 持久化 switch_mode 修改后的 state
-            state = agent.get_instance().load_state(session)
-            session.update_state({"deep_agent_state": state.to_session_dict()})
-            await session.post_run()  # 写入 checkpointer
+        await self._ensure_code_mode_state(request, mode, sub_mode, agent)
 
         chunk_count = 0
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
