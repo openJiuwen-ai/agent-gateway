@@ -292,6 +292,59 @@ def _safe_rmtree(path: Path) -> bool:
     return False
 
 
+def _handle_copy_error(exc: OSError, dest: Path, logger_prefix: str, src: Path | None = None) -> dict[str, Any]:
+    """处理文件/目录复制失败的统一错误处理函数.
+    
+    Args:
+        exc: 捕获到的 OSError 异常（包括 shutil.Error）
+        dest: 目标路径（会被清理）
+        logger_prefix: 日志前缀（用于区分不同操作）
+        src: 源路径（可选，用于日志记录）
+    
+    Returns:
+        错误响应字典
+    """
+    # 记录错误日志
+    if src:
+        logger.error("[SkillManager] %s copy failed: src=%s dest=%s error=%s", logger_prefix, src, dest, exc)
+    else:
+        logger.error("[SkillManager] %s copy failed: dest=%s error=%s", logger_prefix, dest, exc)
+    
+    # 清理可能已部分创建的目录
+    if dest.exists():
+        _safe_rmtree(dest)
+    
+    # 获取错误消息字符串（支持普通 OSError 和 shutil.Error）
+    error_msg = str(exc)    
+    # 检查是否是路径太长错误 (WinError 206)
+    if "WinError 206" in error_msg or "206" in error_msg:
+        return {
+            "success": False,
+            "detail": (
+                "文件名或路径过长：可能是skill 内部子文件路径过长"
+                "或当前工作路径过长，请尝试缩短 skill 名称，"
+                "使用更短的目录路径，或者开启windows长路径支持"
+            ),
+        }
+
+    # 检查是否是路径不存在错误 (WinError 3)
+    if "WinError 3" in error_msg or "系统找不到指定的路径" in error_msg:
+        return {
+            "success": False,
+            "detail": (
+                "路径不存在：可能是skill 内部子文件路径过长"
+                "或当前工作路径过长，请尝试缩短 skill 名称，"
+                "使用更短的目录路径，或者开启windows长路径支持"
+            ),
+        }
+
+    # 返回通用错误信息
+    return {
+        "success": False,
+        "detail": error_msg if error_msg else f"复制失败 ({type(exc).__name__})",
+    }
+
+
 class SkillManager:
     """Skill 管理器，对应 skills.* 请求方法."""
 
@@ -1934,8 +1987,11 @@ class SkillManager:
                 if not force:
                     return {"success": False, "detail": f"skill {skill_name} 已存在"}
                 _safe_rmtree(dest)
-            dest.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest / src.name)
+            try:
+                dest.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest / src.name)
+            except OSError as exc:
+                return _handle_copy_error(exc, dest, "local import file", src)
         elif src.is_dir():
             md = self._try_find_skill_file(src)
             if md is None:
@@ -1952,7 +2008,10 @@ class SkillManager:
                 if not force:
                     return {"success": False, "detail": f"skill {skill_name} 已存在"}
                 _safe_rmtree(dest)
-            shutil.copytree(src, dest)
+            try:
+                shutil.copytree(src, dest)
+            except OSError as exc:
+                return _handle_copy_error(exc, dest, "local import dir", src)
         else:
             return {"success": False, "detail": f"不支持的路径类型: {origin}"}
 
