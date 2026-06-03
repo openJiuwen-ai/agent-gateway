@@ -3813,7 +3813,7 @@ class JiuWenClawDeepAdapter:
     # ------------------------------------------------------------------
 
     async def _handle_evolve_command(self, query: str, session_id: str) -> dict[str, Any]:
-        """/evolve [list | <skill_name> [<user_query>...]] handler using the active SDK path.
+        """/evolve [<skill_name> [<user_query>...]] handler using the active SDK path.
 
         Uses SkillEvolutionRail.request_user_evolution to return structured
         approval data directly. Passive/background evolution still uses the
@@ -3836,7 +3836,7 @@ class JiuWenClawDeepAdapter:
         parts = query.split(maxsplit=1)
         skill_arg = parts[1].strip() if len(parts) > 1 else ""
 
-        # --- /evolve list (or bare /evolve) ---
+        # --- bare /evolve summary. "list" is retained for backward compatibility. ---
         if not skill_arg or skill_arg == "list":
             if not skill_names:
                 return {
@@ -3861,7 +3861,7 @@ class JiuWenClawDeepAdapter:
                 "output": (
                     f"在 skills_base_dir 下未找到 Skill '{skill_name}'。\n"
                     f"当前可用 Skill：{available}\n"
-                    f"可使用 /evolve list 查看所有记录。"
+                    f"可使用 /evolve_list <skill_name> 查看指定 Skill 的经验库。"
                 ),
                 "result_type": "error",
             }
