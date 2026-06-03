@@ -5633,22 +5633,77 @@ class JiuWenClawDeepAdapter:
         return {"status": "ok", "summary": summary_text.strip()}
 
     def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
-        """从当前 agent 对话上下文中提取最近N条消息。"""
-        if self._instance is None or self._instance.react_agent is None:
-            return []
+        """从当前 agent 对话上下文中提取最近N条消息。
 
-        context_engine = self._instance.react_agent.context_engine
-        context = context_engine.get_context(session_id=session_id)
-        if context is None:
-            return []
+        当 context_engine 中没有该 session 的上下文时（例如 /resume 之后），
+        回退到从磁盘读取 history.json。
+        """
+        # --- 快速路径：context_engine 已加载 ---
+        if self._instance is not None and self._instance.react_agent is not None:
+            context_engine = self._instance.react_agent.context_engine
+            context = context_engine.get_context(session_id=session_id)
+            if context is not None:
+                try:
+                    all_messages = list(context.get_messages() or [])
+                    if all_messages:
+                        return all_messages[-window:]
+                except Exception as exc:
+                    logger.debug("[JiuWenClaw] _get_recent_messages from context_engine failed: %s", exc)
 
+        # --- 回退路径：从磁盘读取 history.json ---
+        # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
+        # 但磁盘上已有该 session 的历史消息。
         try:
-            all_messages = list(context.get_messages() or [])
-        except Exception as exc:
-            logger.debug("[JiuWenClaw] _get_recent_messages failed: %s", exc)
-            return []
+            from types import SimpleNamespace
 
-        return all_messages[-window:]
+            from jiuwenswarm.common.utils import get_agent_sessions_dir
+            from jiuwenswarm.server.runtime.session.session_history import _read_history
+
+            history_path = get_agent_sessions_dir() / session_id / "history.json"
+            records = _read_history(history_path)
+            if not records:
+                logger.debug(
+                    "[JiuWenClaw] _get_recent_messages: no history records on disk for session %s",
+                    session_id,
+                )
+                return []
+
+            # 过滤出适合 recap 的消息记录
+            # 只保留 user 消息和 assistant 的最终回复 / compact summary
+            recapworthy = []
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                role = rec.get("role")
+                content = rec.get("content")
+                if not isinstance(content, str) or not content.strip():
+                    continue
+
+                if role == "user":
+                    recapworthy.append(SimpleNamespace(role="user", content=content))
+                elif role == "assistant":
+                    event_type = rec.get("event_type")
+                    # 只包含 assistant 的最终回复和 compact summary
+                    if event_type in ("chat.final", "context.compact_summary") or not event_type:
+                        recapworthy.append(SimpleNamespace(role="assistant", content=content))
+
+            if not recapworthy:
+                logger.debug(
+                    "[JiuWenClaw] _get_recent_messages: no recap-worthy records on disk for session %s",
+                    session_id,
+                )
+                return []
+
+            logger.info(
+                "[JiuWenClaw] _get_recent_messages: loaded %d records from disk for session %s "
+                "(context_engine fallback)",
+                len(recapworthy),
+                session_id,
+            )
+            return recapworthy[-window:]
+        except Exception as exc:
+            logger.debug("[JiuWenClaw] _get_recent_messages disk fallback failed: %s", exc)
+            return []
 
     async def _call_model_for_recap(
         self,
