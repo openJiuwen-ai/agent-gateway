@@ -509,13 +509,38 @@ export function createConfigCommand(): SlashCommand {
       {
         name: "reset",
         description: "Reset config to default value",
-        usage: "/config reset <key>",
+        usage: "/config reset [key]",
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: async (ctx, args) => {
           const key = args.trim();
+          // No key: open interactive reset panel (like /config edit but in reset mode)
           if (!key) {
-            ctx.addItem(addError(ctx.sessionId, "usage: /config reset <key>"));
+            if (ctx.enterConfigEditor) {
+              let payload: Record<string, unknown> & { schema?: ConfigItemSchema[] };
+              try {
+                payload = await ctx.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
+                  "config.get",
+                  {},
+                );
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                ctx.addItem(addError(ctx.sessionId, `failed to load config: ${message}`));
+                return;
+              }
+              const mergedPayload: Record<string, unknown> & { schema?: ConfigItemSchema[] } = {
+                ...payload,
+                schema: [...(payload.schema ?? []), ...FRONTEND_SCHEMAS],
+              };
+              for (const schema of FRONTEND_SCHEMAS) {
+                if (mergedPayload[schema.key] === undefined) {
+                  mergedPayload[schema.key] = getFrontendValue(ctx, schema.key);
+                }
+              }
+              ctx.enterConfigEditor(undefined, mergedPayload, "reset");
+            } else {
+              ctx.addItem(addError(ctx.sessionId, "usage: /config reset <key>"));
+            }
             return;
           }
           // Handle frontend-only config keys

@@ -172,8 +172,11 @@ type McpToolDetailState = {
 
 type ConfigEditorPhase = "search_list" | "select_value" | "input_value";
 
+type ConfigEditorMode = "edit" | "reset";
+
 type ConfigEditorState = {
   phase: ConfigEditorPhase;
+  mode: ConfigEditorMode;  // edit=修改值, reset=重置到默认值
   schemaList: ConfigItemSchema[];
   currentValues: Record<string, string>;
   selectedKey: string | null;
@@ -1498,8 +1501,8 @@ export class AppScreen implements Component, Focusable {
           setInput: (text: string) => {
             this.editor.setText(text);
           },
-          enterConfigEditor: (focusKey, configPayload) => {
-            this.openConfigEditor(focusKey, configPayload);
+          enterConfigEditor: (focusKey, configPayload, mode) => {
+            this.openConfigEditor(focusKey, configPayload, mode);
           },
           openInEditor: (filePath: string) => {
             openInExternalEditor(this.tui, filePath);
@@ -2600,7 +2603,8 @@ export class AppScreen implements Component, Focusable {
 
     // Title line
     if (state.phase === "search_list") {
-      lines.push(padToWidth(palette.status.warning("配置编辑器"), width));
+      const title = state.mode === "reset" ? "重置配置项" : "配置编辑器";
+      lines.push(padToWidth(palette.status.warning(title), width));
     } else if (state.phase === "select_value") {
       const schema = state.schemaList.find((s) => s.key === state.selectedKey);
       lines.push(padToWidth(palette.status.warning(`选择 "${schema?.label ?? state.selectedKey}" 的值`), width));
@@ -2613,10 +2617,13 @@ export class AppScreen implements Component, Focusable {
 
     // Search box for search_list phase
     if (state.phase === "search_list") {
+      const searchHint = state.mode === "reset"
+        ? "输入搜索 · ↑/↓ 选择 · Enter/空格 重置 · / 搜索 · Esc 关闭"
+        : "输入搜索 · ↑/↓ 选择 · Enter/空格 修改 · / 搜索 · Esc 关闭";
       if (state.searchMode) {
         lines.push(padToWidth(palette.text.primary(`搜索: ${state.searchQuery}${END_CURSOR}`), width));
       } else {
-        lines.push(padToWidth(palette.text.dim("输入搜索 · ↑/↓ 选择 · Enter/空格 修改 · / 搜索 · Esc 关闭"), width));
+        lines.push(padToWidth(palette.text.dim(searchHint), width));
       }
       lines.push(blank);  // Gap between search box and list
     }
@@ -2640,11 +2647,12 @@ export class AppScreen implements Component, Focusable {
     lines.push(blank);  // Gap between content and hint
 
     // Hint line
+    const actionLabel = state.mode === "reset" ? "重置" : "修改";
     let hint: string;
     if (state.phase === "search_list") {
       hint = state.searchMode
         ? "Backspace 删除 · ↑/↓ 导航 · Enter 选择 · Esc 清除搜索"
-        : "↑/↓ 选择 · Enter/空格 修改 · / 搜索 · Esc 关闭";
+        : `↑/↓ 选择 · Enter/空格 ${actionLabel} · / 搜索 · Esc 关闭`;
     } else if (state.phase === "input_value") {
       hint = "输入值 · Enter 确认 · Esc 返回";
     } else {
@@ -2688,7 +2696,20 @@ export class AppScreen implements Component, Focusable {
     schema: ConfigItemSchema,
   ): void {
     const currentValues = this.configEditorState!.currentValues;
+    const mode = this.configEditorState!.mode;
 
+    // reset 模式：直接重置为默认值，不需要子面板
+    if (mode === "reset") {
+      const defaultValue = schema.default ?? "";
+      if (defaultValue) {
+        void this.applyConfigEditorSetAndStay(schema.key, defaultValue, schema, currentValues);
+      } else {
+        this.state.addItem(addInfo(this.state.getSnapshot().sessionId, `${schema.key} has no default value`, "c"));
+      }
+      return;
+    }
+
+    // edit 模式：原有逻辑
     if (schema.type === "toggle") {
       const currentVal = currentValues[schema.key] ?? "false";
       const newValue = currentVal === "true" ? "false" : "true";
@@ -2751,11 +2772,16 @@ export class AppScreen implements Component, Focusable {
     schema: ConfigItemSchema,
     currentValues: Record<string, string>,
   ): Promise<void> {
+    const isReset = this.configEditorState?.mode === "reset";
+    const valueDisplay = schema.sensitive ? "***" : value;
+    const statusLabel = isReset ? "已重置" : "已应用";
+    const restartLabel = isReset ? "已重置(需重启)" : "需重启";
+
     // Handle frontend-only config keys (theme)
     if (key === "theme") {
       this.state.setThemeName(value as import("./theme.js").ThemeName);
       currentValues[key] = value;
-      this.state.addItem(addInfo(this.state.getSnapshot().sessionId, `✓ ${key}: ${value} (已应用)`, "c"));
+      this.state.addItem(addInfo(this.state.getSnapshot().sessionId, `✓ ${key}: ${valueDisplay} (${statusLabel})`, "c"));
       this.refreshConfigEditorList();
       return;
     }
@@ -2766,8 +2792,8 @@ export class AppScreen implements Component, Focusable {
       }>("config.set", { [key]: value });
       currentValues[key] = value;
       const msg = result.applied_without_restart
-        ? `✓ ${key}: ${schema.sensitive ? "***" : value} (已应用)`
-        : `✓ ${key}: ${schema.sensitive ? "***" : value} (需重启)`;
+        ? `✓ ${key}: ${valueDisplay} (${statusLabel})`
+        : `✓ ${key}: ${valueDisplay} (${restartLabel})`;
       this.state.addItem(addInfo(this.state.getSnapshot().sessionId, msg, "c"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2836,7 +2862,9 @@ export class AppScreen implements Component, Focusable {
   private openConfigEditor(
     focusKey?: string,
     configPayload?: Record<string, unknown> & { schema?: ConfigItemSchema[] },
+    mode?: ConfigEditorMode,
   ): void {
+    const editorMode: ConfigEditorMode = mode ?? "edit";
     const schemaList = configPayload?.schema ?? [];
     if (schemaList.length === 0) {
       this.state.addItem(addError(this.state.getSnapshot().sessionId, "No config schema available"));
@@ -2860,6 +2888,7 @@ export class AppScreen implements Component, Focusable {
         );
         this.configEditorState = {
           phase: "search_list",
+          mode: editorMode,
           schemaList,
           currentValues,
           selectedKey: null,
@@ -2894,6 +2923,7 @@ export class AppScreen implements Component, Focusable {
 
     this.configEditorState = {
       phase: "search_list",
+      mode: editorMode,
       schemaList,
       currentValues,
       selectedKey: null,
@@ -3155,6 +3185,7 @@ export class AppScreen implements Component, Focusable {
     );
     this.configEditorState = {
       phase: "search_list",
+      mode: "edit",
       schemaList,
       currentValues,
       selectedKey: null,

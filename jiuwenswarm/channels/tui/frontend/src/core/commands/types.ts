@@ -90,6 +90,7 @@ export interface CommandContext {
   enterConfigEditor?: (
     focusKey?: string,
     configPayload?: Record<string, unknown> & { schema?: ConfigItemSchema[] },
+    mode?: "edit" | "reset",
   ) => void;
   enterStatusView?: (tab?: StatusViewTab) => void;
   openInEditor?: (filePath: string) => void;
