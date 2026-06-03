@@ -13,8 +13,13 @@ let lastInterruptTime = 0;
 export interface AppScreenKeymapDelegate {
   /** Interrupt server-side task (send chat.interrupt) */
   interruptTask(): void;
-  /** Set local interrupt flag only (for long-running local commands like log streaming) */
-  requestLocalInterrupt(): void;
+  /**
+   * Set local interrupt flag only (for long-running local commands like log streaming).
+   * Returns true if an active command WS request was cancelled — this means the
+   * Ctrl+C keystroke was consumed by the command cancellation and the "double-press-
+   * to-exit" timer should be reset.
+   */
+  requestLocalInterrupt(): boolean;
   /** Show a brief hint that pressing Ctrl+C again will exit */
   showCtrlCExitHint(): void;
   exitApp(): void;
@@ -48,11 +53,22 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBinding[] = [
       }
 
       // Always set local interrupt flag (for long-running local commands)
-      delegate.requestLocalInterrupt();
+      // Returns true if an active command request was cancelled — this means
+      // Ctrl+C was consumed by command cancellation, not a generic interrupt.
+      const commandCancelled = delegate.requestLocalInterrupt();
 
       // Only send chat.interrupt if there's a server task running
       if (delegate.hasServerTask()) {
         delegate.interruptTask();
+      }
+
+      // When a command (e.g. /recap) was cancelled, reset the double-press timer
+      // so the user needs TWO fresh Ctrl+C presses to exit, not just one more.
+      if (commandCancelled && !delegate.hasServerTask()) {
+        lastInterruptTime = 0;
+        // Don't show the "Press Ctrl+C again to exit" hint — the user just
+        // cancelled a command, they don't intend to exit the TUI.
+        return;
       }
 
       // If idle (no server task and no local command running), clear input
@@ -60,7 +76,7 @@ export const APP_SCREEN_KEY_BINDINGS: readonly KeyBinding[] = [
         delegate.clearInput();
       }
 
-      // Show hint that pressing Ctrl+C again within 1s will exit
+      // Show hint that pressing Ctrl+C again will exit
       delegate.showCtrlCExitHint();
 
       lastInterruptTime = now;

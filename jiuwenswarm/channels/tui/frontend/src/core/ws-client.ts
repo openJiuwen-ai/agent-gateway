@@ -207,6 +207,21 @@ export class WsClient {
     }
   }
 
+  /**
+   * Cancel a specific pending request by ID.
+   * Clears the timeout timer, removes the entry, and rejects the Promise.
+   * Used when a command is interrupted (Ctrl+C) to clean up the WS request
+   * immediately instead of waiting for timeout.
+   */
+  cancelRequest(id: string, reason = "cancelled"): void {
+    const pending = this.pending.get(id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.pending.delete(id);
+      pending.reject(new Error(reason));
+    }
+  }
+
   private rejectAllPending(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);

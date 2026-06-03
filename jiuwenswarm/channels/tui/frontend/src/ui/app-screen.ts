@@ -976,7 +976,7 @@ export class AppScreen implements Component, Focusable {
       },
       hasServerTask: () => this.state.hasServerTask(),
       requestLocalInterrupt: () => {
-        this.state.requestLocalInterrupt();
+        return this.state.requestLocalInterrupt();
       },
       showCtrlCExitHint: () => {
         if (this.transientNoticeTimer) {

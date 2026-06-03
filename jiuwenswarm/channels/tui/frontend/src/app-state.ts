@@ -235,6 +235,8 @@ export class CliPiAppState {
   private suppressInterruptResult = false;
   /** 本地中断请求标志，cancel() 调用时立即置 true，用于 long-running 命令的中断检测。 */
   private interruptRequested = false;
+  /** 当前正在执行的斜杠命令 WS 请求 ID，用于 Ctrl+C 时立即取消。 */
+  private activeCommandRequestId: string | null = null;
   private lastVisibleUserRequest: VisibleUserRequest | null = null;
   /** 保存 askQuestions 之前的 streamingState，用于在对话框关闭后恢复。 */
   private streamingStateBeforeQuestion: StreamingState | null = null;
@@ -627,9 +629,21 @@ export class CliPiAppState {
     return this.interruptRequested;
   }
 
-  /** Set local interrupt flag (for long-running local commands like log streaming) */
-  requestLocalInterrupt(): void {
+  /**
+   * Set local interrupt flag (for long-running local commands like log streaming).
+   * Returns true if an active command WS request was cancelled — this signals
+   * to the Ctrl+C handler that the interrupt consumed the keystroke and the
+   * "double-press-to-exit" timer should be reset.
+   */
+  requestLocalInterrupt(): boolean {
     this.interruptRequested = true;
+    // 立即取消正在执行的命令 WS 请求（如 /recap），避免等待 60 秒超时
+    if (this.activeCommandRequestId) {
+      this.wsClient.cancelRequest(this.activeCommandRequestId, "cancelled");
+      this.activeCommandRequestId = null;
+      return true; // 命令请求被取消 → Ctrl+C 被消费，不应触发"连按两次退出"
+    }
+    return false;
   }
 
   /** Clear local interrupt flag (called after handling interrupt) */
@@ -764,22 +778,31 @@ export class CliPiAppState {
     timeoutMs?: number,
   ): Promise<T> => {
     const id = `tui_${Date.now().toString(16)}_${Math.random().toString(36).slice(2, 6)}`;
+    // 记录当前命令请求 ID，以便 Ctrl+C 时能立即取消 WS 请求
+    this.activeCommandRequestId = id;
     const trustedDirs = getTrustedDirs();
     const projectDir = getCurrentProjectDir() || process.cwd();
     const cwd = getCurrentCwd() || projectDir;
-    const response = await this.wsClient.request(
-      id,
-      method,
-      {
-        ...params,
-        session_id: params.session_id ?? this.sessionId,
-        ...(trustedDirs.length > 0 ? { trusted_dirs: trustedDirs } : {}),
-        ...(projectDir ? { project_dir: projectDir } : {}),
-        ...(cwd ? { cwd } : {}),
-      },
-      timeoutMs ?? 30000,
-    );
-    return response.payload as T;
+    try {
+      const response = await this.wsClient.request(
+        id,
+        method,
+        {
+          ...params,
+          session_id: params.session_id ?? this.sessionId,
+          ...(trustedDirs.length > 0 ? { trusted_dirs: trustedDirs } : {}),
+          ...(projectDir ? { project_dir: projectDir } : {}),
+          ...(cwd ? { cwd } : {}),
+        },
+        timeoutMs ?? 30000,
+      );
+      return response.payload as T;
+    } finally {
+      // 请求完成后清理追踪（无论成功/失败/取消）
+      if (this.activeCommandRequestId === id) {
+        this.activeCommandRequestId = null;
+      }
+    }
   };
 
   readonly updateSession = (newId: string): void => {
@@ -1040,6 +1063,11 @@ export class CliPiAppState {
     }
     // Set local interrupt flag immediately for long-running command detection
     this.interruptRequested = true;
+    // 同时取消正在执行的命令 WS 请求（与 requestLocalInterrupt 保持一致）
+    if (this.activeCommandRequestId) {
+      this.wsClient.cancelRequest(this.activeCommandRequestId, "cancelled");
+      this.activeCommandRequestId = null;
+    }
     const hadLocalWork = this.getSnapshot().cancellableWork;
     this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     if (options?.showNotice !== false && hadLocalWork) {
