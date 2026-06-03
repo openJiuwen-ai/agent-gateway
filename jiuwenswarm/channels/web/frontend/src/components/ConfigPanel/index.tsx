@@ -12,11 +12,13 @@ function MultiSelectDropdown({
   selected,
   onChange,
   placeholder,
+  emptyMessage,
 }: {
   options: string[];
   selected: string[];
   onChange: (selected: string[]) => void;
   placeholder?: string;
+  emptyMessage?: string;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -86,7 +88,7 @@ function MultiSelectDropdown({
           ))
         )}
       </div>
-      {isOpen && options.length > 0 && createPortal(
+      {isOpen && createPortal(
         <div
           ref={dropdownRef}
           className="fixed z-[9999] max-h-60 overflow-auto rounded border border-border bg-card shadow-lg"
@@ -96,20 +98,26 @@ function MultiSelectDropdown({
             width: dropdownPosition.width,
           }}
         >
-          {options.map((option) => (
-            <label
-              key={option}
-              className="flex items-center gap-2 px-2 py-1.5 hover:bg-secondary/50 cursor-pointer text-xs"
-            >
-              <input
-                type="checkbox"
-                checked={selected.includes(option)}
-                onChange={() => toggleOption(option)}
-                className="rounded border-border"
-              />
-              <span className="text-text">{option}</span>
-            </label>
-          ))}
+          {options.length === 0 ? (
+            <div className="px-2 py-1.5 text-xs text-text-muted">
+              {emptyMessage || "No options available"}
+            </div>
+          ) : (
+            options.map((option) => (
+              <label
+                key={option}
+                className="flex items-center gap-2 px-2 py-1.5 hover:bg-secondary/50 cursor-pointer text-xs"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(option)}
+                  onChange={() => toggleOption(option)}
+                  className="rounded border-border"
+                />
+                <span className="text-text">{option}</span>
+              </label>
+            ))
+          )}
         </div>,
         document.body
       )}
@@ -1457,6 +1465,7 @@ function MultiAgentSection({
                           onAgentsChange(copy);
                         }}
                         placeholder={t("config.keys.agentSkillsPlaceholder")}
+                        emptyMessage={t("config.keys.agentSkillsEmpty")}
                       />
                     ) : field === "completion_timeout" ? (
                       <input
@@ -1555,6 +1564,7 @@ function MultiAgentSection({
                   selected={newAgent.skills || []}
                   onChange={(selected) => setNewAgent((p) => ({ ...p, skills: selected }))}
                   placeholder={t("config.keys.agentSkillsPlaceholder")}
+                  emptyMessage={t("config.keys.agentSkillsEmpty")}
                 />
               ) : field === "completion_timeout" ? (
                 <input
