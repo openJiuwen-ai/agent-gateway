@@ -119,6 +119,10 @@ from jiuwenswarm.agents.harness.common.rails import (
     ResponsePromptRail,
     RuntimePromptRail,
 )
+from jiuwenswarm.agents.harness.common.rails.execution_guard import (
+    CircuitBreakerRail,
+    CircuitBreakerConfig,
+)
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
@@ -2112,6 +2116,31 @@ class JiuWenClawDeepAdapter:
             logger.warning("[JiuWenClawDeepAdapter] AvatarPromptRail create failed: %s", exc)
             return None
 
+    def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
+        try:
+            guard_cfg = (get_config() or {}).get("execution_guard") or {}
+            cb_cfg = guard_cfg.get("circuit_breaker") or {}
+            if cb_cfg.get("enabled", False) is not True:
+                logger.info("[JiuWenClawDeepAdapter] CircuitBreakerRail disabled by config")
+                return None
+            defaults = CircuitBreakerConfig()
+            config = CircuitBreakerConfig(
+                warning_threshold=cb_cfg.get("warning_threshold", defaults.warning_threshold),
+                critical_threshold=cb_cfg.get("critical_threshold", defaults.critical_threshold),
+                global_breaker_threshold=cb_cfg.get(
+                    "global_breaker_threshold", defaults.global_breaker_threshold
+                ),
+                unknown_tool_threshold=cb_cfg.get(
+                    "unknown_tool_threshold", defaults.unknown_tool_threshold
+                ),
+            )
+            rail = CircuitBreakerRail(config, language=self._resolve_runtime_language())
+            logger.info("[JiuWenClawDeepAdapter] CircuitBreakerRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenClawDeepAdapter] CircuitBreakerRail create failed: %s", exc)
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -2151,6 +2180,7 @@ class JiuWenClawDeepAdapter:
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_subagent_rail", self._build_subagent_rail),
             _RailBuildInfo(
@@ -3168,6 +3198,9 @@ class JiuWenClawDeepAdapter:
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
+        circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+        if circuit_breaker_rail is not None:
+            circuit_breaker_rail.set_language(resolved_language)
         self._write_runtime_state(
             mode=runtime_config.mode,
             language=resolved_language,
