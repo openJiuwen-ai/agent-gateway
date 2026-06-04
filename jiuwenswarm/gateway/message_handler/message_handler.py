@@ -14,7 +14,7 @@ from abc import ABC
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict
+from typing import TYPE_CHECKING, Any, Dict, Literal
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_INTERNAL_METADATA_KEYS
 from jiuwenswarm.gateway.routing.session_map import SessionMap
@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
+# TUI/ACP/legacy CLI: one in-flight chat replaces any prior work on that channel.
+_SINGLE_USER_CHANNEL_IDS = frozenset({
+    ChannelType.ACP.value,
+    ChannelType.CLI.value,
+    "cli",
+})
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
 _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
     "sess_",
@@ -126,10 +132,12 @@ class MessageHandler(ABC):
         self._running = False
         self._forward_task: asyncio.Task | None = None
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
+        self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
         self._stream_sessions: dict[str, str | None] = {}  # request_id -> session_id
         self._stream_metadata: dict[str, dict[str, Any] | None] = {}  # request_id -> request metadata
         self._stream_modes: dict[str, str] = {}  # request_id -> mode
         self._stream_emits_processing_status: dict[str, bool] = {}  # request_id -> emits chat.processing_status
+        self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
         self._pending_evolution_approval: dict[str, str] = {}  # session_id -> approval_request_id
         self._queued_supplement_input: dict[str, dict[str, Any]] = {}  # session_id -> queued supplement payload
         self._session_last_user_query: dict[str, str] = {}
@@ -378,12 +386,160 @@ class MessageHandler(ABC):
         )
         await self.publish_robot_messages(msg)
 
+    def _pop_stream_tracking(self, rid: str) -> None:
+        """Remove all per-request stream tracking entries for *rid*."""
+        self._stream_tasks.pop(rid, None)
+        self._stream_channels.pop(rid, None)
+        self._stream_sessions.pop(rid, None)
+        self._stream_metadata.pop(rid, None)
+        self._stream_emits_processing_status.pop(rid, None)
+        self._stream_modes.pop(rid, None)
+
+    @staticmethod
+    def _is_single_user_channel(channel_id: str) -> bool:
+        """Channels where only one user interacts at a time (TUI, ACP, CLI)."""
+        return channel_id in _SINGLE_USER_CHANNEL_IDS
+
+    def _clone_message_for_session_cancel(
+        self,
+        msg: "Message",
+        session_id: str,
+        *,
+        mode: str | None = None,
+    ) -> "Message":
+        """Build a Message suitable for ``_cancel_agent_work_for_session``."""
+        params = dict(msg.params) if isinstance(msg.params, dict) else {}
+        if mode:
+            params["mode"] = mode
+        return replace(msg, session_id=session_id, params=params)
+
+    def _should_cancel_stream_on_channel(
+        self,
+        channel_id: str,
+        new_session_id: str | None,
+        task_session: str | None,
+    ) -> bool:
+        """Whether an in-flight stream on *channel_id* should be replaced by a new chat.send."""
+        if new_session_id and task_session == new_session_id:
+            return True
+        return self._is_single_user_channel(channel_id)
+
+    def _resolve_stream_cancel_session_id(
+        self,
+        channel_id: str,
+    ) -> str | None:
+        """Best-effort session id when a stream task lacks ``_stream_sessions``."""
+        for rid, sess in self._stream_sessions.items():
+            if self._stream_channels.get(rid) != channel_id:
+                continue
+            candidate = (sess or "").strip()
+            if candidate:
+                return candidate
+        state_key_prefix = f"{channel_id}:"
+        for key in self._channel_states:
+            if key == channel_id:
+                continue
+            if key.startswith(state_key_prefix):
+                suffix = key[len(state_key_prefix):].strip()
+                if suffix:
+                    return suffix
+        return None
+
+    async def _cancel_stream_tasks_for_channel(
+        self,
+        msg: "Message",
+        *,
+        reason: str = "new_chat_send",
+    ) -> int:
+        """Cancel in-flight stream work on *msg.channel_id* before starting a new chat.send.
+
+        Stops both gateway stream consumers and AgentServer work (via interrupt).
+        Single-user channels (TUI/ACP) also drop orphan tasks from other session_ids.
+        """
+        channel_id = msg.channel_id
+        new_session_id = msg.session_id
+        if not channel_id:
+            return 0
+
+        candidates: list[tuple[str, asyncio.Task, str | None, str | None]] = []
+        for rid, task in list(self._stream_tasks.items()):
+            if self._stream_channels.get(rid) != channel_id:
+                continue
+            if task.done():
+                continue
+            task_session = self._stream_sessions.get(rid)
+            if not self._should_cancel_stream_on_channel(
+                channel_id, new_session_id, task_session,
+            ):
+                continue
+            candidates.append(
+                (rid, task, task_session, self._stream_modes.get(rid)),
+            )
+
+        if not candidates:
+            return 0
+
+        rids_cancelled = [rid for rid, _, _, _ in candidates]
+        logger.info(
+            "[MessageHandler] 取消 channel 已有流式任务 (reason=%s): channel_id=%s "
+            "cancelled_rids=%s 当前并发=%d",
+            reason,
+            channel_id,
+            rids_cancelled,
+            len(self._stream_tasks),
+        )
+
+        sid_mode: dict[str, str | None] = {}
+        unresolved_rids: list[str] = []
+        for rid, _task, task_session, task_mode in candidates:
+            sid = (task_session or "").strip()
+            if not sid:
+                sid = (self._resolve_stream_cancel_session_id(channel_id) or "").strip()
+            if sid:
+                if sid not in sid_mode:
+                    sid_mode[sid] = task_mode
+            else:
+                unresolved_rids.append(rid)
+
+        # Stop gateway stream consumers first — never block on AgentServer RPC.
+        tasks_to_stop = [task for _rid, task, _sess, _mode in candidates]
+        for task in tasks_to_stop:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks_to_stop, return_exceptions=True)
+        for rid, _, _, _ in candidates:
+            self._pop_stream_tracking(rid)
+
+        for old_sid, mode in sid_mode.items():
+            cancel_msg = self._clone_message_for_session_cancel(msg, old_sid, mode=mode)
+            await self._cancel_agent_work_for_session(
+                cancel_msg,
+                old_sid,
+                publish_interrupt_result=False,
+                channel_id=channel_id,
+                cancel_gateway_tasks=False,
+                agent_notify="await",
+            )
+
+        if unresolved_rids:
+            logger.warning(
+                "[MessageHandler] 流式任务取消时无法解析 session_id，"
+                "已停止网关 stream 但未通知 AgentServer: channel_id=%s rids=%s",
+                channel_id,
+                unresolved_rids,
+            )
+
+        return len(candidates)
+
     async def _cancel_agent_work_for_session(
         self,
         msg: "Message",
         old_sid: str | None,
         *,
         publish_interrupt_result: bool = True,
+        channel_id: str | None = None,
+        cancel_gateway_tasks: bool = True,
+        agent_notify: Literal["await", "fire_and_forget"] = "await",
     ) -> None:
         """Cancel gateway and AgentServer work for a session.
 
@@ -394,6 +550,8 @@ class MessageHandler(ABC):
                 results returned by AgentServer. Control commands use this as an
                 internal cleanup step, so they suppress the intermediate result
                 and only publish their own command notice.
+            cancel_gateway_tasks: Whether to cancel in-flight gateway stream tasks.
+            agent_notify: ``await`` blocks on AgentServer; ``fire_and_forget`` does not.
         """
         from jiuwenswarm.common.schema.message import Message, ReqMethod
 
@@ -413,6 +571,8 @@ class MessageHandler(ABC):
         for rid, task in list(self._stream_tasks.items()):
             if self._stream_sessions.get(rid) != old_sid:
                 continue
+            if channel_id is not None and self._stream_channels.get(rid) != channel_id:
+                continue
             if not task.done():
                 rids_cancelled.append(rid)
                 tasks_to_cancel.append(task)
@@ -423,6 +583,8 @@ class MessageHandler(ABC):
         sid_for_agent = (old_sid or "").strip()
         if not sid_for_agent:
             await _cancel_tasks(tasks_to_cancel)
+            for rid in rids_cancelled:
+                self._pop_stream_tracking(rid)
             return
 
         # 即使网关侧已无活跃流式拉取任务（例如 Agent 正在执行 shell/工具），也必须通知 AgentServer，
@@ -439,9 +601,9 @@ class MessageHandler(ABC):
             # _apply_channel_state 已将 mode 写入 msg.params
             cancel_mode = msg.params["mode"]
         else:
-            # 回退到 channel_states
+            # 回退到 channel_states（按被 cancel 的 session，而非触发消息的 session）
             state = self._channel_states.get(
-                self._get_channel_state_key(msg.channel_id, msg.session_id)
+                self._get_channel_state_key(msg.channel_id, sid_for_agent)
             ) or self._channel_states.get(msg.channel_id)
             if state is not None:
                 cancel_mode = state.mode.value if hasattr(state.mode, 'value') else str(state.mode)
@@ -467,11 +629,32 @@ class MessageHandler(ABC):
         )
         agent_msg = await self._prepare_agent_dispatch_message(cancel_req)
         env_interrupt = self.message_to_e2a(agent_msg)
+
+        if cancel_gateway_tasks:
+            await _cancel_tasks(tasks_to_cancel)
+            for rid in rids_cancelled:
+                self._pop_stream_tracking(rid)
+
+        if agent_notify == "fire_and_forget":
+            task = asyncio.create_task(self._send_interrupt_to_agent(env_interrupt))
+            self._fire_and_forget_tasks.add(task)
+            task.add_done_callback(self._fire_and_forget_tasks.discard)
+            logger.info(
+                "[MessageHandler] 已 fire-and-forget 发送 AgentServer 中断: session_id=%s",
+                sid_for_agent,
+            )
+            return
+
         try:
             resp = await self._agent_client.send_request(env_interrupt)
         except Exception as exc:
             logger.warning("[MessageHandler] AgentServer 中断请求失败: %s", exc)
-            await _cancel_tasks(tasks_to_cancel)
+            if cancel_gateway_tasks:
+                pass  # gateway tasks already cancelled above
+            else:
+                await _cancel_tasks(tasks_to_cancel)
+                for rid in rids_cancelled:
+                    self._pop_stream_tracking(rid)
             if publish_interrupt_result:
                 await self._send_interrupt_result_notification(
                     msg.id, msg.channel_id, sid_for_agent, "cancel",
@@ -479,8 +662,10 @@ class MessageHandler(ABC):
                 )
             return
 
-        # AgentServer 中断成功后，取消网关侧流式任务
-        await _cancel_tasks(tasks_to_cancel)
+        if not cancel_gateway_tasks:
+            await _cancel_tasks(tasks_to_cancel)
+            for rid in rids_cancelled:
+                self._pop_stream_tracking(rid)
 
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
@@ -530,12 +715,46 @@ class MessageHandler(ABC):
     async def cancel_agent_sessions_on_disconnect(
         self,
         session_keys: list[tuple[str, str]],
+        *,
+        stale_request_keys: list[tuple[str, str]] | None = None,
     ) -> None:
-        """TUI/WebSocket 异常断开时，取消仍绑定在该连接上的会话（与显式 chat.interrupt 对齐）。"""
+        """TUI/WebSocket 异常断开时，取消仍绑定在该连接上的会话（与显式 chat.interrupt 对齐）。
+
+        Args:
+            session_keys: ``(channel_id, session_id)`` 元组，来自 GatewayServer
+                ``_session_to_client`` 中 ``client is ws`` 的反查。当用户在同一
+                ``session_id`` 上重连导致旧 WS 在该映射中被覆盖时，这里可能为空。
+            stale_request_keys: ``(channel_id, request_id)`` 元组，来自 GatewayServer
+                ``_request_to_client`` 中 ``client is ws`` 的反查。即使
+                ``session_keys`` 为空，这里仍能让我们通过 ``_stream_sessions``
+                找出该 WS 上 in-flight stream 对应的 session_id，避免漏取消。
+        """
         from jiuwenswarm.common.schema.message import Message, ReqMethod
 
+        # 合并两路来源到统一的 (channel_id, session_id) 列表
+        merged: list[tuple[str, str]] = list(session_keys or [])
+        recovered_via_requests: list[tuple[str, str]] = []
+        for channel_id, request_id in stale_request_keys or []:
+            task_session = (self._stream_sessions.get(request_id) or "").strip()
+            if not task_session:
+                continue
+            entry = (channel_id, task_session)
+            if entry in merged:
+                continue
+            merged.append(entry)
+            recovered_via_requests.append(entry)
+
+        logger.info(
+            "[MessageHandler] WS 断开触发 cancel: session_keys=%s recovered_from_requests=%s",
+            session_keys,
+            recovered_via_requests,
+        )
+
+        if not merged:
+            return
+
         seen: set[str] = set()
-        for _channel_id, session_id in session_keys:
+        for _channel_id, session_id in merged:
             sid = (session_id or "").strip()
             if not sid or sid in seen:
                 continue
@@ -2504,7 +2723,11 @@ class MessageHandler(ABC):
                 stream_rid = env.request_id or msg.id
                 try:
                     if env.is_stream:
-                        # 流式处理：启动后台任务，支持多任务并发
+                        # 取消同一 channel 上已有的流式任务，避免会话孤岛
+                        # （例如 TUI 发送新消息时，旧 session 仍在后台空跑）
+                        if msg.req_method == ReqMethod.CHAT_SEND:
+                            await self._cancel_stream_tasks_for_channel(msg)
+                        # 流式处理：启动后台任务
                         # 通知前端新任务开始处理
                         emit_processing_status = self._should_emit_processing_status_for_stream(msg)
                         if emit_processing_status:
@@ -2520,6 +2743,7 @@ class MessageHandler(ABC):
                             )
                         )
                         self._stream_tasks[stream_rid] = task
+                        self._stream_channels[stream_rid] = msg.channel_id
                         self._stream_sessions[stream_rid] = msg.session_id
                         self._stream_metadata[stream_rid] = msg.metadata
                         self._stream_emits_processing_status[stream_rid] = emit_processing_status
@@ -2617,11 +2841,7 @@ class MessageHandler(ABC):
             raise  # 重新抛出，让调用者知道任务被取消
         finally:
             # 清理状态
-            self._stream_tasks.pop(rid, None)
-            self._stream_sessions.pop(rid, None)
-            self._stream_metadata.pop(rid, None)
-            self._stream_emits_processing_status.pop(rid, None)
-            self._stream_modes.pop(rid, None)
+            self._pop_stream_tracking(rid)
             if session_id is not None and session_id not in self._stream_sessions.values():
                 # Fallback cleanup when stream exits unexpectedly without evolution end signal.
                 self._clear_session_evolution_in_progress(session_id)
@@ -2862,6 +3082,7 @@ class MessageHandler(ABC):
                 except asyncio.CancelledError:
                     pass
         self._stream_tasks.clear()
+        self._stream_channels.clear()
         self._stream_sessions.clear()
         self._stream_metadata.clear()
         self._stream_emits_processing_status.clear()

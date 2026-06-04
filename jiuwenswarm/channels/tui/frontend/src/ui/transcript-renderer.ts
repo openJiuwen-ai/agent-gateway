@@ -116,7 +116,8 @@ export function buildTranscriptLines(
       compact: snapshot.transcriptMode === "compact",
       collapsed,
       thinkingExpanded: showFullThinking,
-      activeThinkingId: snapshot.isProcessing ? latestThinkingId : undefined,
+      activeThinkingId:
+        snapshot.isProcessing || snapshot.cancellableWork ? latestThinkingId : undefined,
       toolDetailsExpanded: showToolDetails,
       animationPhase,
     });

@@ -524,22 +524,38 @@ class GatewayServer:
             self._clients.discard(ws)
             return
 
+        normal_close = False
         try:
             async for raw in ws:
                 await self._handle_raw_message(ws, raw, matched_path, route)
+            normal_close = True
         except ConnectionClosedError:
             logger.info("[App] WebSocket connection closed: channel=%s", route.channel_id)
         finally:
+            if normal_close:
+                logger.info(
+                    "[App] WebSocket connection closed (normal): channel=%s",
+                    route.channel_id,
+                )
             self._clients.discard(ws)
-            stale_request_ids = [request_id for request_id, client in self._request_to_client.items() if client is ws]
-            for request_id in stale_request_ids:
-                self._request_to_client.pop(request_id, None)
-            stale_session_keys = [key for key, client in self._session_to_client.items() if client is ws]
+            stale_request_keys = [
+                key for key, client in self._request_to_client.items() if client is ws
+            ]
+            for request_key in stale_request_keys:
+                self._request_to_client.pop(request_key, None)
+            stale_session_keys = [
+                key for key, client in self._session_to_client.items() if client is ws
+            ]
             for session_key in stale_session_keys:
                 self._session_to_client.pop(session_key, None)
             if route.disconnect_handler is not None:
                 try:
-                    result = route.disconnect_handler(ws, stale_session_keys)
+                    # Pass stale_request_keys so the handler can recover session_ids
+                    # via in-flight stream bookkeeping even when _session_to_client
+                    # was overwritten by a subsequent reconnect on the same session.
+                    result = route.disconnect_handler(
+                        ws, stale_session_keys, stale_request_keys,
+                    )
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception:

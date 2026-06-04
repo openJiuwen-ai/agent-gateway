@@ -286,7 +286,8 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
   const teamWorking =
     isTeamMode(snapshot.mode) &&
     isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
-  const liveTranscript = snapshot.isProcessing || snapshot.isPaused || teamWorking;
+  const liveTranscript =
+    snapshot.isProcessing || snapshot.isPaused || snapshot.cancellableWork || teamWorking;
   if (requestedOffset === 0 && !liveTranscript) {
     return [...transcriptLines, ...fixedLines];
   }

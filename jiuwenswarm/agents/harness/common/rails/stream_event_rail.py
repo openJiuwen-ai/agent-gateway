@@ -189,6 +189,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
     # ctx.extra persists across all events within a single invoke, so sub-agent
     # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
     _SID_KEY = "__jiuwenswarm_session_id__"
+    _SHELL_SID_TOKEN_KEY = "__jiuwenswarm_shell_session_token__"
 
     def __init__(self) -> None:
         super().__init__()
@@ -271,6 +272,24 @@ class JiuClawStreamEventRail(DeepAgentRail):
         sid = session_id or "default"
         self._abort_requested[sid] = True
         self._get_pause_event(sid).set()
+        if sid:
+            try:
+                from openjiuwen.core.sys_operation.shell_process_registry import (
+                    kill_shell_processes_for_session_tree,
+                )
+
+                killed = kill_shell_processes_for_session_tree(sid)
+                if killed:
+                    logger.info(
+                        "[StreamEventRail] killed %d shell process(es) for session=%s",
+                        killed,
+                        sid,
+                    )
+            except Exception:
+                logger.debug(
+                    "[StreamEventRail] kill_commands_for_session failed",
+                    exc_info=True,
+                )
 
     def reset_abort(self, session_id: str = "") -> None:
         sid = session_id or "default"
@@ -376,6 +395,27 @@ class JiuClawStreamEventRail(DeepAgentRail):
         # Sub-agents inherit this from the parent's invoke since they don't
         # fire their own before_invoke (ctx.session is None → early return above).
         ctx.extra[self._SID_KEY] = sid
+        try:
+            from openjiuwen.core.sys_operation.shell_process_registry import (
+                set_shell_session_id,
+            )
+
+            ctx.extra[self._SHELL_SID_TOKEN_KEY] = set_shell_session_id(raw_conv_id or sid)
+        except Exception:
+            logger.debug("[StreamEventRail] set_shell_session_id failed", exc_info=True)
+
+    async def after_invoke(self, ctx: AgentCallbackContext) -> None:
+        token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
+        if token is None:
+            return
+        try:
+            from openjiuwen.core.sys_operation.shell_process_registry import (
+                reset_shell_session_id,
+            )
+
+            reset_shell_session_id(token)
+        except Exception:
+            logger.debug("[StreamEventRail] reset_shell_session_id failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # before_model_call: pause check + context fix + compression info

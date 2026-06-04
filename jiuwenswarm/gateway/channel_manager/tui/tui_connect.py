@@ -2090,11 +2090,24 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
             )
         )
 
-    async def _tui_disconnect(_ws: Any, stale_session_keys: list[tuple[str, str]]) -> None:
+    async def _tui_disconnect(
+        _ws: Any,
+        stale_session_keys: list[tuple[str, str]],
+        stale_request_keys: list[tuple[str, str]] | None = None,
+    ) -> None:
         mh = bind.message_handler
-        if mh is None or not stale_session_keys:
+        if mh is None:
             return
-        await mh.cancel_agent_sessions_on_disconnect(stale_session_keys)
+        # NOTE: do not early-return on empty stale_session_keys; in-flight streams
+        # may still be tracked under stale_request_keys even when _session_to_client
+        # was overwritten by a later reconnect on the same session_id.
+        request_keys = stale_request_keys or []
+        if not stale_session_keys and not request_keys:
+            return
+        await mh.cancel_agent_sessions_on_disconnect(
+            stale_session_keys,
+            stale_request_keys=request_keys,
+        )
 
     return GatewayRouteBinding(
         path=bind.path,

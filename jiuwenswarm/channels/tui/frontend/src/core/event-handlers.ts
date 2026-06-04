@@ -367,12 +367,14 @@ function appendThinkingChunk(
 ): void {
   const entries = delegate.getEntries();
   const lastEntry = entries[entries.length - 1];
+  const at = new Date().toISOString();
   if (lastEntry && lastEntry.kind === "thinking" && lastEntry.sessionId === activeSessionId) {
     delegate.setEntries([
       ...entries.slice(0, -1),
       {
         ...lastEntry,
         content: `${lastEntry.content}${content}`,
+        at,
       },
     ]);
     return;
@@ -383,7 +385,7 @@ function appendThinkingChunk(
     id: createId("reasoning"),
     sessionId: activeSessionId,
     content,
-    at: new Date().toISOString(),
+    at,
   });
 }
 
@@ -473,6 +475,7 @@ function handleDelta(
   const entries = delegate.getEntries();
   if (payload.source_chunk_type === "llm_reasoning") {
     appendThinkingChunk(delegate, activeSessionId, content);
+    delegate.setStreamingState(StreamingState.Responding);
     return true;
   }
 
@@ -572,8 +575,13 @@ function handleFinal(
           },
         ],
   );
-  delegate.setStreamingState(StreamingState.Idle);
   delegate.addWorkedForEntry();
+  // Defensive: chat.final is the definitive end-of-response marker.
+  // The primary Idle transition is driven by chat.processing_status
+  // (is_processing=false), but if that frame is lost (server crash,
+  // connection drop, cancel path), the UI would be stuck in Responding.
+  // Setting Idle here is safe — processing_status will override if needed.
+  delegate.setStreamingState(StreamingState.Idle);
   return true;
 }
 
@@ -585,6 +593,7 @@ function handleReasoning(
   const content = typeof payload.content === "string" ? payload.content : "";
   if (!content) return false;
   appendThinkingChunk(delegate, activeSessionId, content);
+  delegate.setStreamingState(StreamingState.Responding);
   return true;
 }
 

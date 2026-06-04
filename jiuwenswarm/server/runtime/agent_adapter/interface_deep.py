@@ -252,6 +252,11 @@ _CRON_TOOL_MODE: ContextVar[str | None] = ContextVar(
     default=None,
 )
 
+
+def get_runtime_tool_session_id() -> str | None:
+    """Session id bound for the current agent tool invocation (ContextVar)."""
+    return _CRON_TOOL_SESSION_ID.get()
+
 logger = logging.getLogger(__name__)
 
 _PERSISTENT_CHECKPOINTER_LOCK = asyncio.Lock()
@@ -521,6 +526,8 @@ class JiuWenClawDeepAdapter:
         # (e.g., supplement while previous task still winding down) don't
         # prematurely remove the entry when the first task finishes.
         self._active_session_ids: Counter[str] = Counter()
+        # In-flight asyncio tasks per session (stream/non-stream agent runs).
+        self._session_agent_tasks: dict[str, set[asyncio.Task[Any]]] = {}
         self._task_planning_rail: TaskPlanningRail | None = None
         self._context_assemble_rail: ContextAssembleRail | None = None
         self._context_assemble_mode: str | None = None
@@ -596,39 +603,191 @@ class JiuWenClawDeepAdapter:
 
     def _mark_session_active(self, session_id: str) -> None:
         """Increment the active-task count for *session_id*."""
-        self._active_session_ids[session_id] += 1
+        sid = self._resolve_interrupt_session_id(session_id)
+        self._active_session_ids[sid] += 1
 
-    def _unmark_session_active(self, session_id: str) -> None:
+    def _unmark_session_active(self, session_id: str, *, cleanup_rail: bool = True) -> None:
         """Decrement the active-task count for *session_id*; remove when zero.
 
-        When the count drops to zero, also cleans up per-session state on the
-        StreamEventRail to prevent unbounded dict growth on long-lived adapters.
+        When the count drops to zero, optionally cleans up per-session rail state.
+        Skip ``cleanup_rail`` when the stream consumer was cancelled but AgentServer
+        work may still be winding down — ``process_interrupt`` owns teardown then.
         """
-        count = self._active_session_ids.get(session_id, 0)
+        sid = self._resolve_interrupt_session_id(session_id)
+        count = self._active_session_ids.get(sid, 0)
         if count <= 1:
-            self._active_session_ids.pop(session_id, None)
-            # Last task for this session finished — clean up per-session rail state
-            if self._stream_event_rail is not None:
+            self._active_session_ids.pop(sid, None)
+            if cleanup_rail and self._stream_event_rail is not None:
                 try:
-                    self._stream_event_rail.cleanup_session(session_id)
+                    self._stream_event_rail.cleanup_session(sid)
                 except Exception as exc:
                     logger.warning(
                         "[JiuWenClawDeepAdapter] cleanup_session(%s) failed: %s",
-                        session_id, exc,
+                        sid, exc,
                     )
         else:
-            self._active_session_ids[session_id] = count - 1
+            self._active_session_ids[sid] = count - 1
 
     def _is_session_active(self, session_id: str) -> bool:
         """Return True if at least one task is running for *session_id*."""
-        return self._active_session_ids.get(session_id, 0) > 0
+        sid = self._resolve_interrupt_session_id(session_id)
+        if self._active_session_ids.get(sid, 0) > 0:
+            return True
+        return self._session_has_registered_tasks(sid)
+
+    def _session_has_registered_tasks(self, session_id: str) -> bool:
+        tasks = getattr(self, "_session_agent_tasks", {}).get(session_id)
+        return bool(tasks and any(not task.done() for task in tasks))
+
+    def _deep_agent_loop_session_id(self) -> str | None:
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return None
+        loop_session = getattr(instance, "_loop_session", None)
+        if loop_session is None:
+            return None
+        loop_sid = ""
+        get_session_id = getattr(loop_session, "get_session_id", None)
+        if callable(get_session_id):
+            try:
+                loop_sid = str(get_session_id() or "")
+            except Exception:
+                loop_sid = ""
+        if not loop_sid:
+            loop_sid = str(getattr(loop_session, "session_id", "") or "")
+        # Return None when the loop session_id is unknown — callers use None
+        # as a conservative signal ("assume DeepAgent is executing").
+        # Normalizing "" → "default" would defeat that check and could cause
+        # _other_active_sessions to undercount, triggering a premature global abort.
+        if not loop_sid or loop_sid == "default":
+            return None
+        return self._resolve_interrupt_session_id(loop_sid)
+
+    def _is_deep_agent_executing_for_session(self, session_id: str) -> bool:
+        """True when the shared DeepAgent still runs stream/task-loop work for *session_id*."""
+        instance = getattr(self, "_instance", None)
+        if instance is None or not getattr(instance, "_invoke_active", False):
+            return False
+        stream_task = getattr(instance, "_stream_process_task", None)
+        if stream_task is not None and not stream_task.done():
+            loop_sid = self._deep_agent_loop_session_id()
+            if loop_sid is None:
+                return True
+            return self._is_related_session(session_id, loop_sid)
+        return False
+
+    def _is_session_live(self, session_id: str) -> bool:
+        sid = self._resolve_interrupt_session_id(session_id)
+        return (
+            self._is_session_active(sid)
+            or self._is_deep_agent_executing_for_session(sid)
+        )
+
+    @staticmethod
+    def _is_related_session(target_sid: str, other_sid: str) -> bool:
+        """Return True when *other_sid* belongs to the same session tree as *target_sid*.
+
+        Covers direct ancestor/descendant relationships only
+        (e.g. ``A`` ↔ ``A_B``, ``A`` ↔ ``A_B_C``).  Siblings such as
+        ``tui_a`` and ``tui_b`` are treated as unrelated — they are
+        independent root sessions that share a channel-prefix convention,
+        not sub-sessions of a common parent.
+        """
+        if not target_sid or not other_sid:
+            return target_sid == other_sid
+        if other_sid == target_sid:
+            return True
+        return other_sid.startswith(f"{target_sid}_") or target_sid.startswith(f"{other_sid}_")
 
     def _other_active_sessions(self, session_id: str) -> int:
-        """Return the number of active tasks belonging to sessions OTHER than *session_id*."""
-        return sum(
-            count for sid, count in self._active_session_ids.items()
-            if sid != session_id
-        )
+        """Return live tasks for sessions unrelated to *session_id*."""
+        normalized = self._resolve_interrupt_session_id(session_id)
+        candidate_sids = set(self._active_session_ids.keys())
+        candidate_sids.update(getattr(self, "_session_agent_tasks", {}).keys())
+        loop_sid = self._deep_agent_loop_session_id()
+        if loop_sid is not None:
+            candidate_sids.add(loop_sid)
+        total = 0
+        for sid in candidate_sids:
+            if self._is_related_session(normalized, sid):
+                continue
+            if self._is_session_live(sid):
+                total += max(self._active_session_ids.get(sid, 0), 1)
+        return total
+
+    async def _halt_deep_agent_execution(self, reason: str) -> None:
+        """Cooperatively abort DeepAgent and cancel in-flight scheduler tasks."""
+        if self._instance is None:
+            return
+        try:
+            try:
+                # asyncio.shield protects abort() from re-injected CancelledError
+                # when called from a CancelledError handler — a second task.cancel()
+                # would otherwise interrupt abort() mid-execution, leaving the
+                # DeepAgent in a partially-aborted state.  shield() ensures abort()
+                # runs to completion even if the outer task is re-cancelled.
+                await asyncio.shield(self._instance.abort())
+                logger.info(
+                    "[JiuWenClawDeepAdapter] interrupt(%s): 已终止 DeepAgent 任务循环",
+                    reason,
+                )
+            except asyncio.CancelledError:
+                # shield() absorbed the re-cancellation; abort() completed.
+                logger.info(
+                    "[JiuWenClawDeepAdapter] interrupt(%s): instance.abort 在 shield 下完成"
+                    "（外层 task 被二次 cancel）",
+                    reason,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenClawDeepAdapter] interrupt(%s): instance.abort 失败: %s",
+                    reason,
+                    exc,
+                )
+        finally:
+            # _cancel_scheduler_running_tasks is sync (no await point), so it
+            # cannot be interrupted by a re-injected CancelledError.  Placing it
+            # in finally guarantees scheduler tasks are cancelled even when the
+            # caller's CancelledError handler is itself re-cancelled.
+            self._cancel_scheduler_running_tasks()
+
+    def _register_session_agent_task(self, session_id: str) -> None:
+        task = asyncio.current_task()
+        if task is None:
+            return
+        sid = self._resolve_interrupt_session_id(session_id)
+        self._session_agent_tasks.setdefault(sid, set()).add(task)
+
+    def _unregister_session_agent_task(self, session_id: str) -> None:
+        task = asyncio.current_task()
+        if task is None:
+            return
+        sid = self._resolve_interrupt_session_id(session_id)
+        bucket = self._session_agent_tasks.get(sid)
+        if bucket is None:
+            return
+        bucket.discard(task)
+        if not bucket:
+            self._session_agent_tasks.pop(sid, None)
+
+    def _cancel_session_agent_tasks(self, session_id: str) -> int:
+        sid = self._resolve_interrupt_session_id(session_id)
+        tasks_dict = getattr(self, "_session_agent_tasks", None)
+        if not tasks_dict:
+            return 0
+        tasks = list(tasks_dict.pop(sid, set()))
+        cancelled = 0
+        for task in tasks:
+            if task is not None and not task.done():
+                task.cancel()
+                cancelled += 1
+        if cancelled:
+            logger.info(
+                "[JiuWenClawDeepAdapter] interrupt: cancelled %d agent asyncio task(s) session=%s",
+                cancelled,
+                sid,
+            )
+        return cancelled
 
     def _clear_a2x_runtime_state(self) -> None:
         """Remove exposed A2X runtime state from the underlying DeepAgent instance."""
@@ -2778,7 +2937,11 @@ class JiuWenClawDeepAdapter:
         metadata: dict[str, Any] | None,
         request_id: str | None,
         mode: str | None,
-    ) -> tuple[Token[str], Token[str | None], Token[dict[str, Any] | None], Token[str | None]]:
+    ) -> tuple[Token[str], Token[str | None], Token[dict[str, Any] | None], Token[str | None], Token[str | None]]:
+        from openjiuwen.core.sys_operation.shell_process_registry import (
+            set_shell_session_id,
+        )
+
         normalized_channel = str(channel_id or "").strip() or CronTargetChannel.WEB.value
         normalized_mode = str(mode).strip() if isinstance(mode, str) and mode.strip() else None
         normalized_metadata = dict(metadata) if isinstance(metadata, dict) else None
@@ -2791,15 +2954,21 @@ class JiuWenClawDeepAdapter:
             _CRON_TOOL_SESSION_ID.set(session_id),
             _CRON_TOOL_METADATA.set(normalized_metadata),
             _CRON_TOOL_MODE.set(normalized_mode),
+            set_shell_session_id(session_id),
         )
 
     @staticmethod
     def _reset_runtime_cron_context(
         tokens: tuple[
-            Token[str], Token[str | None], Token[dict[str, Any] | None], Token[str | None]
+            Token[str], Token[str | None], Token[dict[str, Any] | None], Token[str | None], Token[str | None]
         ],
     ) -> None:
-        channel_token, session_token, metadata_token, mode_token = tokens
+        from openjiuwen.core.sys_operation.shell_process_registry import (
+            reset_shell_session_id,
+        )
+
+        channel_token, session_token, metadata_token, mode_token, shell_token = tokens
+        reset_shell_session_id(shell_token)
         _CRON_TOOL_MODE.reset(mode_token)
         _CRON_TOOL_METADATA.reset(metadata_token)
         _CRON_TOOL_SESSION_ID.reset(session_token)
@@ -3325,6 +3494,79 @@ class JiuWenClawDeepAdapter:
                 selected_names.append(name)
         return selected_names
 
+    @staticmethod
+    def _resolve_interrupt_session_id(session_id: str | None) -> str:
+        return (session_id or "default").strip() or "default"
+
+    def _stop_session_interrupt_work(
+        self,
+        session_id: str | None,
+        *,
+        intent: str,
+        reset_for_new_task: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
+        sid = self._resolve_interrupt_session_id(session_id)
+        cancelled_tool_results: list[dict[str, Any]] = []
+        cancelled_tasks = self._cancel_session_agent_tasks(sid)
+        if self._stream_event_rail is not None:
+            self._stream_event_rail.abort(session_id or sid)
+            self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
+            cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(
+                session_id or sid,
+            )
+            self._stream_event_rail.clear_cancelled_tool_results(session_id or sid)
+            if reset_for_new_task:
+                self._stream_event_rail.reset_for_new_task(session_id or sid)
+        try:
+            from openjiuwen.core.sys_operation.shell_process_registry import (
+                kill_shell_processes_for_session_tree,
+            )
+
+            killed = kill_shell_processes_for_session_tree(sid)
+            if killed:
+                logger.info(
+                    "[JiuWenClawDeepAdapter] interrupt(%s): killed %d shell process(es) session=%s",
+                    intent,
+                    killed,
+                    sid,
+                )
+        except Exception:
+            logger.debug(
+                "[JiuWenClawDeepAdapter] interrupt(%s): kill_shell_processes failed",
+                intent,
+                exc_info=True,
+            )
+        if cancelled_tasks:
+            logger.info(
+                "[JiuWenClawDeepAdapter] interrupt(%s): cancelled %d agent task(s) session=%s",
+                intent,
+                cancelled_tasks,
+                sid,
+            )
+        return cancelled_tool_results
+
+    async def _abort_shared_agent_if_safe(self, normalized_sid: str, intent: str) -> None:
+        """Global DeepAgent/scheduler abort when safe for unrelated sessions."""
+        if self._instance is None:
+            return
+        other_count = self._other_active_sessions(normalized_sid)
+        if other_count > 0:
+            # instance.abort() is a global operation on the shared DeepAgent —
+            # it aborts ALL sessions, not just the target.  When other sessions
+            # are active, we must NOT call it.  Per-session teardown (rail abort,
+            # _cancel_session_agent_tasks, shell process kill) is sufficient to
+            # stop the target session's work without collateral damage.
+            logger.info(
+                "[JiuWenClawDeepAdapter] interrupt(%s): 跳过 instance.abort/scheduler cancel，"
+                "其他 session 仍活跃 (count=%d, active=%s)",
+                intent,
+                other_count,
+                dict(self._active_session_ids),
+            )
+            return
+        await self._halt_deep_agent_execution(intent)
+
     async def process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -3351,13 +3593,24 @@ class JiuWenClawDeepAdapter:
         # sessions when any one session is interrupted.
         # Normalize session_id the same way process_message_*_impl does, so that
         # an empty-string or None request.session_id doesn't bypass the guard.
-        _normalized_sid = request.session_id or "default"
+        _normalized_sid = self._resolve_interrupt_session_id(request.session_id)
         _session_is_active = self._is_session_active(_normalized_sid)
-        if not _session_is_active:
+        if not _session_is_active and intent in ("pause", "resume"):
             logger.info(
                 "[JiuWenClawDeepAdapter] interrupt(%s): session=%s not active on this adapter, "
-                "skipping abort operations (active_sessions=%s)",
-                intent, request.session_id, dict(self._active_session_ids),
+                "skipping pause/resume (active_sessions=%s)",
+                intent,
+                request.session_id,
+                dict(self._active_session_ids),
+            )
+        elif not _session_is_active and intent in ("cancel", "supplement"):
+            logger.info(
+                "[JiuWenClawDeepAdapter] interrupt(%s): session=%s not in active counter "
+                "(stream may have unwound); still running per-session teardown "
+                "(active_sessions=%s)",
+                intent,
+                request.session_id,
+                dict(self._active_session_ids),
             )
 
         success = True
@@ -3386,32 +3639,16 @@ class JiuWenClawDeepAdapter:
 
         elif intent == "supplement":
             # supplement: 停止当前执行，但保留 todo（新任务会根据 todo 待办继续执行）
+            cancelled_tool_results = self._stop_session_interrupt_work(
+                request.session_id,
+                intent="supplement",
+            )
             if _session_is_active:
-                # 1. 通过 rail abort 在 checkpoint 抛 CancelledError，打断当前内层执行
-                #    rail.abort(session_id) 是 per-session 的，不会影响其他 session
-                if self._stream_event_rail is not None:
-                    self._stream_event_rail.abort(request.session_id)
-                    # 收集被中断的工具执行信息，通知前端更新状态
-                    self._stream_event_rail.collect_cancelled_tool_updates(request.session_id)
-                    cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(request.session_id)
-                    self._stream_event_rail.clear_cancelled_tool_results(request.session_id)
-                # 2. 终止 DeepAgent 外层 task loop（仅当没有其他活跃 session 时）
-                # 3. 取消 TaskScheduler 中正在运行的 asyncio.Tasks
-                #    （协作式 abort 只能在 checkpoint 之间生效，无法打断 in-flight HTTP 调用）
-                # 2+3 必须放在 other_sessions guard 内，否则会跨 session 杀死共享 adapter 上其他会话的任务
-                #    （instance.abort 和 scheduler cancel 是 SDK 级别的全局操作，不受 per-session rail 保护）
-                if self._instance is not None:
-                    other_count = self._other_active_sessions(_normalized_sid)
-                    if other_count == 0:
-                        await self._instance.abort()
-                        self._cancel_scheduler_running_tasks()
-                    else:
-                        logger.info(
-                            "[JiuWenClawDeepAdapter] interrupt(supplement): 跳过 instance.abort/scheduler cancel，"
-                            "其他 session 仍活跃 (count=%d, active=%s)",
-                            other_count, dict(self._active_session_ids),
-                        )
-            # 4. 不清理 todo — 保留给新任务继续
+                # Global abort is safe only when this session has work in flight.
+                # When inactive, another session may have just started — aborting
+                # the shared DeepAgent would kill it as collateral damage.
+                await self._abort_shared_agent_if_safe(_normalized_sid, "supplement")
+            # 不清理 todo — 保留给新任务继续
             logger.info(
                 "[JiuWenClawDeepAdapter] interrupt(supplement): 已停止执行 request_id=%s",
                 request.request_id,
@@ -3424,39 +3661,19 @@ class JiuWenClawDeepAdapter:
             # DeepAgent 的 _run_task_loop_stream 后台 Task 不会停止
             # （stream_task.cancel() 只取消了 chunk 转发 Task，不影响 _stream_process）。
             # SessionManager.cancel_session_task 仅管理非流式队列 Task，对流式后台 Task 无效。
+            cancelled_tool_results = self._stop_session_interrupt_work(
+                request.session_id,
+                intent="cancel",
+                reset_for_new_task=True,
+            )
             if _session_is_active:
-                if self._stream_event_rail is not None:
-                    # rail.abort(session_id) 是 per-session 的，不会影响其他 session
-                    self._stream_event_rail.abort(request.session_id)
-                    self._stream_event_rail.collect_cancelled_tool_updates(request.session_id)
-                    cancelled_tool_results = self._stream_event_rail.get_cancelled_tool_results(request.session_id)
-                    self._stream_event_rail.clear_cancelled_tool_results(request.session_id)
-                    self._stream_event_rail.reset_for_new_task(request.session_id)
-                    logger.info(
-                        "[JiuWenClawDeepAdapter] interrupt(cancel): 已设置 abort 并解除 pause 阻塞"
-                    )
-                if self._instance is not None:
-                    other_count = self._other_active_sessions(_normalized_sid)
-                    if other_count == 0:
-                        try:
-                            await self._instance.abort()
-                            logger.info(
-                                "[JiuWenClawDeepAdapter] interrupt(cancel): 已终止 DeepAgent 任务循环"
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "[JiuWenClawDeepAdapter] interrupt(cancel): instance.abort 失败: %s",
-                                exc,
-                            )
-                        # 协作式 abort 只能在 checkpoint 之间生效，无法打断 in-flight LLM HTTP 调用。
-                        # 直接取消 TaskScheduler 中运行中的 asyncio.Task，注入 CancelledError 到 HTTP await 点。
-                        self._cancel_scheduler_running_tasks()
-                    else:
-                        logger.info(
-                            "[JiuWenClawDeepAdapter] interrupt(cancel): 跳过 instance.abort/scheduler cancel，"
-                            "其他 session 仍活跃 (count=%d, active=%s)",
-                            other_count, dict(self._active_session_ids),
-                        )
+                # Global abort is safe only when this session has work in flight.
+                # When inactive, another session may have just started — aborting
+                # the shared DeepAgent would kill it as collateral damage.
+                await self._abort_shared_agent_if_safe(_normalized_sid, "cancel")
+            logger.info(
+                "[JiuWenClawDeepAdapter] interrupt(cancel): 已设置 abort 并解除 pause 阻塞"
+            )
 
             updated_todos = None
             if request.session_id:
@@ -4551,6 +4768,7 @@ class JiuWenClawDeepAdapter:
         resolved_model = self._resolve_model_for_request(request)
         self._apply_model_to_react_agent(resolved_model)
         self._mark_session_active(session_id)
+        self._register_session_agent_task(session_id)
         if self._stream_event_rail is not None:
             self._stream_event_rail.reset_abort(session_id)
         try:
@@ -4578,6 +4796,7 @@ class JiuWenClawDeepAdapter:
             logger.error("[JiuWenClawDeepAdapter] Agent 任务执行异常: %s", e)
             raise
         finally:
+            self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
@@ -4754,6 +4973,8 @@ class JiuWenClawDeepAdapter:
         resolved_model = self._resolve_model_for_request(request)
         self._apply_model_to_react_agent(resolved_model)
         self._mark_session_active(session_id)
+        self._register_session_agent_task(session_id)
+        stream_consumer_cancelled = False
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -4965,10 +5186,18 @@ class JiuWenClawDeepAdapter:
                 task.add_done_callback(self._on_evolution_watcher_done)
                 self._evolution_watcher_tasks.add(task)
         except asyncio.CancelledError:
+            stream_consumer_cancelled = True
             logger.info(
                 "[JiuWenClawDeepAdapter] 流式任务被取消: request_id=%s session_id=%s",
                 rid,
                 session_id,
+            )
+            # Use _abort_shared_agent_if_safe to guard against cross-session
+            # collateral damage — instance.abort() is global on the shared
+            # DeepAgent and must not fire when other sessions are active.
+            await self._abort_shared_agent_if_safe(
+                self._resolve_interrupt_session_id(session_id),
+                "stream_cancel",
             )
             raise
         except Exception as exc:
@@ -4980,10 +5209,19 @@ class JiuWenClawDeepAdapter:
                 is_complete=False,
             )
         finally:
+            self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
-            self._reset_runtime_cron_context(cron_context_tokens)
-            self._unmark_session_active(session_id)
+            if not stream_consumer_cancelled:
+                self._reset_runtime_cron_context(cron_context_tokens)
+            # Always clean up rail state — process_interrupt's
+            # _stop_session_interrupt_work sets abort flags but does NOT
+            # call cleanup_session(), so skipping cleanup here would leak
+            # _abort_requested / _pause_events entries on long-lived adapters.
+            self._unmark_session_active(
+                session_id,
+                cleanup_rail=True,
+            )
 
         summary = {
             "input_tokens": usage_accumulator["input_tokens"],
