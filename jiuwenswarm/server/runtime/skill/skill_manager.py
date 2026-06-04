@@ -1885,14 +1885,29 @@ class SkillManager:
         params:
             name: skill 名称
         """
-        name = params.get("name", "")
-        if not name:
+        raw_name = params.get("name", "")
+        if not raw_name:
             return {"success": False, "detail": "缺少参数: name"}
         try:
-            name = _safe_path_name(name, "skill")
+            name = _safe_path_name(raw_name, "skill")
         except ValueError as exc:
-            _log_rejected_name("skills.uninstall", "skill", name, exc)
-            return {"success": False, "detail": str(exc)}
+            # name 含不安全字符（如 /），从 local_skills 的 origin 提取 slug
+            slug = ""
+            for ls in self._state.get("local_skills", []):
+                if isinstance(ls, dict) and ls.get("name") == raw_name:
+                    origin = str(ls.get("origin", ""))
+                    if ":" in origin:
+                        slug = origin.rsplit(":", 1)[-1]
+                    break
+            if slug:
+                try:
+                    name = _safe_path_name(slug, "skill")
+                except ValueError:
+                    _log_rejected_name("skills.uninstall", "skill", raw_name, exc)
+                    return {"success": False, "detail": str(exc)}
+            else:
+                _log_rejected_name("skills.uninstall", "skill", raw_name, exc)
+                return {"success": False, "detail": str(exc)}
 
         # 使用 _resolve_local_skill_dir 正确解析技能目录（处理 name 与文件夹名称不一致的情况）
         dest = self._resolve_local_skill_dir(name)
@@ -1932,8 +1947,8 @@ class SkillManager:
             if mirror_dest.exists() and mirror_dest.is_dir():
                 _safe_rmtree(mirror_dest)
 
-        self._remove_installed_plugin(name)
-        self._remove_local_skill(name)
+        self._remove_installed_plugin(raw_name)
+        self._remove_local_skill(raw_name)
         self._refresh_agent_data_indexes()
         return {"success": True}
 
