@@ -1284,6 +1284,21 @@
       "entryCount": "共 {{count}} 条演进经验"
     }
   },
+  "share": {
+    "export": "导出长图",
+    "exporting": "正在导出长图...",
+    "generating": "正在生成",
+    "exportUnavailable": "会话结束后可导出长图",
+    "exportFailed": "导出长图失败",
+    "mainConversation": "正文对话",
+    "noMainConversation": "暂无正文对话",
+    "groupChat": "群聊记录",
+    "noGroupChat": "暂无群聊记录",
+    "everyone": "所有人",
+    "generatedBy": "由 openJiuwen AI 生成",
+    "website": "官网地址：{{url}}",
+    "repository": "代码仓：{{url}}"
+  },
   "network": {
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",

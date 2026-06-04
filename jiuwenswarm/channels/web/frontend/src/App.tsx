@@ -20,6 +20,11 @@ import { ChannelsPanel } from './components/ChannelsPanel';
 import { BrowserPanel } from './components/BrowserPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExtensionsHubPanel } from './components/ExtensionsHubPanel';
+import {
+  ShareImageDocument,
+  exportShareImageNode,
+  type ShareImageSnapshot,
+} from './features/shareImageExport';
 
 import { FEATURE_APP_UPDATER_UI } from './featureFlags';
 import { HeartbeatMessageModal } from './features/HeartbeatMessageModal';
@@ -164,6 +169,15 @@ function storeSessionId(sessionId: string | null) {
   }
 }
 
+function downloadDataUrl(dataUrl: string, filename: string): void {
+  const link = document.createElement('a');
+  link.href = dataUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 function AppContent() {
   const { t, i18n } = useTranslation();
   const tRef = useRef(t);
@@ -179,6 +193,8 @@ function AppContent() {
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
+  const [isExportingShare, setIsExportingShare] = useState(false);
+  const [shareExportSnapshot, setShareExportSnapshot] = useState<ShareImageSnapshot | null>(null);
   const [restartSeenDisconnect, setRestartSeenDisconnect] = useState(false);
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [newSessionToastVisible, setNewSessionToastVisible] = useState(false);
@@ -232,6 +248,9 @@ function AppContent() {
   const historyLoadingMoreRef = useRef(false);
   const historyRestoreHandleRef = useRef<HistoryRestoreHandle | null>(null);
   const historyPageHandleRef = useRef<HistoryRestoreHandle | null>(null);
+  const shareExportRef = useRef<HTMLDivElement>(null);
+  const shareExportFilenameRef = useRef('jiuwenswarm-share.png');
+  const shareExportTokenRef = useRef(0);
   /** 为 true 表示刚从「会话列表」恢复；history 为空时在 useEffect 的 onEmpty 中提示一次 */
   const historyRestoreFromPanelHintRef = useRef(false);
 
@@ -283,6 +302,7 @@ function AppContent() {
     addToolResult,
     prependMessages,
     isProcessing,
+    isPaused,
     setProcessing,
     setThinking,
     setLoadingHistory,
@@ -1267,6 +1287,82 @@ for (let i = payload.team.length; i < 10; i++) {
     if (nav === 'channels') setHasVisitedChannels(true);
   }, []);
 
+  const handleExportShare = useCallback(async () => {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId || currentSessionId === 'new' || (isProcessing && !isPaused) || isExportingShare) {
+      return;
+    }
+    setIsExportingShare(true);
+    try {
+      const params = new URLSearchParams({
+        session_id: currentSessionId,
+      });
+      const response = await fetch(`/share-api/snapshot?${params.toString()}`, {
+        cache: 'no-store',
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        let detail = '';
+        try {
+          const payload = await response.json();
+          detail = typeof payload?.error === 'string' ? payload.error : '';
+        } catch {
+          detail = await response.text().catch(() => '');
+        }
+        throw new Error(detail || `HTTP ${response.status}`);
+      }
+      if (!contentType.includes('application/json')) {
+        throw new Error('share_snapshot_not_json');
+      }
+      const payload = await response.json() as {
+        filename?: string;
+        snapshot?: ShareImageSnapshot;
+      };
+      if (!payload.snapshot) {
+        throw new Error('missing_snapshot');
+      }
+      shareExportFilenameRef.current = payload.filename || payload.snapshot.metadata?.filename || 'jiuwenswarm-share.png';
+      setShareExportSnapshot(payload.snapshot);
+    } catch (error) {
+      console.error('Failed to export share image:', error);
+      const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+      window.alert(`${t('share.exportFailed')}${detail}`);
+      setIsExportingShare(false);
+      setShareExportSnapshot(null);
+    }
+  }, [isExportingShare, isPaused, isProcessing, t]);
+
+  useEffect(() => {
+    if (!shareExportSnapshot) {
+      return;
+    }
+    const token = shareExportTokenRef.current + 1;
+    shareExportTokenRef.current = token;
+
+    void (async () => {
+      try {
+        const node = shareExportRef.current;
+        if (!node) {
+          throw new Error('share_image_node_missing');
+        }
+        const dataUrl = await exportShareImageNode(node);
+        if (shareExportTokenRef.current !== token) {
+          return;
+        }
+        downloadDataUrl(dataUrl, shareExportFilenameRef.current);
+      } catch (error) {
+        console.error('Failed to render share image:', error);
+        const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+        window.alert(`${t('share.exportFailed')}${detail}`);
+      } finally {
+        if (shareExportTokenRef.current === token) {
+          setIsExportingShare(false);
+          setShareExportSnapshot(null);
+        }
+      }
+    })();
+  }, [shareExportSnapshot, t]);
+
   const heartbeatToastPreviewRaw = heartbeatToastMessage.replace(/\s+/g, ' ').trim();
   const heartbeatToastPreview = heartbeatToastPreviewRaw.length > 120
     ? `${heartbeatToastPreviewRaw.slice(0, 120)}...`
@@ -1318,6 +1414,9 @@ for (let i = payload.team.length; i < 10; i++) {
                     isProcessing={isProcessing}
                     onNewSession={handleNewSession}
                     onUserAnswer={handleUserAnswer}
+                    onExportShare={handleExportShare}
+                    isExportingShare={isExportingShare}
+                    canExportShare={Boolean(sessionId && sessionId !== 'new' && (!isProcessing || isPaused))}
                     historyPager={
                       historyPagerMeta
                         ? {
@@ -1577,6 +1676,10 @@ for (let i = payload.team.length; i < 10; i++) {
         message={heartbeatToastMessage}
         onClose={() => setHeartbeatModalOpen(false)}
       />
+
+      <div className="share-image-stage" aria-hidden="true">
+        <ShareImageDocument ref={shareExportRef} snapshot={shareExportSnapshot} />
+      </div>
     </div>
   );
 }

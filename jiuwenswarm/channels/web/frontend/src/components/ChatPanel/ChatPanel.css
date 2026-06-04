@@ -616,6 +616,57 @@
   height: 16px;
 }
 
+.share-export-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  gap: 6px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  padding: 0 8px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  transition:
+    background var(--duration-fast) ease,
+    color var(--duration-fast) ease;
+}
+
+.share-export-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+}
+
+.share-export-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--chat-control-focus-ring);
+}
+
+.share-export-btn:disabled {
+  color: var(--placeholder);
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.share-export-btn--loading {
+  padding: 0 10px;
+  color: var(--accent);
+  opacity: 1;
+}
+
+.share-export-btn__spinner {
+  animation: harness-spin 1s linear infinite;
+}
+
+.share-export-btn__label {
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .chat-input-btn-icon--image {
   width: 32px;
   height: 32px;
