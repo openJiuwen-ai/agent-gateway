@@ -6153,7 +6153,6 @@ class JiuWenClawDeepAdapter:
         try:
             result = await self._model.invoke(
                 recap_messages,
-                max_tokens=300,
                 temperature=0,
             )
             return getattr(result, "content", None) or str(result)
