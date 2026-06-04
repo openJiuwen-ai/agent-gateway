@@ -1145,10 +1145,7 @@ class SkillManager:
                 with tempfile.TemporaryDirectory(prefix="jiuwenclari_clawhub_") as tmpdir:
                     tmp_path = Path(tmpdir)
 
-                    # 保存 zip 文件
-                    zip_content = io.BytesIO(response.content)
-                    with zipfile.ZipFile(zip_content, "r") as zip_ref:
-                        zip_ref.extractall(tmp_path)
+                    self._safe_extract_zip_bytes_to_dir(response.content, tmp_path)
 
                     # 查找 skill 目录
                     skill_dir = self._locate_skill_dir(tmp_path)
@@ -2759,8 +2756,7 @@ class SkillManager:
             stage_dir = tmpdir / "zip_stage"
             stage_dir.mkdir(parents=True, exist_ok=True)
             try:
-                with zipfile.ZipFile(src_zip, "r") as zf:
-                    zf.extractall(stage_dir)
+                self._safe_extract_zip_to_dir(src_zip, stage_dir)
             except zipfile.BadZipFile as exc:
                 raise RuntimeError(f"zip 文件损坏或格式非法: {src_zip}") from exc
             return self._build_teamskills_publish_zip_from_root(stage_dir, plugin_version, tmpdir)
