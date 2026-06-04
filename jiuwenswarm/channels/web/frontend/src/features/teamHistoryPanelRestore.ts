@@ -624,6 +624,14 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         applyMemberShutdown(memberId);
         continue;
       }
+      if (!shouldKeepMember(memberId)) {
+        continue;
+      }
+      const memberStatus = pickString(event, ['new_status', 'status']);
+      if (memberStatus === 'shut_down') {
+        applyMemberShutdown(memberId);
+        continue;
+      }
       const memberEventType = pickString(event, ['type']);
       if (
         shutdownMembers.has(memberId) &&
