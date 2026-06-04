@@ -32,6 +32,7 @@ type PreferredLanguage = "zh" | "en";
 export interface PendingQuestion {
   requestId: string;
   source?: string;
+  evolutionMeta?: Record<string, unknown>;
   questions: PendingQuestionItem[];
 }
 
@@ -1149,9 +1150,16 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
       if (!requestId || questions.length === 0) {
         return connectionChanged;
       }
+      const evolutionMeta =
+        payload.evolution_meta && typeof payload.evolution_meta === "object"
+          ? (payload.evolution_meta as Record<string, unknown>)
+          : payload._evolution_meta && typeof payload._evolution_meta === "object"
+            ? (payload._evolution_meta as Record<string, unknown>)
+            : undefined;
       delegate.setPendingQuestion({
         requestId,
         source: typeof payload.source === "string" ? payload.source : undefined,
+        evolutionMeta,
         questions,
       });
       delegate.setStreamingState(StreamingState.WaitingForConfirmation);

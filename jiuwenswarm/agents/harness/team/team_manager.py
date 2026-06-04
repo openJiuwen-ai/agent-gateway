@@ -1200,6 +1200,8 @@ class TeamManager:
         for rail in self._team_skill_rails.values():
             if request_id in getattr(rail, "_pending_approval_snapshots", {}):
                 return rail
+            if request_id in getattr(rail, "_pending_governance", {}):
+                return rail
         return None
 
     async def drain_team_skill_events(self, session_id: str) -> list[dict]:

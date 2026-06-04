@@ -212,6 +212,27 @@ def test_interface_deep_parse_stream_chunk_preserves_message_metadata():
     assert parsed["metadata"]["rail"] == "ApikeyguardalertRail"
 
 
+def test_parse_stream_chunk_preserves_evolution_meta_for_ask_user_question():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="chat.ask_user_question",
+            payload={
+                "request_id": "evolve_simplify_team123",
+                "evolution_meta": {
+                    "event_kind": "approval",
+                    "rail_kind": "team",
+                    "request_id": "evolve_simplify_team123",
+                },
+                "questions": [{"header": "Skill 精简审批", "question": "是否执行？"}],
+            },
+        )
+    )
+
+    assert parsed["event_type"] == "chat.ask_user_question"
+    assert parsed["evolution_meta"]["rail_kind"] == "team"
+    assert "_evolution_meta" not in parsed
+
+
 def test_parse_stream_chunk_serializes_team_runtime_enum_kind():
     parsed = parse_stream_chunk(
         {

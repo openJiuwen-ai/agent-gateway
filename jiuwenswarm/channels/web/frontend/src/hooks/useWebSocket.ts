@@ -916,6 +916,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const sendUserAnswer = useCallback(
     async (sessionId: string, requestId: string, answers: UserAnswer[], source?: string) => {
       try {
+        const pendingQuestion = useChatStore.getState().pendingQuestion;
+        const evolutionMeta =
+          pendingQuestion?.request_id === requestId
+            ? pendingQuestion.evolutionMeta
+            : undefined;
+        const evolutionMetaPayload =
+          evolutionMeta && typeof evolutionMeta === 'object'
+            ? { evolution_meta: evolutionMeta }
+            : {};
         // 如果是需要走 interrupt/interact 的确认，发送 chat.send
         if (source === 'permission_interrupt') {
           await request('chat.send', {
@@ -924,6 +933,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             request_id: requestId,
             answers: answers,
             source,
+            ...evolutionMetaPayload,
           });
         } else if (source === 'activate_confirm') {
           const action = answers[0]?.selected_options[0] === '拒绝' ? 'reject' : 'accept';
@@ -948,6 +958,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             session_id: sessionId,
             request_id: requestId,
             answers,
+            ...evolutionMetaPayload,
           });
         }
         setPendingQuestion(null);
@@ -1717,7 +1728,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('chat.ask_user_question', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
-        setPendingQuestion(payload as unknown as AskUserQuestionPayload);
+        const questionPayload = payload as Record<string, unknown>;
+        const evolutionMeta =
+          questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'
+            ? (questionPayload.evolution_meta as Record<string, unknown>)
+            : questionPayload._evolution_meta && typeof questionPayload._evolution_meta === 'object'
+              ? (questionPayload._evolution_meta as Record<string, unknown>)
+              : undefined;
+        const normalizedPayload: AskUserQuestionPayload = {
+          request_id: typeof questionPayload.request_id === 'string' ? questionPayload.request_id : '',
+          source: typeof questionPayload.source === 'string' ? questionPayload.source : undefined,
+          questions: Array.isArray(questionPayload.questions) ? questionPayload.questions : [],
+          ...(evolutionMeta ? { evolutionMeta } : {}),
+        };
+        setPendingQuestion(normalizedPayload);
       }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {

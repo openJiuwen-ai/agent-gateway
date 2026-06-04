@@ -144,22 +144,35 @@ from jiuwenswarm.server.runtime.session.session_history import append_history_re
 from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
+    EVOLUTION_ACCEPT_LABELS,
+    EVOLUTION_EXECUTE_LABELS,
     EvolutionPushContext,
     TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
     TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES,
     TEAM_EVOLUTION_IDLE_SLEEP_SEC,
+    approve_evolution_records,
+    answers_select_option,
+    approved_record_ids_from_answers,
     build_evolution_status_update,
     evolution_outcome_from_event,
+    evolution_meta_from_params,
+    evolution_slash_result,
+    evolution_status_response,
     is_evolution_approval_event,
     is_evolution_outcome_event,
     push_evolution_event,
     push_evolution_progress,
     push_evolution_status,
+    record_ids_from_pending_approval,
+    reject_evolution_records,
     resolve_evolution_event_timeout_sec,
     team_evolution_terminal_progress,
     terminal_stage,
+    validate_evolution_log_writable,
+    validate_evolution_skill,
     visible_evolution_progress_from_events,
 )
+from jiuwenswarm.server.utils.stream_utils import parse_ask_user_question_payload
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
@@ -3869,7 +3882,13 @@ class JiuWenClawDeepAdapter:
                 request.channel_id,
             )
         elif request_id.startswith("evolve_simplify_"):
-            resolved = await self._handle_governance_approval(request_id, answers, "simplify")
+            resolved = await self._handle_simplify_approval(
+                request_id,
+                answers,
+                session_id,
+                request.channel_id,
+                evolution_meta_from_params(request.params),
+            )
         elif request_id.startswith("skill_evolve_"):
             resolved = await self._handle_evolution_approval(request_id, answers)
 
@@ -3933,16 +3952,27 @@ class JiuWenClawDeepAdapter:
             logger.warning("[JiuWenClaw] evolution approval failed: no SkillEvolutionRail")
             return False
 
-        # Determine if user accepted (any answer contains "接收")
-        accepted = any(
-            isinstance(ans, dict) and "接收" in ans.get("selected_options", []) for ans in answers
+        record_ids_by_index = record_ids_from_pending_approval(rail, request_id)
+        accepted, approved_record_ids = approved_record_ids_from_answers(
+            answers,
+            EVOLUTION_ACCEPT_LABELS,
+            record_ids_by_index,
         )
 
         if accepted:
-            await rail.on_approve(request_id)
+            await approve_evolution_records(
+                rail,
+                request_id,
+                approved_record_ids,
+                legacy_fallback=True,
+            )
             logger.info("[JiuWenClaw] evolution approval accepted: request_id=%s", request_id)
         else:
-            await rail.on_reject(request_id)
+            await reject_evolution_records(
+                rail,
+                request_id,
+                legacy_fallback=True,
+            )
             logger.info("[JiuWenClaw] evolution approval rejected: request_id=%s", request_id)
 
         return True
@@ -3966,23 +3996,6 @@ class JiuWenClawDeepAdapter:
         except Exception:
             return None
 
-    @staticmethod
-    def _option_matches(answers: list, accept_labels: tuple[str, ...]) -> bool:
-        """Check whether any answer's selected_options matches accept labels.
-
-        Tolerates both Chinese and English labels (case-insensitive) so the
-        agent-core layer can keep neutral English labels while jiuwenswarm UI
-        may localize them.
-        """
-        normalized_accept = {s.strip().lower() for s in accept_labels}
-        for ans in answers:
-            if not isinstance(ans, dict):
-                continue
-            for opt in ans.get("selected_options", []) or []:
-                if isinstance(opt, str) and opt.strip().lower() in normalized_accept:
-                    return True
-        return False
-
     async def handle_team_skill_evolve_approval(
         self,
         request_id: str,
@@ -3995,7 +4008,12 @@ class JiuWenClawDeepAdapter:
             logger.warning("[JiuWenClaw] team skill evolve approval failed: no TeamSkillEvolutionRail")
             return False
 
-        accepted = self._option_matches(answers, ("accept", "接收", "接受"))
+        record_ids_by_index = record_ids_from_pending_approval(rail, request_id)
+        accepted, approved_record_ids = approved_record_ids_from_answers(
+            answers,
+            EVOLUTION_ACCEPT_LABELS,
+            record_ids_by_index,
+        )
 
         logger.info(
             "[JiuWenClaw] team skill evolve approval: request_id=%s, answers=%s, accepted=%s",
@@ -4003,7 +4021,7 @@ class JiuWenClawDeepAdapter:
         )
 
         if accepted:
-            await rail.approve_record(request_id)
+            await approve_evolution_records(rail, request_id, approved_record_ids)
             # Sync updated team skill from workspace to global team_skills dir.
             try:
                 from jiuwenswarm.agents.harness.team import sync_team_skills_across_managers
@@ -4013,7 +4031,7 @@ class JiuWenClawDeepAdapter:
                 logger.warning("[JiuWenClaw] team skill sync after patch failed: %s", exc)
             logger.info("[JiuWenClaw] team skill evolve accepted: request_id=%s", request_id)
         else:
-            await rail.reject_record(request_id)
+            await reject_evolution_records(rail, request_id)
             logger.info("[JiuWenClaw] team skill evolve rejected: request_id=%s", request_id)
 
         await self._push_team_skill_evolve_resolution_status(
@@ -4023,6 +4041,62 @@ class JiuWenClawDeepAdapter:
             accepted=accepted,
         )
         return True
+
+    async def _handle_team_simplify_approval(
+        self,
+        request_id: str,
+        answers: list,
+        session_id: str | None = None,
+        channel_id: str | None = None,
+    ) -> bool:
+        rail = self.find_team_skill_rail(request_id, channel_id)
+        if rail is None:
+            logger.warning("[JiuWenClaw] team simplify approval failed: no TeamSkillEvolutionRail")
+            return False
+
+        accepted = answers_select_option(answers, EVOLUTION_EXECUTE_LABELS)
+        if accepted:
+            await rail.on_approve_simplify(request_id)
+            try:
+                from jiuwenswarm.agents.harness.team import sync_team_skills_across_managers
+                if session_id:
+                    sync_team_skills_across_managers(session_id)
+            except Exception as exc:
+                logger.warning("[JiuWenClaw] team skill sync after simplify failed: %s", exc)
+            logger.info("[JiuWenClaw] team simplify accepted: request_id=%s", request_id)
+        else:
+            await rail.on_reject_simplify(request_id)
+            logger.info("[JiuWenClaw] team simplify rejected: request_id=%s", request_id)
+
+        return True
+
+    async def _handle_simplify_approval(
+        self,
+        request_id: str,
+        answers: list,
+        session_id: str | None,
+        channel_id: str | None,
+        evolution_meta: dict[str, Any],
+    ) -> bool:
+        rail_kind = str(evolution_meta.get("rail_kind") or "").strip().lower()
+        if rail_kind == "team":
+            return await self._handle_team_simplify_approval(
+                request_id,
+                answers,
+                session_id,
+                channel_id,
+            )
+        if rail_kind == "regular":
+            return await self._handle_governance_approval(request_id, answers, "simplify")
+
+        if self.find_team_skill_rail(request_id, channel_id) is not None:
+            return await self._handle_team_simplify_approval(
+                request_id,
+                answers,
+                session_id,
+                channel_id,
+            )
+        return await self._handle_governance_approval(request_id, answers, "simplify")
 
     @staticmethod
     async def _push_team_skill_evolve_resolution_status(
@@ -4112,16 +4186,13 @@ class JiuWenClawDeepAdapter:
         skill_name = skill_parts[0].strip()
         user_query = skill_parts[1].strip() if len(skill_parts) > 1 else ""
 
-        if skill_name not in skill_names:
-            available = "、".join(skill_names) or "（无可用 Skill）"
-            return {
-                "output": (
-                    f"在 skills_base_dir 下未找到 Skill '{skill_name}'。\n"
-                    f"当前可用 Skill：{available}\n"
-                    f"可使用 /evolve_list <skill_name> 查看指定 Skill 的经验库。"
-                ),
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=True)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
+
+        writable_error = validate_evolution_log_writable(store, skill_name)
+        if writable_error is not None:
+            return {"output": writable_error, "result_type": "error"}
 
         # 1) Collect conversation messages from the context engine cache
         parsed_messages = self._collect_messages_for_evolve(session_id)
@@ -4141,13 +4212,6 @@ class JiuWenClawDeepAdapter:
 
         attributed = [s for s in new_signals if s.skill_name == skill_name]
 
-        # If no detected signals and no user_query, nothing to evolve
-        if not attributed and not user_query:
-            return {
-                "output": "当前对话未发现明确的演进信号（无工具执行失败、无用户纠正）。\n",
-                "result_type": "answer",
-            }
-
         evolution_intent = user_query
         if not evolution_intent:
             for sig in attributed:
@@ -4160,6 +4224,8 @@ class JiuWenClawDeepAdapter:
                 if isinstance(content, str) and content:
                     evolution_intent = content
                     break
+        if not evolution_intent:
+            evolution_intent = f"用户显式请求演进 Skill '{skill_name}'。"
 
         try:
             evolve_result = await rail.request_user_evolution(
@@ -4173,6 +4239,14 @@ class JiuWenClawDeepAdapter:
                 "output": f"演进经验生成失败：{exc}",
                 "result_type": "error",
             }
+
+        status_response = evolution_status_response(
+            evolve_result,
+            generation_failed_output="llm error",
+            no_records_output="已请求演进，但本次未生成可保存经验。",
+        )
+        if status_response is not None:
+            return status_response
 
         if not getattr(evolve_result, "has_changes", False):
             return {
@@ -4331,13 +4405,9 @@ class JiuWenClawDeepAdapter:
                 "result_type": "error",
             }
 
-        if not store.skill_exists(skill_name):
-            available = ("、".join(filter_visible_skill_names(store.list_skill_names()))
-                         or "（无可用 Skill）")
-            return {
-                "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
 
         records = await store.get_records_by_score(skill_name)
         if not records:
@@ -4394,13 +4464,13 @@ class JiuWenClawDeepAdapter:
                 "result_type": "error",
             }
 
-        if not store.skill_exists(skill_name):
-            available = ("、".join(filter_visible_skill_names(store.list_skill_names()))
-                         or "（无可用 Skill）")
-            return {
-                "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=True)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
+
+        writable_error = validate_evolution_log_writable(store, skill_name)
+        if writable_error is not None:
+            return {"output": writable_error, "result_type": "error"}
 
         try:
             simplify_result = await rail.request_simplify(skill_name, user_intent)
@@ -4429,12 +4499,9 @@ class JiuWenClawDeepAdapter:
                 "result_type": "error",
             }
 
-        if not store.skill_exists(skill_name):
-            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-            return {
-                "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
 
         try:
             followup_prompt = await rail.request_rebuild(skill_name, user_intent)
@@ -4480,12 +4547,9 @@ class JiuWenClawDeepAdapter:
                 "result_type": "error",
             }
 
-        if not store.skill_exists(skill_name):
-            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-            return {
-                "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
 
         archives = store.list_archives(skill_name)
         body_versions = [a for a in archives if a.startswith("SKILL.v")]
@@ -4618,32 +4682,62 @@ class JiuWenClawDeepAdapter:
         if stripped.startswith("/evolve_simplify"):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
-                return {"output": err, "result_type": "error"}
-            return await self._handle_evolve_simplify_command(stripped)
+                return evolution_slash_result(
+                    "evolve_simplify",
+                    {"output": err, "result_type": "error"},
+                )
+            return evolution_slash_result(
+                "evolve_simplify",
+                await self._handle_evolve_simplify_command(stripped),
+            )
 
         if stripped.startswith("/evolve_rebuild"):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
-                return {"output": err, "result_type": "error"}
-            return await self._handle_evolve_rebuild_command(stripped)
+                return evolution_slash_result(
+                    "evolve_rebuild",
+                    {"output": err, "result_type": "error"},
+                )
+            return evolution_slash_result(
+                "evolve_rebuild",
+                await self._handle_evolve_rebuild_command(stripped),
+            )
 
         if stripped.startswith("/evolve_rollback"):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
-                return {"output": err, "result_type": "error"}
-            return await self._handle_evolve_rollback_command(stripped)
+                return evolution_slash_result(
+                    "evolve_rollback",
+                    {"output": err, "result_type": "error"},
+                )
+            return evolution_slash_result(
+                "evolve_rollback",
+                await self._handle_evolve_rollback_command(stripped),
+            )
 
         if stripped.startswith("/evolve_list"):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
-                return {"output": err, "result_type": "error"}
-            return await self._handle_evolve_list_command(stripped)
+                return evolution_slash_result(
+                    "evolve_list",
+                    {"output": err, "result_type": "error"},
+                )
+            return evolution_slash_result(
+                "evolve_list",
+                await self._handle_evolve_list_command(stripped),
+            )
 
         if stripped == "/evolve" or stripped.startswith("/evolve "):
             err = self._ensure_evolution_rail_for_slash(mode)
             if err:
-                return {"output": err, "result_type": "error"}
-            return await self._handle_evolve_command(stripped, session_id)
+                return evolution_slash_result(
+                    "evolve",
+                    {"output": err, "result_type": "error"},
+                )
+            return evolution_slash_result(
+                "evolve",
+                await self._handle_evolve_command(stripped, session_id),
+            )
 
         return None
 
@@ -4746,7 +4840,12 @@ class JiuWenClawDeepAdapter:
                     payload: dict[str, Any] = {"approval_chunks": approval_chunks}
                 else:
                     content = slash_result.get("output", str(slash_result))
-                    payload = {"content": content}
+                    payload = {
+                        "content": content,
+                        "source": slash_result.get("source"),
+                        "slash_command": slash_result.get("slash_command"),
+                        "display_level": slash_result.get("display_level"),
+                    }
                 return AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -4929,7 +5028,13 @@ class JiuWenClawDeepAdapter:
                     yield AgentResponseChunk(
                         request_id=request.request_id,
                         channel_id=request.channel_id,
-                        payload={"event_type": "chat.final", "content": content},
+                        payload={
+                            "event_type": "chat.final",
+                            "content": content,
+                            "source": slash_result.get("source"),
+                            "slash_command": slash_result.get("slash_command"),
+                            "display_level": slash_result.get("display_level"),
+                        },
                         is_complete=True,
                     )
                 return
@@ -5482,10 +5587,7 @@ class JiuWenClawDeepAdapter:
                     }
 
                 if chunk_type == "chat.ask_user_question":
-                    return {
-                        "event_type": "chat.ask_user_question",
-                        **(payload if isinstance(payload, dict) else {}),
-                    }
+                    return parse_ask_user_question_payload(payload)
 
                 if chunk_type == "__interaction__":
                     if isinstance(payload, dict) and payload.get("interaction_type") == "activate_confirm":

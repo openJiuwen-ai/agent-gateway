@@ -49,9 +49,13 @@ class _FakeTeamSkillEvolutionRail:
     def __init__(self, *, auto_scan: bool = True) -> None:
         self.auto_scan = auto_scan
         self._pending_approval_snapshots: dict[str, object] = {}
+        self._pending_governance: dict[str, object] = {}
 
     def add_pending_approval_snapshot(self, request_id: str) -> None:
         self._pending_approval_snapshots[request_id] = object()
+
+    def add_pending_governance(self, request_id: str) -> None:
+        self._pending_governance[request_id] = object()
 
 
 class _FakeTeamSkillCreateRail:
@@ -190,6 +194,16 @@ def test_find_team_skill_rail_for_request_uses_pending_approval_snapshots() -> N
     manager.register_team_skill_rail("sess-1", rail)
 
     assert manager.find_team_skill_rail_for_request("team_skill_evolve_req1") is rail
+    assert manager.find_team_skill_rail_for_request("missing") is None
+
+
+def test_find_team_skill_rail_for_request_uses_pending_governance() -> None:
+    manager = TeamManager()
+    rail = _FakeTeamSkillEvolutionRail()
+    rail.add_pending_governance("evolve_simplify_req1")
+    manager.register_team_skill_rail("sess-1", rail)
+
+    assert manager.find_team_skill_rail_for_request("evolve_simplify_req1") is rail
     assert manager.find_team_skill_rail_for_request("missing") is None
 
 

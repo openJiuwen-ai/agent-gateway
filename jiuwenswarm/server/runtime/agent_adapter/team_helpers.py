@@ -18,7 +18,6 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import get_team_manager
-from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
     get_session_metadata,
@@ -36,6 +35,7 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES,
     TEAM_EVOLUTION_HIDDEN_STAGE,
     TEAM_EVOLUTION_IDLE_SLEEP_SEC,
+    TEAM_EVOLUTION_SLASH_WARNING_PHRASES,
     TEAM_EVOLUTION_START_MESSAGE,
     TEAM_EVOLUTION_START_STAGE,
     broadcast_evolution_progress,
@@ -43,6 +43,9 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     event_type,
     evolution_outcome_from_event,
     evolution_progress_status_from_event,
+    evolution_slash_command_name,
+    evolution_slash_result,
+    evolution_status_response,
     extract_evolution_request_id,
     group_evolution_approvals,
     is_evolution_outcome_event,
@@ -54,6 +57,8 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     team_evolution_end_update,
     terminal_progress_from_events,
     terminal_stage,
+    validate_evolution_log_writable,
+    validate_evolution_skill,
     visible_evolution_progress_from_events,
 )
 
@@ -412,9 +417,9 @@ async def _resolve_team_rebuild_followup(
     if not skill_name:
         return None, "请指定 Skill 名称：`/evolve_rebuild <skill_name> [user_intent]`"
 
-    if not store.skill_exists(skill_name):
-        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-        return None, f"未找到 Skill '{skill_name}'。当前可用：{available}"
+    validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
+    if validation_error is not None:
+        return None, validation_error
 
     try:
         followup_prompt = await rail.request_rebuild(skill_name, user_intent)
@@ -455,12 +460,9 @@ async def _handle_team_evolve_list_command(
             "result_type": "error",
         }
 
-    if not store.skill_exists(skill_name):
-        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-        return {
-            "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-            "result_type": "error",
-        }
+    validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
+    if validation_error is not None:
+        return {"output": validation_error, "result_type": "error"}
 
     records = await store.get_records_by_score(skill_name)
     if not records:
@@ -540,12 +542,13 @@ async def _handle_team_slash_command(
                 "result_type": "error",
             }
 
-        if not store.skill_exists(skill_name):
-            available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-            return {
-                "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-                "result_type": "error",
-            }
+        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=True)
+        if validation_error is not None:
+            return {"output": validation_error, "result_type": "error"}
+
+        writable_error = validate_evolution_log_writable(store, skill_name)
+        if writable_error is not None:
+            return {"output": writable_error, "result_type": "error"}
 
         try:
             simplify_result = await rail.request_simplify(skill_name, user_intent)
@@ -578,18 +581,19 @@ async def _handle_team_slash_command(
     skill_name = parts[1].strip()
     user_query = parts[2].strip() if len(parts) > 2 else ""
 
-    if not store.skill_exists(skill_name):
-        available = "、".join(filter_visible_skill_names(store.list_skill_names())) or "（无可用 Skill）"
-        return {
-            "output": f"未找到 Skill '{skill_name}'。当前可用：{available}",
-            "result_type": "error",
-        }
-
     if not user_query:
         return {
             "output": "请补充演进意图：`/evolve <skill_name> <user_query>`",
             "result_type": "error",
         }
+
+    validation_error = validate_evolution_skill(store, skill_name, require_skill_md=True)
+    if validation_error is not None:
+        return {"output": validation_error, "result_type": "error"}
+
+    writable_error = validate_evolution_log_writable(store, skill_name)
+    if writable_error is not None:
+        return {"output": writable_error, "result_type": "error"}
 
     try:
         evolve_result = await rail.request_user_evolution(skill_name, user_query)
@@ -609,6 +613,13 @@ async def _handle_team_slash_command(
             "output": f"Skill '{skill_name}' 演进请求已提交，请等待审批。",
             "result_type": "answer",
         }
+    status_response = evolution_status_response(
+        evolve_result,
+        generation_failed_output="llm error",
+        no_records_output="已请求团队 Skill 演进，但本次未生成可保存经验。",
+    )
+    if status_response is not None:
+        return status_response
     return _approval_result_from_event_or_items(
         skill_name=skill_name,
         event=getattr(evolve_result, "approval_event", None),
@@ -684,12 +695,22 @@ async def process_team_message_stream(
             )
             return
 
+        slash_result = evolution_slash_result(
+            evolution_slash_command_name(query_text),
+            slash_result,
+            warning_phrases=TEAM_EVOLUTION_SLASH_WARNING_PHRASES,
+        )
         result_type = str(slash_result.get("result_type", "answer")).strip().lower()
         content = str(slash_result.get("output", ""))
+        slash_meta = {
+            "source": slash_result.get("source"),
+            "slash_command": slash_result.get("slash_command"),
+            "display_level": slash_result.get("display_level"),
+        }
         payload = (
-            {"event_type": "chat.error", "error": content}
+            {"event_type": "chat.error", "error": content, **slash_meta}
             if result_type == "error"
-            else {"event_type": "chat.final", "content": content}
+            else {"event_type": "chat.final", "content": content, **slash_meta}
         )
         yield AgentResponseChunk(
             request_id=rid,

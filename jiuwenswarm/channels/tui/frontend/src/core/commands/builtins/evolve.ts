@@ -18,7 +18,6 @@ export function createEvolveCommand(): SlashCommand {
       const skillArg = args.trim();
       // Forward as-is. Agent mode still accepts bare /evolve for a pending-record summary.
       const text = skillArg ? `/evolve ${skillArg}` : `/evolve`;
-
       const requestId = ctx.sendMessage(text);
       if (!requestId) {
         ctx.addItem(

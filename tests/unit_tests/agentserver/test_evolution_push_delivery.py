@@ -92,6 +92,34 @@ class _FakeEvolutionRail:
         self.cleanup_calls += 1
 
 
+class _FakeApprovalRail:
+    def __init__(
+        self,
+        *,
+        request_id: str = "",
+        record_ids: list[str] | None = None,
+    ) -> None:
+        self.approved: list[tuple[str, list[str] | None]] = []
+        self.rejected: list[str] = []
+        if record_ids is not None:
+            self._pending_approval_snapshots = {
+                request_id: SimpleNamespace(
+                    payload=[SimpleNamespace(id=record_id) for record_id in record_ids],
+                ),
+            }
+
+    async def approve_record(
+        self,
+        request_id: str,
+        *,
+        approved_record_ids: list[str] | None = None,
+    ) -> None:
+        self.approved.append((request_id, approved_record_ids))
+
+    async def reject_record(self, request_id: str) -> None:
+        self.rejected.append(request_id)
+
+
 class _TestAdapter(JiuWenClawDeepAdapter):
     @classmethod
     def build_with_rail(cls, rail: _FakeEvolutionRail) -> "_TestAdapter":
@@ -427,19 +455,8 @@ async def test_normal_evolution_watcher_hides_timed_out_terminal_progress(monkey
 
 
 @pytest.mark.asyncio
-async def test_team_skill_evolve_approval_uses_record_api(monkeypatch):
-    class _FakeTeamRail:
-        def __init__(self) -> None:
-            self.approved: list[str] = []
-            self.rejected: list[str] = []
-
-        async def approve_record(self, request_id: str) -> None:
-            self.approved.append(request_id)
-
-        async def reject_record(self, request_id: str) -> None:
-            self.rejected.append(request_id)
-
-    rail = _FakeTeamRail()
+async def test_team_skill_evolve_approval_keeps_legacy_whole_request_without_record_ids(monkeypatch):
+    rail = _FakeApprovalRail()
     adapter = object.__new__(JiuWenClawDeepAdapter)
     monkeypatch.setattr(
         JiuWenClawDeepAdapter,
@@ -459,25 +476,51 @@ async def test_team_skill_evolve_approval_uses_record_api(monkeypatch):
     )
 
     assert handled is True
-    assert rail.approved == ["team_skill_evolve_req1"]
+    assert rail.approved == [("team_skill_evolve_req1", None)]
+    assert rail.rejected == []
+
+
+@pytest.mark.asyncio
+async def test_team_skill_evolve_approval_passes_selected_record_ids(monkeypatch):
+    rail = _FakeApprovalRail(
+        request_id="team_skill_evolve_req1",
+        record_ids=["team-rec-1", "team-rec-2", "team-rec-3"],
+    )
+    adapter = object.__new__(JiuWenClawDeepAdapter)
+    monkeypatch.setattr(
+        JiuWenClawDeepAdapter,
+        "find_team_skill_rail",
+        staticmethod(lambda request_id, channel_id=None: rail),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.sync_team_skills_across_managers",
+        lambda session_id: None,
+    )
+
+    handled = await adapter.handle_team_skill_evolve_approval(
+        "team_skill_evolve_req1",
+        [
+            {"selected_options": ["accept"]},
+            {"selected_options": ["reject"]},
+            {"selected_options": ["接收"]},
+        ],
+        session_id="sess-1",
+        channel_id="web",
+    )
+
+    assert handled is True
+    assert rail.approved == [("team_skill_evolve_req1", ["team-rec-1", "team-rec-3"])]
     assert rail.rejected == []
 
 
 @pytest.mark.asyncio
 async def test_team_skill_evolve_approval_pushes_terminal_status(monkeypatch):
-    class _FakeTeamRail:
-        async def approve_record(self, request_id: str) -> None:
-            return None
-
-        async def reject_record(self, request_id: str) -> None:
-            return None
-
     _FakeTransport.pushes = []
     adapter = object.__new__(JiuWenClawDeepAdapter)
     monkeypatch.setattr(
         JiuWenClawDeepAdapter,
         "find_team_skill_rail",
-        staticmethod(lambda request_id, channel_id=None: _FakeTeamRail()),
+        staticmethod(lambda request_id, channel_id=None: _FakeApprovalRail()),
     )
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.sync_team_skills_across_managers",

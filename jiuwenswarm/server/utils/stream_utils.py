@@ -109,6 +109,9 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     chunk_type = getattr(chunk, "type", "")
     payload = getattr(chunk, "payload", {})
 
+    if chunk_type == "chat.ask_user_question":
+        return parse_ask_user_question_payload(payload)
+
     if isinstance(chunk_type, str) and "." in chunk_type:
         if chunk_type == "context.compression_state":
             if hasattr(payload, "model_dump"):
@@ -318,12 +321,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                     usage_payload[key] = value
             return usage_payload
 
-    if chunk_type == "chat.ask_user_question":
-        return {
-            "event_type": "chat.ask_user_question",
-            **(payload if isinstance(payload, dict) else {}),
-        }
-
     if chunk_type == "__interaction__":
         return _parse_interaction_payload(payload)
 
@@ -355,6 +352,20 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     return {
         "event_type": f"chat.{chunk_type}",
         "content": str(payload),
+    }
+
+
+def parse_ask_user_question_payload(payload: Any) -> dict[str, Any]:
+    question_payload = payload if isinstance(payload, dict) else {}
+    question_payload = dict(question_payload)
+    evolution_meta = question_payload.get("evolution_meta")
+    legacy_evolution_meta = question_payload.get("_evolution_meta")
+    if not isinstance(evolution_meta, dict) and isinstance(legacy_evolution_meta, dict):
+        question_payload["evolution_meta"] = dict(legacy_evolution_meta)
+    question_payload.pop("_evolution_meta", None)
+    return {
+        "event_type": "chat.ask_user_question",
+        **question_payload,
     }
 
 

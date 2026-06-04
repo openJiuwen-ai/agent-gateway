@@ -306,6 +306,55 @@ def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monke
     assert response.payload["resolved"] is False
 
 
+def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
+
+    calls: list[tuple[str, str]] = []
+
+    class FakeTeamRail:
+        async def on_approve_simplify(self, request_id: str) -> dict[str, int]:
+            calls.append(("approve_simplify", request_id))
+            return {"applied": 1}
+
+        async def on_reject_simplify(self, request_id: str) -> None:
+            calls.append(("reject_simplify", request_id))
+
+    class FailingRegularRail:
+        async def on_approve_simplify(self, request_id: str) -> None:
+            pytest.fail("team simplify approval must not use regular SkillEvolutionRail")
+
+        async def on_reject_simplify(self, request_id: str) -> None:
+            pytest.fail("team simplify approval must not use regular SkillEvolutionRail")
+
+    adapter = JiuWenClawDeepAdapter()
+    adapter._skill_evolution_rail = FailingRegularRail()  # pylint: disable=protected-access
+    monkeypatch.setattr(
+        JiuWenClawDeepAdapter,
+        "find_team_skill_rail",
+        staticmethod(lambda request_id, channel_id=None: FakeTeamRail()),
+    )
+
+    request = AgentRequest(
+        request_id="req-answer",
+        channel_id="web",
+        session_id="team-session",
+        params={
+            "request_id": "evolve_simplify_team123",
+            "answers": [{"selected_options": ["执行"], "custom_input": ""}],
+            "evolution_meta": {
+                "event_kind": "approval",
+                "rail_kind": "team",
+                "request_id": "evolve_simplify_team123",
+            },
+        },
+    )
+
+    response = asyncio.run(adapter.handle_user_answer(request))
+
+    assert response.payload["resolved"] is True
+    assert calls == [("approve_simplify", "evolve_simplify_team123")]
+
+
 def test_handle_stream_accepts_team_mode_without_sub_mode(monkeypatch):
     class FakeAgent:
         def __init__(self):

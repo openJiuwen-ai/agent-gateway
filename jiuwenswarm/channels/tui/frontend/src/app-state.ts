@@ -1148,11 +1148,18 @@ export class CliPiAppState {
         true,
       );
     } else {
-      this.sendEventOnly("chat.user_answer", {
+      const params: Record<string, unknown> = {
         request_id: this.pendingQuestion.requestId,
         answers,
         mode: this.mode,
-      });
+      };
+      if (this.pendingQuestion.evolutionMeta) {
+        params.evolution_meta = this.pendingQuestion.evolutionMeta;
+      }
+      this.sendEventOnly(
+        "chat.user_answer",
+        params,
+      );
     }
     this.pendingQuestion = null;
     this.streamingState = StreamingState.Idle;

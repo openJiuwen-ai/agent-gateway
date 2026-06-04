@@ -240,6 +240,60 @@ def test_evolution_helpers_group_approvals_skips_missing_request_ids():
     assert grouped["team_skill_evolve_real"] == [real_request_id]
 
 
+def test_evolution_helpers_resolve_approved_record_ids_by_answer_index():
+    accepted, approved_ids = evolution_helpers.approved_record_ids_from_answers(
+        [
+            {"selected_options": ["接收"]},
+            {"selected_options": ["拒绝"]},
+            {"selected_options": ["Accept"]},
+        ],
+        evolution_helpers.EVOLUTION_ACCEPT_LABELS,
+        ["rec-1", "rec-2", "rec-3"],
+    )
+
+    assert accepted is True
+    assert approved_ids == ["rec-1", "rec-3"]
+
+
+def test_evolution_helpers_preserve_legacy_whole_request_without_record_ids():
+    accepted, approved_ids = evolution_helpers.approved_record_ids_from_answers(
+        [{"selected_options": ["接收"]}],
+        evolution_helpers.EVOLUTION_ACCEPT_LABELS,
+    )
+
+    assert accepted is True
+    assert approved_ids is None
+
+
+def test_evolution_helpers_do_not_whole_approve_when_snapshot_id_is_missing():
+    accepted, approved_ids = evolution_helpers.approved_record_ids_from_answers(
+        [{"selected_options": ["接收"]}],
+        evolution_helpers.EVOLUTION_ACCEPT_LABELS,
+        [""],
+    )
+
+    assert accepted is True
+    assert approved_ids == []
+
+
+def test_evolution_helpers_extract_record_ids_from_pending_snapshot():
+    rail = SimpleNamespace(
+        _pending_approval_snapshots={
+            "skill_evolve_req1": SimpleNamespace(
+                payload=[
+                    SimpleNamespace(id="rec-1"),
+                    SimpleNamespace(id="rec-2"),
+                ],
+            ),
+        },
+    )
+
+    assert evolution_helpers.record_ids_from_pending_approval(
+        rail,
+        "skill_evolve_req1",
+    ) == ["rec-1", "rec-2"]
+
+
 def test_evolution_helpers_builds_team_cycle_request_id():
     assert (
         evolution_helpers.make_team_evolution_cycle_request_id("sess-1", 2)

@@ -1524,6 +1524,52 @@ async def test_handle_team_slash_command_submits_explicit_evolve_request(monkeyp
 
 
 @pytest.mark.anyio
+async def test_handle_team_slash_command_maps_generation_failed_status(monkeypatch):
+    class _FakeStore:
+        @staticmethod
+        def skill_exists(skill_name: str) -> bool:
+            return skill_name == "demo-skill"
+
+        @staticmethod
+        def skill_definition_exists(skill_name: str) -> bool:
+            return skill_name == "demo-skill"
+
+        @staticmethod
+        def list_skill_names() -> list[str]:
+            return ["demo-skill"]
+
+    class _FakeRail:
+        store = _FakeStore()
+
+        @staticmethod
+        async def request_user_evolution(skill_name: str, user_query: str):
+            return SimpleNamespace(
+                status="generation_failed",
+                message="llm unavailable",
+                approval_event=None,
+                records=[],
+            )
+
+    class _FakeManager:
+        @staticmethod
+        def get_team_skill_rail(session_id: str):
+            return _FakeRail()
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    result = await _TeamHelpersTestApi.handle_team_slash_command(
+        "web",
+        "sess-team-evolve",
+        "/evolve demo-skill improve review flow",
+    )
+
+    assert result == {
+        "output": "llm unavailable",
+        "result_type": "error",
+    }
+
+
+@pytest.mark.anyio
 async def test_handle_team_slash_command_simplify_reports_noop(monkeypatch):
     recorded_calls: list[tuple[str, str | None]] = []
     watcher_calls: list[tuple[str | None, str, str]] = []
