@@ -45,7 +45,7 @@ export function createBranchCommand(): SlashCommand {
         const originalSessionId = ctx.sessionId;
         ctx.updateSession(forkSessionId);
         ctx.clearEntries();
-        ctx.addItem(addCommandEcho(forkSessionId, "/branch"));
+        ctx.addItem(addCommandEcho(forkSessionId, customTitle ? `/branch ${customTitle}` : "/branch"));
         ctx.addItem(
           addInfo(
             forkSessionId,
