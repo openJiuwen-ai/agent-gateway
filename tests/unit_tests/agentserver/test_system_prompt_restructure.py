@@ -9,6 +9,7 @@ from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
+from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail as runtime_prompt_rail_module
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 
 
@@ -84,6 +85,32 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path):
     assert str(current_dir) in prompt
     assert str(stale_dir) not in prompt
     assert str(extra_dir) in prompt
+
+
+@pytest.mark.asyncio
+async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime_state(
+    monkeypatch,
+    tmp_path,
+):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "runtime_state.yaml").write_text(
+        "model: test-model\nmode: team.plan\nlanguage: en\nchannel: tui\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(runtime_prompt_rail_module, "get_config_dir", lambda: config_dir)
+
+    builder = SystemPromptBuilder(language="cn")
+    runtime_rail = RuntimePromptRail(language="cn", channel="tui")
+    runtime_rail.init(SimpleNamespace(system_prompt_builder=builder))
+
+    ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "Always respond in Chinese." in prompt
+    assert "Always respond in English." not in prompt
+    assert "当前语言：cn" in prompt
 
 
 def test_resolve_skill_mode_accepts_all_and_auto_list():

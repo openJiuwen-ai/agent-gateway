@@ -157,7 +157,11 @@ class RuntimePromptRail(DeepAgentRail):
 
         model = (runtime_state.get("model") or self._model_name or "unknown").strip()
         mode = (runtime_state.get("mode") or self._mode or "unknown").strip()
-        language_val = (runtime_state.get("language") or self._language or "unknown").strip()
+        language_val = (
+            "en"
+            if self._force_english
+            else self._language or runtime_state.get("language") or "unknown"
+        ).strip()
         channel = (runtime_state.get("channel") or self._channel or "unknown").strip()
 
         if not self._force_english and self._language == "cn":
