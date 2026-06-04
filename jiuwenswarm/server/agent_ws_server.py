@@ -1341,7 +1341,8 @@ class AgentWebSocketServer:
                 for entry in sorted(sessions_dir.iterdir(), key=lambda e: e.stat().st_mtime, reverse=True):
                     if not entry.is_dir():
                         continue
-                    meta = get_session_metadata(entry.name)
+                    # 强制跳过缓存，确保获取跨进程写入的最新数据（如 Gateway 的 /color 设置）
+                    meta = get_session_metadata(entry.name, cache_bust=True)
                     if not meta:
                         meta = {
                             "session_id": entry.name,

@@ -44,17 +44,23 @@ def _metadata_file(session_id: str) -> Path:
     return session_dir / "metadata.json"
 
 
-def _read_metadata(session_id: str) -> dict[str, Any]:
+def _read_metadata(session_id: str, cache_bust: bool = False) -> dict[str, Any]:
     """读取会话元数据(优先从内存缓存读取,避免异步写入未落盘时读到陈旧数据)
 
     读路径不应产生副作用：即便 session 目录不存在，也不触发 mkdir，
     否则会导致仅查询(session.rename 无 title 参数时)隐式创建空 session 目录，
     污染 session.list 结果。
+
+    Args:
+        session_id: 会话 ID
+        cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
     """
-    with _CACHE_LOCK:
-        cached = _METADATA_CACHE.get(session_id)
-        if cached is not None:
-            return cached.copy()
+    if not cache_bust:
+        with _CACHE_LOCK:
+            cached = _METADATA_CACHE.get(session_id)
+            if cached is not None:
+                return cached.copy()
+    # cache_bust=True 或缓存没有数据时，强制读磁盘
     fpath = get_agent_sessions_dir() / session_id / "metadata.json"
     if not fpath.exists():
         return {}
@@ -163,6 +169,7 @@ def update_session_metadata(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     team_name: str | None = None,
+    accent_color: str | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -205,6 +212,8 @@ def update_session_metadata(
             metadata["mode"] = mode
         if team_name is not None:
             metadata["team_name"] = team_name
+        if accent_color is not None:
+            metadata["accent_color"] = accent_color
         # 显式清除优先级高于 title 入参
         if clear_title:
             metadata["title"] = ""
@@ -229,9 +238,14 @@ def update_session_metadata(
     _enqueue_write(session_id, metadata)
 
 
-def get_session_metadata(session_id: str) -> dict[str, Any]:
-    """获取会话元数据"""
-    return _read_metadata(session_id)
+def get_session_metadata(session_id: str, cache_bust: bool = False) -> dict[str, Any]:
+    """获取会话元数据
+
+    Args:
+        session_id: 会话 ID
+        cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景）
+    """
+    return _read_metadata(session_id, cache_bust)
 
 
 def increment_session_round_count(session_id: str) -> int:

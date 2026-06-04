@@ -1736,9 +1736,14 @@ export class AppScreen implements Component, Focusable {
     if (!nextSessionId) {
       return;
     }
+    // 在清空 resumeSessionList 之前获取 accent_color
+    const sessions = this.resumeSessionList?.sessions ?? [];
+    const matchedSession = sessions.find((s) => s.session_id === nextSessionId);
+    const accentColor = matchedSession?.accent_color ?? "default";
     this.resumeSessionList = null;
     this.state.updateSession(nextSessionId);
     this.state.clearEntries();
+    this.state.setAccentColor(accentColor);
     await this.state.restoreHistory(nextSessionId);
     // 异步获取被恢复会话的标题并更新终端窗口标题
     void (async () => {

@@ -50,6 +50,10 @@ export function createColorCommand(): SlashCommand {
         return;
       }
       ctx.setAccentColor(normalizedColor);
+      void ctx.request("session.color_set", {
+        session_id: ctx.sessionId,
+        color: normalizedColor,
+      }).catch(() => {});
       ctx.addItem(addInfo(ctx.sessionId, `Session accent color set to ${normalizedColor}`, "c"));
     },
   };

@@ -423,10 +423,6 @@ export class CliPiAppState {
       setCurrentThemeName(config.theme);
       this.themeName = config.theme;
     }
-    if (config.accentColor) {
-      setCurrentAccentColor(config.accentColor);
-      this.accentColor = config.accentColor;
-    }
   }
 
   start(): void {
@@ -825,6 +821,10 @@ export class CliPiAppState {
     this.sessionId = newId;
     this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
+    if (this.accentColor !== "default") {
+      this.accentColor = "default";
+      setCurrentAccentColor("default");
+    }
     this.emitChange();
   };
 

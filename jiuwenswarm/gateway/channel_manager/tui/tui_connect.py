@@ -1386,6 +1386,54 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 code=code,
             )
 
+    async def _session_color_set(ws, req_id, params, session_id):
+        """设置 session 的 accent_color。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+            _write_metadata_sync,
+            _read_metadata,
+        )
+
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
+            )
+            return
+        target = str(params.get("session_id") or session_id).strip()
+        if not target:
+            await channel.send_response(
+                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
+            )
+            return
+
+        color = params.get("color")
+        valid_colors = ["default", "blue", "green", "pink", "purple", "red", "yellow"]
+
+        if color is None:
+            # 查询模式
+            metadata = get_session_metadata(target)
+            accent_color = metadata.get("accent_color", "default") if metadata else "default"
+            await channel.send_response(
+                ws, req_id, ok=True,
+                payload={"session_id": target, "accent_color": accent_color}
+            )
+            return
+
+        if str(color) not in valid_colors:
+            await channel.send_response(
+                ws, req_id, ok=False, error=f"invalid color: {color}", code="BAD_REQUEST"
+            )
+            return
+
+        # 设置模式 - 同步写入确保跨进程可见
+        metadata = _read_metadata(target)
+        metadata["accent_color"] = str(color)
+        _write_metadata_sync(target, metadata)
+        await channel.send_response(
+            ws, req_id, ok=True,
+            payload={"session_id": target, "accent_color": str(color)}
+        )
+
     async def _chat_send(ws, req_id, params, session_id):
         await channel.send_response(
             ws, req_id, ok=True, payload={"accepted": True, "session_id": session_id}
@@ -1777,6 +1825,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "session.create", _session_create)
     channel.register_local_handler(path, "session.delete", _session_delete)
     channel.register_local_handler(path, "session.rename", _session_rename)
+    channel.register_local_handler(path, "session.color_set", _session_color_set)
     channel.register_local_handler(path, "session.rewind", _session_rewind)
     channel.register_local_handler(path, "session.rewind_and_restore", _session_rewind_and_restore)
     channel.register_local_handler(path, "session.restore_files", _session_restore_files)
