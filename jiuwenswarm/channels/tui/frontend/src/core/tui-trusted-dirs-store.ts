@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -164,15 +164,18 @@ export function addTrustedDir(path: string): "added" | "exists" | "not_found" | 
   if (!normalized) {
     return "invalid";
   }
-  if (!existsSync(normalized)) {
-    return "not_found";
-  }
   try {
     const stats = statSync(normalized);
     if (!stats.isDirectory()) {
       return "invalid";
     }
-  } catch {
+  } catch (err: any) {
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return "no_access";
+    }
+    if (err.code === "ENOENT") {
+      return "not_found";
+    }
     return "invalid";
   }
   const access = checkDirAccess(normalized);
@@ -198,7 +201,7 @@ function checkDirAccess(normalized: string): "valid" | "no_access" | "invalid" {
   try {
     readdirSync(normalized);
   } catch (err: any) {
-    if (err.code === "EACCES") {
+    if (err.code === "EACCES" || err.code === "EPERM") {
       return "no_access";
     }
     return "invalid";
@@ -216,15 +219,18 @@ export function validateDirPath(path: string): "valid" | "not_found" | "invalid"
   if (!normalized) {
     return "invalid";
   }
-  if (!existsSync(normalized)) {
-    return "not_found";
-  }
   try {
     const stats = statSync(normalized);
     if (!stats.isDirectory()) {
       return "invalid";
     }
-  } catch {
+  } catch (err: any) {
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return "no_access";
+    }
+    if (err.code === "ENOENT") {
+      return "not_found";
+    }
     return "invalid";
   }
   const access = checkDirAccess(normalized);
@@ -245,15 +251,18 @@ export function setTrustedDir(path: string): "set" | "not_found" | "invalid" | "
   if (!normalized) {
     return "invalid";
   }
-  if (!existsSync(normalized)) {
-    return "not_found";
-  }
   try {
     const stats = statSync(normalized);
     if (!stats.isDirectory()) {
       return "invalid";
     }
-  } catch {
+  } catch (err: any) {
+    if (err.code === "EACCES" || err.code === "EPERM") {
+      return "no_access";
+    }
+    if (err.code === "ENOENT") {
+      return "not_found";
+    }
     return "invalid";
   }
   const access = checkDirAccess(normalized);
