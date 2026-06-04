@@ -96,8 +96,11 @@ def _get_marketplace_dir() -> "Path":
     return get_agent_skills_dir() / "_marketplace"
 
 
+def _get_state_file() -> "Path":
+    return get_state_file()
+
+
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
-    get_registered_skill_names,
     get_skill_enabled,
     get_state_file,
     list_disabled_skills,
@@ -3220,7 +3223,7 @@ class SkillManager:
         try:
             from skillnet_ai import SkillNetClient
             from skillnet_ai.client import SkillNetError
-        except Exception as exc:
+        except Exception:
             return {
                 "ok": False,
                 "detail": "未安装 skillnet-ai，请先安装依赖: pip install skillnet-ai",
