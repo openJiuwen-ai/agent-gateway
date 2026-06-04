@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -23,6 +24,8 @@ from openjiuwen.harness.workspace.workspace import Workspace
 if TYPE_CHECKING:
     from openjiuwen.core.session.agent import Session
     from openjiuwen.harness.deep_agent import DeepAgent
+
+_SUB_AGENTS_DIR = "sub_agents"
 
 # ── Tool names that must never be delegated to a sub-agent ──────────────
 DISALLOWED_FOR_SUBAGENTS: set[str] = {
@@ -217,18 +220,15 @@ class AgentTool(Tool):
         )
 
         # 构建 workspace（对齐 DeepAgent.create_subagent 的逻辑）
-        if parent_config.workspace and isinstance(parent_config.workspace, Workspace):
-            workspace = Workspace(
-                root_path=str(parent_config.workspace.root_path),
-                language=parent_config.language,
-            )
-        else:
-            workspace_path = (
-                f"{parent_config.workspace}/{sub_session_id}"
-                if parent_config.workspace
-                else f"./{sub_session_id}"
-            )
-            workspace = Workspace(root_path=workspace_path, language=parent_config.language)
+        parent_workspace_root = (
+            str(parent_config.workspace.root_path)
+            if parent_config.workspace and isinstance(parent_config.workspace, Workspace)
+            else str(parent_config.workspace or ".")
+        )
+        workspace = Workspace(
+            root_path=str(Path(parent_workspace_root) / _SUB_AGENTS_DIR / sub_session_id),
+            language=parent_config.language,
+        )
 
         # 构建 create_kwargs（对齐 DeepAgent.create_subagent 的字段映射）
         create_kwargs = {
@@ -239,7 +239,7 @@ class AgentTool(Tool):
             "mcps": spec.mcps,
             "enable_task_loop": spec.enable_task_loop,
             "max_iterations": spec.max_iterations if spec.max_iterations is not None else parent_config.max_iterations,
-            "workspace": spec.workspace if spec.workspace is not None else workspace,
+            "workspace": workspace,
             "skills": spec.skills,
             "backend": spec.backend if spec.backend is not None else parent_config.backend,
             "sys_operation": None,  # 子 agent 不继承 sys_operation
