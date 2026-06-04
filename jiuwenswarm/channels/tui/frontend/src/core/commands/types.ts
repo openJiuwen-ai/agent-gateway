@@ -1,4 +1,4 @@
-import type { HistoryItem } from "../types.js";
+import type { HistoryItem, TeamMessageEvent } from "../types.js";
 import type { AccentColorName, ThemeName } from "../../ui/theme.js";
 import type { PendingQuestionItem, UserAnswer } from "../event-handlers.js";
 import type { FileAttachment } from "../protocol.js";
@@ -46,6 +46,8 @@ export interface CommandContext {
   sessionId: string;
   preferredLanguage: PreferredLanguage;
   entries: HistoryItem[];
+  /** Sidechain / team messages (not part of main conversation entries) */
+  teamMessageEvents: TeamMessageEvent[];
   themeName: ThemeName;
   accentColor: AccentColorName;
   updateSession: (id: string) => void;

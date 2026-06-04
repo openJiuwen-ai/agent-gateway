@@ -670,6 +670,7 @@ export class CliPiAppState {
       sessionId: snapshot.sessionId,
       preferredLanguage: snapshot.preferredLanguage,
       entries: snapshot.entries,
+      teamMessageEvents: snapshot.teamMessageEvents,
       themeName: snapshot.themeName,
       accentColor: snapshot.accentColor,
       updateSession: this.updateSession,
