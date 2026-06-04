@@ -5549,6 +5549,22 @@ class JiuWenClawDeepAdapter:
                     )
                     return {"event_type": "chat.error", "error": error_msg}
 
+                if chunk_type == "security.alert":
+                    if isinstance(payload, dict):
+                        return {
+                            "event_type": "security.alert",
+                            **payload,
+                        }
+                    return None
+
+                if chunk_type == "chat.retract":
+                    if isinstance(payload, dict):
+                        return {
+                            "event_type": "chat.retract",
+                            **payload,
+                        }
+                    return None
+
                 if chunk_type == "thinking":
                     return {
                         "event_type": "chat.processing_status",
