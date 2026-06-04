@@ -3076,7 +3076,7 @@ class AgentWebSocketServer:
             logger.warning("[command.sandbox] persist sandbox endpoint failed: %s", exc)
 
         runtime = update_sandbox_runtime({"enabled": True})
-        rebuilt_modes = await self._agent_manager.recreate_agent(channel_id, immediate=True)
+        await self._agent_manager.recreate_agent(channel_id, immediate=True)
 
         return {
             "runtime": runtime,
@@ -3094,17 +3094,12 @@ class AgentWebSocketServer:
                 "startup_mode": startup_mode,
                 "policy_path": str(policy_path),
             },
-            "agent_recreated": True,
-            "rebuilt_modes": rebuilt_modes,
+            "agent_recreated": True
         }
 
     async def _handle_sandbox_disable(self, channel_id: str) -> dict[str, Any]:
         runtime = update_sandbox_runtime({"enabled": False})
-        # 先重建 agent: 新 agent 在 enabled=False 下不再装载 jiuwenbox provider,
-        # 不会有新请求打到将要关闭的子进程; 老 agent 上的 in-flight 调用也由
-        # recreate_agent 内部完成切换。然后再关 jiuwenbox 子进程, 避免出现
-        # "老 agent 还活着 + jiuwenbox 已死" 的中间窗口导致 tool call 报连接错误。
-        rebuilt_modes = await self._agent_manager.recreate_agent(channel_id, immediate=True)
+        await self._agent_manager.recreate_agent(channel_id, immediate=True)
 
         # 记录关闭前的端点用于回执 (external 模式下 runner 没拥有进程, 会是 None)。
         owned_endpoint = self._jiuwenbox_runner.get_owned_endpoint()
@@ -3127,7 +3122,6 @@ class AgentWebSocketServer:
         payload: dict[str, Any] = {
             "runtime": runtime,
             "agent_recreated": True,
-            "rebuilt_modes": rebuilt_modes,
             "jiuwenbox_stopped": jiuwenbox_stopped,
         }
         if owned_endpoint is not None:

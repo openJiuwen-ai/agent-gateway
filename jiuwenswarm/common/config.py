@@ -1640,15 +1640,18 @@ def _looks_like_bare_filename(value: str) -> bool:
 def _jiuwenbox_configs_dir() -> Path | None:
     """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
 
-    优先在仓库目录树里寻找 (开发场景, ``code_agent/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包同级 ``configs/``。
+    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
+    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
     """
     here = Path(__file__).resolve()
 
     for ancestor in here.parents[1:7]:
-        candidate = ancestor / "jiuwenbox" / "configs"
-        if candidate.is_dir():
-            return candidate
+        for candidate in (
+            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
+            ancestor / "jiuwenbox" / "configs",
+        ):
+            if candidate.is_dir():
+                return candidate
     try:
         import jiuwenbox  # type: ignore[import-not-found]
     except ImportError:
@@ -1657,9 +1660,7 @@ def _jiuwenbox_configs_dir() -> Path | None:
         pkg_dir = Path(jiuwenbox.__file__).resolve().parent
     except Exception:  # noqa: BLE001
         return None
-    # wheel 安装版: ``scripts/build.sh`` 把 ``jiuwenbox/configs/`` 临时 stage 到
-    # ``jiuwenbox/src/jiuwenbox/configs/`` 后再打包, 安装后表现为
-    # ``<site-packages>/jiuwenbox/configs/``。优先按这个布局找。
+    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
     direct = pkg_dir / "configs"
     if direct.is_dir():
         return direct

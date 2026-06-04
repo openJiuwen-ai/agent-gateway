@@ -14,12 +14,13 @@ import httpx
 import pytest
 import yaml
 
+from jiuwenbox.bundled_configs import default_policy_path
 from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.supervisor import network as network_module
 from jiuwenbox.supervisor.bwrap import BwrapConfig
 
 _DEFAULT_POLICY = yaml.safe_load(
-    (Path(__file__).resolve().parents[2] / "configs" / "default-policy.yaml").read_text(encoding="utf-8")
+    default_policy_path().read_text(encoding="utf-8")
 )
 _DEFAULT_FILESYSTEM_POLICY = _DEFAULT_POLICY["filesystem_policy"]
 

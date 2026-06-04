@@ -73,32 +73,29 @@ python3 -m build --wheel
 uv pip install ./dist/jiuwenbox*.whl
 ```
 
+The wheel ships `jiuwenbox/configs/*.yaml` (sources under `src/jiuwenbox/configs/`).
+When `JIUWENBOX_POLICY_PATH` is unset, the server uses the bundled
+`default-policy.yaml`.
+
 ## Start The Server
 
 ### Local Start
 
-Set the default policy path and start the installed service via the venv
-Python:
+After installing the wheel, start with the bundled default policy:
 
 ```bash
-sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
-  ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
+sudo ./.venv/bin/jiuwenbox-server
+# or
+sudo ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
 ```
 
-Use another policy or port by changing the environment variable or uvicorn
-arguments:
+To use a different policy or port, set `JIUWENBOX_POLICY_PATH` to an **absolute**
+path (or, from a dev tree, `src/jiuwenbox/configs/<name>.yaml`):
 
 ```bash
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/jiuwenswarm-policy.yaml" \
+  JIUWENBOX_POLICY_PATH="/absolute/path/to/policy.yaml" \
   ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 9000 --log-level debug
-```
-
-The selected policy path is read from:
-
-```bash
-JIUWENBOX_POLICY_PATH=/absolute/path/to/policy.yaml
 ```
 
 ### Docker Start
@@ -136,7 +133,6 @@ Start locally on UDS (same two rules as the ⚠️ in *Local Start*:
 
 ```bash
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
   JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
   ./.venv/bin/python -m jiuwenbox.server.launcher
 
@@ -153,7 +149,7 @@ mkdir -p /tmp/jiuwenbox-sock
 sudo env \
   JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
   JIUWENBOX_UDS_HOST_DIR=/tmp/jiuwenbox-sock \
-  ./run_docker.sh configs/default-policy.yaml
+  ./run_docker.sh src/jiuwenbox/configs/default-policy.yaml
 ```
 
 `run_docker.sh` skips the management-API TCP port mapping under UDS mode and
@@ -231,13 +227,10 @@ sandbox in boot order.
 Local launch:
 
 ```bash
-sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
-  ./.venv/bin/jiuwenbox-server --save-logs /var/log/jiuwenbox
+sudo ./.venv/bin/jiuwenbox-server --save-logs /var/log/jiuwenbox
 
 # Equivalent via env:
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
   JIUWENBOX_SAVE_LOGS_DIR=/var/log/jiuwenbox \
   ./.venv/bin/jiuwenbox-server
 ```
@@ -521,7 +514,7 @@ When the policy YAML file **only configures `inference_privacy_proxies`** (top-l
 
 The startup log emits `Proxy-only policy detected (no sandbox config); skipping sandbox subsystem startup`, followed by `Inference privacy proxy listening on http://<host>:<port>` so operators can verify the listener address at a glance.
 
-See the reference config at [`configs/inference-policy.yaml`](configs/inference-policy.yaml).
+See the reference config at [`src/jiuwenbox/configs/inference-policy.yaml`](src/jiuwenbox/configs/inference-policy.yaml) (installed as `jiuwenbox/configs/inference-policy.yaml`).
 
 ### Proxy Configuration
 

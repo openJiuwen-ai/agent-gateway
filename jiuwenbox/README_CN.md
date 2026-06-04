@@ -69,30 +69,27 @@ python3 -m build --wheel
 uv pip install ./dist/jiuwenbox*.whl
 ```
 
+构建出的 wheel 已包含 `jiuwenbox/configs/*.yaml`（源码位于 `src/jiuwenbox/configs/`）。
+安装后若不设置 `JIUWENBOX_POLICY_PATH`，服务自动使用包内自带的 `default-policy.yaml`。
+
 ## 启动服务
 
 ### 本地启动
 
-设置默认 policy 路径，并通过 venv 里的 python 启动已安装的服务：
+安装 wheel 后可直接启动（使用包内默认 policy）：
 
 ```bash
-sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
-  ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
+sudo ./.venv/bin/jiuwenbox-server
+# 或
+sudo ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
 ```
 
-如需使用其他 policy 或端口，可修改环境变量或 uvicorn 参数：
+如需指定其它 policy 或端口，设置 `JIUWENBOX_POLICY_PATH` 为**绝对路径**（也可在开发树里用 `src/jiuwenbox/configs/<name>.yaml`）：
 
 ```bash
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/jiuwenswarm-policy.yaml" \
+  JIUWENBOX_POLICY_PATH="/absolute/path/to/policy.yaml" \
   ./.venv/bin/python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 9000 --log-level debug
-```
-
-服务会从以下环境变量读取默认 policy 路径：
-
-```bash
-JIUWENBOX_POLICY_PATH=/absolute/path/to/policy.yaml
 ```
 
 ### Docker 启动
@@ -129,7 +126,6 @@ JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock  # 切到 UDS, 路径必�
 
 ```bash
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
   JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
   ./.venv/bin/python -m jiuwenbox.server.launcher
 
@@ -146,7 +142,7 @@ mkdir -p /tmp/jiuwenbox-sock
 sudo env \
   JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
   JIUWENBOX_UDS_HOST_DIR=/tmp/jiuwenbox-sock \
-  ./run_docker.sh configs/default-policy.yaml
+  ./run_docker.sh src/jiuwenbox/configs/default-policy.yaml
 ```
 
 `run_docker.sh` 在 UDS 模式下会自动跳过管理 API 的 TCP 端口映射、把宿主
@@ -218,13 +214,10 @@ ISO 8601 基本格式 (`%Y%m%dT%H%M%S`) 是为了让 `ls` 自然按时间排序�
 本地启动：
 
 ```bash
-sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
-  ./.venv/bin/jiuwenbox-server --save-logs /var/log/jiuwenbox
+sudo ./.venv/bin/jiuwenbox-server --save-logs /var/log/jiuwenbox
 
 # 或走环境变量, 等价:
 sudo env \
-  JIUWENBOX_POLICY_PATH="$(pwd)/configs/default-policy.yaml" \
   JIUWENBOX_SAVE_LOGS_DIR=/var/log/jiuwenbox \
   ./.venv/bin/jiuwenbox-server
 ```
@@ -501,7 +494,7 @@ sandbox:
 
 启动日志会打印 `Proxy-only policy detected (no sandbox config); skipping sandbox subsystem startup`，随后再输出 `Inference privacy proxy listening on http://<host>:<port>`，便于运维快速确认监听地址。
 
-参考配置：[`configs/inference-policy.yaml`](configs/inference-policy.yaml)。
+参考配置：[`src/jiuwenbox/configs/inference-policy.yaml`](src/jiuwenbox/configs/inference-policy.yaml)（安装后位于包内 `jiuwenbox/configs/`）。
 
 ### 代理配置
 

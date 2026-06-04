@@ -339,7 +339,7 @@ class AgentManager:
                 )
             logger.info(f"channel {channel_id} reload agent config success.")
 
-    async def recreate_agent(self, channel_id: str, *, immediate: bool = True) -> list[str]:
+    async def recreate_agent(self, channel_id: str, *, immediate: bool = True) -> None:
         """重建指定 channel 的所有 agent 实例.
 
         用于 ``/sandbox enable/disable`` 等需要重新构建 ``SysOperationCard`` 的场景.
@@ -353,9 +353,6 @@ class AgentManager:
         Args:
             channel_id: 通道 ID.
             immediate: 是否立即重建 (默认 True).
-
-        Returns:
-            被重建的 mode 列表.
         """
         channel_key = channel_id or "default"
         agents = self.agents.get(channel_key)
@@ -364,7 +361,6 @@ class AgentManager:
                 "[AgentManager] recreate_agent: no active agent on channel %s",
                 channel_key,
             )
-            return []
 
         # 1. 备份 (mode -> create_params)
         existing_modes = list(agents.keys())
@@ -401,7 +397,6 @@ class AgentManager:
                 "[AgentManager] recreate_agent: channel %s will rebuild on next get_agent()",
                 channel_key,
             )
-            return existing_modes
 
         # 3. 立即按原参数重建
         for mode_key, params in backup_params.items():
@@ -424,7 +419,6 @@ class AgentManager:
             channel_key,
             existing_modes,
         )
-        return existing_modes
 
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.
