@@ -191,9 +191,11 @@ class JiuClawStreamEventRail(DeepAgentRail):
     _SID_KEY = "__jiuwenswarm_session_id__"
     _SHELL_SID_TOKEN_KEY = "__jiuwenswarm_shell_session_token__"
 
-    def __init__(self) -> None:
+    def __init__(self, *, member_name: str | None = None, role: str | None = None) -> None:
         super().__init__()
         self._deep_agent: Optional[Any] = None
+        self._member_name = str(member_name or "").strip()
+        self._role = str(role or "").strip().lower()
         # Per-session pause/abort state.  Keyed by session_id (conversation_id).
         # Shared adapter instances serve multiple concurrent sessions; scalar state
         # would cause cross-session contamination (session A cancel kills session B).
@@ -431,7 +433,11 @@ class JiuClawStreamEventRail(DeepAgentRail):
             await self._fix_incomplete_tool_context(ctx.context)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
-        await self._emit_context_usage(ctx)
+        await self._emit_context_usage(
+            ctx,
+            member_name=self._member_name or None,
+            role=self._role or None,
+        )
 
     # ------------------------------------------------------------------
     # before_tool_call: pause check + emit tool_call event
@@ -697,7 +703,12 @@ class JiuClawStreamEventRail(DeepAgentRail):
         ]
 
     @staticmethod
-    async def _emit_context_usage(ctx: AgentCallbackContext) -> None:
+    async def _emit_context_usage(
+        ctx: AgentCallbackContext,
+        *,
+        member_name: str | None = None,
+        role: str | None = None,
+    ) -> None:
         """Emit context usage stats (context_max, tokens_used, rate)."""
         session = ctx.session
         if session is None:
@@ -745,15 +756,21 @@ class JiuClawStreamEventRail(DeepAgentRail):
             else:
                 rate = 0
 
+            payload = {
+                "rate": rate,
+                "context_max": raw_total_tokens,
+                "tokens_used": current_context_tokens,
+            }
+            if role:
+                payload["role"] = role
+            if member_name:
+                payload["member_name"] = member_name
+
             await session.write_stream(
                 OutputSchema(
                     type="context.usage",
                     index=0,
-                    payload={
-                        "rate": rate,
-                        "context_max": raw_total_tokens,
-                        "tokens_used": current_context_tokens,
-                    },
+                    payload=payload,
                 )
             )
         except Exception:

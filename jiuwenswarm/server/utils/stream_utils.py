@@ -306,12 +306,17 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
 
     if chunk_type == "context.usage":
         if isinstance(payload, dict):
-            return {
+            usage_payload = {
                 "event_type": "context.usage",
                 "rate": payload.get("rate", 0),
                 "context_max": payload.get("context_max") or 0,
                 "tokens_used": payload.get("tokens_used") or 0,
             }
+            for key in ("role", "member_name"):
+                value = payload.get(key)
+                if value is not None:
+                    usage_payload[key] = value
+            return usage_payload
 
     if chunk_type == "chat.ask_user_question":
         return {

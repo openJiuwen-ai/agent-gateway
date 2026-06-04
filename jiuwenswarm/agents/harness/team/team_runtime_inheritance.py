@@ -184,7 +184,10 @@ def build_member_rails(
         logger.warning("[TeamRuntime] FileSystemRail failed: %s", exc)
 
     try:
-        rail = JiuClawStreamEventRail()
+        rail = JiuClawStreamEventRail(
+            member_name=member_info.agent_name,
+            role=member_info.role,
+        )
         rails_list.append(rail)
         logger.info("[TeamRuntime] JiuClawStreamEventRail created")
     except Exception as exc:

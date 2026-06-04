@@ -1548,6 +1548,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('context.usage', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
+        const currentMode = useSessionStore.getState().mode;
+        if (isHiddenTeamTeammateMessagePayload(currentMode, payload)) return;
         const rate =
           typeof payload.rate === 'number' ? payload.rate : 0;
         const contextMax =
