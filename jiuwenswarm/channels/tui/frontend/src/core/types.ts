@@ -36,6 +36,8 @@ export interface InfoMeta {
     items: Array<{ label: string; value?: string; description?: string }>;
   }>;
   version?: string;
+  /** 标记消息来源，用于区分手动触发和自动触发的回顾。 */
+  source?: "auto_recap";
 }
 
 export interface ToolCallDisplay {

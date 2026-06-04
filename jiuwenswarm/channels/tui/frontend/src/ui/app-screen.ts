@@ -867,6 +867,9 @@ export class AppScreen implements Component, Focusable {
   }
 
   handleInput(data: string): void {
+    // 更新用户活动时间戳（用于 auto-recap 空闲检测）
+    this.state.recordActivity();
+
     // FileViewer mode: handle input separately
     if (this.fileViewerState) {
       this.handleFileViewerInput(data);
@@ -1283,6 +1286,9 @@ export class AppScreen implements Component, Focusable {
   private async handleSubmit(raw: string): Promise<void> {
     const text = raw.trim();
     if (!text) return;
+
+    // 更新用户活动时间戳（用于 auto-recap 空闲检测）
+    this.state.recordActivity();
 
     // When config editor is active (any phase), don't send chat messages
     if (this.configEditorState !== null) {

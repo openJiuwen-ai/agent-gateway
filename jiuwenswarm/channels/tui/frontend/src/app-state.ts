@@ -152,6 +152,12 @@ const LOCAL_FILE_SEARCH_TOOL_NAMES = new Set([
   "search",
 ]);
 
+// ── Auto-recap (自动回顾) 常量 ──
+/** 用户空闲多久后自动触发回顾（5分钟）。 */
+const AUTO_RECAP_IDLE_THRESHOLD_MS = 5 * 60_000;
+/** 周期性检查空闲状态的时间间隔（30秒）。 */
+const AUTO_RECAP_CHECK_INTERVAL_MS = 30_000;
+
 function isLocalFileSearchTool(name: string): boolean {
   return LOCAL_FILE_SEARCH_TOOL_NAMES.has(name.trim().toLowerCase());
 }
@@ -242,6 +248,13 @@ export class CliPiAppState {
   private streamingStateBeforeQuestion: StreamingState | null = null;
   /** 当前回合的起始时间戳，用于在回合结束时计算执行耗时。 */
   private turnStartedAt: number | null = null;
+  /** ── Auto-recap 字段 ── */
+  /** 最后一次用户交互时间戳，用于判断空闲时长。 */
+  private lastActivityAt: number = Date.now();
+  /** 自动回顾状态机：idle → pending → generated → idle（用户发言后重置）。 */
+  private autoRecapState: "idle" | "pending" | "generated" = "idle";
+  /** 周期检查空闲状态的定时器。 */
+  private autoRecapTimer: ReturnType<typeof setInterval> | null = null;
   private ripgrepAvailable: boolean | null = null;
   private ripgrepSearchTipShown = false;
   /** Harness extension ready info (for file tree display) */
@@ -434,6 +447,7 @@ export class CliPiAppState {
 
     this.wsClient.connect();
     this.startStatusLinePoll();
+    this.startAutoRecapTimer();
   }
 
   stop(): void {
@@ -455,6 +469,7 @@ export class CliPiAppState {
     this.unlistenFrames = null;
     this.stopStatusLinePoll();
     this.stopMemoryRefresh();
+    this.stopAutoRecapTimer();
     this.wsClient.disconnect();
   }
 
@@ -838,6 +853,10 @@ export class CliPiAppState {
     } else {
       this.lastError = null;
     }
+    // 用户发言后重置自动回顾状态，允许下一次空闲时触发新的回顾
+    if (item.kind === "user") {
+      this.autoRecapState = "idle";
+    }
     this.emitChange();
   };
 
@@ -992,6 +1011,8 @@ export class CliPiAppState {
     this.lastError = null;
     if (options?.logAsUser !== false) {
       this.lastVisibleUserRequest = { requestId, content, sessionId: this.sessionId };
+      // 用户发言后重置自动回顾状态，允许下一次空闲时触发新的回顾
+      this.autoRecapState = "idle";
       this.entries = [
         ...this.entries,
         {
@@ -1029,6 +1050,8 @@ export class CliPiAppState {
       ...(attachments?.length ? { attachments } : {}),
     });
     this.lastError = null;
+    // 用户发言后重置自动回顾状态（supplement 也是用户消息）
+    this.autoRecapState = "idle";
     this.entries = [
       ...this.entries,
       {
@@ -1920,6 +1943,83 @@ export class CliPiAppState {
       clearInterval(this.statusLineTimer);
       this.statusLineTimer = null;
     }
+  }
+
+  // ── Auto-recap (自动回顾) 方法 ──
+
+  /** 更新用户活动时间戳，表示用户刚刚与 TUI 交互。 */
+  recordActivity(): void {
+    this.lastActivityAt = Date.now();
+  }
+
+  private startAutoRecapTimer(): void {
+    this.autoRecapTimer = setInterval(() => {
+      this.checkAutoRecap();
+    }, AUTO_RECAP_CHECK_INTERVAL_MS);
+  }
+
+  private stopAutoRecapTimer(): void {
+    if (this.autoRecapTimer) {
+      clearInterval(this.autoRecapTimer);
+      this.autoRecapTimer = null;
+    }
+  }
+
+  /** 周期性检查是否满足自动回顾条件。 */
+  private checkAutoRecap(): void {
+    // 条件1：空闲时间 >= 5分钟
+    if (Date.now() - this.lastActivityAt < AUTO_RECAP_IDLE_THRESHOLD_MS) {
+      return;
+    }
+    // 条件2：本次空闲期间还没有生成过回顾
+    if (this.autoRecapState !== "idle") {
+      return;
+    }
+    // 条件3：当前没有正在执行的任务
+    const snapshot = this.getSnapshot();
+    if (snapshot.isProcessing || snapshot.cancellableWork) {
+      return;
+    }
+    // 条件4：WebSocket 已连接
+    if (this.connectionStatus !== "connected") {
+      return;
+    }
+
+    this.triggerAutoRecap();
+  }
+
+  /** 自动触发回顾，调用后端生成摘要并显示。 */
+  private async triggerAutoRecap(): Promise<void> {
+    this.autoRecapState = "pending";
+    this.addItem(addInfo(this.sessionId, "※ Auto-recaping...", "※", { source: "auto_recap" }));
+
+    try {
+      const payload = await this.request<Record<string, unknown>>(
+        "command.recap",
+        { mode: this.mode },
+        60_000,
+      );
+
+      const status = payload.status as string;
+      if (status === "ok") {
+        const summary = payload.summary as string;
+        this.addItem(addInfo(this.sessionId, `※ ${summary}`, "※", { source: "auto_recap" }));
+        this.autoRecapState = "generated";
+      } else if (status === "no_turn") {
+        // 当前会话没有可回顾的内容，设为 generated 防止反复触发
+        this.autoRecapState = "generated";
+      } else {
+        // failed：后端生成失败（如模型调用出错），设为 generated 防止反复触发
+        // 用户发言后会重置为 idle，届时再重新尝试
+        this.autoRecapState = "generated";
+      }
+    } catch {
+      // 请求失败或被取消（如 Ctrl+C、WS 断连），设为 generated 防止反复触发
+      this.autoRecapState = "generated";
+    }
+
+    // 无论成功/失败/取消，更新活动时间以避免反复触发
+    this.lastActivityAt = Date.now();
   }
 
   restartStatusLinePoll(): void {
