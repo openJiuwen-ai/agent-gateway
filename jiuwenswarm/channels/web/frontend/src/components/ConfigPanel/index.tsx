@@ -1237,7 +1237,6 @@ function MultiAgentSection({
   availableModels,
   installedSkills,
   onDeleteAgent,
-  onAgentNameChangeWarning,
   t,
 }: {
   agents: AgentEntry[];
@@ -1247,18 +1246,39 @@ function MultiAgentSection({
   availableModels: ModelEntry[];
   installedSkills?: { name: string; installed?: boolean }[];
   onDeleteAgent?: (idx: number, agentName: string, references: string[]) => void;
-  onAgentNameChangeWarning: (warning: string | null) => void;
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
   const [newAgentError, setNewAgentError] = useState<string | null>(null);
+  const [timeoutInputDraft, setTimeoutInputDraft] = useState<Record<number, string>>({});
+  const [newTimeoutDraft, setNewTimeoutDraft] = useState<string | null>(null);
   const [newAgent, setNewAgent] = useState<AgentEntry>({
     name: "",
     model: { provider: "", api_base: "", api_key: "", model: "" },
     skills: [],
-    completion_timeout: 600,
+    completion_timeout: 60,
   });
+
+  const normalizeTimeoutInput = (input: string): string => {
+    let raw = input.replace(/[^0-9.]/g, "");
+    const parts = raw.split(".");
+    if (parts.length > 2) {
+      raw = parts[0] + "." + parts.slice(1).join("");
+    }
+    if (parts.length === 2) {
+      parts[0] = parts[0].replace(/^0+(?=\d)/, "");
+      raw = (parts[0] || "0") + "." + parts[1];
+    } else if (raw.length > 0 && !raw.startsWith("0.")) {
+      raw = raw.replace(/^0+(?=\d)/, "");
+    }
+    return raw;
+  };
+
+  const parseTimeoutValue = (raw: string, defaultValue = 0.1): number => {
+    const v = parseFloat(raw);
+    return isNaN(v) || v <= 0 ? defaultValue : v;
+  };
 
   // 检查 agent 是否被 team 引用
   const getAgentReferences = (agentName: string): string[] => {
@@ -1308,7 +1328,6 @@ function MultiAgentSection({
       if (oldName && oldName !== value) {
         const references = getAgentReferences(oldName);
         if (references.length > 0) {
-          onAgentNameChangeWarning(t("config.agentList.nameChangeWarning"));
           const updatedTeams = teams.map((team) => ({
             ...team,
             leader: team.leader?.agent_key === oldName ? { ...team.leader, agent_key: "" } : team.leader,
@@ -1318,8 +1337,6 @@ function MultiAgentSection({
             ),
           }));
           onTeamsChange(updatedTeams);
-        } else {
-          onAgentNameChangeWarning(null);
         }
       }
     }
@@ -1372,7 +1389,7 @@ function MultiAgentSection({
     onAgentsChange([...agents, { ...newAgent, name }]);
     setExpandedIdx(agents.length);
     setAddingNew(false);
-    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [], completion_timeout: 600 });
+    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [], completion_timeout: 60 });
   };
 
   const agentFields: (keyof AgentEntry)[] = ["name", "skills", "completion_timeout"];
@@ -1470,13 +1487,17 @@ function MultiAgentSection({
                       />
                     ) : field === "completion_timeout" ? (
                       <input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        value={agent[field] ?? 0}
-                        onChange={(e) => {
-                          const v = parseFloat(e.target.value.replace(/^0+/, '')) || 0;
-                          updateAgentField(idx, field, v >= 0 ? v : 0);
+                        type="text"
+                        value={timeoutInputDraft[idx] ?? String(agent[field] ?? 60)}
+                        onChange={(e) => setTimeoutInputDraft((prev) => ({ ...prev, [idx]: normalizeTimeoutInput(e.target.value) }))}
+                        onBlur={() => {
+                          const raw = timeoutInputDraft[idx] ?? String(agent[field] ?? 60);
+                          updateAgentField(idx, field, parseTimeoutValue(raw));
+                          setTimeoutInputDraft((prev) => {
+                            const next = { ...prev };
+                            delete next[idx];
+                            return next;
+                          });
                         }}
                         className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                       />
@@ -1569,13 +1590,13 @@ function MultiAgentSection({
                 />
               ) : field === "completion_timeout" ? (
                 <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  value={newAgent[field] ?? 0}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value.replace(/^0+/, '')) || 0;
-                    setNewAgent((p) => ({ ...p, [field]: v >= 0 ? v : 0 }));
+                  type="text"
+                  value={newTimeoutDraft ?? String(newAgent[field] ?? 60)}
+                  onChange={(e) => setNewTimeoutDraft(normalizeTimeoutInput(e.target.value))}
+                  onBlur={() => {
+                    const raw = newTimeoutDraft ?? String(newAgent.completion_timeout ?? 60);
+                    setNewAgent((p) => ({ ...p, completion_timeout: parseTimeoutValue(raw) }));
+                    setNewTimeoutDraft(null);
                   }}
                   className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                 />
@@ -2332,7 +2353,6 @@ export function ConfigPanel({
   const [deleteTeamConfirm, setDeleteTeamConfirm] = useState<{ idx: number; teamName: string } | null>(null);
   const [deleteTeamMemberConfirm, setDeleteTeamMemberConfirm] = useState<{ teamIdx: number; memberIdx: number; memberName: string } | null>(null);
   const [installedSkills, setInstalledSkills] = useState<{ name: string; installed?: boolean }[]>([]);
-  const [agentNameChangeWarning, setAgentNameChangeWarning] = useState<string | null>(null);
 
   const markAgentsTeamsEdited = () => {
     setAgentsTeamsEdited(true);
@@ -2357,15 +2377,6 @@ export function ConfigPanel({
     };
     fetchSkills();
   }, []);
-
-  useEffect(() => {
-    if (agentNameChangeWarning) {
-      const timer = setTimeout(() => {
-        setAgentNameChangeWarning(null);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [agentNameChangeWarning]);
 
   const handleDeleteAgent = (idx: number, agentName: string, references: string[]) => {
     setDeleteAgentConfirm({ idx, agentName, references });
@@ -2513,7 +2524,7 @@ export function ConfigPanel({
           model: matchedModel.model_name || "",
         } : { provider: "", api_base: "", api_key: "", model: modelName },
         skills: (normalizedConfig[`agent_skills_${i}`] || normalizedConfig[`agent_${i}_skills`] || "").split(/[,，]/).map((s: string) => s.trim()).filter(Boolean),
-        completion_timeout: Number(normalizedConfig[`agent_completion_timeout_${i}`]) ?? Number(normalizedConfig[`agent_${i}_completion_timeout`]) ?? 600,
+        completion_timeout: Number(normalizedConfig[`agent_completion_timeout_${i}`]) ?? Number(normalizedConfig[`agent_${i}_completion_timeout`]) ?? 60,
       });
     }
     return agents;
@@ -2826,7 +2837,6 @@ export function ConfigPanel({
     setAgentsTeamsUserEdited(false);
     setError(null);
     setModelError(null);
-    setAgentNameChangeWarning(null);
   };
 
   const buildAgentsTeamsPayload = (): AgentsTeamsPayload => {
@@ -3036,11 +3046,6 @@ export function ConfigPanel({
             {t('config.modelList.apiBaseRequired')}
           </div>
         ) : null}
-        {!error && agentNameChangeWarning ? (
-          <div className="mb-4 rounded-md border border-amber-500 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
-            {agentNameChangeWarning}
-          </div>
-        ) : null}
         {!error && hasDuplicateAgentNames ? (
           <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
             {t('config.agentList.duplicateName')}
@@ -3176,7 +3181,6 @@ export function ConfigPanel({
                         availableModels={draftModels}
                         installedSkills={installedSkills}
                         onDeleteAgent={handleDeleteAgent}
-                        onAgentNameChangeWarning={setAgentNameChangeWarning}
                         t={t}
                       />
                     </div>
