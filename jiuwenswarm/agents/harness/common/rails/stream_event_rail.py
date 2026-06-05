@@ -74,6 +74,33 @@ def _extract_tool_interrupt(value: Any) -> Any | None:
     return None
 
 
+def _normalize_ask_user_interrupt_value(value_obj: Any, tool_args: dict[str, Any]) -> Any:
+    """Attach ask_user tool metadata so plain-query interrupts are not misclassified."""
+    if isinstance(value_obj, dict):
+        if str(value_obj.get("tool_name") or "").strip() == "ask_user":
+            return value_obj
+        if value_obj.get("tool_args"):
+            return value_obj
+        return {
+            **value_obj,
+            "tool_name": "ask_user",
+            "tool_args": tool_args,
+            "message": value_obj.get("message") or tool_args.get("query") or "",
+        }
+
+    tool_name = str(getattr(value_obj, "tool_name", "") or "").strip()
+    existing_args = getattr(value_obj, "tool_args", None)
+    if tool_name == "ask_user" and existing_args:
+        return value_obj
+
+    return {
+        "tool_name": "ask_user",
+        "tool_args": tool_args,
+        "message": str(getattr(value_obj, "message", "") or tool_args.get("query") or ""),
+        "questions": getattr(value_obj, "questions", None) or tool_args.get("questions") or [],
+    }
+
+
 def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) -> dict[str, Any] | None:
     request_id = str(
         getattr(getattr(interrupt, "request", None), "tool_call_id", None)
@@ -83,12 +110,14 @@ def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) ->
     if not request_id:
         return None
 
+    args = _parse_tool_call_arguments(tool_call)
     value_obj = getattr(interrupt, "request", None)
     if value_obj is None:
-        args = _parse_tool_call_arguments(tool_call)
         if not args:
             return None
-        value_obj = {"tool_args": args, "questions": args.get("questions", [])}
+        value_obj = {"tool_name": "ask_user", "tool_args": args, "questions": args.get("questions", [])}
+    elif args:
+        value_obj = _normalize_ask_user_interrupt_value(value_obj, args)
 
     return convert_interactions_to_ask_user_question([{"id": request_id, "value": value_obj}])
 

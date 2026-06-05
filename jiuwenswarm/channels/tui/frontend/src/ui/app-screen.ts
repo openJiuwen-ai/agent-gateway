@@ -1339,7 +1339,15 @@ export class AppScreen implements Component, Focusable {
           this.editor.setText("");
           return;
         }
-        this.state.answerQuestion(text);
+        const question =
+          snapshot.pendingQuestion.questions[this.activeQuestionIndex]?.question ?? "";
+        if (question) {
+          this.state.submitQuestionAnswers([
+            { selected_options: [text], custom_input: text },
+          ]);
+        } else {
+          this.state.answerQuestion(text);
+        }
       }
       this.editor.setText("");
       return;
@@ -1584,6 +1592,12 @@ export class AppScreen implements Component, Focusable {
       this.pendingQuestionAnswers.clear();
       this.draftBeforeQuestion = this.editor.getText();
       this.editor.setText("");
+      const pendingQuestion = snapshot.pendingQuestion;
+      const firstQuestion = pendingQuestion?.questions[0];
+      this.otherInputMode =
+        pendingQuestion?.source === "ask_user_interrupt" &&
+        !!firstQuestion &&
+        firstQuestion.options.length === 0;
       this.syncQuestionList(snapshot);
     } else if (questionId && this.activeQuestionId) {
       // Same question still active — preserve existing questionList to keep cursor position
@@ -1591,6 +1605,7 @@ export class AppScreen implements Component, Focusable {
     } else if (!questionId && this.activeQuestionId) {
       this.activeQuestionId = null;
       this.activeQuestionIndex = 0;
+      this.otherInputMode = false;
       this.pendingQuestionAnswers.clear();
       this.questionList = null;
       this.questionDetailsMap = null;

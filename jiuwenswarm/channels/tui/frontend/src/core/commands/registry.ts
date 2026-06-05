@@ -28,7 +28,7 @@ import { createPluginCommand } from "./builtins/plugin.js";
 import { createReloadPluginsCommand } from "./builtins/reload-plugins.js";
 import { createModeCommand } from "./builtins/mode.js";
 import { createPermissionsCommand } from "./builtins/permissions.js";
-// Re-enable next release: import { createPlanCommand } from "./builtins/plan.js";
+import { createPlanCommand } from "./builtins/plan.js";
 import { createResumeCommand } from "./builtins/resume.js";
 import { createRenameCommand } from "./builtins/rename.js";
 import { createRewindCommand } from "./builtins/rewind.js";
@@ -70,7 +70,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createMcpCommand(),
     createModeCommand(),
     createPermissionsCommand(),
-    // createPlanCommand(),
+    createPlanCommand(),
     createResumeCommand(),
     createRenameCommand(),
     createRewindCommand(),

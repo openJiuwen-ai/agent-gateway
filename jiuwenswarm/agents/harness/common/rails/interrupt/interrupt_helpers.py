@@ -282,10 +282,74 @@ def build_permission_rail(
 
 
 
+def _read_value_field(value_obj: Any, field_name: str, default: Any = "") -> Any:
+    if hasattr(value_obj, field_name):
+        return getattr(value_obj, field_name, default)
+    if isinstance(value_obj, dict):
+        return value_obj.get(field_name, default)
+    return default
+
+
+def _normalize_tool_args(raw: Any) -> dict | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
+    tool_name = str(_read_value_field(value_obj, "tool_name", "") or "").strip()
+    if tool_name == "ask_user":
+        return True
+    if hasattr(value_obj, "payload_schema") and hasattr(value_obj, "questions"):
+        return True
+    if isinstance(value_obj, dict) and "payload_schema" in value_obj and "questions" in value_obj:
+        return True
+    tool_args = _normalize_tool_args(_read_value_field(value_obj, "tool_args", None))
+    if isinstance(tool_args, dict) and str(tool_args.get("query") or "").strip():
+        if not tool_args.get("questions"):
+            return True
+    return False
+
+
+def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
+    """Build a free-text ask_user question when no structured options are present."""
+    if not _is_ask_user_interrupt_value(value_obj):
+        return None
+    if _extract_questions_from_value(value_obj) is not None:
+        return None
+
+    query = ""
+    tool_args = _normalize_tool_args(_read_value_field(value_obj, "tool_args", None))
+    if isinstance(tool_args, dict):
+        query = str(tool_args.get("query") or "").strip()
+    if not query:
+        query = str(_read_value_field(value_obj, "message", "") or "").strip()
+    if not query:
+        query = str(_read_value_field(value_obj, "question", "") or "").strip()
+    if not query:
+        return None
+
+    return {
+        "question": query,
+        "header": "Question",
+        "options": [],
+        "multi_select": False,
+    }
+
+
 def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | None:
     """Convert __interaction__ list to frontend chat.ask_user_question format.
 
-    AskUserRail 中断: value 有 questions 字段 → source="ask_user_interrupt"
+    AskUserRail 中断: value 有 questions 字段，或 ask_user 的 plain query
+        → source="ask_user_interrupt"
     PermissionRail 中断: value 无 questions 字段 → source="permission_interrupt"
 
     state_outputs 中的元素可能是:
@@ -319,6 +383,20 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
             "questions": questions,
             "source": "ask_user_interrupt",
         }
+
+    for interaction in interactions:
+        request_id, value_obj = _extract_interaction_parts(interaction)
+        if not request_id:
+            continue
+
+        plain_question = _build_plain_ask_user_question(value_obj)
+        if plain_question:
+            return {
+                "event_type": "chat.ask_user_question",
+                "request_id": request_id,
+                "questions": [plain_question],
+                "source": "ask_user_interrupt",
+            }
 
     for interaction in interactions:
         request_id, _value_obj = _extract_interaction_parts(interaction)

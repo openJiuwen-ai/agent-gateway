@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -34,11 +33,6 @@ from openjiuwen.harness.rails import (
     SysOperationRail,
     LspRail
 )
-from openjiuwen.harness.rails.agent_mode_rail import (
-    DEFAULT_PLAN_MODE_ALLOWED_TOOLS,
-)
-from openjiuwen.harness.prompts.builder import PromptSection
-from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.lsp import InitializeOptions
 from openjiuwen.harness.schema.config import SubAgentConfig
@@ -78,15 +72,6 @@ from jiuwenswarm.common.utils import get_agent_workspace_dir
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tool name sets (mirrored from agent_mode_rail.py)
-# ---------------------------------------------------------------------------
-
-_TODO_TOOL_NAMES = frozenset({"todo_create", "todo_list", "todo_modify"})
-_SESSION_TOOL_NAMES = frozenset({"sessions_list", "sessions_cancel", "sessions_spawn"})
-_HIDDEN_IN_PLAN_LOCAL = _TODO_TOOL_NAMES | _SESSION_TOOL_NAMES
-_HIDDEN_IN_NORMAL_LOCAL = frozenset({"enter_plan_mode", "exit_plan_mode"})
-
-# ---------------------------------------------------------------------------
 # Static plan mode system prompt note (KV-cache-friendly: same content every turn)
 # Injected into system prompt so the model knows it's in plan mode BEFORE its
 # first tool call. Without this, the model only sees a weak <system-reminder>
@@ -110,20 +95,6 @@ read-only commands).
 Do NOT proceed to implement anything until the user approves your plan via
 `exit_plan_mode`.
 """
-
-# ---------------------------------------------------------------------------
-# Non-git write operations to block in plan mode's bash tool.
-# The parent AgentModeRail only blocks git-write commands (commit/push/add/etc).
-# These additional patterns block common shell write operations.
-# ---------------------------------------------------------------------------
-
-_NON_GIT_WRITE_RE = re.compile(
-    r"\b(mkdir|touch|mv|cp|chmod|chown|dd|tee|wget|curl\s+.*\s*-[a-zA-Z]*O)\b"
-    r"|\brm\s+(-[a-zA-Z]*[rf]|/|[~.])"
-    r"|\b(7z|tar|zip|unzip|gzip|gunzip)\s+"
-    r"|>\s*\S"
-    r"|>>"
-)
 
 # ---------------------------------------------------------------------------
 # Plan mode instructions for enter_plan_mode tool_result
@@ -176,7 +147,7 @@ Goal: Write the final plan to the plan file.
 - Include a Verification section
 
 #### Phase 5: End Planning Phase
-Call exit_plan_mode to end the planning phase. You must output the content of the final plan file.
+Call exit_plan_mode to end the planning phase.
 
 ### Turn Ending Rules
 Your turn can only end in one of these two ways:
@@ -338,238 +309,6 @@ def create_coding_memory_rail(
         ),
         language="en",
     )
-
-
-class JiuwenAgentModeRail(AgentModeRail):
-    """扩展 AgentModeRail，对齐 Claude Code 的 plan 模式行为。
-
-    核心改动（相比父类 AgentModeRail）：
-
-    1. **System prompt 稳定化** — before_model_call 不再增删 system prompt 段
-       （MODE_INSTRUCTIONS / TODO / SESSION_TOOLS），从而避免 mode 切换导致
-       KVCacheManager 检测到 system message 变化而全量释放 KV 缓存。
-
-    2. **Plan 指令进对话** — plan 模式行为指令通过 enter_plan_mode 的
-       tool_result 返回（对齐 Claude Code），而非注入 system prompt。
-
-    3. **屏蔽 switch_mode** — plan 模式下 LLM 无法单方面退出 plan 模式
-       （Claude Code 根本没有 switch_mode 工具）。
-    """
-
-    def __init__(self, **kwargs: Any) -> None:
-        # 从 plan 模式工具白名单中移除 switch_mode，
-        # 阻止 LLM 在 plan 模式下自行切换到 normal 模式
-        allowed_tools = [
-            t for t in DEFAULT_PLAN_MODE_ALLOWED_TOOLS if t != "switch_mode"
-        ]
-        super().__init__(allowed_tools=allowed_tools, **kwargs)
-
-    # ------------------------------------------------------------------
-    # init — monkey-patch EnterPlanModeTool
-    # ------------------------------------------------------------------
-
-    def init(self, agent: "DeepAgent") -> None:
-        """注册工具 + monkey-patch EnterPlanModeTool + ExitPlanModeTool."""
-        super().init(agent)
-        self._patch_enter_plan_mode_tool()
-        self._patch_exit_plan_mode_tool()
-
-    def _patch_enter_plan_mode_tool(self) -> None:
-        """Monkey-patch EnterPlanModeTool.invoke() 使其返回完整 plan 指令.
-
-        对齐 Claude Code：plan 模式行为指令在 tool_result 中返回，
-        而非注入 system prompt。
-        """
-        for tool in self._tools:
-            if getattr(tool.card, "name", "") != "enter_plan_mode":
-                continue
-
-            original_invoke = tool.invoke
-
-            async def patched_invoke(inputs, _orig=original_invoke, **kwargs):
-                result = await _orig(inputs, **kwargs)
-                return result + _ENTER_PLAN_MODE_INSTRUCTIONS_EN
-
-            tool.invoke = patched_invoke
-            logger.info(
-                "[JiuwenAgentModeRail] Patched enter_plan_mode.invoke() "
-                "to return full plan instructions in tool_result"
-            )
-            break
-
-    def _patch_exit_plan_mode_tool(self) -> None:
-        """Monkey-patch ExitPlanModeTool.invoke() to append exit notification.
-
-        Aligns with Claude Code's plan_mode_exit attachment: after exiting
-        plan mode, the model receives an explicit notification that it can
-        now edit files. Without this, the model only sees MODE_INSTRUCTIONS
-        removed from the system prompt but gets no explicit signal that
-        write operations are now permitted.
-        """
-        for tool in self._tools:
-            if getattr(tool.card, "name", "") != "exit_plan_mode":
-                continue
-
-            original_invoke = tool.invoke
-
-            async def patched_invoke(inputs, _orig=original_invoke, **kwargs):
-                result = await _orig(inputs, **kwargs)
-                return result + "\n\n" + _EXIT_PLAN_MODE_NOTIFICATION
-
-            tool.invoke = patched_invoke
-            logger.info(
-                "[JiuwenAgentModeRail] Patched exit_plan_mode.invoke() "
-                "to append plan mode exit notification in tool_result"
-            )
-            break
-
-    # ------------------------------------------------------------------
-    # before_model_call — 工具过滤，不修改 system prompt
-    # ------------------------------------------------------------------
-
-    async def before_model_call(self, ctx: Any) -> None:
-        """工具过滤 + plan 模式约束注入 + prompt 段清理。
-
-        刻意 **不调用** super().before_model_call(ctx) —
-        父类会增删 MODE_INSTRUCTIONS / TODO / SESSION_TOOLS 段，
-        导致 system prompt 变化 → KV 缓存全量释放。
-
-        替代方案：
-        - plan 模式：注入 **静态** MODE_INSTRUCTIONS 段（内容不随 plan_file
-          状态变化，保持 KV 缓存跨 turn 稳定）+ 工具白名单过滤
-        - normal 模式：移除 MODE_INSTRUCTIONS 段 + 隐藏 plan 工具
-        """
-        agent = self._agent
-        session = ctx.session
-        plan_state = agent.load_state(session).plan_mode
-
-        # ---- 工具过滤 + prompt 段管理 ----
-        if plan_state.mode == "plan":
-            # plan 模式：注入静态 plan 模式系统提示词约束
-            # （内容不随 enter_plan_mode 调用状态变化，KV 缓存友好）
-            if self.system_prompt_builder:
-                section = PromptSection(
-                    name=SectionName.MODE_INSTRUCTIONS,
-                    content={"en": _PLAN_MODE_SYSTEM_NOTE},
-                    priority=85,
-                )
-                self.system_prompt_builder.add_section(section)
-                # 移除 TaskPlanningRail/SubagentRail 在更高优先级下
-                # 添加的 TODO/SESSION_TOOLS 段，避免 LLM 在 system prompt
-                # 中看到隐藏工具的描述
-                self.system_prompt_builder.remove_section(SectionName.TODO)
-                self.system_prompt_builder.remove_section(SectionName.SESSION_TOOLS)
-
-            # plan 模式：白名单 + 移除 switch_mode + 隐藏 todo/session 工具
-            if isinstance(ctx.inputs.tools, list):
-                filtered = []
-                for t in ctx.inputs.tools:
-                    tool_name = getattr(t, "name", "")
-                    if tool_name in self._allowed_tools:
-                        if tool_name != "switch_mode" and tool_name not in _HIDDEN_IN_PLAN_LOCAL:
-                            filtered.append(t)
-                ctx.inputs.tools = filtered
-        else:
-            # normal 模式：移除 MODE_INSTRUCTIONS + 隐藏 plan 工具
-            if self.system_prompt_builder:
-                self.system_prompt_builder.remove_section(SectionName.MODE_INSTRUCTIONS)
-            if isinstance(ctx.inputs.tools, list):
-                ctx.inputs.tools = [
-                    t for t in ctx.inputs.tools
-                    if getattr(t, "name", "") not in _HIDDEN_IN_NORMAL_LOCAL
-                ]
-
-        self._sync_task_tool_for_model_tool_inputs(ctx)
-
-        # 防御性清理：非 plan 模式下移除 AgentModeRail 自身注册的 task_tool。
-        # 当通过 switch_mode 强制退出 plan 模式（绕过 exit_plan_mode）时，
-        # _owns_task_tool 未被清理，_sync_task_tool 会将 task_tool 注入工具列表。
-        # 注意：仅在 self._owns_task_tool 为 True 时过滤，避免误删 SubagentRail
-        # 注册的 task_tool（SubagentRail 在 agent 初始化时无条件注册 task_tool）。
-        if (
-            plan_state.mode != "plan"
-            and self._owns_task_tool
-            and isinstance(ctx.inputs.tools, list)
-        ):
-            ctx.inputs.tools = [
-                t for t in ctx.inputs.tools
-                if getattr(t, "name", "") != "task_tool"
-            ]
-
-    # ------------------------------------------------------------------
-    # before_tool_call — 增强 bash 写操作拦截（补齐父类盲区）
-    # ------------------------------------------------------------------
-
-    async def before_tool_call(self, ctx: Any) -> None:
-        """父类逻辑 + 非 git bash 写操作拦截.
-
-        父类 AgentModeRail.before_tool_call 仅拦截 git 写操作
-        （commit/push/add 等），未拦截 mkdir/touch/rm/mv/cp 等
-        通用 shell 写操作。此处补齐这一盲区。
-        """
-        await super().before_tool_call(ctx)
-
-        # 已被父类拒绝的调用无需二次拦截
-        if ctx.extra.get("_skip_tool"):
-            return
-
-        # 仅在 plan 模式下追加检查
-        agent = self._agent
-        session = ctx.session
-        plan_state = agent.load_state(session).plan_mode
-        if plan_state.mode != "plan":
-            return
-
-        # bash 工具：拦截非 git 写操作
-        tool_name = ctx.inputs.tool_name
-        if tool_name == "bash":
-            command = self._extract_bash_command(ctx)
-            if _NON_GIT_WRITE_RE.search(command):
-                logger.info(
-                    "reject bash call: non-git write operation in plan mode"
-                )
-                bash_msg = (
-                    f"[AgentModeRail] Write operations are blocked in "
-                    f"plan mode ({command!r})."
-                )
-                self._reject_tool(ctx, bash_msg)
-                return
-
-    # ------------------------------------------------------------------
-    # after_tool_call — 保留父类行为 + 补充模式恢复
-    # ------------------------------------------------------------------
-
-    async def after_tool_call(self, ctx: Any) -> None:
-        """父类逻辑 + exit_plan_mode 后补充恢复模式（仅在 tool 未恢复时）.
-
-        ExitPlanModeTool.invoke() 在 plan 有内容时已调用 restore_mode_after_plan_exit，
-        此处只在 tool 未调用 restore 时（plan 内容为空 / hook 阻止工具执行）补充调用，
-        避免重复调用导致 pre_plan_mode=None → mode 被覆盖为 "normal" 的问题.
-
-        注意：不检查 ctx.extra.get('_skip_tool') — 当 hook 阻止 exit_plan_mode 执行时，
-        _skip_tool=True 但 restore 未被调用，补充恢复是唯一的机会。
-        pre_plan_mode is not None 检查已能防止重复恢复。
-        """
-        await super().after_tool_call(ctx)
-
-        tool_name = ctx.inputs.tool_name
-        if tool_name == "exit_plan_mode":
-            agent = self._agent
-            session = ctx.session
-            state = agent.load_state(session)
-            # pre_plan_mode 不为 None 说明 ExitPlanModeTool 未调用 restore
-            # （plan 内容为空时的提前返回路径），此时需要补充恢复
-            if state.plan_mode.pre_plan_mode is not None:
-                try:
-                    agent.restore_mode_after_plan_exit(session)
-                    logger.info(
-                        "[JiuwenAgentModeRail] Restored mode after plan exit "
-                        "(plan was empty, tool did not restore)"
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[JiuwenAgentModeRail] Failed to restore mode: %s", exc
-                    )
 
 
 class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
@@ -886,9 +625,14 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             return None
 
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
-        """构建 JiuwenAgentModeRail（屏蔽 plan 模式下的 switch_mode）."""
+        """构建 AgentModeRail（屏蔽 switch_mode + 静态 plan 提示词 + plan 指令进对话）."""
         try:
-            return JiuwenAgentModeRail()
+            return AgentModeRail(
+                allow_switch_mode=False,
+                plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
+                enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
+                exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
+            )
         except Exception as exc:
             logger.warning("[JiuwenClawCodeAdapter] AgentModeRail create failed: %s", exc)
             return None

@@ -498,13 +498,23 @@ class JiuWenClaw:
 
         if source == "ask_user_interrupt":
             answers_dict = {}
+            free_text_answer = ""
             for answer in answers:
                 if isinstance(answer, dict):
-                    question_text = answer.get("question", "")
+                    question_text = str(answer.get("question", "") or "").strip()
                     selected_options = answer.get("selected_options", [])
-                    answer_value = selected_options[0] if selected_options else ""
+                    custom_input = str(answer.get("custom_input", "") or "").strip()
+                    answer_value = ""
+                    if selected_options:
+                        answer_value = str(selected_options[0] or "").strip()
+                    elif custom_input:
+                        answer_value = custom_input
                     if question_text and answer_value:
                         answers_dict[question_text] = answer_value
+                    elif answer_value:
+                        free_text_answer = answer_value
+            if not answers_dict and free_text_answer:
+                answers_dict["__free_text__"] = free_text_answer
             interactive_input.update(request_id, {"answers": answers_dict})
             logger.info(
                 "[JiuWenClaw] AskUserRail InteractiveInput.update: request_id=%s payload=%s",

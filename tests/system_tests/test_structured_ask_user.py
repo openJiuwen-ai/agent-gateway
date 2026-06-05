@@ -379,8 +379,8 @@ class TestConvertInteractionsToAskUserQuestion:
         assert q["options"][2]["label"] == "Other"
 
     @staticmethod
-    def test_plain_query_produce_permission_interrupt():
-        """Plain query (no questions) should produce source=permission_interrupt."""
+    def test_plain_query_produce_ask_user_interrupt():
+        """Plain query (no questions) should produce source=ask_user_interrupt."""
         tcir = _make_tcir(tool_args={"query": "What is your role?"})
 
         interaction = MagicMock()
@@ -389,13 +389,34 @@ class TestConvertInteractionsToAskUserQuestion:
 
         result = convert_interactions_to_ask_user_question([interaction])
         assert result is not None
-        assert result["source"] == "permission_interrupt"
+        assert result["source"] == "ask_user_interrupt"
+        assert result["questions"][0]["question"] == "What is your role?"
+        assert result["questions"][0]["options"] == []
 
     @staticmethod
     def test_empty_state_outputs_returns_none():
         """Empty state_outputs should return None."""
         result = convert_interactions_to_ask_user_question([])
         assert result is None
+
+    @staticmethod
+    def test_ask_user_request_without_tool_args_uses_query_from_tool_args():
+        """AskUserRequest shells should still resolve as ask_user_interrupt."""
+        result = convert_interactions_to_ask_user_question([
+            {
+                "id": "req_004",
+                "value": {
+                    "tool_name": "ask_user",
+                    "tool_args": {"query": "Choose a language"},
+                    "message": "Choose a language",
+                    "questions": [],
+                    "payload_schema": {},
+                },
+            }
+        ])
+        assert result is not None
+        assert result["source"] == "ask_user_interrupt"
+        assert result["questions"][0]["question"] == "Choose a language"
 
     @staticmethod
     def test_dict_interaction_with_questions_in_value():

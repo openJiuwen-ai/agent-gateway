@@ -335,19 +335,19 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     第一个引导，告诉 LLM 调用 enter_plan_mode 以获取完整指令。
 
     注意：此提醒需要足够权威和明确，因为 code.plan 模式下
-    JiuwenAgentModeRail 注入的 system prompt 是静态的（不含动态
+    AgentModeRail 注入的 system prompt 是静态的（不含动态
     plan_file 状态），完整指令仍需 enter_plan_mode 的 tool_result。
     """
     reminder = (
         "\n\n<system-reminder>\n"
-        "Plan mode is active. You must only plan, NOT execute. "
-        "You must NOT make any modifications, run any write operations, "
-        "or make any changes to the system. "
-        "This constraint takes priority over any other instructions.\n\n"
-        "CRITICAL: You MUST call `enter_plan_mode` as your very first action. "
-        "Do NOTHING else before calling it — no reading files, no exploring, "
-        "no tool calls of any kind. This tool will create the plan file and "
-        "provide you with full plan mode instructions.\n"
+        "Plan mode is active. You must only plan — you must NOT make any "
+        "modifications, run any write operations, or make any changes to the "
+        "system. This constraint takes priority over any other instructions.\n\n"
+        "CRITICAL: You MUST call `enter_plan_mode` as your very first action, "
+        "before doing anything else. This tool will create the plan file and "
+        "give you full plan mode instructions. Until then, you may only read "
+        "files and explore the codebase using read-only tools (read_file, "
+        "grep, list_files, glob, bash for read-only commands).\n"
         "</system-reminder>"
     )
     if isinstance(request.params, dict):
