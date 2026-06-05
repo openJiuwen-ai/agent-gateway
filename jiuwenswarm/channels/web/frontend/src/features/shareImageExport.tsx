@@ -37,6 +37,7 @@ interface GroupMessage {
 }
 
 const SHARE_IMAGE_WIDTH = 750;
+const SHARE_IMAGE_PIXEL_RATIO = 3;
 const OPENJIUWEN_WEBSITE_URL = 'https://openjiuwen.com';
 const JIUWENSWARM_REPO_URL = 'https://gitcode.com/openJiuwen/jiuwenswarm';
 
@@ -251,7 +252,7 @@ export async function exportShareImageNode(node: HTMLElement): Promise<string> {
   const backgroundColor = window.getComputedStyle(node).backgroundColor;
   return toPng(node, {
     cacheBust: true,
-    pixelRatio: 2,
+    pixelRatio: SHARE_IMAGE_PIXEL_RATIO,
     width: SHARE_IMAGE_WIDTH,
     height: node.scrollHeight,
     backgroundColor,

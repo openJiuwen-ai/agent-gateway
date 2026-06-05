@@ -29,7 +29,7 @@ import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { parseTeamEventMessage } from './teamEventUtils';
+import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 
 export function MarkdownMessageBody({
@@ -401,8 +401,8 @@ export function MessageItem({
 	     if (content && content.startsWith('team.event:')) {
 	       const event = parseTeamEventMessage(message);
 	       if (event) {
-	           // team_leader 发给用户的消息（不是 p2p 也不是 broadcast）
-	           if (event.isLeaderToUser) {
+	           // 面向用户的团队消息直接展示在主会话
+	           if (event.isLeaderToUser || isTeamP2PMessageToUser(event)) {
 	             return (
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
