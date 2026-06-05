@@ -2309,22 +2309,28 @@ class AgentWebSocketServer:
             project_dir = resolve_request_project_dir(request)
             diff_service = get_diff_service()
             turns = diff_service.get_turn_diffs(session_id, project_dir)
+            git_diff = diff_service.get_git_diff(project_dir)
 
             logger.info(
-                "[AgentWebSocketServer] command.diff response: session_id=%s turns=%s project_dir=%s",
+                "[AgentWebSocketServer] command.diff response: session_id=%s turns=%s git_diff=%s project_dir=%s",
                 session_id,
-                turns,
+                len(turns),
+                git_diff is not None,
                 project_dir,
             )
+
+            payload: dict[str, Any] = {
+                "type": "list",
+                "turns": turns,
+            }
+            if git_diff is not None:
+                payload["gitDiff"] = git_diff
 
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={
-                    "type": "list",
-                    "turns": turns,
-                },
+                payload=payload,
             )
         except Exception as e:
             logger.exception("[AgentWebSocketServer] command.diff failed: %s", e)
