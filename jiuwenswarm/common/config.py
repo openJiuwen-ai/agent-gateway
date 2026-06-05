@@ -1236,6 +1236,17 @@ def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_a2ui_in_config(updates: dict[str, Any]) -> None:
+    """更新 a2ui 配置段并写回 config.yaml。"""
+    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
+    if "a2ui" not in data:
+        data["a2ui"] = {}
+    section = data["a2ui"]
+    for key, value in updates.items():
+        section[key] = value
+    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
+
+
 def _deep_merge(
     template: dict[str, Any],
     user: dict[str, Any],

@@ -27,8 +27,15 @@ class PromptPriority(IntEnum):
     SKILLS = 40
     MEMORY = 55
     RESPONSE = 60
+    A2UI = 61
     WORKSPACE = 70
     TODO = 85
+
+
+class LocalSectionName:
+    """Local section names for optional JiuwenSwarm prompt sections."""
+
+    A2UI = "a2ui"
 
 
 # ─── response section (shared by both modes via ResponsePromptRail) ───

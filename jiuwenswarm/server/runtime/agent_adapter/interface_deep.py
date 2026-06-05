@@ -4763,7 +4763,7 @@ class JiuWenClawDeepAdapter:
 
     async def _handle_slash_command(
         self,
-        query: str,
+        query: Any,
         session_id: str = "default",
         mode: str = "agent.plan",
     ) -> dict[str, Any] | None:
@@ -4773,6 +4773,9 @@ class JiuWenClawDeepAdapter:
         The dict may contain an ``approval_chunks`` list that the caller
         should forward to the frontend as separate stream events.
         """
+        if not isinstance(query, str):
+            return None
+
         stripped = query.strip()
 
         if stripped.startswith("/evolve_simplify"):
@@ -6254,6 +6257,25 @@ class JiuWenClawDeepAdapter:
         except Exception:
             logger.exception("[generate_recap] model call failed")
             return None
+
+    async def repair_model_response(self, prompt: str) -> str | None:
+        """Run a focused repair prompt using the currently selected chat model."""
+        if self._model is None:
+            logger.warning("[JiuWenClawDeepAdapter] repair skipped: no model instance available")
+            return None
+        from openjiuwen.core.foundation.llm.schema.message import UserMessage
+
+        result = await self._model.invoke(
+            [UserMessage(content=prompt)],
+            temperature=0,
+        )
+        content = getattr(result, "content", None)
+        if isinstance(content, str):
+            return content
+        output = getattr(result, "output", None)
+        if isinstance(output, str):
+            return output
+        return str(result) if result is not None else None
 
     async def _count_full_context_tokens(
         self,

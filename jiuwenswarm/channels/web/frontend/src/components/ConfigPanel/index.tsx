@@ -288,6 +288,7 @@ const FREE_SEARCH_BOOLEAN_KEYS = new Set(["free_search_ddg_enabled", "free_searc
 const FREE_SEARCH_KEYS = new Set([...FREE_SEARCH_BOOLEAN_KEYS]);
 const HIDDEN_CONFIG_KEYS = new Set(["free_search_proxy_url"]);
 const MEMORY_KEYS = new Set(["memory_forbidden_enabled", "memory_forbidden_description"]);
+const A2UI_KEYS = new Set(["a2ui_enabled"]);
 
 function classifyKey(key: string): string {
   if (MODEL_DEFAULT_KEYS.has(key)) return "model_default";
@@ -302,6 +303,7 @@ function classifyKey(key: string): string {
   if (TEAM_KEYS.has(key)) return "team";
   if (FREE_SEARCH_KEYS.has(key)) return "free_search";
   if (MEMORY_KEYS.has(key)) return "memory";
+  if (A2UI_KEYS.has(key)) return "a2ui";
   if (key === "context_engine_enabled" || key === "kv_cache_affinity_enabled") return "context_engine";
   if (key === "permissions_enabled") return "permissions";
   if (key.startsWith("feishu")) return "feishu";
@@ -393,6 +395,14 @@ function getGroupIcon(tag: string) {
       </svg>
     );
   }
+  if (tag === "a2ui") {
+    return (
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 5.25h15A1.5 1.5 0 0121 6.75v10.5a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 17.25V6.75a1.5 1.5 0 011.5-1.5z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 9.75h9M7.5 14.25h5.25" />
+      </svg>
+    );
+  }
   return (
     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
       <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 6h9m-9 6h9m-9 6h9M3.75 6h.008v.008H3.75V6zm0 6h.008v.008H3.75V12zm0 6h.008v.008H3.75V18z" />
@@ -414,6 +424,7 @@ function getGroupToneClass(tag: string): string {
   if (tag === "memory") return "text-purple-500 bg-purple-500/10 border-purple-500/20";
   if (tag === "context_engine") return "text-sky-500 bg-sky-500/10 border-sky-500/20";
   if (tag === "permissions") return "text-rose-500 bg-rose-500/10 border-rose-500/20";
+  if (tag === "a2ui") return "text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20";
   if (tag === "email") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
   return "text-text-muted bg-secondary/70 border-border";
 }
@@ -436,7 +447,8 @@ function isBooleanKey(key: string): boolean {
     key === "context_engine_enabled" ||
     key === "kv_cache_affinity_enabled" ||
     key === "permissions_enabled" ||
-    key === "memory_forbidden_enabled"
+    key === "memory_forbidden_enabled" ||
+    key === "a2ui_enabled"
   );
 }
 
@@ -454,6 +466,7 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     kv_cache_affinity_enabled: t('config.booleanLabels.kvCacheAffinity'),
     permissions_enabled: t('config.booleanLabels.enabled'),
     memory_forbidden_enabled: t('config.booleanLabels.enabled'),
+    a2ui_enabled: t('config.booleanLabels.enabled'),
   };
   return labels[key] ?? key;
 }
@@ -495,9 +508,10 @@ function getGroupMeta(t: (key: string) => string): Record<string, { label: strin
     team: { label: t('config.groups.team.label'), order: 7.6, hint: t('config.groups.team.hint') },
     context_engine: { label: t('config.groups.contextEngine.label'), order: 8, hint: t('config.groups.contextEngine.hint') },
     permissions: { label: t('config.groups.permissions.label'), order: 9, hint: t('config.groups.permissions.hint') },
-    memory: { label: t('config.groups.memory.label'), order: 10, hint: t('config.groups.memory.hint') },
-    email: { label: t('config.groups.email.label'), order: 11, hint: t('config.groups.email.hint') },
-    other: { label: t('config.groups.other.label'), order: 12, hint: t('config.groups.other.hint') },
+    a2ui: { label: t('config.groups.a2ui.label'), order: 10, hint: t('config.groups.a2ui.hint') },
+    memory: { label: t('config.groups.memory.label'), order: 11, hint: t('config.groups.memory.hint') },
+    email: { label: t('config.groups.email.label'), order: 12, hint: t('config.groups.email.hint') },
+    other: { label: t('config.groups.other.label'), order: 13, hint: t('config.groups.other.hint') },
   };
 }
 

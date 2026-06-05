@@ -53,6 +53,22 @@ _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
     "whatsapp_",
 )
 
+_A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
+
+
+def apply_a2ui_text_fallback_to_gateway_payload(
+    payload: dict[str, Any],
+    *,
+    channel_id: str,
+) -> dict[str, Any]:
+    """Convert A2UI blocks to text for non-Web channel payloads."""
+    if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
+        return payload
+
+    from jiuwenswarm.server.runtime.a2ui.integration import apply_non_web_text_fallback_to_payload
+
+    return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
+
 
 
 class ChannelMode(str, Enum):
@@ -1786,8 +1802,13 @@ class MessageHandler(ABC):
 
         # 检查 payload 中是否包含 event_type，如果包含则创建事件消息
         event_type = None
+        payload = resp.payload
         if resp.payload and isinstance(resp.payload, dict):
-            event_type_str = resp.payload.get("event_type")
+            payload = apply_a2ui_text_fallback_to_gateway_payload(
+                dict(resp.payload),
+                channel_id=resp.channel_id,
+            )
+            event_type_str = payload.get("event_type")
             if isinstance(event_type_str, str):
                 try:
                     event_type = EventType(event_type_str)
@@ -1800,7 +1821,7 @@ class MessageHandler(ABC):
                         params={},
                         timestamp=time.time(),
                         ok=True,
-                        payload=resp.payload,
+                        payload=payload,
                         event_type=event_type,
                         metadata=metadata,
                         group_digital_avatar=group_digital_avatar,
@@ -1819,7 +1840,7 @@ class MessageHandler(ABC):
             params={},
             timestamp=time.time(),
             ok=resp.ok,
-            payload=resp.payload,
+            payload=payload,
             event_type=EventType.CHAT_FINAL,
             metadata=metadata,
             group_digital_avatar=group_digital_avatar,
@@ -1973,8 +1994,13 @@ class MessageHandler(ABC):
 
         # 从 payload 中提取 event_type（如果存在）
         event_type = None
+        payload = chunk.payload
         if chunk.payload and isinstance(chunk.payload, dict):
-            event_type_str = chunk.payload.get("event_type")
+            payload = apply_a2ui_text_fallback_to_gateway_payload(
+                dict(chunk.payload),
+                channel_id=chunk.channel_id,
+            )
+            event_type_str = payload.get("event_type")
             if isinstance(event_type_str, str):
                 try:
                     event_type = EventType(event_type_str)
@@ -1989,7 +2015,7 @@ class MessageHandler(ABC):
             params={},
             timestamp=time.time(),
             ok=True,
-            payload=chunk.payload,
+            payload=payload,
             event_type=event_type,
             metadata=metadata,
             group_digital_avatar=group_digital_avatar,
@@ -2669,49 +2695,50 @@ class MessageHandler(ABC):
                 if msg.req_method == ReqMethod.CHAT_SEND and msg.params:
                     content = msg.params.get("query") or msg.params.get("content") or ""
                     attachments = msg.params.get("attachments")
-                    cwd = None
-                    if isinstance(msg.metadata, dict):
-                        cwd = msg.metadata.get("cwd")
-                    enriched = content
-                    if attachments:
-                        enriched = self._resolve_structured_attachments(
-                            content,
-                            attachments,
-                            cwd=cwd,
-                        )
-                    elif content and "@" in content:
-                        enriched = self.resolve_at_file_references(content, cwd=cwd)
-
-                    # ---- Resolve @agent-xxx mentions ----
-                    agent_mentions = self.extract_agent_mentions(content)
-                    if agent_mentions:
-                        hint_parts = []
-                        for agent_name in agent_mentions:
-                            hint_parts.append(
-                                f"用户表达了调用智能体 \"{agent_name}\" 的意图。"
-                                f"请按需调用该智能体，并向其传递所需的上下文。"
+                    if isinstance(content, str):
+                        cwd = None
+                        if isinstance(msg.metadata, dict):
+                            cwd = msg.metadata.get("cwd")
+                        enriched = content
+                        if attachments:
+                            enriched = self._resolve_structured_attachments(
+                                content,
+                                attachments,
+                                cwd=cwd,
                             )
-                        agent_hint = "\n".join(hint_parts)
-                        enriched = (
-                            enriched
-                            + "\n\n<system-reminder>\n"
-                            + agent_hint
-                            + "\n</system-reminder>"
-                        )
-                        logger.info(
-                            "[MessageHandler] Agent mentions detected: %s",
-                            agent_mentions,
-                        )
+                        elif content and "@" in content:
+                            enriched = self.resolve_at_file_references(content, cwd=cwd)
 
-                    if enriched != content:
-                        msg.params = dict(msg.params)
-                        msg.params["query"] = enriched
-                        if "content" in msg.params:
-                            msg.params["content"] = enriched
-                        logger.info(
-                            "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
-                            msg.id,
-                        )
+                        # ---- Resolve @agent-xxx mentions ----
+                        agent_mentions = self.extract_agent_mentions(content)
+                        if agent_mentions:
+                            hint_parts = []
+                            for agent_name in agent_mentions:
+                                hint_parts.append(
+                                    f"用户表达了调用智能体 \"{agent_name}\" 的意图。"
+                                    f"请按需调用该智能体，并向其传递所需的上下文。"
+                                )
+                            agent_hint = "\n".join(hint_parts)
+                            enriched = (
+                                enriched
+                                + "\n\n<system-reminder>\n"
+                                + agent_hint
+                                + "\n</system-reminder>"
+                            )
+                            logger.info(
+                                "[MessageHandler] Agent mentions detected: %s",
+                                agent_mentions,
+                            )
+
+                        if enriched != content:
+                            msg.params = dict(msg.params)
+                            msg.params["query"] = enriched
+                            if "content" in msg.params:
+                                msg.params["content"] = enriched
+                            logger.info(
+                                "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
+                                msg.id,
+                            )
 
                 logger.info(
                     "[MessageHandler] 从 user_messages 取出，发往 AgentServer: id=%s channel_id=%s is_stream=%s",

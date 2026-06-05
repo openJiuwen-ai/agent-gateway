@@ -45,6 +45,14 @@ import { useTeamPanelState } from './features/teamPanelState';
 import { AgentMode, UserAnswer, ModelEntry } from './types';
 import { useSessionStore, useChatStore, useTodoStore, useHarnessStore } from './stores';
 import { useTranslation } from 'react-i18next';
+import {
+  normalizeA2UIEnabled,
+  setA2UIFeatureEnabled,
+} from './features/a2ui/featureConfig';
+import {
+  buildA2UIClientEventContent,
+  setA2UIActionHandler,
+} from './features/a2ui/actionBridge';
 import './App.css';
 
 type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'heartbeat' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'logspanel' | 'browserpanel' | 'updatepanel';
@@ -354,6 +362,7 @@ function AppContent() {
     isConnected,
     request,
     sendMessage,
+    sendStructuredChatContent,
     pause,
     cancel,
     supplement,
@@ -417,6 +426,7 @@ function AppContent() {
   const fetchConfig = useCallback(async () => {
     try {
       const config = await request<Record<string, unknown>>('config.get');
+      setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setServerConfig(config);
       setConfigError(null);
     } catch (error) {
@@ -527,10 +537,13 @@ function AppContent() {
       'config.set',
       updates
     );
+    if ('a2ui_enabled' in updates) {
+      setA2UIFeatureEnabled(normalizeA2UIEnabled(updates.a2ui_enabled));
+    }
     setServerConfig((prev) => {
       if (!prev) return updates;
       const next: Record<string, unknown> = { ...prev, ...updates };
-      // 保留 memory_forbidden_description 的双语字典结构
+      // Keep the bilingual memory_forbidden_description dictionary structure.
       if (typeof prev.memory_forbidden_description === 'object' && prev.memory_forbidden_description !== null
           && !Array.isArray(prev.memory_forbidden_description) && updates.memory_forbidden_description !== undefined) {
         const prevDict = prev.memory_forbidden_description as Record<string, string>;
@@ -553,7 +566,7 @@ function AppContent() {
     }
   }, [clearRestartAutoCloseTimer, closeRestartModal, request]);
 
-const applyConfigSaveUiState = useCallback((appliedWithoutRestart: boolean) => {
+  const applyConfigSaveUiState = useCallback((appliedWithoutRestart: boolean) => {
     setConfigError(null);
     setRestartModalOpen(true);
     setRestartSuccess(false);
@@ -1054,6 +1067,17 @@ for (let i = payload.team.length; i < 10; i++) {
     if (!currentSessionId || currentSessionId === 'new') return;
     void sendMessage(content, currentSessionId);
   }, [sendMessage]);
+
+  useEffect(() => {
+    return setA2UIActionHandler((message) => {
+      const currentSessionId = sessionIdRef.current;
+      if (!currentSessionId || currentSessionId === 'new') return;
+      void sendStructuredChatContent(
+        buildA2UIClientEventContent(message),
+        currentSessionId,
+      );
+    });
+  }, [sendStructuredChatContent]);
 
   const handleInterrupt = useCallback((newInput?: string) => {
     const currentSessionId = sessionIdRef.current;

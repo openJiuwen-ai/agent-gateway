@@ -38,7 +38,13 @@ from jiuwenswarm.common.config import (
     update_permissions_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
+    update_a2ui_in_config,
     update_updater_in_config,
+)
+from jiuwenswarm.server.runtime.a2ui.integration import (
+    get_a2ui_config_payload,
+    get_default_a2ui_config_payload,
+    validate_a2ui_config_update,
 )
 from jiuwenswarm.common.updater import UpdaterService
 from jiuwenswarm.common.utils import (
@@ -375,6 +381,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "permissions_enabled",
     "memory_forbidden_enabled",
     "memory_forbidden_description",
+    "a2ui_enabled",
 })
 
 
@@ -636,6 +643,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["memory_forbidden_enabled"] = "true" if memory_cfg.get("enabled", False) else "false"
             memory_desc = memory_cfg.get("description") or {}
             payload["memory_forbidden_description"] = memory_desc
+            payload.update(get_a2ui_config_payload(raw))
             if not payload.get("free_search_ddg_enabled"):
                 payload["free_search_ddg_enabled"] = "false"
             if not payload.get("free_search_bing_enabled"):
@@ -649,6 +657,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("evolution_auto_scan", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("memory_forbidden_description", "")
+            for key, value in get_default_a2ui_config_payload().items():
+                payload.setdefault(key, value)
             payload.setdefault("free_search_ddg_enabled", "false")
             payload.setdefault("free_search_bing_enabled", "false")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
@@ -747,6 +757,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "memory_forbidden_description":
                     desc_val = str(val).strip()
                     update_memory_forbidden_description_in_config({preferred_lang: desc_val})
+                elif param_key.startswith("a2ui_"):
+                    ok, update, error = validate_a2ui_config_update(param_key, val)
+                    if not ok:
+                        raise _ConfigBadRequest(error or "invalid A2UI config")
+                    update_a2ui_in_config(update)
                 yaml_updated.append(param_key)
             except Exception as e:  # noqa: BLE001
                 logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
