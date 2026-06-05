@@ -2579,6 +2579,9 @@ export function ConfigPanel({
     if (agentsTeamsEdited) return;
     setDraftAgents(agentsFromConfig);
     setDraftTeams(teamsFromConfig);
+    // 同时更新初始值，用于比较是否有修改
+    setInitialAgents(agentsFromConfig);
+    setInitialTeams(teamsFromConfig);
     if (agentsFromConfig.length === 0 && teamsFromConfig.length === 0) {
       clearCachedAgentsTeams();
     }
@@ -2700,7 +2703,42 @@ export function ConfigPanel({
     });
   }, [draftModels, storeAvailableModels]);
 
-  const hasAgentsTeamsChanges = agentsTeamsEdited;
+  const hasAgentsTeamsChanges = useMemo(() => {
+    // 比较 agents
+    if (draftAgents.length !== initialAgents.length) return true;
+    for (let i = 0; i < draftAgents.length; i++) {
+      const da = draftAgents[i];
+      const ia = initialAgents[i];
+      if (!ia) return true;
+      if (da.name !== ia.name) return true;
+      if (da.completion_timeout !== ia.completion_timeout) return true;
+      if (da.skills.length !== ia.skills.length || da.skills.some((s, j) => s !== ia.skills[j])) return true;
+      if (da.model.provider !== ia.model.provider || da.model.api_base !== ia.model.api_base
+          || da.model.api_key !== ia.model.api_key || da.model.model !== ia.model.model) return true;
+    }
+    // 比较 teams
+    if (draftTeams.length !== initialTeams.length) return true;
+    for (let i = 0; i < draftTeams.length; i++) {
+      const dt = draftTeams[i];
+      const it = initialTeams[i];
+      if (!it) return true;
+      if (dt.team_name !== it.team_name || dt.lifecycle !== it.lifecycle
+          || dt.teammate_mode !== it.teammate_mode || dt.spawn_mode !== it.spawn_mode) return true;
+      if (dt.leader.member_name !== it.leader.member_name || dt.leader.display_name !== it.leader.display_name
+          || dt.leader.persona !== it.leader.persona || dt.leader.agent_key !== it.leader.agent_key) return true;
+      if (dt.teammate.agent_key !== it.teammate.agent_key) return true;
+      if (dt.predefined_members.length !== it.predefined_members.length) return true;
+      for (let j = 0; j < dt.predefined_members.length; j++) {
+        const dpm = dt.predefined_members[j];
+        const ipm = it.predefined_members[j];
+        if (!ipm) return true;
+        if (dpm.member_name !== ipm.member_name || dpm.display_name !== ipm.display_name
+            || dpm.persona !== ipm.persona || dpm.prompt_hint !== ipm.prompt_hint
+            || dpm.agent_key !== ipm.agent_key) return true;
+      }
+    }
+    return false;
+  }, [draftAgents, draftTeams, initialAgents, initialTeams]);
   const hasChanges = hasConfigChanges || hasModelChanges || hasAgentsTeamsChanges;
   const missingRequiredModelFields = useMemo(
     () => REQUIRED_MODEL_FIELDS.filter((key) => !(draftValues[key] ?? "").trim()),
@@ -3024,7 +3062,7 @@ export function ConfigPanel({
             <button
               type="button"
               onClick={() => void handleSaveAndRestart()}
-              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || hasDuplicateAgentNames || (agentsTeamsUserEdited && !!agentsTeamsValidationError) || (isProcessing && mode !== 'team')}
+              disabled={!hasChanges || saving || hasMissingRequiredModelFields || hasMissingModelApiKey || hasMissingModelApiBase || hasDuplicateAgentNames || !!agentsTeamsValidationError || (isProcessing && mode !== 'team')}
               className="btn primary !px-3 !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving ? t('common.saving') : t('common.save')}
@@ -3053,7 +3091,7 @@ export function ConfigPanel({
         ) : null
         }
         {
-          !error && agentsTeamsUserEdited && agentsTeamsValidationError ? (
+          !error && agentsTeamsValidationError ? (
             <div className="mb-4 rounded-md border border-[var(--border-danger)] bg-danger-subtle px-3 py-2 text-sm text-danger">
               {agentsTeamsValidationError}
             </div>
