@@ -890,7 +890,30 @@ class JiuClawStreamEventRail(DeepAgentRail):
         return s
 
     async def _fix_incomplete_tool_context(self, ctx: AgentCallbackContext) -> None:
-        """Fix incomplete context: ensure assistant messages with tool_calls have matching tool messages."""
+        """Ensure every assistant tool_call has a matching ToolMessage, without
+        disturbing the existing message order or content.
+
+        Reasoning models (e.g. GLM's interleaved / preserved thinking) require
+        the assistant reasoning + tool-call sequence to be replayed back to the
+        model faithfully across turns; reordering or editing those messages
+        corrupts the model's reasoning state and triggers degenerate behaviour
+        (redoing completed work, emitting malformed/garbled tool calls).
+
+        The previous implementation popped and rebuilt the whole message list
+        on every model call -- reordering tool results, rewriting tool_call
+        arguments, and inserting placeholders -- which broke that contract on
+        every turn. This version is intentionally minimal:
+
+        * It is a strict no-op when the context is already consistent (every
+          assistant tool_call already has a matching ToolMessage).
+        * When a result is genuinely missing, it only INSERTS a placeholder
+          ToolMessage right after the assistant that owns the call. It never
+          reorders, drops, or rewrites any existing message.
+
+        This keeps the behaviour model-agnostic: it neither adds nor removes
+        any model-specific fields (such as reasoning_content), it merely stops
+        scrambling the sequence the model produced.
+        """
         try:
             context = ctx.context
             if context is None:
@@ -910,85 +933,75 @@ class JiuClawStreamEventRail(DeepAgentRail):
             if len_messages == 0:
                 return
 
-            messages = context.pop_messages(size=len_messages)
-            tool_message_cache: dict = {}
-            tool_id_cache: list = []
+            # Defensive normalization of malformed tool-call argument JSON on
+            # replayed history. _ensure_json_arguments returns well-formed
+            # arguments byte-for-byte unchanged, so we reassign ONLY when the
+            # value actually changes -- i.e. only genuinely malformed JSON
+            # (missing quotes / unbalanced braces) is rewritten, while valid
+            # arguments stay identical to preserve faithful replay for
+            # reasoning models. The authoritative repair still lives in
+            # ability_manager at execution time; this is just a safety net.
+            for m in messages:
+                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
+                    for tc in m.tool_calls:
+                        raw = getattr(tc, "arguments", None)
+                        if not isinstance(raw, str) or not raw.strip():
+                            continue
+                        normalized = self._ensure_json_arguments(raw)
+                        if normalized != raw:
+                            tc.arguments = normalized
 
-            for i in range(len_messages):
-                if isinstance(messages[i], AssistantMessage):
-                    if not tool_id_cache:
-                        tool_calls = getattr(messages[i], "tool_calls", None)
-                        if tool_calls:
-                            for tc in tool_calls:
-                                arguments = getattr(tc, "arguments", '{}')
-                                arguments = self._ensure_json_arguments(arguments)
-                                if hasattr(tc, "arguments"):
-                                    tc.arguments = arguments
-                                tool_id_cache.append({
-                                        "tool_call_id": getattr(tc, "id", ""),
-                                        "tool_name": getattr(tc, "name", ""),
-                                })
-                        await context.add_messages(messages[i])
-                    else:
-                        logger.info("Fixed incomplete tool context with placeholder messages")
-                        for tc_info in tool_id_cache:
-                            tool_name = tc_info["tool_name"]
-                            tool_call_id = tc_info["tool_call_id"]
-                            if tool_call_id in tool_message_cache:
-                                await context.add_messages(tool_message_cache[tool_call_id])
-                            else:
-                                await context.add_messages(ToolMessage(
-                                        content=self._tool_interrupted_message(tool_name),
-                                        tool_call_id=tool_call_id,
-                                ))
-                        tool_id_cache = []
-                        tool_calls = getattr(messages[i], "tool_calls", None)
-                        if tool_calls:
-                            for tc in tool_calls:
-                                arguments = getattr(tc, "arguments", {})
-                                arguments = self._ensure_json_arguments(arguments)
-                                if hasattr(tc, "arguments"):
-                                    tc.arguments = arguments
-                                tool_id_cache.append({
-                                        "tool_call_id": getattr(tc, "id", ""),
-                                        "tool_name": getattr(tc, "name", ""),
-                                })
-                        await context.add_messages(messages[i])
-                elif isinstance(messages[i], ToolMessage):
-                    if not tool_id_cache:
-                        tool_message_cache[messages[i].tool_call_id] = messages[i]
-                        continue
-                    if messages[i].tool_call_id == tool_id_cache[0]["tool_call_id"]:
-                        await context.add_messages(messages[i])
-                        tool_id_cache.pop(0)
-                    else:
-                        tool_message_cache[messages[i].tool_call_id] = messages[i]
-                        continue
-                else:
-                    logger.info("Fixed incomplete tool context with placeholder messages")
-                    for tc_info in tool_id_cache:
-                        tool_name = tc_info["tool_name"]
-                        tool_call_id = tc_info["tool_call_id"]
-                        if tool_call_id in tool_message_cache:
-                            await context.add_messages(tool_message_cache[tool_call_id])
-                        else:
+            # tool_call_ids that already have a ToolMessage result anywhere
+            # in the context. Computed once so we never insert a duplicate
+            # placeholder for a call whose real result simply appears later.
+            satisfied_ids = {
+                getattr(m, "tool_call_id", None)
+                for m in messages
+                if isinstance(m, ToolMessage)
+            }
+            satisfied_ids.discard(None)
+            satisfied_ids.discard("")
+
+            # Is any assistant tool_call missing its result?
+            has_missing = False
+            for m in messages:
+                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
+                    for tc in m.tool_calls:
+                        tcid = getattr(tc, "id", "")
+                        if tcid and tcid not in satisfied_ids:
+                            has_missing = True
+                            break
+                if has_missing:
+                    break
+
+            # Already consistent: leave the context exactly as the model
+            # produced it. This is the common path on every normal turn.
+            if not has_missing:
+                return
+
+            # Repair: replay messages in their ORIGINAL order, inserting a
+            # placeholder result immediately after the assistant that owns
+            # each unmatched call. Nothing existing is reordered or dropped.
+            rebuilt = context.pop_messages(size=len(messages))
+            inserted = 0
+            for m in rebuilt:
+                await context.add_messages(m)
+                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
+                    for tc in m.tool_calls:
+                        tcid = getattr(tc, "id", "")
+                        if tcid and tcid not in satisfied_ids:
                             await context.add_messages(ToolMessage(
-                                    content=self._tool_interrupted_message(tool_name),
-                                    tool_call_id=tool_call_id,
+                                content=self._tool_interrupted_message(
+                                    getattr(tc, "name", ""),
+                                ),
+                                tool_call_id=tcid,
                             ))
-                    tool_id_cache = []
-                    await context.add_messages(messages[i])
-
-            if tool_id_cache:
-                for tc_info in tool_id_cache:
-                    tool_name = tc_info["tool_name"]
-                    tool_call_id = tc_info["tool_call_id"]
-                    if tool_call_id in tool_message_cache:
-                        await context.add_messages(tool_message_cache[tool_call_id])
-                    else:
-                        await context.add_messages(ToolMessage(
-                                content=self._tool_interrupted_message(tool_name),
-                                tool_call_id=tool_call_id,
-                        ))
+                            inserted += 1
+            if inserted:
+                logger.info(
+                    "Inserted %d placeholder tool result(s) for unmatched "
+                    "tool_calls (order/content preserved)",
+                    inserted,
+                )
         except Exception as e:
             logger.warning("Failed to fix incomplete tool context: %s", e)
