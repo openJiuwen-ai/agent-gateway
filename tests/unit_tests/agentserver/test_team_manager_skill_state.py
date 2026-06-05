@@ -336,8 +336,8 @@ def test_team_plan_leader_uses_preferred_language_for_code_profile(monkeypatch, 
     assert calls[0]["force_english_runtime_prompt"] is False
 
 
-def test_configure_code_team_member_uses_relative_coding_memory_path(monkeypatch, tmp_path):
-    """code.team members should register workspace directories with relative paths."""
+def test_configure_code_team_member_uses_agent_workspace_coding_memory_path(monkeypatch, tmp_path):
+    """code.team members should keep coding memory out of member cwd."""
     from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
     global_workspace = tmp_path / "global_agent_workspace"
@@ -428,5 +428,6 @@ def test_configure_code_team_member_uses_relative_coding_memory_path(monkeypatch
     )
 
     coding_memory_path = Path(workspace.directories[0]["path"])
-    assert not coding_memory_path.is_absolute()
-    assert coding_memory_path.parts == ("coding_memory", parent_project.name)
+    assert coding_memory_path.is_absolute()
+    assert coding_memory_path == global_workspace / "coding_memory" / "project"
+    assert coding_memory_path != member_workspace / "coding_memory"

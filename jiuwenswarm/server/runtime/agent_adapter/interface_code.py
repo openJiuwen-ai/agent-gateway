@@ -69,7 +69,7 @@ from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode
 from jiuwenswarm.agents.harness.common.tools import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.common.coding_memory_paths import resolve_project_coding_memory_dir
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -241,6 +241,63 @@ class _RailBuildInfo:
         self.params = self.params or {}
 
 
+def _resolve_coding_memory_dir(
+    *,
+    project_dir: str | None,
+    agent_workspace_dir: str,
+) -> str:
+    """Resolve the app-owned CodingMemory directory scoped by project."""
+    return resolve_project_coding_memory_dir(
+        agent_workspace_dir=agent_workspace_dir,
+        project_dir=project_dir,
+    )
+
+
+def _build_coding_memory_directory_node(
+    coding_memory_dir: str,
+    *,
+    description: str,
+) -> dict[str, Any]:
+    return {
+        "name": "coding_memory",
+        "description": description,
+        "path": coding_memory_dir,
+        "children": [
+            {
+                "name": "MEMORY.md",
+                "description": "Coding 记忆索引",
+                "path": "MEMORY.md",
+                "children": [],
+                "is_file": True,
+                "default_content": "",
+            },
+        ],
+    }
+
+
+def _set_workspace_coding_memory_directory(
+    workspace: Any,
+    *,
+    project_dir: str | None,
+    agent_workspace_dir: str,
+    description: str = "Coding Agent memory",
+) -> None:
+    set_directory = getattr(workspace, "set_directory", None)
+    if not callable(set_directory):
+        return
+
+    coding_memory_dir = _resolve_coding_memory_dir(
+        project_dir=project_dir,
+        agent_workspace_dir=agent_workspace_dir,
+    )
+    set_directory(
+        _build_coding_memory_directory_node(
+            coding_memory_dir,
+            description=description,
+        )
+    )
+
+
 def create_coding_memory_rail(
     *,
     project_dir: str | None,
@@ -266,8 +323,10 @@ def create_coding_memory_rail(
             "registering tools with memory fallback provider"
         )
 
-    project_name = os.path.basename(project_dir) if project_dir else "default"
-    coding_memory_dir = os.path.join(agent_workspace_dir, "coding_memory", project_name)
+    coding_memory_dir = _resolve_coding_memory_dir(
+        project_dir=project_dir,
+        agent_workspace_dir=agent_workspace_dir,
+    )
     os.makedirs(coding_memory_dir, exist_ok=True)
 
     return CodingMemoryRail(
@@ -632,6 +691,17 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         configured_subagents, _should_add_general = self._build_configured_subagents(model, config, config_base)
         configured_subagents = configured_subagents or []
 
+        workspace = Workspace(
+            root_path=self._workspace_dir or "./",
+            language=self._resolve_runtime_language(),
+        )
+        _set_workspace_coding_memory_directory(
+            workspace,
+            project_dir=self._project_dir,
+            agent_workspace_dir=self._agent_workspace_dir,
+            description="Coding Agent 记忆模块",
+        )
+
         self._instance = create_deep_agent(
             model=model,
             card=agent_card,
@@ -641,10 +711,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             rails=rails_list if rails_list else [],
             enable_task_loop=config.get("enable_task_loop", True),
             max_iterations=config.get("max_iterations", 15),
-            workspace=Workspace(
-                root_path=self._workspace_dir or "./",
-                language=self._resolve_runtime_language(),
-            ),
+            workspace=workspace,
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
             auto_create_workspace=False
@@ -671,24 +738,6 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             "_jiuwenswarm_project_dir",
             self._project_dir or self._workspace_dir,
         )
-
-        _project_name = os.path.basename(self._project_dir) if self._project_dir else "default"
-        coding_memory_workspace_path = os.path.join("coding_memory", _project_name)
-        self._instance.deep_config.workspace.set_directory({
-            "name": "coding_memory",
-            "description": "Coding Agent 记忆模块",
-            "path": coding_memory_workspace_path,
-            "children": [
-                {
-                    "name": "MEMORY.md",
-                    "description": "Coding 记忆索引",
-                    "path": "MEMORY.md",
-                    "children": [],
-                    "is_file": True,
-                    "default_content": "",
-                },
-            ],
-        })
 
         # code 模式不传: vision_model_config, audio_model_config,
         # context_engine_config, completion_timeout
@@ -1502,7 +1551,8 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             or react_config.get("workspace_dir")
             or str(get_agent_workspace_dir())
         )
-        self._agent_workspace_dir = member_workspace_root or str(get_agent_workspace_dir())
+        # Coding memory is application data; keep it out of member/project cwd.
+        self._agent_workspace_dir = str(get_agent_workspace_dir())
         self._instance_overrides = {
             "agent_name": self._agent_name,
             "project_dir": self._project_dir,
@@ -1519,6 +1569,12 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
         tool_cards = self.build_code_tool_cards(agent_id)
         added_tools = _merge_tool_cards(agent, tool_cards)
 
+        _set_coding_memory_directory(
+            agent,
+            self._project_dir,
+            self._agent_workspace_dir,
+        )
+
         rails = self._build_agent_rails(react_config, config_base, mode="code")
         added_rails = sum(1 for rail in rails if _queue_rail_if_missing(agent, rail))
 
@@ -1530,7 +1586,6 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             if _queue_rail_if_missing(agent, subagent_rail):
                 added_rails += 1
 
-        _set_coding_memory_directory(agent, self._project_dir)
         setattr(agent, "_jiuwenswarm_adapter_mode", "code")
         setattr(agent, "_jiuwenswarm_code_project_dir", self._project_dir or self._workspace_dir)
         setattr(agent, "_jiuwenswarm_project_dir", self._project_dir or self._workspace_dir)
@@ -1652,30 +1707,19 @@ def _resolve_member_workspace_root(agent: Any) -> str | None:
     return None
 
 
-def _set_coding_memory_directory(agent: Any, project_dir: str | None) -> None:
+def _set_coding_memory_directory(
+    agent: Any,
+    project_dir: str | None,
+    agent_workspace_dir: str,
+) -> None:
     deep_config = getattr(agent, "deep_config", None)
     workspace = getattr(deep_config, "workspace", None)
-    set_directory = getattr(workspace, "set_directory", None)
-    if not callable(set_directory):
-        return
-
-    project_name = os.path.basename(project_dir) if project_dir else "default"
-    coding_memory_workspace_path = os.path.join("coding_memory", project_name)
-    set_directory({
-        "name": "coding_memory",
-        "description": "Coding Agent memory",
-        "path": coding_memory_workspace_path,
-        "children": [
-            {
-                "name": "MEMORY.md",
-                "description": "Coding memory",
-                "path": "MEMORY.md",
-                "children": [],
-                "is_file": True,
-                "default_content": "",
-            },
-        ],
-    })
+    _set_workspace_coding_memory_directory(
+        workspace,
+        project_dir=project_dir,
+        agent_workspace_dir=agent_workspace_dir,
+        description="Coding Agent memory",
+    )
 
 
 def configure_code_team_member_agent(
