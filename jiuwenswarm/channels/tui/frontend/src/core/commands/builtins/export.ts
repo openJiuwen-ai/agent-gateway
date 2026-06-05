@@ -126,7 +126,7 @@ export function createExportCommand(): SlashCommand {
     usage: "/export [filename]",
     example: "/export my-chat.txt",
     kind: CommandKind.BUILT_IN,
-    hidden: true,
+    hidden: false,
     takesArgs: true,
     action: async (ctx, args) => {
       const content = renderEntriesToPlainText(ctx.entries);
@@ -187,7 +187,8 @@ export function createExportCommand(): SlashCommand {
         }
 
         if (method === "Copy to clipboard") {
-          if (!copyToClipboard(content)) {
+          const ok = await copyToClipboard(content);
+          if (!ok) {
             ctx.addItem(
               addError(ctx.sessionId, "Clipboard unavailable — try saving to file instead"),
             );
