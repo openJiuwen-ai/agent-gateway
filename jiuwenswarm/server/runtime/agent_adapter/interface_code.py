@@ -173,6 +173,25 @@ implementing the approved plan.
 </system-reminder>"""
 
 
+class JiuwenAgentModeRail(AgentModeRail):
+    """AgentModeRail preconfigured with jiuwenswarm's code plan-mode contract.
+
+    Bakes in the Claude-Code-aligned plan-mode behavior (switch_mode disabled,
+    static plan-mode system note, enter/exit plan instructions) so both the
+    legacy adapter path and the declarative swarm provider construct an
+    identical rail without duplicating configuration.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the rail with the fixed code plan-mode configuration."""
+        super().__init__(
+            allow_switch_mode=False,
+            plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
+            enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
+            exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
+        )
+
+
 # 名字 → 构建方法映射（rail/tool 名字与类方法名对照）
 _RAIL_BUILD_NAMES: dict[str, str] = {
     "SysOperationRail": "_build_filesystem_rail",
@@ -627,12 +646,7 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
         """构建 AgentModeRail（屏蔽 switch_mode + 静态 plan 提示词 + plan 指令进对话）."""
         try:
-            return AgentModeRail(
-                allow_switch_mode=False,
-                plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
-                enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
-                exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
-            )
+            return JiuwenAgentModeRail()
         except Exception as exc:
             logger.warning("[JiuwenClawCodeAdapter] AgentModeRail create failed: %s", exc)
             return None

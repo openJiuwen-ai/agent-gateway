@@ -158,8 +158,8 @@ class TestStructuredAskUserRailLifecycle:
         with patch("openjiuwen.harness.rails.interrupt.ask_user_rail.resolve_language", return_value="en"):
             rail.init(agent)
 
-        agent.ability_manager.add.assert_called_once()
-        added_card = agent.ability_manager.add.call_args[0][0]
+        agent.ability_manager.add_ability.assert_called_once()
+        added_card = agent.ability_manager.add_ability.call_args[0][0]
         assert added_card.name == "ask_user"
 
     @staticmethod
@@ -172,7 +172,7 @@ class TestStructuredAskUserRailLifecycle:
             rail.init(agent)
             rail.uninit(agent)
 
-        agent.ability_manager.remove.assert_called_once_with("ask_user")
+        agent.ability_manager.remove_ability.assert_called_once_with("ask_user")
 
     @staticmethod
     def test_init_uninit_clears_structured_tools():

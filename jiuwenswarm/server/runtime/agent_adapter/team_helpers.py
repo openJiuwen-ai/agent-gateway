@@ -728,14 +728,16 @@ async def process_team_message_stream(
         return
 
     try:
-        if deep_agent is None:
-            raise RuntimeError("DeepAgent not initialized")
         request_metadata = dict(request.metadata or {})
         if isinstance(getattr(request, "params", None), dict):
             request_metadata.setdefault("mode", request.params.get("mode"))
-        team_spec = await team_manager.get_enriched_team_spec(
+        resolved_mode = str(request_metadata.get("mode") or "").strip()
+        # Provider-based assembly: build members from the shared config source,
+        # no pre-built parent DeepAgent required.
+        team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
-            deep_agent=deep_agent,
+            mode=resolved_mode,
+            project_dir=request_metadata.get("project_dir"),
             request_id=rid,
             channel_id=channel_id,
             request_metadata=request_metadata,
