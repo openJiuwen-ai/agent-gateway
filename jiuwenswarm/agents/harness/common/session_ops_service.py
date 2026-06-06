@@ -187,6 +187,9 @@ def rewind_session(
         # 剥离 <file-content> 块（系统注入的文件元数据，非用户实际输入）
         removed_turn_content = re.sub(r"<file-content[^>]*>.*?</file-content>", "", raw, flags=re.DOTALL).strip()
 
+    # 在截断 history 之前，记录目标 turn 的时间戳（用于后续清理 file_ops）
+    cut_timestamp = history[cut_index].get("timestamp")
+
     result = truncate_history_records(session_id=session_id, cut_index=cut_index)
 
     from jiuwenswarm.server.runtime.session.session_metadata import update_session_metadata
@@ -195,6 +198,16 @@ def rewind_session(
         session_id=session_id,
         set_message_count=result["remaining_records"],
     )
+
+    # 清理 session-specific file_ops 日志，使 turn diff 显示与截断后的 history 一致
+    # 必须在 truncate_history_records 之后调用，但传入截断前获取的时间戳
+    if cut_timestamp is not None:
+        try:
+            from jiuwenswarm.server.utils.diff_service import get_diff_service
+
+            get_diff_service().truncate_file_ops_by_timestamp(session_id, cut_timestamp)
+        except Exception as exc:
+            logger.warning("rewind_session: failed to truncate file_ops: %s", exc)
 
     return {
         "session_id": session_id,

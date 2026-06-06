@@ -727,6 +727,78 @@ class DiffService:
         return files_to_restore
 
 
+    def truncate_file_ops_by_timestamp(self, session_id: str, cutoff_ts: float) -> None:
+        """截断 session-specific file_ops 日志，移除 timestamp >= cutoff_ts 的条目.
+
+        在 rewind 操作后调用，确保 file_ops 日志与截断后的 history.json 一致。
+        仅处理 session-specific 文件（文件名包含 session_id），不动全局 file_ops。
+
+        Args:
+            session_id: 会话 ID
+            cutoff_ts: 截断阈值（Unix timestamp），>= 此时间的条目将被移除
+        """
+
+        # 收集所有 session-specific file_ops 文件
+        file_ops_paths: list[Path] = []
+        for base_dir in (get_agent_workspace_dir(), get_user_workspace_dir()):
+            hist_dir = base_dir / ".agent_history"
+            if not hist_dir.is_dir():
+                continue
+            for f in hist_dir.iterdir():
+                if self._is_valid_file_ops_file(f.name, session_id, require_session=True):
+                    file_ops_paths.append(f)
+
+        # 也从项目目录扫描
+        project_dir = self._get_project_dir_from_metadata(session_id)
+        if project_dir:
+            project_hist_dir = Path(project_dir) / ".agent_history"
+            if project_hist_dir.is_dir():
+                for f in project_hist_dir.iterdir():
+                    if self._is_valid_file_ops_file(f.name, session_id, require_session=True):
+                        if f not in file_ops_paths:
+                            file_ops_paths.append(f)
+
+        for file_ops_path in file_ops_paths:
+            try:
+                data = json.loads(file_ops_path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    continue
+
+                truncated = False
+                new_data: dict[str, Any] = {}
+                for file_path, entries in data.items():
+                    if not isinstance(entries, list):
+                        continue
+                    filtered = []
+                    for e in entries:
+                        try:
+                            entry_ts = self._iso_to_timestamp(e.get("timestamp", ""))
+                        except (ValueError, TypeError):
+                            filtered.append(e)  # 无法解析的条目保留
+                            continue
+                        if entry_ts < cutoff_ts:
+                            filtered.append(e)
+                    if len(filtered) != len(entries):
+                        truncated = True
+                    if filtered:
+                        new_data[file_path] = filtered
+
+                if truncated:
+                    file_ops_path.write_text(
+                        json.dumps(new_data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    logger.info(
+                        "truncate_file_ops: cleaned %s (cutoff_ts=%s)",
+                        file_ops_path.name, cutoff_ts,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "truncate_file_ops: failed to process %s: %s",
+                    file_ops_path, exc,
+                )
+
+
 _diff_service: DiffService | None = None
 
 

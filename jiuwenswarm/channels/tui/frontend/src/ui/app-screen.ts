@@ -14,7 +14,7 @@ import {
   truncateToWidth,
 } from "@mariozechner/pi-tui";
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import { statSync, realpathSync } from "node:fs";
 import type { CliPiAppState } from "../app-state.js";
 import { openFileInEditor as openInExternalEditor } from "../core/utils/editor.js";
 import {
@@ -481,9 +481,14 @@ function wrapPlainText(text: string, width: number): string[] {
   return lines.length > 0 ? lines : [text.slice(0, maxWidth)];
 }
 
-function formatSessionTime(timestamp: number | undefined): string {
+function formatRelativeTime(timestamp: number | undefined): string {
   if (!timestamp) return "-";
-  return new Date(timestamp * 1000).toLocaleString();
+  const diff = Date.now() / 1000 - timestamp;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+  return new Date(timestamp * 1000).toLocaleDateString();
 }
 
 function getDisplayLabel(s: SessionMeta): string {
@@ -491,10 +496,13 @@ function getDisplayLabel(s: SessionMeta): string {
 }
 
 function sessionToSelectItem(s: SessionMeta): SelectItem {
+  const parts: string[] = [formatRelativeTime(s.last_message_at)];
+  const msgCount = s.message_count ?? 0;
+  if (msgCount > 0) parts.push(`${msgCount} msgs`);
   return {
     value: s.session_id,
     label: getDisplayLabel(s),
-    description: `${s.session_id} · msgs ${s.message_count ?? 0} · ${formatSessionTime(s.last_message_at)}`,
+    description: parts.join(" · "),
   };
 }
 
@@ -505,7 +513,11 @@ function buildResumeSessionItems(sessions: SessionMeta[]): SelectItem[] {
 function filterResumeSessions(sessions: SessionMeta[], query: string): SelectItem[] {
   const normalizedQuery = query.toLowerCase();
   return sessions
-    .filter((s) => getDisplayLabel(s).toLowerCase().includes(normalizedQuery))
+    .filter((s) => {
+      const label = getDisplayLabel(s).toLowerCase();
+      const sid = s.session_id.toLowerCase();
+      return label.includes(normalizedQuery) || sid.includes(normalizedQuery);
+    })
     .map(sessionToSelectItem);
 }
 
@@ -1754,10 +1766,33 @@ export class AppScreen implements Component, Focusable {
     if (!nextSessionId) {
       return;
     }
-    // 在清空 resumeSessionList 之前获取 accent_color
+    // 在清空 resumeSessionList 之前获取 accent_color 和项目信息
     const sessions = this.resumeSessionList?.sessions ?? [];
     const matchedSession = sessions.find((s) => s.session_id === nextSessionId);
     const accentColor = matchedSession?.accent_color ?? "default";
+
+    // 跨项目恢复保护（对齐 Claude Code checkCrossProjectResume）
+    // 使用 realpathSync 规范化路径以处理 macOS 符号链接（如 /tmp → /private/tmp）
+    let currentProject = (getCurrentProjectDir() || process.cwd()).trim();
+    let sessionProject = (matchedSession?.project_dir || "").trim();
+    try { currentProject = realpathSync(currentProject); } catch { /* path may not exist */ }
+    if (sessionProject) {
+      try { sessionProject = realpathSync(sessionProject); } catch { /* path may not exist */ }
+    }
+    if (sessionProject && currentProject && sessionProject !== currentProject
+        && !sessionProject.startsWith(currentProject + "/")
+        && !currentProject.startsWith(sessionProject + "/")) {
+      this.resumeSessionList = null;
+      const dirName = sessionProject.split("/").pop() || sessionProject;
+      this.state.addItem(addInfo(
+        this.state.getSnapshot().sessionId,
+        `Session belongs to project "${dirName}". Please cd to that directory first.`,
+        "r",
+      ));
+      this.tui.requestRender();
+      return;
+    }
+
     this.resumeSessionList = null;
     this.state.updateSession(nextSessionId);
     this.state.clearEntries();

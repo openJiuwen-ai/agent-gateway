@@ -10,6 +10,8 @@ export interface SessionMeta {
   created_at?: number;
   last_message_at?: number;
   message_count?: number;
+  /** 会话所属项目目录（由 gateway 从 channel_metadata 中提取） */
+  project_dir?: string;
 }
 
 export interface SessionListPayload {

@@ -984,9 +984,63 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(resp.payload, dict)
             else []
         )
-        cli_sessions = [
-            s for s in all_sessions if s.get("channel_id", "") == "tui"
-        ][:limit]
+        # 按项目目录过滤 + 排除当前会话（对齐 Claude Code /resume 行为）
+        project_dir = (
+            str(params.get("project_dir", "")).strip()
+            if isinstance(params, dict) else ""
+        )
+        # 规范化路径以处理 macOS 符号链接（如 /tmp → /private/tmp）
+        if project_dir:
+            try:
+                project_dir = os.path.realpath(project_dir)
+            except OSError:
+                pass
+        current_sid = str(session_id or "").strip()
+
+        def _session_matches_project(s):
+            if not project_dir:
+                return True
+            ch_meta = s.get("channel_metadata") or {}
+            session_project = (
+                ch_meta.get("project_dir") or ch_meta.get("cwd") or ""
+            ).strip()
+            if not session_project:
+                return True  # 无项目信息的会话作为兜底保留
+            try:
+                session_project = os.path.realpath(session_project)
+            except OSError:
+                pass
+            return (
+                session_project == project_dir
+                or session_project.startswith(project_dir + "/")
+            )
+
+        cli_sessions = []
+        for s in all_sessions:
+            if s.get("channel_id", "") != "tui":
+                continue
+            if not _session_matches_project(s):
+                continue
+            if s.get("session_id", "") == current_sid:
+                continue
+            cli_sessions.append(s)
+        # 按 last_message_at 降序排序（最近活跃优先）
+        cli_sessions.sort(
+            key=lambda s: s.get("last_message_at", 0) or 0, reverse=True
+        )
+        cli_sessions = cli_sessions[:limit]
+
+        # 附带每个会话的 project_dir 供前端判断跨项目恢复
+        for s in cli_sessions:
+            ch_meta = s.get("channel_metadata") or {}
+            sp = (ch_meta.get("project_dir") or ch_meta.get("cwd") or "").strip()
+            if sp:
+                try:
+                    sp = os.path.realpath(sp)
+                except OSError:
+                    pass
+            s["project_dir"] = sp
+
         await channel.send_response(ws, req_id, ok=True, payload={"sessions": cli_sessions})
 
     async def _session_create(ws, req_id, params, session_id):
