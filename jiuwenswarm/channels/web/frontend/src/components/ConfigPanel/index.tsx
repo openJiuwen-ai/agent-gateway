@@ -136,7 +136,6 @@ interface AgentEntry {
   name: string;
   model: AgentModel;
   skills: string[];
-  completion_timeout: number;
 }
 
 interface Teammate {
@@ -191,7 +190,6 @@ interface ConfigPanelProps {
     agents: Record<string, {
       model: { provider: string; api_base: string; api_key: string; model: string };
       skills: string[];
-      completion_timeout: number;
     }>;
     team: Array<{
       team_name: string;
@@ -209,7 +207,6 @@ interface AgentsTeamsPayload {
   agents: Record<string, {
     model: { provider: string; api_base: string; api_key: string; model: string };
     skills: string[];
-    completion_timeout: number;
   }>;
   team: Array<{
     team_name: string;
@@ -282,7 +279,7 @@ function getFieldLengthErrorKey(field: keyof ModelEntry, value: string): string 
       return null;
   }
 }
-const AGENT_KEYS = new Set(["name", "model", "skills", "completion_timeout"]);
+const AGENT_KEYS = new Set(["name", "model", "skills"]);
 const TEAM_KEYS = new Set(["team_name", "lifecycle", "teammate_mode", "spawn_mode"]);
 const FREE_SEARCH_BOOLEAN_KEYS = new Set(["free_search_ddg_enabled", "free_search_bing_enabled"]);
 const FREE_SEARCH_KEYS = new Set([...FREE_SEARCH_BOOLEAN_KEYS]);
@@ -531,7 +528,6 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   name: "config.keys.agentName",
   model: "config.keys.agentModel",
   skills: "config.keys.agentSkills",
-  completion_timeout: "config.keys.agentCompletionTimeout",
 };
 const KEY_PLACEHOLDER_I18N: Record<string, string> = {
   memory_forbidden_description: "config.keys.memoryForbiddenDescriptionPlaceholder",
@@ -550,7 +546,6 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   memory_forbidden_description: 1,
   model: 0,
   skills: 1,
-  completion_timeout: 3,
 };
 
 function getKeyDisplayLabel(key: string, t: (key: string) => string): string {
@@ -1265,34 +1260,11 @@ function MultiAgentSection({
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
   const [newAgentError, setNewAgentError] = useState<string | null>(null);
-  const [timeoutInputDraft, setTimeoutInputDraft] = useState<Record<number, string>>({});
-  const [newTimeoutDraft, setNewTimeoutDraft] = useState<string | null>(null);
   const [newAgent, setNewAgent] = useState<AgentEntry>({
     name: "",
     model: { provider: "", api_base: "", api_key: "", model: "" },
     skills: [],
-    completion_timeout: 60,
   });
-
-  const normalizeTimeoutInput = (input: string): string => {
-    let raw = input.replace(/[^0-9.]/g, "");
-    const parts = raw.split(".");
-    if (parts.length > 2) {
-      raw = parts[0] + "." + parts.slice(1).join("");
-    }
-    if (parts.length === 2) {
-      parts[0] = parts[0].replace(/^0+(?=\d)/, "");
-      raw = (parts[0] || "0") + "." + parts[1];
-    } else if (raw.length > 0 && !raw.startsWith("0.")) {
-      raw = raw.replace(/^0+(?=\d)/, "");
-    }
-    return raw;
-  };
-
-  const parseTimeoutValue = (raw: string, defaultValue = 0.1): number => {
-    const v = parseFloat(raw);
-    return isNaN(v) || v <= 0 ? defaultValue : v;
-  };
 
   // 检查 agent 是否被 team 引用
   const getAgentReferences = (agentName: string): string[] => {
@@ -1403,10 +1375,10 @@ function MultiAgentSection({
     onAgentsChange([...agents, { ...newAgent, name }]);
     setExpandedIdx(agents.length);
     setAddingNew(false);
-    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [], completion_timeout: 60 });
+    setNewAgent({ name: "", model: { provider: "", api_base: "", api_key: "", model: "" }, skills: [] });
   };
 
-  const agentFields: (keyof AgentEntry)[] = ["name", "skills", "completion_timeout"];
+  const agentFields: (keyof AgentEntry)[] = ["name", "skills"];
 
   // Agent 必填字段
   const AGENT_REQUIRED_FIELDS = new Set(["name"]);
@@ -1499,22 +1471,6 @@ function MultiAgentSection({
                         placeholder={t("config.keys.agentSkillsPlaceholder")}
                         emptyMessage={t("config.keys.agentSkillsEmpty")}
                       />
-                    ) : field === "completion_timeout" ? (
-                      <input
-                        type="text"
-                        value={timeoutInputDraft[idx] ?? String(agent[field] ?? 60)}
-                        onChange={(e) => setTimeoutInputDraft((prev) => ({ ...prev, [idx]: normalizeTimeoutInput(e.target.value) }))}
-                        onBlur={() => {
-                          const raw = timeoutInputDraft[idx] ?? String(agent[field] ?? 60);
-                          updateAgentField(idx, field, parseTimeoutValue(raw));
-                          setTimeoutInputDraft((prev) => {
-                            const next = { ...prev };
-                            delete next[idx];
-                            return next;
-                          });
-                        }}
-                        className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
-                      />
                     ) : (
                       <input
                         type="text"
@@ -1601,18 +1557,6 @@ function MultiAgentSection({
                   onChange={(selected) => setNewAgent((p) => ({ ...p, skills: selected }))}
                   placeholder={t("config.keys.agentSkillsPlaceholder")}
                   emptyMessage={t("config.keys.agentSkillsEmpty")}
-                />
-              ) : field === "completion_timeout" ? (
-                <input
-                  type="text"
-                  value={newTimeoutDraft ?? String(newAgent[field] ?? 60)}
-                  onChange={(e) => setNewTimeoutDraft(normalizeTimeoutInput(e.target.value))}
-                  onBlur={() => {
-                    const raw = newTimeoutDraft ?? String(newAgent.completion_timeout ?? 60);
-                    setNewAgent((p) => ({ ...p, completion_timeout: parseTimeoutValue(raw) }));
-                    setNewTimeoutDraft(null);
-                  }}
-                  className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
                 />
               ) : (
                 <input
@@ -2538,7 +2482,6 @@ export function ConfigPanel({
           model: matchedModel.model_name || "",
         } : { provider: "", api_base: "", api_key: "", model: modelName },
         skills: (normalizedConfig[`agent_skills_${i}`] || normalizedConfig[`agent_${i}_skills`] || "").split(/[,，]/).map((s: string) => s.trim()).filter(Boolean),
-        completion_timeout: Number(normalizedConfig[`agent_completion_timeout_${i}`]) ?? Number(normalizedConfig[`agent_${i}_completion_timeout`]) ?? 60,
       });
     }
     return agents;
@@ -2725,7 +2668,6 @@ export function ConfigPanel({
       const ia = initialAgents[i];
       if (!ia) return true;
       if (da.name !== ia.name) return true;
-      if (da.completion_timeout !== ia.completion_timeout) return true;
       if (da.skills.length !== ia.skills.length || da.skills.some((s, j) => s !== ia.skills[j])) return true;
       if (da.model.provider !== ia.model.provider || da.model.api_base !== ia.model.api_base
           || da.model.api_key !== ia.model.api_key || da.model.model !== ia.model.model) return true;
@@ -2898,7 +2840,6 @@ export function ConfigPanel({
       agentsPayload[agent.name] = {
         model: { ...agent.model },
         skills: agent.skills,
-        completion_timeout: agent.completion_timeout,
       };
     }
     const validAgentKeys = new Set(Object.keys(agentsPayload));
@@ -2924,7 +2865,8 @@ export function ConfigPanel({
   };
 
   const updateCacheAfterSave = () => {
-    saveCachedAgentsTeams(draftAgents, draftTeams);
+    clearCachedAgentsTeams();
+    setAgentsTeamsEdited(false);
     setAgentsTeamsUserEdited(false);
   };
 

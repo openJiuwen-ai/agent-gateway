@@ -675,7 +675,6 @@
       "agentName": "Name",
       "agentModel": "Model",
       "agentSkills": "Skills",
-      "agentCompletionTimeout": "Completion Timeout",
       "teamName": "Team Name",
       "teamLifecycle": "Lifecycle",
       "teamTeammateMode": "Teammate Mode",

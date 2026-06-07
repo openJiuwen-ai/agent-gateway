@@ -61,7 +61,6 @@ type AgentsTeamsSavePayload = {
   agents: Record<string, {
     model: { provider: string; api_base: string; api_key: string; model: string };
     skills: string[];
-    completion_timeout: number;
   }>;
   team: Array<{
     team_name: string;
@@ -588,13 +587,11 @@ function AppContent() {
       updates[`agent_name_${idx}`] = name;
       updates[`agent_model_${idx}`] = agent.model.model;
       updates[`agent_skills_${idx}`] = agent.skills.join(',');
-      updates[`agent_completion_timeout_${idx}`] = String(agent.completion_timeout);
     });
     for (let i = agentCount; i < 10; i++) {
       updates[`agent_name_${i}`] = "";
       updates[`agent_model_${i}`] = "";
       updates[`agent_skills_${i}`] = "";
-      updates[`agent_completion_timeout_${i}`] = "";
     }
     payload.team.forEach((team, idx) => {
       updates[`team_name_${idx}`] = team.team_name;
