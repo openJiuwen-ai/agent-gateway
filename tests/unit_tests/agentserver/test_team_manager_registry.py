@@ -913,3 +913,24 @@ def test_resolve_session_team_name_returns_none_when_metadata_missing(
     team_name = manager.resolve_session_team_name_for_test("sess-missing")
 
     assert team_name is None
+
+
+def test_register_workflow_handler() -> None:
+    tm = TeamManager()
+    fake_handler = type("FakeWorkflowHandler", (), {"session_id": "sess_1"})()
+    tm.register_workflow_handler("sess_1", fake_handler)
+    assert tm.get_workflow_handler("sess_1") is fake_handler
+
+
+def test_pop_workflow_handler() -> None:
+    tm = TeamManager()
+    fake_handler = type("FakeWorkflowHandler", (), {"session_id": "sess_1"})()
+    tm.register_workflow_handler("sess_1", fake_handler)
+    popped = tm.pop_workflow_handler("sess_1")
+    assert popped is fake_handler
+    assert tm.get_workflow_handler("sess_1") is None
+
+
+def test_get_workflow_handler_returns_none_for_unknown() -> None:
+    tm = TeamManager()
+    assert tm.get_workflow_handler("unknown_sess") is None

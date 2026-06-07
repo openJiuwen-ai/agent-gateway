@@ -886,6 +886,7 @@ modes:
       lifecycle: persistent
       teammate_mode: build_mode
       spawn_mode: inprocess
+      enable_swarmflow: false
 
       leader:
         member_name: team-leader

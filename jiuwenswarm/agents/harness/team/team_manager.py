@@ -45,7 +45,7 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
     runtime_role,
     try_start_pg_cluster,
 )
-from jiuwenswarm.agents.harness.team.monitor_handler import TeamMonitorHandler
+from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
 from jiuwenswarm.agents.harness.team.team_skill_links import sync_skill_dir_links
 from jiuwenswarm.common.config import get_config, get_default_models
@@ -135,6 +135,8 @@ class TeamManager:
         self._team_evolution_watchers: dict[str, asyncio.Task] = {}
         # session_id -> team workspace skills directory used as the shared link view.
         self._team_shared_skill_link_targets: dict[str, Path] = {}
+        # session_id → workflow handler instance
+        self._workflow_handlers: dict[str, Any] = {}
 
     def has_stream_task(self, session_id: str) -> bool:
         return session_id in self._stream_tasks
@@ -948,6 +950,15 @@ class TeamManager:
     def register_monitor(self, session_id: str, handler: TeamMonitorHandler) -> None:
         self._team_monitors[session_id] = handler
 
+    def register_workflow_handler(self, session_id: str, handler: Any) -> None:
+        self._workflow_handlers[session_id] = handler
+
+    def get_workflow_handler(self, session_id: str) -> Any | None:
+        return self._workflow_handlers.get(session_id)
+
+    def pop_workflow_handler(self, session_id: str) -> Any | None:
+        return self._workflow_handlers.pop(session_id, None)
+
     def register_stream_task(self, session_id: str, task: asyncio.Task) -> None:
         self._stream_tasks[session_id] = task
 
@@ -1164,6 +1175,17 @@ class TeamManager:
             except Exception as exc:
                 logger.warning(
                     "[TeamManager] monitor stop failed: session_id=%s error=%s",
+                    session_id,
+                    exc,
+                )
+
+        workflow_handler = self.pop_workflow_handler(session_id)
+        if workflow_handler is not None:
+            try:
+                await workflow_handler.stop()
+            except Exception as exc:
+                logger.warning(
+                    "[TeamManager] workflow handler stop failed: session_id=%s error=%s",
                     session_id,
                     exc,
                 )

@@ -62,6 +62,7 @@ import {
   getCurrentCwd,
 } from "./core/tui-trusted-dirs-store.js";
 import { loadTuiConfig, type StatusLineSetting } from "./core/tui-config-store.js";
+import { applyWorkflowUpdate, type WorkflowRun } from "./core/workflows.js";
 import { execFile, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,6 +115,7 @@ export interface AppSnapshot {
   teamMemberEvents: TeamMemberEvent[];
   teamTaskEvents: TeamTaskEvent[];
   teamMessageEvents: TeamMessageEvent[];
+  workflowRuns: WorkflowRun[];
   evolutionStatus: "idle" | "running";
   contextCompression: ContextCompressionStats | null;
   contextWindowLimit: number | null;
@@ -150,6 +152,30 @@ const LOCAL_FILE_SEARCH_TOOL_NAMES = new Set([
   "rg",
   "ripgrep",
   "search",
+]);
+
+const DEFERRED_TRANSCRIPT_EVENTS = new Set([
+  "chat.delta",
+  "chat.final",
+  "chat.reasoning",
+  "chat.error",
+  "chat.tool_call",
+  "chat.tool_result",
+  "chat.interrupt_result",
+  "chat.ask_user_question",
+  "chat.media",
+  "chat.file",
+  "chat.subtask_update",
+  "chat.session_result",
+  "session_result",
+  "history.message",
+  "context.compression_state",
+  "todo.updated",
+  "team.member",
+  "team.task",
+  "team.message",
+  "harness.extension_ready",
+  "harness.activate_interaction",
 ]);
 
 // ── Auto-recap (自动回顾) 常量 ──
@@ -200,6 +226,7 @@ export class CliPiAppState {
   private teamMemberEvents: TeamMemberEvent[] = [];
   private teamTaskEvents: TeamTaskEvent[] = [];
   private teamMessageEvents: TeamMessageEvent[] = [];
+  private workflowRuns: WorkflowRun[] = [];
   private evolutionStatus: "idle" | "running" = "idle";
   private contextCompression: ContextCompressionStats | null = null;
   private contextWindowLimit: number | null = null;
@@ -261,6 +288,8 @@ export class CliPiAppState {
   private harnessExtensionReady: HarnessExtensionReady | null = null;
   /** Harness activate interaction state (for user confirmation) */
   private harnessActivateInteraction: HarnessActivateInteraction | null = null;
+  private deferTranscriptFrames = false;
+  private deferredTranscriptFrames: EventFrame[] = [];
   private readonly eventDelegate: AppEventDelegate = {
     getConnectionStatus: () => this.connectionStatus,
     getSessionId: () => this.sessionId,
@@ -299,6 +328,9 @@ export class CliPiAppState {
     },
     appendTeamMessageEvent: (event) => {
       this.teamMessageEvents = [...this.teamMessageEvents.slice(-99), event];
+    },
+    applyWorkflowUpdate: (workflow) => {
+      this.applyWorkflowUpdate(workflow);
     },
     setEvolutionStatus: (status) => {
       this.evolutionStatus = status;
@@ -623,6 +655,16 @@ export class CliPiAppState {
       teamMemberEvents: [...this.teamMemberEvents],
       teamTaskEvents: [...this.teamTaskEvents],
       teamMessageEvents: [...this.teamMessageEvents],
+      workflowRuns: this.workflowRuns.map((workflow) => ({
+        ...workflow,
+        phases: workflow.phases.map((phase) => ({
+          ...phase,
+          agents: phase.agents.map((agent) => ({
+            ...agent,
+            activity: agent.activity ? [...agent.activity] : undefined,
+          })),
+        })),
+      })),
       evolutionStatus: this.evolutionStatus,
       contextCompression: this.contextCompression ? { ...this.contextCompression } : null,
       contextWindowLimit: this.contextWindowLimit,
@@ -817,10 +859,53 @@ export class CliPiAppState {
     }
   };
 
+  readonly loadWorkflowSnapshot = async (sessionId = this.sessionId): Promise<void> => {
+    const payload = await this.request<{
+      type?: string;
+      workflows?: unknown[];
+      session_id?: string;
+    }>(
+      "command.workflows",
+      {
+        action: "list",
+        session_id: sessionId,
+      },
+      10000,
+    );
+    this.applyWorkflowSnapshotPayload(payload);
+  };
+
+  readonly applyWorkflowSnapshotPayload = (payload: {
+    type?: unknown;
+    workflows?: unknown;
+    [key: string]: unknown;
+  }): void => {
+    const workflows = Array.isArray(payload.workflows) ? payload.workflows : [];
+    if (payload.type !== "workflow_run_snapshot" && workflows.length === 0) {
+      return;
+    }
+    this.setWorkflowRuns(
+      workflows.filter((item): item is WorkflowRun =>
+        Boolean(item && typeof item === "object" && !Array.isArray(item) && "id" in item),
+      ),
+    );
+  };
+
+  readonly setWorkflowRuns = (workflows: WorkflowRun[]): void => {
+    this.workflowRuns = workflows;
+    this.emitChange();
+  };
+
+  readonly applyWorkflowUpdate = (workflow: WorkflowRun): void => {
+    this.workflowRuns = applyWorkflowUpdate(this.workflowRuns, workflow);
+    this.emitChange();
+  };
+
   readonly updateSession = (newId: string): void => {
     this.sessionId = newId;
     this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
+    this.workflowRuns = [];
     if (this.accentColor !== "default") {
       this.accentColor = "default";
       setCurrentAccentColor("default");
@@ -860,6 +945,26 @@ export class CliPiAppState {
     this.emitChange();
   };
 
+  readonly beginDeferredTranscript = (): void => {
+    this.deferTranscriptFrames = true;
+  };
+
+  readonly flushDeferredTranscript = (): void => {
+    if (!this.deferTranscriptFrames && this.deferredTranscriptFrames.length === 0) {
+      return;
+    }
+    this.deferTranscriptFrames = false;
+    const frames = this.deferredTranscriptFrames;
+    this.deferredTranscriptFrames = [];
+    let changed = false;
+    for (const frame of frames) {
+      changed = handleIncomingFrame(this.eventDelegate, frame) || changed;
+    }
+    if (changed) {
+      this.emitChange();
+    }
+  };
+
   readonly clearEntries = (): void => {
     if (this.localPendingQuestion) {
       this.localPendingQuestion.reject(new Error("input flow was interrupted"));
@@ -885,6 +990,8 @@ export class CliPiAppState {
     this.historyPageDoneResolvers.clear();
     this.harnessExtensionReady = null;
     this.harnessActivateInteraction = null;
+    this.deferTranscriptFrames = false;
+    this.deferredTranscriptFrames = [];
     this.emitChange();
   };
 
@@ -2156,9 +2263,26 @@ export class CliPiAppState {
       return;
     }
     const typedFrame = frame as EventFrame;
+    if (this.shouldDeferTranscriptFrame(typedFrame)) {
+      this.deferredTranscriptFrames.push(typedFrame);
+      return;
+    }
     if (handleIncomingFrame(this.eventDelegate, typedFrame)) {
       this.emitChange();
     }
+  }
+
+  private shouldDeferTranscriptFrame(frame: EventFrame): boolean {
+    if (!this.deferTranscriptFrames) {
+      return false;
+    }
+    const payload = frame.payload;
+    const effectiveEvent = typeof payload.event_type === "string" ? payload.event_type : frame.event;
+    if (!DEFERRED_TRANSCRIPT_EVENTS.has(effectiveEvent)) {
+      return false;
+    }
+    const eventSessionId = typeof payload.session_id === "string" ? payload.session_id : "";
+    return !eventSessionId || eventSessionId === this.sessionId;
   }
 
   private scheduleHistoryFlush(): void {

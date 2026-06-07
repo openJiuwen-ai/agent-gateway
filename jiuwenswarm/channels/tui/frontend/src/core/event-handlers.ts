@@ -26,6 +26,7 @@ import {
 import type { ConnectionStatus } from "./ws-client.js";
 import { createId, findLastIndex, isIgnorableHistoryRestoreError } from "./app-state-helpers.js";
 import { isClientMode, type ClientMode } from "./modes.js";
+import type { WorkflowRun } from "./workflows.js";
 
 type PreferredLanguage = "zh" | "en";
 
@@ -98,6 +99,7 @@ export interface AppEventDelegate {
   appendTeamMemberEvent(event: TeamMemberEvent): void;
   appendTeamTaskEvent(event: TeamTaskEvent): void;
   appendTeamMessageEvent(event: TeamMessageEvent): void;
+  applyWorkflowUpdate(workflow: WorkflowRun): void;
   setEvolutionStatus(status: "idle" | "running"): void;
   setContextCompression(stats: ContextCompressionStats | null): void;
   setContextWindowLimit(n: number | null): void;
@@ -1041,6 +1043,22 @@ function handleTeamMessageEvent(
   return true;
 }
 
+function handleWorkflowUpdated(
+  delegate: AppEventDelegate,
+  payload: Record<string, unknown>,
+): boolean {
+  const normalized = normalizeNestedPayload(payload);
+  const workflow = normalized.workflow;
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) {
+    return false;
+  }
+  if (typeof (workflow as Record<string, unknown>).id !== "string") {
+    return false;
+  }
+  delegate.applyWorkflowUpdate(workflow as unknown as WorkflowRun);
+  return true;
+}
+
 export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFrame): boolean {
   const connectionChanged = handleConnectionAck(delegate, frame);
 
@@ -1233,6 +1251,9 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
 
     case "team.message":
       return handleTeamMessageEvent(delegate, payload);
+
+    case "workflow.updated":
+      return handleWorkflowUpdated(delegate, payload);
 
     case "chat.usage_summary":
       delegate.appendUsageSummary(

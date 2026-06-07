@@ -46,6 +46,14 @@ import { buildModeAutocompleteItems } from "../core/commands/builtins/mode.js";
 import { PIPELINE_VALUES, PIPELINE_OPTIONS, INTERVAL_VALUES, INTERVAL_OPTIONS, FLAG_OPTIONS } from "../core/commands/builtins/auto-harness.js";
 import { isTeamMode } from "../core/modes.js";
 import {
+  countCompletedWorkflowAgents,
+  countWorkflowAgents,
+  findWorkflowAgent,
+  workflowStatusIcon,
+  type WorkflowRun,
+  type WorkflowStatus,
+} from "../core/workflows.js";
+import {
   addTrustedDir,
   getCurrentCwd,
   getCurrentProjectDir,
@@ -198,6 +206,25 @@ type StatusViewState = {
   statusPayload: import("../core/commands/builtins/status.js").StatusPayload | null;
   configPayload: (Record<string, unknown> & { schema?: ConfigItemSchema[] }) | null;
 };
+
+type SwarmWorkflowsViewState =
+  | {
+      phase: "list";
+      list: SelectList;
+    }
+  | {
+      phase: "workflow";
+      workflowId: string;
+      selectedPhaseId: string;
+      focus: "phases" | "agents";
+      phaseList: SelectList;
+      agentList: SelectList;
+    }
+  | {
+      phase: "agent";
+      workflowId: string;
+      agentId: string;
+    };
 
 // FileViewer state for viewing large content (e.g., formatted logs)
 type FileViewerState = {
@@ -481,6 +508,35 @@ function wrapPlainText(text: string, width: number): string[] {
   return lines.length > 0 ? lines : [text.slice(0, maxWidth)];
 }
 
+function workflowStatusTone(status: WorkflowStatus): (value: string) => string {
+  switch (status) {
+    case "planned":
+    case "pending":
+      return palette.status.warning;
+    case "running":
+      return palette.status.info;
+    case "completed":
+      return palette.status.success;
+    case "failed":
+      return palette.status.error;
+    case "stopped":
+      return palette.text.dim;
+    default:
+      return palette.text.dim;
+  }
+}
+
+function formatWorkflowStatus(status: WorkflowStatus): string {
+  return workflowStatusTone(status)(`${workflowStatusIcon(status)} ${status}`);
+}
+
+function formatWorkflowElapsed(startedAt: number): string {
+  const totalSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
 function formatRelativeTime(timestamp: number | undefined): string {
   if (!timestamp) return "-";
   const diff = Date.now() / 1000 - timestamp;
@@ -614,6 +670,7 @@ export class AppScreen implements Component, Focusable {
   private themeList: ThemeListState | null = null;
   private configEditorState: ConfigEditorState | null = null;
   private statusViewState: StatusViewState | null = null;
+  private swarmWorkflowsViewState: SwarmWorkflowsViewState | null = null;
   private startupPromptList: SelectList | null = null;
   private todosCollapsed = false;
   private showTeamPanel = false;
@@ -910,6 +967,7 @@ export class AppScreen implements Component, Focusable {
       this.modelList !== null ||
       this.toolSelector !== null ||
       this.themeList !== null ||
+      this.swarmWorkflowsViewState !== null ||
       this.configEditorState !== null;
 
     if (!pendingQuestion && !hasOverlay && this.handleTranscriptScrollInput(data)) {
@@ -1148,6 +1206,11 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
+    if (!snapshot.pendingQuestion && this.swarmWorkflowsViewState !== null) {
+      this.handleSwarmWorkflowsInput(data);
+      return;
+    }
+
     if (!snapshot.pendingQuestion && this.showTeamPanel) {
       if (matchesKey(data, "left")) {
         this.viewedTeamMemberId = null;
@@ -1242,6 +1305,8 @@ export class AppScreen implements Component, Focusable {
       ...this.buildMcpToolsLines(width),
       ...this.buildMcpToolDetailLines(width),
       ...this.buildThemeListLines(width),
+      ...(this.swarmWorkflowsViewState ? [] : this.buildWorkflowRuntimeLines(width)),
+      ...this.buildSwarmWorkflowsLines(width),
       ...this.buildPendingQuestionLines(snapshot, width),
     ];
     const showFullThinking = snapshot.transcriptMode === "detailed";
@@ -1519,6 +1584,14 @@ export class AppScreen implements Component, Focusable {
         this.openThemeList();
         return;
       }
+      const swarmFlowsMatch = text.match(/^\/(?:swarmflows|swarmworkflows)\s*$/);
+      if (swarmFlowsMatch) {
+        this.editor.addToHistory(text);
+        this.editor.setText("");
+        this.state.addItem(addCommandEcho(snapshot.sessionId, text));
+        await this.enterSwarmWorkflowsView();
+        return;
+      }
       this.beginPendingSubmittedInput(text, snapshot);
       this.editor.addToHistory(text);
       this.editor.setText("");
@@ -1628,6 +1701,7 @@ export class AppScreen implements Component, Focusable {
       this.clearCtrlCPendingForQuestion();
     }
     this.syncTeamPanelSelection(snapshot);
+    this.refreshSwarmWorkflowsView();
     this.syncAnimationLoop(snapshot);
     // Sync terminal window title with session title when it changes
     if (snapshot.sessionTitle !== this.previousSessionTitle) {
@@ -1798,6 +1872,11 @@ export class AppScreen implements Component, Focusable {
     this.state.clearEntries();
     this.state.setAccentColor(accentColor);
     await this.state.restoreHistory(nextSessionId);
+    try {
+      await this.state.loadWorkflowSnapshot(nextSessionId);
+    } catch {
+      // Workflow snapshots are optional for sessions without workflow state.
+    }
     // 异步获取被恢复会话的标题并更新终端窗口标题
     void (async () => {
       try {
@@ -2526,6 +2605,433 @@ export class AppScreen implements Component, Focusable {
       ...this.themeList.list.render(width),
       padToWidth(palette.text.dim("↑/↓ choose · Enter to select · Esc to cancel"), width),
     ];
+  }
+
+  private async openSwarmWorkflowsView(): Promise<void> {
+    try {
+      await this.state.loadWorkflowSnapshot();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.state.addItem(
+        addError(this.state.getSnapshot().sessionId, `workflow list failed: ${message}`),
+      );
+    }
+    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+    this.tui.requestRender();
+  }
+
+  private async enterSwarmWorkflowsView(): Promise<void> {
+    this.state.beginDeferredTranscript();
+    await this.openSwarmWorkflowsView();
+  }
+
+  private closeSwarmWorkflowsView(): void {
+    if (!this.swarmWorkflowsViewState) return;
+    this.swarmWorkflowsViewState = null;
+    this.state.flushDeferredTranscript();
+    this.tui.requestRender();
+  }
+
+  private refreshSwarmWorkflowsView(): void {
+    const current = this.swarmWorkflowsViewState;
+    if (!current) return;
+    if (current.phase === "list") {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      return;
+    }
+    if (current.phase === "workflow") {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+        current.workflowId,
+        current.selectedPhaseId,
+        current.focus,
+      );
+      return;
+    }
+    const lookup = findWorkflowAgent(
+      this.state.getSnapshot().workflowRuns,
+      current.workflowId,
+      current.agentId,
+    );
+    if (!lookup) {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+    } else {
+      this.swarmWorkflowsViewState = {
+        phase: "agent",
+        workflowId: lookup.workflow.id,
+        agentId: lookup.agent.id,
+      };
+    }
+  }
+
+  private buildSwarmWorkflowsListState(): SwarmWorkflowsViewState {
+    const workflows = this.state.getSnapshot().workflowRuns;
+    const items: SelectItem[] = workflows.map((workflow) => {
+      const total = workflow.agent_count ?? countWorkflowAgents(workflow);
+      const completed = workflow.completed_agent_count ?? countCompletedWorkflowAgents(workflow);
+      const progress = workflow.status === "running" ? `${completed}/${total}` : `${total}`;
+      return {
+        value: workflow.id,
+        label: `${formatWorkflowStatus(workflow.status)} ${workflow.name}`,
+        description: `${progress} agents`,
+      };
+    });
+    const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
+      minPrimaryColumnWidth: 24,
+      maxPrimaryColumnWidth: 42,
+    });
+    list.onSelect = (item) => {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(item.value);
+      this.tui.requestRender();
+    };
+    list.onCancel = () => {
+      this.closeSwarmWorkflowsView();
+    };
+    return { phase: "list", list };
+  }
+
+  private buildSwarmWorkflowDetailState(
+    workflowId: string,
+    selectedPhaseId?: string,
+    focus: "phases" | "agents" = "phases",
+  ): SwarmWorkflowsViewState {
+    const workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
+    if (!workflow) return this.buildSwarmWorkflowsListState();
+    const selectedPhase =
+      workflow.phases.find((phase) => phase.id === selectedPhaseId) ?? workflow.phases[0];
+    const activePhaseId = selectedPhase?.id ?? "";
+    const phaseItems: SelectItem[] = workflow.phases.map((phase) => {
+      const phaseTotal = phase.agent_count ?? phase.agents.length;
+      const phaseCompleted =
+        phase.completed_agent_count ??
+        phase.agents.filter((agent) => agent.status === "completed").length;
+      const selectedMark = phase.id === activePhaseId ? palette.text.accent("•") : " ";
+      return {
+        value: phase.id,
+        label: `${selectedMark} ${formatWorkflowStatus(phase.status)} ${phase.name}`,
+        description: `${phaseCompleted}/${phaseTotal}`,
+      };
+    });
+    const phaseList = new SelectList(
+      phaseItems,
+      Math.min(Math.max(phaseItems.length, 1), 8),
+      selectListTheme,
+      {
+        minPrimaryColumnWidth: 22,
+        maxPrimaryColumnWidth: 36,
+      },
+    );
+    phaseList.onSelect = (item) => {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+        workflowId,
+        item.value,
+        "agents",
+      );
+      this.tui.requestRender();
+    };
+    phaseList.onCancel = () => {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      this.tui.requestRender();
+    };
+
+    const agentItems: SelectItem[] = (selectedPhase?.agents ?? []).map((agent) => ({
+      value: agent.id,
+      label: `${formatWorkflowStatus(agent.status)} ${agent.name}`,
+      description: agent.model ?? "",
+    }));
+    const agentList = new SelectList(
+      agentItems,
+      Math.min(Math.max(agentItems.length, 1), 10),
+      selectListTheme,
+      {
+        minPrimaryColumnWidth: 24,
+        maxPrimaryColumnWidth: 44,
+      },
+    );
+    agentList.onSelect = (item) => {
+      this.swarmWorkflowsViewState = {
+        phase: "agent",
+        workflowId,
+        agentId: item.value,
+      };
+      this.tui.requestRender();
+    };
+    agentList.onCancel = () => {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+        workflowId,
+        activePhaseId,
+        "phases",
+      );
+      this.tui.requestRender();
+    };
+    return {
+      phase: "workflow",
+      workflowId,
+      selectedPhaseId: activePhaseId,
+      focus,
+      phaseList,
+      agentList,
+    };
+  }
+
+  private handleSwarmWorkflowsInput(data: string): void {
+    const state = this.swarmWorkflowsViewState;
+    if (!state) return;
+    if (matchesKey(data, "escape")) {
+      if (state.phase === "list") {
+        this.closeSwarmWorkflowsView();
+      } else if (state.phase === "workflow") {
+        this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      } else {
+        const lookup = findWorkflowAgent(
+          this.state.getSnapshot().workflowRuns,
+          state.workflowId,
+          state.agentId,
+        );
+        this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+          state.workflowId,
+          lookup?.phase.id,
+          "agents",
+        );
+      }
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "left")) {
+      if (state.phase === "agent") {
+        const lookup = findWorkflowAgent(
+          this.state.getSnapshot().workflowRuns,
+          state.workflowId,
+          state.agentId,
+        );
+        this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+          state.workflowId,
+          lookup?.phase.id,
+          "agents",
+        );
+      } else if (state.phase === "workflow") {
+        this.swarmWorkflowsViewState =
+          state.focus === "agents"
+            ? this.buildSwarmWorkflowDetailState(state.workflowId, state.selectedPhaseId, "phases")
+            : this.buildSwarmWorkflowsListState();
+      }
+      this.tui.requestRender();
+      return;
+    }
+    if (state.phase === "workflow" && (matchesKey(data, "right") || data === "\t")) {
+      const nextFocus = state.focus === "phases" ? "agents" : "phases";
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+        state.workflowId,
+        state.selectedPhaseId,
+        nextFocus,
+      );
+      this.tui.requestRender();
+      return;
+    }
+    if (matchesKey(data, "r")) {
+      void this.openSwarmWorkflowsView();
+      this.tui.requestRender();
+      return;
+    }
+    if (state.phase === "list") {
+      state.list.handleInput(data);
+      this.tui.requestRender();
+      return;
+    }
+    if (state.phase === "workflow") {
+      const activeList = state.focus === "phases" ? state.phaseList : state.agentList;
+      activeList.handleInput(data);
+      this.tui.requestRender();
+    }
+  }
+
+  private buildSwarmWorkflowsLines(width: number): string[] {
+    const state = this.swarmWorkflowsViewState;
+    if (!state) return [];
+    if (state.phase === "list") {
+      return this.buildSwarmWorkflowsListLines(state, width);
+    }
+    if (state.phase === "workflow") {
+      return this.buildSwarmWorkflowDetailLines(state, width);
+    }
+    return this.buildSwarmWorkflowAgentLines(state, width);
+  }
+
+  private buildWorkflowRuntimeLines(width: number): string[] {
+    const workflow = this.state
+      .getSnapshot()
+      .workflowRuns.find((item) => item.status === "running");
+    if (!workflow) return [];
+    const spinner = ["◐", "◓", "◑", "◒"][this.animationPhase % 4]!;
+    const elapsed = formatWorkflowElapsed(Date.parse(workflow.started_at ?? "") || Date.now());
+    return [
+      padToWidth(
+        `${palette.status.warning(spinner)} ${palette.text.assistant(`Workflow ${workflow.name} running...`)} ${palette.text.dim(`(${elapsed})`)}`,
+        width,
+      ),
+    ];
+  }
+
+  private buildSwarmWorkflowsListLines(
+    state: Extract<SwarmWorkflowsViewState, { phase: "list" }>,
+    width: number,
+  ): string[] {
+    const workflows = this.state.getSnapshot().workflowRuns;
+    return [
+      padToWidth(palette.text.accent("Dynamic workflows"), width),
+      padToWidth(palette.text.dim(`${workflows.length} workflows`), width),
+      "",
+      ...state.list.render(width),
+      padToWidth(palette.text.dim("up/down select · Enter view · r refresh · Esc close"), width),
+    ];
+  }
+
+  private buildSwarmWorkflowDetailLines(
+    state: Extract<SwarmWorkflowsViewState, { phase: "workflow" }>,
+    width: number,
+  ): string[] {
+    const workflow = this.state
+      .getSnapshot()
+      .workflowRuns.find((item) => item.id === state.workflowId);
+    if (!workflow) return [padToWidth(palette.status.error("Workflow not found"), width)];
+    const total = workflow.agent_count ?? countWorkflowAgents(workflow);
+    const completed = workflow.completed_agent_count ?? countCompletedWorkflowAgents(workflow);
+    const selectedPhase =
+      workflow.phases.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases[0];
+    const lines: string[] = [
+      padToWidth(palette.text.accent(workflow.name), width),
+      ...wrapPlainText(workflow.summary, width).map((line) =>
+        padToWidth(palette.text.dim(line), width),
+      ),
+      padToWidth(
+        `${formatWorkflowStatus(workflow.status)} ${palette.text.dim(`· ${completed}/${total} agents`)}`,
+        width,
+      ),
+      "",
+      padToWidth(
+        state.focus === "phases" ? palette.text.accent("Phases") : palette.text.secondary("Phases"),
+        width,
+      ),
+    ];
+    if (state.focus === "phases") {
+      lines.push(...state.phaseList.render(width));
+    } else {
+      lines.push(...this.renderSwarmWorkflowPhaseRows(workflow, state.selectedPhaseId, width));
+    }
+    lines.push("");
+    const agentsTitle = selectedPhase ? `Agents · ${selectedPhase.name}` : "Agents";
+    lines.push(
+      padToWidth(
+        state.focus === "agents"
+          ? palette.text.accent(agentsTitle)
+          : palette.text.secondary(agentsTitle),
+        width,
+      ),
+    );
+    if (state.focus === "agents") {
+      lines.push(...state.agentList.render(width));
+    } else if (selectedPhase) {
+      lines.push(...this.renderSwarmWorkflowAgentRows(selectedPhase.agents, width));
+    } else {
+      lines.push(padToWidth(palette.text.dim("No agents"), width));
+    }
+    lines.push(
+      padToWidth(
+        palette.text.dim(
+          state.focus === "phases"
+            ? "up/down select phase · Enter show agents · Tab/Right agents · Esc back"
+            : "up/down select agent · Enter detail · Tab/Left phases · r refresh · Esc back",
+        ),
+        width,
+      ),
+    );
+    return lines;
+  }
+
+  private renderSwarmWorkflowPhaseRows(
+    workflow: WorkflowRun,
+    selectedPhaseId: string,
+    width: number,
+  ): string[] {
+    return workflow.phases.map((phase) => {
+      const phaseTotal = phase.agent_count ?? phase.agents.length;
+      const phaseCompleted =
+        phase.completed_agent_count ??
+        phase.agents.filter((agent) => agent.status === "completed").length;
+      const marker =
+        phase.id === selectedPhaseId ? palette.text.accent("›") : palette.text.dim(" ");
+      return padToWidth(
+        `${marker} ${formatWorkflowStatus(phase.status)} ${phase.name} ${palette.text.dim(`${phaseCompleted}/${phaseTotal}`)}`,
+        width,
+      );
+    });
+  }
+
+  private renderSwarmWorkflowAgentRows(
+    agents: WorkflowRun["phases"][number]["agents"],
+    width: number,
+  ): string[] {
+    if (agents.length === 0) return [padToWidth(palette.text.dim("No agents"), width)];
+    return agents.map((agent) =>
+      padToWidth(
+        `  ${formatWorkflowStatus(agent.status)} ${agent.name}${agent.model ? ` ${palette.text.dim(`· ${agent.model}`)}` : ""}`,
+        width,
+      ),
+    );
+  }
+
+  private buildSwarmWorkflowAgentLines(
+    state: Extract<SwarmWorkflowsViewState, { phase: "agent" }>,
+    width: number,
+  ): string[] {
+    const lookup = findWorkflowAgent(
+      this.state.getSnapshot().workflowRuns,
+      state.workflowId,
+      state.agentId,
+    );
+    if (!lookup) return [padToWidth(palette.status.error("Agent not found"), width)];
+    const { workflow, phase, agent } = lookup;
+    const lines: string[] = [
+      padToWidth(palette.text.accent(agent.name), width),
+      padToWidth(palette.text.dim(`${workflow.name} · ${phase.name}`), width),
+      padToWidth(
+        `${formatWorkflowStatus(agent.status)}${agent.model ? ` ${palette.text.dim(`· ${agent.model}`)}` : ""}`,
+        width,
+      ),
+      "",
+    ];
+    this.appendLabeledWrappedLines(lines, width, "Prompt", agent.prompt);
+    if (agent.activity?.length) {
+      lines.push(padToWidth(palette.text.secondary("Activity"), width));
+      for (const item of agent.activity) {
+        const prefix = item.type ? `${item.type}: ` : "";
+        lines.push(
+          ...wrapPlainText(`- ${prefix}${item.content}`, width).map((line) =>
+            padToWidth(palette.text.dim(line), width),
+          ),
+        );
+      }
+      lines.push("");
+    }
+    this.appendLabeledWrappedLines(lines, width, "Outcome", agent.outcome);
+    this.appendLabeledWrappedLines(lines, width, "Error", agent.error, true);
+    lines.push(padToWidth(palette.text.dim("Esc/← back"), width));
+    return lines;
+  }
+
+  private appendLabeledWrappedLines(
+    lines: string[],
+    width: number,
+    label: string,
+    value?: string,
+    error = false,
+  ): void {
+    if (!value) return;
+    lines.push(
+      padToWidth(error ? palette.status.error(label) : palette.text.secondary(label), width),
+    );
+    const color = error ? palette.status.error : palette.text.dim;
+    lines.push(...wrapPlainText(value, width).map((line) => padToWidth(color(line), width)));
+    lines.push("");
   }
 
   private buildOutgoingMessage(text: string): { content: string; attachments: FileAttachment[] } {
@@ -3382,8 +3888,9 @@ export class AppScreen implements Component, Focusable {
       snapshot.teamMemberEvents,
       snapshot.teamMessageEvents,
     );
+    const runningWorkflow = snapshot.workflowRuns.find((workflow) => workflow.status === "running");
     const shouldAnimate =
-      !snapshot.isInterrupted && (snapshot.isProcessing || hasRunningTools || teamWorking);
+      !snapshot.isInterrupted && (snapshot.isProcessing || hasRunningTools || teamWorking || Boolean(runningWorkflow));
     if (!shouldAnimate) {
       const nowMs = Date.now();
       if (this.runningStoppedAtMs === null) {
@@ -3412,6 +3919,9 @@ export class AppScreen implements Component, Focusable {
       }
     } else if (teamWorking) {
       this.runningStartedAtMs = teamStartedAt ?? this.runningStartedAtMs ?? Date.now();
+    } else if (runningWorkflow) {
+      this.runningStartedAtMs =
+        Date.parse(runningWorkflow.started_at ?? "") || this.runningStartedAtMs || Date.now();
     }
     this.runningStoppedAtMs = null;
     if (this.animationTimer) {

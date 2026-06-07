@@ -885,6 +885,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.TEAM_SNAPSHOT:
                 await self._handle_team_snapshot(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.COMMAND_WORKFLOWS:
+                await self._handle_command_workflows(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.TEAM_HISTORY_GET:
                 await self._handle_team_history_get(ws, request, send_lock)
                 return
@@ -1950,6 +1953,90 @@ class AgentWebSocketServer:
                 channel_id=channel_id,
                 ok=True,
                 payload={"members": [], "tasks": [], "team_id": None},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_command_workflows(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Handle command.workflows RPC request — return workflow_run_snapshot."""
+        from jiuwenswarm.agents.harness.team import get_team_manager
+
+        session_id = request.session_id or ""
+        channel_id = request.channel_id or "web"
+
+        # WF_DBG: 维测日志 — 记录 command.workflows 请求到达
+        logger.info(
+            "[WF_DBG command_workflows] request received: "
+            "channel_id=%s session_id=%s request_id=%s",
+            channel_id,
+            session_id,
+            request.request_id,
+        )
+
+        team_manager = get_team_manager(channel_id)
+        workflow_handler = team_manager.get_workflow_handler(session_id)
+
+        if workflow_handler is None:
+            # WF_DBG: 维测日志 — 无 handler（返回空快照）
+            logger.info(
+                "[WF_DBG command_workflows] no handler found: "
+                "channel_id=%s session_id=%s → returning empty snapshot",
+                channel_id,
+                session_id,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={"type": "workflow_run_snapshot", "workflows": [], "session_id": session_id},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await ws.send(json.dumps(wire, ensure_ascii=False))
+            return
+
+        try:
+            snapshot = workflow_handler.get_workflow_snapshot()
+            # WF_DBG: 维测日志 — 记录返回的快照内容摘要
+            wf_names = [wf.get("name", "?") for wf in snapshot]
+            wf_statuses = [wf.get("status", "?") for wf in snapshot]
+            logger.info(
+                "[WF_DBG command_workflows] snapshot returned: "
+                "channel_id=%s session_id=%s workflows_count=%d "
+                "names=%s statuses=%s",
+                channel_id,
+                session_id,
+                len(snapshot),
+                wf_names,
+                wf_statuses,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={
+                    "type": "workflow_run_snapshot",
+                    "workflows": snapshot,
+                    "session_id": session_id,
+                },
+            )
+        except Exception as e:
+            logger.warning("[AgentWebSocketServer] command.workflows failed: %s", e)
+            # WF_DBG: 维测日志 — 记录异常
+            logger.info(
+                "[WF_DBG command_workflows] exception: "
+                "channel_id=%s session_id=%s error=%s → returning empty snapshot",
+                channel_id,
+                session_id,
+                e,
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={"type": "workflow_run_snapshot", "workflows": [], "session_id": session_id},
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)

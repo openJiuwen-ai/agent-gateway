@@ -39,7 +39,7 @@ from jiuwenswarm.agents.harness.team.team_skill_links import (
     prune_skill_dir_links,
     remove_skill_dir_link,
 )
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.common.utils import get_agent_workspace_dir, get_agent_skills_dir
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ def build_member_skill_toolkit(params: dict, ctx: Any) -> object | None:
 
     member_skills_dir = Path(root_path) / "skills"
     selected_skills = [str(skill).strip() for skill in inp.skills if str(skill).strip()]
-    global_skills_dir = Path(inp.global_skills_dir)
+    global_skills_dir = Path(inp.global_skills_dir) if inp.global_skills_dir else get_agent_skills_dir()
     agent_workspace_dir = get_agent_workspace_dir()
     session_id = inp.session_id
     channel = inp.channel
