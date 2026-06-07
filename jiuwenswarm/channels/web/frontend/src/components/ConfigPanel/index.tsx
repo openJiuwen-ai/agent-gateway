@@ -2753,7 +2753,7 @@ export function ConfigPanel({
     return null;
   };
 
-  const agentsTeamsValidationError = getAgentsTeamsValidationError();
+  const agentsTeamsValidationError = agentsTeamsUserEdited ? getAgentsTeamsValidationError() : null;
 
   const handleFieldChange = (key: string, value: string) => {
     setDraftValues((prev) => ({ ...prev, [key]: value }));
