@@ -233,6 +233,8 @@ type StatusViewState = {
   list: SelectList;
   statusPayload: import("../core/commands/builtins/status.js").StatusPayload | null;
   configPayload: (Record<string, unknown> & { schema?: ConfigItemSchema[] }) | null;
+  searchMode: boolean;
+  searchQuery: string;
 };
 
 type SwarmWorkflowsViewState =
@@ -1188,6 +1190,51 @@ export class AppScreen implements Component, Focusable {
         this.tui.requestRender();
         return;
       }
+      // Search mode for config tab
+      if (this.statusViewState.tab === "config" && this.statusViewState.searchMode) {
+        if (matchesKey(data, "escape")) {
+          if (this.statusViewState.searchQuery.length > 0) {
+            this.statusViewState.searchQuery = "";
+          } else {
+            this.statusViewState.searchMode = false;
+          }
+          this.rebuildStatusViewTabList();
+          this.tui.requestRender();
+          return;
+        }
+        if (matchesKey(data, "return") || matchesKey(data, "down")) {
+          this.statusViewState.searchMode = false;
+          this.tui.requestRender();
+          return;
+        }
+        if (matchesKey(data, "left")) {
+          this.switchStatusViewTab(-1);
+          return;
+        }
+        if (matchesKey(data, "right")) {
+          this.switchStatusViewTab(1);
+          return;
+        }
+        if (matchesKey(data, "backspace") || matchesKey(data, "delete")) {
+          if (this.statusViewState.searchQuery.length > 0) {
+            this.statusViewState.searchQuery = this.statusViewState.searchQuery.slice(0, -1);
+            this.rebuildStatusViewTabList();
+          } else {
+            this.statusViewState.searchMode = false;
+          }
+          this.tui.requestRender();
+          return;
+        }
+        // Printable character → append to search query
+        if (data.length === 1 && !matchesKey(data, "up") && !matchesKey(data, "tab")) {
+          this.statusViewState.searchQuery += data;
+          this.rebuildStatusViewTabList();
+          this.tui.requestRender();
+          return;
+        }
+        return;
+      }
+      // Normal mode: Esc to close, / or printable char on config tab enters search
       if (matchesKey(data, "escape")) {
         this.closeStatusView();
         return;
@@ -1199,6 +1246,22 @@ export class AppScreen implements Component, Focusable {
       if (matchesKey(data, "right")) {
         this.switchStatusViewTab(1);
         return;
+      }
+      // On config tab, / enters search mode; printable chars also enter search mode
+      if (this.statusViewState.tab === "config") {
+        if (data === "/") {
+          this.statusViewState.searchMode = true;
+          this.statusViewState.searchQuery = "";
+          this.tui.requestRender();
+          return;
+        }
+        if (data.length === 1 && !matchesKey(data, "up") && !matchesKey(data, "down") && !matchesKey(data, "return") && !matchesKey(data, "tab") && !matchesKey(data, "backspace") && !matchesKey(data, "delete") && !matchesKey(data, "escape")) {
+          this.statusViewState.searchMode = true;
+          this.statusViewState.searchQuery = data;
+          this.rebuildStatusViewTabList();
+          this.tui.requestRender();
+          return;
+        }
       }
       this.statusViewState.list.handleInput(data);
       this.tui.requestRender();
@@ -3506,6 +3569,8 @@ export class AppScreen implements Component, Focusable {
     if (this.statusViewState) {
       this.statusViewState.phase = "tab_view";
       this.statusViewState.tab = "config";
+      this.statusViewState.searchMode = false;
+      this.statusViewState.searchQuery = "";
       this.rebuildStatusViewTabList();
       // Re-fetch payloads so status tab reflects any config changes made in the editor
       this.refreshStatusViewPayloads();
@@ -3621,9 +3686,11 @@ export class AppScreen implements Component, Focusable {
     this.statusViewState = {
       phase: "tab_view",
       tab: initialTab,
-      list: this.buildStatusViewTabState(initialTab, statusPayload, configPayload),
+      list: this.buildStatusViewTabState(initialTab, statusPayload, configPayload, ""),
       statusPayload,
       configPayload,
+      searchMode: false,
+      searchQuery: "",
     };
     this.tui.requestRender();
   }
@@ -3632,13 +3699,14 @@ export class AppScreen implements Component, Focusable {
     tab: StatusViewTab,
     statusPayload: import("../core/commands/builtins/status.js").StatusPayload | null,
     configPayload: (Record<string, unknown> & { schema?: ConfigItemSchema[] }) | null,
+    searchQuery: string,
   ): SelectList {
     const items: SelectItem[] =
       tab === "status"
         ? this.buildStatusTabItems(statusPayload)
         : tab === "usage"
           ? this.buildUsageTabItems()
-          : this.buildConfigTabItems(configPayload);
+          : this.buildConfigTabItems(configPayload, searchQuery);
 
     const list = new SelectList(items, tab === "status" ? items.length : Math.min(Math.max(items.length, 1), 10), selectListTheme, {
       minPrimaryColumnWidth: 20,
@@ -3718,13 +3786,31 @@ export class AppScreen implements Component, Focusable {
 
   private buildConfigTabItems(
     configPayload: (Record<string, unknown> & { schema?: ConfigItemSchema[] }) | null,
+    searchQuery: string,
   ): SelectItem[] {
     if (!configPayload?.schema?.length) {
       return [{ value: "__display__", label: "No config schema available", description: "" }];
     }
     const schemaList = configPayload.schema;
+
+    const filteredSchemaList = searchQuery
+      ? schemaList.filter((schema) => {
+          const q = searchQuery.toLowerCase();
+          return (
+            schema.key.toLowerCase().includes(q) ||
+            schema.label.toLowerCase().includes(q) ||
+            (schema.description ?? "").toLowerCase().includes(q) ||
+            (schema.group ?? "").toLowerCase().includes(q)
+          );
+        })
+      : schemaList;
+
+    if (filteredSchemaList.length === 0) {
+      return [{ value: "__display__", label: `No config items match "${searchQuery}"`, description: "" }];
+    }
+
     const groups: Record<string, ConfigItemSchema[]> = {};
-    for (const schema of schemaList) {
+    for (const schema of filteredSchemaList) {
       const group = schema.group || "Other";
       if (!groups[group]) groups[group] = [];
       groups[group].push(schema);
@@ -3777,11 +3863,14 @@ export class AppScreen implements Component, Focusable {
     return [padToWidth(combined, width)];
   }
 
-  private getTabHint(tab: StatusViewTab): string {
+  private getTabHint(tab: StatusViewTab, inSearchMode: boolean): string {
     if (tab === "status" || tab === "usage") {
       return "←/→ switch tab · Esc close";
     }
-    return "←/→ switch tab · Enter edit item · Esc close";
+    if (inSearchMode) {
+      return "Esc clear/exit search · Enter ↓ to list · ←/→ switch tab";
+    }
+    return "←/→ switch tab · / search · Enter edit item · Esc close";
   }
 
   private buildStatusViewLines(width: number): string[] {
@@ -3791,14 +3880,26 @@ export class AppScreen implements Component, Focusable {
     }
     const lines: string[] = [];
     lines.push(...this.renderTabBar(width));
-    lines.push(padToWidth(palette.status.warning("Status"), width));
+    // Search input line on config tab
+    if (this.statusViewState.tab === "config" && this.statusViewState.searchMode) {
+      const queryDisplay = this.statusViewState.searchQuery || "";
+      const placeholder = queryDisplay.length === 0 ? "Search settings…" : "";
+      const searchText = placeholder || queryDisplay;
+      const searchLine = `⌕ ${searchText}`;
+      lines.push(padToWidth(palette.status.warning(searchLine), width));
+    } else {
+      lines.push(padToWidth(palette.status.warning("Status"), width));
+    }
     lines.push(...this.statusViewState.list.render(width));
-    lines.push(padToWidth(palette.text.dim(this.getTabHint(this.statusViewState.tab)), width));
+    lines.push(padToWidth(palette.text.dim(this.getTabHint(this.statusViewState.tab, this.statusViewState.searchMode)), width));
     return lines;
   }
 
   private switchStatusViewTab(direction: -1 | 1): void {
     if (!this.statusViewState || this.statusViewState.phase !== "tab_view") return;
+    // Exit search mode when switching tabs
+    this.statusViewState.searchMode = false;
+    this.statusViewState.searchQuery = "";
     const tabs: StatusViewTab[] = ["status", "usage", "config"];
     const current = tabs.indexOf(this.statusViewState.tab);
     const next = (current + direction + tabs.length) % tabs.length;
@@ -3813,11 +3914,12 @@ export class AppScreen implements Component, Focusable {
       this.statusViewState.tab,
       this.statusViewState.statusPayload,
       this.statusViewState.configPayload,
+      this.statusViewState.searchQuery,
     );
     this.tui.requestRender();
   }
 
-  /** Re-fetch command.status and config.get payloads to refresh the StatusView
+/** Re-fetch command.status and config.get payloads to refresh the StatusView
    *  after a config change (e.g. model name update). */
   private async refreshStatusViewPayloads(): Promise<void> {
     if (!this.statusViewState) return;
