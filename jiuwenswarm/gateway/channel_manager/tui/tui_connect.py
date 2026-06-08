@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -1700,17 +1701,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 names,
                 os.getenv("MODEL_NAME", "unknown"),
             )
-            env = e2a_from_agent_fields(
-                request_id=req_id,
-                channel_id="cli",
-                session_id=session_id,
-                req_method=ReqMethod.COMMAND_MODEL,
-                params={},
-                is_stream=False,
-                timestamp=time.time(),
-            )
-            resp = await real_client.send_request(env)
-            payload = resp.payload if resp.ok else {}
+            # 列出模型全部数据均可从本地 config.yaml 获取，
+            # 无需等待 AgentServer 响应（其返回的 current/available 会被本地值覆盖）。
+            # 若 await send_request() 阻塞 >30s，会导致 TUI WS 超时且后续请求排队，
+            # 故直接以本地数据构建 payload 立即回包。
+            payload: dict = {}
             payload["available_models"] = names
             _raw = get_config_raw()
             _defs = (_raw.get("models") or {}).get("defaults")
@@ -1811,32 +1806,43 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         update_default_models_in_config([_target_entry] + _other_entries)
         logger.info("[cli command.model] 切换，已更新 models.defaults 首位: %s", target)
-        _reload_env = e2a_from_agent_fields(
-            request_id=req_id,
-            channel_id="cli",
-            session_id=session_id,
-            req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-            params={},
-            is_stream=False,
-            timestamp=time.time(),
-        )
-        await real_client.send_request(_reload_env)
-        if on_config_saved:
-            try:
-                _cb = on_config_saved(set(), env_updates={}, config_payload=get_config())
-                if inspect.isawaitable(_cb):
-                    await _cb
-            except Exception as _e2:
-                logger.warning("[cli model.switch] on_config_saved failed: %s", _e2)
         _target_model_name = resolve_env_vars(
             str((_target_entry.get("model_client_config") or {}).get("model_name", target)))
-        logger.info("[cli command.model] 切换完成: current=%s", _target_model_name)
+
+        # 先回包再执行 Agent 热重载（与 config.set 保持一致），
+        # 避免 WebSocket 长时间无响应、CLI 误以为无反馈 / 超时。
         await channel.send_response(ws, req_id, ok=True, payload={
             "current": _target_model_name,
             "requested": target,
             "type": "switched",
             "applied": True,
         })
+
+        # 后台触发 AgentServer reload + on_config_saved（不阻塞 WS 消息循环）
+        async def _model_switch_background():
+            _reload_env = e2a_from_agent_fields(
+                request_id=req_id,
+                channel_id="cli",
+                session_id=session_id,
+                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+                params={},
+                is_stream=False,
+                timestamp=time.time(),
+            )
+            try:
+                await real_client.send_request(_reload_env)
+            except Exception as _e_reload:
+                logger.warning("[cli model.switch] AGENT_RELOAD_CONFIG failed: %s", _e_reload)
+            if on_config_saved:
+                try:
+                    _cb = on_config_saved(set(), env_updates={}, config_payload=get_config())
+                    if inspect.isawaitable(_cb):
+                        await _cb
+                except Exception as _e2:
+                    logger.warning("[cli model.switch] on_config_saved failed: %s", _e2)
+            logger.info("[cli command.model] 切换完成: current=%s", _target_model_name)
+
+        asyncio.create_task(_model_switch_background())
         return
 
     async def _models_list(ws, req_id, params, session_id):
