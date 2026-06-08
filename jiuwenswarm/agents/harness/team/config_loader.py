@@ -290,6 +290,9 @@ def _build_predefined_members(team_raw: dict[str, Any]) -> list[dict[str, Any]]:
         member_spec["member_name"] = member_name
         member_spec["display_name"] = str(identity_name).strip()
         member_spec["persona"] = member_spec.get("persona") or ""
+        # openjiuwen TeamMemberSpec 现按 role_type 判别联合类型，缺省补 teammate
+        role_type = str(member_spec.get("role_type") or "").strip()
+        member_spec["role_type"] = role_type or "teammate"
 
         predefined_members.append(member_spec)
 
