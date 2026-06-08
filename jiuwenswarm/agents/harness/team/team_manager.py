@@ -529,6 +529,14 @@ class TeamManager:
         """Ensure team shared skills are available in the team workspace."""
         TeamManager._initialize_team_shared_skill_links(spec)
 
+    def ensure_team_shared_skills_ready_for_session(self, session_id: str, spec: TeamAgentSpec) -> None:
+        """Ensure team shared skills are initialized and registered for refresh."""
+        self.ensure_team_shared_skills_initialized(spec)
+        self.register_team_shared_skill_link_target(
+            session_id,
+            self._resolve_team_shared_skills_dir(spec),
+        )
+
     def register_team_shared_skill_link_target(self, session_id: str, target: Path) -> None:
         """Register the team shared skills directory for link refresh."""
         self._team_shared_skill_link_targets[session_id] = target
@@ -599,11 +607,7 @@ class TeamManager:
             team_agent = spec.build()
             self._team_agents[session_id] = team_agent
             # After build, initialize team shared skill links.
-            self.ensure_team_shared_skills_initialized(spec)
-            self.register_team_shared_skill_link_target(
-                session_id,
-                self._resolve_team_shared_skills_dir(spec),
-            )
+            self.ensure_team_shared_skills_ready_for_session(session_id, spec)
 
             if self._is_distributed_mode(config_base):
                 try:

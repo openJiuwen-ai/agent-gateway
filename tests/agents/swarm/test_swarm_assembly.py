@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import types
+from pathlib import Path
 
 import pytest
 
@@ -32,6 +33,8 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     DeepAgentSpec,
     RailSpec,
 )
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
+from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 
 from jiuwenswarm.agents.swarm import (
     SwarmBuildContext,
@@ -67,6 +70,8 @@ logger = logging.getLogger(__name__)
 _COMMON_RAIL_NAMES: frozenset[str] = frozenset(
     {
         registry.RUNTIME_PROMPT,
+        registry.TEAM_SKILL_STORAGE_POLICY,
+        registry.TEAM_SHARED_SKILL_LINK_REFRESH,
         registry.RESPONSE_PROMPT,
         registry.SYS_OPERATION,
         registry.STREAM_EVENT,
@@ -179,6 +184,96 @@ def test_runtime_prompt_rail_resolves_via_registry() -> None:
     assert type(rail).__name__ == "RuntimePromptRail"
 
 
+@pytest.mark.asyncio
+async def test_team_skill_storage_policy_rail_resolves_and_injects_paths(tmp_path: Path) -> None:
+    """The team skill storage policy should inject concrete team/member paths."""
+    register_swarm_providers()
+    global_skills_dir = str(tmp_path / "agent" / "workspace" / "skills")
+    team_ws_root = str(tmp_path / ".agent_teams" / "unit" / "team-workspace")
+    team_skills_dir = str(tmp_path / ".agent_teams" / "unit" / "team-workspace" / "skills")
+    member_workspace_root = str(
+        tmp_path / ".agent_teams" / "unit" / "workspaces" / "member_workspace"
+    )
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        global_skills_dir=global_skills_dir,
+        team_ws_root=team_ws_root,
+        team_skills_dir=team_skills_dir,
+        workspace=types.SimpleNamespace(root_path=member_workspace_root),
+    )
+
+    rail = RailSpec(type=registry.TEAM_SKILL_STORAGE_POLICY).build(
+        language="cn",
+        context=fake_ctx,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    rail.init(types.SimpleNamespace(system_prompt_builder=builder))
+
+    await rail.before_model_call(AgentCallbackContext(agent=None, inputs=None, session=None))
+
+    content = builder.build()
+    assert f"{global_skills_dir}/<skill-name>/SKILL.md" in content
+    assert team_ws_root in content
+    assert team_skills_dir in content
+    assert member_workspace_root in content
+    assert "skill-creator" not in content
+
+
+@pytest.mark.asyncio
+async def test_team_shared_skill_link_refresh_rail_resolves_and_refreshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared skill link refresh rail should refresh after global skill writes."""
+    register_swarm_providers()
+    global_skills_dir = tmp_path / "agent" / "workspace" / "skills"
+    skill_dir = global_skills_dir / "new-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\ndescription: test\n---\n", encoding="utf-8")
+    calls: list[tuple[str, str]] = []
+
+    class _FakeTeamManager:
+        def __init__(self, channel: str) -> None:
+            self._channel = channel
+
+        def refresh_team_shared_skill_links(self, session_id: str) -> bool:
+            calls.append((self._channel, session_id))
+            return True
+
+    def _get_team_manager(channel: str) -> _FakeTeamManager:
+        return _FakeTeamManager(channel)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_team_manager",
+        _get_team_manager,
+    )
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        session_id="session-1",
+        channel="web",
+        global_skills_dir=str(global_skills_dir),
+    )
+
+    rail = RailSpec(type=registry.TEAM_SHARED_SKILL_LINK_REFRESH).build(
+        language="cn",
+        context=fake_ctx,
+    )
+
+    await rail.after_tool_call(
+        AgentCallbackContext(
+            agent=None,
+            inputs=ToolCallInputs(
+                tool_name="write_file",
+                tool_args={"file_path": str(skill_file)},
+            ),
+            session=None,
+        )
+    )
+
+    assert calls == [("web", "session-1")]
+
+
 def test_unknown_swarm_rail_type_raises() -> None:
     """An unregistered ``swarm.*`` rail type surfaces a clear ``ValueError``."""
     register_swarm_providers()
@@ -215,9 +310,9 @@ def test_build_member_capability_specs_rail_names(
 
     assert _COMMON_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    # The common set has exactly 12 entries; the role adds only its evolution
+    # The common set has exactly 14 entries; the role adds only its evolution
     # rails on top.
-    assert len(_COMMON_RAIL_NAMES) == 12
+    assert len(_COMMON_RAIL_NAMES) == 14
     assert rail_names == _COMMON_RAIL_NAMES | extra_rails
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)

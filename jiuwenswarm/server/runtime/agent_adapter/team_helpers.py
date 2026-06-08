@@ -873,7 +873,7 @@ async def process_team_message_stream(
 
     try:
         if is_first_request:
-            team_manager.ensure_team_shared_skills_initialized(team_spec)
+            team_manager.ensure_team_shared_skills_ready_for_session(session_id, team_spec)
             await team_manager.prepare_runtime_activation(session_id, team_name)
             request_queue = asyncio.Queue()
             waiter_key = (_resolve_channel_id(channel_id), session_id)

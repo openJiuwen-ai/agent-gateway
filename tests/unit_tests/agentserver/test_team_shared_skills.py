@@ -131,6 +131,42 @@ def test_refresh_team_shared_skill_links_adds_new_global_skill(tmp_path, monkeyp
     _assert_link_points_to(team_shared_skills / "skill-b", skill_b)
 
 
+def test_ensure_team_shared_skills_ready_for_session_registers_refresh_target(tmp_path, monkeypatch):
+    """Session readiness should initialize links and register the refresh target."""
+    global_skills_dir = tmp_path / "global_skills"
+    global_skills_dir.mkdir(parents=True)
+    skill_a = global_skills_dir / "skill-a"
+    skill_a.mkdir()
+    (skill_a / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
+        lambda: global_skills_dir,
+    )
+
+    team_workspace = tmp_path / "team_workspace"
+    spec = TeamAgentSpec.model_validate(
+        {
+            "team_name": "demo_team",
+            "agents": {"leader": {}, "teammate": {}},
+            "workspace": {"root_path": str(team_workspace), "enabled": True},
+        }
+    )
+    manager = TeamManager()
+
+    manager.ensure_team_shared_skills_ready_for_session("sess-1", spec)
+
+    team_shared_skills = team_workspace / "skills"
+    _assert_link_points_to(team_shared_skills / "skill-a", skill_a)
+
+    skill_b = global_skills_dir / "skill-b"
+    skill_b.mkdir()
+    (skill_b / "SKILL.md").write_text("---\nname: skill-b\n---\n", encoding="utf-8")
+
+    assert manager.refresh_team_shared_skill_links("sess-1")
+    _assert_link_points_to(team_shared_skills / "skill-b", skill_b)
+
+
 def test_refresh_team_shared_skill_links_prunes_removed_global_skill(tmp_path, monkeypatch):
     """Refreshing shared links should remove links for uninstalled global skills."""
     global_skills_dir = tmp_path / "global_skills"

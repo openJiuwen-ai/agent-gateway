@@ -51,6 +51,8 @@ _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
 # provider name re-exported from the registry (no hard-coded strings).
 _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
+    registry.TEAM_SKILL_STORAGE_POLICY,
+    registry.TEAM_SHARED_SKILL_LINK_REFRESH,
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
