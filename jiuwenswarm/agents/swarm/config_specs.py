@@ -523,6 +523,8 @@ def build_member_deep_agent_spec(
     merged_tools.extend(tool_specs)
 
     update: dict[str, Any] = {"rails": merged_rails, "tools": merged_tools}
+    if not _is_code_mode(mode):
+        update["enable_skill_discovery"] = True
 
     subagent_specs = build_member_subagent_specs(config, mode, role)
     if subagent_specs:

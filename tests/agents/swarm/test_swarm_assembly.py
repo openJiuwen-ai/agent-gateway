@@ -254,6 +254,28 @@ def test_member_skill_toolkit_carries_selected_skills() -> None:
     assert toolkit.params == {"skills": ["alpha", "beta"]}
 
 
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_member_deep_agent_spec_enables_skill_discovery(role: str) -> None:
+    """Chat-team members rely on the core default SkillUseRail."""
+    base = DeepAgentSpec(enable_skill_discovery=False)
+
+    spec = build_member_deep_agent_spec({}, "team", role, base)
+
+    assert spec.enable_skill_discovery is True
+
+
+@pytest.mark.parametrize("mode", ["code.team", "team.plan"])
+def test_code_member_deep_agent_spec_keeps_explicit_skill_use_rail(mode: str) -> None:
+    """Code profiles keep their explicit SkillUseRail provider path."""
+    base = DeepAgentSpec(enable_skill_discovery=False)
+
+    spec = build_member_deep_agent_spec({}, mode, "leader", base)
+    rail_names = {rail.type for rail in (spec.rails or [])}
+
+    assert spec.enable_skill_discovery is False
+    assert registry.CODE_SKILL_USE in rail_names
+
+
 def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     """The enrichment seam must never accept a pre-built DeepAgent."""
     params = set(inspect.signature(enrich_team_spec_for_swarm).parameters)
