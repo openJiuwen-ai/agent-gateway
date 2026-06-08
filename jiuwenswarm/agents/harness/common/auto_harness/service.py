@@ -1686,6 +1686,23 @@ class AutoHarnessService:
                     "[AutoHarnessService] Consumer received terminal event, session=%s",
                     active_run.session_id,
                 )
+
+                # When EXTENDED_EVOLVE_PIPELINE finishes, refresh packages cache
+                # so other channels can pick up newly generated packages.
+                if self._base_config and self._base_config.pipeline_preference == EXTENDED_EVOLVE_PIPELINE:
+                    try:
+                        data = await asyncio.to_thread(self.scan_runtime_extensions)
+                        await asyncio.to_thread(self.save_packages, data)
+                        logger.info(
+                            "[AutoHarnessService] Packages cache refreshed after %s, session=%s",
+                            self._base_config.pipeline_preference,
+                            active_run.session_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[AutoHarnessService] Failed to refresh packages cache: %s",
+                            exc,
+                        )
                 break
 
             if active_run.cancelled:
