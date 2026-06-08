@@ -17,7 +17,7 @@ export function createDiffCommand(): SlashCommand {
     kind: CommandKind.BUILT_IN,
     action: async (ctx, args) => {
       try {
-        const showDetail = /\b--detail\b/.test(args || "");
+        const showDetail = (args || "").split(/\s+/).filter(Boolean).includes("--detail");
 
         const payload = await ctx.request<DiffPayload>("command.diff", {});
         const turns = payload.turns || [];
