@@ -1241,8 +1241,10 @@ export class CliPiAppState {
 
     if (
       source === "permission_interrupt" ||
+      source === "confirm_interrupt" ||
       source === "ask_user_interrupt"
     ) {
+      const resumeMode = this.pendingQuestion.resumeMode ?? this.mode;
       this.sendEventOnly(
         "chat.send",
         {
@@ -1250,10 +1252,11 @@ export class CliPiAppState {
           request_id: this.pendingQuestion.requestId,
           answers,
           source,
-          mode: this.mode,
+          mode: resumeMode,
         },
         true,
       );
+      this.streamingState = StreamingState.Responding;
     } else {
       const params: Record<string, unknown> = {
         request_id: this.pendingQuestion.requestId,
@@ -1269,7 +1272,9 @@ export class CliPiAppState {
       );
     }
     this.pendingQuestion = null;
-    this.streamingState = StreamingState.Idle;
+    if (this.streamingState !== StreamingState.Responding) {
+      this.streamingState = StreamingState.Idle;
+    }
     this.streamingStateBeforeQuestion = null;
     this.emitChange();
   }

@@ -258,11 +258,25 @@ def build_code_coding_memory(params: dict[str, Any], ctx: SwarmBuildContext) -> 
 def build_code_agent_mode(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build the code plan-mode rail (Claude-Code-aligned AgentModeRail)."""
     try:
-        from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
-            JiuwenAgentModeRail,
+        from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
+            CodeAgentModeRail,
         )
 
-        return JiuwenAgentModeRail()
+        return CodeAgentModeRail(
+            allowed_tools=[
+                "enter_plan_mode",
+                "exit_plan_mode",
+                "ask_user",
+                "task_tool",
+                "read_file",
+                "grep",
+                "list_files",
+                "glob",
+                "bash",
+                "write_file",
+                "edit_file",
+            ],
+        )
     except Exception as exc:
         logger.warning("[swarm.code_agent_mode] create failed: %s", exc)
         return None

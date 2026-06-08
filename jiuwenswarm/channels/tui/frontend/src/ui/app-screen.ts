@@ -78,9 +78,37 @@ const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
 const DISABLE_MOUSE_TRACKING = "\x1b[?1000l\x1b[?1006l";
 const TRANSCRIPT_WHEEL_SCROLL_LINES = 3;
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
+const CONFIRM_TOOL_RE = /(?:Tool|工具)\s*:\s*`([^`]+)`/i;
+const CONFIRM_ACTION_RE = /\*\*(?:Agent wants to|Tool `[^`]+` requires your approval)([^*]*)\*\*/i;
 const PERMISSION_RISK_RE = /安全风险评估：\**\s*([^\s*]+)?\s*\**([^*\n]+?风险)\**/m;
 const PERMISSION_QUOTE_RE = /^>\s*(.+)$/gm;
 const PERMISSION_JSON_BLOCK_RE = /```json\s*([\s\S]*?)\s*```/i;
+const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([mM])$/;
+
+interface QuestionOptionRowHit {
+  row: number;
+  value: string;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function parseSgrMouseRelease(
+  data: string,
+): { button: number; col: number; row: number } | null {
+  const match = data.match(SGR_MOUSE_RE);
+  if (!match || match[4] !== "m") {
+    return null;
+  }
+  const button = Number.parseInt(match[1], 10) & 3;
+  const col = Number.parseInt(match[2], 10);
+  const row = Number.parseInt(match[3], 10);
+  if (!Number.isFinite(col) || !Number.isFinite(row)) {
+    return null;
+  }
+  return { button, col, row };
+}
 
 function wrapText(text: string, maxWidth: number): string[] {
   if (maxWidth < 1) return [text];
@@ -298,11 +326,21 @@ function resolveFdBinary(): string | null {
 }
 
 function isPermissionRequest(source: string | undefined, questionText: string): boolean {
-  return source === "permission_interrupt" || PERMISSION_TOOL_RE.test(questionText);
+  return (
+    source === "permission_interrupt" ||
+    source === "confirm_interrupt" ||
+    PERMISSION_TOOL_RE.test(questionText) ||
+    CONFIRM_TOOL_RE.test(questionText) ||
+    CONFIRM_ACTION_RE.test(questionText) ||
+    /\*\*Tool `/i.test(questionText)
+  );
 }
 
 function parsePermissionSummary(questionText: string): PermissionSummary {
-  const tool = PERMISSION_TOOL_RE.exec(questionText)?.[1]?.trim();
+  const tool =
+    PERMISSION_TOOL_RE.exec(questionText)?.[1]?.trim() ||
+    CONFIRM_TOOL_RE.exec(questionText)?.[1]?.trim();
+  const confirmAction = CONFIRM_ACTION_RE.exec(questionText)?.[1]?.trim();
   const riskMatch = PERMISSION_RISK_RE.exec(questionText);
   const risk = riskMatch
     ? `${(riskMatch[1] ?? "").trim()} ${riskMatch[2].trim()}`.trim()
@@ -334,7 +372,7 @@ function parsePermissionSummary(questionText: string): PermissionSummary {
     risk,
     reason,
     command,
-    description,
+    description: description ?? confirmAction,
   };
 }
 
@@ -657,6 +695,7 @@ export class AppScreen implements Component, Focusable {
   private pendingQuestionAnswers = new Map<number, string>();
   private questionList: SelectList | null = null;
   private questionDetailsMap: Map<string, string[]> | null = null;
+  private questionOptionRows: QuestionOptionRowHit[] = [];
   private otherInputMode = false;
   private ctrlCPendingForQuestion = false;
   private ctrlCPendingForQuestionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1009,6 +1048,11 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
+    if (pendingQuestion && this.handlePendingQuestionInput(data, snapshot)) {
+      this.tui.requestRender();
+      return;
+    }
+
     const handled = handleAppScreenKeyInput(data, {
       interruptTask: () => this.interruptTask(),
       exitApp: () => this.exit(),
@@ -1234,25 +1278,6 @@ export class AppScreen implements Component, Focusable {
       }
     }
 
-    if (snapshot.pendingQuestion && this.questionList !== null) {
-      this.questionList.handleInput(data);
-      this.tui.requestRender();
-      return;
-    }
-
-    if (snapshot.pendingQuestion && this.otherInputMode) {
-      if (matchesKey(data, "escape")) {
-        this.otherInputMode = false;
-        this.editor.setText("");
-        this.syncQuestionList(this.state.getSnapshot());
-        this.tui.requestRender();
-        return;
-      }
-      this.editor.handleInput(data);
-      this.tui.requestRender();
-      return;
-    }
-
     // Detect pasted file paths (drag-and-drop) in the terminal
     // When files are dragged in, they arrive as a pasted string.
     // Windows/PowerShell may not send bracketed paste markers,
@@ -1333,7 +1358,7 @@ export class AppScreen implements Component, Focusable {
     }
     this.lastTranscriptLineCount = transcriptLineCount;
     this.lastTranscriptLineWidth = width;
-    return buildAppScreenLines(snapshot, {
+    const screenLines = buildAppScreenLines(snapshot, {
       width,
       height: this.tui.terminal.rows,
       questionLines,
@@ -1361,6 +1386,8 @@ export class AppScreen implements Component, Focusable {
           ? Date.now() - this.runningStartedAtMs
           : undefined,
     });
+    this.updateQuestionOptionRows(screenLines, snapshot);
+    return screenLines;
   }
 
   private async handleSubmit(raw: string): Promise<void> {
@@ -1391,40 +1418,55 @@ export class AppScreen implements Component, Focusable {
 
     const snapshot = this.state.getSnapshot();
     if (snapshot.pendingQuestion) {
-      if (this.questionList === null) {
-        if (this.otherInputMode) {
-          this.pendingQuestionAnswers.set(this.activeQuestionIndex, text);
-          this.otherInputMode = false;
+      if (this.questionList !== null) {
+        const selected = this.questionList.getSelectedItem();
+        if (selected) {
+          this.handleQuestionSelection(selected.value);
+        }
+        this.editor.setText("");
+        return;
+      }
+      if (this.otherInputMode) {
+        const pendingQuestion = snapshot.pendingQuestion;
+        const pickedLabel = this.pendingQuestionAnswers.get(this.activeQuestionIndex) ?? "";
+        this.otherInputMode = false;
+        this.syncEditorSubmitState(this.state.getSnapshot());
 
-          const pendingQuestion = snapshot.pendingQuestion;
-          if (this.activeQuestionIndex < pendingQuestion.questions.length - 1) {
-            this.activeQuestionIndex += 1;
-            this.syncQuestionList(this.state.getSnapshot());
-            this.editor.setText("");
-            this.tui.requestRender();
-            return;
-          }
-
-          const answers = pendingQuestion.questions.map((question, index) => {
-            const answerValue = this.pendingQuestionAnswers.get(index) ?? question.options[0]?.label ?? "";
-            return {
-              question: question.question,
-              selected_options: [answerValue],
-            };
-          });
-          this.state.submitQuestionAnswers(answers);
+        if (this.activeQuestionIndex < pendingQuestion.questions.length - 1) {
+          this.pendingQuestionAnswers.set(this.activeQuestionIndex, pickedLabel || text);
+          this.activeQuestionIndex += 1;
+          this.syncQuestionList(this.state.getSnapshot());
           this.editor.setText("");
+          this.tui.requestRender();
           return;
         }
-        const question =
-          snapshot.pendingQuestion.questions[this.activeQuestionIndex]?.question ?? "";
-        if (question) {
-          this.state.submitQuestionAnswers([
-            { selected_options: [text], custom_input: text },
-          ]);
-        } else {
-          this.state.answerQuestion(text);
-        }
+
+        const answers = pendingQuestion.questions.map((question, index) => {
+          const label = this.pendingQuestionAnswers.get(index) ?? "";
+          if (label === "Other") {
+            return {
+              question: question.question,
+              selected_options: [label],
+              custom_input: index === this.activeQuestionIndex ? text : undefined,
+            };
+          }
+          return {
+            question: question.question,
+            selected_options: [label || text],
+          };
+        });
+        this.state.submitQuestionAnswers(answers);
+        this.editor.setText("");
+        return;
+      }
+      const question =
+        snapshot.pendingQuestion.questions[this.activeQuestionIndex]?.question ?? "";
+      if (question) {
+        this.state.submitQuestionAnswers([
+          { selected_options: [text], custom_input: text },
+        ]);
+      } else {
+        this.state.answerQuestion(text);
       }
       this.editor.setText("");
       return;
@@ -1700,6 +1742,7 @@ export class AppScreen implements Component, Focusable {
       this.draftBeforeQuestion = "";
       this.clearCtrlCPendingForQuestion();
     }
+    this.syncEditorSubmitState(snapshot);
     this.syncTeamPanelSelection(snapshot);
     this.refreshSwarmWorkflowsView();
     this.syncAnimationLoop(snapshot);
@@ -4250,7 +4293,14 @@ export class AppScreen implements Component, Focusable {
 
     if (permissionRequest) {
       const summary = parsePermissionSummary(question.question);
-      const title = progress ? `Permission ${this.activeQuestionIndex + 1}/${total}` : "Permission";
+      const title =
+        pendingQuestion.source === "confirm_interrupt"
+          ? progress
+            ? `Confirm ${this.activeQuestionIndex + 1}/${total}`
+            : "Confirm action"
+          : progress
+            ? `Permission ${this.activeQuestionIndex + 1}/${total}`
+            : "Permission";
       lines.push(...renderPermissionBlock(width, summary, title));
     } else if (this.otherInputMode) {
       lines.push(
@@ -4315,8 +4365,8 @@ export class AppScreen implements Component, Focusable {
         padToWidth(
           palette.text.dim(
             permissionRequest
-              ? "↑/↓ review · Enter confirm · Esc reject"
-              : "↑/↓ choose · Enter confirm · Esc reject",
+              ? "↑/↓ review · Enter/click confirm · Esc reject"
+              : "↑/↓ choose · Enter/click confirm · Esc reject",
           ),
           width,
         ),
@@ -4326,6 +4376,82 @@ export class AppScreen implements Component, Focusable {
       lines.push(padToWidth(palette.status.warning("Press Ctrl+C again to exit"), width));
     }
     return lines;
+  }
+
+  private handlePendingQuestionInput(
+    data: string,
+    snapshot: ReturnType<CliPiAppState["getSnapshot"]>,
+  ): boolean {
+    if (!snapshot.pendingQuestion) {
+      return false;
+    }
+
+    const mouse = parseSgrMouseRelease(data);
+    if (mouse?.button === 0 && this.questionList !== null) {
+      const hit = this.questionOptionRows.find((entry) => entry.row === mouse.row);
+      if (hit) {
+        this.handleQuestionSelection(hit.value);
+        return true;
+      }
+    }
+
+    if (this.questionList !== null) {
+      this.questionList.handleInput(data);
+      return true;
+    }
+
+    if (this.otherInputMode) {
+      if (matchesKey(data, "escape")) {
+        this.otherInputMode = false;
+        this.editor.setText("");
+        this.syncQuestionList(this.state.getSnapshot());
+        this.syncEditorSubmitState(snapshot);
+        return true;
+      }
+      this.editor.handleInput(data);
+      return true;
+    }
+
+    return false;
+  }
+
+  private updateQuestionOptionRows(
+    screenLines: string[],
+    snapshot: ReturnType<CliPiAppState["getSnapshot"]>,
+  ): void {
+    this.questionOptionRows = [];
+    if (!snapshot.pendingQuestion || !this.questionList) {
+      return;
+    }
+
+    const question =
+      snapshot.pendingQuestion.questions[this.activeQuestionIndex] ??
+      snapshot.pendingQuestion.questions[0];
+    if (!question) {
+      return;
+    }
+
+    for (const option of question.options) {
+      const displayLabel = normalizePermissionOptionLabel(option.label);
+      for (let i = 0; i < screenLines.length; i++) {
+        const plain = stripAnsi(screenLines[i]);
+        if (
+          (plain.startsWith("→ ") || plain.startsWith("  ")) &&
+          plain.includes(displayLabel)
+        ) {
+          this.questionOptionRows.push({ row: i + 1, value: option.label });
+          break;
+        }
+      }
+    }
+  }
+
+  private syncEditorSubmitState(snapshot: ReturnType<CliPiAppState["getSnapshot"]>): void {
+    const pendingQuestion = snapshot.pendingQuestion;
+    this.editor.disableSubmit =
+      !!pendingQuestion &&
+      !this.otherInputMode &&
+      (this.questionList !== null || (pendingQuestion.questions[0]?.options.length ?? 0) > 0);
   }
 
   private syncQuestionList(snapshot: ReturnType<CliPiAppState["getSnapshot"]>): void {
@@ -4346,7 +4472,8 @@ export class AppScreen implements Component, Focusable {
     const items: SelectItem[] = question.options.map((option) => ({
       value: option.label,
       label:
-        pendingQuestion.source === "permission_interrupt"
+        pendingQuestion.source === "permission_interrupt" ||
+        pendingQuestion.source === "confirm_interrupt"
           ? normalizePermissionOptionLabel(option.label)
           : option.label,
       description: option.description,
@@ -4361,7 +4488,11 @@ export class AppScreen implements Component, Focusable {
     }
     this.questionDetailsMap = detailsMap;
 
-    const maxVisible = pendingQuestion.source === "permission_interrupt" ? 4 : 6;
+    const maxVisible =
+      pendingQuestion.source === "permission_interrupt" ||
+      pendingQuestion.source === "confirm_interrupt"
+        ? 4
+        : 6;
     // For questions with details sub-lines (e.g. rewind), use a narrower label column
     // so the description starts sooner and details can align beneath it.
     const layout = detailsMap.size > 0
@@ -4410,7 +4541,9 @@ export class AppScreen implements Component, Focusable {
 
     if (label === "Other") {
       this.otherInputMode = true;
+      this.pendingQuestionAnswers.set(this.activeQuestionIndex, label);
       this.questionList = null;
+      this.syncEditorSubmitState(snapshot);
       this.tui.requestRender();
       return;
     }

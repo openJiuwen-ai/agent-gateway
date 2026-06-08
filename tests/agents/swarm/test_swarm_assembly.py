@@ -759,7 +759,7 @@ def test_code_member_builds_declaratively_without_post_processing(
     # Code-specific rails materialized via the normal declarative spec.build.
     for expected in (
         "CodeTaskPlanningRail",
-        "JiuwenAgentModeRail",
+        "CodeAgentModeRail",
         "StructuredAskUserRail",
         "WorktreeRail",
     ):

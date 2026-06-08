@@ -32,6 +32,10 @@ from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     _extract_questions_from_value,
     convert_interactions_to_ask_user_question,
+    extract_question_from_interaction,
+)
+from jiuwenswarm.agents.harness.code.rails.code_confirm_interrupt_rail import (
+    build_confirm_interrupt_message,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.system]
@@ -433,6 +437,77 @@ class TestConvertInteractionsToAskUserQuestion:
         ])
         assert result is not None
         assert result["source"] == "ask_user_interrupt"
+
+
+# =====================================================================
+# 5b. Confirm vs permission interrupt classification
+# =====================================================================
+
+class TestConfirmAndPermissionInterrupts:
+    @staticmethod
+    def test_confirm_interrupt_message_is_classified():
+        message = build_confirm_interrupt_message("switch_mode", {"mode": "plan"})
+        result = convert_interactions_to_ask_user_question([
+            {
+                "id": "req_confirm",
+                "value": {
+                    "tool_name": "switch_mode",
+                    "message": message,
+                    "tool_args": {"mode": "plan"},
+                },
+            }
+        ])
+        assert result is not None
+        assert result["source"] == "confirm_interrupt"
+        assert "switch_mode" in result["questions"][0]["question"]
+        assert result["questions"][0]["header"].startswith("操作确认")
+
+    @staticmethod
+    def test_permission_interrupt_message_is_classified():
+        message = "**工具 `write_file` 需要授权才能执行**\n\n请确认是否允许该操作。"
+        result = convert_interactions_to_ask_user_question([
+            {
+                "id": "req_perm",
+                "value": {
+                    "tool_name": "write_file",
+                    "message": message,
+                    "tool_args": {"file_path": "foo.py"},
+                },
+            }
+        ])
+        assert result is not None
+        assert result["source"] == "permission_interrupt"
+        assert "write_file" in result["questions"][0]["question"]
+        assert result["questions"][0]["header"].startswith("权限审批")
+
+    @staticmethod
+    def test_extract_question_falls_back_for_generic_confirm_copy():
+        question = extract_question_from_interaction({
+            "id": "req_generic",
+            "value": {
+                "tool_name": "switch_mode",
+                "message": "Please approve or reject?",
+                "tool_args": {"mode": "normal"},
+            },
+        })
+        assert question is not None
+        assert "switch_mode" in question["question"]
+        assert question["header"] == "操作确认: switch_mode"
+
+    @staticmethod
+    def test_exit_plan_mode_interrupt_uses_confirm_interrupt():
+        result = convert_interactions_to_ask_user_question([
+            {
+                "id": "req_plan_exit",
+                "value": {
+                    "tool_name": "exit_plan_mode",
+                    "message": "Please approve or reject?",
+                    "tool_args": {},
+                },
+            }
+        ])
+        assert result is not None
+        assert result["source"] == "confirm_interrupt"
 
 
 # =====================================================================

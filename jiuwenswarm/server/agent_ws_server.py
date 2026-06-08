@@ -78,10 +78,41 @@ from jiuwenswarm.common.security.ws_origin import (
     is_origin_check_enabled,
     is_allowed_browser_origin,
 )
+from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
+    APPROVE_CMD_PREFIX,
+    APPROVED_NOTIFICATION,
+    FEEDBACK_INJECTION,
+    PLAN_MODE_EXITED_EVENT_TYPE,
+    PLAN_USER_APPROVED_FLAG,
+    REJECT_CMD_PREFIX,
+    classify_plan_user_intent,
+    extract_feedback_from_reject,
+    is_direct_plan_implement_request,
+)
+from jiuwenswarm.common.schema.message import ReqMethod
 
 logger = logging.getLogger(__name__)
 
-# 流式处理心跳间隔：当 Agent 处理时间超过此阈值时，发送心跳 chunk 保持 WebSocket 连接活跃
+# ── Plan approval state store (session_id → PlanApprovalState) ────────────
+# Populated by PlanApprovalRail.after_tool_call after exit_plan_mode,
+# consumed by _handle_pending_plan_approval before the next user turn.
+_pending_plan_approvals: dict[str, dict] = {}
+
+# Sessions where the user approved the plan on the latest chat turn.
+# Consumed by _ensure_code_mode_state (session-scoped, not request.params) so
+# concurrent skills.list RPCs cannot steal the approval flag.
+_plan_approved_sessions: set[str] = set()
+
+# Serialize plan-mode restore per session to avoid checkpoint races.
+_session_mode_sync_locks: dict[str, asyncio.Lock] = {}
+
+_CODE_MODE_SYNC_METHODS = frozenset({
+    ReqMethod.CHAT_SEND,
+    ReqMethod.CHAT_RESUME,
+    ReqMethod.CHAT_ANSWER,
+})
+
+# ── 流式处理心跳间隔：当 Agent 处理时间超过此阈值时，发送心跳 chunk 保持 WebSocket 连接活跃 --
 # 避免 ping_timeout 导致连接关闭。默认 10 秒，小于服务端 ping_timeout=20s。
 _STREAM_HEARTBEAT_INTERVAL_SECONDS = 10.0
 _HISTORY_PAGE_SIZE = 20
@@ -226,8 +257,6 @@ def _apply_resolved_mode_to_request(request: AgentRequest) -> tuple[str, str | N
 
 def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
     """将 Gateway 发送的 JSON 载荷解析为 AgentRequest."""
-    from jiuwenswarm.common.schema.message import ReqMethod
-
     req_method = data.get("req_method")
     if req_method is not None and isinstance(req_method, str):
         req_method = ReqMethod(req_method)
@@ -363,6 +392,202 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
             "request.params is not a dict (type=%s), session=%s",
             type(request.params).__name__, request.session_id,
         )
+
+
+# ── Plan approval helpers ──────────────────────────────────────────────
+
+
+def _store_pending_approval_from_agent(
+    session_id: str,
+    agent_instance: Any,
+) -> None:
+    """Pick up ``_plan_approval_state`` from the agent instance and store it.
+
+    Called after ``agent.process_message`` / ``process_message_stream``
+    completes.  The rail sets ``agent_instance._plan_approval_state`` during
+    ``after_tool_call``; we read it and store it in the session-level dict so
+    the next request can inspect it.
+
+    Args:
+        session_id: The session identifier.
+        agent_instance: The DeepAgent instance that just processed a request.
+    """
+    approval_state = getattr(agent_instance, "_plan_approval_state", None)
+    if approval_state is None:
+        return
+    # Convert dataclass to dict if needed
+    if hasattr(approval_state, "to_dict"):
+        _pending_plan_approvals[session_id] = approval_state.to_dict()
+    elif isinstance(approval_state, dict):
+        _pending_plan_approvals[session_id] = approval_state
+    else:
+        _pending_plan_approvals[session_id] = {
+            "pending": True,
+            "plan_slug": getattr(approval_state, "plan_slug", ""),
+            "plan_content": getattr(approval_state, "plan_content", ""),
+            "plan_path": getattr(approval_state, "plan_path", ""),
+        }
+    try:
+        delattr(agent_instance, "_plan_approval_state")
+    except (AttributeError, TypeError):
+        pass
+    logger.info(
+        "[_store_pending_approval] Session %s has pending plan approval",
+        session_id,
+    )
+
+
+def _is_resuming_tool_interrupt(request: AgentRequest) -> bool:
+    """Return True when the request resumes a paused tool-call interrupt."""
+    params = request.params if isinstance(request.params, dict) else {}
+    request_id = str(params.get("request_id") or "").strip()
+    answers = params.get("answers")
+    if not request_id or not answers:
+        return False
+    source = str(params.get("source") or "").strip()
+    return source in {
+        "permission_interrupt",
+        "confirm_interrupt",
+        "ask_user_interrupt",
+    }
+
+
+def _check_and_handle_pending_approval(
+    request: AgentRequest,
+    language: str = "cn",
+) -> bool:
+    """Check for pending plan approval and handle user's response.
+
+    Must be called BEFORE agent processing (before _ensure_code_mode_state).
+    If there is a pending approval and the user's message is a response to it,
+    this function will:
+
+    - **On approval**: Return ``True``, having already modified ``request``
+      to inject the approval notification into the query (which will be
+      visible to the model in normal mode).
+    - **On feedback**: Return ``True``, having injected the feedback as a
+      ``<system-reminder>`` and kept plan mode active.
+    - **No pending approval**: Return ``False`` (no changes).
+
+    Args:
+        request: The incoming request (will be mutated if approval is handled).
+        language: ``"cn"`` or ``"en"``.
+
+    Returns:
+        ``True`` if a pending approval was found and handled; ``False`` otherwise.
+    """
+    if _is_resuming_tool_interrupt(request):
+        return False
+
+    session_id = request.session_id
+    if not session_id:
+        return False
+
+    pending = _pending_plan_approvals.pop(session_id, None)
+    if not pending or not pending.get("pending"):
+        return False
+
+    # Read the user's response
+    user_msg = ""
+    if isinstance(request.params, dict):
+        user_msg = (request.params.get("query") or "").strip()
+    if not user_msg:
+        # Empty user message — keep pending state
+        _pending_plan_approvals[session_id] = pending
+        return False
+
+    plan_content = pending.get("plan_content", "")
+    lang = "cn" if language == "cn" else "en"
+
+    # Classify: approve → exit plan and implement; revise → stay in plan.
+    is_reject_cmd = user_msg.startswith(REJECT_CMD_PREFIX)
+    intent = classify_plan_user_intent(user_msg)
+
+    if intent == "approve":
+        # ── User approves the plan ──
+        _plan_approved_sessions.add(session_id)
+        if isinstance(request.params, dict):
+            request.params["mode"] = "code.normal"
+            request.params[PLAN_USER_APPROVED_FLAG] = True
+        approval_text = APPROVED_NOTIFICATION[lang].format(plan_content=plan_content)
+        if isinstance(request.params, dict):
+            request.params["query"] = approval_text
+        logger.info(
+            "[_check_and_handle_pending_approval] User APPROVED plan for session %s",
+            session_id,
+        )
+    else:
+        # ── User wants plan revisions only ──
+        feedback_msg = user_msg
+        if is_reject_cmd:
+            feedback_msg = extract_feedback_from_reject(user_msg)
+        feedback_text = FEEDBACK_INJECTION[lang].format(user_message=feedback_msg)
+        _plan_approved_sessions.discard(session_id)
+        if isinstance(request.params, dict):
+            request.params["mode"] = "code.plan"
+            request.params.pop(PLAN_USER_APPROVED_FLAG, None)
+            request.params["query"] = feedback_text
+        logger.info(
+            "[_check_and_handle_pending_approval] User REVISE plan for session %s",
+            session_id,
+        )
+
+    return True
+
+
+async def _try_handle_direct_plan_implement(
+    request: AgentRequest,
+    agent: Any,
+    language: str = "cn",
+) -> bool:
+    """Approve plan via chat when ``exit_plan_mode`` left no pending gate.
+
+    Covers cases where the user says e.g. 「按计划实现」 after rejecting a
+    misleading ``switch_mode`` confirm, without re-calling ``exit_plan_mode``.
+    """
+    if _is_resuming_tool_interrupt(request):
+        return False
+
+    session_id = request.session_id
+    if not session_id or not isinstance(request.params, dict):
+        return False
+    if request.params.get(PLAN_USER_APPROVED_FLAG):
+        return False
+    user_msg = (request.params.get("query") or "").strip()
+    if not is_direct_plan_implement_request(user_msg):
+        return False
+
+    from openjiuwen.core.single_agent import create_agent_session
+
+    session = create_agent_session(
+        session_id=request.session_id,
+        card=agent.get_instance().card,
+    )
+    await session.pre_run(inputs=None)
+    state = agent.get_instance().load_state(session)
+    if state.plan_mode.mode != "plan":
+        return False
+
+    plan_path = agent.get_instance().get_plan_file_path(session)
+    plan_content = ""
+    if plan_path and plan_path.exists():
+        plan_content = plan_path.read_text(encoding="utf-8")
+    if not plan_content.strip():
+        return False
+
+    lang = "cn" if language == "cn" else "en"
+    _plan_approved_sessions.add(session_id)
+    request.params["mode"] = "code.normal"
+    request.params[PLAN_USER_APPROVED_FLAG] = True
+    request.params["query"] = APPROVED_NOTIFICATION[lang].format(
+        plan_content=plan_content,
+    )
+    logger.info(
+        "[_try_handle_direct_plan_implement] User APPROVED plan via chat "
+        "for session %s",
+        session_id,
+    )
+    return True
 
 
 class AgentWebSocketServer:
@@ -836,8 +1061,6 @@ class AgentWebSocketServer:
         )
 
         try:
-            from jiuwenswarm.common.schema.message import ReqMethod
-
             if request.channel_id == "acp" and request.req_method != ReqMethod.INITIALIZE:
                 metadata = dict(request.metadata or {})
                 ws_caps = self._get_ws_acp_client_capabilities(ws)
@@ -1072,8 +1295,6 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         return request.req_method in (
             ReqMethod.CHAT_SEND,
             ReqMethod.CHAT_RESUME,
@@ -1150,13 +1371,109 @@ class AgentWebSocketServer:
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
 
+    @staticmethod
+    def _resolve_code_language() -> str:
+        """Determine the display language for code mode plan approval messages.
+
+        Returns ``"cn"`` or ``"en"`` based on configuration.
+        Defaults to ``"cn"`` if the config key is missing.
+        """
+        try:
+            config = get_config()
+            return config.get("language", "cn")
+        except Exception:
+            return "cn"
+
+    @staticmethod
+    def _should_sync_code_mode_state(request: AgentRequest) -> bool:
+        """Only agent chat turns may change plan/normal mode.
+
+        Background RPCs (e.g. ``skills.list``) also send ``mode: code.normal`` but
+        must not run plan-mode restore logic or race with an in-flight approval.
+        """
+        method = request.req_method
+        if method is None:
+            return True
+        return method in _CODE_MODE_SYNC_METHODS
+
+    @staticmethod
+    def _session_mode_sync_lock(session_id: str) -> asyncio.Lock:
+        lock = _session_mode_sync_locks.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _session_mode_sync_locks[session_id] = lock
+        return lock
+
+    async def _push_plan_mode_exited(self, request: AgentRequest) -> None:
+        """Notify the client that plan mode ended after user approval."""
+        session_id = request.session_id
+        if not session_id:
+            return
+        await self.send_push({
+            "channel_id": request.channel_id or "default",
+            "session_id": session_id,
+            "payload": {
+                "event_type": PLAN_MODE_EXITED_EVENT_TYPE,
+                "mode": "code.normal",
+            },
+        })
+
+    @staticmethod
+    def _is_resuming_tool_interrupt(request: AgentRequest) -> bool:
+        """Return True when the request resumes a paused tool-call interrupt."""
+        return _is_resuming_tool_interrupt(request)
+
+    async def _prepare_code_mode_chat_turn(
+        self,
+        request: AgentRequest,
+        channel_id: str,
+    ) -> tuple[str, str | None, Any]:
+        """Plan approval gates, mode resolution, and correct agent instance selection."""
+        language = self._resolve_code_language()
+
+        if not _is_resuming_tool_interrupt(request):
+            _check_and_handle_pending_approval(request, language=language)
+
+        mode, sub_mode = _apply_resolved_mode_to_request(request)
+        agent_mode = "agent" if mode == "auto_harness" else mode
+        project_dir = resolve_request_project_dir(request)
+
+        agent = await self._agent_manager.get_agent(
+            channel_id=channel_id,
+            mode=agent_mode,
+            project_dir=project_dir,
+            sub_mode=sub_mode,
+        )
+        if agent is None:
+            raise ValueError("Failed to get agent")
+
+        if (
+            not _is_resuming_tool_interrupt(request)
+            and await _try_handle_direct_plan_implement(
+                request, agent, language=language
+            )
+        ):
+            prev_sub_mode = sub_mode
+            mode, sub_mode = _apply_resolved_mode_to_request(request)
+            if sub_mode != prev_sub_mode:
+                agent = await self._agent_manager.get_agent(
+                    channel_id=channel_id,
+                    mode=agent_mode,
+                    project_dir=project_dir,
+                    sub_mode=sub_mode,
+                )
+                if agent is None:
+                    raise ValueError("Failed to get agent")
+
+        return mode, sub_mode, agent
+
     async def _ensure_code_mode_state(
         self,
         request: AgentRequest,
         mode: str,
         sub_mode: str,
         agent: Any,
-    ) -> None:
+    ) -> bool:
         """code 模式：确保 agent 的 plan_mode 状态正确，必要时执行 switch_mode 并持久化.
 
         当 plan 已完成（plan_slug 存在且 mode 不为 "plan"）时跳过 switch_mode，
@@ -1166,37 +1483,75 @@ class AgentWebSocketServer:
 
         切换到 plan 模式且尚未调用 enter_plan_mode 时，注入 <system-reminder>
         告知 LLM 调用 enter_plan_mode（对齐 Claude Code：plan 指令不进 system prompt）。
+
+        Returns:
+            ``True`` if plan mode was restored to normal after user approval.
         """
         if mode != "code" or sub_mode == "team":
-            return
-        from openjiuwen.core.single_agent import create_agent_session
-        session = create_agent_session(
-            session_id=request.session_id, card=agent.get_instance().card
-        )
-        await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
-        state = agent.get_instance().load_state(session)
-        # 仅在目标模式与当前模式不同时执行 switch_mode，避免：
-        # 1. exit_plan_mode 已恢复的模式被覆盖（plan 完成 → mode=normal, sub_mode=normal → 跳过）
-        # 2. 已在 plan 模式时冗余调用 switch_mode（pre_plan_mode 被污染）
-        # 3. 强制退出后无法重新进入 plan 模式（plan_slug 残留 + mode=normal → sub_mode=plan → 执行）
-        if state.plan_mode.mode != sub_mode:
-            agent.get_instance().switch_mode(session=session, mode=sub_mode)
-            # switch_mode 内部已通过 save_state 写入 "deepagent" key，
-            # 只需 post_run 持久化到 checkpointer
-            await session.post_run()
+            return False
+        if not self._should_sync_code_mode_state(request):
+            return False
+        if self._is_resuming_tool_interrupt(request):
+            logger.info(
+                "[_ensure_code_mode_state] Skip mode sync while resuming tool interrupt "
+                "for session=%s source=%s",
+                request.session_id,
+                (request.params or {}).get("source") if isinstance(request.params, dict) else None,
+            )
+            return False
 
-        # 切换到 plan 模式且尚未调用 enter_plan_mode 时，
-        # 注入 <system-reminder> 告知 LLM 调用 enter_plan_mode。
-        # 此检查需在 mode-switch 条件块之外：若 LLM 在第一次进入 plan 模式时
-        # 未调用 enter_plan_mode（例如用 ask_user 回复），后续请求中 mode
-        # 已等于 sub_mode，if 块被跳过，但提醒仍需注入。
-        if sub_mode == "plan" and not state.plan_mode.plan_slug:
-            _inject_plan_mode_activation_reminder(request)
+        session_id = request.session_id or "default"
+        restored_after_approval = False
+        async with self._session_mode_sync_lock(session_id):
+            from openjiuwen.core.single_agent import create_agent_session
+            session = create_agent_session(
+                session_id=request.session_id, card=agent.get_instance().card
+            )
+            await session.pre_run(inputs=None)  # 从 checkpointer 加载历史 state
+            state = agent.get_instance().load_state(session)
+            # 仅在目标模式与当前模式不同时执行模式切换，避免：
+            # 1. exit_plan_mode 已恢复的模式被覆盖（plan 完成 → mode=normal, sub_mode=normal → 跳过）
+            # 2. 已在 plan 模式时冗余调用 switch_mode（pre_plan_mode 被污染）
+            # 3. 强制退出后无法重新进入 plan 模式（plan_slug 残留 + mode=normal → sub_mode=plan → 执行）
+            if state.plan_mode.mode != sub_mode:
+                approved_this_turn = session_id in _plan_approved_sessions
+                if isinstance(request.params, dict):
+                    request.params.pop(PLAN_USER_APPROVED_FLAG, None)
+                # 仅当用户明确批准计划时才允许 plan → normal。
+                if state.plan_mode.mode == "plan" and sub_mode == "normal":
+                    if approved_this_turn:
+                        _plan_approved_sessions.discard(session_id)
+                        agent.get_instance().restore_mode_after_plan_exit(session)
+                        restored_after_approval = True
+                        logger.info(
+                            "[_ensure_code_mode_state] Restored plan→normal after user "
+                            "approval for session=%s",
+                            session_id,
+                        )
+                    else:
+                        if isinstance(request.params, dict):
+                            request.params["mode"] = "code.plan"
+                        logger.info(
+                            "[_ensure_code_mode_state] Blocked plan→normal without approval "
+                            "for session=%s request_id=%s",
+                            session_id,
+                            request.request_id,
+                        )
+                else:
+                    agent.get_instance().switch_mode(session=session, mode=sub_mode)
+                # switch_mode/restore 内部已通过 save_state 写入 "deepagent" key，
+                # 只需 post_run 持久化到 checkpointer
+                await session.post_run()
+
+            # 切换到 plan 模式且尚未调用 enter_plan_mode 时，
+            # 注入 <system-reminder> 告知 LLM 调用 enter_plan_mode。
+            if sub_mode == "plan" and not state.plan_mode.plan_slug:
+                _inject_plan_mode_activation_reminder(request)
+
+        return restored_after_approval
 
     async def _handle_unary(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """非流式处理：调用 process_message，返回一条 E2AResponse 线 JSON。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
-
         channel_id = request.channel_id or "default"
 
         if request.req_method == ReqMethod.INITIALIZE:
@@ -1215,20 +1570,21 @@ class AgentWebSocketServer:
             await self._handle_acp_tool_response(ws, request, send_lock)
             return
 
-        mode, sub_mode = _apply_resolved_mode_to_request(request)
-        agent_mode = "agent" if mode == "auto_harness" else mode
-        agent = await self._agent_manager.get_agent(
-            channel_id=channel_id,
-            mode=agent_mode,
-            project_dir=resolve_request_project_dir(request),
-            sub_mode=sub_mode,
+        mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
+            request, channel_id
         )
-        if agent is None:
-            raise ValueError("Failed to get agent")
 
-        await self._ensure_code_mode_state(request, mode, sub_mode, agent)
+        restored_plan = await self._ensure_code_mode_state(request, mode, sub_mode, agent)
+        if restored_plan:
+            await self._push_plan_mode_exited(request)
 
         resp = await agent.process_message(request)
+
+        # ── Pick up pending approval state from agent ──
+        _store_pending_approval_from_agent(
+            request.session_id or "default",
+            agent.get_instance(),
+        )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
@@ -1245,18 +1601,14 @@ class AgentWebSocketServer:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._session_stream_tasks[session_id] = current_task
-        mode, sub_mode = _apply_resolved_mode_to_request(request)
-        agent_mode = "agent" if mode == "auto_harness" else mode
-        agent = await self._agent_manager.get_agent(
-            channel_id=channel_id,
-            mode=agent_mode,
-            project_dir=resolve_request_project_dir(request),
-            sub_mode=sub_mode,
-        )
-        if agent is None:
-            raise ValueError("Failed to get agent")
 
-        await self._ensure_code_mode_state(request, mode, sub_mode, agent)
+        mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
+            request, channel_id
+        )
+
+        restored_plan = await self._ensure_code_mode_state(request, mode, sub_mode, agent)
+        if restored_plan:
+            await self._push_plan_mode_exited(request)
 
         chunk_count = 0
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
@@ -1325,6 +1677,12 @@ class AgentWebSocketServer:
             # 清除 session 流式任务追踪（仅清除自身，避免误删后续新任务）
             if self._session_stream_tasks.get(session_id) is current_task:
                 self._session_stream_tasks.pop(session_id, None)
+
+            # ── Pick up pending approval state from agent ──
+            _store_pending_approval_from_agent(
+                session_id,
+                agent.get_instance(),
+            )
 
         logger.info(
             "[AgentWebSocketServer] 流式响应已发送: request_id=%s 共 %s 个 chunk",

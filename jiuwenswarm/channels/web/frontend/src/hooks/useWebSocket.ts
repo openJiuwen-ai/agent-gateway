@@ -971,7 +971,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             ? { evolution_meta: evolutionMeta }
             : {};
         // 如果是需要走 interrupt/interact 的确认，发送 chat.send
-        if (source === 'permission_interrupt') {
+        if (source === 'permission_interrupt' || source === 'confirm_interrupt') {
           await request('chat.send', {
             session_id: sessionId,
             query: '',

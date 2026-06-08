@@ -522,7 +522,10 @@ class JiuWenClaw:
             )
             return interactive_input
 
-        if source and source != "permission_interrupt":
+        if source and source not in {
+            "permission_interrupt",
+            "confirm_interrupt",
+        }:
             return None
 
         answer = answers[0] if answers else {}
@@ -531,7 +534,7 @@ class JiuWenClaw:
 
         value = selected_options[0] if selected_options else ""
 
-        if value in ("approve", "本次允许", "Approve"):
+        if value in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
             confirm_payload = {"approved": True, "auto_confirm": False, "feedback": ""}
         elif value in ("always_allow", "总是允许", "Always Allow"):
             confirm_payload = {
@@ -540,8 +543,13 @@ class JiuWenClaw:
                 "persist_allow": True,
                 "feedback": "",
             }
-        elif value in ("reject", "拒绝", "Reject"):
-            confirm_payload = {"approved": False, "auto_confirm": False, "feedback": custom_input or "用户拒绝"}
+        elif value in ("reject", "拒绝", "Reject", "继续规划", "其他意见"):
+            feedback = custom_input or (
+                "用户希望继续规划" if value in ("Keep planning", "继续规划", "其他意见") else "用户拒绝"
+            )
+            confirm_payload = {"approved": False, "auto_confirm": False, "feedback": feedback}
+        elif custom_input:
+            confirm_payload = {"approved": False, "auto_confirm": False, "feedback": custom_input}
         else:
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 

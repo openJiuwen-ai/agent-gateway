@@ -28,7 +28,6 @@ from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
     AgentModeRail,
-    ConfirmInterruptRail,
     CodingMemoryRail,
     SysOperationRail,
     LspRail
@@ -54,7 +53,10 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
     build_code_system_prompt,
 )
-from jiuwenswarm.agents.harness.code.rails import CodeTaskPlanningRail
+from jiuwenswarm.agents.harness.code.rails import (
+    CodeTaskPlanningRail,
+    PlanApprovalRail,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
     StructuredAskUserRail,
@@ -173,25 +175,6 @@ implementing the approved plan.
 </system-reminder>"""
 
 
-class JiuwenAgentModeRail(AgentModeRail):
-    """AgentModeRail preconfigured with jiuwenswarm's code plan-mode contract.
-
-    Bakes in the Claude-Code-aligned plan-mode behavior (switch_mode disabled,
-    static plan-mode system note, enter/exit plan instructions) so both the
-    legacy adapter path and the declarative swarm provider construct an
-    identical rail without duplicating configuration.
-    """
-
-    def __init__(self) -> None:
-        """Initialize the rail with the fixed code plan-mode configuration."""
-        super().__init__(
-            allow_switch_mode=False,
-            plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
-            enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
-            exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
-        )
-
-
 # 名字 → 构建方法映射（rail/tool 名字与类方法名对照）
 _RAIL_BUILD_NAMES: dict[str, str] = {
     "SysOperationRail": "_build_filesystem_rail",
@@ -208,6 +191,7 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "CodingMemoryRail": "_build_coding_memory_rail",
     "WorktreeRail": "_build_worktree_rail_via_config",
     "CodeAgentRail": "_build_code_agent_rail",
+    "PlanApprovalRail": "_build_plan_approval_rail",
 }
 
 _TOOL_BUILD_NAMES: dict[str, str] = {
@@ -328,6 +312,24 @@ def create_coding_memory_rail(
         ),
         language="en",
     )
+
+
+# ─── Plan mode allowed tools for code mode ──────────────────────────────
+# Excludes switch_mode so the LLM cannot unilaterally exit plan mode.
+
+_CODE_PLAN_ALLOWED_TOOLS: list[str] = [
+    "enter_plan_mode",
+    "exit_plan_mode",
+    "ask_user",
+    "task_tool",
+    "read_file",
+    "grep",
+    "list_files",
+    "glob",
+    "bash",
+    "write_file",
+    "edit_file",
+]
 
 
 class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
@@ -546,11 +548,12 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             _RailBuildInfo(
                 "_code_confirm_interrupt_rail",
                 self._build_confirm_interrupt_rail,
-                {"tool_names": ["switch_mode", "exit_plan_mode"]},
+                {"tool_names": ["switch_mode"]},
             ),
             _RailBuildInfo("_context_processor_rail", self._build_context_processor_rail),
             _RailBuildInfo("_code_task_planning_rail", self._build_code_task_planning_rail),
             _RailBuildInfo("_code_agent_rail", self._build_code_agent_rail),
+            _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
         ]
 
         # 动态 Rails — 从 config.yaml::modes.code.rails 读取
@@ -644,11 +647,17 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             return None
 
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
-        """构建 AgentModeRail（屏蔽 switch_mode + 静态 plan 提示词 + plan 指令进对话）."""
+        """构建 CodeAgentModeRail（plan 退出需用户批准后生效）."""
         try:
-            return JiuwenAgentModeRail()
+            from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
+                CodeAgentModeRail,
+            )
+
+            return CodeAgentModeRail(
+                allowed_tools=_CODE_PLAN_ALLOWED_TOOLS,
+            )
         except Exception as exc:
-            logger.warning("[JiuwenClawCodeAdapter] AgentModeRail create failed: %s", exc)
+            logger.warning("[JiuwenClawCodeAdapter] CodeAgentModeRail create failed: %s", exc)
             return None
 
     @staticmethod
@@ -668,12 +677,18 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             logger.warning("[JiuwenClawCodeAdapter] StructuredAskUserRail create failed: %s", exc)
             return None
 
-    def _build_confirm_interrupt_rail(self, tool_names: list[str] | None = None) -> ConfirmInterruptRail | None:
-        """构建 ConfirmInterruptRail."""
+    def _build_confirm_interrupt_rail(self, tool_names: list[str] | None = None) -> Any | None:
+        """构建 CodeConfirmInterruptRail（控制类工具需用户确认，含可读提示）."""
         try:
-            return ConfirmInterruptRail(tool_names=tool_names or ["switch_mode"])
+            from jiuwenswarm.agents.harness.code.rails.code_confirm_interrupt_rail import (
+                CodeConfirmInterruptRail,
+            )
+
+            # exit_plan_mode 由 PlanApprovalRail 负责计划审批，不再走 ConfirmInterrupt。
+            filtered = [name for name in (tool_names or []) if name != "exit_plan_mode"]
+            return CodeConfirmInterruptRail(tool_names=filtered or ["switch_mode"])
         except Exception as exc:
-            logger.warning("[JiuwenClawCodeAdapter] ConfirmInterruptRail create failed: %s", exc)
+            logger.warning("[JiuwenClawCodeAdapter] CodeConfirmInterruptRail create failed: %s", exc)
             return None
 
     def _build_lsp_rail_via_config(self) -> Any:
@@ -1020,18 +1035,30 @@ class JiuwenClawCodeAdapter(JiuWenClawDeepAdapter):
             logger.warning("[JiuwenClawCodeAdapter] CodeAgentRail create failed: %s", exc)
             return None
 
+    def _build_plan_approval_rail(self) -> PlanApprovalRail | None:
+        """构建 PlanApprovalRail，管理 plan 审批生命周期。"""
+        try:
+            rail = PlanApprovalRail()
+            logger.info("[JiuwenClawCodeAdapter] PlanApprovalRail created")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuwenClawCodeAdapter] PlanApprovalRail create failed: %s", exc)
+            return None
+
     def _get_current_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any] | None = None
     ) -> list[Any]:
-        """扩展父类方法，将 CodeAgentRail 纳入热重载范围。
+        """扩展父类方法，将 Code/Plan 专属 Rail 纳入热重载范围。
 
         父类 _get_current_agent_rails 只返回 skill/context/memory 等 rail，
-        CodeAgentRail 不在其中。覆盖此方法确保 config reload 时
-        CodeAgentRail 被正确重新初始化。
+        CodeAgentRail 和 PlanApprovalRail 不在其中。覆盖此方法确保 config reload
+        时这些 rail 被正确重新初始化。
         """
         rails_list = super()._get_current_agent_rails(config, config_base)
         if self._code_agent_rail is not None:
             rails_list.append(self._code_agent_rail)
+        if self._code_plan_approval_rail is not None:
+            rails_list.append(self._code_plan_approval_rail)
         return rails_list
 
     # ─── Runtime config ──────────────────────────
