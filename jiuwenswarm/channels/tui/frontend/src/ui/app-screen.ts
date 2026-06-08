@@ -239,6 +239,7 @@ type SwarmWorkflowsViewState =
   | {
       phase: "list";
       list: SelectList;
+      loading: boolean;
     }
   | {
       phase: "workflow";
@@ -253,6 +254,25 @@ type SwarmWorkflowsViewState =
       workflowId: string;
       agentId: string;
     };
+
+function formatSwarmWorkflowsSummary(workflows: WorkflowRun[]): string {
+  if (workflows.length === 0) return "No workflows";
+  const statusOrder: WorkflowStatus[] = [
+    "running",
+    "pending",
+    "planned",
+    "completed",
+    "failed",
+    "stopped",
+  ];
+  const parts = statusOrder
+    .map((status) => {
+      const count = workflows.filter((workflow) => workflow.status === status).length;
+      return count > 0 ? `${count} ${status}` : null;
+    })
+    .filter((part): part is string => Boolean(part));
+  return parts.join(", ");
+}
 
 // FileViewer state for viewing large content (e.g., formatted logs)
 type FileViewerState = {
@@ -2651,6 +2671,8 @@ export class AppScreen implements Component, Focusable {
   }
 
   private async openSwarmWorkflowsView(): Promise<void> {
+    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(true);
+    this.tui.requestRender();
     try {
       await this.state.loadWorkflowSnapshot();
     } catch (error) {
@@ -2659,7 +2681,7 @@ export class AppScreen implements Component, Focusable {
         addError(this.state.getSnapshot().sessionId, `workflow list failed: ${message}`),
       );
     }
-    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false);
     this.tui.requestRender();
   }
 
@@ -2706,7 +2728,7 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
-  private buildSwarmWorkflowsListState(): SwarmWorkflowsViewState {
+  private buildSwarmWorkflowsListState(loading = false): SwarmWorkflowsViewState {
     const workflows = this.state.getSnapshot().workflowRuns;
     const items: SelectItem[] = workflows.map((workflow) => {
       const total = workflow.agent_count ?? countWorkflowAgents(workflow);
@@ -2729,7 +2751,7 @@ export class AppScreen implements Component, Focusable {
     list.onCancel = () => {
       this.closeSwarmWorkflowsView();
     };
-    return { phase: "list", list };
+    return { phase: "list", list, loading };
   }
 
   private buildSwarmWorkflowDetailState(
@@ -2919,12 +2941,27 @@ export class AppScreen implements Component, Focusable {
     width: number,
   ): string[] {
     const workflows = this.state.getSnapshot().workflowRuns;
+    const headerLines = [
+      padToWidth(palette.text.accent("Swarm workflows"), width),
+      padToWidth(
+        palette.text.dim(
+          state.loading ? "Loading workflows..." : formatSwarmWorkflowsSummary(workflows),
+        ),
+        width,
+      ),
+    ];
+    const helpLine = padToWidth(
+      palette.text.dim("up/down select - Enter view - r refresh - Esc close"),
+      width,
+    );
+    if (state.loading || workflows.length === 0) {
+      return [...headerLines, "", helpLine];
+    }
     return [
-      padToWidth(palette.text.accent("Dynamic workflows"), width),
-      padToWidth(palette.text.dim(`${workflows.length} workflows`), width),
+      ...headerLines,
       "",
       ...state.list.render(width),
-      padToWidth(palette.text.dim("up/down select · Enter view · r refresh · Esc close"), width),
+      helpLine,
     ];
   }
 
