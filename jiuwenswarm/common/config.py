@@ -14,6 +14,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 from ruamel.yaml import YAML
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from jiuwenswarm.common.utils import get_config_dir, get_config_file
 
@@ -740,6 +741,10 @@ def update_default_models_in_config(models_list: list[dict[str, Any]]) -> None:
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "models" not in data:
         data["models"] = {}
+    # alias 为字符串时强制带双引号写出，避免 "yes"/"no"/"on"/"off" 等被 YAML 1.1 解析为布尔值
+    for entry in models_list:
+        if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
+            entry["alias"] = DoubleQuotedScalarString(entry["alias"])
     data["models"]["defaults"] = models_list
     if "default" in data["models"]:
         del data["models"]["default"]
