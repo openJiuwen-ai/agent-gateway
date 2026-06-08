@@ -3404,6 +3404,9 @@ export class AppScreen implements Component, Focusable {
       this.rebuildStatusViewTabList();
       this.configEditorState = null;
       this.tui.requestRender();
+      // Re-fetch status & config payloads so the status tab shows updated values
+      // (e.g. model name changed via config editor)
+      this.refreshStatusViewPayloads();
       return;
     }
 
@@ -3424,6 +3427,8 @@ export class AppScreen implements Component, Focusable {
       this.statusViewState.phase = "tab_view";
       this.statusViewState.tab = "config";
       this.rebuildStatusViewTabList();
+      // Re-fetch payloads so status tab reflects any config changes made in the editor
+      this.refreshStatusViewPayloads();
     }
     this.configEditorState = null;
     this.tui.requestRender();
@@ -3730,6 +3735,32 @@ export class AppScreen implements Component, Focusable {
       this.statusViewState.configPayload,
     );
     this.tui.requestRender();
+  }
+
+  /** Re-fetch command.status and config.get payloads to refresh the StatusView
+   *  after a config change (e.g. model name update). */
+  private async refreshStatusViewPayloads(): Promise<void> {
+    if (!this.statusViewState) return;
+    try {
+      const statusPayload = await this.state.request<import("../core/commands/builtins/status.js").StatusPayload>(
+        "command.status",
+        {},
+      );
+      this.statusViewState.statusPayload = statusPayload;
+    } catch {
+      // keep stale payload if refresh fails
+    }
+    try {
+      const configPayload = await this.state.request<Record<string, unknown> & { schema?: ConfigItemSchema[] }>(
+        "config.get",
+        {},
+      );
+      this.statusViewState.configPayload = configPayload;
+    } catch {
+      // keep stale payload if refresh fails
+    }
+    // Rebuild list with fresh payloads so the current tab reflects updated data
+    this.rebuildStatusViewTabList();
   }
 
   private transitionToConfigEditor(key: string): void {
