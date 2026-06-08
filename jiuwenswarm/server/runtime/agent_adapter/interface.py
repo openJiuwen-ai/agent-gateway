@@ -906,7 +906,8 @@ class JiuWenClaw:
                 request_id=request.request_id or "",
                 repair_call=repair_call,
             )
-            result.payload["content"] = content_str
+            if isinstance(content, str):
+                result.payload["content"] = content_str
             append_history_record(
                 session_id=session_id,
                 request_id=request.request_id,
