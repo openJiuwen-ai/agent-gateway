@@ -70,7 +70,7 @@ import {
   orderedMemberIds,
   teamWorkingStartedAtMs,
 } from "./components/team-shared.js";
-import { padToWidth } from "./rendering/text.js";
+import { padToWidth, renderWrappedText } from "./rendering/text.js";
 import { editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
 
 const END_CURSOR = "\x1b[7m \x1b[0m";
@@ -4379,9 +4379,14 @@ export class AppScreen implements Component, Focusable {
       if (selectedItem && this.questionDetailsMap) {
         const details = this.questionDetailsMap.get(selectedItem.value);
         if (details && details.length > 0) {
-          const detailLines = details.map((d) =>
-            padToWidth(palette.text.dim(`              ${d}`), width),
-          );
+          const indent = "              ";
+          const detailLines: string[] = [];
+          for (const d of details) {
+            // Wrap indented text to full terminal width, so long paths auto-break into multiple lines
+            detailLines.push(
+              ...renderWrappedText(Math.max(1, width), `${indent}${d}`, palette.text.dim),
+            );
+          }
           // SelectList.render() layout: [visible item 0..N-1, (scroll indicator?)]
           // Replicate its scroll-window calculation to find where the selected
           // item sits, then splice detail lines right after it.
@@ -4530,11 +4535,14 @@ export class AppScreen implements Component, Focusable {
       pendingQuestion.source === "confirm_interrupt"
         ? 4
         : 6;
-    // For questions with details sub-lines (e.g. rewind), use a narrower label column
+    // For memory edit, use a layout that shows short labels with full-path details sub-lines.
+    // For rewind and other questions with details sub-lines, use a narrower label column
     // so the description starts sooner and details can align beneath it.
-    const layout = detailsMap.size > 0
-      ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
-      : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
+    const layout = pendingQuestion.source === "local_command_memory_edit"
+      ? { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 30 }
+      : detailsMap.size > 0
+        ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
+        : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
     const list = new SelectList(
       items,
       Math.min(Math.max(items.length, 1), maxVisible),
