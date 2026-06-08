@@ -77,6 +77,7 @@ const END_CURSOR = "\x1b[7m \x1b[0m";
 const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
 const DISABLE_MOUSE_TRACKING = "\x1b[?1000l\x1b[?1006l";
 const TRANSCRIPT_WHEEL_SCROLL_LINES = 3;
+const SWARM_WORKFLOW_AGENT_PREVIEW_LIMIT = 8;
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
 const CONFIRM_TOOL_RE = /(?:Tool|工具)\s*:\s*`([^`]+)`/i;
 const CONFIRM_ACTION_RE = /\*\*(?:Agent wants to|Tool `[^`]+` requires your approval)([^*]*)\*\*/i;
@@ -2824,8 +2825,11 @@ export class AppScreen implements Component, Focusable {
   ): SwarmWorkflowsViewState {
     const workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
     if (!workflow) return this.buildSwarmWorkflowsListState();
-    const selectedPhase =
-      workflow.phases.find((phase) => phase.id === selectedPhaseId) ?? workflow.phases[0];
+    const selectedPhaseIndex = Math.max(
+      0,
+      workflow.phases.findIndex((phase) => phase.id === selectedPhaseId),
+    );
+    const selectedPhase = workflow.phases[selectedPhaseIndex] ?? workflow.phases[0];
     const activePhaseId = selectedPhase?.id ?? "";
     const phaseItems: SelectItem[] = workflow.phases.map((phase) => {
       const phaseTotal = phase.agent_count ?? phase.agents.length;
@@ -2848,6 +2852,15 @@ export class AppScreen implements Component, Focusable {
         maxPrimaryColumnWidth: 36,
       },
     );
+    phaseList.setSelectedIndex(selectedPhaseIndex);
+    phaseList.onSelectionChange = (item) => {
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
+        workflowId,
+        item.value,
+        "phases",
+      );
+      this.tui.requestRender();
+    };
     phaseList.onSelect = (item) => {
       this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
         workflowId,
@@ -3073,7 +3086,13 @@ export class AppScreen implements Component, Focusable {
     if (state.focus === "agents") {
       lines.push(...state.agentList.render(width));
     } else if (selectedPhase) {
-      lines.push(...this.renderSwarmWorkflowAgentRows(selectedPhase.agents, width));
+      lines.push(
+        ...this.renderSwarmWorkflowAgentRows(
+          selectedPhase.agents,
+          width,
+          SWARM_WORKFLOW_AGENT_PREVIEW_LIMIT,
+        ),
+      );
     } else {
       lines.push(padToWidth(palette.text.dim("No agents"), width));
     }
@@ -3112,14 +3131,26 @@ export class AppScreen implements Component, Focusable {
   private renderSwarmWorkflowAgentRows(
     agents: WorkflowRun["phases"][number]["agents"],
     width: number,
+    maxRows = agents.length,
   ): string[] {
     if (agents.length === 0) return [padToWidth(palette.text.dim("No agents"), width)];
-    return agents.map((agent) =>
+    const visibleAgents = agents.slice(0, maxRows);
+    const lines = visibleAgents.map((agent) =>
       padToWidth(
         `  ${formatWorkflowStatus(agent.status)} ${agent.name}${agent.model ? ` ${palette.text.dim(`· ${agent.model}`)}` : ""}`,
         width,
       ),
     );
+    const hiddenCount = agents.length - visibleAgents.length;
+    if (hiddenCount > 0) {
+      lines.push(
+        padToWidth(
+          palette.text.dim(`  ... ${hiddenCount} more agents - Tab/Right to browse`),
+          width,
+        ),
+      );
+    }
+    return lines;
   }
 
   private buildSwarmWorkflowAgentLines(
