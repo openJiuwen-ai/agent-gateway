@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -89,12 +90,19 @@ class SessionManager:
                 queue = self._session_queues[session_id]
                 while True:
                     try:
-                        priority, task_func = await queue.get()
+                        item = await queue.get()
+                        # Queue items are (priority, task_func, ctx) tuples.
+                        # The sentinel to stop the processor is (priority, None, None).
+                        priority, task_func, task_ctx = item
                         if task_func is None:
                             break
 
+                        # Pass the captured ContextVar context to create_task
+                        # so the new Task inherits the caller's ContextVars
+                        # (workspace, cwd, project_root, etc.) rather than
+                        # the processor Task's (possibly stale) context.
                         self._session_tasks[session_id] = asyncio.create_task(
-                            task_func()
+                            task_func(), context=task_ctx
                         )
                         try:
                             await self._session_tasks[session_id]
@@ -138,7 +146,10 @@ class SessionManager:
         await self.ensure_session_processor(session_id)
         self._session_priorities[session_id] -= 1
         priority = self._session_priorities[session_id]
-        await self._session_queues[session_id].put((priority, task_func))
+        # Snapshot ContextVars so the agent task inherits the caller's
+        # context (workspace, cwd, project_root set by init_cwd, etc.)
+        ctx = contextvars.copy_context()
+        await self._session_queues[session_id].put((priority, task_func, ctx))
 
     async def submit_and_wait(
         self,
@@ -166,7 +177,10 @@ class SessionManager:
 
         self._session_priorities[session_id] -= 1
         priority = self._session_priorities[session_id]
-        await self._session_queues[session_id].put((priority, wrapped_task))
+        # Snapshot ContextVars so the agent task inherits the caller's
+        # context (workspace, cwd, project_root set by init_cwd, etc.)
+        ctx = contextvars.copy_context()
+        await self._session_queues[session_id].put((priority, wrapped_task, ctx))
 
         return await result_future
 
