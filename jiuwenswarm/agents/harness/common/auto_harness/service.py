@@ -165,6 +165,7 @@ class ActiveAutoHarnessRun:
     current_stage_name: str = "assess"
     pending_interaction_id: str = ""
     completed: bool = False
+    pipeline_preference: str = ""
 
 
 class AutoHarnessService:
@@ -992,6 +993,7 @@ class AutoHarnessService:
                 orchestrator=orchestrator,
                 stream_queue=stream_queue,
                 current_stage_name="activate",
+                pipeline_preference=config.pipeline_preference,
             )
             self._active_runs[session_id] = active_run
 
@@ -1183,6 +1185,7 @@ class AutoHarnessService:
                 orchestrator=orchestrator,
                 stream_queue=stream_queue,
                 current_stage_name="implement_ext",
+                pipeline_preference=config.pipeline_preference,
             )
             self._active_runs[session_id] = active_run
 
@@ -1397,6 +1400,7 @@ class AutoHarnessService:
                 cancelled=False,
                 orchestrator=orchestrator,
                 stream_queue=stream_queue,
+                pipeline_preference=config.pipeline_preference,
             )
             self._active_runs[session_id] = active_run
 
@@ -1689,13 +1693,13 @@ class AutoHarnessService:
 
                 # When EXTENDED_EVOLVE_PIPELINE finishes, refresh packages cache
                 # so other channels can pick up newly generated packages.
-                if self._base_config and self._base_config.pipeline_preference == EXTENDED_EVOLVE_PIPELINE:
+                if active_run.pipeline_preference == EXTENDED_EVOLVE_PIPELINE:
                     try:
                         data = await asyncio.to_thread(self.scan_runtime_extensions)
                         await asyncio.to_thread(self.save_packages, data)
                         logger.info(
                             "[AutoHarnessService] Packages cache refreshed after %s, session=%s",
-                            self._base_config.pipeline_preference,
+                            active_run.pipeline_preference,
                             active_run.session_id,
                         )
                     except Exception as exc:
