@@ -723,6 +723,7 @@
       "aliasTooLong": "Alias is too long, please keep it under 100 characters",
       "apiBaseTooLong": "API Base URL is too long, please keep it under 100 characters",
       "apiKeyTooLong": "API Key is too long, please keep it under 500 characters",
+      "reasoningDefault": "Use default",
       "alias": "Alias",
       "aliasPlaceholder": "Optional, defaults to empty"
     },

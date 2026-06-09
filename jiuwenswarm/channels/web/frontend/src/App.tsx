@@ -510,6 +510,7 @@ function AppContent() {
       api_key: string;
       model: string;
       model_provider: string;
+      reasoning_level?: string;
     }) => {
       await request('config.validate_model', fields, { timeoutMs: 60000 });
     },

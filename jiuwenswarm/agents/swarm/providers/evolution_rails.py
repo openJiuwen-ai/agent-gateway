@@ -328,13 +328,17 @@ def _build_evolution_llm_from(model_config: dict[str, Any]) -> tuple[Any, str]:
         ModelClientConfig,
         ModelRequestConfig,
     )
+    from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 
     model_client_config = model_config.get("model_client_config") or {}
     model_config_obj = model_config.get("model_config_obj") or {}
     model_name = model_config.get("model_name") or "gpt-4"
     request_config = ModelRequestConfig(
-        model=model_name,
-        temperature=model_config_obj.get("temperature", 0.95),
+        **build_reasoning_model_request_kwargs(
+            model_client_config=model_client_config,
+            model_config_obj=model_config_obj,
+            model_name=model_name,
+        )
     )
     client_config = ModelClientConfig(**model_client_config)
     return Model(

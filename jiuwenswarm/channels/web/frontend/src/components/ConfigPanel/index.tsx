@@ -183,7 +183,7 @@ interface ConfigPanelProps {
   initialExpandGroupTag?: string | null;
   /** 一次性原子提交完整模型列表，覆盖增删改重排 */
   onModelsReplaceAll?: (models: ModelEntry[]) => Promise<void>;
-  onModelValidate?: (fields: { api_base: string; api_key: string; model: string; model_provider: string }) => Promise<void>;
+  onModelValidate?: (fields: { api_base: string; api_key: string; model: string; model_provider: string; reasoning_level?: string }) => Promise<void>;
   onModelsRefresh?: () => Promise<void>;
   /** 多Agent和Teams操作回调 */
   onAgentsTeamsSave?: (payload: {
@@ -772,6 +772,7 @@ function GroupSection({
 }
 
 const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "InferenceAffinity", "DeepSeek"] as const;
+const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
 
 /** 多默认模型管理（受控组件，编辑状态由父组件持有） */
 function MultiModelSection({
@@ -786,7 +787,7 @@ function MultiModelSection({
 }: {
   models: ModelEntry[];
   onModelsChange: (models: ModelEntry[]) => void;
-  onModelValidate?: (fields: { api_base: string; api_key: string; model: string; model_provider: string }) => Promise<void>;
+  onModelValidate?: (fields: { api_base: string; api_key: string; model: string; model_provider: string; reasoning_level?: string }) => Promise<void>;
   isConnected: boolean;
   agents?: AgentEntry[];
   onDeleteModel?: (idx: number, modelName: string, references: string[]) => void;
@@ -798,13 +799,13 @@ function MultiModelSection({
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
   const [newModel, setNewModel] = useState<ModelEntry>({
-    model_name: "", api_base: "", api_key: "", model_provider: "OpenAI",
+    model_name: "", api_base: "", api_key: "", model_provider: "OpenAI", reasoning_level: "",
   });
   const [localError, setLocalError] = useState<string | null>(null);
   const [validateToast, setValidateToast] = useState<{ show: boolean; success: boolean; message: string }>({ show: false, success: true, message: "" });
 
   const resetNewModelDraft = () => {
-    setNewModel({ model_name: "", api_base: "", api_key: "", model_provider: "OpenAI", alias: "" });
+    setNewModel({ model_name: "", api_base: "", api_key: "", model_provider: "OpenAI", alias: "", reasoning_level: "" });
     setLocalError(null);
   };
 
@@ -847,6 +848,7 @@ function MultiModelSection({
       await onModelValidate({
         api_base: model.api_base, api_key: model.api_key,
         model: model.model_name, model_provider: model.model_provider,
+        reasoning_level: model.reasoning_level || undefined,
       });
       setValidateResults((prev) => ({ ...prev, [idx]: "ok" }));
       setValidateToast({ show: true, success: true, message: t("config.validateModel.success") });
@@ -1034,7 +1036,7 @@ function MultiModelSection({
     onModelsChange([...models, entry]);
     setExpandedIdx(models.length); // 自动展开新增的条目
     setAddingNew(false);
-    setNewModel({ model_name: "", api_base: "", api_key: "", model_provider: "OpenAI", alias: "" });
+    setNewModel({ model_name: "", api_base: "", api_key: "", model_provider: "OpenAI", alias: "", reasoning_level: "" });
   };
 
   return (
@@ -1139,7 +1141,7 @@ function MultiModelSection({
               </div>
               {isExpanded && (
                 <div className="border-t border-border px-3 py-2 space-y-2">
-                  {(["model_name", "alias", "api_base", "api_key", "model_provider"] as const).map((field) => (
+                  {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
                     <div key={field} className="flex items-center gap-2 text-xs">
                       <label className="w-28 text-text-muted shrink-0">
                         {field}{["api_key", "api_base", "model_name", "model_provider"].includes(field) && <span className="text-danger ml-0.5">*</span>}
@@ -1152,6 +1154,15 @@ function MultiModelSection({
                         >
                           <option value="" disabled>{t("config.selectModelProvider")}</option>
                           {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                        </select>
+                      ) : field === "reasoning_level" ? (
+                        <select
+                          value={models[idx]?.reasoning_level ?? ""}
+                          onChange={(e) => updateModel(idx, field, e.target.value)}
+                          className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                        >
+                          <option value="">{t("config.modelList.reasoningDefault")}</option>
+                          {REASONING_LEVEL_OPTIONS.map((level) => <option key={level} value={level}>{level}</option>)}
                         </select>
                       ) : (
                         <input
@@ -1186,7 +1197,7 @@ function MultiModelSection({
 
         {addingNew ? (
           <div className="rounded-lg border border-accent/40 bg-accent/5 px-3 py-2 space-y-2">
-            {(["model_name", "alias", "api_base", "api_key", "model_provider"] as const).map((field) => (
+            {(["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"] as const).map((field) => (
               <div key={field} className="flex items-center gap-2 text-xs">
                 <label className="w-28 text-text-muted shrink-0">
                   {field}{["api_key", "api_base", "model_name", "model_provider"].includes(field) && <span className="text-danger ml-0.5">*</span>}
@@ -1199,6 +1210,15 @@ function MultiModelSection({
                   >
                     <option value="" disabled>{t("config.selectModelProvider")}</option>
                     {MODEL_PROVIDER_OPTIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                ) : field === "reasoning_level" ? (
+                  <select
+                    value={newModel.reasoning_level ?? ""}
+                    onChange={(e) => handleNewModelChange(field, e.target.value)}
+                    className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
+                  >
+                    <option value="">{t("config.modelList.reasoningDefault")}</option>
+                    {REASONING_LEVEL_OPTIONS.map((level) => <option key={level} value={level}>{level}</option>)}
                   </select>
                 ) : (
                   <input
@@ -2672,6 +2692,7 @@ export function ConfigPanel({
       return dm.model_name !== om.model_name || dm.api_base !== om.api_base
         || dm.api_key !== om.api_key || dm.model_provider !== om.model_provider
         || (dm.alias ?? "") !== (om.alias ?? "")
+        || (dm.reasoning_level ?? "") !== (om.reasoning_level ?? "")
         || dm.is_default !== om.is_default
         || (dm.temperature ?? 0.95) !== (om.temperature ?? 0.95)
         || (dm.timeout ?? 1800) !== (om.timeout ?? 1800);

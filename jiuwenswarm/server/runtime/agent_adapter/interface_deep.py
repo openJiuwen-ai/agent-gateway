@@ -221,6 +221,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     image_reading,
 )
 from jiuwenswarm.common.config import get_config, get_default_models, get_sandbox_runtime, resolve_env_vars
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     create_local_sysop_card,
@@ -1682,13 +1683,16 @@ class JiuWenClawDeepAdapter:
     def _build_model_from_entry(mcc: dict, mco: dict) -> Model:
         """根据单个模型条目的 model_client_config / model_config_obj 构建 Model 实例。"""
         name = mcc.get("model_name", "")
-        m_config = ModelRequestConfig(
-            model=name,
-            temperature=mco.get("temperature", 0.95),
-        )
         mcc_fields = {k: v for k, v in mcc.items() if k != "model_name"}
         if not mcc_fields.get("client_provider"):
             mcc_fields["client_provider"] = "OpenAI"
+        m_config = ModelRequestConfig(
+            **build_reasoning_model_request_kwargs(
+                model_client_config=mcc_fields,
+                model_config_obj=mco,
+                model_name=name,
+            )
+        )
         return Model(model_client_config=ModelClientConfig(**mcc_fields), model_config=m_config)
 
     def _build_model_cache_from_defaults(self, config: dict) -> None:

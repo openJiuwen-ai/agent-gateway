@@ -46,6 +46,7 @@ from jiuwenswarm.server.runtime.a2ui.integration import (
     get_default_a2ui_config_payload,
     validate_a2ui_config_update,
 )
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.common.updater import UpdaterService
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
@@ -84,6 +85,18 @@ def _values_match(parsed_val: Any, resolved_val: Any) -> bool:
     return str(parsed_val if parsed_val is not None else "") == str(
         resolved_val if resolved_val is not None else ""
     )
+
+
+def _serialize_reasoning_level(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+    # Always emit a quoted YAML string so the same field never round-trips
+    # as a mix of plain scalars and quoted scalars.
+    return DoubleQuotedScalarString(text)
 
 
 def _merge_models_for_replace_all(
@@ -128,6 +141,12 @@ def _merge_models_for_replace_all(
                 new_mcc["client_provider"] = item["model_provider"]
             if not _values_match(item["temperature"], resolved_mco.get("temperature")):
                 new_mco["temperature"] = item["temperature"]
+            reasoning_level = item.get("reasoning_level", "")
+            if not _values_match(reasoning_level, resolved_mco.get("reasoning_level")):
+                if reasoning_level:
+                    new_mco["reasoning_level"] = _serialize_reasoning_level(reasoning_level)
+                else:
+                    new_mco.pop("reasoning_level", None)
             if not _values_match(item["timeout"], resolved_mcc.get("timeout")):
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
@@ -154,6 +173,8 @@ def _merge_models_for_replace_all(
                 },
                 "model_config_obj": {
                     "temperature": item["temperature"],
+                    **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
+                       if item.get("reasoning_level") else {}),
                 },
                 "is_default": item["is_default"],
                 "alias": item["alias"],
@@ -839,6 +860,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             verify_ssl = bool(item.get("verify_ssl", False))
             is_default = bool(item.get("is_default", False))
             alias = str(item.get("alias") or "").strip()
+            reasoning_level = str(item.get("reasoning_level") or "").strip()
 
             if alias:
                 if alias in aliases_seen:
@@ -856,6 +878,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "timeout": timeout,
                 "verify_ssl": verify_ssl,
                 "alias": alias,
+                "reasoning_level": reasoning_level,
                 "origin_index": origin_index,
             })
 
@@ -957,9 +980,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         verify_ssl = bool(params.get("verify_ssl", False))
 
+        model_config_obj = {"temperature": 0}
+        if "reasoning_level" in params:
+            model_config_obj["reasoning_level"] = params.get("reasoning_level")
+        reasoning_mcc = {
+            "client_provider": model_provider,
+            "api_base": api_base,
+        }
         model_request_config = ModelRequestConfig(
-            model=model,
-            temperature=0,
+            **build_reasoning_model_request_kwargs(
+                model_client_config=reasoning_mcc,
+                model_config_obj=model_config_obj,
+                model_name=model,
+            )
         )
         model_client_config = ModelClientConfig(
             client_id="config-validate",
@@ -1068,6 +1101,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature", 0.95),
+                    "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
                     "is_default": is_default,
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,

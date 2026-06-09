@@ -39,6 +39,7 @@ from jiuwenswarm.common.config import (
     ensure_defaults_list_in_config,
     update_preferred_language_in_config,
 )
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -1015,7 +1016,20 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             api_base = api_base.rsplit("/chat/completions", 1)[0]
         api_base = api_base.rstrip("/")
 
-        model_request_config = ModelRequestConfig(model=model, temperature=0)
+        model_config_obj = {"temperature": 0}
+        if "reasoning_level" in params:
+            model_config_obj["reasoning_level"] = params.get("reasoning_level")
+        reasoning_mcc = {
+            "client_provider": model_provider,
+            "api_base": api_base,
+        }
+        model_request_config = ModelRequestConfig(
+            **build_reasoning_model_request_kwargs(
+                model_client_config=reasoning_mcc,
+                model_config_obj=model_config_obj,
+                model_name=model,
+            )
+        )
         model_client_config = ModelClientConfig(
             client_id="config-validate",
             client_provider=model_provider,
