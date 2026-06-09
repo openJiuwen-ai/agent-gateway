@@ -301,6 +301,19 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
   return 'agent.plan';
 }
 
+function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): string | null {
+  const trimmed = content.trim();
+  const isEvolutionCommand =
+    trimmed === '/evolve' ||
+    trimmed.startsWith('/evolve ') ||
+    trimmed === '/evolve_simplify' ||
+    trimmed.startsWith('/evolve_simplify ');
+  if (!isEvolutionCommand || mode === 'agent.plan' || mode === 'team') {
+    return null;
+  }
+  return `${mode} 模式下演进功能不可用。`;
+}
+
 const EVENT_DEDUP_WINDOW_MS = 1500;
 const CONTEXT_COMPRESSION_START_DELAY_MS = 300;
 
@@ -689,6 +702,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     async (content: string, sessionId: string) => {
       if (!content.trim()) return;
 
+      const currentMode = useSessionStore.getState().mode;
+      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode);
+      if (unsupportedEvolutionMode) {
+        addMessage({
+          id: `error-${Date.now()}`,
+          role: 'system',
+          content: unsupportedEvolutionMode,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+
       const isInitialUserMessage = !useChatStore
         .getState()
         .messages.some((message) => message.role === 'user');
@@ -722,7 +747,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       setThinking(true);
 
       // 正常调用接口
-      const currentMode = useSessionStore.getState().mode;
       const selectedModel = useSessionStore.getState().selectedModelName;
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset();

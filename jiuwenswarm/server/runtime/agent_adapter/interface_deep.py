@@ -4804,7 +4804,8 @@ class JiuWenClawDeepAdapter:
         Returns None when the rail is (or becomes) available, or an error message string.
         """
         if mode != "agent.plan":
-            return "agent 模式下演进功能不可用。"
+            display_mode = str(mode or "当前").strip() or "当前"
+            return f"{display_mode} 模式下演进功能不可用。"
         if not self._config_cache.get("evolution", {}).get("enabled", False):
             return "演进功能未启用。"
         if self._skill_evolution_rail is None:
