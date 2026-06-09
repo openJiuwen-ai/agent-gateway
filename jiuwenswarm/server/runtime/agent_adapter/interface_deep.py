@@ -186,7 +186,12 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 
-from jiuwenswarm.agents.harness.common.tools import SendFileToolkit, SkillToolkit
+from jiuwenswarm.agents.harness.common.tools import (
+    SendFileToolkit,
+    SkillRetrievalToolkit,
+    SkillToolkit,
+    is_skill_retrieval_enabled,
+)
 from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import MultiSessionToolkit
@@ -2823,6 +2828,24 @@ class JiuWenSwarmDeepAdapter:
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
+
+        if is_skill_retrieval_enabled():
+            try:
+                skill_retrieval_toolkit = SkillRetrievalToolkit(manager=self._skill_manager)
+                skill_retrieval_tool_names: list[str] = []
+                for tool in skill_retrieval_toolkit.get_tools():
+                    if not Runner.resource_mgr.get_tool(tool.card.id):
+                        Runner.resource_mgr.add_tool(tool)
+                    tool_cards.append(tool.card)
+                    skill_retrieval_tool_names.append(tool.card.name)
+                logger.info(
+                    "[JiuWenClawDeepAdapter] SkillRetrievalToolkit registered: tools=%s",
+                    skill_retrieval_tool_names,
+                )
+            except Exception as exc:
+                logger.warning("[JiuWenClawDeepAdapter] skill retrieval tools registration failed: %s", exc)
+        else:
+            logger.info("[JiuWenClawDeepAdapter] SkillRetrievalToolkit skipped: disabled")
 
         # acp_chat: forward prompts to external stdio ACP agents (see acp_agents in config.yaml)
         try:

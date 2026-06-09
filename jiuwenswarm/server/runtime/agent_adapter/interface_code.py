@@ -62,7 +62,11 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode
-from jiuwenswarm.agents.harness.common.tools import SkillToolkit
+from jiuwenswarm.agents.harness.common.tools import (
+    SkillRetrievalToolkit,
+    SkillToolkit,
+    is_skill_retrieval_enabled,
+)
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.coding_memory_paths import resolve_project_coding_memory_dir
@@ -200,6 +204,7 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "web_paid_search": "_build_paid_search_tool",
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
+    "skill_retrieval": "_build_skill_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
 }
 
@@ -1246,6 +1251,22 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return skill_toolkit.get_tools()
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] skill_toolkit build failed: %s", exc)
+            return None
+
+    def _build_skill_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建 SkillRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        if not is_skill_retrieval_enabled():
+            logger.info("[JiuwenClawCodeAdapter] SkillRetrievalToolkit skipped: disabled")
+            return None
+        try:
+            skill_retrieval_toolkit = SkillRetrievalToolkit(manager=self._skill_manager)
+            logger.info(
+                "[JiuwenClawCodeAdapter] SkillRetrievalToolkit built: tools=%s",
+                [t.card.name for t in skill_retrieval_toolkit.get_tools()],
+            )
+            return skill_retrieval_toolkit.get_tools()
+        except Exception as exc:
+            logger.warning("[JiuwenClawCodeAdapter] skill_retrieval build failed: %s", exc)
             return None
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:

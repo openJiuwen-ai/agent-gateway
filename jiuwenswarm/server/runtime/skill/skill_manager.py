@@ -527,6 +527,31 @@ class SkillManager:
             "detail": "配置已更新；下次 reload / rebuild / 新会话后执行面生效。",
         }
 
+    async def handle_skills_retrieval_status(self, params: dict) -> dict:
+        """返回本地 skill retrieval 索引状态."""
+        from jiuwenswarm.symphony.skill_retrieval import get_skill_retrieval_status
+
+        return await asyncio.to_thread(get_skill_retrieval_status, self)
+
+    async def handle_skills_retrieval_index_build(self, params: dict) -> dict:
+        """构建或复用本地 skill retrieval 索引."""
+        from jiuwenswarm.symphony.skill_retrieval import build_skill_index
+
+        return await asyncio.to_thread(build_skill_index, self)
+
+    async def handle_skills_retrieval_search(self, params: dict) -> dict:
+        """基于本地索引检索已安装 skills."""
+        from jiuwenswarm.symphony.skill_retrieval import retrieve_skills
+
+        query = str((params or {}).get("query") or "").strip()
+        return await asyncio.to_thread(retrieve_skills, query, self)
+
+    async def handle_skills_retrieval_tree(self, params: dict) -> dict:
+        """返回本地 skill retrieval 树索引概览."""
+        from jiuwenswarm.symphony.skill_retrieval import get_skill_retrieval_tree
+
+        return await asyncio.to_thread(get_skill_retrieval_tree, self)
+
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
         name = str(params.get("name") or "").strip()

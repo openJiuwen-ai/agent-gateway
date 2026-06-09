@@ -600,6 +600,13 @@
       "isMarkdown": false
     }
   ],
+  "workspace/skills/skill-retrieval": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/skill-retrieval/SKILL.md",
+      "isMarkdown": true
+    }
+  ],
   "workspace/skills/skvm-general": [
     {
       "name": "SKILL.md",

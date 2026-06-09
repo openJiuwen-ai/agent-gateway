@@ -257,6 +257,30 @@ def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
+    """更新 symphony.skill_retrieval 配置段并写回。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "symphony" not in data or data["symphony"] is None:
+        data["symphony"] = {}
+    symphony = data["symphony"]
+    if "skill_retrieval" not in symphony or symphony["skill_retrieval"] is None:
+        symphony["skill_retrieval"] = {}
+
+    def merge_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
+        for key, value in patch.items():
+            if isinstance(value, dict):
+                child = target.get(key)
+                if not isinstance(child, dict):
+                    child = {}
+                    target[key] = child
+                merge_dict(child, value)
+            else:
+                target[key] = value
+
+    merge_dict(symphony["skill_retrieval"], updates)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_permissions_enabled_in_config(value: bool) -> None:
     """更新 permissions.enabled（工具安全护栏开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

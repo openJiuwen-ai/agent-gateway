@@ -21,6 +21,10 @@ from .send_file_to_user import (
 from .skill_toolkits import (
     SkillToolkit,
 )
+from .skill_retrieval_toolkits import (
+    is_skill_retrieval_enabled,
+    SkillRetrievalToolkit,
+)
 
 # Re-export deep openjiuwen symbols at ≤3-layer depth so task_tools.py can comply
 # with the G.IMP import-depth lint rule without creating additional files.
@@ -57,6 +61,8 @@ __all__ = [
     "is_group_chat_mode",
     "SendFileToolkit",
     "SkillToolkit",
+    "is_skill_retrieval_enabled",
+    "SkillRetrievalToolkit",
     # openjiuwen re-exports
     "tool",
     "ce_config",
