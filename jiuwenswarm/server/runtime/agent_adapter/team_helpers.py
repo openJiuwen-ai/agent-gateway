@@ -944,6 +944,7 @@ async def process_team_message_stream(
                 session_id,
                 rid,
             )
+            yield _team_processing_done_chunk(rid, channel_id, session_id)
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,

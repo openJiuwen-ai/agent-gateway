@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 from openjiuwen.agent_teams.schema.team import TeamRole
 
-from jiuwenswarm.agents.harness.team import TeamMonitorHandler
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
@@ -1031,6 +1030,59 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch)
     }
     assert chunks[1].is_complete is False
     assert chunks[2].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_emits_processing_done_for_followup(monkeypatch):
+    class _FakeManager:
+        interact_calls: list[tuple[str, str]] = []
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-followup"
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: str):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-followup",
+        request_id="req-team-followup",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+    )
+    inputs = {"query": "$human-reporter claim task"}
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        inputs,
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-followup", "$human-reporter claim task"),
+    ]
+    assert len(chunks) == 2
+    assert chunks[0].payload == {
+        "event_type": "chat.processing_status",
+        "session_id": "sess-team-followup",
+        "is_processing": False,
+        "is_complete": True,
+    }
+    assert chunks[0].is_complete is False
+    assert chunks[1].payload is None
+    assert chunks[1].is_complete is True
 
 
 @pytest.mark.anyio

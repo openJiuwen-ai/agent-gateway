@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """MessageHandler - 消息处理抽象与双队列实现（入队经 AgentServerClient 发往 AgentServer）."""
 
@@ -267,6 +267,16 @@ class MessageHandler(ABC):
         method = getattr(msg, "req_method", None)
         value = getattr(method, "value", method)
         return value == "chat.send" or str(value) == "ReqMethod.CHAT_SEND"
+
+    @staticmethod
+    def _is_team_chat_send(msg: "Message") -> bool:
+        if not isinstance(msg.params, dict):
+            return False
+        return str(msg.params.get("mode") or "").strip().lower() == "team"
+
+    @classmethod
+    def _should_cancel_existing_stream_before_chat_send(cls, msg: "Message") -> bool:
+        return cls._is_chat_send_message(msg) and not cls._is_team_chat_send(msg)
 
     def _get_channel_default_state(self, channel_id: str) -> ChannelControlState:
         """从 config.yaml 读取 Channel 的默认 session_id / mode."""
@@ -2752,7 +2762,7 @@ class MessageHandler(ABC):
                     if env.is_stream:
                         # 取消同一 channel 上已有的流式任务，避免会话孤岛
                         # （例如 TUI 发送新消息时，旧 session 仍在后台空跑）
-                        if msg.req_method == ReqMethod.CHAT_SEND:
+                        if self._should_cancel_existing_stream_before_chat_send(msg):
                             await self._cancel_stream_tasks_for_channel(msg)
                         # 流式处理：启动后台任务
                         # 通知前端新任务开始处理
