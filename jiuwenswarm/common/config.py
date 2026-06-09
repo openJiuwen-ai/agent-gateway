@@ -266,6 +266,15 @@ def update_permissions_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_auto_recap_enabled_in_config(value: bool) -> None:
+    """更新 auto_recap.enabled（自动回顾开关）并写回。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "auto_recap" not in data:
+        data["auto_recap"] = {}
+    data["auto_recap"]["enabled"] = value
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

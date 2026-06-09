@@ -29,6 +29,7 @@ from jiuwenswarm.common.config import (
     get_default_models,
     load_yaml_round_trip,
     resolve_env_vars,
+    update_auto_recap_enabled_in_config,
     update_context_engine_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_permissions_enabled_in_config,
@@ -400,6 +401,7 @@ _CLI_CONFIG_SET_ENV_MAP = {
 }
 
 _CLI_CONFIG_YAML_SETTERS: dict[str, Any] = {
+    "auto_recap_enabled": update_auto_recap_enabled_in_config,
     "context_engine_enabled": update_context_engine_enabled_in_config,
     "permissions_enabled": update_permissions_enabled_in_config,
     "memory_forbidden_enabled": update_memory_forbidden_enabled_in_config,
@@ -507,6 +509,8 @@ def _build_config_schema() -> list[dict]:
          "type": "toggle", "source": "yaml", "default": "false"},
         {"key": "preferred_language", "label": "显示语言", "group": "Features", "type": "select",
          "options": ["zh", "en"], "source": "yaml", "default": "zh"},
+        {"key": "auto_recap_enabled", "label": "自动回顾", "group": "Features",
+         "type": "toggle", "source": "yaml", "default": "true"},
         {"key": "evolution_auto_scan", "label": "自动扫描技能", "group": "Features",
          "type": "toggle", "source": "env", "default": "false"},
         # Auto-Harness (定时任务配置) - 合并为三项
@@ -645,6 +649,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 "true" if mem_cfg.get("enabled", False) else "false"
             )
             payload["preferred_language"] = raw.get("preferred_language") or "zh"
+            auto_recap_cfg = raw.get("auto_recap") or {}
+            payload["auto_recap_enabled"] = (
+                "true" if auto_recap_cfg.get("enabled", True) else "false"
+            )
 
             # Resolve model-related fields from config.yaml.
             # When models.defaults list is in use, it is the canonical source
@@ -701,6 +709,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 except Exception as e:
                     logger.warning("[config.get] Failed to resolve %s model config: %s", _section_name, e)
         except Exception:
+            payload.setdefault("auto_recap_enabled", "true")
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("memory_forbidden_enabled", "false")

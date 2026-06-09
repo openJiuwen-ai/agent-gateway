@@ -282,6 +282,8 @@ export class CliPiAppState {
   private autoRecapState: "idle" | "pending" | "generated" = "idle";
   /** 周期检查空闲状态的定时器。 */
   private autoRecapTimer: ReturnType<typeof setInterval> | null = null;
+  /** 是否启用自动回顾（从 config.yaml 读取，默认 true）。 */
+  private autoRecapEnabled: boolean = true;
   private ripgrepAvailable: boolean | null = null;
   private ripgrepSearchTipShown = false;
   /** Harness extension ready info (for file tree display) */
@@ -475,7 +477,8 @@ export class CliPiAppState {
 
     this.wsClient.connect();
     this.startStatusLinePoll();
-    this.startAutoRecapTimer();
+    // auto-recap timer 由 fetchModelInfo() 在拿到配置后启动，
+    // 避免在配置为 disabled 时仍提前启动 timer。
   }
 
   stop(): void {
@@ -528,6 +531,15 @@ export class CliPiAppState {
         ? models.find((m) => m.model_name === activeModelName)
         : models[0];
       this.preferredLanguage = normalizePreferredLanguage(config.preferred_language);
+      this.autoRecapEnabled = config.auto_recap_enabled !== "false";
+      // 同步 auto-recap timer：WS 连接后才拿到配置，需根据实际值启停 timer
+      if (this.autoRecapEnabled) {
+        if (!this.autoRecapTimer) {
+          this.startAutoRecapTimer();
+        }
+      } else {
+        this.stopAutoRecapTimer();
+      }
       this.modelInfo = {
         provider: String(activeModel?.model_provider ?? config.model_provider ?? ""),
         model: activeModelName || String(config.model ?? ""),
@@ -560,6 +572,8 @@ export class CliPiAppState {
       this.emitChange();
     } catch {
       // ignore error, use defaults
+      // config.get 失败时，按默认值 true 启动 auto-recap timer
+      this.startAutoRecapTimer();
     }
   }
 
@@ -2072,6 +2086,9 @@ export class CliPiAppState {
   }
 
   private startAutoRecapTimer(): void {
+    if (this.autoRecapTimer) {
+      return; // 防止重复启动导致 timer 泄漏
+    }
     this.autoRecapTimer = setInterval(() => {
       this.checkAutoRecap();
     }, AUTO_RECAP_CHECK_INTERVAL_MS);

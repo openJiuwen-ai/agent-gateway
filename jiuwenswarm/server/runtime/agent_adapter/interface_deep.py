@@ -6203,7 +6203,7 @@ class JiuWenClawDeepAdapter:
         if not messages:
             return {"status": "no_turn"}
 
-        prompt = build_recap_prompt(memory=None)
+        prompt = build_recap_prompt(memory=None, language=self._resolve_prompt_language())
         summary_text = await self._call_model_for_recap(messages, prompt)
         if not summary_text:
             return {"status": "failed", "error": "Model returned empty response"}
