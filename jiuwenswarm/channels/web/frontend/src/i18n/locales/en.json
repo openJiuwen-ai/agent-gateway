@@ -1123,7 +1123,7 @@
       "configDescription": "Enter the CLI Token from the ClawHub platform to access the ClawHub skill library.",
       "tokenLabel": "CLI Token",
       "tokenPlaceholder": "Enter ClawHub CLI Token (clh_...)",
-      "tokenConfigured": "Token configured: {{token}}",
+      "tokenConfigured": "Token configured",
       "messages": {
         "tokenSaved": "Token saved",
         "installed": "Installed: {{name}}"

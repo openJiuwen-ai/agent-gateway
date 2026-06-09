@@ -1122,7 +1122,7 @@
       "configDescription": "请输入从 ClawHub 平台获取的 CLI Token，用于访问 ClawHub 技能库。",
       "tokenLabel": "CLI Token",
       "tokenPlaceholder": "请输入 ClawHub CLI Token (clh_...)",
-      "tokenConfigured": "已配置 Token: {{token}}",
+      "tokenConfigured": "已配置 Token",
       "messages": {
         "tokenSaved": "Token 已保存",
         "installed": "已安装：{{name}}"
