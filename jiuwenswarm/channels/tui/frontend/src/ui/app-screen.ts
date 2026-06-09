@@ -78,6 +78,8 @@ const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
 const DISABLE_MOUSE_TRACKING = "\x1b[?1000l\x1b[?1006l";
 const TRANSCRIPT_WHEEL_SCROLL_LINES = 3;
 const SWARM_WORKFLOW_AGENT_PREVIEW_LIMIT = 8;
+// 不可中断的命令列表（ESC 按下时显示提示）
+const UNINTERRUPTIBLE_COMMANDS = ["compact"];
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
 const CONFIRM_TOOL_RE = /(?:Tool|工具)\s*:\s*`([^`]+)`/i;
 const CONFIRM_ACTION_RE = /\*\*(?:Agent wants to|Tool `[^`]+` requires your approval)([^*]*)\*\*/i;
@@ -1049,6 +1051,21 @@ export class AppScreen implements Component, Focusable {
       } else {
         this.state.cancel();
       }
+      return;
+    }
+
+    // 检查不可中断命令列表（ESC 显示提示）
+    if (!pendingQuestion && snapshot.runningCommand && UNINTERRUPTIBLE_COMMANDS.includes(snapshot.runningCommand) && matchesKey(data, "escape") && !hasOverlay) {
+      this.transientNotice = `${snapshot.runningCommand} 命令执行中，无法中断`;
+      if (this.transientNoticeTimer) {
+        clearTimeout(this.transientNoticeTimer);
+      }
+      this.transientNoticeTimer = setTimeout(() => {
+        this.transientNotice = null;
+        this.transientNoticeTimer = null;
+        this.tui.requestRender();
+      }, 3500);
+      this.tui.requestRender();
       return;
     }
 
