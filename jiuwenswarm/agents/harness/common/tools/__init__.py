@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""Tools for JiuWenClaw AgentServer."""
+"""Tools for JiuWenSwarm AgentServer."""
 
 from .memory_tools import (
     set_global_memory_manager,

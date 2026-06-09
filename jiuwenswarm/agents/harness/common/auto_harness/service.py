@@ -4,13 +4,13 @@
 
 This service handles:
 - Repo URL resolution and cloning/updating
-- AutoHarnessConfig construction from JiuwenClaw model config
+- AutoHarnessConfig construction from JiuwenSwarm model config
 - Orchestrator creation and session streaming
 - Chunk to WebSocket event mapping
 - Active run management with cancel support
 
 Design per §5.1-5.6 of auto_harness.md:
-- Service is instantiated as member variable of JiuWenClawDeepAdapter
+- Service is instantiated as member variable of JiuWenSwarmDeepAdapter
 - Base config.yaml loaded once at init
 - Per-request: repo_url from request params, clone repo, build config with overrides
 """
@@ -56,7 +56,7 @@ from openjiuwen.auto_harness.stages.activate import ExtendActivateStage
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.session.stream.base import OutputSchema
 
-from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuClawStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -169,9 +169,9 @@ class ActiveAutoHarnessRun:
 
 
 class AutoHarnessService:
-    """Service for auto_harness mode integration with JiuwenClaw Web.
+    """Service for auto_harness mode integration with JiuwenSwarm Web.
 
-    Instantiated as member variable of JiuWenClawDeepAdapter for proper lifecycle management.
+    Instantiated as member variable of JiuWenSwarmDeepAdapter for proper lifecycle management.
     """
 
     def __init__(
@@ -221,10 +221,10 @@ class AutoHarnessService:
     def update_agent_instance(self, agent: Any):
         self._agent = agent.get_instance()
         try:
-            stream_event_rail = JiuClawStreamEventRail()
-            logger.info("[AutoHarnessService] JiuClawStreamEventRail create success")
+            stream_event_rail = JiuSwarmStreamEventRail()
+            logger.info("[AutoHarnessService] JiuSwarmStreamEventRail create success")
         except Exception as exc:
-            logger.warning("[AutoHarnessService] JiuClawStreamEventRail create failed: %s", exc)
+            logger.warning("[AutoHarnessService] JiuSwarmStreamEventRail create failed: %s", exc)
             stream_event_rail = None
         self._stream_event_rail = stream_event_rail
 
@@ -590,7 +590,7 @@ class AutoHarnessService:
         Args:
             repo_url: Remote repository URL (from request params per §5.5)
             local_repo: Local path to cloned repository
-            model: Model instance from JiuwenClaw
+            model: Model instance from JiuwenSwarm
 
         Returns:
             Configured AutoHarnessConfig instance
@@ -1256,7 +1256,7 @@ class AutoHarnessService:
             session_id: Session identifier
             request_id: Request identifier
             query: User's optimization goal input
-            model: JiuwenClaw's current model config
+            model: JiuwenSwarm's current model config
 
         Yields:
             AgentResponseChunk instances mapped from orchestrator chunks
@@ -1496,11 +1496,11 @@ class AutoHarnessService:
         results: list[AgentResponseChunk] = []
 
         # Import _parse_stream_chunk from DeepAdapter to reuse OutputSchema parsing logic
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
         # Handle OutputSchema - delegate to shared _parse_stream_chunk
         if isinstance(chunk, OutputSchema):
-            parsed = JiuWenClawDeepAdapter._parse_stream_chunk(
+            parsed = getattr(JiuWenSwarmDeepAdapter, '_parse_stream_chunk')(
                 chunk,
                 _has_streamed_content=False,
                 _stage=current_stage_name,
@@ -1555,7 +1555,7 @@ class AutoHarnessService:
                 )
             elif "type" in chunk:
                 # Treat as OutputSchema-like dict, use _parse_stream_chunk
-                parsed = JiuWenClawDeepAdapter._parse_stream_chunk(
+                parsed = getattr(JiuWenSwarmDeepAdapter, '_parse_stream_chunk')(
                     chunk,
                     _has_streamed_content=False,
                     _stage=current_stage_name,
@@ -2633,7 +2633,7 @@ class AutoHarnessService:
             query: The optimization goal/task description
             interval_hours: Execution interval in hours
             run_immediately: If True, trigger immediate execution after creation
-            model: Model configuration from JiuwenClaw (model_name stored for execution)
+            model: Model configuration from JiuwenSwarm (model_name stored for execution)
             pipeline: Pipeline preference (extended_evolve_pipeline or meta_evolve_pipeline)
 
         Returns:
@@ -2703,7 +2703,7 @@ class AutoHarnessService:
 
         Args:
             query: The optimization goal/task description
-            model: Model configuration from JiuwenClaw
+            model: Model configuration from JiuwenSwarm
             pipeline: Pipeline preference (extended_evolve_pipeline or meta_evolve_pipeline)
 
         Returns:

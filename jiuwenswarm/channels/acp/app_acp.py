@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""JiuWenClaw CLI entrypoint (subcommand dispatcher).
+"""JiuWenSwarm CLI entrypoint (subcommand dispatcher).
 
 Supports ``--dotenv <path>`` for multi-instance isolation.
 """

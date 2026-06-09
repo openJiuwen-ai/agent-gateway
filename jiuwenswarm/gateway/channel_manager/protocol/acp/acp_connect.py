@@ -1777,7 +1777,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-acp",
-        description="Start JiuwenClaw ACP stdio entrypoint.",
+        description="Start JiuwenSwarm ACP stdio entrypoint.",
     )
     parser.add_argument(
         "--gateway-url",

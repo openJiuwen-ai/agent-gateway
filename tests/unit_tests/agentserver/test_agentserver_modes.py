@@ -248,7 +248,7 @@ def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
         },
     )
 
-    asyncio.run(interface_module.JiuWenClaw().process_message(request))
+    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
 
     inputs = fake_adapter.seen_inputs
     assert inputs["project_dir"] == "/tmp/project"
@@ -276,20 +276,20 @@ def test_build_inputs_does_not_map_team_plan_approval_answers_to_interactive_inp
         },
     )
 
-    inputs, _, _ = interface_module.JiuWenClaw().build_inputs(request)
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(request)
 
     assert not isinstance(inputs["query"], InteractiveInput)
 
 
 def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.get_team_manager",
         lambda _channel_id: pytest.fail("team_plan_approval should not route via interact"),
     )
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     request = AgentRequest(
         request_id="req-answer",
         channel_id="tui",
@@ -307,7 +307,7 @@ def test_deep_adapter_handle_user_answer_ignores_team_plan_approval_compat(monke
 
 
 def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     calls: list[tuple[str, str]] = []
 
@@ -326,10 +326,10 @@ def test_deep_adapter_routes_team_simplify_answer_by_evolution_meta(monkeypatch)
         async def on_reject_simplify(self, request_id: str) -> None:
             pytest.fail("team simplify approval must not use regular SkillEvolutionRail")
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = FailingRegularRail()  # pylint: disable=protected-access
     monkeypatch.setattr(
-        JiuWenClawDeepAdapter,
+        JiuWenSwarmDeepAdapter,
         "find_team_skill_rail",
         staticmethod(lambda request_id, channel_id=None: FakeTeamRail()),
     )

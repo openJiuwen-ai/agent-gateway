@@ -833,7 +833,7 @@ export class AppScreen implements Component, Focusable {
       {
         label: "Yes, I trust this folder",
         value: "yes",
-        description: "JiuwenClaw will be able to read, edit, and execute files here",
+        description: "JiuwenSwarm will be able to read, edit, and execute files here",
       },
       {
         label: "No, use default workspace",

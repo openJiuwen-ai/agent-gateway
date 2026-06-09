@@ -211,8 +211,8 @@
     "placeholderTeamMode": "集群模式，输入新指令会并行执行...",
     "placeholderTeamModeProcessing": "集群模式处理中，输入新指令会并行执行...",
     "placeholderVoice": "正在听取语音...",
-    "welcomeLogoAlt": "JiuwenClaw 标志",
-    "welcomeHeading": "你好，我是JiuwenClaw，很高兴认识你！",
+    "welcomeLogoAlt": "JiuwenSwarm 标志",
+    "welcomeHeading": "你好，我是JiuwenSwarm，很高兴认识你！",
     "welcomeSubtext": "我可以帮你回答问题，解决疑惑，还可以帮你完成一些任务。",
     "welcomeSuggestions": {
       "journey": "让我们开启一段新的旅程吧！",

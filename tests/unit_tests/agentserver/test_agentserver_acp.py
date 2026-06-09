@@ -128,7 +128,7 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
         return await super()._find_team_session_ids(team_name)
 
 
-class DeepAdapterHarness(interface_deep_module.JiuWenClawDeepAdapter):
+class DeepAdapterHarness(interface_deep_module.JiuWenSwarmDeepAdapter):
     def build_context_assemble_rail_for_test(self):
         return _build_context_assemble_rail()
 

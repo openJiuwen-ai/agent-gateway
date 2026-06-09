@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenClawDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
 
 @pytest.mark.anyio
@@ -35,7 +35,7 @@ async def test_evolve_slash_reports_current_mode_when_unsupported(
     slash_command: str,
     expected_output: str,
 ):
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
 
     result = await adapter._handle_slash_command(  # pylint: disable=protected-access
         query,
@@ -76,7 +76,7 @@ async def test_agent_evolve_simplify_already_minimal_returns_answer():
                 actions=[],
             )
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = _FakeRail()  # pylint: disable=protected-access
 
     result = await adapter._handle_evolve_simplify_command(  # pylint: disable=protected-access
@@ -110,7 +110,7 @@ async def test_agent_evolve_missing_skill_md_fails_before_sdk_call(monkeypatch):
         async def request_user_evolution(*_args, **_kwargs):
             pytest.fail("missing SKILL.md must be rejected before calling SDK evolution")
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = _FakeRail()  # pylint: disable=protected-access
     monkeypatch.setattr(
         adapter,
@@ -174,7 +174,7 @@ async def test_agent_evolve_maps_sdk_result_status(
                 records=[],
             )
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = _FakeRail()  # pylint: disable=protected-access
     monkeypatch.setattr(adapter, "_collect_messages_for_evolve", lambda _session_id: [])
 
@@ -218,7 +218,7 @@ async def test_agent_evolve_without_local_signal_still_maps_sdk_generation_failu
                 records=[],
             )
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = _FakeRail()  # pylint: disable=protected-access
     monkeypatch.setattr(adapter, "_collect_messages_for_evolve", lambda _session_id: [])
 
@@ -264,7 +264,7 @@ async def test_agent_evolve_hides_internal_toolchain_generation_error(monkeypatc
                 records=[],
             )
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = _FakeRail()  # pylint: disable=protected-access
     monkeypatch.setattr(adapter, "_collect_messages_for_evolve", lambda _session_id: [])
 
@@ -298,7 +298,7 @@ async def test_agent_evolve_list_allows_skill_without_skill_md():
         async def get_records_by_score(skill_name: str) -> list[object]:
             return []
 
-    adapter = JiuWenClawDeepAdapter()
+    adapter = JiuWenSwarmDeepAdapter()
     adapter._skill_evolution_rail = SimpleNamespace(  # pylint: disable=protected-access
         store=_FakeStore()
     )

@@ -1,4 +1,4 @@
-// jiuwenclaw/cli/src/core/commands/builtins/auto-harness.ts
+// jiuwenswarm/cli/src/core/commands/builtins/auto-harness.ts
 
 import { addError, addInfo, parseArgs } from "../helpers.js";
 import { CommandKind, type SlashCommand, type CommandContext } from "../types.js";

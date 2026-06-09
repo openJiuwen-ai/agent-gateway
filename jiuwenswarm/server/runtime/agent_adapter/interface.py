@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""JiuWenClaw Facade - 统一入口与 SDK 适配层.
+"""JiuWenSwarm Facade - 统一入口与 SDK 适配层.
 
 此模块提供：
-- 统一的 JiuWenClaw 公开 API
+- 统一的 JiuWenSwarm 公开 API
 - SDK 工厂路由（通过环境变量选择）
 - 公共编排逻辑（session 队列、Skills 路由、heartbeat、流式包装）
 """
@@ -237,8 +237,8 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
 
 
 
-class JiuWenClaw:
-    """JiuWenClaw 统一门面.
+class JiuWenSwarm:
+    """JiuWenSwarm 统一门面.
 
     提供：
     - SDK 工厂路由
@@ -258,7 +258,7 @@ class JiuWenClaw:
         """懒初始化并返回 SkillDevService 实例.
 
         SkillDevService 是无状态的，单实例即可服务所有请求。
-        首次调用时从当前 JiuWenClaw 配置中提取最小依赖并构造。
+        首次调用时从当前 JiuWenSwarm 配置中提取最小依赖并构造。
         """
         if self._skilldev_service is not None:
             return self._skilldev_service
@@ -285,7 +285,7 @@ class JiuWenClaw:
             workspace_provider=workspace_provider,
         )
         self._skilldev_service = SkillDevService(deps)
-        logger.info("[JiuWenClaw] SkillDevService 初始化完成")
+        logger.info("[JiuWenSwarm] SkillDevService 初始化完成")
         return self._skilldev_service
 
     def _ensure_adapter(self, *, mode: str = "agent") -> AgentAdapter:
@@ -298,7 +298,7 @@ class JiuWenClaw:
             self._skill_manager.set_skillnet_install_complete_hook(
                 self._on_skillnet_install_complete
             )
-            logger.info("[JiuWenClaw] Initialized adapter: sdk=%s, mode=%s", self._sdk_name, mode)
+            logger.info("[JiuWenSwarm] Initialized adapter: sdk=%s, mode=%s", self._sdk_name, mode)
         return self._adapter
 
     @staticmethod
@@ -324,7 +324,10 @@ class JiuWenClaw:
         """
         adapter = self._ensure_adapter(mode=mode)
         await adapter.create_instance(config, mode=mode, sub_mode=sub_mode)
-        logger.info("[JiuWenClaw] Agent instance created: sdk=%s, mode=%s, sub_mode=%s", self._sdk_name, mode, sub_mode)
+        logger.info(
+            "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
+            self._sdk_name, mode, sub_mode,
+        )
 
         sm = self._session_manager
         if hasattr(adapter, "try_start_dreaming"):
@@ -344,7 +347,7 @@ class JiuWenClaw:
 
             refresh_team_shared_skill_links_across_managers(session_id)
         except Exception as exc:
-            logger.warning("[JiuWenClaw] team shared skill link refresh failed: %s", exc)
+            logger.warning("[JiuWenSwarm] team shared skill link refresh failed: %s", exc)
 
     async def reload_agent_config(
             self,
@@ -361,7 +364,7 @@ class JiuWenClaw:
         if hasattr(adapter, "try_stop_dreaming"):
             await adapter.try_stop_dreaming()
         await adapter.reload_agent_config(config_base, env_overrides)
-        logger.info("[JiuWenClaw] Agent config reloaded: sdk=%s", self._sdk_name)
+        logger.info("[JiuWenSwarm] Agent config reloaded: sdk=%s", self._sdk_name)
         if hasattr(adapter, "try_start_dreaming"):
             sm = self._session_manager
             asyncio.create_task(adapter.try_start_dreaming(
@@ -517,7 +520,7 @@ class JiuWenClaw:
                 answers_dict["__free_text__"] = free_text_answer
             interactive_input.update(request_id, {"answers": answers_dict})
             logger.info(
-                "[JiuWenClaw] AskUserRail InteractiveInput.update: request_id=%s payload=%s",
+                "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s payload=%s",
                 request_id, {"answers": answers_dict}
             )
             return interactive_input
@@ -555,7 +558,7 @@ class JiuWenClaw:
 
         interactive_input.update(request_id, confirm_payload)
         logger.info(
-            "[JiuWenClaw] PermissionRail InteractiveInput.update: request_id=%s payload=%s",
+            "[JiuWenSwarm] PermissionRail InteractiveInput.update: request_id=%s payload=%s",
             request_id, confirm_payload
         )
 
@@ -574,7 +577,7 @@ class JiuWenClaw:
             final = chunks[-1] if chunks else None
             payload = final.payload if final else {}
         except Exception as exc:
-            logger.error("[JiuWenClaw] skilldev 请求处理失败: %s", exc)
+            logger.error("[JiuWenSwarm] skilldev 请求处理失败: %s", exc)
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -614,7 +617,7 @@ class JiuWenClaw:
                 await self.create_instance()
                 self._refresh_team_shared_skill_links(request.session_id)
         except Exception as exc:
-            logger.error("[JiuWenClaw] skills 请求处理失败: %s", exc)
+            logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -648,7 +651,7 @@ class JiuWenClaw:
             if _reload_after:
                 await self.create_instance()
         except Exception as exc:
-            logger.error("[JiuWenClaw] plugins 请求处理失败: %s", exc)
+            logger.error("[JiuWenSwarm] plugins 请求处理失败: %s", exc)
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -822,7 +825,7 @@ class JiuWenClaw:
             return await team_manager.terminate_session_runtime(session_id, reason=log_prefix)
         except Exception:
             logger.exception(
-                "[JiuWenClaw] failed to terminate team runtime: session_id=%s",
+                "[JiuWenSwarm] failed to terminate team runtime: session_id=%s",
                 session_id,
             )
             return False
@@ -870,7 +873,7 @@ class JiuWenClaw:
         )
 
         logger.info(
-            "[JiuWenClaw] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+            "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
 
@@ -948,7 +951,7 @@ class JiuWenClaw:
                 async for chunk in service.handle(request):
                     yield chunk
             except Exception as exc:
-                logger.error("[JiuWenClaw] skilldev 流式请求处理失败: %s", exc)
+                logger.error("[JiuWenSwarm] skilldev 流式请求处理失败: %s", exc)
                 yield AgentResponseChunk(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -985,7 +988,7 @@ class JiuWenClaw:
         )
 
         logger.info(
-            "[JiuWenClaw] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
         )
 
@@ -1000,7 +1003,7 @@ class JiuWenClaw:
             if not isinstance(inputs.get("query"), InteractiveInput):
                 inputs["query"] = raw_query
             logger.info(
-                "[JiuWenClaw] Team模式使用原始query: %s",
+                "[JiuWenSwarm] Team模式使用原始query: %s",
                 raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
             )
 
@@ -1029,7 +1032,7 @@ class JiuWenClaw:
                 and not team_manager.has_stream_task(session_id)
             )
             logger.info(
-                "[JiuWenClaw] Team模式: session_id=%s is_first=%s",
+                "[JiuWenSwarm] Team模式: session_id=%s is_first=%s",
                 session_id, is_team_first_request
             )
 
@@ -1043,10 +1046,10 @@ class JiuWenClaw:
                 async for chunk in adapter.process_message_stream_impl(request, inputs):
                     await stream_queue.put(("chunk", chunk))
             except asyncio.CancelledError:
-                logger.info("[JiuWenClaw] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)
+                logger.info("[JiuWenSwarm] 流式任务被取消: request_id=%s session_id=%s", rid, session_id)
                 await stream_queue.put(("error", asyncio.CancelledError()))
             except Exception as exc:
-                logger.exception("[JiuWenClaw] 流式任务异常: %s", exc)
+                logger.exception("[JiuWenSwarm] 流式任务异常: %s", exc)
                 await stream_queue.put(("error", exc))
             finally:
                 stream_done.set()
@@ -1056,13 +1059,13 @@ class JiuWenClaw:
         # 且 team_helpers 内部已有请求锁保证同一 session 的请求串行执行
         if is_team_mode and not is_team_first_request:
             logger.info(
-                "[JiuWenClaw] Team模式后续请求，直接执行: request_id=%s session_id=%s",
+                "[JiuWenSwarm] Team模式后续请求，直接执行: request_id=%s session_id=%s",
                 rid, session_id,
             )
             asyncio.create_task(run_stream_task())
         elif is_auto_harness_resume:
             logger.info(
-                "[JiuWenClaw] Auto-Harness resume请求，绕过Session队列: request_id=%s session_id=%s",
+                "[JiuWenSwarm] Auto-Harness resume请求，绕过Session队列: request_id=%s session_id=%s",
                 rid, session_id,
             )
             asyncio.create_task(run_stream_task())
@@ -1080,7 +1083,7 @@ class JiuWenClaw:
 
                 if event_type == "error":
                     if isinstance(data, asyncio.CancelledError):
-                        logger.info("[JiuWenClaw] 流式处理被中断: request_id=%s", rid)
+                        logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
                         raise data
                     append_history_record(
                         session_id=session_id,
@@ -1184,7 +1187,7 @@ class JiuWenClaw:
                             is_complete=False,
                         )
         except asyncio.CancelledError:
-            logger.info("[JiuWenClaw] 流式处理被中断: request_id=%s", rid)
+            logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
             raise
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
@@ -1320,7 +1323,7 @@ class JiuWenClaw:
         try:
             await abort_fn()
         except Exception:
-            logger.exception("[JiuWenClaw] adapter.abort_on_gateway_disconnect failed")
+            logger.exception("[JiuWenSwarm] adapter.abort_on_gateway_disconnect failed")
 
     async def cleanup(self) -> None:
         """清理资源，准备销毁实例.
@@ -1328,14 +1331,14 @@ class JiuWenClaw:
         每次 initialize 重建 agent 时调用。
         不清理记忆数据（记忆数据保留在文件系统中）。
         """
-        logger.info("[JiuWenClaw] cleanup: 清理资源")
+        logger.info("[JiuWenSwarm] cleanup: 清理资源")
 
         if self._adapter is not None:
             try:
                 if hasattr(self._adapter, "cleanup"):
                     await self._adapter.cleanup()
             except Exception as e:
-                logger.warning("[JiuWenClaw] Adapter cleanup failed: %s", e)
+                logger.warning("[JiuWenSwarm] Adapter cleanup failed: %s", e)
             self._adapter = None
 
-        logger.info("[JiuWenClaw] cleanup: 完成")
+        logger.info("[JiuWenSwarm] cleanup: 完成")

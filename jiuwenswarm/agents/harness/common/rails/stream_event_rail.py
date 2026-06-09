@@ -1,8 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-"""JiuClawStreamEventRail — Stream event emission, pause checks, context fix.
+"""JiuSwarmStreamEventRail — Stream event emission, pause checks, context fix.
 
-Migrated from JiuClawReActAgent:
+Migrated from JiuSwarmReActAgent:
   - _emit_tool_call / _emit_tool_result / _emit_todo_updated / _emit_context_usage
   - _fix_incomplete_tool_context
   - Pause checkpoint logic
@@ -204,7 +204,7 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
-class JiuClawStreamEventRail(DeepAgentRail):
+class JiuSwarmStreamEventRail(DeepAgentRail):
     """Emit frontend stream events and enforce pause/abort checkpoints.
 
     Pause/abort state is owned by this Rail (not DeepAgent) so that
@@ -538,7 +538,7 @@ class JiuClawStreamEventRail(DeepAgentRail):
             await self._fix_incomplete_tool_context(ctx)
 
     # ------------------------------------------------------------------
-    # Private helpers (migrated from JiuClawReActAgent)
+    # Private helpers (migrated from JiuSwarmReActAgent)
     # ------------------------------------------------------------------
 
     @staticmethod
