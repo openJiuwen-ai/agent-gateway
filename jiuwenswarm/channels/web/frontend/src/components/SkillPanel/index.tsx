@@ -13,6 +13,7 @@ import { ClawHubSearchModal } from "../../features/ClawHubSearchModal";
 import { TeamSkillsHubModal } from "../../features/TeamSkillsHubModal";
 import { SkillEvolutionModal } from "../../features/SkillEvolutionModal";
 import { normalizeSkillNetUrl } from "../../utils/skillNetUrl";
+import { SkillGraphPanel } from "../SkillGraphPanel";
 import { Switch } from "../Switch";
 
 /** 刷新会 git pull marketplace，略放宽；普通进页单次 RPC 一般很快。 */
@@ -286,7 +287,7 @@ function SkillIndexTreeView({
 
 export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index">("my");
+  const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
   const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled">("all");
   const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
   const [onlineSource, setOnlineSource] = useState<"skillnet" | "clawhub">("skillnet");
@@ -1140,6 +1141,16 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
               {t('skills.tabs.marketplace')}
             </button>
             <button
+              onClick={() => setActiveTab("graph")}
+              className={`px-4 text-sm font-medium transition-colors ${
+                activeTab === "graph"
+                  ? "rounded-[8px] bg-secondary h-8 text-text"
+                  : "text-text-muted hover:text-text"
+              }`}
+            >
+              技能总谱
+            </button>
+            <button
               onClick={() => setActiveTab("index")}
               className={`px-4 text-sm font-medium transition-colors ${
                 activeTab === "index"
@@ -1150,7 +1161,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
               {t('skills.tabs.skillIndex')}
             </button>
           </div>
-          {activeTab !== "index" ? (
+          {activeTab !== "index" && activeTab !== "graph" ? (
             <div className="flex items-center gap-1 border border-border rounded-lg p-1">
               <button
                 onClick={() => setViewMode("list")}
@@ -1387,6 +1398,12 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                 )}
               </div>
             </div>
+          </div>
+          ) : null}
+
+        {activeTab === "graph" ? (
+          <div className="mt-4 flex-1 min-h-0">
+            <SkillGraphPanel />
           </div>
         ) : null}
 

@@ -1,6 +1,6 @@
 """Regression test for chat.error stream events carrying ``error_type``.
 
-The streaming error aggregator in ``JiuWenClaw.process_message_stream``
+The streaming error aggregator in ``JiuWenSwarm.process_message_stream``
 classifies the exception class on each chat.error event so that downstream
 consumers (log indexers, dashboards, external evaluators) can group failures
 without regexing the message text. This pins the contract on both the
@@ -16,7 +16,7 @@ from typing import Any, AsyncIterator, List
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
-from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenClaw
+from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 
 
@@ -63,7 +63,7 @@ class _RaisingAdapter:
 
 def _patch_facade(
     monkeypatch: pytest.MonkeyPatch,
-    facade: JiuWenClaw,
+    facade: JiuWenSwarm,
     adapter: _RaisingAdapter,
     recorded: List[dict[str, Any]],
 ) -> None:
@@ -83,7 +83,7 @@ def _patch_facade(
 
 @pytest.mark.asyncio
 async def test_chat_error_chunk_includes_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    facade = JiuWenClaw()
+    facade = JiuWenSwarm()
     adapter = _RaisingAdapter(ValueError("boom from agent"))
     history: List[dict[str, Any]] = []
     _patch_facade(monkeypatch, facade, adapter, history)
@@ -111,7 +111,7 @@ async def test_chat_error_chunk_includes_error_type(monkeypatch: pytest.MonkeyPa
 
 @pytest.mark.asyncio
 async def test_chat_error_history_record_carries_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    facade = JiuWenClaw()
+    facade = JiuWenSwarm()
     adapter = _RaisingAdapter(RuntimeError("rate limited"))
     history: List[dict[str, Any]] = []
     _patch_facade(monkeypatch, facade, adapter, history)
@@ -144,7 +144,7 @@ async def test_chat_error_history_record_persists_error_type_at_top_level(
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session import session_metadata
 
-    facade = JiuWenClaw()
+    facade = JiuWenSwarm()
     adapter = _RaisingAdapter(LookupError("token bucket exhausted"))
     monkeypatch.setattr(facade, "_adapter", adapter)
     monkeypatch.setattr(facade, "_sdk_name", "harness")
@@ -194,7 +194,7 @@ async def test_chat_error_history_record_persists_error_type_at_top_level(
 async def test_cancelled_error_propagates_without_chat_error_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
     # asyncio.CancelledError must propagate as cancellation, not be classified
     # and yielded as a chat.error event.
-    facade = JiuWenClaw()
+    facade = JiuWenSwarm()
     adapter = _RaisingAdapter(asyncio.CancelledError())
     history: List[dict[str, Any]] = []
     _patch_facade(monkeypatch, facade, adapter, history)

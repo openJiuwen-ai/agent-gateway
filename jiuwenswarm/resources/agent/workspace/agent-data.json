@@ -693,5 +693,12 @@
       "path": "agent/workspace/skills/swarmskill-creator/templates/workflow.md.template",
       "isMarkdown": false
     }
+  ],
+  "workspace/skills/symphony": [
+    {
+      "name": "SKILL.md",
+      "path": "agent/workspace/skills/symphony/SKILL.md",
+      "isMarkdown": true
+    }
   ]
 }

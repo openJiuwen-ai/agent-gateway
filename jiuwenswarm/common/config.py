@@ -10,13 +10,13 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Optional
 
-import yaml
-
-logger = logging.getLogger(__name__)
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+import yaml
 
 from jiuwenswarm.common.utils import get_config_dir, get_config_file
+
+logger = logging.getLogger(__name__)
 
 _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()

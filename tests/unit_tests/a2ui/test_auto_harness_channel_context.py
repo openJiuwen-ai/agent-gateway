@@ -113,7 +113,11 @@ async def test_runtime_config_syncs_channel_to_response_prompt_rail(monkeypatch)
 
     adapter._response_prompt_rail = _ResponseRail()
 
-    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_seed_runtime_cwd", lambda self, cwd=None: None)
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter,
+        "_seed_runtime_cwd",
+        lambda self, cwd=None, workspace=None: None,
+    )
     monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_resolve_runtime_language", lambda self: "cn")
     monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_write_runtime_state", lambda self, **kwargs: None)
     monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_update_rails_for_mode", async_noop)

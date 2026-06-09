@@ -163,6 +163,7 @@ const DEFERRED_TRANSCRIPT_EVENTS = new Set([
   "chat.error",
   "chat.tool_call",
   "chat.tool_result",
+  "chat.symphony_status",
   "chat.interrupt_result",
   "chat.ask_user_question",
   "chat.media",

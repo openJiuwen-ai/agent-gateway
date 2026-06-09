@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import re
@@ -143,6 +144,15 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGINS_DISABLE: "handle_plugins_disable",
     ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
 }
+
+_SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.SYMPHONY_BUILD_SCORE,
+        ReqMethod.SYMPHONY_SCORE_STATUS,
+        ReqMethod.SYMPHONY_GRAPH,
+        ReqMethod.SYMPHONY_PLAN,
+    }
+)
 
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
@@ -695,6 +705,42 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_symphony_request(self, request: AgentRequest) -> AgentResponse | None:
+        """处理 Symphony extension RPC 请求."""
+        if request.req_method not in _SYMPHONY_METHODS:
+            return None
+
+        method = request.req_method.value
+        try:
+            handler = ExtensionRegistry.get_instance().get_rpc_handler(method)
+            if handler is None:
+                payload = {
+                    "success": False,
+                    "detail": f"Symphony extension RPC unavailable: {method}: handler not registered",
+                }
+            else:
+                result = handler(request.params or {}, request=request)
+                payload = await result if inspect.isawaitable(result) else result
+                if not isinstance(payload, dict):
+                    payload = {"success": True, "result": payload}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[JiuWenSwarm] Symphony RPC failed: %s", method)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"success": False, "detail": f"{method}: {exc}"},
+                metadata=request.metadata,
+            )
+
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -886,6 +932,10 @@ class JiuWenSwarm:
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
+
+        symphony_response = await self._handle_symphony_request(request)
+        if symphony_response is not None:
+            return symphony_response
 
         session_id = self._session_manager.get_session_id(request.session_id)
         query = request.params.get("query", "")

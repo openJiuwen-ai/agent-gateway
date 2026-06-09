@@ -436,6 +436,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const clearedTeamPanelSessionRef = useRef<string | null>(null);
   const teamMemberOutputEventRef = useRef<Map<string, string>>(new Map());
   const eventDedupDroppedRef = useRef<Record<string, number>>({});
+  const symphonyStatusTargetRef = useRef<Map<string, { messageId: string; baseContent: string }>>(
+    new Map()
+  );
   const contextCompressionSummaryRef = useRef<ContextCompressionSummary>({
     count: 0,
     summaries: [],
@@ -1719,6 +1722,60 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             }
           }
         }
+      }),
+      webClient.on('chat.symphony_status', ({ payload }) => {
+        if (!shouldHandleSessionEvent(payload)) return;
+        const content = typeof payload.content === 'string' ? payload.content.trim() : '';
+        if (!content) return;
+        const operationId =
+          typeof payload.operation_id === 'string' && payload.operation_id.trim()
+            ? payload.operation_id.trim()
+            : typeof payload.request_id === 'string' && payload.request_id.trim()
+              ? payload.request_id.trim()
+              : `${Date.now()}`;
+        const messageId = `symphony-status-${operationId}`;
+        const status = typeof payload.status === 'string' ? payload.status : '';
+        const detail = typeof payload.detail === 'string' ? payload.detail.trim() : '';
+        const displayContent =
+          status === 'failed' && detail && !content.includes(detail)
+            ? `${content}\n${detail}`
+            : content;
+        const chatState = useChatStore.getState();
+        const cachedTarget = symphonyStatusTargetRef.current.get(operationId);
+        const targetMessage = cachedTarget
+          ? chatState.messages.find((message) => message.id === cachedTarget.messageId)
+          : [...chatState.messages].reverse().find(
+            (message) =>
+              message.role === 'assistant' ||
+              (message.role === 'system' && message.id?.startsWith('team-leader-'))
+          );
+        if (targetMessage) {
+          const target = cachedTarget || {
+            messageId: targetMessage.id,
+            baseContent: targetMessage.content || '',
+          };
+          symphonyStatusTargetRef.current.set(operationId, target);
+          const baseContent = target.baseContent.trimEnd();
+          chatState.updateMessage(target.messageId, {
+            content: baseContent ? `${baseContent}\n\n${displayContent}` : displayContent,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        const existing = chatState.messages.find((message) => message.id === messageId);
+        if (existing) {
+          chatState.updateMessage(messageId, {
+            content: displayContent,
+            timestamp: new Date().toISOString(),
+          });
+          return;
+        }
+        chatState.addMessage({
+          id: messageId,
+          role: 'system',
+          content: displayContent,
+          timestamp: new Date().toISOString(),
+        });
       }),
       webClient.on('chat.evolution_status', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;

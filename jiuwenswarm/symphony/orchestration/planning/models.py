@@ -143,67 +143,10 @@ class GroundingClient(Protocol):
 
 
 @dataclass(frozen=True)
-class BeamCandidateScore:
-    """Intent score assigned to a legal beam expansion candidate."""
-
-    skill_id: str
-    score: float
-    reason: str = ""
-    source: str = "llm"
-
-
-class BeamCandidateScorer(Protocol):
-    """Scores legal can_feed candidates for beam expansion."""
-
-    async def score_forward_candidates(
-        self,
-        *,
-        grounded: GroundedQuery,
-        current_skill: dict[str, Any],
-        candidates: list[dict[str, Any]],
-    ) -> dict[str, BeamCandidateScore]:
-        ...
-
-    async def score_backward_candidates(
-        self,
-        *,
-        grounded: GroundedQuery,
-        root_skill: dict[str, Any],
-        missing_inputs: list[dict[str, Any]],
-        candidates: list[dict[str, Any]],
-    ) -> dict[str, BeamCandidateScore]:
-        ...
-
-
-@dataclass(frozen=True)
-class PlanningConfig:
-    """Runtime planning and ranking knobs.
-
-    Override precedence should be applied by callers as:
-    request > runtime service config > manifest defaults.
-    """
-
-    min_edge_confidence: float = 0.7
-    max_depth: int = 4
-    max_plans: int = 20
-    max_branch: int = 8
-    max_entry_skills: int = 40
-    beam_width: int = 40
-    min_beam_candidate_score: float = 0.2
-    top_m: int = 12
-    top_k: int = 3
-    include_candidates: bool = True
-    conservative_reject: bool = True
-    hard_fail_missing_inputs: bool = False
-    enable_backward_search: bool = True
-
-
-@dataclass(frozen=True)
 class SearchState:
     """Internal forward-search state."""
 
     skill_ids: tuple[str, ...]
     available: frozenset[tuple[str, str]]
     edges: tuple[int, ...]
-    beam_score: float = 0.0
     score_reasons: tuple[str, ...] = ()

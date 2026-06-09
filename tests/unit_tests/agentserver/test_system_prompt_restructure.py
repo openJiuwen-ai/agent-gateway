@@ -43,11 +43,30 @@ class _FakeAgent:
         self.prompt_attachment_manager = PromptAttachmentManager()
 
 
-def test_build_agent_identity_prompt_contains_identity_section_only():
+def test_build_agent_identity_prompt_contains_identity_section_only(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.config.load_symphony_config",
+        lambda: SimpleNamespace(enabled=True),
+    )
     prompt = build_agent_identity_prompt(language="zh")
 
     assert "# 你的家" in prompt
+    assert "## Symphony Routing" in prompt
+    assert "`symphony_compose_score`" in prompt
+    assert "present its returned `content` or" in prompt
     assert "# 消息说明" not in prompt
+
+
+def test_build_agent_identity_prompt_omits_symphony_when_disabled(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.config.load_symphony_config",
+        lambda: SimpleNamespace(enabled=False),
+    )
+
+    prompt = build_agent_identity_prompt(language="zh")
+
+    assert "## Symphony Routing" not in prompt
+    assert "`symphony_compose_score`" not in prompt
 
 
 @pytest.mark.asyncio

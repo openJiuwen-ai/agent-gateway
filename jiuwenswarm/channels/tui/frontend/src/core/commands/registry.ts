@@ -25,6 +25,7 @@ import { createModelCommand } from "./builtins/model.js";
 import { createMcpCommand } from "./builtins/mcp.js";
 import { createMemoryCommand } from "./builtins/memory.js";
 import { createPluginCommand } from "./builtins/plugin.js";
+import { createSymphonyCommand } from "./builtins/symphony.js";
 import { createReloadPluginsCommand } from "./builtins/reload-plugins.js";
 import { createModeCommand } from "./builtins/mode.js";
 import { createPermissionsCommand } from "./builtins/permissions.js";
@@ -88,6 +89,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createUsageCommand(),
     createMemoryCommand(),
     createPluginCommand(),
+    createSymphonyCommand(),
     createReloadPluginsCommand(),
   ];
 

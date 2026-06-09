@@ -283,6 +283,6 @@ def _orchestration_mode(value: Any, default: str) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return default
-    if text in {"beam", "default", "fast"}:
+    if text == "fast":
         return "fast"
     raise ValueError(f"Unsupported Symphony orchestration mode: {value}")

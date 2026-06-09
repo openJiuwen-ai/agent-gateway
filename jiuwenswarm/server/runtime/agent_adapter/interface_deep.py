@@ -191,6 +191,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillRetrievalToolkit,
     SkillToolkit,
     is_skill_retrieval_enabled,
+    SymphonyToolkit,
 )
 from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
@@ -2839,13 +2840,31 @@ class JiuWenSwarmDeepAdapter:
                     tool_cards.append(tool.card)
                     skill_retrieval_tool_names.append(tool.card.name)
                 logger.info(
-                    "[JiuWenClawDeepAdapter] SkillRetrievalToolkit registered: tools=%s",
+                    "[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit registered: tools=%s",
                     skill_retrieval_tool_names,
                 )
             except Exception as exc:
-                logger.warning("[JiuWenClawDeepAdapter] skill retrieval tools registration failed: %s", exc)
+                logger.warning("[JiuWenSwarmDeepAdapter] skill retrieval tools registration failed: %s", exc)
         else:
-            logger.info("[JiuWenClawDeepAdapter] SkillRetrievalToolkit skipped: disabled")
+            logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit skipped: disabled")
+
+        try:
+            symphony_toolkit = SymphonyToolkit()
+            symphony_tool_names: list[str] = []
+            for tool in symphony_toolkit.get_tools():
+                if not Runner.resource_mgr.get_tool(tool.card.id):
+                    Runner.resource_mgr.add_tool(tool)
+                tool_cards.append(tool.card)
+                symphony_tool_names.append(tool.card.name)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SymphonyToolkit registered: tools=%s",
+                symphony_tool_names,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] orchestration tools registration failed: %s",
+                exc,
+            )
 
         # acp_chat: forward prompts to external stdio ACP agents (see acp_agents in config.yaml)
         try:
@@ -5753,6 +5772,20 @@ class JiuWenSwarmDeepAdapter:
                                 raw_output = result_info.get("rawOutput")
                             if raw_output is not None:
                                 result_payload["raw_output"] = raw_output
+                            for key in (
+                                "status",
+                                "success",
+                                "is_error",
+                                "error",
+                                "summary",
+                                "score_status",
+                                "score_build",
+                                "direct_display",
+                                "display_format",
+                                "mermaid",
+                            ):
+                                if key in result_info:
+                                    result_payload[key] = result_info[key]
                     else:
                         result_payload = {"result": str(payload)}
                     return {
@@ -5824,6 +5857,14 @@ class JiuWenSwarmDeepAdapter:
 
                 if chunk_type == "chat.ask_user_question":
                     return parse_ask_user_question_payload(payload)
+
+                if chunk_type == "chat.symphony_status":
+                    if isinstance(payload, dict):
+                        return {
+                            "event_type": "chat.symphony_status",
+                            **payload,
+                        }
+                    return None
 
                 if chunk_type == "__interaction__":
                     if isinstance(payload, dict) and payload.get("interaction_type") == "activate_confirm":

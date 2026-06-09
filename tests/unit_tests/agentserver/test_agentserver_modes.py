@@ -422,7 +422,7 @@ def test_build_inputs_threads_workspace_dir_into_cwd(monkeypatch, tmp_path):
         params={"query": "hello", "workspace_dir": str(scratch)},
     )
 
-    asyncio.run(interface_module.JiuWenClaw().process_message(request))
+    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
 
     inputs = fake_adapter.seen_inputs
     # Path is resolved (symlinks followed, absolute form) before threading.
@@ -494,7 +494,7 @@ def test_build_inputs_omits_cwd_when_workspace_dir_unset(monkeypatch):
         params={"query": "hello", "cwd": "/tmp/explicit-cwd"},  # no workspace_dir
     )
 
-    asyncio.run(interface_module.JiuWenClaw().process_message(request))
+    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
 
     inputs = fake_adapter.seen_inputs
     # params.cwd is preserved untouched

@@ -365,6 +365,7 @@ class AcpGatewayBridge:
             EventType.CHAT_TOOL_CALL,
             EventType.CHAT_TOOL_UPDATE,
             EventType.CHAT_TOOL_RESULT,
+            EventType.CHAT_SYMPHONY_STATUS,
             EventType.TODO_UPDATED,
             EventType.CHAT_SUBTASK_UPDATE,
         ):
@@ -1359,6 +1360,7 @@ class AcpChannel(BaseChannel):
             EventType.CHAT_TOOL_CALL,
             EventType.CHAT_TOOL_UPDATE,
             EventType.CHAT_TOOL_RESULT,
+            EventType.CHAT_SYMPHONY_STATUS,
             EventType.TODO_UPDATED,
             EventType.CHAT_SUBTASK_UPDATE,
         ):

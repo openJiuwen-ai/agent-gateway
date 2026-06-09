@@ -12,6 +12,63 @@ a2ui:
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
 
+symphony:
+  enabled: false
+  paths:
+    skills_root: ""
+    score_dir: ""
+
+  fingerprint:
+    scan:
+      max_depth:
+    extraction:
+      workers: 4
+      batch_size: 2
+      body_limit:
+    normalization:
+      workers: 4
+      batch_size: 2
+      duplicate_name_similarity_threshold: 0.8
+      max_vocab_size:
+
+  build:
+    workers: 4
+    batch_size: 16
+    require_consensus: true
+    min_edge_confidence: 0.1
+
+  orchestration:
+    mode: fast
+    top_k: 3
+    max_depth: 4
+    min_edge_confidence: 0.3
+
+  skill_retrieval:
+    enabled: false
+    artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
+    build:
+      branching_factor: 128
+      max_depth: 6
+      root_categories: ""
+      max_workers: 2
+      max_retries: 2
+      request_timeout_seconds: 420
+      classification_batch_limit: 32
+      discovery_seed: 42
+      postprocess_enabled: true
+      postprocess_max_passes: 1
+      postprocess_min_skills: 6
+      equivalence_enabled: true
+    retrieve:
+      top_k: 10
+      compact_codes_enabled: false
+      flatten_tree: false
+      max_exposure_depth: 99
+      max_branch_choices: 2
+      max_parallel_branches: 2
+      max_tokens: 96
+      request_timeout_seconds: 120
+
 # 日志目录：~/.jiuwenswarm/agent/.logs/
 # gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
@@ -177,33 +234,6 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
-
-symphony:
-  skill_retrieval:
-    enabled: false
-    artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
-    build:
-      branching_factor: 128
-      max_depth: 6
-      root_categories: ""
-      max_workers: 2
-      max_retries: 2
-      request_timeout_seconds: 420
-      classification_batch_limit: 32
-      discovery_seed: 42
-      postprocess_enabled: true
-      postprocess_max_passes: 1
-      postprocess_min_skills: 6
-      equivalence_enabled: true
-    retrieve:
-      top_k: 10
-      compact_codes_enabled: false
-      flatten_tree: false
-      max_exposure_depth: 99
-      max_branch_choices: 2
-      max_parallel_branches: 2
-      max_tokens: 96
-      request_timeout_seconds: 120
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
