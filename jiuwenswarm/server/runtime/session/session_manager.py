@@ -202,7 +202,7 @@ class SessionManager:
             if self._is_oneshot_session(session_id):
                 queue = self._session_queues.get(session_id)
                 if queue is not None:
-                    await queue.put((1_000_000_000, None))
+                    await queue.put((1_000_000_000, None, None))
 
     def get_current_task(self, session_id: str) -> asyncio.Task | None:
         """获取当前 session 正在执行的任务."""
