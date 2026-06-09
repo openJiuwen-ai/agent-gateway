@@ -932,7 +932,7 @@ class JiuWenClawDeepAdapter:
         channel = session_id.split("_", 1)[0]
         if channel == "sess":
             return "web"
-        if channel in {"acp", "cron", "heartbeat", "feishu", "web", "dingtalk", "wecom"}:
+        if channel in {"acp", "cron", "heartbeat", "feishu", "web", "dingtalk", "wecom", "tui"}:
             return channel
         return "web"
 
@@ -3533,6 +3533,8 @@ class JiuWenClawDeepAdapter:
             )
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
+        if self._response_prompt_rail:
+            self._response_prompt_rail.set_channel(resolved_channel)
         circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
         if circuit_breaker_rail is not None:
             circuit_breaker_rail.set_language(resolved_language)
@@ -5125,6 +5127,19 @@ class JiuWenClawDeepAdapter:
                     self._stream_event_rail,
                     agent=self._instance,
                 )
+
+            await self._update_runtime_config(
+                self._RuntimeConfig(
+                    session_id=request.session_id,
+                    mode=mode,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    request_metadata=request.metadata,
+                    trusted_dirs=inputs.get("trusted_dirs"),
+                    cwd=inputs.get("cwd"),
+                    project_dir=inputs.get("project_dir"),
+                )
+            )
 
             activate_response = request.params.get("activate_response")
             if isinstance(activate_response, dict):

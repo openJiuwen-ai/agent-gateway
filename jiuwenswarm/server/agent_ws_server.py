@@ -130,6 +130,16 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
     }
 )
 
+
+def _request_query_text(request: AgentRequest) -> str:
+    """Return text chat query only; structured events are handled downstream."""
+    if not isinstance(request.params, dict):
+        return ""
+    query = request.params.get("query")
+    if not isinstance(query, str):
+        return ""
+    return query.strip()
+
 # System prompt for LLM-based agent generation
 _AGENT_CREATION_SYSTEM_PROMPT = """\
 You are an elite AI agent architect. When given an agent name and description, your job is to design a high-performance agent that EXECUTES tasks to completion — not just analyzes and reports.
@@ -488,9 +498,7 @@ def _check_and_handle_pending_approval(
         return False
 
     # Read the user's response
-    user_msg = ""
-    if isinstance(request.params, dict):
-        user_msg = (request.params.get("query") or "").strip()
+    user_msg = _request_query_text(request)
     if not user_msg:
         # Empty user message — keep pending state
         _pending_plan_approvals[session_id] = pending
@@ -553,7 +561,7 @@ async def _try_handle_direct_plan_implement(
         return False
     if request.params.get(PLAN_USER_APPROVED_FLAG):
         return False
-    user_msg = (request.params.get("query") or "").strip()
+    user_msg = _request_query_text(request)
     if not is_direct_plan_implement_request(user_msg):
         return False
 

@@ -130,3 +130,32 @@ def test_pending_approval_accepts_feedback_text() -> None:
     assert PLAN_USER_APPROVED_FLAG not in request.params
     assert "用户要求修订计划" in request.params["query"]
     assert "多添加几个边界测试用例" in request.params["query"]
+
+
+def test_pending_approval_ignores_structured_a2ui_event() -> None:
+    session_id = "sess_a2ui_event"
+    _pending_plan_approvals[session_id] = {
+        "pending": True,
+        "plan_content": "# Plan",
+        "plan_slug": "test-plan",
+        "plan_path": "/tmp/plan.md",
+    }
+    event = {
+        "type": "a2ui.client_event",
+        "event": {
+            "userAction": {
+                "name": "submitForm",
+                "context": {"dietary": ["vegetarian"]},
+            }
+        },
+    }
+    request = AgentRequest(
+        request_id="req_a2ui_event",
+        channel_id="web",
+        session_id=session_id,
+        params={"query": event, "content": event, "mode": "agent.fast"},
+    )
+
+    assert _check_and_handle_pending_approval(request, language="cn") is False
+    assert _pending_plan_approvals[session_id]["pending"] is True
+    assert request.params["query"] is event

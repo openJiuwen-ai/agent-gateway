@@ -265,6 +265,34 @@ async def test_direct_implement_reads_plan_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_direct_implement_ignores_structured_a2ui_event() -> None:
+    event = {
+        "type": "a2ui.client_event",
+        "event": {
+            "userAction": {
+                "name": "submitForm",
+                "context": {"dietary": ["vegetarian"]},
+            }
+        },
+    }
+    request = AgentRequest(
+        request_id="req_a2ui_event",
+        channel_id="web",
+        session_id="sess_a2ui_event",
+        params={"query": event, "content": event, "mode": "agent.fast"},
+    )
+
+    handled = await _try_handle_direct_plan_implement(
+        request,
+        MagicMock(),
+        language="cn",
+    )
+
+    assert handled is False
+    assert request.params["query"] is event
+
+
+@pytest.mark.asyncio
 async def test_reject_switch_mode_then_direct_implement_exits_plan(
     tmp_path: Path,
 ) -> None:

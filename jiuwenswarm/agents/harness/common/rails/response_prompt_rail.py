@@ -28,6 +28,7 @@ class ResponsePromptRail(DeepAgentRail):
     def __init__(self) -> None:
         super().__init__()
         self.system_prompt_builder = None
+        self._runtime_channel: str | None = None
 
     def init(self, agent) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -37,6 +38,11 @@ class ResponsePromptRail(DeepAgentRail):
             self.system_prompt_builder.remove_section("response")
             self.system_prompt_builder.remove_section(LocalSectionName.A2UI)
         self.system_prompt_builder = None
+        self._runtime_channel = None
+
+    def set_channel(self, channel: str | None) -> None:
+        value = str(channel or "").strip()
+        self._runtime_channel = value or None
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         channel = self._resolve_channel(ctx)
@@ -52,8 +58,7 @@ class ResponsePromptRail(DeepAgentRail):
         self.system_prompt_builder.add_section(_response_prompt(language))
         self._sync_a2ui_prompt_section(self._resolve_channel(ctx))
 
-    @staticmethod
-    def _resolve_channel(ctx: AgentCallbackContext) -> str | None:
+    def _resolve_channel(self, ctx: AgentCallbackContext) -> str | None:
         """Read the request channel from callback inputs when available."""
         inputs = getattr(ctx, "inputs", None)
         if isinstance(inputs, dict):
@@ -71,15 +76,22 @@ class ResponsePromptRail(DeepAgentRail):
             if value is not None:
                 return str(value)
 
+        if self._runtime_channel is not None:
+            return self._runtime_channel
+
         conversation_id = (
             inputs.get("conversation_id")
             if isinstance(inputs, dict)
             else getattr(inputs, "conversation_id", None)
         )
         if isinstance(conversation_id, str) and "_" in conversation_id:
-            return conversation_id.split("_", 1)[0]
+            channel = conversation_id.split("_", 1)[0]
+            if channel == "sess":
+                return "web"
+            if channel:
+                return channel
 
-        return "web"
+        return None
 
     def _sync_a2ui_prompt_section(self, channel: str | None) -> None:
         """Inject or remove the A2UI prompt section from runtime config."""

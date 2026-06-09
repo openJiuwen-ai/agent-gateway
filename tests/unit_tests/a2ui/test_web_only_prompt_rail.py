@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen.core.single_agent.rail.base import InvokeInputs
+from openjiuwen.core.single_agent.rail.base import InvokeInputs, ModelCallInputs
 
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
@@ -79,6 +79,58 @@ async def test_response_prompt_rail_keeps_web_channel_from_invoke_context(monkey
 
 
 @pytest.mark.asyncio
+async def test_response_prompt_rail_maps_sess_prefix_to_web(monkeypatch):
+    """Web sessions use sess_* ids and should still receive Web-only A2UI."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(
+        SimpleNamespace(inputs=InvokeInputs(query="generate an A2UI form", conversation_id="sess_123"))
+    )
+
+    assert "response" in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_uses_runtime_channel_for_model_call_inputs(monkeypatch):
+    """Real ReAct model-call inputs need the adapter-synced runtime channel."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+    rail.set_channel("web")
+
+    await rail.before_model_call(SimpleNamespace(inputs=ModelCallInputs()))
+
+    assert "response" in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_keeps_tui_runtime_channel_disabled(monkeypatch):
+    """Runtime channel sync must not make non-Web ReAct model calls A2UI-aware."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+    rail.set_channel("tui")
+
+    await rail.before_model_call(SimpleNamespace(inputs=ModelCallInputs()))
+
+    assert "response" in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
 async def test_response_prompt_rail_keeps_non_web_bypass_from_invoke_context(monkeypatch):
     """Non-Web channel inferred from conversation id should still bypass A2UI."""
     monkeypatch.setattr(
@@ -97,4 +149,40 @@ async def test_response_prompt_rail_keeps_non_web_bypass_from_invoke_context(mon
     )
     await rail.before_model_call(SimpleNamespace(inputs=SimpleNamespace(), extra=extra))
 
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_does_not_default_missing_channel_to_web(monkeypatch):
+    """Missing channel context should not silently enable Web-only A2UI."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(
+        SimpleNamespace(inputs=InvokeInputs(query="generate a report", conversation_id="session1"))
+    )
+
+    assert "response" in rail.system_prompt_builder.sections
+    assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_does_not_inject_a2ui_for_tui_session_prefix(monkeypatch):
+    """TUI sessions inferred from conversation id should bypass A2UI."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+    rail = ResponsePromptRail()
+    rail.system_prompt_builder = _FakePromptBuilder()
+
+    await rail.before_model_call(
+        SimpleNamespace(inputs=InvokeInputs(query="generate a report", conversation_id="tui_session_1"))
+    )
+
+    assert "response" in rail.system_prompt_builder.sections
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
