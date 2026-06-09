@@ -451,7 +451,13 @@ class SkillManager:
             if md is None:
                 continue
             meta = self._parse_skill_md(md)
-            if meta and meta.get("name") == name:
+            if meta is None:
+                continue
+            # 与 _scan_local_skills 保持一致：无 frontmatter 时 name 退化为文件名(SKILL)，
+            # 此处用目录名修正，否则前端列表(目录名)与详情(文件名)对不上导致“未找到 skill”
+            if meta.get("name") == md.stem:
+                meta["name"] = child.name
+            if meta.get("name") == name:
                 # 字段转换以符合前端期望
                 meta["content"] = meta.pop("body", "")
                 meta["file_path"] = meta.pop("path", "")
@@ -479,7 +485,11 @@ class SkillManager:
                     if md is None:
                         continue
                     meta = self._parse_skill_md(md)
-                    if meta and meta.get("name") == name:
+                    if meta is None:
+                        continue
+                    if meta.get("name") == md.stem:
+                        meta["name"] = plugin_dir.name
+                    if meta.get("name") == name:
                         # 字段转换以符合前端期望
                         meta["content"] = meta.pop("body", "")
                         meta["file_path"] = meta.pop("path", "")
