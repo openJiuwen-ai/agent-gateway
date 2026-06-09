@@ -981,7 +981,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
-                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
                                     disabled={isToggling}
                                   />
                                 )}
@@ -1136,7 +1135,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                           <Switch
                             checked={selectedSkill.enabled !== false}
                             onChange={() => toggleSkillDisabled(selectedSkill.name)}
-                            title={selectedSkill.enabled === false ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
                             disabled={actionTarget === `toggle:${selectedSkill.name}`}
                           />
                         </div>
@@ -1281,7 +1279,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
-                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
                                     disabled={isToggling}
                                   />
                                 </div>
@@ -1318,7 +1315,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
                                   <Switch
                                     checked={!isDisabled}
                                     onChange={() => toggleSkillDisabled(skill.name)}
-                                    title={isDisabled ? t('skills.mySkillsTabs.all') : t('skills.mySkillsTabs.disabled')}
                                     disabled={isToggling}
                                   />
                                 </div>
