@@ -3507,9 +3507,20 @@ class JiuWenSwarmDeepAdapter:
         if self._instance.deep_config is not None:
             self._instance.deep_config.language = resolved_language
 
-    def _seed_runtime_cwd(self, cwd: str | None = None) -> None:
-        """Seed Core's CwdState holder from the request/runtime cwd."""
-        workspace_root = str(self._workspace_dir or self._project_dir or os.getcwd())
+    def _seed_runtime_cwd(
+        self, cwd: str | None = None, workspace: str | None = None
+    ) -> None:
+        """Seed Core's CwdState holder from the request/runtime cwd.
+
+        ``workspace``: optional per-request workspace override. When set,
+        becomes the workspace anchor for tools that read ``get_workspace()``
+        (notably ``fs_operation``'s sandbox enforcement, which gates
+        absolute-path writes by membership in the workspace tree). When
+        unset, falls back to the agent's instance-level workspace.
+        """
+        workspace_root = str(
+            workspace or self._workspace_dir or self._project_dir or os.getcwd()
+        )
         runtime_cwd = str(cwd or "").strip()
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = str(self._project_dir or "").strip()
@@ -3528,6 +3539,7 @@ class JiuWenSwarmDeepAdapter:
         request_metadata: dict[str, Any] | None = None
         trusted_dirs: list[str] | None = None
         cwd: str | None = None
+        workspace: str | None = None
         project_dir: str | None = None
 
     async def _update_runtime_config(self, runtime_config: "_RuntimeConfig") -> None:
@@ -3539,7 +3551,8 @@ class JiuWenSwarmDeepAdapter:
             runtime_config.cwd
             or runtime_config.project_dir
             or self._project_dir
-            or self._workspace_dir
+            or self._workspace_dir,
+            workspace=runtime_config.workspace,
         )
         resolved_language = self._resolve_runtime_language()
         resolved_channel = (
@@ -5060,6 +5073,7 @@ class JiuWenSwarmDeepAdapter:
                     request_metadata=request.metadata,
                     trusted_dirs=inputs.get("trusted_dirs"),
                     cwd=inputs.get("cwd"),
+                    workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
                 )
             )
@@ -5287,6 +5301,7 @@ class JiuWenSwarmDeepAdapter:
                     request_metadata=request.metadata,
                     trusted_dirs=inputs.get("trusted_dirs"),
                     cwd=inputs.get("cwd"),
+                    workspace=inputs.get("workspace_dir"),
                     project_dir=inputs.get("project_dir"),
                 )
             )
@@ -5510,7 +5525,11 @@ class JiuWenSwarmDeepAdapter:
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={"event_type": "chat.error", "error": str(exc)},
+                payload={
+                    "event_type": "chat.error",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                },
                 is_complete=False,
             )
         finally:

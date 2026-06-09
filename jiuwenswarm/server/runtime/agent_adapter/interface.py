@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator, Tuple
 
 from datetime import datetime, timedelta, timezone
@@ -480,6 +481,29 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+
+        # Per-request workspace_dir scopes one prompt's cwd to the given
+        # directory; threaded into inputs["cwd"] which downstream init_cwd
+        # installs onto openjiuwen's CwdState ContextVar. See E2A-protocol.md
+        # section 11.6 for the wire contract and precedence rules.
+        workspace_dir = request.params.get("workspace_dir")
+        if isinstance(workspace_dir, str) and workspace_dir.strip():
+            expanded = Path(workspace_dir).expanduser().resolve()
+            try:
+                expanded.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "[JiuWenClaw] workspace_dir %s mkdir failed (%s); "
+                    "request falls back to params.cwd or the global default",
+                    workspace_dir, exc,
+                )
+            else:
+                # Scope BOTH cwd and workspace so the agent's tools (which
+                # read get_cwd() for relative-path resolution) AND its
+                # fs_operation sandbox (which gates absolute-path writes by
+                # workspace membership) agree on the per-request root.
+                inputs["cwd"] = str(expanded)
+                inputs["workspace_dir"] = str(expanded)
 
         # 返回原始 query（未经 build_user_prompt 包装）
         # Team 模式需要使用原始 query，而不是 JSON 包装后的 prompt
@@ -1089,6 +1113,17 @@ class JiuWenSwarm:
                     if isinstance(data, asyncio.CancelledError):
                         logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
                         raise data
+                    # Surface exception class so consumers can classify
+                    # failures structurally instead of regexing the message.
+                    error_type = (
+                        type(data).__name__ if isinstance(data, BaseException) else ""
+                    )
+                    error_payload: dict[str, Any] = {
+                        "event_type": "chat.error",
+                        "error": str(data),
+                    }
+                    if error_type:
+                        error_payload["error_type"] = error_type
                     append_history_record(
                         session_id=session_id,
                         request_id=rid,
@@ -1098,11 +1133,12 @@ class JiuWenSwarm:
                         content=str(data),
                         timestamp=time.time(),
                         mode=request.params.get("mode", "unknown"),
+                        extra={"error_type": error_type} if error_type else None,
                     )
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
-                        payload={"event_type": "chat.error", "error": str(data)},
+                        payload=error_payload,
                         is_complete=False,
                     )
                 else:
