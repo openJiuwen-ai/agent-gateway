@@ -1671,6 +1671,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params = {}
         action = params.get("action")
         model_name = params.get("model")
+        model_index = params.get("index")
 
         real_client = (
             agent_client.get("value")
@@ -1881,7 +1882,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     _valid_names.add(_al)
         if not _valid_names:
             _valid_names = set(get_model_names())
-        if target not in _valid_names:
+        # 当有 model_index 时跳过名称验证（前端已通过列表选择，索引即可信）
+        _skip_name_check = model_index is not None
+        if not _skip_name_check and target not in _valid_names:
             logger.warning(
                 "[cli command.model] 模型不存在: %s, 可用: %s",
                 target,
@@ -1912,15 +1915,28 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         _raw_defaults = ensure_defaults_list_in_config()
         _target_entry = None
         _target_idx = None
-        for _i, _e in enumerate(_raw_defaults):
-            if not isinstance(_e, dict):
-                continue
-            _ename = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
-            _ealias = resolve_env_vars(str(_e.get("alias", ""))) if _e.get("alias") else ""
-            if _ename == target or _ealias == target:
-                _target_entry = _e
-                _target_idx = _i
-                break
+
+        # 如果前端传了 index，直接按索引定位（支持同名模型区分）
+        if model_index is not None:
+            try:
+                _idx = int(model_index)
+                if 0 <= _idx < len(_raw_defaults) and isinstance(_raw_defaults[_idx], dict):
+                    _target_entry = _raw_defaults[_idx]
+                    _target_idx = _idx
+            except (ValueError, TypeError):
+                pass
+
+        # 回退到按名称/alias查找
+        if _target_entry is None:
+            for _i, _e in enumerate(_raw_defaults):
+                if not isinstance(_e, dict):
+                    continue
+                _ename = resolve_env_vars(str((_e.get("model_client_config") or {}).get("model_name", "")))
+                _ealias = resolve_env_vars(str(_e.get("alias", ""))) if _e.get("alias") else ""
+                if _ename == target or _ealias == target:
+                    _target_entry = _e
+                    _target_idx = _i
+                    break
         _other_entries = [_e for _i, _e in enumerate(_raw_defaults) if _i != _target_idx]
         if _target_entry is None:
             await channel.send_response(ws, req_id, ok=False, error=f"Model '{target}' config not found")

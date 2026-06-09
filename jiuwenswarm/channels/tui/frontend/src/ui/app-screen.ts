@@ -2130,7 +2130,11 @@ export class AppScreen implements Component, Focusable {
       }
 
       const skipped = models.filter((m) => isReservedMultimodalModelKey(m));
-      const selectable = models.filter((m) => !isReservedMultimodalModelKey(m));
+      // 构建 selectable 时保留在完整 models 列表中的原始索引，避免 reserved 模型过滤后索引错位
+      const selectableWithOrigIdx = models
+        .map((m, i) => ({ name: m, origIdx: i }))
+        .filter((entry) => !isReservedMultimodalModelKey(entry.name));
+      const selectable = selectableWithOrigIdx.map((entry) => entry.name);
       if (skipped.length > 0) {
         this.state.addItem(
           addInfo(
@@ -2151,8 +2155,9 @@ export class AppScreen implements Component, Focusable {
       // 后端 available_models 和 models 位置对齐，用索引匹配而非名称查找
       const nameOccurrence: Record<string, number> = {};
       const currentIdx = selectable.findIndex((m) => m === current);
-      const items = selectable.map((m, i) => {
-        const meta = modelsMeta[i];
+      const items = selectableWithOrigIdx.map((entry, i) => {
+        const m = entry.name;
+        const meta = modelsMeta[entry.origIdx];
         const isCurrent = i === currentIdx;
         const seq = (nameOccurrence[m] ?? 0) + 1;
         nameOccurrence[m] = seq;
@@ -2170,7 +2175,7 @@ export class AppScreen implements Component, Focusable {
         const suffix = meta?.api_base && sameNameTotal > 1 ? ` [${meta.api_base}]` : "";
         return {
           label: `${i + 1}. ${displayName}${suffix}${isCurrent ? " (current)" : ""}`,
-          value: m,
+          value: `${m}\x00${entry.origIdx}`,
         };
       });
       const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
@@ -2272,10 +2277,15 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
-  private async handleModelSelection(modelName: string): Promise<void> {
-    if (!modelName) {
+  private async handleModelSelection(modelValue: string): Promise<void> {
+    if (!modelValue) {
       return;
     }
+    // Parse "modelName\x00origIdx" format from SelectList (null separator avoids collision with model names)
+    const sepIdx = modelValue.indexOf("\x00");
+    const modelName = sepIdx >= 0 ? modelValue.substring(0, sepIdx) : modelValue;
+    const modelIndex = sepIdx >= 0 ? parseInt(modelValue.substring(sepIdx + 1), 10) : undefined;
+
     if (isReservedMultimodalModelKey(modelName)) {
       this.modelList = null;
       this.state.addItem(
@@ -2289,11 +2299,15 @@ export class AppScreen implements Component, Focusable {
     }
     this.modelList = null;
     try {
+      const reqParams: Record<string, unknown> = { model: modelName };
+      if (modelIndex !== undefined && !isNaN(modelIndex)) {
+        reqParams.index = modelIndex;
+      }
       const payload = await this.state.request<{
         current?: string;
         requested?: string;
         applied?: boolean;
-      }>("command.model", { model: modelName });
+      }>("command.model", reqParams);
       const nextModel = payload.current ?? modelName;
       this.state.setModel(nextModel);
       this.state.addItem(
