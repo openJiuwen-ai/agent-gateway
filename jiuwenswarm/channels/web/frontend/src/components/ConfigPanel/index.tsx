@@ -1632,7 +1632,7 @@ function TeamItemSection({
   const [openLeader, setOpenLeader] = useState(true);
   const [openTeammate, setOpenTeammate] = useState(true);
   const [openMembers, setOpenMembers] = useState(true);
-  const [expandedMemberIdx, setExpandedMemberIdx] = useState<number | null>(0);
+  const [expandedMemberIdx, setExpandedMemberIdx] = useState<number | null>(null);
   const [memberNameError, setMemberNameError] = useState<{ field: 'leader' | number; error: string } | null>(null);
   const [addingNewMember, setAddingNewMember] = useState(false);
   const [newMember, setNewMember] = useState<TeamMember>({ member_name: "", display_name: "", persona: "", prompt_hint: "", agent_key: "" });
@@ -2530,7 +2530,7 @@ export function ConfigPanel({
       if (!teamName) continue;
       // 解析 predefined_members JSON
       let predefinedMembers: TeamMember[] = [];
-      const membersJson = normalizedConfig[`team_predefined_members_${i}`];
+      const membersJson = normalizedConfig[`team_predefined_members_${i}`] || normalizedConfig[`team_${i}_predefined_members`];
       if (membersJson) {
         try {
           predefinedMembers = JSON.parse(membersJson);
