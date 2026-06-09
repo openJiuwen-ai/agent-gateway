@@ -799,7 +799,6 @@ export class AppScreen implements Component, Focusable {
     setCurrentCwd(process.cwd());
     // Initialize startup prompt for workspace trust
     this.initStartupPrompt();
-    this.tui.terminal.write(ENABLE_MOUSE_TRACKING);
   }
 
   private initStartupPrompt(): void {
@@ -844,6 +843,14 @@ export class AppScreen implements Component, Focusable {
   set focused(value: boolean) {
     this._focused = value;
     this.editor.focused = value;
+  }
+
+  private setMouseTrackingEnabled(enabled: boolean): void {
+    if (enabled) {
+      this.tui.terminal.write(ENABLE_MOUSE_TRACKING);
+    } else {
+      this.tui.terminal.write(DISABLE_MOUSE_TRACKING);
+    }
   }
 
   dispose(): void {
@@ -4634,6 +4641,7 @@ export class AppScreen implements Component, Focusable {
     if (!pendingQuestion) {
       this.questionList = null;
       this.questionDetailsMap = null;
+      this.setMouseTrackingEnabled(false);
       return;
     }
 
@@ -4641,6 +4649,7 @@ export class AppScreen implements Component, Focusable {
     if (!question || question.options.length === 0) {
       this.questionList = null;
       this.questionDetailsMap = null;
+      this.setMouseTrackingEnabled(false);
       return;
     }
 
@@ -4708,6 +4717,7 @@ export class AppScreen implements Component, Focusable {
       list.setSelectedIndex(selectedIndex);
     }
     this.questionList = list;
+    this.setMouseTrackingEnabled(true);
   }
 
   private handleQuestionSelection(label: string): void {
@@ -4721,6 +4731,7 @@ export class AppScreen implements Component, Focusable {
       this.otherInputMode = true;
       this.pendingQuestionAnswers.set(this.activeQuestionIndex, label);
       this.questionList = null;
+      this.setMouseTrackingEnabled(false);
       this.syncEditorSubmitState(snapshot);
       this.tui.requestRender();
       return;
