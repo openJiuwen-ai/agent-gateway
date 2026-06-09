@@ -68,6 +68,13 @@ _ENV_FILE = get_env_file()
 load_dotenv(dotenv_path=_ENV_FILE, override=True)
 
 
+_ENV_VAR_PLACEHOLDER_RE = re.compile(r"^\$\{([^:}]+)(?::-([^}]*))?\}$")
+
+
+def _is_env_var_placeholder(value: Any) -> bool:
+    return isinstance(value, str) and bool(_ENV_VAR_PLACEHOLDER_RE.match(value.strip()))
+
+
 def _values_match(parsed_val: Any, resolved_val: Any) -> bool:
     """Compare a frontend-sent value against the resolved value of a model entry.
 
@@ -137,7 +144,13 @@ def _merge_models_for_replace_all(
                 new_mcc["model_name"] = item["model_name"]
             if not _values_match(item["api_base"], resolved_mcc.get("api_base")):
                 new_mcc["api_base"] = item["api_base"]
-            if not _values_match(item["model_provider"], resolved_mcc.get("client_provider")):
+            # client_provider: 当 YAML 仍是 ${MODEL_PROVIDER} 占位符时，其解析值会与前端
+            # 选择（如 OpenAI）一致而被误判为"未改"，导致首次配置后占位符残留。只要原值是
+            # 占位符就用前端值固化它。
+            if item["model_provider"] and (
+                _is_env_var_placeholder(new_mcc.get("client_provider"))
+                or not _values_match(item["model_provider"], resolved_mcc.get("client_provider"))
+            ):
                 new_mcc["client_provider"] = item["model_provider"]
             if not _values_match(item["temperature"], resolved_mco.get("temperature")):
                 new_mco["temperature"] = item["temperature"]
