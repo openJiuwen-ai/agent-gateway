@@ -16,6 +16,18 @@ from pydantic import BaseModel, Field
 # Input model — mirrors WorkflowProgressTeamEvent fields
 # ---------------------------------------------------------------------------
 
+class PhasePlan(BaseModel):
+    """One phase entry from the script's META ``phases`` list.
+
+    Mirrors agent-core ``PhasePlan`` (dataclass). Normalized by the engine
+    before emitting ``WORKFLOW_STARTED``, so downstream receives uniform
+    structured entries — no ``isinstance`` checks needed.
+    """
+
+    title: str
+    description: Optional[str] = None
+
+
 class WorkflowProgress(BaseModel):
     """Incoming workflow progress event data.
 
@@ -38,7 +50,7 @@ class WorkflowProgress(BaseModel):
     model: Optional[str] = None
     outcome: Optional[str] = None
     text: Optional[str] = None
-    phases: Optional[list] = None
+    phases: Optional[list[PhasePlan]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -54,26 +66,6 @@ def _slugify(name: str) -> str:
     s = _NON_ALNUM_RE.sub("-", name.lower().strip())
     s = _MULTI_DASH_RE.sub("-", s)
     return s.strip("-") or "anon"
-
-
-def _parse_meta_phases(phases: Any) -> list[tuple[str, Optional[str]]]:
-    """Normalize META ``phases`` to ``(title, description)`` pairs.
-
-    Accepts the engine/META shapes: plain strings or dicts with ``title`` /
-    ``name`` and optional ``description``.
-    """
-    if not phases or not isinstance(phases, list):
-        return []
-    parsed: list[tuple[str, Optional[str]]] = []
-    for item in phases:
-        if isinstance(item, dict):
-            title = str(item.get("title") or item.get("name") or "?")
-            raw_desc = item.get("description")
-            description = str(raw_desc) if raw_desc is not None else None
-            parsed.append((title, description))
-        else:
-            parsed.append((str(item), None))
-    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -249,9 +241,10 @@ class WorkflowRunState(BaseModel):
     def _on_workflow_started(self, progress: WorkflowProgress) -> dict[str, Any]:
         """Create new WorkflowRunState on workflow_started.
 
-        When ``progress.phases`` is present (from script META), normalize and
-        pre-create every step as ``planned`` so the first delta shows the full
-        phase list on the frontend.
+        When ``progress.phases`` is present (from script META, already
+        normalized to ``PhasePlan`` by the engine), pre-create every step
+        as ``planned`` so the first delta shows the full phase list on
+        the frontend.
         """
         self.id = f"wf_{uuid.uuid4().hex[:12]}"
         self.name = progress.workflow_name or "workflow"
@@ -259,13 +252,13 @@ class WorkflowRunState(BaseModel):
         self.status = "running"
         self.started_at = self._utc_now_iso()
 
-        for title, description in _parse_meta_phases(progress.phases):
-            phase_id = self._generate_phase_id(title)
+        for phase_plan in (progress.phases or []):
+            phase_id = self._generate_phase_id(phase_plan.title)
             self.phases.append(
                 WorkflowPhaseState(
                     id=phase_id,
-                    name=title,
-                    description=description,
+                    name=phase_plan.title,
+                    description=phase_plan.description,
                     status="planned",
                 )
             )
@@ -413,20 +406,36 @@ class WorkflowRunState(BaseModel):
                     if agent.started_at:
                         agent.duration_ms = self._calc_duration_ms(agent.started_at, agent.completed_at)
 
-    def _on_log(self, progress: WorkflowProgress) -> None:
-        """Append log text to top-level ``self.logs``.
+    def _on_log(self, progress: WorkflowProgress) -> dict[str, Any]:
+        """Append log text to top-level ``self.logs`` and emit delta with logs.
 
         Log text is stored at the workflow level only — not routed to any
-        agent or phase activity. Agent lifecycle is captured by ``status`` /
-        ``started_at`` / ``completed_at`` etc. on ``WorkflowAgentState``, and
-        tool-call activity requires upstream structured data which is not yet
-        available.
+        agent or phase activity. The returned delta includes ``logs`` at the
+        same level as ``phases`` so the frontend receives log updates via the
+        ``workflow.updated`` event.
         """
         log_text = progress.text or ""
         self.logs.append(log_text)
-        return None
+        return self._build_log_delta(log_text)
 
     # --- Delta builders ---
+
+    def _build_log_delta(self, log_text: str) -> dict[str, Any]:
+        """Build delta with **incremental** log entry — mirrors ``_build_phases_delta``.
+
+        Only the newly appended log text is included in ``logs``, not the full
+        history. The surrounding top-level fields match ``_build_phases_delta``
+        so the frontend can merge this delta the same way.
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "status": self.status,
+            "agent_count": self.agent_count,
+            "completed_agent_count": self.completed_agent_count,
+            "started_at": self.started_at,
+            "logs": [log_text],
+        }
 
     def _build_top_level_delta(self) -> dict[str, Any]:
         """Build delta with workflow top-level fields and pre-populated phases."""
@@ -439,6 +448,7 @@ class WorkflowRunState(BaseModel):
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
             "phases": [p.to_dict() for p in self.phases],
+            "logs": list(self.logs),
         }
 
     def _build_phase_delta(self, phase: WorkflowPhaseState) -> dict[str, Any]:
@@ -476,6 +486,7 @@ class WorkflowRunState(BaseModel):
             result["result"] = self.result
         # Terminal delta includes all phases for completeness
         result["phases"] = [p.to_dict() for p in self.phases]
+        result["logs"] = list(self.logs)
         return result
 
     def to_workflow_run_dict(self) -> dict[str, Any]:
@@ -493,6 +504,7 @@ class WorkflowRunState(BaseModel):
             "completed_agent_count": self.completed_agent_count,
             "started_at": self.started_at,
             "phases": [p.to_dict() for p in self.phases],
+            "logs": list(self.logs),
         }
         if self.completed_at:
             result["completed_at"] = self.completed_at

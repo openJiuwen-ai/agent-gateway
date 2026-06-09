@@ -9,6 +9,7 @@ from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
     WorkflowAgentState,
     WorkflowAgentActivity,
     WorkflowProgress,
+    PhasePlan,
 )
 
 
@@ -34,11 +35,11 @@ class TestWorkflowRunStateLifecycle:
 
     @staticmethod
     def test_workflow_started_pre_populates_planned_phases():
-        """Phases from META are normalized and pre-created as planned."""
+        """Phases from META (already normalized to PhasePlan) are pre-created as planned."""
         phases_meta = [
-            {"title": "发牌", "description": "分配身份"},
-            {"title": "游戏进行"},
-            "结算",
+            PhasePlan(title="发牌", description="分配身份"),
+            PhasePlan(title="游戏进行"),
+            PhasePlan(title="结算"),
         ]
         progress = _make_progress("workflow_started", workflow_name="werewolf-game", phases=phases_meta)
         state = WorkflowRunState()
@@ -49,6 +50,7 @@ class TestWorkflowRunStateLifecycle:
         assert state.phases[0].description == "分配身份"
         assert state.phases[1].name == "游戏进行"
         assert state.phases[1].status == "planned"
+        assert state.phases[1].description is None
         assert state.phases[2].name == "结算"
         assert state.phases[2].status == "planned"
         assert len(delta["phases"]) == 3
@@ -57,7 +59,7 @@ class TestWorkflowRunStateLifecycle:
     @staticmethod
     def test_planned_phase_activated_on_phase_event():
         """A planned phase becomes running when the engine sends a PHASE event."""
-        phases_meta = [{"title": "发牌"}, {"title": "游戏进行"}]
+        phases_meta = [PhasePlan(title="发牌"), PhasePlan(title="游戏进行")]
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="test", phases=phases_meta))
         assert state.phases[0].status == "planned"
@@ -194,13 +196,16 @@ class TestWorkflowRunStateLifecycle:
         assert state.phases[0].agents[0].status == "failed"
 
     @staticmethod
-    def test_log_event_no_push():
-        """Log events do not produce delta push."""
+    def test_log_event_produces_delta_with_logs():
+        """Log events produce a delta with ``logs`` at the same level as ``phases``."""
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="test"))
         progress = _make_progress("log", text="some narration")
         delta = state.apply(progress)
-        assert delta is None
+        assert delta is not None
+        assert "logs" in delta
+        assert delta["logs"] == ["some narration"]
+        assert "phases" not in delta  # log delta does not include phases
         assert len(state.logs) == 1
 
     @staticmethod
@@ -212,7 +217,9 @@ class TestWorkflowRunStateLifecycle:
         state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
         progress = _make_progress("log", phase="Phase 1", label="agent-a", text="thinking...")
         delta = state.apply(progress)
-        assert delta is None
+        assert delta is not None
+        assert "logs" in delta
+        assert delta["logs"] == ["thinking..."]
         agent = state.phases[0].agents[0]
         assert len(agent.activity) == 0  # log is not written to agent activity
         assert len(state.logs) == 1
@@ -226,19 +233,23 @@ class TestWorkflowRunStateLifecycle:
         state.apply(_make_progress("agent_started", phase="Phase 1", label="agent-a"))
         progress = _make_progress("log", phase="Phase 1", text="phase-level log")
         delta = state.apply(progress)
-        assert delta is None
+        assert delta is not None
+        assert "logs" in delta
+        assert delta["logs"] == ["phase-level log"]
         agent = state.phases[0].agents[0]
         assert len(agent.activity) == 0  # log is not written to agent activity
         assert len(state.logs) == 1
 
     @staticmethod
     def test_log_without_phase_stored_in_top_level_only():
-        """Log without phase or label only stored in self.logs."""
+        """Log without phase or label only stored in self.logs, delta includes logs."""
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="test"))
         progress = _make_progress("log", text="orphan log")
         delta = state.apply(progress)
-        assert delta is None
+        assert delta is not None
+        assert "logs" in delta
+        assert delta["logs"] == ["orphan log"]
         assert len(state.logs) == 1
         assert state.logs[0] == "orphan log"
 

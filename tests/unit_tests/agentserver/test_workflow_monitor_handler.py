@@ -70,6 +70,33 @@ class _FakeRawEvent:
         return self.payload
 
 
+class _FakeAgentCoreRawEvent:
+    """Simulates agent-core EventMessage with WorkflowProgressTeamEvent payload."""
+
+    def __init__(self, kind: str, **kwargs: Any) -> None:
+        from openjiuwen.agent_teams.schema.events import EventMessage, WorkflowProgressTeamEvent
+        from openjiuwen.agent_teams.workflow.engine.progress import PhasePlan as CorePhasePlan
+
+        phases = kwargs.pop("phases", None)
+        core_phases = None
+        if phases is not None:
+            core_phases = [
+                CorePhasePlan(title=p.title, description=p.description)
+                for p in phases
+            ]
+        self._message = EventMessage.from_event(
+            WorkflowProgressTeamEvent(
+                team_name="t",
+                kind=kind,
+                phases=core_phases,
+                **kwargs,
+            )
+        )
+
+    def get_payload(self) -> Any:
+        return self._message.get_payload()
+
+
 # ---------------------------------------------------------------------------
 # Helper: start handler, inject events, then stop and drain
 # ---------------------------------------------------------------------------
@@ -179,6 +206,38 @@ class TestWorkflowMonitorHandlerEventProcessing:
         assert item["workflow"]["status"] == "running"
 
     @pytest.mark.anyio
+    async def test_workflow_started_pre_populates_planned_phases_from_agent_core_event(self) -> None:
+        """agent-core PhasePlan dataclass must convert to planned phases on the frontend delta."""
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import PhasePlan
+
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+
+        results = await _run_handler_with_events(
+            handler,
+            monitor,
+            [
+                _FakeAgentCoreRawEvent(
+                    kind="workflow_started",
+                    workflow_name="werewolf-game",
+                    phases=[
+                        PhasePlan(title="发牌", description="分配身份"),
+                        PhasePlan(title="游戏进行"),
+                    ],
+                ),
+            ],
+        )
+
+        assert len(results) == 1
+        phases = results[0]["workflow"]["phases"]
+        assert len(phases) == 2
+        assert phases[0]["name"] == "发牌"
+        assert phases[0]["description"] == "分配身份"
+        assert phases[0]["status"] == "planned"
+        assert phases[1]["name"] == "游戏进行"
+        assert phases[1]["status"] == "planned"
+
+    @pytest.mark.anyio
     async def test_phase_event_produces_delta(self) -> None:
         monitor = _FakeTeamMonitor()
         handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
@@ -199,7 +258,7 @@ class TestWorkflowMonitorHandlerEventProcessing:
         assert phase_item["workflow"]["phases"][0]["name"] == "planning"
 
     @pytest.mark.anyio
-    async def test_log_kind_produces_no_delta(self) -> None:
+    async def test_log_kind_produces_delta_with_logs(self) -> None:
         monitor = _FakeTeamMonitor()
         handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
 
@@ -211,9 +270,10 @@ class TestWorkflowMonitorHandlerEventProcessing:
             ],
         )
 
-        # Only workflow_started produces a delta; log does not
-        assert len(results) == 1
+        # workflow_started and log both produce deltas; log delta has logs at top level
+        assert len(results) == 2
         assert results[0]["workflow"]["name"] == "log-test"
+        assert results[1]["workflow"]["logs"] == ["some log message"]
 
     @pytest.mark.anyio
     async def test_multiple_workflows_sequential(self) -> None:

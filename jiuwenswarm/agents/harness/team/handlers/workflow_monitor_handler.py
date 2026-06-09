@@ -160,6 +160,16 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         if isinstance(payload, dict):
             return WorkflowProgress(**payload)
 
+        if hasattr(payload, "model_dump") and callable(payload.model_dump):
+            try:
+                return WorkflowProgress(**payload.model_dump())
+            except Exception:
+                logger.warning(
+                    "[WorkflowMonitorHandler] Failed to convert team event payload via model_dump()",
+                    exc_info=True,
+                )
+                return None
+
         try:
             return WorkflowProgress(
                 kind=payload.kind if hasattr(payload, "kind") else "unknown",
