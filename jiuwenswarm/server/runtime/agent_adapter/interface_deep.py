@@ -3286,6 +3286,8 @@ class JiuWenClawDeepAdapter:
                 channel_id=_CRON_TOOL_CHANNEL_ID.get(),
                 request_id=request_id,
                 sub_agent_config=sub_agent_config,
+                max_concurrent_tasks=20,  # 最多同时运行20个子任务
+                task_timeout=600.0,  # 每个子任务超时时间10分钟
             )
             for ms_tool in multi_session_toolkit.get_tools():
                 Runner.resource_mgr.add_tool(ms_tool)
