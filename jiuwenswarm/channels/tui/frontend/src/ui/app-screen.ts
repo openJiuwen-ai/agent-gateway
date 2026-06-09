@@ -4384,7 +4384,7 @@ export class AppScreen implements Component, Focusable {
               // Special handling for auto-harness completions with descriptions
               // Check top-level command name (command.name) since matchedPath only contains subcommands
               if (command.name === "auto-harness") {
-                const remainingArgs = remainingTokens.join(" ");
+                const remainingArgs = remainingTokens.length > 0 ? remainingTokens.join(" ") : trimmed;
                 const items = await currentCommand.completion(this.state.getCommandContext(), remainingArgs);
                 const prefix = matchedPath.length > 0 ? matchedPath.join(" ") + " " : "";
 
@@ -4431,7 +4431,7 @@ export class AppScreen implements Component, Focusable {
                   };
                 });
               }
-              const remainingArgs = remainingTokens.join(" ");
+              const remainingArgs = remainingTokens.length > 0 ? remainingTokens.join(" ") : trimmed;
               const items = await currentCommand.completion(this.state.getCommandContext(), remainingArgs);
               const prefix = matchedPath.length > 0 ? matchedPath.join(" ") + " " : "";
               const suffix = currentCommand.completionSuffix ?? "";
