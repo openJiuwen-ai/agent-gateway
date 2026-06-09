@@ -51,6 +51,7 @@ from openjiuwen.harness import (
 )
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
+from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentScope
 from openjiuwen.harness.rails import (
     SkillUseRail,
     TaskPlanningRail,
@@ -144,6 +145,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import build_server_pus
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
     EVOLUTION_EXECUTE_LABELS,
@@ -240,6 +242,7 @@ from jiuwenswarm.common.utils import (
     get_deepagent_soul_md_path,
     get_deepagent_user_md_path,
     get_env_file,
+    get_prompt_attachment_dir,
     reset_free_search_runtime_flags,
 )
 
@@ -549,6 +552,7 @@ class JiuWenClawDeepAdapter:
         self._context_processor_rail: ContextProcessorRail | None = None
         self._runtime_prompt_rail: RuntimePromptRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
+        self._prompt_attachment_loader: PromptAttachmentLoader | None = None
         self._security_rail: SecurityRail | None = None
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
@@ -886,7 +890,7 @@ class JiuWenClawDeepAdapter:
                 self._a2x_config.get("role", "teammate"),
                 self._a2x_config.get("base_url", ""),
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._a2x_client = None
             self._a2x_config = {}
             self._a2x_blank_service_id = ""
@@ -2091,7 +2095,7 @@ class JiuWenClawDeepAdapter:
                 from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
                     force_recreate_jiuwenbox_sandbox,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox import "
                     "failed: %s",
@@ -2110,7 +2114,7 @@ class JiuWenClawDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] sandbox instance recreated: %s",
                     new_sandbox_id,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] force_recreate_jiuwenbox_sandbox "
                     "failed: %s",
@@ -2871,6 +2875,8 @@ class JiuWenClawDeepAdapter:
             "project_dir", config.get("project_dir")
         )
         self._workspace_dir = config.get("workspace_dir", str(get_agent_workspace_dir()))
+        self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
+        self._prompt_attachment_loader.ensure_layout()
 
         model = self._create_model(config_base)
         await self._try_init_a2x_client(config_base)
@@ -2939,6 +2945,49 @@ class JiuWenClawDeepAdapter:
 
         # 动态加载用户自定义的 Rail 扩展
         await self.load_user_rails()
+
+    async def _sync_prompt_attachments_for_request(self, session_id: str, invoke_turn_id: str) -> None:
+        """Hot-load prompt attachment files for the current request.
+
+        Prompt attachment loading must not block the user request path. Failures are
+        logged and the original Runner flow continues without attachment injection.
+        """
+
+        if self._instance is None:
+            return
+        if self._prompt_attachment_loader is None:
+            self._prompt_attachment_loader = PromptAttachmentLoader(self._prompt_attachment_root())
+            self._prompt_attachment_loader.ensure_layout()
+        try:
+            await self._prompt_attachment_loader.sync_to_agent(
+                self._instance,
+                session_id=session_id,
+                invoke_turn_id=invoke_turn_id,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenClawDeepAdapter] prompt attachment sync skipped: %s", exc)
+
+    async def _clear_prompt_attachments_for_request(self, session_id: str, invoke_turn_id: str) -> None:
+        """Clear all turn-scope prompt attachments for one completed request."""
+
+        if self._instance is None:
+            return
+        manager = getattr(self._instance, "prompt_attachment_manager", None)
+        if manager is None:
+            return
+        try:
+            await manager.remove_by_filter(
+                session_id=session_id,
+                invoke_turn_id=invoke_turn_id,
+                scope=PromptAttachmentScope.TURN,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenClawDeepAdapter] prompt attachment turn cleanup skipped: %s", exc)
+
+    def _prompt_attachment_root(self) -> Path:
+        if self._workspace_dir == str(get_agent_workspace_dir()):
+            return get_prompt_attachment_dir()
+        return Path(self._workspace_dir) / "prompt_attachment"
 
     async def load_user_rails(self) -> None:
         """动态加载用户自定义的 Rail 扩展."""
@@ -4984,6 +5033,9 @@ class JiuWenClawDeepAdapter:
                     project_dir=inputs.get("project_dir"),
                 )
             )
+            inputs = dict(inputs)
+            inputs["_invoke_turn_id"] = request.request_id
+            await self._sync_prompt_attachments_for_request(session_id, request.request_id)
             result = await Runner.run_agent(agent=self._instance, inputs=inputs)
         except asyncio.CancelledError:
             logger.info(
@@ -4996,6 +5048,7 @@ class JiuWenClawDeepAdapter:
             logger.error("[JiuWenClawDeepAdapter] Agent 任务执行异常: %s", e)
             raise
         finally:
+            await self._clear_prompt_attachments_for_request(session_id, request.request_id)
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
@@ -5196,6 +5249,9 @@ class JiuWenClawDeepAdapter:
             )
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
+            inputs = dict(inputs)
+            inputs["_invoke_turn_id"] = rid
+            await self._sync_prompt_attachments_for_request(session_id, rid)
             async for chunk in Runner.run_agent_streaming(self._instance, inputs):
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = self._parse_stream_chunk(chunk)
@@ -5415,6 +5471,7 @@ class JiuWenClawDeepAdapter:
                 is_complete=False,
             )
         finally:
+            await self._clear_prompt_attachments_for_request(session_id, rid)
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
