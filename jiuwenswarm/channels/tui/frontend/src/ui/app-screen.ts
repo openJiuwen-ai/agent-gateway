@@ -14,7 +14,7 @@ import {
   truncateToWidth,
 } from "@mariozechner/pi-tui";
 import { spawnSync } from "node:child_process";
-import { statSync, realpathSync } from "node:fs";
+import { statSync } from "node:fs";
 import type { CliPiAppState } from "../app-state.js";
 import { openFileInEditor as openInExternalEditor } from "../core/utils/editor.js";
 import {
@@ -56,7 +56,6 @@ import {
 import {
   addTrustedDir,
   getCurrentCwd,
-  getCurrentProjectDir,
   getTrustedDirs,
   isTrustedDir,
   setCurrentCwd,
@@ -611,7 +610,11 @@ function formatRelativeTime(timestamp: number | undefined): string {
 }
 
 function getDisplayLabel(s: SessionMeta): string {
-  return s.title?.trim() || s.session_id;
+  const title = s.title?.trim();
+  if (title) {
+    return `${s.session_id}  |  ${title}`;
+  }
+  return s.session_id;
 }
 
 function sessionToSelectItem(s: SessionMeta): SelectItem {
@@ -1996,33 +1999,24 @@ export class AppScreen implements Component, Focusable {
     const matchedSession = sessions.find((s) => s.session_id === nextSessionId);
     const accentColor = matchedSession?.accent_color ?? "default";
 
-    // 跨项目恢复保护（对齐 Claude Code checkCrossProjectResume）
-    // 使用 realpathSync 规范化路径以处理 macOS 符号链接（如 /tmp → /private/tmp）
-    let currentProject = (getCurrentProjectDir() || process.cwd()).trim();
-    let sessionProject = (matchedSession?.project_dir || "").trim();
-    try { currentProject = realpathSync(currentProject); } catch { /* path may not exist */ }
-    if (sessionProject) {
-      try { sessionProject = realpathSync(sessionProject); } catch { /* path may not exist */ }
-    }
-    if (sessionProject && currentProject && sessionProject !== currentProject
-        && !sessionProject.startsWith(currentProject + "/")
-        && !currentProject.startsWith(sessionProject + "/")) {
-      this.resumeSessionList = null;
-      const dirName = sessionProject.split("/").pop() || sessionProject;
-      this.state.addItem(addInfo(
-        this.state.getSnapshot().sessionId,
-        `Session belongs to project "${dirName}". Please cd to that directory first.`,
-        "r",
-      ));
-      this.tui.requestRender();
-      return;
-    }
+    // 跨项目目录已由后端 session.list 完成过滤（_session_matches_project），
+    // 此处不再重复校验，避免前后端路径规范化差异（resolve vs realpath）
+    // 导致误拦截本已通过后端过滤的会话。
 
     this.resumeSessionList = null;
     this.state.updateSession(nextSessionId);
     this.state.clearEntries();
     this.state.setAccentColor(accentColor);
-    await this.state.restoreHistory(nextSessionId);
+    try {
+      await this.state.restoreHistory(nextSessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.state.addItem(
+        addError(this.state.getSnapshot().sessionId, "Failed to restore session: " + message),
+      );
+      this.tui.requestRender();
+      return;
+    }
     try {
       await this.state.loadWorkflowSnapshot(nextSessionId);
     } catch {
