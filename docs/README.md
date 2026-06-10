@@ -1,6 +1,14 @@
-# 使用指南
+<h1 align="center">JiuwenSwarm 文档</h1>
 
-这里汇总 JiuwenSwarm 的常用使用说明与功能文档。
+<p align="center">
+  <strong>汇总 JiuwenSwarm 的常用使用说明与功能文档。</strong>
+</p>
+
+<p align="center">
+  <a href="README.md">中文</a>
+  ·
+  <a href="README_EN.md">English</a>
+</p>
 
 
 ## 安装

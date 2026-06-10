@@ -1,6 +1,14 @@
-# User Guide
+<h1 align="center">JiuwenSwarm Docs</h1>
 
-This page collects common JiuwenSwarm usage instructions and feature documentation.
+<p align="center">
+  <strong>This page collects common JiuwenSwarm usage instructions and feature documentation.</strong>
+</p>
+
+<p align="center">
+  <a href="README_EN.md">English</a>
+  ·
+  <a href="README.md">中文</a>
+</p>
 
 ## Installation
 
