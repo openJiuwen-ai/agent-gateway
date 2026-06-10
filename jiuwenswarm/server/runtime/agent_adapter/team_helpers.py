@@ -822,6 +822,16 @@ async def process_team_message_stream(
         if isinstance(getattr(request, "params", None), dict):
             request_metadata.setdefault("mode", request.params.get("mode"))
         resolved_mode = str(request_metadata.get("mode") or "").strip()
+        # Page-selected model name (from chat page model selector). Used as a
+        # fallback for team members whose ``modes.team.agents.*.model`` is not
+        # explicitly configured, so cluster mode honors the page model when no
+        # per-agent model is set in config.yaml.
+        params_obj = getattr(request, "params", None)
+        requested_model_name = (
+            str(params_obj.get("model_name") or "").strip()
+            if isinstance(params_obj, dict)
+            else ""
+        ) or None
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         team_spec = await team_manager.get_swarm_enriched_team_spec(
@@ -831,6 +841,7 @@ async def process_team_message_stream(
             request_id=rid,
             channel_id=channel_id,
             request_metadata=request_metadata,
+            requested_model_name=requested_model_name,
         )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)

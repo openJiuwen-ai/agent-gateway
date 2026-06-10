@@ -256,7 +256,11 @@ class TeamManager:
         )
 
     @staticmethod
-    def _load_team_spec(session_id: str) -> TeamAgentSpec:
+    def _load_team_spec(
+        session_id: str,
+        *,
+        requested_model_name: str | None = None,
+    ) -> TeamAgentSpec:
         config_base = get_config()
         # Keep dependency checks scoped to distributed mode to make the
         # control flow explicit at the call site (local mode bypasses checks).
@@ -279,7 +283,10 @@ class TeamManager:
                 )
                 config_base = fallback_distributed_to_local(config_base)
 
-        spec_dict = load_team_spec_dict(config_base=config_base)
+        spec_dict = load_team_spec_dict(
+            config_base=config_base,
+            requested_model_name=requested_model_name,
+        )
         spec_dict = TeamManager._normalize_team_identity_fields(spec_dict)
         if TeamManager._is_distributed_mode(config_base):
             spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
@@ -328,6 +335,7 @@ class TeamManager:
         request_id: str | None = None,
         channel_id: str | None = None,
         request_metadata: dict[str, Any] | None = None,
+        requested_model_name: str | None = None,
     ) -> TeamAgentSpec:
         """Build a team spec via provider-based assembly (no parent DeepAgent).
 
@@ -351,7 +359,10 @@ class TeamManager:
 
         config_base = get_config()
         await self._ensure_postgresql_for_leader(config_base)
-        spec = self._load_team_spec(session_id)
+        spec = self._load_team_spec(
+            session_id,
+            requested_model_name=requested_model_name,
+        )
         self._apply_session_scoped_team_name(spec, session_id=session_id)
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
