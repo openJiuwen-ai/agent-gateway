@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
-    PromptAttachmentScope,
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -217,9 +216,8 @@ class ProjectMemoryRail(DeepAgentRail):
             logger.warning("[ProjectMemoryRail] skip project memory: prompt attachment manager unavailable")
             return
         try:
-            await self.attachment_manager.for_context(ctx).upsert_from_section(
-                section=section,
-                scope=PromptAttachmentScope.SESSION,
+            await self.attachment_manager.bind_context(ctx).add_from_prompt_section(
+                prompt_section=section,
                 kind=PromptAttachmentKind.MEMORY,
                 source="jiuwenswarm.project_memory",
                 priority=self.SECTION_PRIORITY,
@@ -234,10 +232,7 @@ class ProjectMemoryRail(DeepAgentRail):
         if self.attachment_manager is None:
             return
         try:
-            await self.attachment_manager.for_context(ctx).clear_section(
-                section=SECTION_NAME,
-                scope=PromptAttachmentScope.SESSION,
-            )
+            await self.attachment_manager.bind_context(ctx).clear_section(SECTION_NAME)
         except ValueError as exc:
             logger.warning("[ProjectMemoryRail] skip clearing project memory prompt attachment: %s", exc)
 

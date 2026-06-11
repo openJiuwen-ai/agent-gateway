@@ -18,7 +18,6 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
-    PromptAttachmentScope,
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
@@ -200,7 +199,6 @@ class RuntimePromptRail(DeepAgentRail):
             ctx,
             section="runtime",
             content=runtime_content,
-            scope=PromptAttachmentScope.TURN,
             kind=PromptAttachmentKind.RUNTIME,
             source="jiuwenswarm.runtime_prompt.runtime",
             priority=95,
@@ -220,7 +218,6 @@ class RuntimePromptRail(DeepAgentRail):
             ctx,
             section="language_output",
             content=language_output_content,
-            scope=PromptAttachmentScope.TURN,
             kind=PromptAttachmentKind.RUNTIME,
             source="jiuwenswarm.runtime_prompt.language_output",
             priority=93,
@@ -325,7 +322,6 @@ class RuntimePromptRail(DeepAgentRail):
                 ctx,
                 section="git_status",
                 content=git_content,
-                scope=PromptAttachmentScope.SESSION,
                 kind=PromptAttachmentKind.WORKSPACE_DELTA,
                 source="jiuwenswarm.runtime_prompt.git_status",
                 priority=87,
@@ -334,7 +330,6 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(
                 ctx,
                 section="git_status",
-                scope=PromptAttachmentScope.SESSION,
             )
 
         self.system_prompt_builder.remove_section("browser_tool_policy")
@@ -354,7 +349,6 @@ class RuntimePromptRail(DeepAgentRail):
                 ctx,
                 section="browser_tool_policy",
                 content=browser_tool_policy,
-                scope=PromptAttachmentScope.TURN,
                 kind=PromptAttachmentKind.RUNTIME,
                 source="jiuwenswarm.runtime_prompt.browser_tool_policy",
                 priority=98,
@@ -363,7 +357,6 @@ class RuntimePromptRail(DeepAgentRail):
             await self._clear_prompt_attachment(
                 ctx,
                 section="browser_tool_policy",
-                scope=PromptAttachmentScope.TURN,
             )
 
         if self._channel == "tui":
@@ -427,13 +420,15 @@ class RuntimePromptRail(DeepAgentRail):
                     ctx,
                     section="trusted_dirs",
                     content=trusted_dirs_content,
-                    scope=PromptAttachmentScope.TURN,
                     kind=PromptAttachmentKind.WORKSPACE_DELTA,
                     source="jiuwenswarm.runtime_prompt.trusted_dirs",
                     priority=90,
                 )
             else:
                 self.system_prompt_builder.remove_section("trusted_dirs_policy")
+                await self._clear_prompt_attachment(ctx, section="trusted_dirs")
+        else:
+            await self._clear_prompt_attachment(ctx, section="trusted_dirs")
 
     async def _upsert_prompt_attachment(
         self,
@@ -441,7 +436,6 @@ class RuntimePromptRail(DeepAgentRail):
         *,
         section: str,
         content: str,
-        scope: PromptAttachmentScope,
         kind: PromptAttachmentKind,
         source: str,
         priority: int,
@@ -453,11 +447,10 @@ class RuntimePromptRail(DeepAgentRail):
             )
             return
         try:
-            writer = self.attachment_manager.for_context(ctx)
-            await writer.upsert_section(
+            writer = self.attachment_manager.bind_context(ctx)
+            await writer.add_section(
                 section=section,
                 content=content,
-                scope=scope,
                 kind=kind,
                 source=source,
                 priority=priority,
@@ -471,14 +464,10 @@ class RuntimePromptRail(DeepAgentRail):
         ctx: AgentCallbackContext,
         *,
         section: str,
-        scope: PromptAttachmentScope,
     ) -> None:
         if self.attachment_manager is None:
             return
         try:
-            await self.attachment_manager.for_context(ctx).clear_section(
-                section=section,
-                scope=scope,
-            )
+            await self.attachment_manager.bind_context(ctx).clear_section(section)
         except ValueError as exc:
             logger.warning("[RuntimePromptRail] skip clearing prompt attachment section=%s: %s", section, exc)

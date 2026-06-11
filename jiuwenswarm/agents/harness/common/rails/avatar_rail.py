@@ -14,7 +14,6 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
-    PromptAttachmentScope,
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
 
@@ -195,16 +194,12 @@ class AvatarPromptRail(DeepAgentRail):
             logger.warning("[AvatarRail] skip avatar context: prompt attachment manager unavailable")
             return
         try:
-            writer = self.attachment_manager.for_context(ctx)
+            writer = self.attachment_manager.bind_context(ctx)
             for section in _AVATAR_SECTION_PRIORITIES:
-                await writer.clear_section(
-                    section=section,
-                    scope=PromptAttachmentScope.TURN,
-                )
+                await writer.clear_section(section)
             for section in sections:
-                await writer.upsert_from_section(
+                await writer.add_from_prompt_section(
                     section=section,
-                    scope=PromptAttachmentScope.TURN,
                     kind=PromptAttachmentKind.RUNTIME,
                     source=f"jiuwenswarm.avatar.{section.name}",
                     language=language,

@@ -51,7 +51,6 @@ from openjiuwen.harness import (
 )
 from openjiuwen.harness.factory import create_deep_agent
 from openjiuwen.harness.prompts import resolve_language
-from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentScope
 from openjiuwen.harness.rails import (
     SkillUseRail,
     TaskPlanningRail,
@@ -2992,7 +2991,7 @@ class JiuWenSwarmDeepAdapter:
         # 动态加载用户自定义的 Rail 扩展
         await self.load_user_rails()
 
-    async def _sync_prompt_attachments_for_request(self, session_id: str, invoke_turn_id: str) -> None:
+    async def _sync_prompt_attachments_for_request(self, session_id: str) -> None:
         """Hot-load prompt attachment files for the current request.
 
         Prompt attachment loading must not block the user request path. Failures are
@@ -3008,27 +3007,9 @@ class JiuWenSwarmDeepAdapter:
             await self._prompt_attachment_loader.sync_to_agent(
                 self._instance,
                 session_id=session_id,
-                invoke_turn_id=invoke_turn_id,
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] prompt attachment sync skipped: %s", exc)
-
-    async def _clear_prompt_attachments_for_request(self, session_id: str, invoke_turn_id: str) -> None:
-        """Clear all turn-scope prompt attachments for one completed request."""
-
-        if self._instance is None:
-            return
-        manager = getattr(self._instance, "prompt_attachment_manager", None)
-        if manager is None:
-            return
-        try:
-            await manager.remove_by_filter(
-                session_id=session_id,
-                invoke_turn_id=invoke_turn_id,
-                scope=PromptAttachmentScope.TURN,
-            )
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] prompt attachment turn cleanup skipped: %s", exc)
 
     def _prompt_attachment_root(self) -> Path:
         if self._workspace_dir == str(get_agent_workspace_dir()):
@@ -5097,8 +5078,7 @@ class JiuWenSwarmDeepAdapter:
                 )
             )
             inputs = dict(inputs)
-            inputs["_invoke_turn_id"] = request.request_id
-            await self._sync_prompt_attachments_for_request(session_id, request.request_id)
+            await self._sync_prompt_attachments_for_request(session_id)
             result = await Runner.run_agent(agent=self._instance, inputs=inputs)
         except asyncio.CancelledError:
             logger.info(
@@ -5111,7 +5091,6 @@ class JiuWenSwarmDeepAdapter:
             logger.error("[JiuWenSwarmDeepAdapter] Agent 任务执行异常: %s", e)
             raise
         finally:
-            await self._clear_prompt_attachments_for_request(session_id, request.request_id)
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)
@@ -5327,8 +5306,7 @@ class JiuWenSwarmDeepAdapter:
             if self._stream_event_rail is not None:
                 self._stream_event_rail.reset_abort(session_id)
             inputs = dict(inputs)
-            inputs["_invoke_turn_id"] = rid
-            await self._sync_prompt_attachments_for_request(session_id, rid)
+            await self._sync_prompt_attachments_for_request(session_id)
             async for chunk in Runner.run_agent_streaming(self._instance, inputs):
                 if not (hasattr(chunk, "type") and hasattr(chunk, "payload")):
                     parsed = self._parse_stream_chunk(chunk)
@@ -5552,7 +5530,6 @@ class JiuWenSwarmDeepAdapter:
                 is_complete=False,
             )
         finally:
-            await self._clear_prompt_attachments_for_request(session_id, rid)
             self._unregister_session_agent_task(session_id)
             TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
             cleanup_permission_context(token_perm)

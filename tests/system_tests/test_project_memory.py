@@ -75,7 +75,7 @@ def _make_ctx(agent: MagicMock, session_id: str = "sess1") -> SimpleNamespace:
 
 
 async def _project_memory_attachment(agent: MagicMock, session_id: str = "sess1"):
-    items = await agent.prompt_attachment_manager.collect_for_turn(session_id, "turn1")
+    items = await agent.prompt_attachment_manager.collect_for_session(session_id)
     project_items = [item for item in items if item.id.endswith(".project_memory")]
     return project_items[-1] if project_items else None
 

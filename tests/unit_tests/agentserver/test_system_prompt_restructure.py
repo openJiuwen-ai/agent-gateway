@@ -6,10 +6,7 @@ import pytest
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
-    PromptAttachment,
-    PromptAttachmentKind,
     PromptAttachmentManager,
-    PromptAttachmentScope,
 )
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 
@@ -87,7 +84,7 @@ async def test_runtime_time_section_participates_in_priority_order():
         agent=agent,
         inputs=None,
         session=_FakeSession(),
-        extra={"_invoke_turn_id": "turn1"},
+        extra={},
     )
     await runtime_rail.before_model_call(ctx)
 
@@ -117,7 +114,7 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
         agent=agent,
         inputs=None,
         session=_FakeSession(),
-        extra={"_invoke_turn_id": "turn1"},
+        extra={},
     )
     await runtime_rail.before_model_call(ctx)
 
@@ -128,11 +125,11 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "# Browser Tool Policy" not in prompt
     assert "# Environment" in prompt
 
-    items = await agent.prompt_attachment_manager.collect_for_turn("sess1", "turn1")
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
     assert [item.id for item in items] == [
-        "turn.sess1.turn1.language_output",
-        "turn.sess1.turn1.runtime",
-        "turn.sess1.turn1.browser_tool_policy",
+        "session.sess1.language_output",
+        "session.sess1.runtime",
+        "session.sess1.browser_tool_policy",
     ]
     rendered = agent.prompt_attachment_manager.render(items)
     assert "model-x" in rendered
@@ -158,70 +155,17 @@ async def test_runtime_git_status_attachment_clears_when_git_context_disappears(
         agent=agent,
         inputs=None,
         session=_FakeSession(),
-        extra={"_invoke_turn_id": "turn1"},
+        extra={},
     )
 
     await runtime_rail.before_model_call(ctx)
-    session_items = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1", scope="session")
+    session_items = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     assert [item.id for item in session_items if item.id.endswith(".git_status")] == ["session.sess1.git_status"]
 
     runtime_state.write_text("git_branch: ''\n", encoding="utf-8")
     await runtime_rail.before_model_call(ctx)
-    session_items = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1", scope="session")
+    session_items = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     assert [item.id for item in session_items if item.id.endswith(".git_status")] == []
-
-
-@pytest.mark.asyncio
-async def test_deep_adapter_clears_all_current_turn_prompt_attachments():
-    builder = SystemPromptBuilder(language="en")
-    agent = _FakeAgent(builder)
-    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._instance = agent
-    adapter._prompt_attachment_loader = None
-
-    await agent.prompt_attachment_manager.add(PromptAttachment(
-        id="turn.sess1.turn1.runtime",
-        scope=PromptAttachmentScope.TURN,
-        kind=PromptAttachmentKind.RUNTIME,
-        content="runtime",
-        source="jiuwenswarm.runtime_prompt.runtime",
-        session_id="sess1",
-        invoke_turn_id="turn1",
-    ))
-    await agent.prompt_attachment_manager.add(PromptAttachment(
-        id="turn.sess1.turn1.avatar",
-        scope=PromptAttachmentScope.TURN,
-        kind=PromptAttachmentKind.RUNTIME,
-        content="avatar",
-        source="jiuwenswarm.avatar.avatar_identity",
-        session_id="sess1",
-        invoke_turn_id="turn1",
-    ))
-    await agent.prompt_attachment_manager.add(PromptAttachment(
-        id="turn.sess1.turn2.runtime",
-        scope=PromptAttachmentScope.TURN,
-        kind=PromptAttachmentKind.RUNTIME,
-        content="other turn",
-        source="jiuwenswarm.runtime_prompt.runtime",
-        session_id="sess1",
-        invoke_turn_id="turn2",
-    ))
-    await agent.prompt_attachment_manager.add(PromptAttachment(
-        id="session.sess1.project_memory",
-        scope=PromptAttachmentScope.SESSION,
-        kind=PromptAttachmentKind.MEMORY,
-        content="session",
-        source="jiuwenswarm.project_memory",
-        session_id="sess1",
-    ))
-
-    await adapter._clear_prompt_attachments_for_request("sess1", "turn1")
-
-    remaining = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
-    assert [item.id for item in remaining] == [
-        "session.sess1.project_memory",
-        "turn.sess1.turn2.runtime",
-    ]
 
 
 @pytest.mark.asyncio
@@ -244,14 +188,14 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path):
         agent=agent,
         inputs=None,
         session=_FakeSession(),
-        extra={"_invoke_turn_id": "turn1"},
+        extra={},
     )
     await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
     assert "Current project directory" not in prompt
     rendered = agent.prompt_attachment_manager.render(
-        await agent.prompt_attachment_manager.collect_for_turn("sess1", "turn1")
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
     )
     assert "Current project directory" in rendered
     assert str(current_dir) in rendered
@@ -281,14 +225,14 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
         agent=agent,
         inputs=None,
         session=_FakeSession(),
-        extra={"_invoke_turn_id": "turn1"},
+        extra={},
     )
     await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
     assert "Always respond in Chinese." not in prompt
     rendered = agent.prompt_attachment_manager.render(
-        await agent.prompt_attachment_manager.collect_for_turn("sess1", "turn1")
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
     )
     assert "Always respond in Chinese." in rendered
     assert "Always respond in English." not in rendered
