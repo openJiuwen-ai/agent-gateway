@@ -50,6 +50,19 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.server.runtime.a2ui.integration import finalize_assistant_response_if_a2ui
 
 
+def _history_user_content(params: Any, query: Any) -> Any:
+    """返回写入历史记录的用户消息内容.
+
+    追加补充/调整请求时，``query`` 是包装后的提示词模板，会把模型提示词暴露到
+    历史记录里。这里优先使用原始用户输入 ``supplement_input`` 作为展示内容。
+    """
+    if isinstance(params, dict) and params.get("is_supplement"):
+        supplement_input = params.get("supplement_input")
+        if isinstance(supplement_input, str) and supplement_input.strip():
+            return supplement_input
+    return query
+
+
 def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     stats: dict[str, Any] = {}
     for key in ("status", "phase", "processor", "model", "before", "after", "saved", "duration_ms"):
@@ -944,7 +957,7 @@ class JiuWenSwarm:
             request_id=request.request_id,
             channel_id=request.channel_id,
             role="user",
-            content=query,
+            content=_history_user_content(request.params, query),
             timestamp=time.time(),
             channel_metadata=request.metadata,
             mode=request.params.get("mode", "unknown"),
@@ -1059,7 +1072,7 @@ class JiuWenSwarm:
             request_id=request.request_id,
             channel_id=request.channel_id,
             role="user",
-            content=query,
+            content=_history_user_content(request.params, query),
             timestamp=time.time(),
             channel_metadata=request.metadata,
             mode=request.params.get("mode", "unknown"),
