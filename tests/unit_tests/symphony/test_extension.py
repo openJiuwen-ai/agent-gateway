@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from deploy.extensions.symphony.extension import (
+from jiuwenswarm.extensions.symphony.extension import (
     SYMPHONY_BUILD_SCORE,
     SYMPHONY_GRAPH,
     SYMPHONY_PLAN,
@@ -37,7 +37,7 @@ def test_extension_registers_rpc_handlers():
 
 
 def test_symphony_skill_metadata():
-    skill_md = Path("deploy/extensions/symphony/skills/symphony-assistant/SKILL.md")
+    skill_md = Path("jiuwenswarm/extensions/symphony/skills/symphony-assistant/SKILL.md")
     content = skill_md.read_text(encoding="utf-8")
 
     assert "name: symphony-assistant" in content
@@ -61,17 +61,17 @@ def test_plan_uses_llm_plan_from_score(monkeypatch, tmp_path):
     llm_config = object()
     seen = {}
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {"paths": {"score_dir": str(configured_score_dir)}}
         ),
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_score_artifacts",
+        "jiuwenswarm.extensions.symphony.extension.load_score_artifacts",
         lambda score_dir: {"score_dir": str(score_dir)},
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.LLMConfig.from_default_model",
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
         lambda: llm_config,
     )
 
@@ -93,7 +93,7 @@ def test_plan_uses_llm_plan_from_score(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.plan_from_score",
+        "jiuwenswarm.extensions.symphony.extension.plan_from_score",
         fake_plan_from_score,
     )
 
@@ -113,17 +113,17 @@ def test_plan_uses_requested_fast_mode(monkeypatch, tmp_path):
     configured_score_dir = tmp_path / "configured"
     seen = {}
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {"paths": {"score_dir": str(configured_score_dir)}}
         ),
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_score_artifacts",
+        "jiuwenswarm.extensions.symphony.extension.load_score_artifacts",
         lambda score_dir: {"score_dir": str(score_dir)},
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.LLMConfig.from_default_model",
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
         lambda: object(),
     )
 
@@ -137,7 +137,7 @@ def test_plan_uses_requested_fast_mode(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.plan_from_score",
+        "jiuwenswarm.extensions.symphony.extension.plan_from_score",
         fake_plan_from_score,
     )
 
@@ -153,7 +153,7 @@ def test_plan_uses_requested_fast_mode(monkeypatch, tmp_path):
 def test_plan_rejects_non_fast_requested_mode(monkeypatch, tmp_path):
     configured_score_dir = tmp_path / "configured"
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {"paths": {"score_dir": str(configured_score_dir)}}
         ),
@@ -171,17 +171,17 @@ def test_plan_rejects_non_fast_requested_mode(monkeypatch, tmp_path):
 def test_plan_presentation_uses_recommended_plan(monkeypatch, tmp_path):
     configured_score_dir = tmp_path / "configured"
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {"paths": {"score_dir": str(configured_score_dir)}}
         ),
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_score_artifacts",
+        "jiuwenswarm.extensions.symphony.extension.load_score_artifacts",
         lambda score_dir: {"score_dir": str(score_dir)},
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.LLMConfig.from_default_model",
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
         lambda: object(),
     )
 
@@ -218,7 +218,7 @@ def test_plan_presentation_uses_recommended_plan(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.plan_from_score",
+        "jiuwenswarm.extensions.symphony.extension.plan_from_score",
         fake_plan_from_score,
     )
 
@@ -239,7 +239,7 @@ def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path)
     configured_score_dir = tmp_path / "configured"
     skills_root = tmp_path / "skills"
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {
                 "paths": {
@@ -250,7 +250,7 @@ def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path)
         ),
     )
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.LLMConfig.from_default_model",
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
         lambda: object(),
     )
     seen = {}
@@ -276,7 +276,7 @@ def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path)
         return _Result()
 
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.service_build_score",
+        "jiuwenswarm.extensions.symphony.extension.service_build_score",
         fake_build_score,
     )
 
@@ -292,7 +292,7 @@ def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path)
 
 def test_graph_returns_business_error_when_artifacts_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {
                 "paths": {
@@ -316,7 +316,7 @@ def test_graph_ignores_request_score_dir_param(monkeypatch, tmp_path):
     configured_score_dir = tmp_path / "configured"
     legacy_score_dir = tmp_path / "legacy"
     monkeypatch.setattr(
-        "deploy.extensions.symphony.extension.load_symphony_config",
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
         lambda: symphony_config_from_dict(
             {
                 "paths": {

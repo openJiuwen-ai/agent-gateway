@@ -7,6 +7,25 @@ from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.utils import logger
 
 
+_DEFAULT_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
+
+
+def _is_default_package_extension_dir(path: Path) -> bool:
+    parts = tuple(part.lower() for part in path.parts if part not in ("", "."))
+    return parts == _DEFAULT_PACKAGE_EXTENSION_DIR
+
+
+def _extension_search_path_candidates(path_value: str) -> list[Path]:
+    path = Path(path_value)
+    if path.is_absolute():
+        return [path]
+
+    candidates = [path.resolve()]
+    if _is_default_package_extension_dir(path):
+        candidates.append(Path(__file__).resolve().parent)
+    return candidates
+
+
 def _split_extension_dirs(value: str) -> list[str]:
     # 按需求使用 ';' 分割
     return [p.strip() for p in value.split(";") if p.strip()]
@@ -34,13 +53,16 @@ class ExtensionManager:
         self._setup_search_paths()
 
     def _setup_search_paths(self) -> None:
+        seen: set[str] = set()
         extension_dirs = _extension_dir_paths_from_config(get_config())
         for path in extension_dirs:
-            p = Path(path)
-            if not p.is_absolute():
-                # 相对路径直接按当前工作目录解析成绝对路径
-                p = p.resolve()
-            if p.exists():
+            for p in _extension_search_path_candidates(path):
+                if not p.exists():
+                    continue
+                key = str(p.resolve()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
                 self.loader.add_search_path(p)
 
     async def load_all_extensions(self) -> None:
