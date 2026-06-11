@@ -115,9 +115,13 @@ class CronSchedulerService:
         self._last_store_mtime = self._get_store_mtime()
 
     async def _check_store_changed(self) -> bool:
-        """If cron_jobs.json was modified externally, reload and return True."""
+        """If cron_jobs.json was modified or deleted externally, reload and return True."""
         mtime = self._get_store_mtime()
-        if mtime and mtime != self._last_store_mtime and self._last_store_mtime != 0.0:
+        # Detect: file modified (mtime changed, both nonzero),
+        #         file deleted (mtime became 0.0 from nonzero),
+        #         file recreated (mtime became nonzero from 0.0).
+        # Skip: no change (mtime == last), or both 0.0 (never had a file).
+        if mtime != self._last_store_mtime and (mtime or self._last_store_mtime):
             logger.info(
                 "[Cron] store file changed (mtime %.3f -> %.3f), reloading",
                 self._last_store_mtime,
@@ -283,6 +287,19 @@ class CronSchedulerService:
         job = self._jobs.get(ev.job_id)
         if job is None and ev.kind != "push_update":
             return
+        # For wake/push events: if the job exists in memory but no longer
+        # exists in the persistent store (e.g. cron_jobs.json was deleted),
+        # skip execution and reload to clear stale in-memory data.
+        if ev.kind in ("wake", "push") and job is not None:
+            store_job = await self._store.get_job(ev.job_id)
+            if store_job is None:
+                logger.info(
+                    "[Cron] job %s no longer in store (file may have been deleted), "
+                    "skipping event %s and triggering reload",
+                    ev.job_id, ev.kind,
+                )
+                await self.reload()
+                return
         if job is None and ev.kind == "push_update":
             state = self._runs.get(ev.run_id)
             if state is None:
