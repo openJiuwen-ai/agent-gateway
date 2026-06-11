@@ -8,6 +8,7 @@ from .config import load_settings
 from .dispatch_imports import dispatch_import_path
 from .index_service import CATALOG_FILENAME, _index_dir
 from .markdown import render_disabled, render_retrieve_failure, render_retrieve_success
+from .skill_tree import build_skill_tree_payload
 
 
 class SkillRetrieveService:
@@ -58,7 +59,7 @@ class SkillRetrieveService:
         except Exception as exc:
             return {"success": False, "result": render_retrieve_failure(str(exc))}
 
-        return {
+        payload = {
             "success": True,
             "result": render_retrieve_success(
                 query=normalized_query,
@@ -69,6 +70,14 @@ class SkillRetrieveService:
                 settings_summary=_settings_summary(settings),
             ),
         }
+        skill_tree = build_skill_tree_payload(
+            query=normalized_query,
+            result=result,
+            catalog_by_worker=catalog_by_worker,
+        )
+        if skill_tree is not None:
+            payload["skill_tree"] = skill_tree
+        return payload
 
     @staticmethod
     def _run_dispatch_retrieve(*, settings: Any, index_dir: Path, query: str) -> Any:

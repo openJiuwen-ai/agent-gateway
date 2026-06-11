@@ -1,3 +1,5 @@
+import { parseSkillTreePath, type SkillTreePath } from '../../types/skillTree';
+
 type UnknownPayload = Record<string, unknown>;
 
 function asRecord(value: unknown): UnknownPayload | null {
@@ -75,6 +77,7 @@ export interface NormalizedToolResult {
   result: string;
   success: boolean;
   summary?: string;
+  skillTree?: SkillTreePath;
 }
 
 export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToolCall {
@@ -134,6 +137,8 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     typeof toolResultPayload.summary === 'string'
       ? toolResultPayload.summary
       : success ? undefined : '❌';
+  const skillTree =
+    parseSkillTreePath(toolResultPayload.raw_output) ?? parseSkillTreePath(toolResultPayload);
 
   return {
     toolName,
@@ -141,5 +146,6 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
     result,
     success,
     summary,
+    skillTree,
   };
 }

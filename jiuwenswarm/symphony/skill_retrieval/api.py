@@ -42,7 +42,11 @@ def get_skill_retrieval_tree(manager: Any | None = None) -> dict[str, Any]:
 
 
 def _tool_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "success": bool(payload.get("success")),
         "result": str(payload.get("result") or ""),
     }
+    skill_tree = payload.get("skill_tree")
+    if isinstance(skill_tree, dict):
+        out["skill_tree"] = skill_tree
+    return out

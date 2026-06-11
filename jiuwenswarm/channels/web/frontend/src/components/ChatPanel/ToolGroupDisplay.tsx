@@ -10,6 +10,7 @@ import clsx from 'clsx';
 import { ToolExecution } from '../../types';
 import { formatToolArguments, formatToolResult } from '../../utils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
+import { SkillTreePath } from './SkillTreePath';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -217,22 +218,26 @@ function ToolDetailModal({ execution, onClose }: ToolDetailModalProps) {
                   )}
                 </span>
               </div>
-              <pre
-                className="p-4 rounded-lg overflow-auto whitespace-pre-wrap break-all"
-                style={{
-                  fontFamily: 'var(--mono)',
-                  fontSize: 'var(--font-size-sm)',
-                  lineHeight: '1.5',
-                  backgroundColor: 'var(--bg-elevated)',
-                  border: '1px solid var(--border)',
-                  color: resultSuccess
-                    ? 'var(--text)'
-                    : 'var(--danger)',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {formatToolResult(result.result)}
-              </pre>
+              {result.skillTree ? (
+                <SkillTreePath tree={result.skillTree} stepIntervalMs={0} />
+              ) : (
+                <pre
+                  className="p-4 rounded-lg overflow-auto whitespace-pre-wrap break-all"
+                  style={{
+                    fontFamily: 'var(--mono)',
+                    fontSize: 'var(--font-size-sm)',
+                    lineHeight: '1.5',
+                    backgroundColor: 'var(--bg-elevated)',
+                    border: '1px solid var(--border)',
+                    color: resultSuccess
+                      ? 'var(--text)'
+                      : 'var(--danger)',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {formatToolResult(result.result)}
+                </pre>
+              )}
             </div>
           )}
 
@@ -358,6 +363,9 @@ export function ToolGroupDisplay({
   }, [scrollInner]);
 
   const headerLabel = t('chatUi.toolGroup.executed', { totalPairs });
+  const skillTreeExecutions = visibleExecutions.filter(
+    (execution) => execution.toolCall.name === 'skill_retrieve' && execution.result?.skillTree
+  );
   if (visibleExecutions.length === 0) {
     return null;
   }
@@ -411,6 +419,10 @@ export function ToolGroupDisplay({
             </>
           )}
         </div>
+
+        {skillTreeExecutions.map((execution) => (
+          <SkillTreePath key={`skill-tree-${execution.toolCallId}`} tree={execution.result!.skillTree!} />
+        ))}
       </div>
     </div>
   );
