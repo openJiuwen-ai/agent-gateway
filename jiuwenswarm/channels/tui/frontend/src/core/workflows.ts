@@ -73,6 +73,16 @@ export function workflowStatusIcon(status: WorkflowStatus): string {
   }
 }
 
+/** Fixed user-facing status lines — avoid showing raw engine narration (e.g. result payload). */
+export const WORKFLOW_STATUS_BANNER: Partial<Record<WorkflowStatus, string>> = {
+  running: "Workflow running",
+  completed: "Workflow completed",
+};
+
+export function workflowStatusBannerText(status: WorkflowStatus): string | null {
+  return WORKFLOW_STATUS_BANNER[status] ?? null;
+}
+
 export function countWorkflowAgents(workflow: WorkflowRun): number {
   return workflow.phases.reduce((total, phase) => total + phase.agents.length, 0);
 }

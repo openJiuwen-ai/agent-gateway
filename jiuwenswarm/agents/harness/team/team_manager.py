@@ -1202,7 +1202,9 @@ class TeamManager:
                 exc,
             )
 
-    async def _cleanup_runtime_locals(self, session_id: str) -> None:
+    async def _cleanup_runtime_locals(
+        self, session_id: str, *, finalize_workflows: bool = True
+    ) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
         if watcher_task and not watcher_task.done():
             watcher_task.cancel()
@@ -1245,10 +1247,24 @@ class TeamManager:
         workflow_handler = self.pop_workflow_handler(session_id)
         if workflow_handler is not None:
             try:
+                # On non-resumable teardown the team runtime (and the swarmflow
+                # background task it drives) is gone, so no further workflow
+                # events can arrive — finalize any still-running run to a
+                # terminal status before stopping, otherwise the checkpoint
+                # would keep it 'running' forever. Pause keeps the runtime
+                # parked and resumable in place, so it opts out.
+                if finalize_workflows:
+                    workflow_handler.finalize_pending_runs()
                 await workflow_handler.stop()
+                logger.info(
+                    "[WF_DBG cleanup] workflow handler stopped: session_id=%s "
+                    "finalized=%s",
+                    session_id,
+                    finalize_workflows,
+                )
             except Exception as exc:
                 logger.warning(
-                    "[TeamManager] workflow handler stop failed: session_id=%s error=%s",
+                    "[WF_DBG cleanup] workflow handler stop failed: session_id=%s error=%s",
                     session_id,
                     exc,
                 )
@@ -1486,7 +1502,9 @@ class TeamManager:
                         exc,
                     )
 
-            await self._cleanup_runtime_locals(session_id)
+            # Pause parks the runtime in place (resumable via a later chat.send),
+            # so running workflows may still continue — do NOT finalize them.
+            await self._cleanup_runtime_locals(session_id, finalize_workflows=False)
             self.clear_active_runtime(session_id)
             self.clear_pending_runtime(session_id)
 

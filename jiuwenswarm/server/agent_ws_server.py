@@ -2345,18 +2345,37 @@ class AgentWebSocketServer:
         workflow_handler = team_manager.get_workflow_handler(session_id)
 
         if workflow_handler is None:
-            # WF_DBG: 维测日志 — 无 handler（返回空快照）
+            # No live handler (runtime not active / torn down by cancel-stop).
+            # The snapshot is a read-only pull and must not depend on runtime
+            # liveness — fall back to the persisted checkpoint so historical /
+            # terminal workflow runs remain queryable after the team session
+            # is cancelled or stopped.
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                restore_workflow_runs,
+            )
+
+            restored = restore_workflow_runs(session_id)
+            workflows = (
+                [run.to_workflow_run_dict() for run in restored.values()]
+                if restored
+                else []
+            )
             logger.info(
-                "[WF_DBG command_workflows] no handler found: "
-                "channel_id=%s session_id=%s → returning empty snapshot",
+                "[WF_DBG command_workflows] no live handler, restored from checkpoint: "
+                "channel_id=%s session_id=%s workflows_count=%d",
                 channel_id,
                 session_id,
+                len(workflows),
             )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=True,
-                payload={"type": "workflow_run_snapshot", "workflows": [], "session_id": session_id},
+                payload={
+                    "type": "workflow_run_snapshot",
+                    "workflows": workflows,
+                    "session_id": session_id,
+                },
             )
             wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
             async with send_lock:
@@ -2389,9 +2408,7 @@ class AgentWebSocketServer:
                 },
             )
         except Exception as e:
-            logger.warning("[AgentWebSocketServer] command.workflows failed: %s", e)
-            # WF_DBG: 维测日志 — 记录异常
-            logger.info(
+            logger.warning(
                 "[WF_DBG command_workflows] exception: "
                 "channel_id=%s session_id=%s error=%s → returning empty snapshot",
                 channel_id,

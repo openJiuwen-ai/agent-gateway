@@ -49,6 +49,7 @@ import {
   countCompletedWorkflowAgents,
   countWorkflowAgents,
   findWorkflowAgent,
+  workflowStatusBannerText,
   workflowStatusIcon,
   type WorkflowRun,
   type WorkflowStatus,
@@ -3102,9 +3103,10 @@ export class AppScreen implements Component, Focusable {
     if (!workflow) return [];
     const spinner = ["◐", "◓", "◑", "◒"][this.animationPhase % 4]!;
     const elapsed = formatWorkflowElapsed(Date.parse(workflow.started_at ?? "") || Date.now());
+    const runningBanner = workflowStatusBannerText("running") ?? "Workflow running";
     return [
       padToWidth(
-        `${palette.status.warning(spinner)} ${palette.text.assistant(`Workflow ${workflow.name} running...`)} ${palette.text.dim(`(${elapsed})`)}`,
+        `${palette.status.warning(spinner)} ${palette.text.assistant(runningBanner)} ${palette.text.dim(workflow.name)} ${palette.text.dim(`(${elapsed})`)}`,
         width,
       ),
     ];
@@ -3150,6 +3152,7 @@ export class AppScreen implements Component, Focusable {
     const total = workflow.agent_count ?? countWorkflowAgents(workflow);
     const completed = workflow.completed_agent_count ?? countCompletedWorkflowAgents(workflow);
     const duration = formatWorkflowDuration(workflow.duration_ms);
+    const statusBanner = workflowStatusBannerText(workflow.status);
     const selectedPhase =
       workflow.phases.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases[0];
     const lines: string[] = [
@@ -3161,6 +3164,14 @@ export class AppScreen implements Component, Focusable {
         `${formatWorkflowStatus(workflow.status)} ${palette.text.dim(`· ${completed}/${total} agents`)}`,
         width,
       ),
+      ...(workflow.status === "failed" && workflow.error
+        ? wrapPlainText(workflow.error, width).map((line) =>
+            padToWidth(palette.status.error(line), width),
+          )
+        : []),
+      ...(statusBanner
+        ? [padToWidth(workflowStatusTone(workflow.status)(statusBanner), width)]
+        : []),
       ...(duration
         ? [padToWidth(palette.text.dim(`duration ${duration}`), width)]
         : []),
