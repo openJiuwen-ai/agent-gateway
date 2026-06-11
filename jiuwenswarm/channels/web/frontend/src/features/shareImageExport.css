@@ -198,6 +198,23 @@
   display: none;
 }
 
+/* Hide mermaid toolbar in share image */
+.share-image-document .mermaid-diagram__toolbar {
+  display: none !important;
+}
+
+/* Unset canvas constraints so the full diagram is visible in share image */
+.share-image-document .mermaid-canvas {
+  height: auto !important;
+  overflow: visible !important;
+  cursor: default !important;
+}
+
+.share-image-document .mermaid-canvas .mermaid-svg-wrapper {
+  position: static !important;
+  transform: none !important;
+}
+
 .share-image-document .chat-bubble,
 .share-image-document .chat-text,
 .share-image-document .chat-markdown {

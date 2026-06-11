@@ -1,9 +1,8 @@
 ﻿// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 import { useEffect, useMemo } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useA2UIActions } from '@a2ui/react';
+import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import {
   extractA2UISurfaceIds,
   namespaceA2UIMessages,
@@ -33,23 +32,6 @@ type RenderPart =
 
 function safeNamespace(input: string): string {
   return input.replace(/[^A-Za-z0-9_-]/g, '_');
-}
-
-function MarkdownPart({ text }: { text: string }) {
-  return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a: ({ href, children, ...props }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
-            {children}
-          </a>
-        ),
-      }}
-    >
-      {text}
-    </ReactMarkdown>
-  );
 }
 
 export function A2UIMessageContent({
@@ -99,7 +81,13 @@ export function A2UIMessageContent({
     <div className="chat-text a2ui-message-content" data-testid={testId}>
       {renderParts.map((part) => {
         if (part.kind === 'text') {
-          return <MarkdownPart key={part.key} text={part.text} />;
+          return (
+            <MarkdownRenderer
+              key={part.key}
+              content={part.text}
+              className="chat-markdown"
+            />
+          );
         }
 
         const Renderer = getA2UIRenderer(part.protocolVersion);

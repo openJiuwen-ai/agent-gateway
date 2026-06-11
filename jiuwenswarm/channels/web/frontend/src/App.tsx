@@ -1439,6 +1439,7 @@ for (let i = payload.team.length; i < 10; i++) {
                     onExportShare={handleExportShare}
                     isExportingShare={isExportingShare}
                     canExportShare={Boolean(sessionId && sessionId !== 'new' && (!isProcessing || isPaused))}
+                    teamAreaExpanded={isTeamAreaExpanded}
                     historyPager={
                       historyPagerMeta
                         ? {

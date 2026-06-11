@@ -245,9 +245,61 @@ async function waitForImages(node: HTMLElement): Promise<void> {
   }));
 }
 
+async function waitForMermaidDiagrams(node: HTMLElement): Promise<void> {
+  function assertNoFailedDiagrams(): void {
+    if (node.querySelector('[data-mermaid-status="error"]')) {
+      throw new Error('share_image_mermaid_render_failed');
+    }
+  }
+
+  function hasPendingDiagrams(): boolean {
+    return node.querySelector('[data-mermaid-status="loading"]') !== null;
+  }
+
+  function allRenderedDiagramsHaveSvg(): boolean {
+    return Array.from(node.querySelectorAll('[data-mermaid-status="rendered"]'))
+      .every((diagram) => diagram.querySelector('svg'));
+  }
+
+  function isReady(): boolean {
+    assertNoFailedDiagrams();
+    return !hasPendingDiagrams() && allRenderedDiagramsHaveSvg();
+  }
+
+  if (isReady()) {
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const observer = new MutationObserver(() => {
+      try {
+        if (isReady()) {
+          observer.disconnect();
+          resolve();
+        }
+      } catch (error) {
+        observer.disconnect();
+        reject(error);
+      }
+    });
+
+    try {
+      if (isReady()) {
+        resolve();
+        return;
+      }
+      observer.observe(node, { childList: true, subtree: true });
+    } catch (error) {
+      observer.disconnect();
+      reject(error);
+    }
+  });
+}
+
 export async function exportShareImageNode(node: HTMLElement): Promise<string> {
   await document.fonts?.ready;
   await waitForImages(node);
+  await waitForMermaidDiagrams(node);
   await nextFrame();
   const backgroundColor = window.getComputedStyle(node).backgroundColor;
   return toPng(node, {

@@ -362,7 +362,7 @@
     "restoreDisabledUnsupported": "Only web frontend sessions (sess_) can be restored",
     "restoreEmpty": "This session has no restorable messages (empty or filtered). You can still chat from here.",
     "delete": "Delete session",
-      "teamLabel": "Team: {{team}}",
+    "teamLabel": "Team: {{team}}",
     "files": "Session Files",
     "selectFirst": "Select a session first",
     "loadingFiles": "Loading files...",
@@ -825,14 +825,14 @@
       "levelDeny": "Deny",
       "delete": "Remove",
       "deleteConfirm": "Remove “{{tool}}” from permissions.tools?",
-        "invalidValue": "Non-standard value; choosing a policy will rewrite it. Current: {{raw}}",
-        "addTitle": "Add tool rule",
-        "toolPlaceholder": "e.g. mcp_exec_command",
-        "duplicateTool": "Tool already exists: {{tool}}",
-        "add": "Add",
-        "loadFailed": "Failed to load tool permissions",
-        "saveFailed": "Save failed"
-      },
+      "invalidValue": "Non-standard value; choosing a policy will rewrite it. Current: {{raw}}",
+      "addTitle": "Add tool rule",
+      "toolPlaceholder": "e.g. mcp_exec_command",
+      "duplicateTool": "Tool already exists: {{tool}}",
+      "add": "Add",
+      "loadFailed": "Failed to load tool permissions",
+      "saveFailed": "Save failed"
+    },
     "errors": {
       "requiredModelFields": "These model fields are required: {{fields}}. Complete them before saving and restarting.",
       "saveFailed": "Save failed, please try again later",
@@ -1253,7 +1253,6 @@
   },
   "fileViewer": {
     "chatPreview": "Chat preview",
-    "chatPreviewHint": "Only partial data is shown",
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
@@ -1299,22 +1298,18 @@
       "progress": {
         "completed": "Task completed",
         "inactive": "No activity",
-        "activeMembers": "Active members: {{count}}"
+        "activeMembers": "Members: {{count}}"
       },
       "status": {
         "completed": "Task completed",
         "cancelled": "Task cancelled",
         "thinking": "Thinking",
+        "idle": "Idle",
         "message": "Sent message",
+        "receivedMessage": "Received message",
         "file": "Sent file",
         "executingTool": "Running tool",
         "toolCall": "Tool call"
-      },
-      "summary": {
-        "task": "{{status}}: {{content}}",
-        "message": "Sent message: {{content}}",
-        "file": "Sent file: {{content}}",
-        "tool": "Calling tool: {{content}}"
       },
       "counts": {
         "tasks": "Tasks executed",
@@ -1475,7 +1470,7 @@
     "importing": "Importing...",
     "folderPathPlaceholder": "Enter extension folder path (e.g., D:/extensions/my_extension)",
     "importHint": "Folder requirements: 1) English name 2) Contains rail.py entry file",
-"importFailed": "Failed to import extension",
+    "importFailed": "Failed to import extension",
     "noExtensions": "No extensions",
     "confirmDelete": "Are you sure you want to delete extension \"{{name}}\"?",
     "deleteButton": "Delete",
@@ -1515,5 +1510,13 @@
       "sendFile": "Send File",
       "sendFileDesc": "Send files to user"
     }
+  },
+  "mermaid": {
+    "image": "Image",
+    "code": "Code",
+    "copyCode": "Copy code",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "fitView": "Fit view"
   }
 }

@@ -1205,7 +1205,7 @@ async def _consume_monitor_events(
             session_id,
         )
         async for event in monitor_handler.events():
-            _persist_team_member_status_event(channel_id, session_id, event)
+            _persist_team_history_event(channel_id, session_id, event)
             _broadcast_event(channel_id, session_id, event)
 
         logger.info(
@@ -1282,35 +1282,44 @@ async def _consume_workflow_events(
         )
 
 
-def _persist_team_member_status_event(
+def _persist_team_history_event(
     channel_id: str | None,
     session_id: str,
     event: dict[str, Any],
 ) -> None:
-    """Persist member status changes so team.history.get can restore refresh state."""
-    if event.get("event_type") != "team.member":
+    """Persist team monitor events required by team.history.get panel restore."""
+    evt_type = event.get("event_type")
+    if evt_type not in {"team.member", "team.task"}:
         return
 
     payload = event.get("event")
     if not isinstance(payload, dict):
         return
-    if payload.get("type") != "team.member.status_changed":
-        return
 
-    member_id = str(payload.get("member_id") or "").strip()
-    new_status = str(payload.get("new_status") or "").strip()
-    if not member_id or not new_status:
-        return
+    request_key = ""
+    if evt_type == "team.member":
+        if payload.get("type") != "team.member.status_changed":
+            return
+        member_id = str(payload.get("member_id") or "").strip()
+        new_status = str(payload.get("new_status") or "").strip()
+        if not member_id or not new_status:
+            return
+        request_key = member_id
+    else:
+        task_id = str(payload.get("task_id") or payload.get("id") or "").strip()
+        if not task_id:
+            return
+        request_key = task_id
 
     timestamp = time.time()
     append_history_record(
         session_id=session_id,
-        request_id=f"team-status-{member_id}-{int(timestamp * 1000)}",
+        request_id=f"{evt_type}-{request_key}-{int(timestamp * 1000)}",
         channel_id=_resolve_channel_id(channel_id),
         role="assistant",
         content="",
         timestamp=timestamp,
-        event_type="team.member",
+        event_type=event_type,
         extra={
             "session_id": session_id,
             "event": dict(payload),

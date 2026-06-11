@@ -27,8 +27,7 @@ import { a2uiContentToText } from '../../features/a2ui/a2uiContent';
 import { formatTimestamp, onTtsStop, sanitizeTtsText } from '../../utils';
 import { useSpeechSynthesis } from '../../hooks';
 import clsx from 'clsx';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { MarkdownRenderer } from '../../components/MarkdownRenderer';
 import { isTeamP2PMessageToUser, parseTeamEventMessage } from './teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 
@@ -42,25 +41,11 @@ export function MarkdownMessageBody({
   testId?: string;
 }) {
   return (
-    <div className={clsx('chat-text chat-markdown', className)} data-testid={testId}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          a: ({ href, children, ...props }) => (
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              {...props}
-            >
-              {children}
-            </a>
-          ),
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
+    <MarkdownRenderer
+      content={content}
+      className={clsx('chat-text chat-markdown', className)}
+      testId={testId}
+    />
   );
 }
 

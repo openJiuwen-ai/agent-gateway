@@ -1027,6 +1027,7 @@ select {
   .team-member-message__card {
     width: fit-content;
     max-width: min(82%, 720px);
+    min-width: 0;
     border-radius: var(--radius-lg);
     border: 1px solid var(--border);
     background: color-mix(in srgb, var(--secondary) 72%, transparent);
@@ -1043,6 +1044,8 @@ select {
 
   .team-member-message__plain {
     max-width: min(82%, 720px);
+    min-width: 0;
+    overflow-x: auto;
     color: var(--text);
     font-size: var(--font-size-sm);
     line-height: 1.75;

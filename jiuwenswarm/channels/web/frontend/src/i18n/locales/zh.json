@@ -362,7 +362,7 @@
     "restoreDisabledUnsupported": "仅支持恢复 web 前端会话（sess_）",
     "restoreEmpty": "该会话没有可恢复的消息（为空或均被过滤）。仍可在此继续对话。",
     "delete": "删除会话",
-      "teamLabel": "团队：{{team}}",
+    "teamLabel": "团队：{{team}}",
     "files": "会话文件",
     "selectFirst": "请先选择会话",
     "loadingFiles": "加载文件中...",
@@ -824,14 +824,14 @@
       "levelDeny": "拒绝 (deny)",
       "delete": "删除",
       "deleteConfirm": "确定从 permissions.tools 中删除「{{tool}}」吗？",
-        "invalidValue": "配置值非标准格式，选择策略后将写回为合法值。当前：{{raw}}",
-        "addTitle": "添加工具规则",
-        "toolPlaceholder": "例如 mcp_exec_command",
-        "duplicateTool": "工具已存在：{{tool}}",
-        "add": "添加",
-        "loadFailed": "加载工具权限失败",
-        "saveFailed": "保存失败"
-      },
+      "invalidValue": "配置值非标准格式，选择策略后将写回为合法值。当前：{{raw}}",
+      "addTitle": "添加工具规则",
+      "toolPlaceholder": "例如 mcp_exec_command",
+      "duplicateTool": "工具已存在：{{tool}}",
+      "add": "添加",
+      "loadFailed": "加载工具权限失败",
+      "saveFailed": "保存失败"
+    },
     "errors": {
       "requiredModelFields": "模型配置为必填：{{fields}}。请完整填写后再保存并重启。",
       "saveFailed": "保存失败，请稍后重试",
@@ -1252,7 +1252,6 @@
   },
   "fileViewer": {
     "chatPreview": "对话预览",
-    "chatPreviewHint": "仅展示部分数据",
     "historyPreviewEmpty": "按与历史恢复相同的规则过滤后，没有可展示的消息（或文件为空）。可关闭预览查看原始 JSON。",
     "edit": "编辑",
     "unknownError": "未知错误",
@@ -1298,22 +1297,18 @@
       "progress": {
         "completed": "任务完成",
         "inactive": "当前无进行中的活动",
-        "activeMembers": "活跃成员数： {{count}}"
+        "activeMembers": "成员数： {{count}}"
       },
       "status": {
         "completed": "任务完成",
         "cancelled": "任务取消",
         "thinking": "正在思考",
+        "idle": "空闲",
         "message": "发送消息",
+        "receivedMessage": "接收消息",
         "file": "发送文件",
         "executingTool": "执行工具",
         "toolCall": "工具调用"
-      },
-      "summary": {
-        "task": "{{status}}：{{content}}",
-        "message": "发送消息：{{content}}",
-        "file": "发送文件：{{content}}",
-        "tool": "调用工具：{{content}}"
       },
       "counts": {
         "tasks": "执行任务",
@@ -1467,14 +1462,14 @@
   "extensions": {
     "title": "Rails 管理",
     "description": "管理自定义 Rail 扩展",
-"loadListFailed": "加载扩展列表失败",
+    "loadListFailed": "加载扩展列表失败",
     "enterFolderPath": "请输入扩展文件夹路径",
     "importTitle": "导入 Rails",
     "importButton": "导入",
     "importing": "导入中...",
     "folderPathPlaceholder": "输入扩展文件夹路径 (例如: D:/extensions/my_extension)",
     "importHint": "文件夹要求：1) 英文名称 2) 包含 rail.py 入口文件",
-"importFailed": "导入扩展失败",
+    "importFailed": "导入扩展失败",
     "noExtensions": "暂无 rails",
     "confirmDelete": "确定要删除扩展 \"{{name}}\" 吗？",
     "deleteButton": "删除",
@@ -1517,5 +1512,13 @@
   },
   "security": {
     "contentRetracted": "内容已因安全原因撤回"
+  },
+  "mermaid": {
+    "image": "图片",
+    "code": "代码",
+    "copyCode": "复制代码",
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "fitView": "适应视图"
   }
 }
