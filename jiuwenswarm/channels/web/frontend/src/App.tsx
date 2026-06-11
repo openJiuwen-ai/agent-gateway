@@ -1063,8 +1063,9 @@ for (let i = payload.team.length; i < 10; i++) {
   const handleSendMessage = useCallback((content: string) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === 'new') return;
+    disposeInFlightHistoryHandles();
     void sendMessage(content, currentSessionId);
-  }, [sendMessage]);
+  }, [disposeInFlightHistoryHandles, sendMessage]);
 
   useEffect(() => {
     return setA2UIActionHandler((message) => {
