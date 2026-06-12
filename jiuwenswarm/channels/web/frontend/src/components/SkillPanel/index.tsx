@@ -106,6 +106,8 @@ type SkillIndexTreeNode = SkillIndexNode & {
 interface SkillPanelProps {
   sessionId: string;
   onNavigateToConfig?: () => void;
+  /** 当前是否处于激活状态（左边栏选中技能） */
+  isActive?: boolean;
 }
 
 function getSourceLabel(source: string, t: (key: string) => string, isBuiltinSource?: boolean): string {
@@ -285,7 +287,7 @@ function SkillIndexTreeView({
   return <div className="space-y-1" role="tree">{roots.map((node) => renderNode(node, 0))}</div>;
 }
 
-export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
+export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: SkillPanelProps) {
   const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
   const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled">("all");
@@ -298,6 +300,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const searchDebounceRef = useRef<number | null>(null);
+  const prevIsActiveRef = useRef(isActive);
   const [selectedSkill, setSelectedSkill] = useState<SkillDetail | null>(null);
   const [listState, setListState] = useState<LoadState>("idle");
   const [detailState, setDetailState] = useState<LoadState>("idle");
@@ -559,9 +562,23 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
     }
   }, [withSession]);
 
+  // 当左边栏切换到技能页面时，或切换到"我的技能"页签时，调用 list 接口
   useEffect(() => {
-    fetchSkills();
-  }, [fetchSkills]);
+    const prevIsActive = prevIsActiveRef.current;
+
+    // 场景1：从其他页面切换到技能页面（isActive 变为 true）
+    if (isActive && !prevIsActive) {
+      fetchSkills();
+    }
+
+    // 场景2：在技能页面内切换到"我的技能"页签（isActive 保持 true，activeTab 变化）
+    if (isActive && prevIsActive && activeTab === "my") {
+      fetchSkills();
+    }
+
+    // 更新 ref
+    prevIsActiveRef.current = isActive;
+  }, [isActive, activeTab, fetchSkills]);
 
   useEffect(() => {
     fetchRetrievalStatus();

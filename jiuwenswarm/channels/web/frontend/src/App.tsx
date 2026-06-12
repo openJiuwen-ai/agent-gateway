@@ -1546,6 +1546,7 @@ for (let i = payload.team.length; i < 10; i++) {
           <div className={`app-section ${activeNav === 'skills' ? '' : 'is-hidden'}`}>
             <SkillPanel
               sessionId={sessionId}
+              isActive={activeNav === 'skills'}
               onNavigateToConfig={() => {
                 setConfigInitialExpandGroup('third_party_api');
                 setActiveNav('configpanel');

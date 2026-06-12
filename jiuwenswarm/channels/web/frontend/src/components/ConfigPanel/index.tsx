@@ -2352,45 +2352,12 @@ export function ConfigPanel({
   });
   const [draftModels, setDraftModels] = useState<ModelEntry[]>(() => storeAvailableModels.map((m) => ({ ...m })));
 
-  // 从 localStorage 加载缓存的 agents 和 teams
-  const loadCachedAgentsTeams = (): { agents: AgentEntry[]; teams: TeamEntry[]; edited?: boolean; userCleared?: boolean } | null => {
-    try {
-      const cached = localStorage.getItem('jiuwenclaw_agents_teams_cache');
-      if (cached) {
-        return JSON.parse(cached);
-      }
-    } catch (e) {
-      console.error('Failed to load cached agents/teams:', e);
-    }
-    return null;
-  };
-
-  // 仅缓存当前页面未保存的 agents 和 teams 草稿；后端配置始终是页面初始化来源。
-  const saveCachedAgentsTeams = (agents: AgentEntry[], teams: TeamEntry[], userCleared?: boolean) => {
-    try {
-      localStorage.setItem('jiuwenclaw_agents_teams_cache', JSON.stringify({ agents, teams, edited: true, userCleared }));
-    } catch (e) {
-      console.error('Failed to save agents/teams cache:', e);
-    }
-  };
-
-  const clearCachedAgentsTeams = () => {
-    try {
-      localStorage.removeItem('jiuwenclaw_agents_teams_cache');
-    } catch (e) {
-      console.error('Failed to clear agents/teams cache:', e);
-    }
-  };
-
-  const cached = loadCachedAgentsTeams();
-  const [draftAgents, setDraftAgents] = useState<AgentEntry[]>(cached?.agents || []);
-  const [draftTeams, setDraftTeams] = useState<TeamEntry[]>(cached?.teams || []);
-  const [initialAgents, setInitialAgents] = useState<AgentEntry[]>(cached?.agents || []);
-  const [initialTeams, setInitialTeams] = useState<TeamEntry[]>(cached?.teams || []);
-  const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(cached?.edited ?? false);
+  const [draftAgents, setDraftAgents] = useState<AgentEntry[]>([]);
+  const [draftTeams, setDraftTeams] = useState<TeamEntry[]>([]);
+  const [initialAgents, setInitialAgents] = useState<AgentEntry[]>([]);
+  const [initialTeams, setInitialTeams] = useState<TeamEntry[]>([]);
+  const [agentsTeamsEdited, setAgentsTeamsEdited] = useState(false);
   const [agentsTeamsUserEdited, setAgentsTeamsUserEdited] = useState(false);
-  // 标志用户是否手动清空过 agent/team，用于区分"主动删除"和"从未配置"
-  const [userClearedAgentsTeams, setUserClearedAgentsTeams] = useState(cached?.userCleared ?? false);
   const [configTab, setConfigTab] = useState<ConfigMainTab>("model");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2507,7 +2474,6 @@ export function ConfigPanel({
     if (!deleteTeamConfirm) return;
     const newTeams = draftTeams.filter((_, i) => i !== deleteTeamConfirm.idx);
     setDraftTeams(newTeams);
-    saveCachedAgentsTeams(draftAgents, newTeams);
     setAgentsTeamsEdited(true);
     setDeleteTeamConfirm(null);
   };
@@ -2561,8 +2527,6 @@ export function ConfigPanel({
   }, [storeAvailableModels]);
 
   const agentsFromConfig = useMemo<AgentEntry[]>(() => {
-    // 用户主动清空过，忽略后端返回的默认配置
-    if (userClearedAgentsTeams) return [];
     const agents: AgentEntry[] = [];
     for (let i = 0; i < 10; i++) {
       const name = normalizedConfig[`agent_name_${i}`] || normalizedConfig[`agent_${i}_name`];
@@ -2581,11 +2545,9 @@ export function ConfigPanel({
       });
     }
     return agents;
-  }, [normalizedConfig, storeAvailableModels, userClearedAgentsTeams]);
+  }, [normalizedConfig, storeAvailableModels]);
 
   const teamsFromConfig = useMemo<TeamEntry[]>(() => {
-    // 用户主动清空过，忽略后端返回的默认配置
-    if (userClearedAgentsTeams) return [];
     const teams: TeamEntry[] = [];
     const validAgentKeys = new Set<string>();
     for (let i = 0; i < 10; i++) {
@@ -2628,38 +2590,15 @@ export function ConfigPanel({
       });
     }
     return teams;
-  }, [normalizedConfig, userClearedAgentsTeams]);
+  }, [normalizedConfig]);
 
   useEffect(() => {
     if (agentsTeamsEdited) return;
     setDraftAgents(agentsFromConfig);
     setDraftTeams(teamsFromConfig);
-    // 同时更新初始值，用于比较是否有修改
     setInitialAgents(agentsFromConfig);
     setInitialTeams(teamsFromConfig);
-    if (agentsFromConfig.length === 0 && teamsFromConfig.length === 0) {
-      // 如果用户主动清空过，保留缓存标志以便下次识别；否则清除缓存
-      if (userClearedAgentsTeams) {
-        saveCachedAgentsTeams([], [], true);
-      } else {
-        clearCachedAgentsTeams();
-      }
-    }
-  }, [agentsFromConfig, teamsFromConfig, agentsTeamsEdited, userClearedAgentsTeams]);
-
-  // 自动保存 agents 和 teams 到 localStorage
-  useEffect(() => {
-    if (!agentsTeamsEdited) {
-      return;
-    }
-    if (draftAgents.length > 0 || draftTeams.length > 0) {
-      saveCachedAgentsTeams(draftAgents, draftTeams, userClearedAgentsTeams);
-    } else {
-      // 用户手动清空所有 agent/team，设置 userCleared 标志
-      setUserClearedAgentsTeams(true);
-      saveCachedAgentsTeams([], [], true);
-    }
-  }, [draftAgents, draftTeams, agentsTeamsEdited, userClearedAgentsTeams]);
+  }, [agentsFromConfig, teamsFromConfig, agentsTeamsEdited]);
 
   const groups = useMemo<ConfigGroup[]>(() => {
     if (!Object.keys(normalizedConfig).length) return [];
@@ -2970,13 +2909,7 @@ export function ConfigPanel({
     };
   };
 
-  const updateCacheAfterSave = () => {
-    // 如果用户主动清空过，保留 userCleared 标志，否则清除缓存
-    if (userClearedAgentsTeams) {
-      saveCachedAgentsTeams([], [], true);
-    } else {
-      clearCachedAgentsTeams();
-    }
+  const resetEditStateAfterSave = () => {
     setAgentsTeamsEdited(false);
     setAgentsTeamsUserEdited(false);
   };
@@ -3073,7 +3006,7 @@ export function ConfigPanel({
         await onSaveAllConfig(payload);
         if (hasModelChanges && onModelsRefresh) await onModelsRefresh();
         if (hasAgentsTeamsChanges) {
-          updateCacheAfterSave();
+          resetEditStateAfterSave();
           setInitialAgents(draftAgents);
           setInitialTeams(draftTeams);
         }
@@ -3087,7 +3020,7 @@ export function ConfigPanel({
           const agentsTeamsPayload = buildAgentsTeamsPayload();
           const showRestartModal = !(hasConfigChanges || hasModelChanges);
           await onAgentsTeamsSave(agentsTeamsPayload, showRestartModal);
-          updateCacheAfterSave();
+          resetEditStateAfterSave();
         }
         if (hasConfigChanges) {
           await onSaveConfig(configUpdates);
@@ -3283,10 +3216,6 @@ export function ConfigPanel({
                         onAgentsChange={(agents) => {
                           setDraftAgents(agents);
                           markAgentsTeamsEdited();
-                          // 用户重新添加 agent，清除 userCleared 标志
-                          if (agents.length > 0 && userClearedAgentsTeams) {
-                            setUserClearedAgentsTeams(false);
-                          }
                         }}
                         teams={draftTeams}
                         onTeamsChange={(teams) => { setDraftTeams(teams); setAgentsTeamsEdited(true); }}
@@ -3318,10 +3247,6 @@ export function ConfigPanel({
                         onTeamsChange={(teams) => {
                           setDraftTeams(teams);
                           markAgentsTeamsEdited();
-                          // 用户重新添加 team，清除 userCleared 标志
-                          if (teams.length > 0 && userClearedAgentsTeams) {
-                            setUserClearedAgentsTeams(false);
-                          }
                         }}
                         agents={draftAgents}
                         onDeleteTeam={handleDeleteTeam}
