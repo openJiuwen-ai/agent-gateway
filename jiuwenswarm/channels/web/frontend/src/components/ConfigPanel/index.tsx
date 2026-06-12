@@ -855,6 +855,16 @@ function GroupSection({
 const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "InferenceAffinity", "DeepSeek"] as const;
 const REASONING_LEVEL_OPTIONS = ["off", "low", "medium", "high"] as const;
 
+function getModelValidationKey(model: ModelEntry): string {
+  return [
+    model.model_name,
+    model.model_provider,
+    model.api_base,
+    model.api_key,
+    model.reasoning_level ?? "",
+  ].join("\u0000");
+}
+
 /** 多默认模型管理（受控组件，编辑状态由父组件持有） */
 function MultiModelSection({
   models,
@@ -876,7 +886,7 @@ function MultiModelSection({
   t: (key: string, options?: Record<string, unknown>) => string;
 }) {
   const [validatingModel, setValidatingModel] = useState<number | null>(null);
-  const [validateResults, setValidateResults] = useState<Record<number, "ok" | "err">>({});
+  const [validateResults, setValidateResults] = useState<Record<string, "ok" | "err">>({});
   const [expandedIdx, setExpandedIdx] = useState<number | null>(0);
   const [addingNew, setAddingNew] = useState(false);
   const [newModel, setNewModel] = useState<ModelEntry>({
@@ -923,18 +933,23 @@ function MultiModelSection({
 
   const handleValidate = async (model: ModelEntry, idx: number) => {
     if (!onModelValidate) return;
+    const validationKey = getModelValidationKey(model);
     setValidatingModel(idx);
-    setValidateResults((prev) => ({ ...prev, [idx]: undefined as any }));
+    setValidateResults((prev) => {
+      const next = { ...prev };
+      delete next[validationKey];
+      return next;
+    });
     try {
       await onModelValidate({
         api_base: model.api_base, api_key: model.api_key,
         model: model.model_name, model_provider: model.model_provider,
         reasoning_level: model.reasoning_level || undefined,
       });
-      setValidateResults((prev) => ({ ...prev, [idx]: "ok" }));
+      setValidateResults((prev) => ({ ...prev, [validationKey]: "ok" }));
       setValidateToast({ show: true, success: true, message: t("config.validateModel.success") });
     } catch {
-      setValidateResults((prev) => ({ ...prev, [idx]: "err" }));
+      setValidateResults((prev) => ({ ...prev, [validationKey]: "err" }));
       setValidateToast({ show: true, success: false, message: t("config.validateModel.notWorking") });
     } finally {
       setValidatingModel(null);
@@ -1147,7 +1162,7 @@ function MultiModelSection({
         )}
         {models.map((model, idx) => {
           const isExpanded = expandedIdx === idx;
-          const vr = validateResults[idx];
+          const vr = validateResults[getModelValidationKey(model)];
           const isDefault = model.is_default !== false;
           const isPrimaryDefault = idx === 0;
           // 同名模型计数，用于区分显示
