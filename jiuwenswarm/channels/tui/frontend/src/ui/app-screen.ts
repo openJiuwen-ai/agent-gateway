@@ -3158,11 +3158,16 @@ export class AppScreen implements Component, Focusable {
     const statusBanner = workflowStatusBannerText(workflow.status);
     const selectedPhase =
       workflow.phases.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases[0];
+    const workflowSummary = workflow.summary.trim();
+    const summaryLines =
+      workflowSummary.length > 0 && workflowSummary !== workflow.name.trim()
+        ? wrapPlainText(workflowSummary, width).map((line) =>
+            padToWidth(palette.text.dim(line), width),
+          )
+        : [];
     const lines: string[] = [
       padToWidth(palette.text.accent(workflow.name), width),
-      ...wrapPlainText(workflow.summary, width).map((line) =>
-        padToWidth(palette.text.dim(line), width),
-      ),
+      ...summaryLines,
       padToWidth(
         `${formatWorkflowStatus(workflow.status)} ${palette.text.dim(`· ${completed}/${total} agents`)}`,
         width,
