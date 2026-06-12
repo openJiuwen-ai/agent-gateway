@@ -19,6 +19,8 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     filter_inheritable_ability_cards,
     resolve_model_config,
 )
+from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
+from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 
 
 class _FakeAbilityManager:
@@ -27,6 +29,18 @@ class _FakeAbilityManager:
 
     def list(self):
         return list(self._abilities)
+
+
+class _FakePromptBuilder:
+    def __init__(self) -> None:
+        self.language = "cn"
+        self.sections = {}
+
+    def add_section(self, section) -> None:
+        self.sections[section.name] = section
+
+    def remove_section(self, name: str) -> None:
+        self.sections.pop(name, None)
 
 
 def _make_tool_card(name: str) -> ToolCard:
@@ -63,6 +77,28 @@ def test_filter_inheritable_ability_cards_includes_extended_swarm_tools():
     assert "user_todos" in inherited_names
     assert "task_tool" not in inherited_names
     assert "send_file_to_user" not in inherited_names
+
+
+@pytest.mark.asyncio
+async def test_build_member_rails_syncs_response_prompt_channel_for_a2ui(monkeypatch):
+    """Team Web model calls should inherit the runtime channel for A2UI prompts."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.a2ui.config.get_current_a2ui_config",
+        lambda: A2UIConfig(enabled=True),
+    )
+
+    rails = build_member_rails(
+        member_info=MemberInfo(role="leader"),
+        runtime=RuntimeInfo(channel="web", language="cn"),
+    )
+    response_rails = [rail for rail in rails if type(rail).__name__ == "ResponsePromptRail"]
+    assert len(response_rails) == 1
+
+    prompt_builder = _FakePromptBuilder()
+    response_rails[0].init(SimpleNamespace(system_prompt_builder=prompt_builder))
+    await response_rails[0].before_model_call(SimpleNamespace(inputs=SimpleNamespace()))
+
+    assert LocalSectionName.A2UI in prompt_builder.sections
 
 
 # -- resolve_model_config tests --

@@ -1086,6 +1086,75 @@ async def test_process_team_message_stream_emits_processing_done_for_followup(mo
 
 
 @pytest.mark.anyio
+async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
+
+    class _FakeManager:
+        interact_calls: list[tuple[str, str]] = []
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-a2ui"
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: str):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-a2ui",
+        request_id="req-team-a2ui",
+        channel_id="web",
+        metadata={"language": "zh"},
+        params={"mode": "team"},
+    )
+    inputs = {
+        "query": {
+            "type": "a2ui.client_event",
+            "protocolVersion": "0.8",
+            "event": {
+                "userAction": {
+                    "name": "submitDietForm",
+                    "surfaceId": "diet-preferences",
+                    "sourceComponentId": "submit-btn",
+                    "context": {"name": "Codex", "dietType": ["balanced"]},
+                },
+            },
+        },
+    }
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        inputs,
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert len(_FakeManager.interact_calls) == 1
+    session_id, prompt = _FakeManager.interact_calls[0]
+    assert session_id == "sess-team-a2ui"
+    assert isinstance(prompt, str)
+    assert "A2UI" in prompt
+    assert "submitDietForm" in prompt
+    assert "dietType" in prompt
+    assert chunks[0].payload == {
+        "event_type": "chat.processing_status",
+        "session_id": "sess-team-a2ui",
+        "is_processing": False,
+        "is_complete": True,
+    }
+    assert chunks[1].is_complete is True
+
+
+@pytest.mark.anyio
 async def test_process_team_message_stream_emits_processing_done_for_evolve_approval(monkeypatch):
     approval_event = SimpleNamespace(
         payload={"request_id": "team_skill_evolve_req1", "questions": [{"header": "x"}]},

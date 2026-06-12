@@ -172,6 +172,42 @@ def _resolve_channel_id(channel_id: str | None) -> str:
     return str(channel_id or "default").strip() or "default"
 
 
+def _resolve_request_language(request: Any) -> str:
+    metadata = getattr(request, "metadata", None)
+    params = getattr(request, "params", None)
+    sources = []
+    if isinstance(metadata, dict):
+        sources.append(metadata)
+    if isinstance(params, dict):
+        sources.append(params)
+
+    for source in sources:
+        for key in ("language", "preferred_language", "preferred_response_language"):
+            value = source.get(key)
+            if value:
+                return str(value).strip().lower() or "zh"
+    return "zh"
+
+
+def _safe_query_preview(query: Any, limit: int = 200) -> str:
+    if isinstance(query, str):
+        return query[:limit]
+    return str(query)[:limit]
+
+
+def _normalize_team_query(query: Any, *, channel_id: str | None, language: str) -> Any:
+    from jiuwenswarm.server.runtime.a2ui.integration import build_user_prompt_if_a2ui_event
+
+    a2ui_prompt = build_user_prompt_if_a2ui_event(
+        query,
+        channel=_resolve_channel_id(channel_id),
+        language=language,
+    )
+    if a2ui_prompt is not None:
+        return a2ui_prompt
+    return query
+
+
 async def ensure_monitor_handlers_for_active_runtime(
     channel_id: str | None,
     session_id: str,
@@ -730,7 +766,12 @@ async def process_team_message_stream(
     channel_id = request.channel_id
 
     team_manager = get_team_manager(channel_id)
-    query = inputs.get("query", "")
+    language = _resolve_request_language(request)
+    query = _normalize_team_query(
+        inputs.get("query", ""),
+        channel_id=channel_id,
+        language=language,
+    )
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -929,7 +970,7 @@ async def process_team_message_stream(
                         _resolve_channel_id(channel_id),
                         session_id,
                         reason,
-                        query[:200],
+                        _safe_query_preview(query),
                     )
                     error_msg = _INTERACT_REASON_ERROR_MAP.get(reason or "",
                         "Failed to send message, please try again later")

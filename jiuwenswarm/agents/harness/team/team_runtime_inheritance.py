@@ -174,8 +174,9 @@ def build_member_rails(
 
     try:
         rail = ResponsePromptRail()
+        rail.set_channel(channel)
         rails_list.append(rail)
-        logger.info("[TeamRuntime] ResponsePromptRail created")
+        logger.info("[TeamRuntime] ResponsePromptRail created: channel=%s", channel)
     except Exception as exc:
         logger.warning("[TeamRuntime] ResponsePromptRail failed: %s", exc)
 

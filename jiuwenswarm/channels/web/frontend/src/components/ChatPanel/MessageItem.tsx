@@ -77,11 +77,15 @@ export function TeamMemberMessageFrame({
 function TeamLeaderPlainTextMessage({
   member = 'team_leader',
   content,
+  messageId,
+  isStreaming = false,
   showAvatar = true,
   fileItems,
 }: {
   member?: string;
   content: string;
+  messageId: string;
+  isStreaming?: boolean;
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
 }) {
@@ -93,10 +97,14 @@ function TeamLeaderPlainTextMessage({
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList files={fileItems} className="w-full md:w-1/2" />
       )}
-      <MarkdownMessageBody
-        content={content}
-        className="team-member-message__plain"
-      />
+      <div className="team-member-message__plain">
+        <A2UIMessageContent
+          content={content}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          testId="team-leader-message-body"
+        />
+      </div>
     </TeamMemberMessageFrame>
   );
 }
@@ -392,6 +400,7 @@ export function MessageItem({
 	               <TeamLeaderPlainTextMessage
 	                 member={event.fromMember}
 	                 content={event.content}
+	                 messageId={id}
 	                 showAvatar={showAvatar}
 	               />
 	             );
@@ -452,6 +461,8 @@ export function MessageItem({
 	         <TeamLeaderPlainTextMessage
 	           member="team_leader"
 	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
+	           messageId={id}
+	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	         />
