@@ -1,4 +1,4 @@
-import { addCommandEcho, addError, addInfo } from "../helpers.js";
+import { addCommandEcho, addError, addInfo, makeItem } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
 export interface TurnFileChange {
@@ -40,7 +40,7 @@ export interface RewindPayload {
 }
 
 /** 恢复选项类型 */
-type RestoreOption = "both" | "conversation" | "code" | "cancel";
+type RestoreOption = "both" | "conversation" | "code" | "summarize" | "summarize_up_to" | "cancel";
 
 const GREEN = "\x1b[32m";
 const RED = "\x1b[31m";
@@ -199,6 +199,16 @@ export function createRewindCommand(): SlashCommand {
             description: "Restore modified files to their prior state; conversation remains unchanged",
             value: "code",
           },
+          {
+            label: "Summarize from here",
+            description: "Keep earlier conversation, summarize messages from this turn onward into a compact summary",
+            value: "summarize",
+          },
+          {
+            label: "Summarize up to here",
+            description: "Summarize earlier conversation, keep this turn and after unchanged",
+            value: "summarize_up_to",
+          },
         ];
 
         // 局限提示
@@ -318,6 +328,64 @@ export function createRewindCommand(): SlashCommand {
           }
 
           ctx.addItem(addInfo(ctx.sessionId, msg, "i"));
+        } else if (optionValue === "summarize") {
+          ctx.addItem(
+            addInfo(ctx.sessionId, "Messages after this point will be summarized.", "i", { view: "dim" }),
+          );
+          ctx.addItem(
+            addInfo(ctx.sessionId, "Summarizing…", "i", { view: "dim" }),
+          );
+          await new Promise(resolve => setTimeout(resolve, 0));
+
+          const rewindPayload = await ctx.request<RewindPayload & { summary?: string; summarized_messages?: number }>(
+            "command.rewind_compact",
+            {
+              session_id: ctx.sessionId,
+              turn_index: selectedTurnIndex,
+              direction: "from",
+              mode: ctx.mode,
+            },
+            120000,
+          );
+
+          const restoreText = rewindPayload.content ?? selectedTurn.content_preview;
+
+          ctx.clearEntries();
+          ctx.addItem(addCommandEcho(ctx.sessionId, `/rewind ${selectedTurnIndex}`));
+          await ctx.restoreHistory(ctx.sessionId);
+
+          if (restoreText) {
+            ctx.setInput?.(restoreText);
+          }
+        } else if (optionValue === "summarize_up_to") {
+          ctx.addItem(
+            addInfo(ctx.sessionId, "Messages up to this point will be summarized.", "i", { view: "dim" }),
+          );
+          ctx.addItem(
+            addInfo(ctx.sessionId, "Summarizing…", "i", { view: "dim" }),
+          );
+          await new Promise(resolve => setTimeout(resolve, 0));
+
+          const rewindPayload = await ctx.request<RewindPayload & { summary?: string; summarized_messages?: number }>(
+            "command.rewind_compact",
+            {
+              session_id: ctx.sessionId,
+              turn_index: selectedTurnIndex,
+              direction: "up_to",
+              mode: ctx.mode,
+            },
+            120000,
+          );
+
+          const restoreText = rewindPayload.content ?? selectedTurn.content_preview;
+
+          ctx.clearEntries();
+          ctx.addItem(addCommandEcho(ctx.sessionId, `/rewind ${selectedTurnIndex}`));
+          await ctx.restoreHistory(ctx.sessionId);
+
+          if (restoreText) {
+            ctx.setInput?.(restoreText);
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

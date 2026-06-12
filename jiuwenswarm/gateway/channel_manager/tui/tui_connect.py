@@ -10,7 +10,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -168,6 +168,7 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "command.add_dir",
         "command.chrome",
         "command.compact",
+        "command.compact_partial",
         "command.context",
         "command.recap",
         "command.diff",
@@ -262,6 +263,7 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "command.add_dir",
         "command.chrome",
         "command.compact",
+        "command.compact_partial",
         "command.context",
         "command.recap",
         "command.diff",
@@ -1346,9 +1348,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
         """Try to forward a rewind request to AgentServer via E2A.
 
-        Returns True if the request was fully handled (success or error response
-        sent to the client).  Returns False if E2A is unavailable and the caller
-        should fall back to local-only processing.
+        Returns True if the request was successfully handled by AgentServer.
+        Returns False if E2A is unavailable or AgentServer returned an error,
+        so the caller should fall back to local-only processing.
         """
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
@@ -1377,18 +1379,54 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 return True
             pl = resp.payload if isinstance(resp.payload, dict) else {}
             err = pl.get("error", params.error_label)
-            code = pl.get("code") or None
-            if isinstance(code, str) and not code.strip():
-                code = None
-            await channel.send_response(params.ws, params.req_id, ok=False, error=str(err), code=code)
-            return True
+            logger.warning("[cli %s] AgentServer returned error, fallback local: %s", params.error_label, err)
+            return False
         except Exception as e:
             logger.warning("[cli %s] forward to agent failed, fallback local: %s", params.error_label, e)
             return False
 
+    async def _compact_partial_via_e2a(target_sid: str, turn_index: int, direction: str) -> tuple[Optional[str], int]:
+        """通过 E2A 转发 LLM 摘要请求到 AgentServer。返回 (summary, summarized_count)。"""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        real_client = (
+            agent_client.get("value")
+            if isinstance(agent_client, dict)
+            else agent_client
+        )
+        if real_client is None:
+            return None, 0
+
+        try:
+            env = e2a_from_agent_fields(
+                request_id=str(time.time()),
+                channel_id="tui",
+                session_id=target_sid,
+                req_method=ReqMethod.COMMAND_COMPACT_PARTIAL,
+                params={
+                    "session_id": target_sid,
+                    "turn_index": turn_index,
+                    "direction": direction,
+                },
+                is_stream=False,
+                timestamp=time.time(),
+            )
+            resp = await real_client.send_request(env)
+            if resp.ok:
+                pl = resp.payload if isinstance(resp.payload, dict) else {}
+                summary = pl.get("summary") if pl.get("status") == "ok" else None
+                summarized_count = pl.get("summarized_count", 0)
+                return summary, summarized_count
+            logger.warning("[compact_partial_via_e2a] E2A failed: %s", resp.payload)
+        except Exception as e:
+            logger.warning("[compact_partial_via_e2a] E2A call failed: %s", e)
+
+        return None, 0
+
     async def _session_rewind(ws, req_id, params, session_id):
+        """session.rewind: E2A → AgentServer（权威写入者），fallback 本地."""
         from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
-        """session.rewind: 优先转发到 AgentServer（同时截断 history + context），失败则 fallback 本地仅截断 history."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1416,7 +1454,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        # 优先通过 E2A 转发到 AgentServer（同时处理 history + context 截断）
         if await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
@@ -1429,8 +1466,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         ):
             return
 
-        # Fallback: 仅本地截断 history.json（不含 context 截断）
-        from jiuwenswarm.agents.harness.common.session_ops_service import rewind_session
         try:
             result = rewind_session(session_id=target_sid, turn_index=turn_index)
             await channel.send_response(ws, req_id, ok=True, payload=result)
@@ -1457,12 +1492,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _session_rewind_and_restore(ws, req_id, params, session_id):
-        """session.rewind_and_restore: 截断对话 + 恢复文件."""
+        """session.rewind_and_restore: E2A → AgentServer（权威写入者），fallback 本地."""
         from jiuwenswarm.agents.harness.common.session_ops_service import (
             restore_session_files,
             rewind_session,
         )
-        """session.rewind_and_restore: 优先转发到 AgentServer（history + context + 文件恢复），失败则 fallback 本地."""
         from jiuwenswarm.common.schema.message import ReqMethod
 
         if not isinstance(params, dict):
@@ -1490,7 +1524,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        # 优先通过 E2A 转发到 AgentServer
         if await _forward_rewind_e2a(
             ForwardRewindE2AParams(
                 ws=ws,
@@ -1503,11 +1536,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         ):
             return
 
-        # Fallback: 仅本地操作
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            restore_session_files,
-            rewind_session,
-        )
         try:
             restore_result = restore_session_files(session_id=target_sid, turn_index=turn_index)
             rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
@@ -1557,6 +1585,101 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _command_rewind_compact(ws, req_id, params, session_id):
+        """command.rewind_compact: LLM 摘要(E2A→AgentServer) + 截断 + 记录写入(AgentServer E2A)。"""
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
+            )
+            return
+        target_sid = str(params.get("session_id") or session_id or "").strip()
+        turn_index = params.get("turn_index")
+        direction = str(params.get("direction") or "from").strip()
+        if not target_sid:
+            await channel.send_response(
+                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
+            )
+            return
+        if turn_index is None:
+            await channel.send_response(
+                ws, req_id, ok=False, error="turn_index is required", code="BAD_REQUEST"
+            )
+            return
+        try:
+            turn_index = int(turn_index)
+        except (ValueError, TypeError):
+            await channel.send_response(
+                ws, req_id, ok=False, error="turn_index must be an integer", code="BAD_REQUEST"
+            )
+            return
+        if direction not in ("from", "up_to"):
+            await channel.send_response(
+                ws, req_id, ok=False, error="direction must be 'from' or 'up_to'", code="BAD_REQUEST"
+            )
+            return
+
+        try:
+            llm_summary, summarized_count = await _compact_partial_via_e2a(target_sid, turn_index, direction)
+        except Exception as e:
+            logger.warning("[cli command.rewind_compact] LLM summary failed: %s", e)
+            llm_summary = None
+            summarized_count = 0
+
+        # Step 2: Send rewind to AgentServer (truncation + agent-internal record writing)
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        real_client = (
+            agent_client.get("value")
+            if isinstance(agent_client, dict)
+            else agent_client
+        )
+        if real_client is not None:
+            try:
+                env = e2a_from_agent_fields(
+                    request_id=req_id,
+                    channel_id="tui",
+                    session_id=target_sid,
+                    req_method=ReqMethod.SESSION_REWIND_COMPACT,
+                    params={
+                        "session_id": target_sid,
+                        "turn_index": turn_index,
+                        "direction": direction,
+                        "compact_summary": llm_summary,
+                        "summarized_count": summarized_count,
+                    },
+                    is_stream=False,
+                    timestamp=time.time(),
+                )
+                resp = await real_client.send_request(env)
+                if resp.ok:
+                    pl = resp.payload if isinstance(resp.payload, dict) else {}
+                    pl["summary"] = llm_summary
+                    pl["summarized_messages"] = summarized_count
+                    await channel.send_response(ws, req_id, ok=True, payload=pl)
+                    return
+                logger.warning("[cli command.rewind_compact] E2A failed: %s", resp.payload)
+            except Exception as e:
+                logger.warning("[cli command.rewind_compact] E2A failed, fallback local: %s", e)
+
+        # Fallback: local truncation + record writing
+        try:
+            from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
+            result = compact_partial_session(
+                session_id=target_sid,
+                turn_index=turn_index,
+                direction=direction,
+                llm_summary=llm_summary,
+            )
+            result["summary"] = llm_summary
+            result["summarized_messages"] = summarized_count
+            await channel.send_response(ws, req_id, ok=True, payload=result)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+        except Exception as e:
+            logger.exception("[cli command.rewind_compact] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _session_rename(ws, req_id, params, session_id):
@@ -2081,6 +2204,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "session.rewind", _session_rewind)
     channel.register_local_handler(path, "session.rewind_and_restore", _session_rewind_and_restore)
     channel.register_local_handler(path, "session.restore_files", _session_restore_files)
+    channel.register_local_handler(path, "command.rewind_compact", _command_rewind_compact)
     channel.register_local_handler(path, "history.list_turns", _history_list_turns)
     channel.register_local_handler(path, "chat.send", _chat_send)
     channel.register_local_handler(path, "chat.resume", _chat_resume)

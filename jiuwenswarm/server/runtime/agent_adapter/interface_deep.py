@@ -6430,6 +6430,132 @@ class JiuWenSwarmDeepAdapter:
             return output
         return str(result) if result is not None else None
 
+    async def compact_partial(
+        self,
+        session_id: str,
+        turn_index: int,
+        direction: str = "from",
+    ) -> dict[str, Any]:
+        """部分对话压缩 — /rewind summarize from here 的核心实现。
+
+        从 history.json 读取消息，找到指定 turn 的 pivot 位置，将对应范围的消息
+        发送给 LLM 生成结构化摘要（9 节：Primary Request, Technical Concepts,
+        Files, Errors, Problem Solving, User Messages, Pending Tasks,
+        Current Work, Optional Next Step）。
+
+        Args:
+            session_id: 会话ID
+            turn_index: 基准 turn 号（1-based）
+            direction: "from" (摘要 turn 及之后) 或 "up_to" (摘要 turn 之前)
+
+        Returns:
+            - status: "ok" | "no_turn" | "failed"
+            - summary: 摘要文本
+            - summarized_count: 被摘要的消息 record 数
+        """
+        from jiuwenswarm.agents.harness.common.session_ops_service import (
+            get_agent_sessions_dir,
+        )
+        from jiuwenswarm.server.runtime.session.session_history import _read_history
+        from jiuwenswarm.server.runtime.agent_adapter.compact_partial_prompts import (
+            NO_TOOLS_PREAMBLE,
+            PARTIAL_COMPACT_PROMPT,
+            PARTIAL_COMPACT_UP_TO_PROMPT,
+        )
+
+        sessions_dir = get_agent_sessions_dir()
+        history_path = sessions_dir / session_id / "history.json"
+        history = _read_history(history_path)
+        if not history:
+            return {"status": "no_turn"}
+
+        user_positions = []
+        for i, record in enumerate(history):
+            if record.get("role") == "user":
+                user_positions.append(i)
+
+        total_turns = len(user_positions)
+        if total_turns == 0 or turn_index > total_turns:
+            return {"status": "no_turn"}
+
+        pivot_idx = user_positions[turn_index - 1]
+
+        if direction == "from":
+            messages_to_summarize = history[pivot_idx:]
+        elif direction == "up_to":
+            messages_to_summarize = history[:pivot_idx]
+        else:
+            return {"status": "failed", "error": f"unknown direction: {direction}"}
+
+        if not messages_to_summarize:
+            return {"status": "no_turn"}
+
+        summarized_count = len(messages_to_summarize)
+
+        prompt = (
+            NO_TOOLS_PREAMBLE + PARTIAL_COMPACT_UP_TO_PROMPT
+            if direction == "up_to"
+            else NO_TOOLS_PREAMBLE + PARTIAL_COMPACT_PROMPT
+        )
+
+        recap_messages = self._build_messages_for_model(messages_to_summarize)
+        if not recap_messages:
+            return {"status": "no_turn"}
+
+        # Add the prompt as the final user message
+        from openjiuwen.core.foundation.llm.schema.message import UserMessage
+        recap_messages.append(UserMessage(content=prompt))
+
+        try:
+            result = await self._model.invoke(recap_messages, temperature=0)
+            raw = getattr(result, "content", None) or str(result)
+        except Exception:
+            logger.exception("[compact_partial] model call failed")
+            return {"status": "failed", "error": "Model call failed"}
+
+        summary = raw if isinstance(raw, str) else str(raw)
+        if not summary.strip():
+            return {"status": "failed", "error": "Model returned empty response"}
+
+        # Strip <analysis> block to get clean summary
+        import re
+        cleaned = re.sub(r"<analysis>.*?</analysis>", "", summary, flags=re.DOTALL).strip()
+
+        return {
+            "status": "ok",
+            "summary": cleaned or summary.strip(),
+            "summarized_count": summarized_count,
+        }
+
+    @staticmethod
+    def _build_messages_for_model(records: list[dict[str, Any]]) -> list[Any]:
+        from openjiuwen.core.foundation.llm.schema.message import UserMessage, AssistantMessage
+
+        messages: list[Any] = []
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            role = rec.get("role")
+            content = rec.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+
+            event_type = rec.get("event_type")
+            # skip tool call/result records — they contain JSON blobs, not useful for summary
+            if role == "user":
+                # strip file-content blocks to save tokens
+                import re
+                cleaned = re.sub(r"<file-content[^>]*>.*?</file-content>", "", content, flags=re.DOTALL).strip()
+                if cleaned:
+                    messages.append(UserMessage(content=cleaned))
+            elif role == "assistant":
+                if event_type in ("chat.final", "context.compact_summary", "context.rewind_summary") or not event_type:
+                    if event_type in ("context.compact_boundary",):
+                        continue
+                    messages.append(AssistantMessage(content=content))
+
+        return messages
+
     async def _count_full_context_tokens(
         self,
         context: Any,

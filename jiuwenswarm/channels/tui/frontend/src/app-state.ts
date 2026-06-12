@@ -1646,7 +1646,15 @@ export class CliPiAppState {
 
     this.entries = [...sorted];
     this.rebuildToolExecutionState();
+    this.collapseAllToolGroupsAfterRestore();
     this.emitChange();
+  }
+
+  private collapseAllToolGroupsAfterRestore(): void {
+    const ids = getToolGroupIds(this.entries, Array.from(this.toolExecutions.values()));
+    for (const id of ids) {
+      this.collapsedToolGroupIds.add(id);
+    }
   }
 
   private readonly clearToolExecutionState = (): void => {

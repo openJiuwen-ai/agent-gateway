@@ -129,6 +129,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "team.message",
         "context.compact_boundary",
         "context.compact_summary",
+        "context.rewind_summary",
     }
 )
 
@@ -1122,6 +1123,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.SESSION_REWIND_AND_RESTORE:
                 await self._handle_session_rewind_full(ws, request, send_lock, restore_files=True)
                 return
+            if request.req_method == ReqMethod.SESSION_REWIND_COMPACT:
+                await self._handle_session_rewind_full(ws, request, send_lock, compact=True)
+                return
             if request.req_method == ReqMethod.SESSION_REWIND_CONTEXT:
                 await self._handle_session_rewind_context(ws, request, send_lock)
                 return
@@ -1154,6 +1158,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.COMMAND_COMPACT:
                 await self._handle_command_compact(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.COMMAND_COMPACT_PARTIAL:
+                await self._handle_command_compact_partial(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.COMMAND_CONTEXT:
                 await self._handle_command_context(ws, request, send_lock)
@@ -2100,6 +2107,7 @@ class AgentWebSocketServer:
     async def _handle_session_rewind_full(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock,
         restore_files: bool = False,
+        compact: bool = False,
     ) -> None:
         """Full rewind: truncate history.json + context_engine + update checkpointer."""
         from jiuwenswarm.agents.harness.common.session_ops_service import (
@@ -2110,6 +2118,9 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         target_sid = str(params.get("session_id") or request.session_id or "").strip()
         turn_index = params.get("turn_index")
+        compact_summary = params.get("compact_summary") if compact else None
+        direction = str(params.get("direction") or "from").strip() if compact else "from"
+        summarized_count = int(params.get("summarized_count", 0) or 0) if compact else 0
 
         if not target_sid or turn_index is None:
             wire = AgentWebSocketServer._send_error_response(
@@ -2139,9 +2150,24 @@ class AgentWebSocketServer:
                 restore_result = restore_session_files(session_id=target_sid, turn_index=turn_index)
 
             # Step 2: Truncate history.json (local file operation)
-            rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
+            # "up_to" direction: keep messages from turn_index onward, summarize the prefix.
+            # compact_partial_session handles this correctly (rewind_session only supports
+            # the "from" direction — keeping the prefix and truncating the tail).
+            if compact and direction == "up_to":
+                from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
+                rewind_result = compact_partial_session(
+                    session_id=target_sid,
+                    turn_index=turn_index,
+                    direction="up_to",
+                    llm_summary=compact_summary,
+                )
+            else:
+                rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
 
-            # Step 3: Truncate context_engine in-place + persist to checkpointer
+            # Step 3: Truncate context_engine in-place + persist to checkpointer.
+            # rewind_session_context reads the already-truncated history.json and
+            # converts ALL records to context messages, so it naturally produces the
+            # correct result for both "from" and "up_to" directions.
             context_ok = False
             pair = self._resolve_rewind_agent(request.channel_id or "default")
             if pair is not None:
@@ -2162,6 +2188,81 @@ class AgentWebSocketServer:
                 payload["restored_files"] = restore_result.get("restored_files", [])
                 payload["deleted_files"] = restore_result.get("deleted_files", [])
                 payload["restore_errors"] = restore_result.get("errors", [])
+
+            # Step 4: For compact mode, append boundary + rewind_summary + compact_summary records.
+            # compact_partial_session already writes these for "up_to", so only append for "from".
+            if compact and direction == "from":
+                import uuid as _uuid
+                import time as _time
+                from jiuwenswarm.server.runtime.session.session_history import append_history_record
+                request_id = str(_uuid.uuid4())
+                now = _time.time()
+
+                short_text = (
+                    f"Summarized {summarized_count} messages from this point."
+                    if direction == "from"
+                    else f"Summarized {summarized_count} messages up to this point."
+                )
+
+                append_history_record(
+                    session_id=target_sid,
+                    request_id=request_id,
+                    channel_id=request.channel_id or "tui",
+                    role="assistant",
+                    event_type="context.compact_boundary",
+                    content="Conversation compacted",
+                    timestamp=now,
+                    extra={
+                        "compact_metadata": {
+                            "trigger": "manual_rewind",
+                            "direction": direction,
+                            "turn_index": turn_index,
+                            "summarized_messages": summarized_count,
+                        },
+                    },
+                )
+
+                append_history_record(
+                    session_id=target_sid,
+                    request_id=request_id,
+                    channel_id=request.channel_id or "tui",
+                    role="assistant",
+                    event_type="context.rewind_summary",
+                    content=short_text,
+                    timestamp=now + 0.001,
+                    extra={
+                        "compact_metadata": {
+                            "trigger": "manual_rewind",
+                            "direction": direction,
+                            "turn_index": turn_index,
+                            "summarized_messages": summarized_count,
+                        },
+                        "is_compact_summary": True,
+                    },
+                )
+
+                if isinstance(compact_summary, str) and compact_summary.strip():
+                    append_history_record(
+                        session_id=target_sid,
+                        request_id=request_id,
+                        channel_id=request.channel_id or "tui",
+                        role="assistant",
+                        event_type="context.compact_summary",
+                        content=compact_summary.strip(),
+                        timestamp=now + 0.002,
+                        extra={
+                            "compact_metadata": {
+                                "trigger": "manual_rewind",
+                                "direction": direction,
+                                "turn_index": turn_index,
+                                "summarized_messages": summarized_count,
+                            },
+                            "is_compact_summary": True,
+                            "transcript_only": True,
+                        },
+                    )
+
+                payload["summarized_messages"] = summarized_count
 
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -2710,6 +2811,55 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=False,
                 payload={"error": str(e)},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_command_compact_partial(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        try:
+            session_id = request.session_id or "default"
+            params = request.params or {}
+            turn_index = int(params.get("turn_index", 0))
+            direction = str(params.get("direction") or "from").strip()
+
+            channel_id = request.channel_id or "default"
+            mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent.plan"))
+            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent = await self._agent_manager.get_agent(
+                channel_id=channel_id,
+                mode=agent_mode,
+                project_dir=resolve_request_project_dir(request),
+                sub_mode=sub_mode,
+            )
+
+            if agent is None:
+                raise ValueError("Failed to get agent")
+
+            result_data = await agent.compact_partial(
+                session_id=session_id,
+                turn_index=turn_index,
+                direction=direction,
+            )
+
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=result_data,
+            )
+        except BaseException as e:
+            if isinstance(e, (KeyboardInterrupt, asyncio.CancelledError)):
+                raise
+            logger.exception("[AgentWebSocketServer] command.compact_partial failed: %s", e)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "status": "failed",
+                    "error": str(e),
+                },
             )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:

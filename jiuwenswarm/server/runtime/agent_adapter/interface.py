@@ -1412,6 +1412,35 @@ class JiuWenSwarm:
             raise ValueError("Agent adapter not available")
         return await adapter.generate_recap(session_id=session_id)
 
+    async def compact_partial(
+        self,
+        session_id: str,
+        turn_index: int,
+        direction: str = "from",
+    ) -> dict[str, Any]:
+        """部分对话压缩 — 对指定 turn 之前或之后的消息进行 LLM 摘要。
+
+        Args:
+            session_id: 会话ID
+            turn_index: 基准 turn 号
+            direction: "from" (摘要 turn 及之后) 或 "up_to" (摘要 turn 之前)
+
+        Returns:
+            包含压缩结果的字典:
+            - status: "ok" | "no_turn" | "failed"
+            - summary: 摘要文本（仅当 status == "ok" 时）
+            - summarized_count: 被摘要的消息数
+            - error: 错误信息（仅当 status == "failed" 时）
+        """
+        adapter = self._adapter
+        if adapter is None:
+            raise ValueError("Agent adapter not available")
+        return await adapter.compact_partial(
+            session_id=session_id,
+            turn_index=turn_index,
+            direction=direction,
+        )
+
     # ---------- 资源清理 ----------
 
     async def cancel_inflight_work(self, log_prefix: str = "[gateway disconnect] ") -> None:
