@@ -3212,7 +3212,7 @@ export class AppScreen implements Component, Focusable {
     } else if (selectedPhase) {
       lines.push(
         ...this.renderSwarmWorkflowAgentRows(
-          selectedPhase.agents,
+          selectedPhase.agents ?? [],
           width,
           SWARM_WORKFLOW_AGENT_PREVIEW_LIMIT,
         ),

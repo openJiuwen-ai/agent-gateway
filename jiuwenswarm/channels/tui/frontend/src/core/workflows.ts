@@ -190,7 +190,17 @@ export function applyWorkflowUpdate(
 ): WorkflowRun[] {
   const index = workflows.findIndex((workflow) => workflow.id === incoming.id);
   if (index === -1) {
-    return [incoming, ...workflows];
+    // Normalize incoming workflow to ensure phases and agents are arrays
+    const normalized: WorkflowRun = {
+      ...incoming,
+      phases: Array.isArray(incoming.phases)
+        ? incoming.phases.map((phase) => ({
+            ...phase,
+            agents: Array.isArray(phase.agents) ? phase.agents : [],
+          }))
+        : [],
+    };
+    return [normalized, ...workflows];
   }
   return workflows.map((workflow, itemIndex) =>
     itemIndex === index ? mergeWorkflowRun(workflow, incoming) : workflow,
