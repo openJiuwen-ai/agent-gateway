@@ -43,7 +43,9 @@ from jiuwenswarm.server.runtime.session.session_history import append_compact_hi
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     find_auto_managed_match,
+    find_nested_files_conflict,
     list_effective_sandbox_files,
+    validate_sandbox_files_runtime,
 )
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
@@ -364,6 +366,28 @@ def _canonicalize_sandbox_files_path(path: str) -> str:
         return str(Path(path).expanduser().resolve())
     except (OSError, RuntimeError):
         return path
+
+
+_SANDBOX_FILES_PARAMS = frozenset(
+    {
+        "sub",
+        "path",
+        "session_id",
+        "trusted_dirs",
+        "project_dir",
+        "cwd",
+        "mode",  # injected by gateway for agent routing
+    }
+)
+
+
+def _reject_extra_sandbox_files_params(params: dict[str, Any]) -> None:
+    extra = set(params.keys()) - _SANDBOX_FILES_PARAMS
+    if extra:
+        raise ValueError(
+            f"unexpected parameter(s): {', '.join(sorted(extra))}; "
+            "/sandbox files allow|deny|remove accepts a single path only"
+        )
 
 
 def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
@@ -3412,6 +3436,7 @@ class AgentWebSocketServer:
             # 故意的, 让 ValueError 命中下方 ``except ValueError`` 分支转成
             # ``SANDBOX_BAD_REQUEST`` 回执, 跟其它入参校验失败的处理一致。
             _require_sandbox_supported()
+            validate_sandbox_files_runtime(get_sandbox_runtime().get("files"))
             if sub == "status":
                 payload = {"runtime": get_sandbox_runtime()}
             elif sub == "enable":
@@ -3435,6 +3460,7 @@ class AgentWebSocketServer:
             else:
                 raise ValueError(f"unknown sub: {sub!r}")
             self._attach_effective_sandbox_files(payload, channel_id, params)
+            await self._attach_landlock_status(payload)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3647,19 +3673,6 @@ class AgentWebSocketServer:
         params: dict[str, Any],
         files: dict[str, Any],
     ) -> None:
-        """在 ``update_sandbox_runtime`` 之前用候选 ``files`` 跑一次
-        :func:`build_filesystem_policy` 试压, 失败立刻抛 ``ValueError`` 给 TUI.
-
-        没有这层 dry-run 时, ``/sandbox files allow|deny|remove`` 的处理顺序是
-        "先 ``update_sandbox_runtime`` 写盘 → 再 ``_apply_sandbox_runtime_patch``
-        调 adapter 触发 ``build_filesystem_policy``"; 一旦 build 抛
-        ``FileNotFoundError`` (典型场景: ``allow /no/such/path``——files.allow /
-        files.deny 都要求 path 在 host 上真实存在),
-        :meth:`_apply_sandbox_runtime_patch` 的 ``except Exception`` 会把异常
-        吞成 warning, 但 yaml 已经写了 ——用户视角是"runtime 看着更新, 沙箱却
-        没重建, 而且 TUI 上没任何报错". 本函数就是消除这个不可见的中间态:
-        校验失败时直接拒绝命令, 不让 yaml 进入"build 不出 policy"的死局。
-        """
         project_dir = self._resolve_active_project_dir(channel_id, params)
         is_code_agent = self._resolve_active_is_code_agent(channel_id)
         try:
@@ -3674,6 +3687,7 @@ class AgentWebSocketServer:
     async def _handle_sandbox_files_set(
         self, channel_id: str, params: dict[str, Any], *, bucket: str
     ) -> dict[str, Any]:
+        _reject_extra_sandbox_files_params(params)
         path = str(params.get("path") or "").strip()
         if not path:
             raise ValueError("path is required")
@@ -3709,14 +3723,11 @@ class AgentWebSocketServer:
                 f"path is auto-managed (always in {matched_bucket}): {canonical}; "
                 f"cannot add via /sandbox files {bucket}"
             )
-        permissions = params.get("permissions")
         current = get_sandbox_runtime()
         files = dict(current.get("files") or {})
         files.setdefault("allow", [])
         files.setdefault("deny", [])
         # 1) 同 bucket 内已经存在等价条目 → 直接报错, 不做 "先删后加" 的隐式覆盖。
-        #    permissions 的差异也算冲突: 让用户先 ``files remove`` 再重新 add,
-        #    确保 yaml 落盘前后 TUI 看到的差异与他实际打的命令一一对应。
         target_list: list[Any] = list(files.get(bucket) or [])
         for existing in target_list:
             if _file_entry_matches_path(existing, path):
@@ -3735,9 +3746,10 @@ class AgentWebSocketServer:
                     f"cannot add the same path to {bucket}. "
                     f"`/sandbox files remove {path}` first if you want to flip it"
                 )
+        nested_error = find_nested_files_conflict(path, bucket, files)
+        if nested_error is not None:
+            raise ValueError(nested_error)
         entry: dict[str, Any] = {"path": path}
-        if isinstance(permissions, str) and permissions.strip():
-            entry["permissions"] = permissions.strip()
         target_list.append(entry)
         files[bucket] = target_list
         # 在写盘前做一次 dry-run, 防止后续 build_filesystem_policy 抛错时,
@@ -3751,6 +3763,7 @@ class AgentWebSocketServer:
     async def _handle_sandbox_files_remove(
         self, channel_id: str, params: dict[str, Any]
     ) -> dict[str, Any]:
+        _reject_extra_sandbox_files_params(params)
         path = str(params.get("path") or "").strip()
         if not path:
             raise ValueError("path is required")
@@ -3935,6 +3948,50 @@ class AgentWebSocketServer:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[command.sandbox] attach effective_files failed: %s", exc)
 
+    @staticmethod
+    def _read_landlock_compatibility(policy_path: Path | None) -> str:
+        if policy_path is None or not policy_path.is_file():
+            return "best_effort"
+        try:
+            import yaml
+
+            data = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                landlock = data.get("landlock")
+                if isinstance(landlock, dict):
+                    compat = landlock.get("compatibility")
+                    if isinstance(compat, str) and compat.strip():
+                        return compat.strip()
+        except Exception as exc:
+            logger.debug("[command.sandbox] read landlock compatibility failed: %s", exc)
+        return "best_effort"
+
+    async def _attach_landlock_status(self, payload: dict[str, Any]) -> None:
+        """Attach jiuwenbox Landlock capability summary to sandbox responses."""
+        try:
+            endpoint = get_sandbox_endpoint()
+            jb = payload.get("jiuwenbox")
+            if isinstance(jb, dict) and jb.get("host") and jb.get("port"):
+                host = str(jb["host"])
+                port = int(jb["port"])
+            else:
+                url = endpoint.get("url") or "http://127.0.0.1:8321"
+                host, port = self._parse_sandbox_host_port(url)
+
+            health = await self._jiuwenbox_runner.fetch_health(host, port)
+            landlock_supported = bool(health.get("landlock_supported")) if health else False
+
+            policy_file = endpoint.get("policy_file") or DEFAULT_SANDBOX_POLICY_FILE
+            policy_path = resolve_sandbox_policy_path(policy_file)
+            compatibility = self._read_landlock_compatibility(policy_path)
+
+            payload["landlock"] = {
+                "supported": landlock_supported,
+                "compatibility": compatibility,
+            }
+        except Exception as exc:
+            logger.warning("[command.sandbox] attach landlock status failed: %s", exc)
+
     async def _apply_sandbox_runtime_patch(
         self, channel_id: str, runtime: dict[str, Any], *, files_changed: bool
     ) -> None:
@@ -3945,13 +4002,8 @@ class AgentWebSocketServer:
         try:
             await adapter.apply_sandbox_runtime_patch(runtime, files_changed=files_changed)
         except (FileNotFoundError, ValueError) as exc:
-            # User-facing 配置冲突 (典型: ``/sandbox files allow|deny`` path 在
-            # host 上不存在) 必须直接抛到 TUI——上层 _handle_command_sandbox 的
-            # 大 try/except 会把 ValueError 路由成 ``SANDBOX_BAD_REQUEST`` 回执,
-            # 用户能立刻看到错误原因; 而不是被 ``except Exception`` 吞成一行
-            # 后台 warning, runtime config 已经写盘但沙箱悄悄没重建。
             raise ValueError(str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("[command.sandbox] apply_sandbox_runtime_patch failed: %s", exc)
 
     @staticmethod
