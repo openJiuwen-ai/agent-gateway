@@ -744,6 +744,17 @@ class JiuWenSwarmDeepAdapter:
         """Cooperatively abort DeepAgent and cancel in-flight scheduler tasks."""
         if self._instance is None:
             return
+        # Cancel scheduler tasks FIRST so in-flight LLM HTTP requests raise
+        # CancelledError promptly.  This allows the _stream_process background
+        # task (which instance.abort() waits on via _cancel_stream_process_task)
+        # to unwind quickly instead of blocking until the LLM call times out.
+        #
+        # Placed before instance.abort() to break the circular wait:
+        #   instance.abort() → await _stream_process_task
+        #   → _stream_process_task stuck in LLM request
+        #   → LLM request cancelled by _cancel_scheduler_running_tasks()
+        #   → but _cancel_scheduler_running_tasks() was AFTER abort() → deadlock.
+        self._cancel_scheduler_running_tasks()
         try:
             try:
                 # asyncio.shield protects abort() from re-injected CancelledError
@@ -770,10 +781,8 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
         finally:
-            # _cancel_scheduler_running_tasks is sync (no await point), so it
-            # cannot be interrupted by a re-injected CancelledError.  Placing it
-            # in finally guarantees scheduler tasks are cancelled even when the
-            # caller's CancelledError handler is itself re-cancelled.
+            # Safety net: cancel again in case new scheduler tasks were spawned
+            # between the first cancel and abort().
             self._cancel_scheduler_running_tasks()
 
     def _register_session_agent_task(self, session_id: str) -> None:
@@ -4003,6 +4012,11 @@ class JiuWenSwarmDeepAdapter:
             else:
                 # Fallback: no active sessions tracked, abort default
                 self._stream_event_rail.abort()
+        # Cancel scheduler tasks FIRST to break the circular wait:
+        #   instance.abort() awaits _stream_process_task, which may be stuck
+        #   in an LLM HTTP request that won't be cancelled until
+        #   _cancel_scheduler_running_tasks() runs.
+        self._cancel_scheduler_running_tasks()
         if self._instance is not None:
             try:
                 await self._instance.abort()
@@ -4011,8 +4025,8 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] abort_on_gateway_disconnect instance.abort failed: %s",
                     exc,
                 )
-        # instance.abort() is cooperative — it cannot interrupt in-flight LLM HTTP
-        # requests. Cancel scheduler tasks to inject CancelledError at the await point.
+        # Safety net: cancel again in case new scheduler tasks were spawned
+        # between the first cancel and abort().
         self._cancel_scheduler_running_tasks()
 
     def _has_valid_model_config(self, requested_model_name: str = "") -> bool:
