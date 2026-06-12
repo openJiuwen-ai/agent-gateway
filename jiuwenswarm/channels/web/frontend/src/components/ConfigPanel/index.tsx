@@ -389,8 +389,8 @@ function getGroupIcon(tag: string) {
   }
   if (tag === "agents") {
     return (
-      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15.042 21.672L13.684 16.6m0 0l-2.51 2.225.569-9.47 2.51 2.225a4.5 4.5 0 00-6.286-3.774l-.53.938a4.5 4.5 0 002.024 2.024l4.286-.572zm-7.97-3.043l-2.51-2.225.569 9.47-2.51-2.225a4.5 4.5 0 016.286 3.774l.53-.938a4.5 4.5 0 00-2.024-2.024z" />
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-hat-glasses-icon lucide-hat-glasses">
+        <path d="M14 18a2 2 0 0 0-4 0"/><path d="m19 11-2.11-6.657a2 2 0 0 0-2.752-1.148l-1.276.61A2 2 0 0 1 12 4H8.5a2 2 0 0 0-1.925 1.456L5 11"/><path d="M2 11h20"/><circle cx="17" cy="18" r="3"/><circle cx="7" cy="18" r="3"/>
       </svg>
     );
   }
@@ -1815,7 +1815,8 @@ function TeamItemSection({
   };
 
   const updateTeamField = (field: keyof TeamEntry, value: string) => {
-    onTeamChange({ ...team, [field]: value });
+    const trimmedValue = field === "team_name" ? value.trim() : value;
+    onTeamChange({ ...team, [field]: trimmedValue });
   };
 
   const removeMember = (idx: number) => {
@@ -1915,7 +1916,7 @@ function TeamItemSection({
                 type="text"
                 value={(team[field] as string) ?? ""}
                 onChange={(e) => updateTeamField(field, e.target.value)}
-                maxLength={field === "team_name" ? 64 : undefined}
+                maxLength={field === "team_name" ? 32 : undefined}
                 className="flex-1 rounded border border-border bg-bg px-2 py-1 text-text text-xs"
               />
             )}
