@@ -123,9 +123,16 @@ export function createRewindCommand(): SlashCommand {
               description: "Stay at current session (no change)",
             },
           ];
+          const MAX_PREVIEW_LENGTH = 60;
+
           for (const t of turns) {
-            const desc = t.content_preview;
+            const rawDesc = t.content_preview.replace(/[\r\n]+/g, " ").trim();
+            const desc =
+              rawDesc.length > MAX_PREVIEW_LENGTH
+                ? rawDesc.slice(0, MAX_PREVIEW_LENGTH) + "…"
+                : rawDesc;
             const details: string[] = [];
+
             if (t.files && t.files.length > 0) {
               for (const f of t.files) {
                 details.push(formatFileChange(f, workspaceDir));
