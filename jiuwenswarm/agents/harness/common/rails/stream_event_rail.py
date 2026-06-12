@@ -35,10 +35,6 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     convert_interactions_to_ask_user_question,
 )
-from jiuwenswarm.agents.harness.common.tools.symphony_status_events import (
-    begin_symphony_status_events,
-    reset_symphony_status_events,
-)
 from jiuwenswarm.common.utils import logger
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
@@ -80,6 +76,8 @@ def _copy_symphony_result_fields(
         "display_format",
         "mermaid",
         "summary",
+        "continue_after_display",
+        "followup_action",
     ):
         if key in raw_output:
             payload[key] = raw_output[key]
@@ -280,7 +278,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Store cancelled tool info for interrupt response (per-session to avoid
         # cross-session leakage in concurrent collect→get→clear sequences).
         self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
-        self._symphony_status_tokens: dict[str, Any] = {}
 
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
@@ -523,14 +520,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             tc = ctx.inputs.tool_call
             await self._emit_tool_call(session, tc)
             await self._emit_tool_update(session, tc, status="in_progress")
-            tool_name = str(getattr(tc, "name", "") or "").strip()
-            if tool_name == "symphony_compose_score":
-                token = begin_symphony_status_events(
-                    session,
-                    str(getattr(tc, "id", "") or ""),
-                )
-                if token is not None:
-                    self._symphony_status_tokens[str(getattr(tc, "id", ""))] = token
             # Track in-flight tool call for cancellation
             tc_id = getattr(tc, "id", "")
             if tc_id:
@@ -556,11 +545,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             self._inflight_tool_calls.pop(tc_id, None)
 
         await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
-        await self._emit_symphony_direct_display(session, tc, ctx.inputs.tool_result)
-        if tc_id:
-            reset_symphony_status_events(
-                self._symphony_status_tokens.pop(tc_id, None)
-            )
+        self._request_symphony_force_finish(ctx, tc, ctx.inputs.tool_result)
         await self._emit_ask_user_question_if_interrupted(
             session,
             tc,
@@ -644,8 +629,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug("tool_result emit failed", exc_info=True)
 
     @staticmethod
-    async def _emit_symphony_direct_display(
-        session: Session,
+    def _request_symphony_force_finish(
+        ctx: AgentCallbackContext,
         tool_call: Any,
         result: Any,
     ) -> None:
@@ -655,25 +640,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         content = _symphony_direct_display_content(result)
         if not content:
             return
-        payload: dict[str, Any] = {
-            "content": content,
-            "source": "symphony_compose_score",
-            "direct_display": True,
-        }
-        if isinstance(result, dict):
-            for key in ("display_format", "mermaid", "score_status", "score_build"):
-                if key in result:
-                    payload[key] = result[key]
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="chat.final",
-                    index=0,
-                    payload=payload,
-                )
-            )
-        except Exception:
-            logger.debug("symphony direct display emit failed", exc_info=True)
+        if (
+            isinstance(result, dict)
+            and _boolish_true(result.get("continue_after_display"))
+        ):
+            return
+        ctx.request_force_finish({"output": content, "result_type": "answer"})
 
     @staticmethod
     async def _emit_ask_user_question_if_interrupted(

@@ -4,10 +4,6 @@ from types import SimpleNamespace
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
-from jiuwenswarm.agents.harness.common.tools.symphony_status_events import (
-    begin_symphony_status_events,
-    reset_symphony_status_events,
-)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 
 
@@ -18,14 +14,6 @@ class _CallbackFramework:
 
     async def trigger(self, *args, **kwargs):
         return None
-
-
-class _StreamSession:
-    def __init__(self):
-        self.chunks = []
-
-    async def write_stream(self, chunk):
-        self.chunks.append(chunk)
 
 
 def setup_function():
@@ -140,13 +128,12 @@ def test_toolkit_plan_refreshes_stale_score_before_planning():
     assert "Update: `succeeded`" in result["content"]
 
 
-def test_toolkit_plan_emits_status_events_for_fresh_score():
+def test_toolkit_plan_succeeds_for_fresh_score():
     registry = ExtensionRegistry.create_instance(
         callback_framework=_CallbackFramework(),
         config={},
         logger=object(),
     )
-    session = _StreamSession()
     registry.register_rpc_handler(
         "symphony.score_status",
         lambda _params, request=None: {"success": True, "exists": True, "stale": False},
@@ -156,34 +143,17 @@ def test_toolkit_plan_emits_status_events_for_fresh_score():
         lambda params, request=None: {"success": True, "params": params},
     )
 
-    token = begin_symphony_status_events(session, "parent-call")
-    try:
-        result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
-    finally:
-        reset_symphony_status_events(token)
+    result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
 
     assert result["success"] is True
-    assert [chunk.type for chunk in session.chunks] == [
-        "chat.symphony_status",
-        "chat.symphony_status",
-    ]
-    payloads = [chunk.payload for chunk in session.chunks]
-    assert [payload["phase"] for payload in payloads] == [
-        "checking_score",
-        "planning",
-    ]
-    assert all(payload["source"] == "symphony_compose_score" for payload in payloads)
-    assert all(payload["operation_id"] == "parent-call" for payload in payloads)
-    assert all(payload["status"] == "in_progress" for payload in payloads)
 
 
-def test_toolkit_plan_emits_refresh_status_for_stale_score():
+def test_toolkit_plan_succeeds_after_refreshing_stale_score():
     registry = ExtensionRegistry.create_instance(
         callback_framework=_CallbackFramework(),
         config={},
         logger=object(),
     )
-    session = _StreamSession()
     registry.register_rpc_handler(
         "symphony.score_status",
         lambda _params, request=None: {"success": True, "exists": True, "stale": True},
@@ -197,48 +167,22 @@ def test_toolkit_plan_emits_refresh_status_for_stale_score():
         lambda params, request=None: {"success": True, "params": params},
     )
 
-    token = begin_symphony_status_events(session, "parent-call")
-    try:
-        result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
-    finally:
-        reset_symphony_status_events(token)
+    result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
 
     assert result["success"] is True
-    assert [chunk.type for chunk in session.chunks] == [
-        "chat.symphony_status",
-        "chat.symphony_status",
-        "chat.symphony_status",
-    ]
-    assert [chunk.payload["phase"] for chunk in session.chunks] == [
-        "checking_score",
-        "building_score",
-        "planning",
-    ]
 
 
-def test_toolkit_plan_emits_failed_status_before_stopping():
+def test_toolkit_plan_returns_failure_when_score_status_fails():
     ExtensionRegistry.create_instance(
         callback_framework=_CallbackFramework(),
         config={},
         logger=object(),
     )
-    session = _StreamSession()
 
-    token = begin_symphony_status_events(session, "parent-call")
-    try:
-        result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
-    finally:
-        reset_symphony_status_events(token)
+    result = asyncio.run(SymphonyToolkit().plan("compose installed skills"))
 
     assert result["success"] is False
-    assert [chunk.type for chunk in session.chunks] == [
-        "chat.symphony_status",
-        "chat.symphony_status",
-    ]
-    result_payload = session.chunks[-1].payload
-    assert result_payload["phase"] == "checking_score"
-    assert result_payload["status"] == "failed"
-    assert "symphony.score_status" in result_payload["detail"]
+    assert "symphony.score_status" in result["detail"]
 
 
 def test_toolkit_plan_preserves_plan_markdown_after_score_summary():
@@ -277,6 +221,99 @@ def test_toolkit_plan_preserves_plan_markdown_after_score_summary():
     assert result["mermaid"] == "flowchart LR\n  A --> B"
     assert result["markdown"] == result["content"]
     assert result["summary"] == result["content"]
+
+
+def test_toolkit_complete_plan_defaults_to_force_finish_display():
+    registry = ExtensionRegistry.create_instance(
+        callback_framework=_CallbackFramework(),
+        config={},
+        logger=object(),
+    )
+    registry.register_rpc_handler(
+        "symphony.score_status",
+        lambda _params, request=None: {"success": True, "exists": True, "stale": False},
+    )
+    registry.register_rpc_handler(
+        "symphony.plan",
+        lambda _params, request=None: {
+            "success": True,
+            "status": "ready",
+            "recommended_plans": [
+                {
+                    "status": "ready",
+                    "steps": [{"skill_id": "skill-a"}],
+                    "missing_inputs": [],
+                }
+            ],
+            "execution_graph": {"nodes": [{"id": "skill-a"}]},
+            "presentation": {"markdown": "## Plan", "mermaid": "flowchart LR\n  A"},
+        },
+    )
+
+    result = asyncio.run(SymphonyToolkit().plan("compose skill plan"))
+
+    assert result["continue_after_display"] is False
+    assert "followup_action" not in result
+
+
+def test_toolkit_no_plan_continues_for_skill_discovery():
+    registry = ExtensionRegistry.create_instance(
+        callback_framework=_CallbackFramework(),
+        config={},
+        logger=object(),
+    )
+    registry.register_rpc_handler(
+        "symphony.score_status",
+        lambda _params, request=None: {"success": True, "exists": True, "stale": False},
+    )
+    registry.register_rpc_handler(
+        "symphony.plan",
+        lambda _params, request=None: {
+            "success": True,
+            "status": "no_plan",
+            "recommended_plans": [{"status": "no_plan", "steps": []}],
+            "execution_graph": {"nodes": []},
+            "presentation": {"markdown": "## No plan", "mermaid": "flowchart LR\n  none"},
+        },
+    )
+
+    result = asyncio.run(SymphonyToolkit().plan("compose missing skill plan"))
+
+    assert result["continue_after_display"] is True
+    assert result["followup_action"] == "external_skill_discovery"
+
+
+def test_toolkit_needs_input_does_not_continue_for_skill_discovery():
+    registry = ExtensionRegistry.create_instance(
+        callback_framework=_CallbackFramework(),
+        config={},
+        logger=object(),
+    )
+    registry.register_rpc_handler(
+        "symphony.score_status",
+        lambda _params, request=None: {"success": True, "exists": True, "stale": False},
+    )
+    registry.register_rpc_handler(
+        "symphony.plan",
+        lambda _params, request=None: {
+            "success": True,
+            "status": "needs_input",
+            "recommended_plans": [
+                {
+                    "status": "needs_input",
+                    "steps": [],
+                    "missing_inputs": [{"name": "brief", "type": "text"}],
+                }
+            ],
+            "execution_graph": {"nodes": []},
+            "presentation": {"markdown": "## Need input", "mermaid": "flowchart LR\n  none"},
+        },
+    )
+
+    result = asyncio.run(SymphonyToolkit().plan("compose skill plan"))
+
+    assert result["continue_after_display"] is False
+    assert "followup_action" not in result
 
 
 def test_toolkit_plan_stops_when_score_status_fails():
@@ -321,3 +358,12 @@ def test_toolkit_get_tools_respects_symphony_enabled(monkeypatch):
         if tool.card.name == "symphony_compose_score"
     )
     assert compose_tool.card.input_params["properties"]["mode"]["enum"] == ["fast"]
+    description = compose_tool.card.description
+    assert "skill capabilities, skill chaining, skill ordering" in description
+    assert "search_skill to discover external skills" in description
+    assert "install_skill" in description
+    assert "symphony_refresh_score" in description
+    assert "currently installed skills" not in description
+    assert "currently installed skills" not in (
+        compose_tool.card.input_params["properties"]["query"]["description"]
+    )

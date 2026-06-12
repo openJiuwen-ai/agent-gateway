@@ -1,10 +1,14 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.symphony.config import SymphonyOrchestrationConfig
 from jiuwenswarm.symphony.orchestration import service
 from jiuwenswarm.symphony.orchestration.artifacts import ScoreArtifacts
+from jiuwenswarm.symphony.orchestration.skill_retrieval import (
+    OrchestrationSkillRetrievalSelection,
+)
 
 
 class _FakeLLMClient:
@@ -284,9 +288,78 @@ async def test_plan_from_score_fast_rejects_low_confidence_edge_once(
     assert "illegal can_feed edges" in result["detail"]
 
 
+async def test_plan_from_score_fast_uses_retrieved_candidates_and_neighbors(
+    monkeypatch,
+    tmp_path,
+):
+    artifacts = _artifacts(tmp_path)
+    artifacts.skills.extend(
+        [
+            {
+                "id": "skill-d",
+                "name": "Delta Skill",
+                "description": "Unrelated high-confidence source.",
+                "inputs": [],
+                "outputs": [{"name": "delta", "type": "markdown"}],
+            },
+            {
+                "id": "skill-e",
+                "name": "Echo Skill",
+                "description": "Unrelated high-confidence target.",
+                "inputs": [{"name": "delta", "type": "markdown"}],
+                "outputs": [{"name": "echo", "type": "markdown"}],
+            },
+        ]
+    )
+    artifacts.graph["edges"].append(
+        {
+            "type": "can_feed",
+            "source": "skill-d",
+            "target": "skill-e",
+            "confidence": 0.99,
+            "method": "llm",
+            "evidence": {"reasons": ["unrelated"]},
+        }
+    )
+    llm = _FakeLLMClient(
+        {
+            "title": "Retrieved fast plan",
+            "status": "ready",
+            "steps": [{"skill_id": "skill-b", "reason": "Retrieved seed."}],
+            "can_feed_edges": [],
+        }
+    )
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
+    monkeypatch.setattr(
+        service,
+        "select_orchestration_skill_candidates",
+        lambda **kwargs: OrchestrationSkillRetrievalSelection(
+            enabled=True,
+            used=True,
+            candidate_skill_ids=("skill-b",),
+        ),
+    )
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "use beta",
+        llm_client=llm,
+        orchestration_config=SymphonyOrchestrationConfig(
+            mode="fast",
+            min_edge_confidence=0.7,
+        ),
+    )
+
+    prompt_payload = json.loads(llm.calls[0]["user_content"])
+    prompt_skill_ids = {skill["id"] for skill in prompt_payload["skills"]}
+    assert prompt_skill_ids == {"skill-a", "skill-b", "skill-c"}
+    assert "skill-d" not in prompt_skill_ids
+    assert result["skill_retrieval"]["used"] is True
+    assert result["skill_retrieval"]["candidate_skill_ids"] == ["skill-b"]
+
+
 async def test_plan_from_score_rejects_non_fast_mode(monkeypatch, tmp_path):
     artifacts = _artifacts(tmp_path)
-
     monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
 
     with pytest.raises(ValueError, match="Unsupported orchestration mode"):
@@ -295,10 +368,191 @@ async def test_plan_from_score_rejects_non_fast_mode(monkeypatch, tmp_path):
             "beam plan",
             llm_client=object(),
             ranker=object(),
-            orchestration_config=SymphonyOrchestrationConfig(
-                mode="beam",
-                top_k=2,
-                max_depth=5,
-                min_edge_confidence=0.7,
-            ),
+            orchestration_config=SymphonyOrchestrationConfig(mode="beam"),
         )
+
+
+def test_orchestration_skill_retrieval_filters_unknown_ids(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.symphony.orchestration import skill_retrieval as retrieval_module
+
+    artifacts = _artifacts(tmp_path)
+    settings = SimpleNamespace(
+        enabled=True,
+        llm=SimpleNamespace(model="model", api_key="key"),
+        retrieve=SimpleNamespace(top_k=2),
+    )
+    result = SimpleNamespace(
+        candidate_records=[
+            {"rank": 1, "worker_id": "missing-skill", "score": 0.9},
+            {"rank": 2, "worker_id": "skill-b", "score": 0.8},
+        ],
+        payloads=["missing-skill", "skill-b"],
+    )
+    monkeypatch.setattr(retrieval_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_module,
+        "_skill_retrieval_status",
+        lambda: {
+            "index_exists": True,
+            "fresh": True,
+            "index_dir": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "run_structured_skill_retrieve",
+        lambda **kwargs: result,
+    )
+
+    selection = retrieval_module.select_orchestration_skill_candidates(
+        query="use beta",
+        artifacts=artifacts,
+    )
+
+    assert selection.used is True
+    assert selection.candidate_skill_ids == ("skill-b",)
+    assert selection.candidate_count == 1
+
+
+def test_orchestration_skill_retrieval_falls_back_when_all_ids_are_stale(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.symphony.orchestration import skill_retrieval as retrieval_module
+
+    artifacts = _artifacts(tmp_path)
+    settings = SimpleNamespace(
+        enabled=True,
+        llm=SimpleNamespace(model="model", api_key="key"),
+        retrieve=SimpleNamespace(top_k=1),
+    )
+    result = SimpleNamespace(
+        candidate_records=[{"rank": 1, "worker_id": "missing-skill"}],
+        payloads=["missing-skill"],
+    )
+    monkeypatch.setattr(retrieval_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_module,
+        "_skill_retrieval_status",
+        lambda: {
+            "index_exists": True,
+            "fresh": True,
+            "index_dir": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "run_structured_skill_retrieve",
+        lambda **kwargs: result,
+    )
+
+    selection = retrieval_module.select_orchestration_skill_candidates(
+        query="use beta",
+        artifacts=artifacts,
+    )
+
+    assert selection.used is False
+    assert selection.candidate_skill_ids == ()
+    assert "no candidates present" in selection.fallback_reason
+
+
+def test_orchestration_skill_retrieval_falls_back_when_index_missing(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.symphony.orchestration import skill_retrieval as retrieval_module
+
+    artifacts = _artifacts(tmp_path)
+    settings = SimpleNamespace(
+        enabled=True,
+        llm=SimpleNamespace(model="model", api_key="key"),
+    )
+    monkeypatch.setattr(retrieval_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_module,
+        "_skill_retrieval_status",
+        lambda: {"index_exists": False, "fresh": False},
+    )
+
+    selection = retrieval_module.select_orchestration_skill_candidates(
+        query="use beta",
+        artifacts=artifacts,
+    )
+
+    assert selection.used is False
+    assert selection.fallback_reason == "skill retrieval index does not exist"
+
+
+def test_orchestration_skill_retrieval_falls_back_when_llm_config_missing(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.symphony.orchestration import skill_retrieval as retrieval_module
+
+    artifacts = _artifacts(tmp_path)
+    settings = SimpleNamespace(
+        enabled=True,
+        llm=SimpleNamespace(model="", api_key=""),
+    )
+    monkeypatch.setattr(retrieval_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_module,
+        "_skill_retrieval_status",
+        lambda: {
+            "index_exists": True,
+            "fresh": True,
+            "index_dir": str(tmp_path),
+        },
+    )
+
+    selection = retrieval_module.select_orchestration_skill_candidates(
+        query="use beta",
+        artifacts=artifacts,
+    )
+
+    assert selection.used is False
+    assert selection.fallback_reason == "skill retrieval LLM config is missing"
+
+
+def test_orchestration_skill_retrieval_falls_back_when_retrieve_raises(
+    monkeypatch,
+    tmp_path,
+):
+    from jiuwenswarm.symphony.orchestration import skill_retrieval as retrieval_module
+
+    artifacts = _artifacts(tmp_path)
+    settings = SimpleNamespace(
+        enabled=True,
+        llm=SimpleNamespace(model="model", api_key="key"),
+    )
+
+    def raise_retrieve(**kwargs):
+        del kwargs
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(retrieval_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(
+        retrieval_module,
+        "_skill_retrieval_status",
+        lambda: {
+            "index_exists": True,
+            "fresh": True,
+            "index_dir": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        retrieval_module,
+        "run_structured_skill_retrieve",
+        raise_retrieve,
+    )
+
+    selection = retrieval_module.select_orchestration_skill_candidates(
+        query="use beta",
+        artifacts=artifacts,
+    )
+
+    assert selection.used is False
+    assert selection.fallback_reason == "skill retrieval failed: boom"

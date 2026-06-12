@@ -1187,6 +1187,68 @@ async def test_normalizer_batch_size_one_uses_single_skill_batches(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_normalizer_overrides_single_image_reference_types(tmp_path):
+    normalizer = SkillFingerprintNormalizer(io_name_resolver=_CreateNewIONameResolver())
+
+    result = await normalizer.normalize_single(
+        _raw_manifest(tmp_path, "image-skill"),
+        ExtractedSkillSchema(
+            inputs=[
+                ParameterSpec(
+                    name="imageUrl",
+                    type="url",
+                    description="Public image URL to process.",
+                ),
+                ParameterSpec(
+                    name="image",
+                    type="text",
+                    description="图片输入，可以是图片 URL、本地文件路径或图片 BASE64 编码数据。",
+                ),
+                ParameterSpec(
+                    name="source_language",
+                    type="text",
+                    required=False,
+                    description="Source language of the text in the image.",
+                ),
+                ParameterSpec(
+                    name="homepage_url",
+                    type="url",
+                    description="Public product homepage URL.",
+                ),
+                ParameterSpec(
+                    name="download_url",
+                    type="url",
+                    description="Download URL for a file artifact.",
+                ),
+            ],
+            outputs=[
+                ArtifactSpec(
+                    name="translated_image_url",
+                    type="url",
+                    description="URL of the translated image.",
+                )
+            ],
+        ),
+    )
+
+    input_types = {item.name: item.type for item in result.fingerprint.inputs}
+    output_types = {item.name: item.type for item in result.fingerprint.outputs}
+    assert input_types["imageurl"] == "image"
+    assert input_types["image"] == "image"
+    assert input_types["source_language"] == "text"
+    assert input_types["homepage_url"] == "url"
+    assert input_types["download_url"] == "url"
+    assert output_types["translated_image_url"] == "image"
+    override_decisions = [
+        decision
+        for decision in result.decisions
+        if decision.field == "type" and decision.method == "semantic_media_override"
+    ]
+    assert {decision.normalized_value for decision in override_decisions} == {"image"}
+    assert {decision.raw_value for decision in override_decisions} == {"url", "text"}
+
+
+@pytest.mark.asyncio
 async def test_normalizer_resolves_single_skill_candidates_together(tmp_path):
     resolver = _CreateNewIONameResolver()
     normalizer = SkillFingerprintNormalizer(io_name_resolver=resolver)

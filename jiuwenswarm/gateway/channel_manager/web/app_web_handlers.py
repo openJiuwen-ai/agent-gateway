@@ -35,7 +35,7 @@ from jiuwenswarm.common.config import (
     update_preferred_language_in_config,
     update_context_engine_enabled_in_config,
     update_kv_cache_affinity_enabled_in_config,
-    update_skill_retrieval_in_config,
+    update_symphony_in_config,
     update_permissions_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -435,22 +435,66 @@ _CONFIG_YAML_KEYS = frozenset({
     "a2ui_enabled",
 })
 
-_SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_build_branching_factor": (("build", "branching_factor"), "int", 128),
-    "skill_retrieval_build_max_depth": (("build", "max_depth"), "int", 6),
-    "skill_retrieval_build_root_categories": (("build", "root_categories"), "str", ""),
-    "skill_retrieval_build_max_workers": (("build", "max_workers"), "int", 2),
-    "skill_retrieval_build_request_timeout_seconds": (("build", "request_timeout_seconds"), "float", 420.0),
-    "skill_retrieval_retrieve_top_k": (("retrieve", "top_k"), "int", 10),
-    "skill_retrieval_compact_codes_enabled": (("retrieve", "compact_codes_enabled"), "bool", False),
-    "skill_retrieval_flatten_tree": (("retrieve", "flatten_tree"), "bool", False),
-    "skill_retrieval_retrieve_max_exposure_depth": (("retrieve", "max_exposure_depth"), "int", 99),
-    "skill_retrieval_retrieve_max_branch_choices": (("retrieve", "max_branch_choices"), "int", 2),
-    "skill_retrieval_retrieve_max_parallel_branches": (("retrieve", "max_parallel_branches"), "int", 2),
-    "skill_retrieval_retrieve_request_timeout_seconds": (("retrieve", "request_timeout_seconds"), "float", 120.0),
+_SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
+    "symphony_enabled": (("enabled",), "bool", False),
+    "skill_retrieval_enabled": (("skill_retrieval", "enabled"), "bool", False),
+    "skill_retrieval_build_branching_factor": (
+        ("skill_retrieval", "build", "branching_factor"),
+        "int",
+        128,
+    ),
+    "skill_retrieval_build_max_depth": (("skill_retrieval", "build", "max_depth"), "int", 6),
+    "skill_retrieval_build_root_categories": (
+        ("skill_retrieval", "build", "root_categories"),
+        "str",
+        "",
+    ),
+    "skill_retrieval_build_max_workers": (("skill_retrieval", "build", "max_workers"), "int", 2),
+    "skill_retrieval_build_request_timeout_seconds": (
+        ("skill_retrieval", "build", "request_timeout_seconds"),
+        "float",
+        420.0,
+    ),
+    "skill_retrieval_retrieve_top_k": (("skill_retrieval", "retrieve", "top_k"), "int", 10),
+    "skill_retrieval_compact_codes_enabled": (
+        ("skill_retrieval", "retrieve", "compact_codes_enabled"),
+        "bool",
+        False,
+    ),
+    "skill_retrieval_flatten_tree": (
+        ("skill_retrieval", "retrieve", "flatten_tree"),
+        "bool",
+        False,
+    ),
+    "skill_retrieval_retrieve_max_exposure_depth": (
+        ("skill_retrieval", "retrieve", "max_exposure_depth"),
+        "int",
+        99,
+    ),
+    "skill_retrieval_retrieve_max_branch_choices": (
+        ("skill_retrieval", "retrieve", "max_branch_choices"),
+        "int",
+        2,
+    ),
+    "skill_retrieval_retrieve_max_parallel_branches": (
+        ("skill_retrieval", "retrieve", "max_parallel_branches"),
+        "int",
+        2,
+    ),
+    "skill_retrieval_retrieve_request_timeout_seconds": (
+        ("skill_retrieval", "retrieve", "request_timeout_seconds"),
+        "float",
+        120.0,
+    ),
 }
-_SKILL_RETRIEVAL_CONFIG_KEYS = frozenset(_SKILL_RETRIEVAL_CONFIG_SPECS.keys())
+_SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
+_SKILL_RETRIEVAL_CONFIG_KEYS = frozenset(
+    key for key in _SYMPHONY_CONFIG_KEYS if key.startswith("skill_retrieval_")
+)
+_SKILL_RETRIEVAL_CONFIG_SPECS = {
+    key: spec for key, spec in _SYMPHONY_CONFIG_SPECS.items()
+    if key in _SKILL_RETRIEVAL_CONFIG_KEYS
+}
 
 
 def _coerce_config_panel_value(value: Any, value_type: str, default: Any) -> Any:
@@ -489,12 +533,11 @@ def _get_nested_config_value(source: dict[str, Any], path: tuple[str, ...], defa
     return default if current is None else current
 
 
-def _flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+def _flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    section = symphony.get("skill_retrieval") if isinstance(symphony.get("skill_retrieval"), dict) else {}
     flat: dict[str, str] = {}
-    for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
-        value = _get_nested_config_value(section, path, default)
+    for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
+        value = _get_nested_config_value(symphony, path, default)
         if value_type == "bool":
             flat[key] = "true" if bool(value) else "false"
         else:
@@ -502,14 +545,25 @@ def _flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, 
     return flat
 
 
-def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, Any]:
+def _flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+    flat = _flatten_symphony_for_config_panel(raw)
+    return {key: value for key, value in flat.items() if key in _SKILL_RETRIEVAL_CONFIG_KEYS}
+
+
+def _build_symphony_config_update(params: dict[str, Any]) -> dict[str, Any]:
     updates: dict[str, Any] = {}
-    for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
+    for key, (path, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
         if key not in params:
             continue
         value = _coerce_config_panel_value(params[key], value_type, default)
         _set_nested_config_value(updates, path, value)
     return updates
+
+
+def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, Any]:
+    updates = _build_symphony_config_update(params)
+    section = updates.get("skill_retrieval")
+    return section if isinstance(section, dict) else {}
 
 
 def _flatten_modes_team_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
@@ -771,7 +825,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             memory_desc = memory_cfg.get("description") or {}
             payload["memory_forbidden_description"] = memory_desc
             payload.update(get_a2ui_config_payload(raw))
-            payload.update(_flatten_skill_retrieval_for_config_panel(raw))
+            payload.update(_flatten_symphony_for_config_panel(raw))
             if not payload.get("free_search_ddg_enabled"):
                 payload["free_search_ddg_enabled"] = "false"
             if not payload.get("free_search_bing_enabled"):
@@ -787,7 +841,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_description", "")
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
-            for key, (_, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
+            for key, (_, value_type, default) in _SYMPHONY_CONFIG_SPECS.items():
                 if value_type == "bool":
                     default_text = "true" if default else "false"
                 else:
@@ -900,13 +954,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             except Exception as e:  # noqa: BLE001
                 logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
 
-        skill_retrieval_updates = _build_skill_retrieval_config_update(params)
-        if skill_retrieval_updates:
+        symphony_updates = _build_symphony_config_update(params)
+        if symphony_updates:
             try:
-                update_skill_retrieval_in_config(skill_retrieval_updates)
-                yaml_updated.extend(k for k in _SKILL_RETRIEVAL_CONFIG_KEYS if k in params)
+                update_symphony_in_config(symphony_updates)
+                yaml_updated.extend(k for k in _SYMPHONY_CONFIG_KEYS if k in params)
             except Exception as e:
-                logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
+                logger.warning("[config.set] 写回 symphony 失败: %s", e)
 
         for env_key, value in env_updates.items():
             os.environ[env_key] = value

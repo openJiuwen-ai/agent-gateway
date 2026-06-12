@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { Music2 } from "lucide-react";
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore } from '../../stores';
 import type { ModelEntry } from '../../types';
@@ -285,6 +286,10 @@ const FREE_SEARCH_KEYS = new Set([...FREE_SEARCH_BOOLEAN_KEYS]);
 const HIDDEN_CONFIG_KEYS = new Set(["free_search_proxy_url"]);
 const MEMORY_KEYS = new Set(["memory_forbidden_enabled", "memory_forbidden_description"]);
 const A2UI_KEYS = new Set(["a2ui_enabled"]);
+const SYMPHONY_BOOLEAN_KEYS = new Set(["symphony_enabled"]);
+const SYMPHONY_KEYS = new Set([
+  ...SYMPHONY_BOOLEAN_KEYS,
+]);
 const SKILL_RETRIEVAL_BOOLEAN_KEYS = new Set([
   "skill_retrieval_enabled",
   "skill_retrieval_compact_codes_enabled",
@@ -320,6 +325,7 @@ function classifyKey(key: string): string {
   if (FREE_SEARCH_KEYS.has(key)) return "free_search";
   if (MEMORY_KEYS.has(key)) return "memory";
   if (A2UI_KEYS.has(key)) return "a2ui";
+  if (SYMPHONY_KEYS.has(key)) return "symphony";
   if (SKILL_RETRIEVAL_KEYS.has(key)) return "skill_retrieval";
   if (key === "context_engine_enabled" || key === "kv_cache_affinity_enabled") return "context_engine";
   if (key === "permissions_enabled") return "permissions";
@@ -424,6 +430,9 @@ function getGroupIcon(tag: string) {
       </svg>
     );
   }
+  if (tag === "symphony") {
+    return <Music2 className="w-3.5 h-3.5" strokeWidth={1.8} />;
+  }
   if (tag === "skill_retrieval") {
     return (
       <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.8}>
@@ -454,6 +463,7 @@ function getGroupToneClass(tag: string): string {
   if (tag === "context_engine") return "text-sky-500 bg-sky-500/10 border-sky-500/20";
   if (tag === "permissions") return "text-rose-500 bg-rose-500/10 border-rose-500/20";
   if (tag === "a2ui") return "text-fuchsia-500 bg-fuchsia-500/10 border-fuchsia-500/20";
+  if (tag === "symphony") return "text-amber-500 bg-amber-500/10 border-amber-500/20";
   if (tag === "skill_retrieval") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
   if (tag === "email") return "text-emerald-500 bg-emerald-500/10 border-emerald-500/20";
   return "text-text-muted bg-secondary/70 border-border";
@@ -479,6 +489,7 @@ function isBooleanKey(key: string): boolean {
     key === "permissions_enabled" ||
     key === "memory_forbidden_enabled" ||
     key === "a2ui_enabled" ||
+    SYMPHONY_BOOLEAN_KEYS.has(key) ||
     SKILL_RETRIEVAL_BOOLEAN_KEYS.has(key)
   );
 }
@@ -498,6 +509,7 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     permissions_enabled: t('config.booleanLabels.enabled'),
     memory_forbidden_enabled: t('config.booleanLabels.enabled'),
     a2ui_enabled: t('config.booleanLabels.enabled'),
+    symphony_enabled: t('config.booleanLabels.enabled'),
     skill_retrieval_enabled: t('config.booleanLabels.enabled'),
     skill_retrieval_compact_codes_enabled: t('config.booleanLabels.skillRetrievalCompact'),
     skill_retrieval_flatten_tree: t('config.booleanLabels.skillRetrievalFlat'),
@@ -543,6 +555,7 @@ function getGroupMeta(t: (key: string) => string): Record<string, { label: strin
     context_engine: { label: t('config.groups.contextEngine.label'), order: 8, hint: t('config.groups.contextEngine.hint') },
     permissions: { label: t('config.groups.permissions.label'), order: 9, hint: t('config.groups.permissions.hint') },
     a2ui: { label: t('config.groups.a2ui.label'), order: 10, hint: t('config.groups.a2ui.hint') },
+    symphony: { label: t('config.groups.symphony.label'), order: 10.4, hint: t('config.groups.symphony.hint') },
     skill_retrieval: { label: t('config.groups.skillRetrieval.label'), order: 10.5, hint: t('config.groups.skillRetrieval.hint') },
     memory: { label: t('config.groups.memory.label'), order: 11, hint: t('config.groups.memory.hint') },
     email: { label: t('config.groups.email.label'), order: 12, hint: t('config.groups.email.hint') },
@@ -566,6 +579,7 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   name: "config.keys.agentName",
   model: "config.keys.agentModel",
   skills: "config.keys.agentSkills",
+  symphony_enabled: "config.keys.symphonyEnabled",
   skill_retrieval_enabled: "config.keys.skillRetrievalEnabled",
   skill_retrieval_build_branching_factor: "config.keys.skillRetrievalBuildBranchingFactor",
   skill_retrieval_build_max_depth: "config.keys.skillRetrievalBuildMaxDepth",
@@ -595,6 +609,7 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   skill_create: 1,
   free_search_ddg_enabled: 0,
   free_search_bing_enabled: 1,
+  symphony_enabled: 0,
   skill_retrieval_enabled: 0,
   skill_retrieval_build_branching_factor: 10,
   skill_retrieval_build_max_depth: 11,

@@ -31,14 +31,23 @@ def _symphony_routing_prompt() -> str:
     return """
 ## Symphony Routing
 
-When the user says to use skill(s) or 技能 to complete a task, you MUST call
-`symphony_compose_score` with the original user task as `query` before answering.
+When the user says to use skill(s) or 技能, or when you judge that skill
+capabilities, skill chaining, skill ordering, or a specialized toolchain could
+help complete the task, you MUST call `symphony_compose_score` with the original
+user task as `query` before answering.
 Do not manually list skill names, inspect skill folders, choose a skill chain,
-or recommend skills before calling `symphony_compose_score`. After it returns, present its returned `content` or `markdown` directly to the user. If Symphony reports
-missing inputs, ask for those inputs.
+or recommend skills before calling `symphony_compose_score`. After it returns,
+present its returned `content` or `markdown` directly to the user. If Symphony
+reports missing inputs, ask for those inputs.
 
-For ordinary tasks that do not ask to use installed skills, continue normally
-without Symphony.
+If Symphony reports no suitable candidates, a missing capability, or caveats
+that point to a skill gap, use `search_skill` to discover external skills. When
+installing a discovered skill is appropriate, call `install_skill`; after a
+successful install, call `symphony_refresh_score` and then call
+`symphony_compose_score` again with the original user task.
+
+For clearly ordinary tasks that do not benefit from skill capabilities, continue
+normally without Symphony.
 """
 
 

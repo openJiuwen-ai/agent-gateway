@@ -81,46 +81,57 @@ class SkillRetrieveService:
 
     @staticmethod
     def _run_dispatch_retrieve(*, settings: Any, index_dir: Path, query: str) -> Any:
-        with dispatch_import_path():
-            from retrieval.service.models import (
-                GenerationConfig,
-                OpenAIClientConfig,
-                RenderConfig,
-                RequestConfig,
-                RetrieverConfig,
-                TraversalConfig,
-            )
-            from retrieval.service.retriever import Retriever
+        return run_structured_skill_retrieve(
+            settings=settings,
+            index_dir=index_dir,
+            query=query,
+        )
 
-            retrieve = settings.retrieve
-            config = RetrieverConfig(
-                top_k=retrieve.top_k,
-                llm_client_config=OpenAIClientConfig(
-                    model=settings.llm.model,
-                    api_key=settings.llm.api_key,
-                    base_url=settings.llm.base_url,
-                    seed=settings.llm.seed,
-                ),
-                traversal_config=TraversalConfig(
-                    max_branch_choices=retrieve.max_branch_choices,
-                    max_parallel_branches=retrieve.max_parallel_branches,
-                    enable_parallel_branches=True,
-                ),
-                render_config=RenderConfig(
-                    compact_codes_enabled=retrieve.compact_codes_enabled,
-                    flatten_tree=retrieve.flatten_tree,
-                    max_exposure_depth=retrieve.max_exposure_depth,
-                ),
-                generation_config=GenerationConfig(
-                    max_tokens=retrieve.max_tokens,
-                    request_timeout_seconds=retrieve.request_timeout_seconds,
-                ),
+
+def run_structured_skill_retrieve(*, settings: Any, index_dir: Path, query: str) -> Any:
+    with dispatch_import_path():
+        from retrieval.service.models import (
+            GenerationConfig,
+            OpenAIClientConfig,
+            RenderConfig,
+            RequestConfig,
+            RetrieverConfig,
+            TraversalConfig,
+        )
+        from retrieval.service.retriever import Retriever
+
+        retrieve = settings.retrieve
+        config = RetrieverConfig(
+            top_k=retrieve.top_k,
+            llm_client_config=OpenAIClientConfig(
+                model=settings.llm.model,
+                api_key=settings.llm.api_key,
+                base_url=settings.llm.base_url,
+                seed=settings.llm.seed,
+            ),
+            traversal_config=TraversalConfig(
+                max_branch_choices=retrieve.max_branch_choices,
+                max_parallel_branches=retrieve.max_parallel_branches,
+                enable_parallel_branches=True,
+            ),
+            render_config=RenderConfig(
+                compact_codes_enabled=retrieve.compact_codes_enabled,
+                flatten_tree=retrieve.flatten_tree,
+                max_exposure_depth=retrieve.max_exposure_depth,
+            ),
+            generation_config=GenerationConfig(
+                max_tokens=retrieve.max_tokens,
+                request_timeout_seconds=retrieve.request_timeout_seconds,
+            ),
+        )
+        retriever = Retriever.from_index(index_dir, config=config)
+        try:
+            return retriever.search_details(
+                query,
+                search_config=RequestConfig(top_k=retrieve.top_k),
             )
-            retriever = Retriever.from_index(index_dir, config=config)
-            try:
-                return retriever.search_details(query, search_config=RequestConfig(top_k=retrieve.top_k))
-            finally:
-                retriever.close()
+        finally:
+            retriever.close()
 
 
 def _load_catalog(index_dir: Path) -> dict[str, dict[str, Any]]:

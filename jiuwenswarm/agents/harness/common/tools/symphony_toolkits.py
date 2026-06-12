@@ -11,9 +11,6 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.symphony.config import load_symphony_config
-from jiuwenswarm.agents.harness.common.tools.symphony_status_events import (
-    emit_symphony_status,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +148,61 @@ class SymphonyToolkit:
         payload.setdefault("direct_display", True)
 
     @staticmethod
+    def _primary_plan(payload: dict[str, Any]) -> dict[str, Any]:
+        for key in ("recommended_plans", "plans"):
+            plans = payload.get(key)
+            if not isinstance(plans, list):
+                continue
+            for plan in plans:
+                if isinstance(plan, dict):
+                    return plan
+        return {}
+
+    @classmethod
+    def _planning_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
+        result = payload.get("result")
+        return result if isinstance(result, dict) else payload
+
+    @classmethod
+    def _needs_external_skill_discovery(cls, payload: dict[str, Any]) -> bool:
+        planning_payload = cls._planning_payload(payload)
+        plan = cls._primary_plan(planning_payload)
+        status = str(
+            plan.get("status")
+            or planning_payload.get("status")
+            or payload.get("status")
+            or ""
+        ).strip().lower()
+        missing_inputs = (
+            plan.get("missing_inputs")
+            or planning_payload.get("missing_inputs")
+            or []
+        )
+        if status == "needs_input" or missing_inputs:
+            return False
+        if status == "no_plan":
+            return True
+
+        steps = plan.get("steps") if isinstance(plan, dict) else []
+        execution_graph = planning_payload.get("execution_graph")
+        if not isinstance(execution_graph, dict):
+            execution_graph = payload.get("execution_graph")
+        graph_nodes = (
+            execution_graph.get("nodes")
+            if isinstance(execution_graph, dict)
+            else []
+        )
+        return not steps and not graph_nodes
+
+    @classmethod
+    def _attach_followup_control(cls, payload: dict[str, Any]) -> None:
+        if cls._needs_external_skill_discovery(payload):
+            payload["continue_after_display"] = True
+            payload["followup_action"] = "external_skill_discovery"
+            return
+        payload.setdefault("continue_after_display", False)
+
+    @staticmethod
     def _failure_detail(payload: dict[str, Any], fallback: str) -> str:
         return str(
             payload.get("detail")
@@ -160,42 +212,22 @@ class SymphonyToolkit:
         ).strip()
 
     async def plan(self, query: str, mode: str | None = None) -> dict[str, Any]:
-        await emit_symphony_status(
-            "checking_score",
-            "正在读取 Symphony 总谱...",
-        )
         status = await self.score_status()
         if not status.get("success"):
             detail = self._failure_detail(status, "symphony.score_status failed")
-            await emit_symphony_status(
-                "checking_score",
-                f"Symphony 总谱读取失败: {detail}",
-                status="failed",
-                detail=detail,
-            )
             return {
                 "success": False,
-                "detail": "symphony.score_status failed before planning",
+                "detail": f"symphony.score_status failed before planning: {detail}",
                 "score_status": status,
             }
         update: dict[str, Any] | None = None
         if status.get("success") and self._score_needs_build(status):
-            await emit_symphony_status(
-                "building_score",
-                "正在构建 Symphony 总谱...",
-            )
             update = await self.refresh_score()
             if not update.get("success"):
                 detail = self._failure_detail(update, "symphony.build_score failed")
-                await emit_symphony_status(
-                    "building_score",
-                    f"Symphony 总谱构建失败: {detail}",
-                    status="failed",
-                    detail=detail,
-                )
                 return {
                     "success": False,
-                    "detail": "symphony.build_score failed before planning",
+                    "detail": f"symphony.build_score failed before planning: {detail}",
                     "score_status": status,
                     "score_build": update,
                 }
@@ -206,23 +238,12 @@ class SymphonyToolkit:
         mode_text = str(mode or "").strip()
         if mode_text:
             params["mode"] = mode_text
-        await emit_symphony_status(
-            "planning",
-            "正在编排技能执行乐谱...",
-        )
         payload = await self._call_rpc("symphony.plan", params)
         if isinstance(payload, dict):
-            if payload.get("success") is False:
-                detail = self._failure_detail(payload, "symphony.plan failed")
-                await emit_symphony_status(
-                    "planning",
-                    f"Symphony 技能执行计划生成失败: {detail}",
-                    status="failed",
-                    detail=detail,
-                )
             payload.setdefault("score_status", status)
             if update is not None:
                 payload.setdefault("score_build", update)
+            self._attach_followup_control(payload)
             self._attach_display_payload(payload, status, update)
         return payload
 
@@ -269,20 +290,24 @@ class SymphonyToolkit:
                 "symphony_compose_score",
                 (
                     "MUST call before answering when the user says to use skill(s) "
-                    "or 技能 to complete a task. Do not manually list skill names "
-                    "or choose a skill chain before calling this tool. This is the "
-                    "Symphony entrypoint: it reads the score, "
-                    "refreshes stale or missing scores, then composes the skill execution graph. "
+                    "or 技能, or when skill capabilities, skill chaining, skill ordering, "
+                    "or a specialized toolchain could help complete the task. Do not manually "
+                    "list skill names or choose a skill chain before calling this tool. This is "
+                    "the Symphony entrypoint: it reads the score, refreshes stale or missing "
+                    "scores, then composes the skill execution graph. If no suitable candidates "
+                    "or a missing capability is reported, use search_skill to discover external "
+                    "skills; when installing a discovered skill is appropriate, call install_skill, "
+                    "then call symphony_refresh_score and retry this tool with the original query. "
                     "After it returns, present its content/markdown result directly to the user; "
                     "do not call individual skill tools just to manually recreate the plan. "
-                    "Do not use for ordinary single-step tasks that do not ask to use installed skills."
+                    "Skip only clearly ordinary tasks that do not benefit from skill capabilities."
                 ),
                 {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "The original user task to complete with currently installed skills.",
+                            "description": "The original user task to complete with skill capabilities.",
                         },
                         "mode": {
                             "type": "string",

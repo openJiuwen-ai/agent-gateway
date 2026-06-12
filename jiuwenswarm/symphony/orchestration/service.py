@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,9 @@ from jiuwenswarm.symphony.llm import LLMConfig
 from jiuwenswarm.symphony.orchestration import load_score_artifacts
 from jiuwenswarm.symphony.orchestration.execution_graph import build_execution_graph
 from jiuwenswarm.symphony.orchestration.planning.fast import FastOneShotPlanner
+from jiuwenswarm.symphony.orchestration.skill_retrieval import (
+    select_orchestration_skill_candidates,
+)
 from jiuwenswarm.symphony.orchestration.planning.utils import clamp
 
 
@@ -31,17 +35,28 @@ async def plan_from_score(
         top_k = orchestration_config.top_k
         max_depth = orchestration_config.max_depth
         min_edge_confidence = orchestration_config.min_edge_confidence
+    mode = orchestration_config.mode if orchestration_config is not None else "fast"
+
     artifacts = load_score_artifacts(score_dir)
+    if mode != "fast":
+        raise ValueError(f"Unsupported orchestration mode: {mode}")
 
-    if orchestration_config is not None and orchestration_config.mode != "fast":
-        raise ValueError(f"Unsupported orchestration mode: {orchestration_config.mode}")
-
+    skill_retrieval = await asyncio.to_thread(
+        select_orchestration_skill_candidates,
+        query=query,
+        artifacts=artifacts,
+    )
+    candidate_skill_ids = (
+        skill_retrieval.candidate_skill_ids if skill_retrieval.used else None
+    )
     result = await FastOneShotPlanner(
         artifacts,
         llm_config=llm_config,
         llm_client=llm_client,
         min_edge_confidence=clamp(min_edge_confidence),
         top_k=max(1, int(top_k)),
+        candidate_skill_ids=candidate_skill_ids,
     ).plan(query)
+    result["skill_retrieval"] = skill_retrieval.to_dict()
     result["execution_graph"] = build_execution_graph(result, artifacts)
     return result

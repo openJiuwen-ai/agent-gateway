@@ -46,10 +46,14 @@ def test_build_agent_identity_prompt_contains_identity_section_only(monkeypatch)
         lambda: SimpleNamespace(enabled=True),
     )
     prompt = build_agent_identity_prompt(language="zh")
+    prompt_inline = " ".join(prompt.split())
 
     assert "# 你的家" in prompt
     assert "## Symphony Routing" in prompt
     assert "`symphony_compose_score`" in prompt
+    assert "skill capabilities, skill chaining, skill ordering" in prompt_inline
+    assert "use `search_skill` to discover external skills" in prompt_inline
+    assert "call `symphony_refresh_score`" in prompt_inline
     assert "present its returned `content` or" in prompt
     assert "# 消息说明" not in prompt
 

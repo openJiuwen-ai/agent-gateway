@@ -7,9 +7,6 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
-from jiuwenswarm.agents.harness.common.tools.symphony_status_events import (
-    emit_symphony_status,
-)
 
 
 class _StreamSession:
@@ -27,6 +24,7 @@ def _ctx(
     tool_result=None,
 ):
     tool_call = SimpleNamespace(id=tool_call_id, name=tool_name, arguments={})
+    force_finish_requests = []
     return SimpleNamespace(
         session=session,
         inputs=ToolCallInputs(
@@ -37,36 +35,32 @@ def _ctx(
         ),
         extra={},
         exception=None,
+        request_force_finish=force_finish_requests.append,
+        force_finish_requests=force_finish_requests,
     )
 
 
 @pytest.mark.asyncio
-async def test_stream_event_rail_enables_symphony_status_events_for_plan_tool():
+async def test_stream_event_rail_does_not_enable_symphony_status_events_for_plan_tool():
     rail = JiuSwarmStreamEventRail()
     session = _StreamSession()
     ctx = _ctx(session, "symphony_compose_score", tool_call_id="parent-call")
 
     await rail.before_tool_call(ctx)
-    await emit_symphony_status("checking_score", "正在读取 Symphony 总谱...")
 
     status_events = [
         chunk
         for chunk in session.chunks
         if chunk.type == "chat.symphony_status"
     ]
-    assert len(status_events) == 1
-    assert status_events[0].payload["operation_id"] == "parent-call"
-    assert status_events[0].payload["phase"] == "checking_score"
+    assert status_events == []
 
     await rail.after_tool_call(ctx)
-    chunk_count_after_cleanup = len(session.chunks)
-    await emit_symphony_status("planning", "正在编排技能执行乐谱...")
-
-    assert len(session.chunks) == chunk_count_after_cleanup
+    assert not any(chunk.type == "chat.symphony_status" for chunk in session.chunks)
 
 
 @pytest.mark.asyncio
-async def test_stream_event_rail_directly_displays_symphony_compose_score_result():
+async def test_stream_event_rail_force_finishes_symphony_compose_score_result():
     rail = JiuSwarmStreamEventRail()
     session = _StreamSession()
     result = {
@@ -95,10 +89,38 @@ async def test_stream_event_rail_directly_displays_symphony_compose_score_result
     assert tool_results[0]["score_status"] == result["score_status"]
     assert tool_results[0]["direct_display"] is True
     direct_messages = [chunk for chunk in session.chunks if chunk.type == "chat.final"]
-    assert len(direct_messages) == 1
-    assert direct_messages[0].payload["content"] == result["content"]
-    assert direct_messages[0].payload["mermaid"] == result["mermaid"]
-    assert direct_messages[0].payload["score_status"] == result["score_status"]
+    assert direct_messages == []
+    assert ctx.force_finish_requests == [
+        {"output": result["content"], "result_type": "answer"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_continues_after_symphony_skill_gap_result():
+    rail = JiuSwarmStreamEventRail()
+    session = _StreamSession()
+    result = {
+        "success": True,
+        "direct_display": True,
+        "display_format": "markdown",
+        "content": "## Symphony plan\n\nNo suitable skill found.",
+        "continue_after_display": True,
+        "followup_action": "external_skill_discovery",
+    }
+    ctx = _ctx(session, "symphony_compose_score", tool_result=result)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    tool_results = [
+        chunk.payload.get("tool_result")
+        for chunk in session.chunks
+        if chunk.type == "tool_result"
+    ]
+    assert tool_results[0]["continue_after_display"] is True
+    assert tool_results[0]["followup_action"] == "external_skill_discovery"
+    assert not any(chunk.type == "chat.final" for chunk in session.chunks)
+    assert ctx.force_finish_requests == []
 
 
 @pytest.mark.asyncio
@@ -108,7 +130,7 @@ async def test_stream_event_rail_does_not_enable_symphony_status_events_for_othe
     ctx = _ctx(session, "todo_list")
 
     await rail.before_tool_call(ctx)
-    chunk_count_after_top_level_call = len(session.chunks)
-    await emit_symphony_status("checking_score", "正在读取 Symphony 总谱...")
+    await rail.after_tool_call(ctx)
 
-    assert len(session.chunks) == chunk_count_after_top_level_call
+    assert not any(chunk.type == "chat.symphony_status" for chunk in session.chunks)
+    assert ctx.force_finish_requests == []

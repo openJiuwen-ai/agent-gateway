@@ -238,7 +238,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
                 "source": "symphony_compose_score",
                 "operation_id": "call-1",
                 "phase": "checking_score",
-                "content": "正在读取 Symphony 总谱...",
+                "content": "Symphony status",
                 "status": "in_progress",
             },
         )
@@ -249,7 +249,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
         "source": "symphony_compose_score",
         "operation_id": "call-1",
         "phase": "checking_score",
-        "content": "正在读取 Symphony 总谱...",
+        "content": "Symphony status",
         "status": "in_progress",
     }
 
@@ -263,7 +263,7 @@ def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
                 "source": "symphony_compose_score",
                 "operation_id": "call-1",
                 "phase": "planning",
-                "content": "正在编排技能执行乐谱...",
+                "content": "Symphony planning status",
                 "status": "in_progress",
             },
         )
@@ -274,7 +274,7 @@ def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
         "source": "symphony_compose_score",
         "operation_id": "call-1",
         "phase": "planning",
-        "content": "正在编排技能执行乐谱...",
+        "content": "Symphony planning status",
         "status": "in_progress",
     }
 

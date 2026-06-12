@@ -46,6 +46,10 @@ def test_symphony_skill_metadata():
     assert "- symphony_compose_score" in content
     assert "- symphony_read_score" in content
     assert "- symphony_refresh_score" in content
+    assert "skill capabilities, skill chaining, skill ordering" in content
+    assert "use `search_skill` to discover external skills" in content
+    assert "call `symphony_refresh_score`" in content
+    assert "currently installed skills" not in content
     assert "instead of inventing them" in content
 
 
@@ -150,7 +154,7 @@ def test_plan_uses_requested_fast_mode(monkeypatch, tmp_path):
     assert seen["orchestration_config"].mode == "fast"
 
 
-def test_plan_rejects_non_fast_requested_mode(monkeypatch, tmp_path):
+def test_plan_rejects_requested_beam_mode(monkeypatch, tmp_path):
     configured_score_dir = tmp_path / "configured"
     monkeypatch.setattr(
         "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
@@ -165,7 +169,7 @@ def test_plan_rejects_non_fast_requested_mode(monkeypatch, tmp_path):
 
     assert result["success"] is False
     assert result["mode"] == "fast"
-    assert "Unsupported Symphony orchestration mode" in result["detail"]
+    assert "Unsupported Symphony orchestration mode: beam" in result["detail"]
 
 
 def test_plan_presentation_uses_recommended_plan(monkeypatch, tmp_path):
