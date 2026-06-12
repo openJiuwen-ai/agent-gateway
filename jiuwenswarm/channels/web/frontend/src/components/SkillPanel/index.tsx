@@ -1538,8 +1538,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                                       event.stopPropagation();
                                       handleInstall(skill.name);
                                     }}
-                                    className="px-3 py-1 text-sm rounded-full border border-black bg-white text-black hover:bg-gray-100 transition-colors"
-                                    style={{ width: '76px', height: '28px' }}
+                                    className="min-w-[76px] h-[28px] px-3 text-sm rounded-full border border-black bg-white text-black hover:bg-gray-100 transition-colors whitespace-nowrap"
                                     disabled={isInstalling}
                                   >
                                     {isInstalling ? t('skills.actions.installing') : t('skills.actions.install')}

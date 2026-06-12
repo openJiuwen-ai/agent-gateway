@@ -362,7 +362,7 @@ export function ClawHubSearchModal({
                                 type="button"
                                 onClick={() => void handleInstall(item)}
                                 disabled={isInstalling}
-                                className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                                className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                   isInstalling
                                     ? "text-text-muted cursor-not-allowed"
                                     : "text-text"
@@ -406,7 +406,7 @@ export function ClawHubSearchModal({
                                   type="button"
                                   onClick={() => void handleInstall(item)}
                                   disabled={isInstalling}
-                                  className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                                  className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                     isInstalling
                                       ? "text-text-muted cursor-not-allowed"
                                       : "text-text"
@@ -648,7 +648,7 @@ export function ClawHubSearchModal({
                               type="button"
                               onClick={() => void handleInstall(item)}
                               disabled={isInstalling}
-                              className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                              className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                 isInstalling
                                   ? "text-text-muted cursor-not-allowed"
                                   : "text-text"

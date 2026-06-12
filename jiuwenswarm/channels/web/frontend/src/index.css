@@ -1613,8 +1613,9 @@ select {
 
   /* Skill action button - white/black in light mode, gray/white in dark mode */
   .skill-action-btn {
-    width: 76px;
+    min-width: 76px;
     height: 28px;
+    padding: 0 12px;
     border-radius: 24px;
     font-size: var(--font-size-sm);
     border: 1px solid #000000;

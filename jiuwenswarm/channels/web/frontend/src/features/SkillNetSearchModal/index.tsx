@@ -633,7 +633,7 @@ export function SkillNetSearchModal({
                                       ? t("skills.skillNet.installingInProgress")
                                       : undefined
                                 }
-                                className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                                className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                   isInstalling || installBlockedByLimit
                                     ? "text-text-muted cursor-not-allowed"
                                     : ""
@@ -652,7 +652,7 @@ export function SkillNetSearchModal({
                                   void handleEvaluate(item);
                                 }}
                                 disabled={evalGloballyBusy}
-                                className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors ${
+                                className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                   evalGloballyBusy
                                     ? "text-text-muted cursor-not-allowed"
                                     : ""
@@ -750,7 +750,7 @@ export function SkillNetSearchModal({
                                     void handleInstall(item);
                                   }}
                                   disabled={isInstalling || installBlockedByLimit}
-                                  className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                                  className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                                     isInstalling || installBlockedByLimit
                                       ? "text-text-muted cursor-not-allowed"
                                       : ""
@@ -998,7 +998,7 @@ export function SkillNetSearchModal({
                                   ? t("skills.skillNet.installingInProgress")
                                   : undefined
                             }
-                            className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
+                            className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                               isInstalling || installBlockedByLimit
                                 ? "text-text-muted cursor-not-allowed"
                                 : ""
@@ -1017,7 +1017,7 @@ export function SkillNetSearchModal({
                               void handleEvaluate(item);
                             }}
                             disabled={evalGloballyBusy}
-                            className={`w-[76px] h-[28px] rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors ${
+                            className={`min-w-[76px] h-[28px] px-3 rounded-[24px] text-sm text-[#191919] border border-[#191919] hover:bg-secondary/50 transition-colors whitespace-nowrap ${
                               evalGloballyBusy
                                 ? "text-text-muted cursor-not-allowed"
                                 : ""
