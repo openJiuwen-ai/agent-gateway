@@ -5,7 +5,6 @@ import { useChatStore, useSessionStore } from '../../stores';
 import type { ModelEntry } from '../../types';
 import { webRequest } from '../../services/webClient';
 import { PermissionsToolsEditor } from "./PermissionsToolsEditor";
-import clusterIcon from '../../assets/cluster.svg';
 
 function MultiSelectDropdown({
   options,
@@ -396,7 +395,11 @@ function getGroupIcon(tag: string) {
   }
   if (tag === "team") {
     return (
-      <img src={clusterIcon} className="w-3.5 h-3.5" alt="" aria-hidden="true" />
+      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="rgb(217 70 239)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-users text-text-muted" aria-hidden="true">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><path d="M16 3.128a4 4 0 0 1 0 7.744"></path>
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+        <circle cx="9" cy="7" r="4"></circle>
+      </svg>
     );
   }
   if (tag === "context_engine") {

@@ -278,7 +278,7 @@ export function TeamSkillsHubModal({
           )}
 
           {loadState === "loading" && (
-            <div className="text-sm text-text-muted">{t("common.loading")}</div>
+            <div className="flex items-center justify-center h-full text-text-muted">{t("common.loading")}</div>
           )}
           {loadState === "error" && (
             <div className="text-sm text-text-muted">{t("skills.teamskillshub.errors.searchFailed")}</div>

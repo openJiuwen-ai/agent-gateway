@@ -1477,7 +1477,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
               {marketplaceSubTab === "builtin" && (
                 <>
                   {listState === "loading" && (
-                    <div className="text-sm text-text-muted">{t('common.loading')}</div>
+                    <div className="flex items-center justify-center h-full text-text-muted">{t('common.loading')}</div>
                   )}
                   {listState === "error" && (
                     <div className="text-sm text-text-muted">{t('skills.listError')}</div>
@@ -1774,7 +1774,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig }: SkillPanelProps) {
 
                 <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`}>
                   {listState === "loading" && (
-                    <div className="text-sm text-text-muted">{t('common.loading')}</div>
+                    <div className="flex items-center justify-center h-full text-text-muted">{t('common.loading')}</div>
                   )}
                   {listState === "error" && (
                     <div className="text-sm text-text-muted">
