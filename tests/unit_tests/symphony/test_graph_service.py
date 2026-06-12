@@ -38,11 +38,14 @@ from jiuwenswarm.symphony.score_state import (
 )
 from jiuwenswarm.symphony.build import (
     ScoreBuildRuntimeFactory,
-    score_status,
     build_score,
+    score_status,
+    _fingerprint_signature,
 )
 from jiuwenswarm.symphony.llm import LLMConfig
 from jiuwenswarm.symphony.config import symphony_config_from_dict
+from jiuwenswarm.symphony.graph.matcher.cache import CachedOntologyMatcher
+from jiuwenswarm.symphony.orchestration.artifacts import load_score_artifacts
 
 
 class _SchemaExtractor:
@@ -58,6 +61,25 @@ class _SchemaExtractor:
         )
 
 
+class _LinkedSchemaExtractor:
+    def __init__(self):
+        self.extract_count = 0
+
+    async def extract(self, manifest):
+        self.extract_count += 1
+        if manifest.folder.id_hint == "skill-1":
+            return ExtractedSkillSchema(
+                description="Create a draft.",
+                inputs=[ParameterSpec(name="brief", type="text")],
+                outputs=[ArtifactSpec(name="draft", type="markdown")],
+            )
+        return ExtractedSkillSchema(
+            description="Review a draft.",
+            inputs=[ParameterSpec(name="draft", type="markdown")],
+            outputs=[ArtifactSpec(name="review", type="markdown")],
+        )
+
+
 class _NoopMatcher:
     thresholds = {"can_feed": 0.7}
 
@@ -67,6 +89,33 @@ class _NoopMatcher:
     @staticmethod
     def manifest_metadata():
         return {"matcher": "noop"}
+
+
+class _CountingAcceptedMatcher:
+    thresholds = {"can_feed": 0.7}
+
+    def __init__(self):
+        self.calls = []
+
+    async def match(self, registry, candidates):
+        del registry
+        candidates = list(candidates)
+        self.calls.append([candidate.key for candidate in candidates])
+        return [
+            LLMMatch(
+                source_id=candidate.source_id,
+                target_id=candidate.target_id,
+                relation_type="can_feed",
+                confidence=0.9,
+                accepted=True,
+                candidate_id=candidate.key,
+            )
+            for candidate in candidates
+        ]
+
+    @staticmethod
+    def manifest_metadata():
+        return {"matcher": "counting-accepted"}
 
 
 class _MismatchedBatchSchemaExtractor(_SchemaExtractor):
@@ -640,6 +689,60 @@ def test_default_matcher_uses_configured_min_edge_confidence():
     assert matcher.thresholds == {"can_feed": 0.42}
 
 
+def test_llm_endpoint_does_not_change_fingerprint_cache_signature():
+    runtime_config = symphony_config_from_dict({})
+    first_signature = _fingerprint_signature(
+        runtime_config,
+        LLMConfig(
+            model="model",
+            model_client_config={
+                "api_key": "key-a",
+                "api_base": "https://a.example.test/v1",
+                "client_provider": "openai",
+            },
+        ),
+    )
+    second_signature = _fingerprint_signature(
+        runtime_config,
+        LLMConfig(
+            model="model",
+            model_client_config={
+                "api_key": "key-b",
+                "api_base": "https://b.example.test/v1",
+                "client_provider": "openai",
+            },
+        ),
+    )
+
+    assert first_signature == second_signature
+
+
+def test_llm_endpoint_is_not_recorded_in_relation_cache_signature(tmp_path):
+    matcher = ScoreBuildRuntimeFactory().matcher(
+        LLMConfig(
+            model="model",
+            model_client_config={
+                "api_key": "key",
+                "api_base": "https://example.test/v1",
+                "client_provider": "openai",
+            },
+        ),
+        build_config=symphony_config_from_dict({}).build,
+    )
+
+    metadata = matcher.manifest_metadata()
+    cached_matcher = CachedOntologyMatcher(
+        matcher,
+        tmp_path / "relation_matches.json",
+        fingerprints=[],
+    )
+
+    assert "base_url" not in metadata
+    assert "api_key" not in metadata
+    assert "base_url" not in cached_matcher.cache.matcher_signature
+    assert "api_key" not in cached_matcher.cache.matcher_signature
+
+
 @pytest.mark.asyncio
 async def test_build_score_uses_configured_scan_max_depth(tmp_path):
     skills_root = tmp_path / "skills"
@@ -732,6 +835,71 @@ async def test_build_score_reuses_unchanged_and_reextracts_changed_skills(tmp_pa
     assert third.reused_count == 1
     assert fourth.extracted_count == 2
     assert fourth.reused_count == 0
+
+
+@pytest.mark.asyncio
+async def test_build_score_publishes_versioned_artifacts_and_loads_current(tmp_path):
+    skills_root = tmp_path / "skills"
+    score_dir = tmp_path / "score"
+    for index in range(2):
+        skill_dir = skills_root / f"skill-{index + 1}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: Skill {index + 1}\n---\n\nTest skill {index + 1}.",
+            encoding="utf-8",
+        )
+
+    result = await build_score(
+        skills_root,
+        score_dir,
+        schema_extractor=_LinkedSchemaExtractor(),
+        matcher=_CountingAcceptedMatcher(),
+        io_name_resolver=_CreateNewIONameResolver(),
+    )
+    artifacts = load_score_artifacts(score_dir)
+
+    assert result.version
+    assert (score_dir / "current.json").is_file()
+    assert (score_dir / "versions" / result.version / "score_manifest.json").is_file()
+    assert artifacts.score_dir == (score_dir / "versions" / result.version).resolve()
+    assert [skill["id"] for skill in artifacts.skills] == ["skill-1", "skill-2"]
+
+
+@pytest.mark.asyncio
+async def test_build_score_reuses_unchanged_relation_matches(tmp_path):
+    skills_root = tmp_path / "skills"
+    score_dir = tmp_path / "score"
+    for index in range(2):
+        skill_dir = skills_root / f"skill-{index + 1}"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: Skill {index + 1}\n---\n\nTest skill {index + 1}.",
+            encoding="utf-8",
+        )
+
+    first_matcher = _CountingAcceptedMatcher()
+    first = await build_score(
+        skills_root,
+        score_dir,
+        schema_extractor=_LinkedSchemaExtractor(),
+        matcher=first_matcher,
+        io_name_resolver=_CreateNewIONameResolver(),
+    )
+    second_matcher = _CountingAcceptedMatcher()
+    second = await build_score(
+        skills_root,
+        score_dir,
+        schema_extractor=_LinkedSchemaExtractor(),
+        matcher=second_matcher,
+        io_name_resolver=_CreateNewIONameResolver(),
+    )
+
+    assert first.relation_resolved_count >= 1
+    assert first.relation_reused_count == 0
+    assert first_matcher.calls
+    assert second.relation_resolved_count == 0
+    assert second.relation_reused_count == first.relation_resolved_count
+    assert second_matcher.calls == []
 
 
 @pytest.mark.asyncio
@@ -841,6 +1009,47 @@ async def test_fingerprint_extractor_extract_from_root_preserves_changed_folder_
         ("extract", 2, 2),
         ("normalize", 2, 2),
     ]
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_extractor_reuses_per_skill_cache_without_published_state(tmp_path):
+    skills_root = tmp_path / "skills"
+    output_dir = tmp_path / "score"
+    skill_dir = skills_root / "skill-1"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: Skill 1\n---\n\nTest skill 1.",
+        encoding="utf-8",
+    )
+
+    first_schema_extractor = _SchemaExtractor()
+    first = await FingerprintExtractor(
+        schema_extractor=first_schema_extractor,
+        normalizer=SkillFingerprintNormalizer(
+            io_name_resolver=_CreateNewIONameResolver(),
+        ),
+    ).extract_from_root(
+        skills_root,
+        output_dir=output_dir,
+        fingerprint_signature="test-signature",
+    )
+    second_schema_extractor = _SchemaExtractor()
+    second = await FingerprintExtractor(
+        schema_extractor=second_schema_extractor,
+        normalizer=SkillFingerprintNormalizer(
+            io_name_resolver=_CreateNewIONameResolver(),
+        ),
+    ).extract_from_root(
+        skills_root,
+        output_dir=output_dir,
+        fingerprint_signature="test-signature",
+    )
+
+    assert first.extracted_count == 1
+    assert first.reused_count == 0
+    assert second.extracted_count == 0
+    assert second.reused_count == 1
+    assert second_schema_extractor.extract_count == 0
 
 
 @pytest.mark.asyncio

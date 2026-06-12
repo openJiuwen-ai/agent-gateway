@@ -18,6 +18,7 @@ from jiuwenswarm.symphony.build import score_status
 from jiuwenswarm.symphony.orchestration import load_score_artifacts
 from jiuwenswarm.symphony.orchestration.execution_graph import select_primary_plan
 from jiuwenswarm.symphony.orchestration.service import plan_from_score
+from jiuwenswarm.symphony.score_storage import resolve_score_artifact_dir
 
 SYMPHONY_BUILD_SCORE = "symphony.build_score"
 SYMPHONY_SCORE_STATUS = "symphony.score_status"
@@ -396,7 +397,11 @@ def _current_token_usage_summary() -> dict[str, Any]:
 
 def _read_manifest_token_usage(score_dir: Path) -> dict[str, Any]:
     try:
-        payload = json.loads((score_dir / "score_manifest.json").read_text(encoding="utf-8"))
+        payload = json.loads(
+            (resolve_score_artifact_dir(score_dir) / "score_manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(payload, dict):
