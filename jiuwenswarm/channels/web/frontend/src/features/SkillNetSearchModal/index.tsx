@@ -544,14 +544,18 @@ export function SkillNetSearchModal({
                 <div className="text-xs text-text-muted">{t("skills.skillNet.noResults")}</div>
               ) : (
                 results.map((item) => {
+                  const hasUrl = Boolean(item.skill_url);
                   const byUrl =
-                    item.skill_url &&
+                    hasUrl &&
                     (installedSkillOrigins?.has(
                       normalizeSkillNetUrl(item.skill_url)
                     ) ??
                       false);
                   const byName = installedSkillNames?.has(item.skill_name) ?? false;
-                  const isInstalled = Boolean(byUrl || byName);
+                  // SkillNet results carry a unique skill_url, so trust URL matching
+                  // and skip the name fallback — otherwise same-name/different-source
+                  // results all flip to "已安装" when only one was installed.
+                  const isInstalled = hasUrl ? byUrl : byName;
                   const isInstalling = installingUrls.has(item.skill_url);
                   const atConcurrentLimit =
                     installingUrls.size >= SKILLNET_MAX_CONCURRENT_INSTALLS;
@@ -907,14 +911,18 @@ export function SkillNetSearchModal({
                 <div className="text-xs text-text-muted">{t("skills.skillNet.noResults")}</div>
               ) : (
                 results.map((item) => {
+                  const hasUrl = Boolean(item.skill_url);
                   const byUrl =
-                    item.skill_url &&
+                    hasUrl &&
                     (installedSkillOrigins?.has(
                       normalizeSkillNetUrl(item.skill_url)
                     ) ??
                       false);
                   const byName = installedSkillNames?.has(item.skill_name) ?? false;
-                  const isInstalled = Boolean(byUrl || byName);
+                  // SkillNet results carry a unique skill_url, so trust URL matching
+                  // and skip the name fallback — otherwise same-name/different-source
+                  // results all flip to "已安装" when only one was installed.
+                  const isInstalled = hasUrl ? byUrl : byName;
                   const isInstalling = installingUrls.has(item.skill_url);
                   const atConcurrentLimit =
                     installingUrls.size >= SKILLNET_MAX_CONCURRENT_INSTALLS;

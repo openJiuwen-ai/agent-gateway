@@ -1614,7 +1614,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                     sessionId={sessionId}
                     externalSearchQuery={debouncedSearch}
                     installedSkillNames={installedSkillNames}
-                    installedSkillOrigins={new Set()}
+                    installedSkillOrigins={installedSkillOrigins}
                     viewMode={viewMode}
                     onClose={() => {}}
                     onInstalled={(_skillName: string) => {
