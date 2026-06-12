@@ -58,6 +58,7 @@ class SkillIndexService:
 
         inventory = scan_skill_inventory(self._manager)
         if inventory.count == 0:
+            _cleanup_index(settings)
             return {
                 "success": False,
                 "result": render_build_failure(
@@ -98,7 +99,12 @@ class SkillIndexService:
         build_index_dir = build_root / "index"
         try:
             build_index_dir.mkdir(parents=True, exist_ok=True)
-            self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+            if _is_complete_index(_index_dir(settings)) and state.get("fingerprint") != expected:
+                logging.info("execute incremental build")
+                self.incremental_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+            else:
+                logging.info("execute full build")
+                self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
             if not _is_complete_index(build_index_dir):
                 raise RuntimeError("dispatch build finished without complete index artifacts")
             _publish_index(settings=settings, candidate_dir=build_index_dir)
@@ -118,6 +124,56 @@ class SkillIndexService:
                 elapsed_seconds=time.monotonic() - started,
             ),
         }
+
+    def incremental_build(
+        self,
+        *,
+        settings: SkillRetrievalSettings,
+        inventory: SkillInventory,
+        output_dir: Path,
+    ):
+        existing_index = _index_dir(settings)
+        manifest_path = existing_index / MANIFEST_FILENAME
+        existing_paths = _load_manifest_item_paths(manifest_path)
+        if existing_paths is None:
+            raise RuntimeError("existing index manifest unavailable; falling back to full rebuild")
+
+        current_paths = {str(Path(p).expanduser().resolve()) for p in inventory.item_paths}
+        added_paths = sorted(current_paths - existing_paths)
+        removed_paths = sorted(existing_paths - current_paths)
+
+        if not added_paths and not removed_paths:
+            raise RuntimeError("no changes detected despite fingerprint mismatch; falling back to full rebuild")
+
+        add_index_path: Path | None = None
+        try:
+            with dispatch_import_path():
+                from indexing.workflows.index_builder import IndexBuilder
+                config = self._make_build_config(settings)
+                if added_paths:
+                    if removed_paths:
+                        add_index_path = output_dir.parent / "added-skills"
+                    else:
+                        add_index_path = output_dir
+                    IndexBuilder.add(
+                        item_paths=added_paths,
+                        base_index_dir=existing_index,
+                        output_dir=add_index_path,
+                        item_type="skill",
+                        config=config,
+                    )
+                if removed_paths:
+                    source = add_index_path if added_paths else existing_index
+                    IndexBuilder.delete(
+                        item_paths=removed_paths,
+                        base_index_dir=source,
+                        output_dir=output_dir,
+                        item_type="skill",
+                        config=config,
+                    )
+        finally:
+            if add_index_path and add_index_path != output_dir:
+                shutil.rmtree(add_index_path, ignore_errors=True)
 
     @staticmethod
     def tree() -> dict[str, Any]:
@@ -169,12 +225,7 @@ class SkillIndexService:
         }
 
     @staticmethod
-    def _run_dispatch_build(
-        *,
-        settings: SkillRetrievalSettings,
-        inventory: SkillInventory,
-        output_dir: Path,
-    ) -> None:
+    def _make_build_config(settings: SkillRetrievalSettings) -> Any:
         with dispatch_import_path():
             from indexing.workflows.artifacts import (
                 BuildConfig,
@@ -183,13 +234,9 @@ class SkillIndexService:
                 BuildOutputConfig,
                 TaxonomyBuildConfig,
             )
-            from indexing.tree.builder import TreeBuilder
-            from indexing.workflows.index_builder import IndexBuilder
-
-            _ensure_tree_builder_compat(TreeBuilder)
 
             build = settings.build
-            config = BuildConfig(
+            return BuildConfig(
                 llm_config=BuildLLMConfig(
                     model=settings.llm.model,
                     api_key=settings.llm.api_key,
@@ -214,6 +261,21 @@ class SkillIndexService:
                 ),
                 output_config=BuildOutputConfig(generate_html=False),
             )
+
+    @staticmethod
+    def _run_dispatch_build(
+        *,
+        settings: SkillRetrievalSettings,
+        inventory: SkillInventory,
+        output_dir: Path,
+    ) -> None:
+        with dispatch_import_path():
+            from indexing.tree.builder import TreeBuilder
+            from indexing.workflows.index_builder import IndexBuilder
+
+            _ensure_tree_builder_compat(TreeBuilder)
+
+            config = SkillIndexService._make_build_config(settings)
             IndexBuilder.build(
                 item_paths=inventory.item_paths,
                 output_dir=output_dir,
@@ -244,8 +306,30 @@ class SkillIndexService:
         return False
 
 
+def _cleanup_index(settings: SkillRetrievalSettings) -> None:
+    """Remove existing index and state when no skills are available."""
+    index_dir = _index_dir(settings)
+    if index_dir.exists():
+        shutil.rmtree(index_dir, ignore_errors=True)
+    state_file = _state_file(settings)
+    if state_file.exists():
+        state_file.unlink()
+
+
 def _index_dir(settings: SkillRetrievalSettings) -> Path:
     return settings.artifact_root / "index"
+
+
+def _load_manifest_item_paths(manifest_path: Path) -> set[str] | None:
+    """Load resolved item_paths from an existing index manifest."""
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    raw = payload.get("item_paths") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        return None
+    return {str(Path(p).expanduser().resolve()) for p in raw}
 
 
 def _ensure_tree_builder_compat(tree_builder_cls: type) -> None:
