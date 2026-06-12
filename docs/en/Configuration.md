@@ -21,6 +21,8 @@ The configuration panel contains the following main sections:
 - **Context Compression**: Dialogue history management (see [6. Context Compression](#6-context-compression))
 - **Tool Security Guardrails**: Tool invocation permission checks (see [7. Tool Security Guardrails](#7-tool-security-guardrails))
 
+The panel also includes **Free Search Engine Configuration**, **Multi-Agent / Team Configuration**, **A2UI**, **Agentic Skill Retrieval**, **Memory Sensitive-Info Filtering**, and **Email Configuration** sections. Configure them as needed.
+
 > 💡 **Tip**: Model configuration (`api_base`, `api_key`, `model`, `model_provider`) is required; all other configurations are optional.
 
 ---
@@ -41,7 +43,7 @@ JiuwenSwarm supports multiple model types to meet diverse scenario requirements:
 | **Vision Model**  | Image understanding and analysis; supports image Q&A, OCR, captioning    | Must support **image understanding** and process image input                              | ⭕ No     |
 | **Image Generation Model** | Generate images from text descriptions; supports AI painting, image creation | Must support **image generation** and create images from text | ⭕ No     |
 
-> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video, audio, vision, and image generation models are optional; configure them only when multimodal capabilities are needed.
+> 💡 **Tip**: The default model is essential for system operation and must be configured correctly. Video, audio, vision, and image generation models are optional; configure them only when multimodal capabilities are needed. The image generation model is not shown in the frontend configuration panel yet; configure it via the main config (`models.image_gen`) or environment variables (`IMAGE_GEN_API_BASE`, etc.).
 
 ### 2.2 Configuration Fields
 
@@ -52,7 +54,7 @@ Each model type supports the following parameters:
 | `api_base`         | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`          | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`            | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider`   | Model provider type          | Supports `OpenAI`, `Azure`, `SiliconFlow`, etc., for API format adaptation                    |
+| `model_provider`   | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
 
 > 💡 **Test Function**: The configuration panel provides a **Test button**. After filling in the model configuration, you can click "Test" to verify the API connection. The system will send a simple test request and display "Test Successful" if successful, or show error information otherwise.
 
@@ -84,12 +86,13 @@ Each model entry contains the following fields:
 | `api_base` | Yes | API endpoint for this model |
 | `api_key` | Yes | API key for this model |
 | `model_provider` | Yes | Provider (e.g., `OpenAI`, `DeepSeek`) |
+| `reasoning_level` | No | Reasoning intensity; optional `off` / `low` / `medium` / `high`; leave empty to unset |
 | `temperature` | No | Sampling temperature, default `0.95` |
 
 **`alias` Rules**:
 - If empty, it automatically defaults to `model_name` when saved;
 - Must be globally unique across all configured models: cannot duplicate another model's `alias` or `model_name`;
-- When switching models (Web dropdown / CLI `\model <name>`), you can use either `alias` or `model_name` as the identifier.
+- When switching models (Web dropdown / CLI `/model <name>`), you can use either `alias` or `model_name` as the identifier.
 
 The first item in the list is the default model; you can drag to reorder or click "Set as Default" to change the default.
 
@@ -100,13 +103,6 @@ Once video, audio, or vision models are configured, JiuwenSwarm enables correspo
 #### Video Model
 
 Using **GLM-4.6V-Flash11** video understanding API as an example:
-
-```
-api_base: https://open.bigmodel.cn/api/paas/v4
-api_key: your-zhipu-api-key
-model: GLM-4.6V-Flash11
-model_provider: ZhiPu
-```
 
 When you send a video file to JiuwenSwarm, the system will invoke the video model for analysis:
 
@@ -127,13 +123,6 @@ JiuwenSwarm: Based on video analysis, the main scenes are:
 
 Using **GLM-ASR-2512** audio model as an example:
 
-```
-api_base: https://open.bigmodel.cn/api/paas/v4
-api_key: your-zhipu-api-key
-model: glm-asr-2512
-model_provider: ZhiPu
-```
-
 When you send an audio file, the system will invoke the audio model for speech recognition or analysis:
 
 ```
@@ -150,12 +139,7 @@ JiuwenSwarm: Transcription:
 
 Using **GLM-4.6V-Flash11** vision model as an example:
 
-```
-api_base: https://open.bigmodel.cn/api/paas/v4
-api_key: your-zhipu-api-key
-model: GLM-4.6V-Flash11
-model_provider: ZhiPu
-```
+When you send an image and ask a question, the system will invoke the vision model for image understanding:
 
 ```
 User: Extract data from the table in this image.
@@ -169,26 +153,6 @@ Showing an upward trend...
 ```
 
 ![Vision Model](../assets/images/config-vision-model-test-en.png)
-
-#### Image Generation Model
-
-Using **GLM-4.6V-Flash11** image generation model as an example:
-
-```
-api_base: https://open.bigmodel.cn/api/paas/v4
-api_key: your-zhipu-api-key
-model: GLM-4.6V-Flash11
-model_provider: ZhiPu
-```
-
-When you request image generation, the system will invoke the image generation model:
-
-```
-User: Generate an image of a beach at sunset.
-
-JiuwenSwarm: [Generated image]
-Generated an image of a beach at sunset, golden sunlight sparkling on the shimmering sea...
-```
 
 ---
 
@@ -226,7 +190,7 @@ embed_model: BAAI/bge-large-zh-v1.5
 
 ## 4. Third-Party Service Configuration
 
-This section mirrors **§1.4** and **§1.5** for readers who jump here first. All items below appear on the **Configuration** page (all optional).
+This section summarizes configuration for search and external services. All items below appear on the **Configuration** page (all optional).
 
 | Field | Description | Reference |
 | --- | --- | --- |
@@ -235,9 +199,14 @@ This section mirrors **§1.4** and **§1.5** for readers who jump here first. Al
 | `serper_api_key` | Serper | [Serper](https://serper.dev/) |
 | `perplexity_api_key` | Perplexity | [Perplexity](https://www.perplexity.ai/) |
 | `github_token` | GitHub; SkillNet, etc. | [GitHub tokens](https://github.com/settings/tokens) |
-| `teamskills_hub_token` | TeamSkillsHub user token | [TeamSkillsHub](https://teamskills.openjiuwen.com) |
+| `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://teamskills.openjiuwen.com) |
 
 > ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back; exact behavior depends on your product version.
+
+Two additional related configuration groups:
+
+- **Free Search Engine Configuration**: `free_search_ddg_enabled` (DuckDuckGo) and `free_search_bing_enabled` (Bing) toggles control whether free search engines are enabled.
+- **Other TeamSkillsHub settings**: `teamskills_market_url` (marketplace URL), `teamskills_system_token` (system token), and `teamskills_allowed_download_hosts` (allowed download hosts), configured as needed.
 
 ---
 
@@ -251,8 +220,8 @@ Self-evolution controls the automatic improvement of JiuwenSwarm's Skills.
 
 The frontend shows two options under **Self-Evolution Configuration**:
 
-- **Auto-detect evolution signals**: disabled by default. When enabled, the system scans failures, corrections, and other evolution signals after chat and tool execution. This maps to `evolution.auto_scan`; env `EVOLUTION_AUTO_SCAN` takes precedence.
-- **Auto-suggest new skill creation**: disabled by default. When enabled, the system can propose creating a new Skill when no suitable Skill exists. This maps to `evolution.skill_create`; env `SKILL_CREATE` takes precedence.
+- **Auto-detect evolution signals**: disabled by default. When enabled, the system scans failures, corrections, and other evolution signals after chat and tool execution. This maps to `react.evolution.auto_scan`; env `EVOLUTION_AUTO_SCAN` takes precedence.
+- **Auto-suggest new skill creation**: disabled by default. When enabled, the system can propose creating a new Skill when no suitable Skill exists. This maps to `react.evolution.skill_create`; env `SKILL_CREATE` takes precedence.
 
 > 📖 For details on the self-evolution mechanism, see [Skill self-evolution](SkillSelfEvolution.md).
 
@@ -266,9 +235,11 @@ Context compression manages dialogue history retention strategies.
 
 ### Toggle
 
-- **Field**: `context_engine.enabled`
+- **Field**: `react.context_engine_config.enabled`
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
+
+This section also provides a **Compute Affinity (KV Release)** toggle (`react.context_engine_config.enable_kv_cache_release`, default `false`).
 
 When enabled, the system will:
 
@@ -303,14 +274,23 @@ When enabled, the system will:
 ```yaml
 permissions:
   enabled: true
+  schema: tiered_policy
+  permission_mode: normal  # normal | strict; maps severity to action
   defaults:
     "*": "allow"           # Allow all actions by default
   tools:
-    mcp_exec_command:
-      "*": "ask"           # Require confirmation for command execution
-      patterns:
-        - pattern: "rm -rf"
-          action: "deny"   # Reject dangerous commands
+    bash: ask              # Require confirmation for command execution
+    mcp_exec_command: ask
+    write_file: ask
+  rules:
+    - id: shell_allow_ls
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "ls *"
+      severity: LOW        # normal mode: LOW/MEDIUM → allow
+    - id: shell_ask_rm
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "rm *"
+      severity: HIGH       # normal mode: HIGH/CRITICAL → ask
 ```
 
 ---
@@ -330,8 +310,8 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `models.*.model_client_config.verify_ssl` | Verify SSL | `false` |
 | `models.*.model_config_obj.temperature` | Temperature | `0.95` |
 | `heartbeat.every` | Heartbeat interval (seconds) | `3600` |
-| `context_engine.max_messages` | Message count threshold | `100` |
-| `context_engine.max_tokens` | Token threshold | `100000` |
+| `react.context_engine_config.dialogue_compressor_config.tokens_threshold` | Dialogue compression token threshold | `100000` |
+| `react.context_engine_config.round_level_compressor_config.tokens_threshold` | Round-level compression token threshold | `230000` |
 
 <a id="dotenv-configuration"></a>
 
@@ -351,7 +331,7 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 ### Q: Configurations not taking effect after saving?
 
-A: The backend restarts automatically after saving. Please wait a few moments and retry. If issues persist, verify configuration format correctness.
+A: The system hot-reloads configuration after saving (and only schedules a process restart when necessary). Please wait a few moments and retry. If issues persist, verify configuration format correctness.
 
 ### Q: How to view the currently active model?
 
