@@ -101,7 +101,9 @@ async def test_runtime_time_section_participates_in_priority_order():
     ]
     positions = [prompt.index(marker) for marker in ordered_markers]
     assert positions == sorted(positions)
-    assert "当前模型" not in prompt
+    assert builder.has_section("runtime.model_answer_policy")
+    assert not builder.has_section("runtime")
+    assert "# 运行时状态" not in prompt
 
 
 @pytest.mark.asyncio
@@ -125,20 +127,16 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     prompt = builder.build()
     assert "# Time Description" in prompt
     assert "# Runtime State" not in prompt
-    assert "# Language" not in prompt
-    assert "# Browser Tool Policy" not in prompt
+    assert "# Language" in prompt
+    assert "# Browser Tool Policy" in prompt
     assert "# Environment" in prompt
 
     items = await agent.prompt_attachment_manager.collect_for_session("sess1")
-    assert [item.id for item in items] == [
-        "session.sess1.language_output",
-        "session.sess1.runtime",
-        "session.sess1.browser_tool_policy",
-    ]
+    assert [item.id for item in items] == ["session.sess1.runtime.setting"]
     rendered = agent.prompt_attachment_manager.render(items)
     assert "model-x" in rendered
-    assert "Always respond in English" in rendered
-    assert "# Browser Tool Policy" in rendered
+    assert "Always respond in English" in prompt
+    assert "# Browser Tool Policy" in prompt
 
 
 @pytest.mark.asyncio
@@ -234,11 +232,11 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     await runtime_rail.before_model_call(ctx)
 
     prompt = builder.build()
-    assert "Always respond in Chinese." not in prompt
+    assert "Always respond in Chinese." in prompt
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.collect_for_session("sess1")
     )
-    assert "Always respond in Chinese." in rendered
+    assert "Always respond in Chinese." not in rendered
     assert "Always respond in English." not in rendered
     assert "Always respond in English." not in prompt
     assert "当前语言：cn" in rendered

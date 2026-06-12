@@ -236,8 +236,10 @@ async def test_file_loaded_attachments_render_and_inject(tmp_path):
 
     assert messages[-1].content == "original query"
     assert injected[0].content == "STATIC_SYSTEM_PROMPT"
+    assert injected[1].content == "original query"
     assert "SESSION_FILE_MARKER" not in injected[0].content
-    assert "original query" in injected[-1].content
+    assert isinstance(injected[-1], UserMessage)
+    assert "original query" not in injected[-1].content
     assert "<system-reminder>" in injected[-1].content
     assert "SESSION_FILE_MARKER" in injected[-1].content
 
