@@ -32,6 +32,7 @@ interface AgentTeamActivityCardProps {
 interface TeamMemberLike {
   member_id: string;
   name?: string;
+  status?: string;
 }
 
 interface MemberActivity {
@@ -112,6 +113,11 @@ function getMemberName(memberId: string, members: TeamMemberLike[]): string {
 
 function isVisibleTeamMember(memberId?: string): memberId is string {
   return Boolean(memberId) && memberId !== 'user' && !isTeamLeaderMember(memberId);
+}
+
+function isActiveTeamMember(member: TeamMemberLike): boolean {
+  const status = `${member.status || ''}`.toLowerCase();
+  return isVisibleTeamMember(member.member_id) && !status.includes('shutdown') && !status.includes('down');
 }
 
 function pickTaskActivity(
@@ -256,8 +262,8 @@ function buildMemberActivities(
 ): MemberActivity[] {
   const eventItems = parseTeamEventItems(messages);
   const memberIds = members
-    .map((member) => member.member_id)
-    .filter(isVisibleTeamMember);
+    .filter(isActiveTeamMember)
+    .map((member) => member.member_id);
 
   return memberIds
     .map((memberId) => {
@@ -299,8 +305,8 @@ function buildMemberCompletionSummaries(
 ): MemberActivityWithCounts[] {
   const eventItems = parseTeamEventItems(messages);
   const memberIds = members
-    .map((member) => member.member_id)
-    .filter(isVisibleTeamMember);
+    .filter(isActiveTeamMember)
+    .map((member) => member.member_id);
 
   return memberIds
     .map((memberId) => {
@@ -513,19 +519,16 @@ export function AgentTeamActivityCard({
   const { teamMembers } = useSessionStore();
   const members = teamMembers as TeamMemberLike[];
   const { activities, activeCount } = useMemo(() => {
+    const count = members.filter(isActiveTeamMember).length;
     if (!isProcessing) {
       const acts = buildMemberCompletionSummaries(
         messages, members, tasks, todos, taskEvents, executionEvents
       );
-      const count = acts.filter(
-        (a) => (a.counts.taskCount + a.counts.messageCount + a.counts.toolCount) > 0
-      ).length;
       return { activities: acts, activeCount: count };
     }
     const acts = buildMemberActivities(
       messages, members, tasks, todos, executionEvents, t
     );
-    const count = acts.filter((a) => a.timestamp > 0).length;
     return { activities: acts, activeCount: count };
   }, [messages, members, tasks, todos, taskEvents, executionEvents, isProcessing, t]);
 
