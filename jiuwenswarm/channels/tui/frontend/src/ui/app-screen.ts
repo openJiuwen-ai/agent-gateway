@@ -23,6 +23,7 @@ import {
   findAttachmentTokenAtCursor,
   formatAttachmentMention,
   isImageAttachment,
+  isPurePathPaste,
   isSupportedAttachment,
   syncComposerImageTokens,
 } from "../core/attachments.js";
@@ -1412,10 +1413,12 @@ export class AppScreen implements Component, Focusable {
     // When files are dragged in, they arrive as a pasted string.
     // Windows/PowerShell may not send bracketed paste markers,
     // so we detect file paths in any multi-character input.
+    // Only intercept when the paste is *pure* file paths (drag-and-drop).
+    // If there's command text interleaved, treat it as a normal paste.
     if (!snapshot.pendingQuestion && data.length > 4) {
       const pastedContent = data.replace(/\x1b\[200~/, "").replace(/\x1b\[201~/, "");
       const filePaths = extractFilePathsFromPaste(pastedContent);
-      if (filePaths.length > 0) {
+      if (filePaths.length > 0 && isPurePathPaste(pastedContent)) {
         // 若解析出路径但无一通过附件校验（扩展名不在白名单等），须把原文交给编辑器，避免粘贴被吞掉
         if (this.handleDroppedFiles(filePaths)) {
           return;
