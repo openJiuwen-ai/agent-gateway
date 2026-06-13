@@ -63,6 +63,7 @@ import {
   setCurrentCwd,
   setCurrentProjectDir,
 } from "../core/tui-trusted-dirs-store.js";
+import { consumeParseError } from "../core/tui-config-store.js";
 import { handleAppScreenKeyInput } from "./keymap.js";
 import { buildAppScreenLines } from "./screen-layout.js";
 import { buildTranscriptLines } from "./transcript-renderer.js";
@@ -824,6 +825,14 @@ export class AppScreen implements Component, Focusable {
     setCurrentCwd(process.cwd());
     // Initialize startup prompt for workspace trust
     this.initStartupPrompt();
+    // 检查一次 config.json 解析错误，用 setTimeout(0) 延迟到 TUI 初始化完成
+    setTimeout(() => {
+      const parseError = consumeParseError();
+      if (parseError) {
+        this.state.setLastError("Invalid config.json. Please fix and restart.");
+        this.tui.requestRender();
+      }
+    }, 0);
   }
 
   private initStartupPrompt(): void {

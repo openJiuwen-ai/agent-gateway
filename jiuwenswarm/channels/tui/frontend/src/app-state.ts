@@ -1045,6 +1045,11 @@ export class CliPiAppState {
     }
   };
 
+  readonly setLastError = (error: string | null): void => {
+    this.lastError = error;
+    this.emitChange();
+  };
+
   readonly setThemeName = (theme: ThemeName): void => {
     if (this.themeName !== theme) {
       this.themeName = theme;
