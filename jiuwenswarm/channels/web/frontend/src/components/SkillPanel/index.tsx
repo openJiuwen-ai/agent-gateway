@@ -346,11 +346,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
     const displayText = type === "success" ? `√ ${text}` : text;
     setMessage(displayText);
     setMessageType(type);
+    // 错误信息显示时间更长（8秒），方便用户阅读详细错误描述
+    const duration = type === "error" ? 8000 : 3000;
     messageTimerRef.current = window.setTimeout(() => {
       setMessage(null);
       setMessageType(null);
       messageTimerRef.current = null;
-    }, 3000);
+    }, duration);
   }, []);
   const [sourceModalOpen, setSourceModalOpen] = useState(false);
   const [skillNetModalOpen, setSkillNetModalOpen] = useState(false);
