@@ -203,6 +203,11 @@
   display: none !important;
 }
 
+/* Remove mermaid diagram border in share image */
+.share-image-document .mermaid-diagram {
+  border: none;
+}
+
 /* Unset canvas constraints so the full diagram is visible in share image */
 .share-image-document .mermaid-canvas {
   height: auto !important;
@@ -213,6 +218,11 @@
 .share-image-document .mermaid-canvas .mermaid-svg-wrapper {
   position: static !important;
   transform: none !important;
+}
+
+/* Prevent Mermaid from squeezing wide diagrams in share images. */
+.share-image-document .mermaid-canvas svg {
+  max-width: none !important;
 }
 
 .share-image-document .chat-bubble,

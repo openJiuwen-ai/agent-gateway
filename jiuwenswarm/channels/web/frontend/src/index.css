@@ -846,6 +846,16 @@ select {
     white-space: normal;
   }
 
+  /* Remove the default prose paragraph margins so single-line messages sit flush
+     inside the bubble. Keep spacing between consecutive paragraphs. */
+  .chat-markdown p {
+    margin-block: 0;
+  }
+
+  .chat-markdown p + p {
+    margin-top: 1em;
+  }
+
   .chat-bubble.assistant.streaming .chat-text {
     @apply prose-sm max-w-none;
     color: var(--chat-text);

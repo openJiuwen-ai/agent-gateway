@@ -495,7 +495,7 @@ export function MessageItem({
       'flex mb-3 animate-rise',
       isUser ? 'justify-end' : 'justify-start'
     )}>
-      <div className="max-w-[82%] min-w-0">
+      <div className="chat-bubble-wrapper max-w-[82%] min-w-0">
         {!isUser && (
           <div className="hidden" data-testid="thinking-summary" aria-hidden="true" />
         )}

@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import type { MermaidConfig } from 'mermaid';
 import type { Element as HastElement } from 'hast';
+import { getSvgNaturalHeight, getSvgNaturalWidth } from '../../utils/svgDimensions';
 import {
   Copy,
   Check,
@@ -23,6 +24,7 @@ import {
   ZoomOut,
   RotateCcw,
 } from 'lucide-react';
+import './MarkdownRenderer.css';
 
 interface MarkdownRendererProps {
   content: string;
@@ -40,6 +42,7 @@ const MERMAID_CONFIG: MermaidConfig = {
   suppressErrorRendering: true,
   securityLevel: 'strict',
   htmlLabels: false,
+  flowchart: { useMaxWidth: false },
 };
 
 function getMermaidTheme(): 'default' | 'dark' {
@@ -62,7 +65,7 @@ function ToolbarButton({
       type="button"
       title={title}
       onClick={onClick}
-      className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-transparent bg-transparent text-muted hover:text-text hover:bg-bg-hover hover:border-border transition-colors duration-fast cursor-pointer flex-shrink-0"
+      className="markdown-toolbar-btn"
     >
       {children}
     </button>
@@ -83,10 +86,8 @@ function TogglePill({
       type="button"
       onClick={onClick}
       className={clsx(
-        'inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer',
-        active
-          ? 'bg-bg-elevated text-text shadow-sm border border-border'
-          : 'text-muted hover:text-text border border-transparent'
+        'markdown-toggle-pill',
+        active && 'markdown-toggle-pill--active'
       )}
     >
       {children}
@@ -98,6 +99,11 @@ function clampScale(s: number): number {
   return Math.min(Math.max(s, 0.25), 3);
 }
 
+const MERMAID_CANVAS_MAX_HEIGHT = 600;
+const MERMAID_CANVAS_TOP_OFFSET = 24;
+const MERMAID_CANVAS_BOTTOM_OFFSET = 24;
+const MERMAID_MIN_FIT_SCALE = 0.5;
+
 function MermaidBlock({ code }: { code: string }) {
   const { t } = useTranslation();
   const diagramId = `mermaid-${useId().replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -107,12 +113,16 @@ function MermaidBlock({ code }: { code: string }) {
   });
   const [viewMode, setViewMode] = useState<'image' | 'code'>('image');
   const [scale, setScale] = useState(1);
+  const [fitScale, setFitScale] = useState(1);
   const [copied, setCopied] = useState(false);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [canvasHeight, setCanvasHeight] = useState(MERMAID_CANVAS_MAX_HEIGHT);
+  const [alignTop, setAlignTop] = useState(false);
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const panStartRef = useRef({ x: 0, y: 0 });
+  const canvasRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,6 +140,56 @@ function MermaidBlock({ code }: { code: string }) {
     render();
     return () => { cancelled = true; };
   }, [code, diagramId]);
+
+  useEffect(() => {
+    if (renderState.status !== 'rendered' || viewMode !== 'image') return;
+    const svg = canvasRef.current?.querySelector('svg');
+    if (!svg) return;
+
+    const updateDimensions = () => {
+      const naturalHeight = getSvgNaturalHeight(svg);
+      const naturalWidth = getSvgNaturalWidth(svg);
+      if (naturalHeight <= 0) return;
+
+      const containerWidth = canvasRef.current?.clientWidth ?? 0;
+      const availableHeight =
+        MERMAID_CANVAS_MAX_HEIGHT -
+        MERMAID_CANVAS_TOP_OFFSET -
+        MERMAID_CANVAS_BOTTOM_OFFSET;
+
+      // Fit wide diagrams to the container width so they are not squeezed or
+      // clipped. For tall diagrams, also scale down so users can see more at
+      // once, but cap the shrink to keep text readable.
+      const scaleToFitWidth =
+        containerWidth > 0 && naturalWidth > 0 ? containerWidth / naturalWidth : 1;
+      const scaleToFitHeight =
+        naturalHeight > 0 ? availableHeight / naturalHeight : 1;
+      const nextFitScale = clampScale(
+        Math.min(scaleToFitWidth, Math.max(MERMAID_MIN_FIT_SCALE, scaleToFitHeight)),
+      );
+
+      const scaledHeight = naturalHeight * nextFitScale;
+      const contentHeight =
+        scaledHeight + MERMAID_CANVAS_TOP_OFFSET + MERMAID_CANVAS_BOTTOM_OFFSET;
+      const nextCanvasHeight = Math.min(MERMAID_CANVAS_MAX_HEIGHT, contentHeight);
+
+      setFitScale(nextFitScale);
+      setScale(nextFitScale);
+      setPan({ x: 0, y: 0 });
+      setCanvasHeight(nextCanvasHeight);
+      // Center small diagrams, but align tall diagrams to the top so users see
+      // the beginning and can pan down.
+      setAlignTop(contentHeight > MERMAID_CANVAS_MAX_HEIGHT);
+    };
+
+    updateDimensions();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const observer = new ResizeObserver(updateDimensions);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [renderState.status, renderState.svg, viewMode]);
 
   async function handleCopy(): Promise<void> {
     try {
@@ -176,15 +236,28 @@ function MermaidBlock({ code }: { code: string }) {
     );
   }
 
+  const panTransform = `translate(${pan.x}px, ${pan.y}px)`;
+  const wrapperStyle = alignTop
+    ? {
+        top: MERMAID_CANVAS_TOP_OFFSET,
+        transformOrigin: 'top center' as const,
+        transform: `translate(-50%, 0) ${panTransform} scale(${scale})`,
+      }
+    : {
+        top: '50%' as const,
+        transformOrigin: 'center center' as const,
+        transform: `translate(-50%, -50%) ${panTransform} scale(${scale})`,
+      };
+
   return (
     <div
-      className="mermaid-diagram my-4 rounded-xl border border-border bg-bg-elevated overflow-hidden"
+      className="mermaid-diagram"
       data-mermaid-status="rendered"
     >
       {/* Toolbar */}
-      <div className="mermaid-diagram__toolbar flex items-center justify-between px-3 py-2 border-b border-border bg-bg-accent">
+      <div className="mermaid-diagram__toolbar">
         {/* Left: View toggle */}
-        <div className="inline-flex items-center rounded-lg bg-secondary p-0.5 border border-border">
+        <div className="mermaid-diagram__view-toggle">
           <TogglePill
             active={viewMode === 'image'}
             onClick={() => setViewMode('image')}
@@ -200,7 +273,7 @@ function MermaidBlock({ code }: { code: string }) {
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-1">
+        <div className="mermaid-diagram__actions">
           <ToolbarButton title={t('mermaid.copyCode')} onClick={handleCopy}>
             {copied ? (
               <Check size={15} className="text-ok" />
@@ -210,7 +283,7 @@ function MermaidBlock({ code }: { code: string }) {
           </ToolbarButton>
           {viewMode === 'image' && (
             <>
-              <div className="w-px h-4 bg-border mx-0.5" />
+              <div className="mermaid-diagram__toolbar-divider" />
               <ToolbarButton
                 title={t('mermaid.zoomIn')}
                 onClick={() => setScale((s) => clampScale(s + 0.25))}
@@ -225,7 +298,7 @@ function MermaidBlock({ code }: { code: string }) {
               </ToolbarButton>
               <ToolbarButton
                 title={t('mermaid.fitView')}
-                onClick={() => { setScale(1); setPan({ x: 0, y: 0 }); }}
+                onClick={() => { setScale(fitScale); setPan({ x: 0, y: 0 }); }}
               >
                 <RotateCcw size={15} />
               </ToolbarButton>
@@ -237,12 +310,9 @@ function MermaidBlock({ code }: { code: string }) {
       {/* Content area */}
       {viewMode === 'image' ? (
         <div
-          className="mermaid-canvas relative overflow-hidden select-none"
-          style={{
-            height: '600px',
-            cursor: isDragging ? 'grabbing' : 'grab',
-            touchAction: 'none',
-          }}
+          ref={canvasRef}
+          className={clsx('mermaid-canvas', isDragging && 'mermaid-canvas--dragging')}
+          style={{ height: canvasHeight }}
           onMouseDown={(e) => { e.preventDefault(); startDrag(e.clientX, e.clientY); }}
           onMouseMove={(e) => moveDrag(e.clientX, e.clientY)}
           onMouseUp={endDrag}
@@ -252,19 +322,14 @@ function MermaidBlock({ code }: { code: string }) {
           onTouchEnd={endDrag}
         >
           <div
-            className="mermaid-svg-wrapper absolute left-1/2 top-0"
-            style={{
-              transform: `translate(-50%, 24px) translate(${pan.x}px, ${pan.y}px) scale(${scale})`,
-              transition: isDragging
-                ? 'none'
-                : 'transform var(--duration-fast) var(--ease-out)',
-            }}
+            className="mermaid-svg-wrapper"
+            style={wrapperStyle}
             dangerouslySetInnerHTML={{ __html: renderState.svg }}
           />
         </div>
       ) : (
-        <div className="relative overflow-auto px-4">
-          <pre className="text-sm font-mono text-text whitespace-pre">
+        <div className="mermaid-code-view">
+          <pre>
             <code>{code}</code>
           </pre>
         </div>
