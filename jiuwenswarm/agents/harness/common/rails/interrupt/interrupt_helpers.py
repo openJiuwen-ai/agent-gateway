@@ -352,7 +352,8 @@ _PERMISSION_INTERRUPT_MARKERS = (
     "Permission denied",
     "安全风险评估",
 )
-_CONFIRM_INTERRUPT_TOOLS = frozenset({"switch_mode", "exit_plan_mode"})
+# exit_plan_mode uses PlanApprovalInterruptRail (extends ConfirmInterruptRail)
+_CONFIRM_INTERRUPT_TOOLS = frozenset({"switch_mode", "exit_plan_mode"})  
 
 
 def _read_interrupt_fields(value_obj: Any) -> tuple[str, str, dict | None]:

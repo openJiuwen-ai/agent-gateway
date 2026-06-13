@@ -19,11 +19,14 @@ from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
 )
+
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import get_config_dir, logger
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+_LANGUAGE_NAMES = {"cn": "Chinese", "zh": "Chinese", "en": "English"}
 
 _LANGUAGE_NAMES = {"cn": "Chinese", "zh": "Chinese", "en": "English"}
 
@@ -220,7 +223,7 @@ class RuntimePromptRail(DeepAgentRail):
             priority=95,
         )
 
-        # ── Language output constraint (injected near end, like Claude Code) ──
+        # ── Language output constraint (injected near end) ──
         language_name = _LANGUAGE_NAMES.get(language_val, language_val)
         language_output_content = (
             "# Language\n\n"
@@ -450,10 +453,10 @@ class RuntimePromptRail(DeepAgentRail):
         try:
             writer = self.attachment_manager.bind_context(ctx)
             await writer.add_section(
-                section=section,
-                content=content,
-                kind=kind,
-                source="jiuwenswarm.runtime_prompt_rail",
+                section,
+                content,
+                kind,
+                "jiuwenswarm.runtime_prompt_rail",
                 priority=priority,
                 content_kind="text/markdown",
             )

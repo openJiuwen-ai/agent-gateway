@@ -55,7 +55,7 @@ from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
 )
 from jiuwenswarm.agents.harness.code.rails import (
     CodeTaskPlanningRail,
-    PlanApprovalRail,
+    PlanApprovalInterruptRail,
 )
 from jiuwenswarm.agents.harness.common.rails import (
     ProjectMemoryRail,
@@ -195,7 +195,7 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "CodingMemoryRail": "_build_coding_memory_rail",
     "WorktreeRail": "_build_worktree_rail_via_config",
     "CodeAgentRail": "_build_code_agent_rail",
-    "PlanApprovalRail": "_build_plan_approval_rail",
+    "PlanApprovalInterruptRail": "_build_plan_approval_rail",
 }
 
 _TOOL_BUILD_NAMES: dict[str, str] = {
@@ -391,6 +391,21 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Resolve user's preferred output language for runtime_state display.
 
         Distinct from prompt/runtime language, which defaults to "en" in code mode.
+        Returns the normalized language code ("cn"/"en") based on
+        config.yaml preferred_language, so the Language section injected
+        by RuntimePromptRail can instruct the LLM to respond in the
+        user's chosen language.
+        """
+        config_base = get_config()
+        raw = str(config_base.get("preferred_language", "zh")).strip().lower()
+        if raw == "zh":
+            raw = "cn"
+        return resolve_language(raw)
+
+    def _resolve_output_language(self) -> str:
+        """Resolve user's preferred output language for runtime_state display.
+
+        Distinct from prompt/runtime language (always "en" in code mode).
         Returns the normalized language code ("cn"/"en") based on
         config.yaml preferred_language, so the Language section injected
         by RuntimePromptRail can instruct the LLM to respond in the
@@ -653,7 +668,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return None
 
     def _build_agent_mode_rail(self) -> AgentModeRail | None:
-        """构建 CodeAgentModeRail（plan 退出需用户批准后生效）."""
+        """构建 CodeAgentModeRail。
+
+        与 Claude Code 对齐：
+        - ``plan_mode_system_note``: 静态注入 system prompt（KV-cache 友好），
+          告知 LLM 必须先调 ``enter_plan_mode``。
+        - ``enter_plan_instructions``: 追加到 ``enter_plan_mode`` 的 tool_result，
+          包含完整的 5-phase 工作流说明（指令在对话中，不在 system prompt）。
+        - ``exit_plan_notification``: 追加到 ``exit_plan_mode`` 的 tool_result，
+          显式告知 LLM 已退出 plan 模式，可以开始编辑文件。
+        """
         try:
             from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
                 CodeAgentModeRail,
@@ -661,6 +685,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             return CodeAgentModeRail(
                 allowed_tools=_CODE_PLAN_ALLOWED_TOOLS,
+                plan_mode_system_note=_PLAN_MODE_SYSTEM_NOTE,
+                enter_plan_instructions=_ENTER_PLAN_MODE_INSTRUCTIONS_EN,
+                exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
             )
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] CodeAgentModeRail create failed: %s", exc)
@@ -690,7 +717,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 CodeConfirmInterruptRail,
             )
 
-            # exit_plan_mode 由 PlanApprovalRail 负责计划审批，不再走 ConfirmInterrupt。
+            # exit_plan_mode 由 PlanApprovalInterruptRail 负责计划审批，不再走 ConfirmInterrupt。
             filtered = [name for name in (tool_names or []) if name != "exit_plan_mode"]
             return CodeConfirmInterruptRail(tool_names=filtered or ["switch_mode"])
         except Exception as exc:
@@ -1041,14 +1068,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] CodeAgentRail create failed: %s", exc)
             return None
 
-    def _build_plan_approval_rail(self) -> PlanApprovalRail | None:
-        """构建 PlanApprovalRail，管理 plan 审批生命周期。"""
+    def _build_plan_approval_rail(self) -> PlanApprovalInterruptRail | None:
+        """构建 PlanApprovalInterruptRail，管理 plan 审批生命周期。
+
+        ``exit_plan_mode`` 触发即时审批弹窗（对齐 Claude Code），
+        用户批准后立即恢复 normal 模式。
+        """
         try:
-            rail = PlanApprovalRail()
-            logger.info("[JiuwenSwarmCodeAdapter] PlanApprovalRail created")
+            rail = PlanApprovalInterruptRail()
+            logger.info("[JiuwenSwarmCodeAdapter] PlanApprovalInterruptRail created")
             return rail
         except Exception as exc:
-            logger.warning("[JiuwenSwarmCodeAdapter] PlanApprovalRail create failed: %s", exc)
+            logger.warning("[JiuwenSwarmCodeAdapter] PlanApprovalInterruptRail create failed: %s", exc)
             return None
 
     def _get_current_agent_rails(
@@ -1057,7 +1088,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """扩展父类方法，将 Code/Plan 专属 Rail 纳入热重载范围。
 
         父类 _get_current_agent_rails 只返回 skill/context/memory 等 rail，
-        CodeAgentRail 和 PlanApprovalRail 不在其中。覆盖此方法确保 config reload
+        CodeAgentRail 和 PlanApprovalInterruptRail 不在其中。覆盖此方法确保 config reload
         时这些 rail 被正确重新初始化。
         """
         rails_list = super()._get_current_agent_rails(config, config_base)

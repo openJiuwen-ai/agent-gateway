@@ -75,7 +75,7 @@ import {
   teamWorkingStartedAtMs,
 } from "./components/team-shared.js";
 import { padToWidth, renderWrappedText } from "./rendering/text.js";
-import { editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
+import { chalk, editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
 
 const END_CURSOR = "\x1b[7m \x1b[0m";
 const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
@@ -89,6 +89,8 @@ const SWARM_WORKFLOW_AGENT_TEXT_PREVIEW_ROWS = 6;
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
 const CONFIRM_TOOL_RE = /(?:Tool|工具)\s*:\s*`([^`]+)`/i;
 const CONFIRM_ACTION_RE = /\*\*(?:Agent wants to|Tool `[^`]+` requires your approval)([^*]*)\*\*/i;
+const PLAN_APPROVAL_RE = /\*\*(?:Plan Approval|计划审批)\*\*/i;
+const PLAN_REJECT_INPUT_RE = /(\s+\[ .+ \])$/;
 const PERMISSION_RISK_RE = /安全风险评估：\**\s*([^\s*]+)?\s*\**([^*\n]+?风险)\**/m;
 const PERMISSION_QUOTE_RE = /^>\s*(.+)$/gm;
 const PERMISSION_JSON_BLOCK_RE = /```json\s*([\s\S]*?)\s*```/i;
@@ -356,6 +358,10 @@ function resolveFdBinary(): string | null {
   return null;
 }
 
+export function isPlanApprovalRequest(source: string | undefined, questionText: string): boolean {
+  return source === "confirm_interrupt" && PLAN_APPROVAL_RE.test(questionText);
+}
+
 function isPermissionRequest(source: string | undefined, questionText: string): boolean {
   return (
     source === "permission_interrupt" ||
@@ -365,6 +371,24 @@ function isPermissionRequest(source: string | undefined, questionText: string): 
     CONFIRM_ACTION_RE.test(questionText) ||
     /\*\*Tool `/i.test(questionText)
   );
+}
+
+export function getPendingQuestionTitle(
+  source: string | undefined,
+  questionText: string,
+  progress: string,
+  activeQuestionIndex: number,
+  total: number,
+): string {
+  if (isPlanApprovalRequest(source, questionText)) {
+    return progress
+      ? `Exit Plan and Execute: ${activeQuestionIndex + 1}/${total}`
+      : "Exit Plan and Execute:";
+  }
+  if (source === "confirm_interrupt") {
+    return progress ? `Confirm ${activeQuestionIndex + 1}/${total}` : "Confirm action";
+  }
+  return progress ? `Permission ${activeQuestionIndex + 1}/${total}` : "Permission";
 }
 
 function parsePermissionSummary(questionText: string): PermissionSummary {
@@ -536,6 +560,18 @@ function normalizePermissionOptionLabel(label: string): string {
   return trimmed;
 }
 
+export function formatQuestionOptionLabelForDisplay(label: string, planApproval: boolean): string {
+  if (!planApproval) {
+    return normalizePermissionOptionLabel(label);
+  }
+  return isRejectOption(label) ? "Reject" : "Approve";
+}
+
+function isAlwaysAllowOption(label: string): boolean {
+  const normalized = label.trim();
+  return normalized.includes("总是允许") || /^always allow\b/i.test(normalized);
+}
+
 function isAllowOption(label: string): boolean {
   const normalized = label.trim();
   return normalized.includes("允许") || /^allow\b/i.test(normalized);
@@ -547,6 +583,76 @@ function isRejectOption(label: string): boolean {
     normalized.includes("拒绝") || /^reject\b/i.test(normalized) || /^deny\b/i.test(normalized)
   );
 }
+
+export function shouldCollectPlanRejectFeedback(
+  source: string | undefined,
+  questionText: string,
+  label: string,
+): boolean {
+  return isPlanApprovalRequest(source, questionText) && isRejectOption(label);
+}
+
+export function shouldAppendPlanRejectFeedback(
+  source: string | undefined,
+  questionText: string,
+  label: string,
+): boolean {
+  return shouldCollectPlanRejectFeedback(source, questionText, label);
+}
+
+export function getPlanRejectFeedbackHint(
+  feedback: string,
+  showCursor = false,
+  cursorIndex?: number,
+): string {
+  const trimmed = feedback.trim();
+  if (!showCursor) {
+    return `[ ${trimmed || "tell jiuwenswarm what to change"} ]`;
+  }
+  const cursor = Math.max(0, Math.min(cursorIndex ?? feedback.length, feedback.length));
+  return trimmed
+    ? `[ ${feedback.slice(0, cursor)}${END_CURSOR}${feedback.slice(cursor)} ]`
+    : `[ ${END_CURSOR}tell jiuwenswarm what to change ]`;
+}
+
+export function buildPlanApprovalQuestionItems(
+  options: Array<{ label: string; description?: string }>,
+  feedback: string,
+  showRejectCursor = false,
+  cursorIndex?: number,
+): SelectItem[] {
+  return options
+    .filter((option) => !isAlwaysAllowOption(option.label))
+    .map((option) => ({
+      value: option.label,
+      label: formatQuestionOptionLabelForDisplay(option.label, true),
+      description: isRejectOption(option.label)
+        ? getPlanRejectFeedbackHint(feedback, showRejectCursor, cursorIndex)
+        : undefined,
+    }));
+}
+
+export function getPlanApprovalListLayout(): {
+  minPrimaryColumnWidth: number;
+  maxPrimaryColumnWidth: number;
+} {
+  return { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 };
+}
+
+const planApprovalSelectListTheme = {
+  ...selectListTheme,
+  selectedText: (value: string) => {
+    const match = PLAN_REJECT_INPUT_RE.exec(value);
+    if (!match?.index) {
+      return selectListTheme.selectedText(value);
+    }
+    return (
+      selectListTheme.selectedText(value.slice(0, match.index)) +
+      chalk.dim(match[1])
+    );
+  },
+  description: (value: string) => chalk.dim(value),
+};
 
 function wrapPlainText(text: string, width: number): string[] {
   const maxWidth = Math.max(12, width - 1);
@@ -1503,7 +1609,8 @@ export class AppScreen implements Component, Focusable {
     // input_value phase: editor is rendered inside buildConfigEditorLines.
     // search_list/select_value phase: no text input needed in the main editor.
     const isConfigEditorActive = this.configEditorState !== null;
-    const editorLines = isConfigEditorActive
+    const hideEditorForInlinePlanReject = this.isEditingInlinePlanReject(snapshot);
+    const editorLines = isConfigEditorActive || hideEditorForInlinePlanReject
       ? []
       : this.applySlashCommandHint(this.editor.render(width), width);
     const composerPreviewLines: string[] = [];
@@ -1603,9 +1710,9 @@ export class AppScreen implements Component, Focusable {
 
     const { content, attachments } = this.buildOutgoingMessage(text);
 
-    if (!content) return;
-
     const snapshot = this.state.getSnapshot();
+    if (!content && !(snapshot.pendingQuestion && this.otherInputMode)) return;
+
     if (snapshot.pendingQuestion) {
       if (this.questionList !== null) {
         const selected = this.questionList.getSelectedItem();
@@ -1632,11 +1739,19 @@ export class AppScreen implements Component, Focusable {
 
         const answers = pendingQuestion.questions.map((question, index) => {
           const label = this.pendingQuestionAnswers.get(index) ?? "";
-          if (label === "Other") {
+          const isPlanRejectFeedback = shouldAppendPlanRejectFeedback(
+            pendingQuestion.source,
+            question.question,
+            label,
+          );
+          if (label === "Other" || isPlanRejectFeedback) {
             return {
               question: question.question,
               selected_options: [label],
-              custom_input: index === this.activeQuestionIndex ? text : undefined,
+              custom_input:
+                index === this.activeQuestionIndex && (label === "Other" || text)
+                  ? text
+                  : undefined,
             };
           }
           return {
@@ -4703,18 +4818,18 @@ export class AppScreen implements Component, Focusable {
     const total = pendingQuestion.questions.length;
     const progress = total > 1 ? ` (${this.activeQuestionIndex + 1}/${total})` : "";
     const permissionRequest = isPermissionRequest(pendingQuestion.source, question.question);
+    const planApprovalRequest = isPlanApprovalRequest(pendingQuestion.source, question.question);
     const lines: string[] = [];
 
-    if (permissionRequest) {
+    if (permissionRequest && !this.otherInputMode) {
       const summary = parsePermissionSummary(question.question);
-      const title =
-        pendingQuestion.source === "confirm_interrupt"
-          ? progress
-            ? `Confirm ${this.activeQuestionIndex + 1}/${total}`
-            : "Confirm action"
-          : progress
-            ? `Permission ${this.activeQuestionIndex + 1}/${total}`
-            : "Permission";
+      const title = getPendingQuestionTitle(
+        pendingQuestion.source,
+        question.question,
+        progress,
+        this.activeQuestionIndex,
+        total,
+      );
       lines.push(...renderPermissionBlock(width, summary, title));
     } else if (this.otherInputMode) {
       lines.push(
@@ -4732,12 +4847,20 @@ export class AppScreen implements Component, Focusable {
       }
       lines.push("");
       lines.push(
-        ...wrapPlainText(
-          `[Answer] Please enter your answer:`,
-          width,
-        ).map((line) => padToWidth(palette.status.info(line), width)),
+        ...wrapPlainText(`[Answer] Please enter your answer:`, width).map((line) =>
+          padToWidth(palette.status.info(line), width),
+        ),
       );
-      lines.push(padToWidth(palette.text.dim("Type your answer · Enter submit · Esc back to options"), width));
+      lines.push(
+        padToWidth(
+          palette.text.dim(
+            planApprovalRequest
+              ? "tell jiuwenswarm what to change · Enter submit · Esc back to options"
+              : "Type your answer · Enter submit · Esc back to options",
+          ),
+          width,
+        ),
+      );
     } else {
       lines.push(
         ...wrapPlainText(
@@ -4784,7 +4907,9 @@ export class AppScreen implements Component, Focusable {
         padToWidth(
           palette.text.dim(
             permissionRequest
-              ? "↑/↓ review · Enter/click confirm · Esc reject"
+              ? planApprovalRequest
+                ? "↑/↓ review · Type feedback on Reject · Enter/click confirm"
+                : "↑/↓ review · Enter/click confirm · Esc reject"
               : "↑/↓ choose · Enter/click confirm · Esc reject",
           ),
           width,
@@ -4815,6 +4940,32 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.questionList !== null) {
+      const question =
+        snapshot.pendingQuestion.questions[this.activeQuestionIndex] ??
+        snapshot.pendingQuestion.questions[0];
+      const selected = this.questionList.getSelectedItem();
+      const editingPlanReject = !!question &&
+        !!selected &&
+        shouldAppendPlanRejectFeedback(
+          snapshot.pendingQuestion.source,
+          question.question,
+          selected.value,
+        );
+      const printableChar = this.getPrintableChar(data);
+      if (
+        editingPlanReject &&
+        (printableChar !== undefined ||
+          matchesKey(data, "backspace") ||
+          matchesKey(data, "delete") ||
+          this.isInlinePlanRejectCursorInput(data))
+      ) {
+        this.pendingQuestionAnswers.set(this.activeQuestionIndex, selected.value);
+        this.editor.handleInput(data);
+        this.syncQuestionList(this.state.getSnapshot());
+        this.syncEditorSubmitState(this.state.getSnapshot());
+        this.tui.requestRender();
+        return true;
+      }
       this.questionList.handleInput(data);
       return true;
     }
@@ -4850,15 +5001,31 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    for (const option of question.options) {
-      const displayLabel = normalizePermissionOptionLabel(option.label);
+    const planApprovalRequest = isPlanApprovalRequest(
+      snapshot.pendingQuestion.source,
+      question.question,
+    );
+    const rowItems = planApprovalRequest
+      ? buildPlanApprovalQuestionItems(
+          question.options,
+          this.editor.getText(),
+          this.isEditingInlinePlanReject(snapshot),
+          this.editor.getCursor().col,
+        )
+      : question.options.map((option) => ({
+          value: option.label,
+          label: formatQuestionOptionLabelForDisplay(option.label, false),
+        }));
+
+    for (const option of rowItems) {
+      const displayLabel = option.label ?? option.value;
       for (let i = 0; i < screenLines.length; i++) {
         const plain = stripAnsi(screenLines[i]);
         if (
           (plain.startsWith("→ ") || plain.startsWith("  ")) &&
           plain.includes(displayLabel)
         ) {
-          this.questionOptionRows.push({ row: i + 1, value: option.label });
+          this.questionOptionRows.push({ row: i + 1, value: option.value });
           break;
         }
       }
@@ -4870,7 +5037,40 @@ export class AppScreen implements Component, Focusable {
     this.editor.disableSubmit =
       !!pendingQuestion &&
       !this.otherInputMode &&
+      !this.isEditingInlinePlanReject(snapshot) &&
       (this.questionList !== null || (pendingQuestion.questions[0]?.options.length ?? 0) > 0);
+  }
+
+  private isEditingInlinePlanReject(snapshot: ReturnType<CliPiAppState["getSnapshot"]>): boolean {
+    const pendingQuestion = snapshot.pendingQuestion;
+    if (!pendingQuestion || this.questionList === null) {
+      return false;
+    }
+    const question =
+      pendingQuestion.questions[this.activeQuestionIndex] ?? pendingQuestion.questions[0];
+    const selected = this.questionList.getSelectedItem();
+    return !!question &&
+      !!selected &&
+      shouldAppendPlanRejectFeedback(pendingQuestion.source, question.question, selected.value);
+  }
+
+  private isInlinePlanRejectCursorInput(data: string): boolean {
+    return (
+      matchesKey(data, "left") ||
+      matchesKey(data, "right") ||
+      matchesKey(data, "home") ||
+      matchesKey(data, "end") ||
+      matchesKey(data, "ctrl+b") ||
+      matchesKey(data, "ctrl+f") ||
+      matchesKey(data, "ctrl+a") ||
+      matchesKey(data, "ctrl+e") ||
+      matchesKey(data, "alt+left") ||
+      matchesKey(data, "alt+right") ||
+      matchesKey(data, "ctrl+left") ||
+      matchesKey(data, "ctrl+right") ||
+      matchesKey(data, "alt+b") ||
+      matchesKey(data, "alt+f")
+    );
   }
 
   private syncQuestionList(snapshot: ReturnType<CliPiAppState["getSnapshot"]>): void {
@@ -4883,6 +5083,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     const question = pendingQuestion.questions[this.activeQuestionIndex];
+    const planApprovalRequest = isPlanApprovalRequest(pendingQuestion.source, question?.question ?? "");
     if (!question || question.options.length === 0) {
       this.questionList = null;
       this.questionDetailsMap = null;
@@ -4890,15 +5091,32 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    const items: SelectItem[] = question.options.map((option) => ({
-      value: option.label,
-      label:
-        pendingQuestion.source === "permission_interrupt" ||
-        pendingQuestion.source === "confirm_interrupt"
-          ? normalizePermissionOptionLabel(option.label)
-          : option.label,
-      description: option.description,
-    }));
+    const currentSelectedValue = this.questionList?.getSelectedItem()?.value;
+    const showRejectCursor =
+      planApprovalRequest &&
+      !!currentSelectedValue &&
+      shouldAppendPlanRejectFeedback(
+        pendingQuestion.source,
+        question.question,
+        currentSelectedValue,
+      );
+
+    const items: SelectItem[] = planApprovalRequest
+      ? buildPlanApprovalQuestionItems(
+          question.options,
+          this.editor.getText(),
+          showRejectCursor,
+          this.editor.getCursor().col,
+        )
+      : question.options.map((option) => ({
+          value: option.label,
+          label:
+            pendingQuestion.source === "permission_interrupt" ||
+            pendingQuestion.source === "confirm_interrupt"
+              ? formatQuestionOptionLabelForDisplay(option.label, false)
+              : option.label,
+          description: option.description,
+        }));
 
     // Build details map for options that have sub-lines (e.g. rewind file changes)
     const detailsMap = new Map<string, string[]>();
@@ -4917,15 +5135,17 @@ export class AppScreen implements Component, Focusable {
     // For memory edit, use a layout that shows short labels with full-path details sub-lines.
     // For rewind and other questions with details sub-lines, use a narrower label column
     // so the description starts sooner and details can align beneath it.
-    const layout = pendingQuestion.source === "local_command_memory_edit"
-      ? { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 30 }
-      : detailsMap.size > 0
-        ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
-        : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
+    const layout = planApprovalRequest
+      ? getPlanApprovalListLayout()
+      : pendingQuestion.source === "local_command_memory_edit"
+        ? { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 30 }
+        : detailsMap.size > 0
+          ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
+          : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
     const list = new SelectList(
       items,
       Math.min(Math.max(items.length, 1), maxVisible),
-      selectListTheme,
+      planApprovalRequest ? planApprovalSelectListTheme : selectListTheme,
       layout,
     );
     list.onSelect = (item) => {
@@ -4942,7 +5162,8 @@ export class AppScreen implements Component, Focusable {
     list.onSelectionChange = () => {
       this.invalidate();
     };
-    let selectedValue = this.pendingQuestionAnswers.get(this.activeQuestionIndex);
+    let selectedValue =
+      currentSelectedValue ?? this.pendingQuestionAnswers.get(this.activeQuestionIndex);
     // For memory edit, restore cursor to the last selected file within this session
     if (!selectedValue && pendingQuestion.source === "local_command_memory_edit" && lastMemorySelection) {
       selectedValue = lastMemorySelection;
@@ -4963,6 +5184,14 @@ export class AppScreen implements Component, Focusable {
     if (!pendingQuestion) {
       return;
     }
+
+    const question =
+      pendingQuestion.questions[this.activeQuestionIndex] ?? pendingQuestion.questions[0];
+    const collectPlanRejectFeedback = shouldCollectPlanRejectFeedback(
+      pendingQuestion.source,
+      question?.question ?? "",
+      label,
+    );
 
     if (label === "Other") {
       this.otherInputMode = true;
@@ -4989,11 +5218,25 @@ export class AppScreen implements Component, Focusable {
 
     const answers = pendingQuestion.questions.map((question, index) => {
       const answerValue = this.pendingQuestionAnswers.get(index) ?? question.options[0]?.label ?? "";
-      return {
+      const answer = {
         question: question.question,
         selected_options: [answerValue],
       };
+      if (
+        index === this.activeQuestionIndex &&
+        collectPlanRejectFeedback &&
+        shouldAppendPlanRejectFeedback(pendingQuestion.source, question.question, answerValue)
+      ) {
+        const feedback = this.editor.getText().trim();
+        if (feedback) {
+          return { ...answer, custom_input: feedback };
+        }
+      }
+      return answer;
     });
     this.state.submitQuestionAnswers(answers);
+    if (collectPlanRejectFeedback) {
+      this.editor.setText("");
+    }
   }
 }

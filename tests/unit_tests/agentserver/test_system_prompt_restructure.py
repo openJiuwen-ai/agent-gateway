@@ -222,7 +222,7 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path):
     prompt = builder.build()
     assert "Current project directory" not in prompt
     rendered = agent.prompt_attachment_manager.render(
-        await agent.prompt_attachment_manager.collect_for_session("sess1")
+        await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
     assert "Current project directory" in rendered
     assert str(current_dir) in rendered
@@ -259,7 +259,7 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     prompt = builder.build()
     assert "Always respond in Chinese." in prompt
     rendered = agent.prompt_attachment_manager.render(
-        await agent.prompt_attachment_manager.collect_for_session("sess1")
+        await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
     assert "Always respond in Chinese." not in rendered
     assert "Always respond in English." not in rendered
