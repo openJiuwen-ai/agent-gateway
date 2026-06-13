@@ -1134,7 +1134,8 @@ export class CliPiAppState {
       this.emitChange();
       return null;
     }
-    if (this.streamingState !== StreamingState.Idle) {
+    // Team 模式允许在 stream 未结束时直接 chat.send，不先发 cancel interrupt。
+    if (this.streamingState !== StreamingState.Idle && !isTeamMode(mode)) {
       this.suppressInterruptResult = true;
       this.sendEventOnly("chat.interrupt", { intent: "cancel", mode: this.mode });
     }

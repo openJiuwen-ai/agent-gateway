@@ -52,6 +52,8 @@ import {
   countCompletedWorkflowAgents,
   countWorkflowAgents,
   findWorkflowAgent,
+  formatWorkflowTimingText,
+  runningWorkflowsBannerText,
   workflowStatusBannerText,
   workflowStatusIcon,
   type WorkflowRun,
@@ -703,13 +705,6 @@ function workflowStatusTone(status: WorkflowStatus): (value: string) => string {
 
 function formatWorkflowStatus(status: WorkflowStatus): string {
   return workflowStatusTone(status)(`${workflowStatusIcon(status)} ${status}`);
-}
-
-function formatWorkflowElapsed(startedAt: number): string {
-  const totalSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function formatWorkflowDuration(durationMs?: number | null): string | null {
@@ -1677,7 +1672,9 @@ export class AppScreen implements Component, Focusable {
       },
       runningElapsedMs:
         !snapshot.isInterrupted &&
-        (snapshot.isProcessing || teamWorking) &&
+        (snapshot.isProcessing ||
+          teamWorking ||
+          snapshot.workflowRuns.some((workflow) => workflow.status === "running")) &&
         this.runningStartedAtMs !== null
           ? Date.now() - this.runningStartedAtMs
           : undefined,
@@ -1965,7 +1962,8 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    if (snapshot.isProcessing || snapshot.isPaused) {
+    // Team 模式持续对话走 chat.send（interact），不通过 supplement 中断当前 stream。
+    if ((snapshot.isProcessing || snapshot.isPaused) && !isTeamMode(snapshot.mode)) {
       this.beginPendingSubmittedInput(text, snapshot);
       const requestId = this.state.supplement(content, attachments);
       if (!requestId) {
@@ -3112,15 +3110,11 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
     };
 
-    const agentItems: SelectItem[] = (selectedPhase?.agents ?? []).map((agent) => {
-      const duration = formatWorkflowDuration(agent.duration_ms);
-      const description = [agent.model, duration].filter((item): item is string => Boolean(item));
-      return {
-        value: agent.id,
-        label: `${formatWorkflowStatus(agent.status)} ${agent.name}`,
-        description: description.join(" - "),
-      };
-    });
+    const agentItems: SelectItem[] = (selectedPhase?.agents ?? []).map((agent) => ({
+      value: agent.id,
+      label: `${formatWorkflowStatus(agent.status)} ${agent.name}`,
+      description: agent.model ?? "",
+    }));
     const agentList = new SelectList(
       agentItems,
       Math.min(Math.max(agentItems.length, 1), 10),
@@ -3296,19 +3290,39 @@ export class AppScreen implements Component, Focusable {
   }
 
   private buildWorkflowRuntimeLines(width: number): string[] {
-    const workflow = this.state
+    const runningWorkflows = this.state
       .getSnapshot()
-      .workflowRuns.find((item) => item.status === "running");
-    if (!workflow) return [];
-    const spinner = ["◐", "◓", "◑", "◒"][this.animationPhase % 4]!;
-    const elapsed = formatWorkflowElapsed(Date.parse(workflow.started_at ?? "") || Date.now());
-    const runningBanner = workflowStatusBannerText("running") ?? "Workflow running";
-    return [
+      .workflowRuns.filter((item) => item.status === "running");
+    if (runningWorkflows.length === 0) return [];
+    const spinner = palette.status.warning(["◐", "◓", "◑", "◒"][this.animationPhase % 4]!);
+
+    const renderRow = (workflow: WorkflowRun, prefix: string): string =>
       padToWidth(
-        `${palette.status.warning(spinner)} ${palette.text.assistant(runningBanner)} ${palette.text.dim(workflow.name)} ${palette.text.dim(`(${elapsed})`)}`,
+        `${prefix}${palette.text.dim(workflow.name)} ${palette.text.dim(formatWorkflowTimingText(workflow))}`,
+        width,
+      );
+
+    if (runningWorkflows.length === 1) {
+      const workflow = runningWorkflows[0]!;
+      return [
+        padToWidth(
+          `${spinner} ${palette.text.assistant(runningWorkflowsBannerText(1))}`,
+          width,
+        ),
+        renderRow(workflow, "  "),
+      ];
+    }
+
+    const lines = [
+      padToWidth(
+        `${spinner} ${palette.text.assistant(runningWorkflowsBannerText(runningWorkflows.length))}`,
         width,
       ),
     ];
+    for (const workflow of runningWorkflows) {
+      lines.push(renderRow(workflow, "  "));
+    }
+    return lines;
   }
 
   private buildSwarmWorkflowsListLines(
@@ -3350,7 +3364,6 @@ export class AppScreen implements Component, Focusable {
     if (!workflow) return [padToWidth(palette.status.error("Workflow not found"), width)];
     const total = workflow.agent_count ?? countWorkflowAgents(workflow);
     const completed = workflow.completed_agent_count ?? countCompletedWorkflowAgents(workflow);
-    const duration = formatWorkflowDuration(workflow.duration_ms);
     const statusBanner = workflowStatusBannerText(workflow.status);
     const selectedPhase =
       workflow.phases.find((phase) => phase.id === state.selectedPhaseId) ?? workflow.phases[0];
@@ -3368,6 +3381,7 @@ export class AppScreen implements Component, Focusable {
         `${formatWorkflowStatus(workflow.status)} ${palette.text.dim(`· ${completed}/${total} agents`)}`,
         width,
       ),
+      padToWidth(palette.text.dim(formatWorkflowTimingText(workflow)), width),
       ...(workflow.status === "failed" && workflow.error
         ? wrapPlainText(workflow.error, width).map((line) =>
             padToWidth(palette.status.error(line), width),
@@ -3375,9 +3389,6 @@ export class AppScreen implements Component, Focusable {
         : []),
       ...(statusBanner
         ? [padToWidth(workflowStatusTone(workflow.status)(statusBanner), width)]
-        : []),
-      ...(duration
-        ? [padToWidth(palette.text.dim(`duration ${duration}`), width)]
         : []),
       "",
       padToWidth(palette.text.secondary("Logs"), width),
@@ -4491,9 +4502,13 @@ export class AppScreen implements Component, Focusable {
       snapshot.teamMemberEvents,
       snapshot.teamMessageEvents,
     );
-    const runningWorkflow = snapshot.workflowRuns.find((workflow) => workflow.status === "running");
+    const runningWorkflows = snapshot.workflowRuns.filter(
+      (workflow) => workflow.status === "running",
+    );
+    const hasRunningWorkflow = runningWorkflows.length > 0;
+    const runningWorkflow = runningWorkflows[0];
     const shouldAnimate =
-      !snapshot.isInterrupted && (snapshot.isProcessing || hasRunningTools || teamWorking || Boolean(runningWorkflow));
+      !snapshot.isInterrupted && (snapshot.isProcessing || hasRunningTools || teamWorking || hasRunningWorkflow);
     if (!shouldAnimate) {
       const nowMs = Date.now();
       if (this.runningStoppedAtMs === null) {
@@ -4522,9 +4537,12 @@ export class AppScreen implements Component, Focusable {
       }
     } else if (teamWorking) {
       this.runningStartedAtMs = teamStartedAt ?? this.runningStartedAtMs ?? Date.now();
-    } else if (runningWorkflow) {
-      this.runningStartedAtMs =
-        Date.parse(runningWorkflow.started_at ?? "") || this.runningStartedAtMs || Date.now();
+    } else if (hasRunningWorkflow) {
+      const earliestStartedAt = runningWorkflows.reduce((earliest, workflow) => {
+        const startedAt = Date.parse(workflow.started_at ?? "") || Date.now();
+        return startedAt < earliest ? startedAt : earliest;
+      }, Date.now());
+      this.runningStartedAtMs = earliestStartedAt || this.runningStartedAtMs || Date.now();
     }
     this.runningStoppedAtMs = null;
     if (this.animationTimer) {

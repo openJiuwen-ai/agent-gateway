@@ -119,7 +119,6 @@ function buildStatusLines(
   const teamWorking =
     isTeamMode(snapshot.mode) &&
     isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
-
   const right = snapshot.lastError
     ? `error:${snapshot.lastError.split('\n')[0].slice(0, 50)}`
     : snapshot.isInterrupted
@@ -287,7 +286,11 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
     isTeamMode(snapshot.mode) &&
     isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
   const liveTranscript =
-    snapshot.isProcessing || snapshot.isPaused || snapshot.cancellableWork || teamWorking;
+    snapshot.isProcessing ||
+    snapshot.isPaused ||
+    snapshot.cancellableWork ||
+    teamWorking ||
+    snapshot.workflowRuns.some((workflow) => workflow.status === "running");
   if (requestedOffset === 0 && !liveTranscript) {
     return [...transcriptLines, ...fixedLines];
   }
