@@ -265,10 +265,9 @@ export function ClawHubSearchModal({
         throw new Error(message);
       }
       const skillName = data.skill?.name || slug;
-      const displayName = item.display_name || skillName;
       // 更新本地已安装状态
       setInstalledSlugs(prev => new Set([...prev, slug]));
-      showMessage("success", t("skills.clawhub.messages.installed", { name: displayName }));
+      showMessage("success", t("skills.clawhub.messages.installed", { name: slug }));
       // 通知父组件刷新技能列�?
       await onInstalled?.(skillName);
     } catch (err) {
@@ -328,9 +327,9 @@ export function ClawHubSearchModal({
                 <div className="text-sm text-text-muted">{t("skills.clawhub.noResults")}</div>
               ) : (
                 results.map((item) => {
-                  const isInstalled = installedSlugs.has(item.slug) || (installedSkillNames?.has(item.slug) ?? false) || (installedSkillNames?.has(item.display_name) ?? false) || (installedSkillOrigins?.has(`clawhub:${item.slug}`) ?? false);
+                  const isInstalled = installedSlugs.has(item.slug) || (installedSkillNames?.has(item.slug) ?? false) || (installedSkillOrigins?.has(`clawhub:${item.slug}`) ?? false);
                   const isInstalling = installingSlug === item.slug;
-                  const avatar = getSkillAvatar(item.display_name || item.slug);
+                  const avatar = getSkillAvatar(item.slug);
                   return (
                     <div
                       key={item.slug}
@@ -345,7 +344,7 @@ export function ClawHubSearchModal({
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="text-base font-semibold text-text-strong truncate">
-                                {item.display_name}
+                                {item.slug}
                               </div>
                               <div className="text-sm text-text-muted mt-1 line-clamp-3">
                                 {item.summary || t("skills.noDescription")}
@@ -381,7 +380,7 @@ export function ClawHubSearchModal({
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="text-sm font-semibold text-text-strong truncate">
-                                {item.display_name}
+                                {item.slug}
                               </div>
                               <div className="text-xs text-text-muted mt-1 line-clamp-2">
                                 {item.summary || t("skills.noDescription")}
@@ -612,9 +611,9 @@ export function ClawHubSearchModal({
                 ) : (
                   results.map((item) => {
                     // 使用本地状态判断是否已安装（刚安装的会立即更新）
-                    const isInstalled = installedSlugs.has(item.slug) || (installedSkillNames?.has(item.slug) ?? false) || (installedSkillNames?.has(item.display_name) ?? false) || (installedSkillOrigins?.has(`clawhub:${item.slug}`) ?? false);
+                    const isInstalled = installedSlugs.has(item.slug) || (installedSkillNames?.has(item.slug) ?? false) || (installedSkillOrigins?.has(`clawhub:${item.slug}`) ?? false);
                     const isInstalling = installingSlug === item.slug;
-                    const avatar = getSkillAvatar(item.display_name || item.slug);
+                    const avatar = getSkillAvatar(item.slug);
                     return (
                       <div
                         key={item.slug}
@@ -626,7 +625,7 @@ export function ClawHubSearchModal({
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="text-base font-semibold text-text-strong truncate">
-                              {item.display_name || item.slug}
+                              {item.slug}
                             </div>
                             <div className="text-sm text-text-muted mt-1 line-clamp-3">
                               {item.summary || t("skills.noDescription")}
