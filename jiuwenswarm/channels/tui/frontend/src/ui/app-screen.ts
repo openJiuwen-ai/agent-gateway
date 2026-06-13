@@ -1996,7 +1996,9 @@ export class AppScreen implements Component, Focusable {
         maxPrimaryColumnWidth: 42,
       });
       list.onSelect = (item) => {
-        void this.handleResumeSessionSelection(item.value);
+        if (item && item.value) {
+          void this.handleResumeSessionSelection(item.value);
+        }
       };
       list.onCancel = () => {
         this.resumeSessionList = null;
@@ -2012,6 +2014,9 @@ export class AppScreen implements Component, Focusable {
   }
 
   private async handleResumeSessionSelection(sessionId: string): Promise<void> {
+    if (!sessionId || typeof sessionId !== "string") {
+      return;
+    }
     const nextSessionId = sessionId.trim();
     if (!nextSessionId) {
       return;
@@ -2096,7 +2101,11 @@ export class AppScreen implements Component, Focusable {
       minPrimaryColumnWidth: 24,
       maxPrimaryColumnWidth: 42,
     });
-    list.onSelect = (item) => void this.handleResumeSessionSelection(item.value);
+    list.onSelect = (item) => {
+      if (item && item.value) {
+        void this.handleResumeSessionSelection(item.value);
+      }
+    };
     list.onCancel = () => {
       this.resumeSessionList = null;
       this.tui.requestRender();
