@@ -256,6 +256,10 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "schedule.logs",
         "schedule.cancel",
         "schedule.delete",
+        "issue.watch_once",
+        "issue.state.list",
+        "issue.matrix",
+        "issue.delete",
     }
 )
 
@@ -347,6 +351,10 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "schedule.logs",
         "schedule.cancel",
         "schedule.delete",
+        "issue.watch_once",
+        "issue.state.list",
+        "issue.matrix",
+        "issue.delete",
     }
 )
 

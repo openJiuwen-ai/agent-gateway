@@ -2,6 +2,19 @@
 
 import { addError, addInfo, parseArgs } from "../helpers.js";
 import { CommandKind, type SlashCommand, type CommandContext } from "../types.js";
+import {
+  ISSUE_DIFFICULTY_VALUES,
+  formatIssueWatchResult,
+  issueStartIntervalSeconds,
+  parseIssueFixArgs,
+  REPO_OPTIONS,
+  resolveRepoName,
+  type IssueListRow,
+  formatIssueTable,
+  calculateStageProgress,
+  formatIssueMatrix,
+  type IssueMatrixResult,
+} from "./auto-harness-issue-fix.js";
 
 // Pipeline options: friendly display names → backend values
 export const PIPELINE_DISPLAY_NAMES = {
@@ -117,6 +130,63 @@ function getPipelineCompletions(_partial: string, parts: string[]): string[] {
 }
 
 // Helper functions
+
+type AutoHarnessStageProgress = {
+  stage: string;
+  name?: string;
+  status: string;
+  messages?: string[];
+};
+
+type AutoHarnessProgress = {
+  summary?: string;
+  stages?: AutoHarnessStageProgress[];
+  completed_stages?: string[];
+  current_stage?: string;
+  failed_stage?: string;
+  last_message?: string;
+  last_error?: string;
+  failure_code?: string;
+  pr_url?: string;
+};
+
+function stageProgressIcon(status?: string): string {
+  switch (status) {
+    case "success":
+      return "✅";
+    case "failed":
+      return "❌";
+    case "running":
+      return "🔄";
+    case "pending":
+      return "⏳";
+    default:
+      return "·";
+  }
+}
+
+function formatProgressLine(progress?: AutoHarnessProgress): string {
+  if (!progress) return "";
+  const summary = progress.summary || "";
+  if (!summary) return "";
+  return `   进度: ${summary}`;
+}
+
+function formatProgressBlock(progress?: AutoHarnessProgress): string[] {
+  if (!progress || !progress.stages || progress.stages.length === 0) {
+    return [];
+  }
+  const lines = ["", "阶段进度:"];
+  for (const stage of progress.stages) {
+    const name = stage.name || stage.stage;
+    const icon = stageProgressIcon(stage.status);
+    lines.push(`  ${icon} ${name}: ${stage.status}`);
+  }
+  if (progress.last_message) {
+    lines.push(`  最近: ${progress.last_message}`);
+  }
+  return lines;
+}
 
 function parseScheduleStartArgs(args: string): { interval: number; pipeline: string; query: string } {
   const parts = parseArgs(args);
@@ -373,9 +443,9 @@ const scheduleListCommand: SlashCommand = {
   action: async (ctx, _args) => {
     ctx.addItem(addInfo(ctx.sessionId, "\n🔍 正在查询任务...\n", "i"));
 
-    const result = await ctx.request<{ tasks?: Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string }> }>("schedule.list", {});
+    const result = await ctx.request<{ tasks?: Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string; progress?: AutoHarnessProgress }> }>("schedule.list", {});
 
-    const tasks = result.tasks as Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string }> | undefined;
+    const tasks = result.tasks as Array<{ task_id: string; query: string; status: string; interval_hours: number; next_run_time: string; created_at: string; is_one_time?: boolean; pipeline?: string; progress?: AutoHarnessProgress }> | undefined;
     if (!tasks || tasks.length === 0) {
       ctx.addItem(addInfo(ctx.sessionId, "\n📭 暂无任务\n💡 使用 /auto-harness schedule start 创建定时任务\n   使用 /auto-harness run 创建一次性任务\n", "i"));
       return;
@@ -401,6 +471,8 @@ const scheduleListCommand: SlashCommand = {
       } else {
         lines.push(`   状态: ${task.status} | 间隔: ${task.interval_hours}h | 下次执行: ${formatLocalTime(task.next_run_time)}${pipelineInfo ? ` | ${pipelineInfo}` : ""}`);
       }
+      const progressLine = formatProgressLine(task.progress);
+      if (progressLine) lines.push(progressLine);
       lines.push(`   创建时间: ${formatLocalTime(task.created_at)}`);
       lines.push("");
     }
@@ -439,7 +511,7 @@ const scheduleStatusCommand: SlashCommand = {
       return;
     }
 
-    const result = await ctx.request<{ error?: string; task_id?: string; query?: string; status?: string; interval_hours?: number; created_at?: string; next_run_time?: string; current_execution_id?: string; execution_history?: Array<{ execution_id: string; status: string; completed_at?: string }>; is_one_time?: boolean; pipeline?: string }>("schedule.status", { task_id });
+    const result = await ctx.request<{ error?: string; task_id?: string; query?: string; status?: string; interval_hours?: number; created_at?: string; next_run_time?: string; current_execution_id?: string; execution_history?: Array<{ execution_id: string; status: string; completed_at?: string }>; is_one_time?: boolean; pipeline?: string; progress?: AutoHarnessProgress }>("schedule.status", { task_id });
 
     if (result.error) {
       ctx.addItem(
@@ -473,6 +545,7 @@ const scheduleStatusCommand: SlashCommand = {
       lines.push(`\n🔄 当前执行: ${result.current_execution_id}`);
       lines.push(`💡 使用 /auto-harness schedule logs ${result.task_id} 查看实时日志`);
     }
+    lines.push(...formatProgressBlock(result.progress));
 
     const history = result.execution_history as Array<{ execution_id: string; status: string; completed_at?: string }> | undefined;
     if (history && history.length > 0) {
@@ -2078,6 +2151,345 @@ const runCommand: SlashCommand = {
   },
 };
 
+const issueScanCommand: SlashCommand = {
+  name: "scan",
+  description: "扫描仓库所有 GitCode issue 并生成分析矩阵",
+  usage: "/auto-harness issue scan [--page <页码>] [--labels <标签>]",
+  example: "/auto-harness issue scan --repo jiuwenswarm",
+  kind: CommandKind.BUILT_IN,
+  takesArgs: true,
+  action: async (ctx, args) => {
+    const parts = parseArgs(args);
+    let repo = "";
+    let forceRefresh = "";  // 空值触发交互
+    let page = 1;
+    let labels = "";  // 默认只显示 bug 类型
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === "--repo" && i + 1 < parts.length) {
+        repo = parts[i + 1];
+        i += 1;
+      } else if (part === "--force-refresh") {
+        forceRefresh = "yes";
+      } else if (part === "--page" && i + 1 < parts.length) {
+        const parsed = parseInt(parts[i + 1], 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          page = parsed;
+        }
+        i += 1;
+      } else if (part === "--labels" && i + 1 < parts.length) {
+        labels = parts[i + 1];
+        i += 1;
+      } else if (part === "--all") {
+        // --all 表示显示所有类型，等同于 --labels ""
+        labels = "";
+      }
+    }
+
+    // Repo 二选一交互：未指定则弹出选择框
+    if (!repo) {
+      const [answer] = await ctx.askQuestions([
+        {
+          header: "仓库",
+          question: "请选择目标仓库:",
+          options: [
+            { label: "jiuwenswarm", description: REPO_OPTIONS.jiuwenswarm.desc },
+            { label: "agent_core", description: REPO_OPTIONS.agent_core.desc },
+          ],
+        },
+      ]);
+      if (!answer.selected_options[0]) {
+        ctx.addItem(addInfo(ctx.sessionId, "已取消"));
+        return;
+      }
+      repo = resolveRepoName(answer.selected_options[0]);
+    } else {
+      repo = resolveRepoName(repo);
+    }
+
+    // 强制刷新二选一交互：未指定则弹出选择框
+    if (!forceRefresh) {
+      const [answer] = await ctx.askQuestions([
+        {
+          header: "刷新",
+          question: "是否强制刷新（重新调用 GitCode API）？",
+          options: [
+            { label: "否（推荐）", description: "使用缓存数据，快速返回" },
+            { label: "是", description: "强制调用 API，更新最新数据" },
+          ],
+        },
+      ]);
+      if (!answer.selected_options[0]) {
+        ctx.addItem(addInfo(ctx.sessionId, "已取消"));
+        return;
+      }
+      forceRefresh = answer.selected_options[0] === "是" ? "yes" : "no";
+    }
+
+    const actualForceRefresh = forceRefresh === "yes";
+
+    ctx.addItem(addInfo(ctx.sessionId, `\n正在扫描 GitCode issue 矩阵...\n仓库: ${repo}\n${labels ? `标签过滤: ${labels}\n` : "显示所有类型\n"}${actualForceRefresh ? "强制刷新所有\n" : ""}${page > 1 ? `页码: ${page}\n` : ""}`, "i"));
+
+    const result = await ctx.request<IssueMatrixResult>("issue.matrix", {
+      repo,
+      force_refresh: actualForceRefresh,
+      page,
+      labels,
+    });
+
+    ctx.addItem(addInfo(ctx.sessionId, formatIssueMatrix(result)));
+  },
+};
+
+const issueFixCommand: SlashCommand = {
+  name: "fix",
+  description: "指定单个或多个 GitCode issue 创建独立修复任务",
+  usage: "/auto-harness issue fix <issue_number(s)>",
+  example: "/auto-harness issue fix 1272,1271,1270",
+  kind: CommandKind.BUILT_IN,
+  takesArgs: true,
+  action: async (ctx, args) => {
+    const parsed = parseIssueFixArgs(args, resolvePipelineName);
+    if (parsed.issue_numbers.length === 0) {
+      ctx.addItem(addError(ctx.sessionId, "请提供 issue 编号\n示例: /auto-harness issue fix 1272,1271,1270"));
+      return;
+    }
+
+    // Repo 二选一交互：未指定则弹出选择框
+    if (!parsed.repo) {
+      const [answer] = await ctx.askQuestions([
+        {
+          header: "仓库",
+          question: "请选择目标仓库:",
+          options: [
+            { label: "jiuwenswarm", description: REPO_OPTIONS.jiuwenswarm.desc },
+            { label: "agent_core", description: REPO_OPTIONS.agent_core.desc },
+          ],
+        },
+      ]);
+      if (!answer.selected_options[0]) {
+        ctx.addItem(addInfo(ctx.sessionId, "已取消"));
+        return;
+      }
+      parsed.repo = resolveRepoName(answer.selected_options[0]);
+    } else {
+      // 用户指定了 --repo，解析别名或完整值
+      parsed.repo = resolveRepoName(parsed.repo);
+    }
+
+    if (!PIPELINE_BACKEND_VALUES.includes(parsed.pipeline)) {
+      ctx.addItem(addError(ctx.sessionId, `无效的 pipeline: ${parsed.pipeline}`));
+      return;
+    }
+
+    // 难度已在 scan 矩阵中展示，默认 medium，不再交互
+    if (!ISSUE_DIFFICULTY_VALUES.has(parsed.max_auto_difficulty)) {
+      ctx.addItem(addError(ctx.sessionId, `无效的难度上限: ${parsed.max_auto_difficulty}\n可选值: low, medium, high, unclear`));
+      return;
+    }
+
+    const configCheck = await ctx.request<{ valid: boolean; missing_fields?: Array<{ id: string; prompt: string }> }>("schedule.check_config", {});
+    const missingFields = configCheck.missing_fields as Array<{ id: string; prompt: string }> | undefined;
+    if (missingFields && missingFields.length > 0) {
+      const missingList = missingFields.map(f => `  - ${f.prompt}`).join("\n");
+      ctx.addItem(addInfo(ctx.sessionId, `GitCode issue 自动处理需要配置:\n${missingList}\n\n请使用 /config edit 配置这些字段后重试`));
+      return;
+    }
+
+    const isDryRun = parsed.dry_run === "yes";
+    ctx.addItem(addInfo(ctx.sessionId, `\n正在为指定 GitCode issue 创建修复任务...\n仓库: ${parsed.repo}\nIssue: ${parsed.issue_numbers.map(n => `#${n}`).join(", ")}\n难度上限: ${parsed.max_auto_difficulty}\n执行模式: ${isDryRun ? "预演" : "正式执行"}\n并发启动: ${parsed.concurrency}\n`, "i"));
+    const result = await ctx.request<{
+      error?: string;
+      fetched?: number;
+      started?: Array<{ number?: number; issue?: number; task_id?: string; status?: string; title?: string }>;
+      skipped?: Array<{ issue?: number; reason?: string; status?: string }>;
+      reconciled?: Array<{ number?: number; status?: string; pr_url?: string }>;
+    }>("issue.watch_once", {
+      repo: parsed.repo,
+      issue_numbers: parsed.issue_numbers,
+      max_issues: parsed.issue_numbers.length,
+      dry_run: isDryRun,
+      comment_on_start: parsed.comment_on_start,
+      pipeline: parsed.pipeline,
+      max_auto_difficulty: parsed.max_auto_difficulty,
+      start_interval_seconds: issueStartIntervalSeconds(parsed.concurrency),
+    });
+
+    if (result.error) {
+      ctx.addItem(addError(ctx.sessionId, `创建失败: ${result.error}`));
+      return;
+    }
+
+    ctx.addItem(addInfo(ctx.sessionId, formatIssueWatchResult(result)));
+    if (isDryRun) {
+      return;
+    }
+
+    // Collect created task IDs for guidance display
+    const taskEntries = (result.started || [])
+      .map(s => ({ issue: s.number ?? s.issue ?? 0, taskId: s.task_id || "" }))
+      .filter(e => e.taskId);
+
+    if (taskEntries.length > 0) {
+      const lines: string[] = ["\n后台任务已提交执行", "━━━━━━━━━━━━━━━━━━━━━━"];
+      for (const { issue, taskId } of taskEntries) {
+        lines.push(`  #${issue}   task: ${taskId}`);
+      }
+      lines.push("━━━━━━━━━━━━━━━━━━━━━━");
+      lines.push("💡 查看进度:");
+      lines.push("   /auto-harness issue status             查看 issue 总体进度");
+      if (taskEntries.length === 1) {
+        lines.push(`   /auto-harness schedule status ${taskEntries[0].taskId}   查看该任务详细日志`);
+      } else {
+        lines.push("   /auto-harness schedule status <task_id>   查看各任务详细日志");
+      }
+      ctx.addItem(addInfo(ctx.sessionId, lines.join("\n")));
+    }
+  },
+};
+
+const issueDeleteCommand: SlashCommand = {
+  name: "delete",
+  description: "删除 issue 处理记录和运行日志",
+  usage: "/auto-harness issue delete <issue_numbers> [--completed] [--failed]",
+  example: "/auto-harness issue delete 123 456",
+  kind: CommandKind.BUILT_IN,
+  takesArgs: true,
+  action: async (ctx, args) => {
+    const parts = parseArgs(args);
+    const issueNumbers: number[] = [];
+    let deleteCompleted = false;
+    let deleteFailed = false;
+
+    for (const part of parts) {
+      if (part === "--completed") {
+        deleteCompleted = true;
+      } else if (part === "--failed") {
+        deleteFailed = true;
+      } else {
+        const num = parseInt(part, 10);
+        if (Number.isFinite(num) && num > 0) {
+          issueNumbers.push(num);
+        }
+      }
+    }
+
+    if (issueNumbers.length === 0 && !deleteCompleted && !deleteFailed) {
+      ctx.addItem(addError(ctx.sessionId, "用法: /auto-harness issue delete <issue_numbers> [--completed] [--failed]\n示例:\n  /auto-harness issue delete 123\n  /auto-harness issue delete 123 456\n  /auto-harness issue delete --completed\n  /auto-harness issue delete --failed"));
+      return;
+    }
+
+    // 调用后端 delete RPC
+    const result = await ctx.request<{
+      error?: string;
+      deleted?: Array<{ issue: number; task_id?: string; log_size?: string }>;
+      rejected?: Array<{ issue: number; reason: string }>;
+    }>("issue.delete", {
+      issue_numbers: issueNumbers,
+      delete_completed: deleteCompleted,
+      delete_failed: deleteFailed,
+    });
+
+    if (result.error) {
+      ctx.addItem(addError(ctx.sessionId, `删除失败: ${result.error}`));
+      return;
+    }
+
+    const lines = ["\n删除结果", "━━━━━━━━━━━━━━━━━━━━━━"];
+    if (result.deleted && result.deleted.length > 0) {
+      lines.push(`已删除: ${result.deleted.length} 条记录`);
+      for (const item of result.deleted) {
+        lines.push(`  #${item.issue}${item.task_id ? ` task: ${item.task_id}` : ""}`);
+      }
+    }
+    if (result.rejected && result.rejected.length > 0) {
+      lines.push(`拒绝删除: ${result.rejected.length} 条`);
+      for (const item of result.rejected) {
+        lines.push(`  #${item.issue}: ${item.reason}`);
+      }
+    }
+    lines.push("━━━━━━━━━━━━━━━━━━━━━━");
+    ctx.addItem(addInfo(ctx.sessionId, lines.join("\n")));
+  },
+};
+
+const issueStatusCommand: SlashCommand = {
+  name: "status",
+  description: "查看 GitCode issue 处理状态",
+  usage: "/auto-harness issue status",
+  kind: CommandKind.BUILT_IN,
+  takesArgs: false,
+  action: async (ctx, _args) => {
+    ctx.addItem(addInfo(ctx.sessionId, "\n正在查询 GitCode issue 处理记录...\n", "i"));
+    const result = await ctx.request<{ issues?: Array<{ key?: string; number?: number; status?: string; task_id?: string; task_status?: string; title?: string; pr_url?: string; reason?: string; progress?: AutoHarnessProgress }> }>("issue.state.list", {});
+    const issues = result.issues || [];
+
+    // 转换为表格行格式
+    const rows: IssueListRow[] = issues.map((issue) => {
+      const number = issue.number || parseInt(String(issue.key || "").split("#").pop() || "0", 10);
+      const reason = issue.reason || "";
+      const stage = issue.progress?.current_stage || issue.progress?.stages?.find(s => s.status === "running")?.stage || "";
+      const progressPercent = issue.progress?.stages ? calculateStageProgress(issue.progress.stages) : 0;
+
+      const isTaskDeleted = issue.task_status === "task_deleted";
+      const inFlightStatuses = new Set(["task_created", "running"]);
+      const effectiveStatus = isTaskDeleted
+        ? "task_deleted"
+        : (issue.task_id && issue.task_status && inFlightStatuses.has(issue.status || "")
+            ? issue.task_status
+            : (issue.status || "unknown"));
+
+      // 终态任务进度显示100%或0%
+      const terminalStatuses = new Set(["success", "failed", "pr_created", "completed", "skipped", "needs_human"]);
+      const finalProgress = terminalStatuses.has(effectiveStatus) ? (effectiveStatus === "success" || effectiveStatus === "pr_created" ? 100 : 0) : progressPercent;
+
+      let details = "";
+      if (issue.pr_url) {
+        details = `PR: ${issue.pr_url}`;
+      } else if (issue.task_id) {
+        details = `task: ${issue.task_id}`;
+      } else if (reason) {
+        // Strip URLs from reason for compact display
+        details = reason.replace(/https?:\/\/\S+/g, "").replace(/;+\s*;+/g, ";").replace(/:\s*$/, "").trim();
+      } else if (issue.title) {
+        details = issue.title.substring(0, 30);
+      }
+
+      return {
+        issue: number,
+        status: effectiveStatus,
+        stage,
+        progress: finalProgress,
+        details,
+        prUrl: issue.pr_url,
+      };
+    });
+
+    ctx.addItem(addInfo(ctx.sessionId, formatIssueTable(rows)));
+  },
+};
+
+const issueCommand: SlashCommand = {
+  name: "issue",
+  description: "GitCode issue 自动处理",
+  usage: "/auto-harness issue <scan|fix|status|delete>",
+  kind: CommandKind.BUILT_IN,
+  takesArgs: true,
+  subCommands: [issueFixCommand, issueScanCommand, issueStatusCommand, issueDeleteCommand],
+  completion: (_ctx, partial) => {
+    const subNames = ["scan", "fix", "status", "delete"];
+    const prefix = partial.trim().toLowerCase();
+    if (!prefix) return subNames;
+    return subNames.filter((n) => n.startsWith(prefix));
+  },
+  action: (ctx, args) => {
+    if (!args.trim()) {
+      ctx.addItem(addError(ctx.sessionId, "用法: /auto-harness issue <fix|scan|status|delete>\n示例:\n  /auto-harness issue fix 1272,1271\n  /auto-harness issue scan --repo jiuwenswarm\n  /auto-harness issue status\n  /auto-harness issue delete 123"));
+    }
+  },
+};
+
 // Main auto-harness command
 
 export function createAutoHarnessCommand(): SlashCommand {
@@ -2087,9 +2499,9 @@ export function createAutoHarnessCommand(): SlashCommand {
     hidden: false, // Temporarily hidden from TUI, core functionality preserved for future re-enable
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
-    subCommands: [runCommand, scheduleCommand],
+    subCommands: [runCommand, scheduleCommand, issueCommand],
     completion: (_ctx, partial) => {
-      const subNames = ["run", "schedule"];
+      const subNames = ["run", "schedule", "issue"];
       const prefix = partial.trim().toLowerCase();
       if (!prefix) return subNames;
       return subNames.filter((n) => n.startsWith(prefix));
@@ -2098,7 +2510,7 @@ export function createAutoHarnessCommand(): SlashCommand {
       const text = args.trim();
       if (!text) {
         ctx.addItem(
-          addError(ctx.sessionId, "用法: /auto-harness <run|schedule> [参数]\n子命令:\n  run       创建并执行一次性任务\n  schedule  管理定时任务\n示例:\n  /auto-harness run 优化上下文压缩能力\n  /auto-harness schedule list\n  /auto-harness schedule logs <task_id>")
+          addError(ctx.sessionId, "用法: /auto-harness <run|schedule|issue> [参数]\n子命令:\n  run       创建并执行一次性任务\n  schedule  管理定时任务\n  issue     处理 GitCode issue\n示例:\n  /auto-harness run 优化上下文压缩能力\n  /auto-harness schedule list\n  /auto-harness issue fix 1272,1271")
         );
       }
     },
