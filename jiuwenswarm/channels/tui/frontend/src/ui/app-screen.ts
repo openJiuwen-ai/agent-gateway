@@ -2832,10 +2832,13 @@ export class AppScreen implements Component, Focusable {
       return;
     }
     if (current.phase === "workflow") {
+      const selectedAgentId =
+        current.focus === "agents" ? current.agentList.getSelectedItem()?.value : undefined;
       this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
         current.workflowId,
         current.selectedPhaseId,
         current.focus,
+        selectedAgentId,
       );
       return;
     }
@@ -2885,6 +2888,7 @@ export class AppScreen implements Component, Focusable {
     workflowId: string,
     selectedPhaseId?: string,
     focus: "phases" | "agents" = "phases",
+    selectedAgentId?: string,
   ): SwarmWorkflowsViewState {
     const workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
     if (!workflow) return this.buildSwarmWorkflowsListState();
@@ -2955,6 +2959,11 @@ export class AppScreen implements Component, Focusable {
         maxPrimaryColumnWidth: 44,
       },
     );
+    const selectedAgentIndex = Math.max(
+      0,
+      agentItems.findIndex((agent) => agent.value === selectedAgentId),
+    );
+    agentList.setSelectedIndex(selectedAgentIndex);
     agentList.onSelect = (item) => {
       this.swarmWorkflowsViewState = {
         phase: "agent",
@@ -2999,6 +3008,7 @@ export class AppScreen implements Component, Focusable {
           state.workflowId,
           lookup?.phase.id,
           "agents",
+          state.agentId,
         );
       }
       this.tui.requestRender();
@@ -3015,11 +3025,17 @@ export class AppScreen implements Component, Focusable {
           state.workflowId,
           lookup?.phase.id,
           "agents",
+          state.agentId,
         );
       } else if (state.phase === "workflow") {
         this.swarmWorkflowsViewState =
           state.focus === "agents"
-            ? this.buildSwarmWorkflowDetailState(state.workflowId, state.selectedPhaseId, "phases")
+            ? this.buildSwarmWorkflowDetailState(
+                state.workflowId,
+                state.selectedPhaseId,
+                "phases",
+                state.agentList.getSelectedItem()?.value,
+              )
             : this.buildSwarmWorkflowsListState();
       }
       this.tui.requestRender();
