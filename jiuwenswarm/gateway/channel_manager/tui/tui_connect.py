@@ -1174,6 +1174,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             else []
         )
         # 按项目目录过滤 + 排除当前会话（对齐 Claude Code /resume 行为）
+        # all_projects=True 时跳过项目过滤，列出所有项目的会话（对齐 CC 的 Ctrl+A）
+        show_all_projects = (
+            bool(params.get("all_projects"))
+            if isinstance(params, dict) else False
+        )
         project_dir = (
             str(params.get("project_dir", "")).strip()
             if isinstance(params, dict) else ""
@@ -1187,6 +1192,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         current_sid = str(session_id or "").strip()
 
         def _session_matches_project(s):
+            if show_all_projects:
+                return True
             if not project_dir:
                 return True
             ch_meta = s.get("channel_metadata") or {}
@@ -1219,7 +1226,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
         cli_sessions = cli_sessions[:limit]
 
-        # 附带每个会话的 project_dir 供前端判断跨项目恢复
+        # 附带每个会话的 project_dir / git_branch 供前端判断跨项目恢复 + 按分支过滤
         for s in cli_sessions:
             ch_meta = s.get("channel_metadata") or {}
             sp = (ch_meta.get("project_dir") or ch_meta.get("cwd") or "").strip()
@@ -1229,8 +1236,20 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 except OSError:
                     pass
             s["project_dir"] = sp
+            # 会话首条消息时记录的分支；存量会话无该字段时回填空串（前端按"兜底显示"处理）
+            s["git_branch"] = str(ch_meta.get("git_branch") or "").strip()
 
-        await channel.send_response(ws, req_id, ok=True, payload={"sessions": cli_sessions})
+        # 当前项目的 git 分支，供前端 Ctrl+B 过滤对比（非 git/失败为哨兵 "HEAD"）
+        from jiuwenswarm.common.utils import resolve_git_branch
+
+        current_branch = resolve_git_branch(project_dir or None)
+
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={"sessions": cli_sessions, "current_branch": current_branch},
+        )
 
     async def _session_create(ws, req_id, params, session_id):
         from jiuwenswarm.common.utils import get_agent_sessions_dir

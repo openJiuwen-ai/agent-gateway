@@ -165,6 +165,13 @@ type ResumeSessionListState = {
   sessions: SessionMeta[];
   total: number;
   searchQuery: string;
+  showAllProjects: boolean;
+  branchFilterEnabled: boolean;
+  currentBranch: string;
+  /** 非空时进入只读预览态（Space 触发，对齐 Claude Code preview）：展示选中会话的信息卡 */
+  preview: SessionMeta | null;
+  /** 非空时进入重命名态（Ctrl+R 触发，对齐 Claude Code Ctrl+R）：编辑选中会话标题 */
+  rename: { sessionId: string; value: string } | null;
 };
 
 type ModelListState = {
@@ -741,10 +748,11 @@ function getDisplayLabel(s: SessionMeta): string {
   return s.session_id;
 }
 
-function sessionToSelectItem(s: SessionMeta): SelectItem {
+function sessionToSelectItem(s: SessionMeta, showProject = false): SelectItem {
   const parts: string[] = [formatRelativeTime(s.last_message_at)];
   const msgCount = s.message_count ?? 0;
   if (msgCount > 0) parts.push(`${msgCount} msgs`);
+  if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
   return {
     value: s.session_id,
     label: getDisplayLabel(s),
@@ -752,19 +760,34 @@ function sessionToSelectItem(s: SessionMeta): SelectItem {
   };
 }
 
-function buildResumeSessionItems(sessions: SessionMeta[]): SelectItem[] {
-  return sessions.map(sessionToSelectItem);
-}
+type ResumeItemOptions = {
+  query: string;
+  showProject: boolean;
+  branchFilter: boolean;
+  currentBranch: string;
+};
 
-function filterResumeSessions(sessions: SessionMeta[], query: string): SelectItem[] {
-  const normalizedQuery = query.toLowerCase();
-  return sessions
-    .filter((s) => {
+function computeResumeItems(sessions: SessionMeta[], opts: ResumeItemOptions): SelectItem[] {
+  let list = sessions;
+  // 按 git 分支过滤（对齐 Claude Code Ctrl+B）：严格匹配当前分支。
+  // 无分支记录的存量会话、以及非 git/HEAD 会话都会被过滤掉；关掉 Ctrl+B 即可看到全部。
+  if (opts.branchFilter && opts.currentBranch) {
+    list = list.filter((s) => (s.git_branch ?? "").trim() === opts.currentBranch);
+  }
+  const normalizedQuery = opts.query.toLowerCase();
+  if (normalizedQuery) {
+    list = list.filter((s) => {
       const label = getDisplayLabel(s).toLowerCase();
       const sid = s.session_id.toLowerCase();
-      return label.includes(normalizedQuery) || sid.includes(normalizedQuery);
-    })
-    .map(sessionToSelectItem);
+      const proj = (s.project_dir ?? "").toLowerCase();
+      return (
+        label.includes(normalizedQuery) ||
+        sid.includes(normalizedQuery) ||
+        (opts.showProject && proj.includes(normalizedQuery))
+      );
+    });
+  }
+  return list.map((s) => sessionToSelectItem(s, opts.showProject));
 }
 
 function formatConfigValue(schema: ConfigItemSchema, val: string): string {
@@ -1368,6 +1391,53 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (!snapshot.pendingQuestion && this.resumeSessionList !== null) {
+      // 重命名态：Enter 保存，Esc 取消，其余按键编辑标题（允许空格）
+      if (this.resumeSessionList.rename !== null) {
+        if (matchesKey(data, "return")) {
+          void this.submitResumeRename();
+        } else if (matchesKey(data, "escape")) {
+          this.resumeSessionList = { ...this.resumeSessionList, rename: null };
+          this.tui.requestRender();
+        } else if (matchesKey(data, "backspace")) {
+          const r = this.resumeSessionList.rename;
+          this.resumeSessionList = {
+            ...this.resumeSessionList,
+            rename: { ...r, value: r.value.slice(0, -1) },
+          };
+          this.tui.requestRender();
+        } else {
+          const ch = this.getPrintableChar(data);
+          if (ch !== undefined) {
+            const r = this.resumeSessionList.rename;
+            this.resumeSessionList = {
+              ...this.resumeSessionList,
+              rename: { ...r, value: r.value + ch },
+            };
+            this.tui.requestRender();
+          }
+        }
+        return;
+      }
+      // 只读预览态：Enter 恢复该会话，Space/Esc 返回列表，其余按键忽略
+      if (this.resumeSessionList.preview !== null) {
+        if (matchesKey(data, "return")) {
+          void this.handleResumeSessionSelection(this.resumeSessionList.preview.session_id);
+        } else if (matchesKey(data, "space") || matchesKey(data, "escape")) {
+          this.resumeSessionList = { ...this.resumeSessionList, preview: null };
+          this.tui.requestRender();
+        }
+        return;
+      }
+      // Space 打开选中会话的预览（牺牲在搜索框输入空格的能力，按用户要求）
+      if (matchesKey(data, "space")) {
+        this.openResumeSessionPreview();
+        return;
+      }
+      // Ctrl+R 重命名选中会话
+      if (matchesKey(data, "ctrl+r")) {
+        this.openResumeRename();
+        return;
+      }
       const printableChar = this.getPrintableChar(data);
       if (printableChar !== undefined) {
         const newQuery = this.resumeSessionList.searchQuery + printableChar;
@@ -1375,6 +1445,10 @@ export class AppScreen implements Component, Focusable {
       } else if (matchesKey(data, "backspace")) {
         const newQuery = this.resumeSessionList.searchQuery.slice(0, -1);
         this.updateResumeSearchQuery(newQuery);
+      } else if (matchesKey(data, "ctrl+a")) {
+        void this.toggleResumeAllProjects();
+      } else if (matchesKey(data, "ctrl+b")) {
+        this.toggleResumeBranchFilter();
       } else if (matchesKey(data, "escape")) {
         if (this.resumeSessionList.searchQuery) {
           this.updateResumeSearchQuery("");
@@ -1603,9 +1677,15 @@ export class AppScreen implements Component, Focusable {
     // IME composing text from appearing in the bottom input box instead of the config panel.
     // input_value phase: editor is rendered inside buildConfigEditorLines.
     // search_list/select_value phase: no text input needed in the main editor.
+    // The resume picker has its own search input, so hide the main editor while it is
+    // open to avoid a misleading second input bar (restored on Esc). Mirrors Claude Code.
     const isConfigEditorActive = this.configEditorState !== null;
     const hideEditorForInlinePlanReject = this.isEditingInlinePlanReject(snapshot);
-    const editorLines = isConfigEditorActive || hideEditorForInlinePlanReject
+    const hideMainEditor =
+      isConfigEditorActive ||
+      hideEditorForInlinePlanReject ||
+      this.resumeSessionList !== null;
+    const editorLines = hideMainEditor
       ? []
       : this.applySlashCommandHint(this.editor.render(width), width);
     const composerPreviewLines: string[] = [];
@@ -1891,7 +1971,8 @@ export class AppScreen implements Component, Focusable {
         this.editor.addToHistory(text);
         this.editor.setText("");
         this.state.addItem(addCommandEcho(snapshot.sessionId, text));
-        await this.openResumeSessionList();
+        // 默认列出全部项目的会话；进入后可按 Ctrl+A 切回仅当前项目
+        await this.openResumeSessionList(true);
         return;
       }
       if (/^\/model\s*$/.test(text)) {
@@ -2147,39 +2228,117 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
-  private async openResumeSessionList(): Promise<void> {
+  private makeResumeSelectList(items: SelectItem[]): SelectList {
+    const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
+      minPrimaryColumnWidth: 24,
+      maxPrimaryColumnWidth: 42,
+    });
+    list.onSelect = (item) => {
+      if (item && item.value) {
+        void this.handleResumeSessionSelection(item.value);
+      }
+    };
+    list.onCancel = () => {
+      this.resumeSessionList = null;
+      this.tui.requestRender();
+    };
+    return list;
+  }
+
+  private async openResumeSessionList(allProjects = false): Promise<void> {
     const snapshot = this.state.getSnapshot();
     try {
-      const payload = await this.state.request<SessionListPayload>("session.list", {});
+      const payload = await this.state.request<SessionListPayload>("session.list", {
+        all_projects: allProjects,
+      });
       const sessions = payload.sessions ?? [];
       const total = payload.total ?? sessions.length;
-      if (sessions.length === 0) {
+      const currentBranch = payload.current_branch ?? "HEAD";
+      // 全部项目仍为空：确无可恢复会话，直接提示，不打开选择器
+      if (sessions.length === 0 && allProjects) {
         this.resumeSessionList = null;
         this.state.addItem(addInfo(snapshot.sessionId, "No sessions found", "r"));
         return;
       }
+      // 当前项目为空：仍打开（空）选择器，便于用户按 Ctrl+A 切到全部项目
 
-      const items = buildResumeSessionItems(sessions);
-      const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
-        minPrimaryColumnWidth: 24,
-        maxPrimaryColumnWidth: 42,
+      const items = computeResumeItems(sessions, {
+        query: "",
+        showProject: allProjects,
+        branchFilter: false,
+        currentBranch,
       });
-      list.onSelect = (item) => {
-        if (item && item.value) {
-          void this.handleResumeSessionSelection(item.value);
-        }
+      this.resumeSessionList = {
+        list: this.makeResumeSelectList(items),
+        sessions,
+        total,
+        searchQuery: "",
+        showAllProjects: allProjects,
+        branchFilterEnabled: false,
+        currentBranch,
+        preview: null,
+        rename: null,
       };
-      list.onCancel = () => {
-        this.resumeSessionList = null;
-        this.tui.requestRender();
-      };
-      this.resumeSessionList = { list, sessions, total, searchQuery: "" };
       this.tui.requestRender();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.resumeSessionList = null;
       this.state.addItem(addError(snapshot.sessionId, `resume failed: ${message}`));
     }
+  }
+
+  private async toggleResumeAllProjects(): Promise<void> {
+    if (!this.resumeSessionList) return;
+    const next = !this.resumeSessionList.showAllProjects;
+    const { searchQuery, branchFilterEnabled } = this.resumeSessionList;
+    const snapshot = this.state.getSnapshot();
+    try {
+      const payload = await this.state.request<SessionListPayload>("session.list", {
+        all_projects: next,
+      });
+      const sessions = payload.sessions ?? [];
+      const total = payload.total ?? sessions.length;
+      const currentBranch = payload.current_branch ?? this.resumeSessionList.currentBranch;
+      const items = computeResumeItems(sessions, {
+        query: searchQuery,
+        showProject: next,
+        branchFilter: branchFilterEnabled,
+        currentBranch,
+      });
+      this.resumeSessionList = {
+        list: this.makeResumeSelectList(items),
+        sessions,
+        total,
+        searchQuery,
+        showAllProjects: next,
+        branchFilterEnabled,
+        currentBranch,
+        preview: null,
+        rename: null,
+      };
+      this.tui.requestRender();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.state.addItem(addError(snapshot.sessionId, `resume failed: ${message}`));
+    }
+  }
+
+  private toggleResumeBranchFilter(): void {
+    if (!this.resumeSessionList) return;
+    const st = this.resumeSessionList;
+    const next = !st.branchFilterEnabled;
+    const items = computeResumeItems(st.sessions, {
+      query: st.searchQuery,
+      showProject: st.showAllProjects,
+      branchFilter: next,
+      currentBranch: st.currentBranch,
+    });
+    this.resumeSessionList = {
+      ...st,
+      list: this.makeResumeSelectList(items),
+      branchFilterEnabled: next,
+    };
+    this.tui.requestRender();
   }
 
   private async handleResumeSessionSelection(sessionId: string): Promise<void> {
@@ -2265,22 +2424,130 @@ export class AppScreen implements Component, Focusable {
 
   private updateResumeSearchQuery(query: string): void {
     if (!this.resumeSessionList) return;
-    const filteredItems = filterResumeSessions(this.resumeSessionList.sessions, query);
-    const list = new SelectList(filteredItems, Math.min(Math.max(filteredItems.length, 1), 8), selectListTheme, {
-      minPrimaryColumnWidth: 24,
-      maxPrimaryColumnWidth: 42,
+    const st = this.resumeSessionList;
+    const filteredItems = computeResumeItems(st.sessions, {
+      query,
+      showProject: st.showAllProjects,
+      branchFilter: st.branchFilterEnabled,
+      currentBranch: st.currentBranch,
     });
-    list.onSelect = (item) => {
-      if (item && item.value) {
-        void this.handleResumeSessionSelection(item.value);
-      }
+    this.resumeSessionList = {
+      ...st,
+      list: this.makeResumeSelectList(filteredItems),
+      searchQuery: query,
     };
-    list.onCancel = () => {
-      this.resumeSessionList = null;
-      this.tui.requestRender();
-    };
-    this.resumeSessionList = { ...this.resumeSessionList, list, searchQuery: query };
     this.tui.requestRender();
+  }
+
+  /** 打开选中会话的只读预览（信息卡）。Space 触发，对齐 Claude Code 的 preview。 */
+  private openResumeSessionPreview(): void {
+    if (!this.resumeSessionList) return;
+    const selected = this.resumeSessionList.list.getSelectedItem();
+    if (!selected) return;
+    const session = this.resumeSessionList.sessions.find(
+      (s) => s.session_id === selected.value,
+    );
+    if (!session) return;
+    this.resumeSessionList = { ...this.resumeSessionList, preview: session };
+    this.tui.requestRender();
+  }
+
+  /** 进入重命名态，初始值取当前标题。Ctrl+R 触发，对齐 Claude Code。 */
+  private openResumeRename(): void {
+    if (!this.resumeSessionList) return;
+    const selected = this.resumeSessionList.list.getSelectedItem();
+    if (!selected) return;
+    const session = this.resumeSessionList.sessions.find(
+      (s) => s.session_id === selected.value,
+    );
+    if (!session) return;
+    this.resumeSessionList = {
+      ...this.resumeSessionList,
+      rename: { sessionId: session.session_id, value: session.title?.trim() ?? "" },
+    };
+    this.tui.requestRender();
+  }
+
+  /** 提交重命名：调用 session.rename 写入标题，成功后就地更新列表并退出重命名态。 */
+  private async submitResumeRename(): Promise<void> {
+    if (!this.resumeSessionList || !this.resumeSessionList.rename) return;
+    const st = this.resumeSessionList;
+    const { sessionId, value } = st.rename!;
+    const title = value.trim();
+    try {
+      const resp = await this.state.request<{ session_id: string; title: string }>(
+        "session.rename",
+        { session_id: sessionId, title },
+      );
+      const newTitle = resp.title ?? title;
+      // 就地更新本地会话标题并重建列表项
+      const sessions = st.sessions.map((s) =>
+        s.session_id === sessionId ? { ...s, title: newTitle } : s,
+      );
+      const items = computeResumeItems(sessions, {
+        query: st.searchQuery,
+        showProject: st.showAllProjects,
+        branchFilter: st.branchFilterEnabled,
+        currentBranch: st.currentBranch,
+      });
+      this.resumeSessionList = {
+        ...st,
+        sessions,
+        list: this.makeResumeSelectList(items),
+        rename: null,
+      };
+      // 若重命名的是当前活动会话，同步终端窗口标题
+      if (sessionId === this.state.getSnapshot().sessionId) {
+        this.state.setSessionTitle(newTitle);
+      }
+      this.tui.requestRender();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.resumeSessionList = { ...st, rename: null };
+      this.state.addItem(
+        addError(this.state.getSnapshot().sessionId, `rename failed: ${message}`),
+      );
+      this.tui.requestRender();
+    }
+  }
+
+  private buildResumeSessionRenameLines(width: number, session: SessionMeta | undefined, value: string): string[] {
+    const placeholder = session?.title?.trim() || session?.session_id || "";
+    return [
+      padToWidth(palette.status.warning("Rename session"), width),
+      padToWidth(palette.text.dim(session?.session_id ?? ""), width),
+      "",
+      padToWidth(`${palette.text.dim("Title: ")}${palette.text.primary(value)}${END_CURSOR}`, width),
+      value.length === 0
+        ? padToWidth(palette.text.dim(`(current: ${placeholder})`), width)
+        : "",
+      "",
+      padToWidth(palette.text.dim("Enter save · Esc cancel · empty clears title"), width),
+    ].filter((l) => l !== "");
+  }
+
+  private buildResumeSessionPreviewLines(width: number, session: SessionMeta): string[] {
+    const title = session.title?.trim() || "(untitled)";
+    const project = session.project_dir?.trim() || "-";
+    const branch = session.git_branch?.trim() || "(unknown)";
+    const msgs = session.message_count ?? 0;
+    const lastActive = formatRelativeTime(session.last_message_at);
+    const created = formatRelativeTime(session.created_at);
+    const row = (k: string, v: string) =>
+      padToWidth(`${palette.text.dim(k.padEnd(11))}${palette.text.primary(v)}`, width);
+    return [
+      padToWidth(palette.status.warning("Session preview"), width),
+      padToWidth(palette.text.primary(title), width),
+      "",
+      row("ID", session.session_id),
+      row("Project", project),
+      row("Branch", branch),
+      row("Messages", String(msgs)),
+      row("Last active", lastActive),
+      row("Created", created),
+      "",
+      padToWidth(palette.text.dim("Enter resume · Space/Esc back"), width),
+    ];
   }
 
   private buildStartupPromptLines(width: number): string[] {
@@ -2307,21 +2574,59 @@ export class AppScreen implements Component, Focusable {
     if (!this.resumeSessionList) {
       return [];
     }
+    if (this.resumeSessionList.rename !== null) {
+      const r = this.resumeSessionList.rename;
+      const session = this.resumeSessionList.sessions.find((s) => s.session_id === r.sessionId);
+      return this.buildResumeSessionRenameLines(width, session, r.value);
+    }
+    if (this.resumeSessionList.preview !== null) {
+      return this.buildResumeSessionPreviewLines(width, this.resumeSessionList.preview);
+    }
+    const showAll = this.resumeSessionList.showAllProjects;
+    const branchOn = this.resumeSessionList.branchFilterEnabled;
+    const scopeLabel = showAll ? "all projects" : "current dir";
+    const projectHint = showAll ? "Ctrl+A current dir" : "Ctrl+A all projects";
+    const branchHint = branchOn
+      ? `Ctrl+B all branches`
+      : `Ctrl+B branch:${this.resumeSessionList.currentBranch}`;
+    const toggleHint = `${projectHint} · ${branchHint}`;
+    const scopeSuffix = branchOn ? ` · branch:${this.resumeSessionList.currentBranch}` : "";
     const searchBox = this.resumeSessionList.searchQuery
       ? padToWidth(palette.text.primary(`Search: ${this.resumeSessionList.searchQuery}${END_CURSOR}`), width)
-      : padToWidth(palette.text.dim("Type to search · ↑/↓ choose · Enter resume · Esc cancel"), width);
+      : padToWidth(
+          palette.text.dim(`Type to search · ↑/↓ choose · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc cancel`),
+          width,
+        );
+    const st = this.resumeSessionList;
+    const visibleCount = computeResumeItems(st.sessions, {
+      query: st.searchQuery,
+      showProject: st.showAllProjects,
+      branchFilter: st.branchFilterEnabled,
+      currentBranch: st.currentBranch,
+    }).length;
+    const emptyMessage = st.searchQuery
+      ? "No matches"
+      : showAll
+        ? "No sessions found"
+        : "No sessions in current project · press Ctrl+A to search all projects";
+    const listLines =
+      visibleCount === 0
+        ? [padToWidth(palette.text.dim(emptyMessage), width)]
+        : this.resumeSessionList.list.render(width);
     return [
       padToWidth(
-        palette.status.warning(`Resume session (${this.resumeSessionList.total} total)`),
+        palette.status.warning(
+          `Resume session (${this.resumeSessionList.total} total · ${scopeLabel}${scopeSuffix})`,
+        ),
         width,
       ),
       searchBox,
-      ...this.resumeSessionList.list.render(width),
+      ...listLines,
       padToWidth(
         palette.text.dim(
           this.resumeSessionList.searchQuery
-            ? "Backspace delete · Enter resume · Esc clear"
-            : "↑/↓ choose · Enter resume · Esc cancel"
+            ? `Backspace delete · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc clear`
+            : `↑/↓ choose · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc cancel`
         ),
         width,
       ),

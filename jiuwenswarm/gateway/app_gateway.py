@@ -674,6 +674,11 @@ class GatewayServer:
             project_dir = params.get("project_dir")
             if project_dir and isinstance(project_dir, str) and project_dir.strip():
                 metadata["project_dir"] = project_dir.strip()
+                # 记录会话首条消息时所在的 git 分支，供 /resume 按分支过滤（Ctrl+B）。
+                # 非 git/detached/失败时为哨兵 "HEAD"，对齐 Claude Code。
+                from jiuwenswarm.common.utils import resolve_git_branch
+
+                metadata["git_branch"] = resolve_git_branch(project_dir.strip())
 
             is_stream = bool(data.get("is_stream", False))
 

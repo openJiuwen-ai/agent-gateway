@@ -124,6 +124,28 @@ Manages directories AI can access for file read, edit, and execute operations.
 - `/resume list`: List historical sessions.
 - `/resume <conversation_id>`: Resume specified session.
 
+#### Interactive picker (TUI)
+
+Entering **`/resume`** or **`/continue`** with **no arguments** opens an interactive session picker (instead of a plain `session.list` dump).
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` | Move focus between sessions |
+| `Enter` | Resume the focused session |
+| type chars | Live search (filter by session ID / title / project dir) |
+| `Backspace` | Delete a search character |
+| `Space` | Preview the focused session info card (title, ID, project dir, branch, message count, last active / created). In preview: `Enter` resumes, `Space`/`Esc` goes back |
+| `Ctrl+R` | Rename the focused session. In edit mode: `Enter` saves, `Esc` cancels, empty value clears the title |
+| `Ctrl+A` | Toggle scope between "all projects" and "current project only" |
+| `Ctrl+B` | Toggle git branch filter (only show sessions whose `git_branch` strictly equals the current project's branch) |
+| `Esc` | Clear search if any; otherwise close the picker |
+
+Behavior:
+
+- **Defaults to listing all projects** (press `Ctrl+A` to narrow to the current project). When the current project has no sessions, an (empty) picker still opens so you can press `Ctrl+A`.
+- **Branch recording & filtering (`Ctrl+B`)**: a session's git branch is recorded (per its `project_dir`) on the first message (`HEAD` for non-git/detached). When the filter is on, sessions are matched by branch **name** strictly; legacy sessions without a recorded branch and `HEAD` sessions are filtered out. Note the match is by name only and not repo-aware — with "all projects + branch filter" enabled, same-named branches in different directories are shown together.
+- **Restore scope**: resume only restores the **conversation context** (history, session ID, accent color, workflow snapshot, window title); it does **not** switch the workspace / current working directory.
+
 ### `/model` (View / Add / Switch Model)
 
 - Usage:
