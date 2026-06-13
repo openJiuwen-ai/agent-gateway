@@ -533,6 +533,7 @@ export function SkillGraphPanel() {
   const hoveredRef = useRef<GraphNode | null>(null);
   const externalBuildRunningRef = useRef(false);
   const observedBuildLogSignatureRef = useRef<string | null>(null);
+  const autoFitRequestRef = useRef(0);
   const dragRef = useRef<{ active: boolean; moved: boolean; x: number; y: number }>({
     active: false,
     moved: false,
@@ -555,6 +556,7 @@ export function SkillGraphPanel() {
   const [tokenUsage, setTokenUsage] = useState<LLMTokenUsageSummary | null>(null);
   const [showBuildLogPanel, setShowBuildLogPanel] = useState(false);
   const [buildElapsedNow, setBuildElapsedNow] = useState(() => Date.now());
+  const [autoFitRequest, setAutoFitRequest] = useState(0);
 
   const applyBuildLog = useCallback((data: { build_log?: BuildLogEntry[]; build_progress?: BuildProgress; llm_token_usage?: LLMTokenUsageSummary }) => {
     if (Array.isArray(data.build_log)) {
@@ -662,6 +664,7 @@ export function SkillGraphPanel() {
     const nodes = visibleRef.current.nodes;
     if (!canvas || nodes.length === 0) return;
     const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
     const xs = nodes.map((node) => node.x);
     const ys = nodes.map((node) => node.y);
     const minX = Math.min(...xs);
@@ -670,9 +673,14 @@ export function SkillGraphPanel() {
     const maxY = Math.max(...ys);
     const graphW = Math.max(1, maxX - minX);
     const graphH = Math.max(1, maxY - minY);
+    const horizontalPadding = Math.min(80, rect.width * 0.2);
+    const verticalPadding = Math.min(80, rect.height * 0.2);
     const scale = Math.max(
       0.18,
-      Math.min(2.2, Math.min((rect.width - 80) / graphW, (rect.height - 80) / graphH)),
+      Math.min(2.2, Math.min(
+        Math.max(1, rect.width - horizontalPadding) / graphW,
+        Math.max(1, rect.height - verticalPadding) / graphH,
+      )),
     );
     transformRef.current = {
       scale,
@@ -680,6 +688,26 @@ export function SkillGraphPanel() {
       y: rect.height / 2 - ((minY + maxY) / 2) * scale,
     };
   }, []);
+
+  const requestAutoFit = useCallback(() => {
+    autoFitRequestRef.current += 1;
+    setAutoFitRequest(autoFitRequestRef.current);
+  }, []);
+
+  useEffect(() => {
+    if (autoFitRequest === 0 || visible.nodes.length === 0) return undefined;
+    let firstFrame = 0;
+    let secondFrame = 0;
+    firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        fitView();
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
   const loadGraph = useCallback(async () => {
     setLoading(true);
@@ -702,7 +730,7 @@ export function SkillGraphPanel() {
       setGraph(normalized);
       selectedRef.current = null;
       setSelectedNode(null);
-      window.setTimeout(fitView, 0);
+      requestAutoFit();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setPayload(null);
@@ -712,7 +740,7 @@ export function SkillGraphPanel() {
         setLoading(false);
       }
     }
-  }, [applyBuildLog, fitView]);
+  }, [applyBuildLog, requestAutoFit]);
 
   const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
     const data = await webRequest<SkillGraphStatus>(
