@@ -214,12 +214,12 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
     if language == "zh":
         prompt = "你收到一条消息：\n"
         if channel == "cron":
-            prompt = "你收到一条消息，对于查询类任务必须输出查询到的内容，不要只回复确认或只记录到memory：\n"
+            prompt = "你收到一条消息，对于查询类任务必须输出查询到的内容，不要只回复确认，不要记录到memory：\n"
     else:
         prompt = "You receive a new message:\n"
         if channel == "cron":
             prompt = ("You receive a new message. For query tasks, you must output the queried content"
-                      "—don't just reply with confirmation or only record to memory:\n")
+                      "—don't just reply with confirmation, don't record to memory:\n")
     msg_data: dict[str, Any] = {
         "source": channel,
         "preferred_response_language": language,
