@@ -161,6 +161,7 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
 _SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
     {
         ReqMethod.SYMPHONY_BUILD_SCORE,
+        ReqMethod.SYMPHONY_PAUSE_BUILD,
         ReqMethod.SYMPHONY_SCORE_STATUS,
         ReqMethod.SYMPHONY_GRAPH,
         ReqMethod.SYMPHONY_PLAN,

@@ -5,6 +5,7 @@ from pathlib import Path
 from jiuwenswarm.extensions.symphony.extension import (
     SYMPHONY_BUILD_SCORE,
     SYMPHONY_GRAPH,
+    SYMPHONY_PAUSE_BUILD,
     SYMPHONY_PLAN,
     SYMPHONY_SCORE_STATUS,
     SymphonyExtension,
@@ -32,6 +33,7 @@ def test_extension_registers_rpc_handlers():
 
     assert SYMPHONY_SCORE_STATUS in registry.handlers
     assert SYMPHONY_BUILD_SCORE in registry.handlers
+    assert SYMPHONY_PAUSE_BUILD in registry.handlers
     assert SYMPHONY_GRAPH in registry.handlers
     assert SYMPHONY_PLAN in registry.handlers
 
@@ -292,6 +294,105 @@ def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path)
     assert seen["args"][1] == configured_score_dir.resolve()
     assert seen["kwargs"]["force"] is False
     assert result["build_log"][-1]["stage"] == "update.done"
+
+
+def test_build_score_accepts_force_rebuild_param(monkeypatch, tmp_path):
+    configured_score_dir = tmp_path / "configured"
+    skills_root = tmp_path / "skills"
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
+        lambda: symphony_config_from_dict(
+            {
+                "paths": {
+                    "skills_root": str(skills_root),
+                    "score_dir": str(configured_score_dir),
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
+        lambda: object(),
+    )
+    seen = {}
+
+    class _Result:
+        @staticmethod
+        def to_dict():
+            return {
+                "success": True,
+                "score_dir": str(configured_score_dir.resolve()),
+                "skill_count": 1,
+                "reused_count": 0,
+                "extracted_count": 1,
+                "removed_count": 0,
+                "edge_count": 0,
+                "diagnostics_count": 0,
+            }
+
+    async def fake_build_score(*args, **kwargs):
+        seen["args"] = args
+        seen["kwargs"] = kwargs
+        return _Result()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.service_build_score",
+        fake_build_score,
+    )
+
+    result = asyncio.run(SymphonyExtension().build_score({"force": True}))
+
+    assert result["success"] is True
+    assert seen["args"][0] == skills_root.resolve()
+    assert seen["kwargs"]["force"] is True
+
+
+def test_pause_build_cancels_active_build(monkeypatch, tmp_path):
+    configured_score_dir = tmp_path / "configured"
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
+        lambda: symphony_config_from_dict(
+            {
+                "paths": {
+                    "skills_root": str(tmp_path / "skills"),
+                    "score_dir": str(configured_score_dir),
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.LLMConfig.from_default_model",
+        lambda: object(),
+    )
+
+    async def run_case():
+        started = asyncio.Event()
+
+        async def fake_build_score(*args, **kwargs):
+            del args
+            kwargs["build_log"]("graph.resolve.start")
+            started.set()
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr(
+            "jiuwenswarm.extensions.symphony.extension.service_build_score",
+            fake_build_score,
+        )
+        extension = SymphonyExtension()
+        build_task = asyncio.create_task(extension.build_score({}))
+        await started.wait()
+        pause_result = await extension.pause_build({})
+        build_result = await build_task
+        return pause_result, build_result
+
+    pause_result, build_result = asyncio.run(run_case())
+
+    assert pause_result["success"] is True
+    assert pause_result["paused"] is True
+    assert build_result["success"] is False
+    assert build_result["paused"] is True
+    assert build_result["build_progress"]["status"] == "paused"
+    assert build_result["build_log"][-1]["stage"] == "update.paused"
 
 
 def test_graph_returns_business_error_when_artifacts_missing(monkeypatch, tmp_path):

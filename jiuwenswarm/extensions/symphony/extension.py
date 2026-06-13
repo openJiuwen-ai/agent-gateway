@@ -21,6 +21,7 @@ from jiuwenswarm.symphony.orchestration.service import plan_from_score
 from jiuwenswarm.symphony.score_storage import resolve_score_artifact_dir
 
 SYMPHONY_BUILD_SCORE = "symphony.build_score"
+SYMPHONY_PAUSE_BUILD = "symphony.pause_build"
 SYMPHONY_SCORE_STATUS = "symphony.score_status"
 SYMPHONY_GRAPH = "symphony.graph"
 SYMPHONY_PLAN = "symphony.plan"
@@ -33,6 +34,8 @@ class SymphonyExtension(BaseExtension):
 
     def __init__(self) -> None:
         self._registry = None
+        self._build_guard = asyncio.Lock()
+        self._active_build_task: asyncio.Task | None = None
 
     async def initialize(self, config) -> None:
         return None
@@ -43,6 +46,7 @@ class SymphonyExtension(BaseExtension):
     def register(self, registry) -> None:
         self._registry = registry
         registry.register_rpc_handler(SYMPHONY_BUILD_SCORE, self.build_score)
+        registry.register_rpc_handler(SYMPHONY_PAUSE_BUILD, self.pause_build)
         registry.register_rpc_handler(SYMPHONY_SCORE_STATUS, self.score_status)
         registry.register_rpc_handler(SYMPHONY_GRAPH, self.graph)
         registry.register_rpc_handler(SYMPHONY_PLAN, self.plan)
@@ -73,7 +77,39 @@ class SymphonyExtension(BaseExtension):
         params: dict[str, Any] | None = None,
         request: Any = None,
     ) -> dict[str, Any]:
-        return await self._build_score(params, request, force=False)
+        params = params or {}
+        return await self._build_score(params, request, force=_param_bool(params.get("force")))
+
+    async def pause_build(
+        self,
+        params: dict[str, Any] | None = None,
+        request: Any = None,
+    ) -> dict[str, Any]:
+        del params, request
+        config = load_symphony_config()
+        score_dir = config.paths.score_dir
+        build_logger = _BuildProcessLogger(score_dir / "build_log.jsonl")
+        async with self._build_guard:
+            task = self._active_build_task
+            if task is None or task.done():
+                payload = {
+                    "success": True,
+                    "score_dir": str(score_dir),
+                    "paused": False,
+                    "detail": "当前没有正在运行的技能总谱构建。",
+                }
+                payload.update(_build_log_payload(score_dir))
+                return payload
+            build_logger.record("update.pause_requested")
+            task.cancel("symphony.pause_build")
+        payload = {
+            "success": True,
+            "score_dir": str(score_dir),
+            "paused": True,
+            "detail": "已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。",
+        }
+        payload.update(_build_log_payload(score_dir))
+        return payload
 
     async def graph(self, params: dict[str, Any] | None = None, request: Any = None) -> dict[str, Any]:
         del params, request
@@ -175,6 +211,18 @@ class SymphonyExtension(BaseExtension):
         config = load_symphony_config()
         skills_root = config.paths.skills_root
         score_dir = config.paths.score_dir
+        current_task = asyncio.current_task()
+        async with self._build_guard:
+            active_task = self._active_build_task
+            if active_task is not None and active_task is not current_task and not active_task.done():
+                payload = {
+                    "success": False,
+                    "score_dir": str(score_dir),
+                    "detail": "已有技能总谱构建正在运行，请等待完成或先暂停当前构建。",
+                }
+                payload.update(_build_log_payload(score_dir))
+                return payload
+            self._active_build_task = current_task
         build_logger = _BuildProcessLogger(score_dir / "build_log.jsonl")
         build_logger.reset()
         build_logger.record(
@@ -194,6 +242,17 @@ class SymphonyExtension(BaseExtension):
                     build_log=build_logger.record,
                 )
             ).to_dict()
+        except asyncio.CancelledError:
+            build_logger.record("update.paused")
+            payload = {
+                "success": False,
+                "score_dir": str(score_dir),
+                "paused": True,
+                "detail": "技能总谱构建已暂停，可再次执行增量构建继续。",
+            }
+            payload.update(_build_log_payload(score_dir))
+            await self._clear_active_build_task(current_task)
+            return payload
         except Exception as exc:  # noqa: BLE001
             build_logger.record("update.failed", error=str(exc))
             payload = {
@@ -202,11 +261,18 @@ class SymphonyExtension(BaseExtension):
                 "detail": f"Symphony 总谱构建失败: {exc}",
             }
             payload.update(_build_log_payload(score_dir))
+            await self._clear_active_build_task(current_task)
             return payload
         build_logger.record("update.done", **result)
         result["success"] = True
         result.update(_build_log_payload(score_dir))
+        await self._clear_active_build_task(current_task)
         return result
+
+    async def _clear_active_build_task(self, task: asyncio.Task | None) -> None:
+        async with self._build_guard:
+            if self._active_build_task is task:
+                self._active_build_task = None
 
 
 async def register_extensions(registry):
@@ -224,8 +290,20 @@ def _missing_artifacts_payload(score_dir: Path, exc: FileNotFoundError) -> dict[
     }
 
 
+def _param_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 _BUILD_STAGE_LABELS = {
     "update.start": "开始构建技能总谱",
+    "update.pause_requested": "正在暂停技能总谱构建",
+    "update.paused": "技能总谱构建已暂停",
     "scan.start": "扫描技能目录",
     "scan.done": "技能目录扫描完成",
     "diff.done": "计算技能变更",
@@ -259,6 +337,8 @@ _BUILD_STAGE_LABELS = {
 
 _BUILD_STAGE_PROGRESS = {
     "update.start": 3,
+    "update.pause_requested": 100,
+    "update.paused": 100,
     "scan.start": 8,
     "scan.done": 14,
     "diff.done": 20,
@@ -356,6 +436,8 @@ def _build_progress(entries: list[dict[str, Any]]) -> dict[str, Any]:
         status = "success"
     elif stage == "update.failed":
         status = "error"
+    elif stage == "update.paused":
+        status = "paused"
     return {
         "stage": stage,
         "label": str(latest.get("label") or _BUILD_STAGE_LABELS.get(stage, stage)),

@@ -4,7 +4,9 @@ import {
   Focus,
   GitBranch,
   Loader2,
+  Pause,
   RefreshCw,
+  RotateCcw,
   Search,
 } from 'lucide-react';
 import { webRequest } from '../../services/webClient';
@@ -33,7 +35,7 @@ type BuildProgress = {
   stage?: string;
   label?: string;
   percent?: number;
-  status?: 'idle' | 'running' | 'success' | 'error';
+  status?: 'idle' | 'running' | 'success' | 'error' | 'paused';
   current?: number;
   total?: number;
   ts?: string;
@@ -64,6 +66,7 @@ type SkillGraphPayload = {
 type SkillGraphUpdate = {
   success?: boolean;
   detail?: string;
+  paused?: boolean;
   score_dir?: string;
   build_log?: BuildLogEntry[];
   build_progress?: BuildProgress;
@@ -131,6 +134,8 @@ const NODE_COLORS: Record<string, string> = {
 };
 
 const INDEX_UPDATE_TIMEOUT_MS = 1_800_000;
+
+type SymphonyBuildMode = 'incremental' | 'full';
 
 function asString(value: unknown, fallback = ''): string {
   if (value === undefined || value === null) return fallback;
@@ -496,7 +501,7 @@ function isSupersededBuildStart(entry: BuildLogEntry, index: number, entries: Bu
 
 function isTerminalBuildLogEntry(entry: BuildLogEntry): boolean {
   const stage = asString(entry.stage);
-  return stage === 'update.done' || stage === 'update.failed';
+  return stage === 'update.done' || stage === 'update.failed' || stage === 'update.paused';
 }
 
 function buildLogTime(entry: BuildLogEntry): string {
@@ -542,6 +547,8 @@ export function SkillGraphPanel() {
   const [minConfidence, setMinConfidence] = useState(0.7);
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [buildMode, setBuildMode] = useState<SymphonyBuildMode | null>(null);
+  const [pausingBuild, setPausingBuild] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [buildLog, setBuildLog] = useState<BuildLogEntry[]>([]);
   const [buildProgress, setBuildProgress] = useState<BuildProgress | null>(null);
@@ -725,24 +732,29 @@ export function SkillGraphPanel() {
     return false;
   }, [applyBuildLog]);
 
-  const rebuildGraph = useCallback(async () => {
+  const rebuildGraph = useCallback(async (mode: SymphonyBuildMode) => {
+    const force = mode === 'full';
     setUpdating(true);
+    setBuildMode(mode);
     setShowBuildLogPanel(true);
     setError(null);
     setTokenUsage(null);
     setBuildProgress({
       stage: 'update.start',
-      label: '准备刷新技能总谱',
+      label: force ? '准备全量重新构建技能总谱' : '准备增量构建技能总谱',
       percent: 3,
       status: 'running',
     });
     try {
       const data = await webRequest<SkillGraphUpdate>(
         'symphony.build_score',
-        {},
+        { force },
         { timeoutMs: INDEX_UPDATE_TIMEOUT_MS },
       );
       applyBuildLog(data);
+      if (data.paused) {
+        return;
+      }
       if (!data.success) {
         throw new Error(data.detail || '技能总谱刷新失败');
       }
@@ -751,8 +763,30 @@ export function SkillGraphPanel() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUpdating(false);
+      setBuildMode(null);
     }
   }, [applyBuildLog, loadGraph]);
+
+  const pauseBuild = useCallback(async () => {
+    setPausingBuild(true);
+    setShowBuildLogPanel(true);
+    setError(null);
+    try {
+      const data = await webRequest<SkillGraphUpdate>(
+        'symphony.pause_build',
+        {},
+        { timeoutMs: 60_000 },
+      );
+      applyBuildLog(data);
+      if (!data.success && !data.paused) {
+        throw new Error(data.detail || '技能总谱暂停失败');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPausingBuild(false);
+    }
+  }, [applyBuildLog]);
 
   useEffect(() => {
     let stopped = false;
@@ -1086,12 +1120,16 @@ export function SkillGraphPanel() {
   );
 
   const isGraphBuildRunning = buildProgress?.status === 'running';
+  const isGraphBuildPaused = buildProgress?.status === 'paused';
   const isBusy = loading || updating;
+  const canPauseBuild = (updating || isGraphBuildRunning) && !pausingBuild;
+  const isIncrementalBuild = updating && buildMode === 'incremental';
+  const isFullBuild = updating && buildMode === 'full';
   const createdAt = asString(payload?.manifest?.created_at);
   const graphUpdatedAt = createdAt ? new Date(createdAt).toLocaleString() : '';
   const currentProgressPercent = progressPercent(buildProgress);
   const progressLabel = buildProgress?.label || (updating ? '正在刷新技能总谱' : '暂无构建日志');
-  const progressTitle = isGraphBuildRunning ? '正在刷新技能总谱' : progressLabel;
+  const progressTitle = isGraphBuildRunning ? '正在刷新技能总谱' : isGraphBuildPaused ? '技能总谱构建已暂停' : progressLabel;
   const recentBuildLog = compactBuildLog(buildLog).slice(-8);
   const tokenUsageText = formatTokenUsage(tokenUsage);
   const elapsedText = buildElapsedText(buildLog, buildProgress, buildElapsedNow);
@@ -1133,11 +1171,32 @@ export function SkillGraphPanel() {
         </div>
 
         <div className="skill-graph-panel__actions">
-          <button type="button" onClick={loadGraph} disabled={isBusy} title="重新读取总谱">
+          <button type="button" onClick={loadGraph} disabled={isBusy} title="读谱">
             {loading ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
           </button>
-          <button type="button" onClick={rebuildGraph} disabled={isBusy} title="刷新并重读总谱">
-            {updating ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <GitBranch size={16} aria-hidden="true" />}
+          <button
+            type="button"
+            onClick={() => void rebuildGraph('incremental')}
+            disabled={isBusy}
+            title="增量构建"
+          >
+            {isIncrementalBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <GitBranch size={16} aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            onClick={pauseBuild}
+            disabled={!canPauseBuild}
+            title="暂停构建"
+          >
+            {pausingBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => void rebuildGraph('full')}
+            disabled={isBusy}
+            title="全量重新构建"
+          >
+            {isFullBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
           </button>
           <button type="button" onClick={fitView} disabled={!visible.nodes.length} title="适配视图">
             <Focus size={16} aria-hidden="true" />
