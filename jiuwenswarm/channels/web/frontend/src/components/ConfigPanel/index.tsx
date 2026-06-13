@@ -2457,6 +2457,29 @@ export function ConfigPanel({
     fetchSkills();
   }, []);
 
+  // 当技能列表更新时，自动清理 agent 配置中已卸载的技能
+  useEffect(() => {
+    if (installedSkills.length === 0) return; // 避免初始化时误清理
+
+    const installedSkillNames = new Set(installedSkills.map((s) => s.name));
+    let hasChanges = false;
+
+    const cleanedAgents = draftAgents.map((agent) => {
+      const originalSkills = agent.skills || [];
+      const cleanedSkills = originalSkills.filter((skill) => installedSkillNames.has(skill));
+      if (cleanedSkills.length !== originalSkills.length) {
+        hasChanges = true;
+        return { ...agent, skills: cleanedSkills };
+      }
+      return agent;
+    });
+
+    if (hasChanges) {
+      setDraftAgents(cleanedAgents);
+      // 不需要标记为编辑状态，因为这是自动清理
+    }
+  }, [installedSkills, draftAgents, setDraftAgents]);
+
   const handleDeleteAgent = (idx: number, agentName: string, references: string[]) => {
     setDeleteAgentConfirm({ idx, agentName, references });
   };
