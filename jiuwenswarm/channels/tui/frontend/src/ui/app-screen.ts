@@ -14,7 +14,9 @@ import {
   truncateToWidth,
 } from "@mariozechner/pi-tui";
 import { spawnSync } from "node:child_process";
-import { statSync } from "node:fs";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 import type { CliPiAppState } from "../app-state.js";
 import { openFileInEditor as openInExternalEditor } from "../core/utils/editor.js";
 import {
@@ -812,6 +814,9 @@ export class AppScreen implements Component, Focusable {
     this.unsubscribe = this.state.onChange(() => {
       this.handleStateChange();
     });
+    // Ensure VSCode user settings have terminal.integrated.tabs.title
+    // set to ${sequence} so OSC 0 sequences update the tab title.
+    this.ensureVscodeSettings();
     // Set initial terminal window title
     this.tui.terminal.setTitle("jiuwenswarm");
     // Inject editor refs into app-state so tryAutoRestoreAfterCancel can
@@ -833,6 +838,48 @@ export class AppScreen implements Component, Focusable {
         this.tui.requestRender();
       }
     }, 0);
+  }
+
+  private ensureVscodeSettings(): void {
+    if (process.env.TERM_PROGRAM !== "vscode") return;
+    try {
+      const userSettingsPath = this.getVscodeUserSettingsPath();
+      if (!userSettingsPath) return;
+
+      let settings: Record<string, unknown> = {};
+      try {
+        const raw = fs.readFileSync(userSettingsPath, "utf-8");
+        settings = JSON.parse(raw);
+      } catch {
+        // File doesn't exist or is invalid — start fresh.
+      }
+
+      if (settings["terminal.integrated.tabs.title"] === "${sequence}") return;
+      settings["terminal.integrated.tabs.title"] = "${sequence}";
+      fs.mkdirSync(path.dirname(userSettingsPath), { recursive: true });
+      fs.writeFileSync(userSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    } catch {
+      // Best-effort only — silent failure.
+    }
+  }
+
+  private getVscodeUserSettingsPath(): string | null {
+    switch (process.platform) {
+      case "win32":
+        return process.env.APPDATA
+          ? path.join(process.env.APPDATA, "Code", "User", "settings.json")
+          : null;
+      case "darwin":
+        return process.env.HOME
+          ? path.join(process.env.HOME, "Library", "Application Support", "Code", "User", "settings.json")
+          : null;
+      case "linux":
+        return process.env.HOME
+          ? path.join(process.env.HOME, ".config", "Code", "User", "settings.json")
+          : null;
+      default:
+        return null;
+    }
   }
 
   private initStartupPrompt(): void {
@@ -4286,7 +4333,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     try {
-      const stats = statSync(path);
+      const stats = fs.statSync(path);
       if (!stats.isFile()) {
         return false;
       }
