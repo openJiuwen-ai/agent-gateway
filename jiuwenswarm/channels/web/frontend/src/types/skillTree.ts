@@ -1,8 +1,8 @@
 /**
  * 技能树路径类型定义
  *
- * 由后端 agentic search（symphony 渐进检索）在工具结果的 raw_output.skill_tree
- * 中下发，前端用于在对话时间线内联回放「技能树路径流转」。
+ * 由后端 symphony 技能检索工具在工具结果的 raw_output.skill_tree 中下发，
+ * 前端用于在对话时间线内联回放「技能树路径流转」。
  */
 
 export interface SkillTreeNamedId {

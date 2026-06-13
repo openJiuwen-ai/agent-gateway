@@ -1,10 +1,10 @@
 /**
  * SkillTreePath 组件
  *
- * 当 agentic search（symphony 渐进检索）在对话中被触发时，把后端下发的
+ * 当 symphony 技能检索工具在对话中被触发时，把后端下发的
  * 「技能树路径」按遍历顺序逐级回放展示，营造路径流转效果，最终落到命中的技能。
  *
- * 数据来源：skill_retrieve 工具结果 raw_output.skill_tree（见 types/skillTree.ts）。
+ * 数据来源：工具结果 raw_output.skill_tree（见 types/skillTree.ts）。
  * 纯 SVG/DOM 实现，不引入第三方图表库。
  */
 

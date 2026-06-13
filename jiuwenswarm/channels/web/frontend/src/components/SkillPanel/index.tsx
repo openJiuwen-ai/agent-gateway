@@ -597,7 +597,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
       const data = await webRequest<{ success: boolean; result?: string }>(
         "skills.retrieval.index_build",
         withSession(),
-        { timeoutMs: 10 * 60_000 }
+        { timeoutMs: 31 * 60_000 }
       );
       setRetrievalResult(data.result || "");
       await fetchRetrievalStatus();

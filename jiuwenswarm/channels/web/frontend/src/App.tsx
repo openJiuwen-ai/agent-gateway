@@ -846,6 +846,7 @@ for (let i = payload.team.length; i < 10; i++) {
                 success: n.success,
                 toolCallId: n.toolCallId,
                 summary: n.summary,
+                skillTree: n.skillTree,
               },
               { updatedAt: item.at }
             );
@@ -1151,6 +1152,7 @@ for (let i = payload.team.length; i < 10; i++) {
                 success: n.success,
                 toolCallId: n.toolCallId,
                 summary: n.summary,
+                skillTree: n.skillTree,
               },
               { updatedAt: item.at }
             );

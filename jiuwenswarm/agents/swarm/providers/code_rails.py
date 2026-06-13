@@ -395,6 +395,10 @@ class CodeSkillUseInput(ConstructionInput):
         default=SkillUseRail.SKILL_MODE_ALL,
         description="Skill exposure mode (ALL or AUTO_LIST) from react.skill_mode.",
     )
+    include_tools: bool = param_field(
+        default=True,
+        description="Whether SkillUseRail should expose regular skill tools.",
+    )
 
 
 @harness_element(
@@ -406,14 +410,20 @@ class CodeSkillUseInput(ConstructionInput):
 def build_code_skill_use(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build SkillUseRail from the config source (skill_mode + disabled skills)."""
     from jiuwenswarm.common.utils import get_agent_skills_dir
+    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+        is_skill_retrieval_enabled,
+    )
     from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
     try:
+        if is_skill_retrieval_enabled():
+            logger.info("[swarm.code_skill_use] skipped: agentic skill retrieval is enabled")
+            return None
         inp = CodeSkillUseInput.resolve(params, ctx)
         return SkillUseRail(
             skills_dir=str(get_agent_skills_dir()),
             skill_mode=inp.skill_mode,
-            include_tools=True,
+            include_tools=inp.include_tools,
             disabled_skills=load_execution_disabled_skills(),
         )
     except Exception as exc:

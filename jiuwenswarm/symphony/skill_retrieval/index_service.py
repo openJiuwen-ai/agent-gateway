@@ -46,8 +46,13 @@ class SkillIndexService:
             "built_at": str(state.get("built_at") or ""),
             "inventory_fingerprint": inventory.fingerprint,
             "fingerprint": str(state.get("fingerprint") or ""),
-            "default_compact_codes_enabled": settings.retrieve.compact_codes_enabled,
-            "default_flatten_tree": settings.retrieve.flatten_tree,
+            "build_branching_factor": settings.build.branching_factor,
+            "build_max_depth": settings.build.max_depth,
+            "build_request_timeout_seconds": settings.build.request_timeout_seconds,
+            "retrieval_top_k": settings.retrieve.top_k,
+            "retrieval_compact_codes_enabled": settings.retrieve.compact_codes_enabled,
+            "retrieval_flatten_tree": settings.retrieve.flatten_tree,
+            "retrieval_max_exposure_depth": settings.retrieve.max_exposure_depth,
         }
 
     def build_index(self) -> dict[str, Any]:

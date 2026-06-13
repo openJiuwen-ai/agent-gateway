@@ -31,6 +31,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     RailSpec,
     SubAgentSpec,
 )
+from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import SkillUseRail
@@ -63,6 +64,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
     registry.PLUGIN_RAILS,
+    registry.SKILL_RETRIEVAL_PROMPT,
 )
 
 # Tools common to both roles. Each element self-gates on config, so all are
@@ -108,6 +110,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.USER_HOOKS,
     registry.CODE_SKILL_USE,
     registry.CODE_WORKTREE,
+    registry.SKILL_RETRIEVAL_PROMPT,
 )
 
 # Rails shared with the team profile, appended to the code profile.
@@ -197,10 +200,31 @@ def _evolution_model_config(config: dict[str, Any]) -> dict[str, Any]:
 
 def _skill_mode(config: dict[str, Any]) -> str:
     """Resolve the validated skill-use mode from ``react.skill_mode``."""
+    if _retrieval_enabled(config):
+        return SkillUseRail.SKILL_MODE_AUTO_LIST
     react = _config_section(config, "react")
     raw = react.get("skill_mode", SkillUseRail.SKILL_MODE_ALL)
     valid = {SkillUseRail.SKILL_MODE_AUTO_LIST, SkillUseRail.SKILL_MODE_ALL}
     return raw if isinstance(raw, str) and raw in valid else SkillUseRail.SKILL_MODE_ALL
+
+
+def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return whether agentic skill retrieval is enabled for this config."""
+    env_value = os.getenv("SYMPHONY_SKILL_RETRIEVAL_ENABLED")
+    if env_value is not None and env_value.strip():
+        return env_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+    symphony = _config_section(config or {}, "symphony")
+    retrieval = symphony.get("skill_retrieval")
+    if isinstance(retrieval, dict):
+        return bool(retrieval.get("enabled", False))
+    return False
+
+
+def _remove_skill_use_rails_for_agentic_retrieval(rails: list[RailSpec]) -> list[RailSpec]:
+    """Remove legacy SkillUseRail when agentic retrieval owns discovery."""
+    skill_rail_types = {CORE_SKILL_USE, "skill_use", registry.CODE_SKILL_USE}
+    return [rail for rail in rails if rail.type not in skill_rail_types]
 
 
 def _additional_directories(config: dict[str, Any]) -> list[str]:
@@ -267,7 +291,10 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
         "embed_config": _config_section(c, "embed")
     },
     registry.USER_HOOKS: lambda c: {"hooks_section": _config_section(c, "hooks")},
-    registry.CODE_SKILL_USE: lambda c: {"skill_mode": _skill_mode(c)},
+    registry.CODE_SKILL_USE: lambda c: {
+        "skill_mode": _skill_mode(c),
+        "include_tools": not _retrieval_enabled(c),
+    },
     registry.CODE_WORKTREE: lambda c: {"enabled": True},
 }
 
@@ -526,9 +553,13 @@ def build_member_deep_agent_spec(
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
 
+    retrieval_enabled = _retrieval_enabled(config)
+    if retrieval_enabled:
+        merged_rails = _remove_skill_use_rails_for_agentic_retrieval(merged_rails)
+
     update: dict[str, Any] = {"rails": merged_rails, "tools": merged_tools}
     if not _is_code_mode(mode):
-        update["enable_skill_discovery"] = True
+        update["enable_skill_discovery"] = not retrieval_enabled
 
     subagent_specs = build_member_subagent_specs(config, mode, role)
     if subagent_specs:

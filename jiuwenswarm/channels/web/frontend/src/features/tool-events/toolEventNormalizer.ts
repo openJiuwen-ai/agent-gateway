@@ -109,7 +109,14 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
 
 export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedToolResult {
   const toolResultPayload = asRecord(payload.tool_result) ?? payload;
+  const rawOutputRecord =
+    asRecord(toolResultPayload.raw_output) ?? asRecord(toolResultPayload.rawOutput);
+  const rawOutputResult =
+    typeof rawOutputRecord?.result === 'string'
+      ? rawOutputRecord.result
+      : undefined;
   const result =
+    rawOutputResult ||
     (typeof toolResultPayload.result === 'string' &&
       toolResultPayload.result) ||
     (toolResultPayload.data != null ? String(toolResultPayload.data) : '') ||
@@ -138,7 +145,10 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
       ? toolResultPayload.summary
       : success ? undefined : '❌';
   const skillTree =
-    parseSkillTreePath(toolResultPayload.raw_output) ?? parseSkillTreePath(toolResultPayload);
+    parseSkillTreePath(toolResultPayload.raw_output) ??
+    parseSkillTreePath(toolResultPayload.rawOutput) ??
+    parseSkillTreePath(toolResultPayload) ??
+    parseSkillTreePath(toolResultPayload.result);
 
   return {
     toolName,

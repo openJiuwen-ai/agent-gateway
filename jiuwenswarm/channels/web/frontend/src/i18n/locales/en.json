@@ -670,7 +670,7 @@
       "memoryForbiddenEnabled": "Enable",
       "memoryForbiddenDescription": "Forbidden memory content description",
       "memoryForbiddenDescriptionPlaceholder": "e.g. passwords, API keys, secrets, tokens, credit card numbers, ID numbers, phone numbers",
-      "skillRetrievalBuildRootCategoriesPlaceholder": "Leave empty for built-in defaults, or enter a JSON/YAML file path",
+      "skillRetrievalBuildRootCategoriesPlaceholder": "Edit the YAML/JSON root taxonomy directly",
       "agentSkillsPlaceholder": "Click to select skills",
       "agentSkillsEmpty": "No installed skills",
       "agentName": "Name",
@@ -692,22 +692,25 @@
       "teamMemberAgentKey": "Agent Key",
       "symphonyEnabled": "Enable Skill Symphony",
       "skillRetrievalEnabled": "Enable skill retrieval",
-      "skillRetrievalBuildBranchingFactor": "Tree branching factor",
+      "skillRetrievalBuildBranchingFactor": "Split threshold base",
       "skillRetrievalBuildMaxDepth": "Max tree depth",
       "skillRetrievalBuildRootCategories": "Root taxonomy config",
       "skillRetrievalBuildMaxWorkers": "Build workers",
+      "skillRetrievalBuildMaxRetries": "Build retries",
       "skillRetrievalBuildTimeout": "Build request timeout (s)",
-      "skillRetrievalTopK": "Retrieved skill count",
-      "skillRetrievalCompactCodes": "Compact retrieval",
-      "skillRetrievalFlattenTree": "Flat tree retrieval",
-      "skillRetrievalMaxExposureDepth": "Max exposure depth",
-      "skillRetrievalMaxBranchChoices": "Branch choices per step",
-      "skillRetrievalMaxParallelBranches": "Parallel branches",
-      "skillRetrievalRetrieveTimeout": "Retrieve request timeout (s)"
+      "skillRetrievalBuildClassificationBatchLimit": "Classification batch limit",
+      "skillRetrievalBuildDiscoverySeed": "Discovery seed",
+      "skillRetrievalBuildPostprocessEnabled": "Enable build postprocess",
+      "skillRetrievalBuildPostprocessMaxPasses": "Postprocess max passes",
+      "skillRetrievalBuildPostprocessMinSkills": "Postprocess min skills",
+      "skillRetrievalBuildEquivalenceEnabled": "Enable equivalent branch merge",
+      "skillRetrievalCompactCodes": "Compact code mode",
+      "skillRetrievalFlattenTree": "Flatten retrieval tree",
+      "skillRetrievalMaxExposureDepth": "Exposure depth per call"
     },
     "keyHelp": {
       "skillCreate": "Install `skill-creator` and `teamskill-creator` before enabling",
-      "skillRetrievalBuildRootCategories": "Optional. Leave empty to use the built-in root taxonomy; when set, use a JSON/YAML file containing tree_root_categories or root_categories."
+      "skillRetrievalBuildRootCategories": "Edit YAML/JSON containing tree_root_categories or root_categories directly. The page shows the default taxonomy as a reference; saving writes the config content itself, not an external file path."
     },
     "hideValue": "Hide value",
     "showValue": "Show value",
@@ -807,9 +810,7 @@
       "freeSearchDdg": "Enable DuckDuckGo (including DDG via Jina)",
       "freeSearchBing": "Enable Bing",
       "enabled": "Enable",
-      "kvCacheAffinity": "Compute affinity (KV cache release)",
-      "skillRetrievalCompact": "Enable compact code",
-      "skillRetrievalFlat": "Enable flat tree"
+      "kvCacheAffinity": "Compute affinity (KV cache release)"
     },
     "permissionsTools": {
       "title": "Tool Guardrail (permissions.tools)",

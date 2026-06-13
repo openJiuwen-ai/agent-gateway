@@ -230,6 +230,65 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     }
 
 
+def test_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
+    raw_output = {
+        "success": True,
+        "result": "# Skill Branch Explore",
+        "skill_tree": {
+            "query": "skill_branch_explore: SoftwareEngineering",
+            "steps": [{"order": 0, "node_id": "SoftwareEngineering"}],
+            "candidates": [],
+        },
+    }
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="tool_result",
+            payload={
+                "tool_result": {
+                    "tool_call_id": "call-1",
+                    "tool_name": "skill_branch_explore",
+                    **raw_output,
+                }
+            },
+        )
+    )
+
+    assert parsed["event_type"] == "chat.tool_result"
+    assert parsed["tool_name"] == "skill_branch_explore"
+    assert parsed["tool_call_id"] == "call-1"
+    assert parsed["raw_output"] == raw_output
+
+
+def test_interface_deep_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
+    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    raw_output = {
+        "success": True,
+        "result": "# Skill Branch Explore",
+        "skill_tree": {
+            "query": "skill_branch_explore: SoftwareEngineering",
+            "steps": [{"order": 0, "node_id": "SoftwareEngineering"}],
+            "candidates": [],
+        },
+    }
+    parsed = parse_chunk(
+        types.SimpleNamespace(
+            type="tool_result",
+            payload={
+                "tool_result": {
+                    "tool_call_id": "call-1",
+                    "tool_name": "skill_branch_explore",
+                    **raw_output,
+                }
+            },
+        )
+    )
+
+    assert parsed["event_type"] == "chat.tool_result"
+    assert parsed["tool_name"] == "skill_branch_explore"
+    assert parsed["tool_call_id"] == "call-1"
+    assert parsed["raw_output"] == raw_output
+
+
 def test_parse_stream_chunk_preserves_symphony_status_payload():
     parsed = parse_stream_chunk(
         types.SimpleNamespace(

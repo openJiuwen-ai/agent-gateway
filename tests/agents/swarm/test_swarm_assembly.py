@@ -82,6 +82,7 @@ _COMMON_RAIL_NAMES: frozenset[str] = frozenset(
         registry.TEAM_WORKSPACE_REPORT_PATH,
         registry.CONTEXT_PROCESSOR,
         registry.PLUGIN_RAILS,
+        registry.SKILL_RETRIEVAL_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
     }
 )
@@ -122,6 +123,10 @@ def _make_team_spec() -> TeamAgentSpec:
         team_name="unit_team",
         leader=LeaderSpec(member_name="team_leader"),
     )
+
+
+def _agentic_retrieval_config(enabled: bool = True) -> dict:
+    return {"symphony": {"skill_retrieval": {"enabled": enabled}}}
 
 
 def test_register_swarm_providers_is_idempotent() -> None:
@@ -312,9 +317,9 @@ def test_build_member_capability_specs_rail_names(
 
     assert _COMMON_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    # The common set has exactly 14 entries; the role adds only its evolution
+    # The common set has exactly 15 entries; the role adds only its evolution
     # rails on top.
-    assert len(_COMMON_RAIL_NAMES) == 14
+    assert len(_COMMON_RAIL_NAMES) == 15
     assert rail_names == _COMMON_RAIL_NAMES | extra_rails
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -352,21 +357,45 @@ def test_member_skill_toolkit_carries_selected_skills() -> None:
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
-def test_team_member_deep_agent_spec_enables_skill_discovery(role: str) -> None:
-    """Chat-team members rely on the core default SkillUseRail."""
+def test_team_member_deep_agent_spec_uses_agentic_skill_disclosure(role: str) -> None:
+    """Chat-team members use lightweight skill exposure when retrieval is enabled."""
     base = DeepAgentSpec(enable_skill_discovery=False)
 
-    spec = build_member_deep_agent_spec({}, "team", role, base)
+    spec = build_member_deep_agent_spec(_agentic_retrieval_config(), "team", role, base)
+    rail_names = {rail.type for rail in (spec.rails or [])}
+
+    assert spec.enable_skill_discovery is False
+    assert "core.skill_use" not in rail_names
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_member_deep_agent_spec_keeps_core_skill_discovery_when_retrieval_disabled(role: str) -> None:
+    """Chat-team members keep the original skill discovery path when retrieval is disabled."""
+    base = DeepAgentSpec(enable_skill_discovery=False)
+
+    spec = build_member_deep_agent_spec(_agentic_retrieval_config(False), "team", role, base)
 
     assert spec.enable_skill_discovery is True
 
 
 @pytest.mark.parametrize("mode", ["code.team", "team.plan"])
-def test_code_member_deep_agent_spec_keeps_explicit_skill_use_rail(mode: str) -> None:
-    """Code profiles keep their explicit SkillUseRail provider path."""
+def test_code_member_deep_agent_spec_omits_skill_use_rail_when_retrieval_enabled(mode: str) -> None:
+    """Code profiles also let agentic retrieval own skill discovery."""
     base = DeepAgentSpec(enable_skill_discovery=False)
 
-    spec = build_member_deep_agent_spec({}, mode, "leader", base)
+    spec = build_member_deep_agent_spec(_agentic_retrieval_config(), mode, "leader", base)
+    rail_names = {rail.type for rail in (spec.rails or [])}
+
+    assert spec.enable_skill_discovery is False
+    assert registry.CODE_SKILL_USE not in rail_names
+
+
+@pytest.mark.parametrize("mode", ["code.team", "team.plan"])
+def test_code_member_deep_agent_spec_keeps_skill_use_rail_when_retrieval_disabled(mode: str) -> None:
+    """Code profiles keep their explicit SkillUseRail provider when retrieval is disabled."""
+    base = DeepAgentSpec(enable_skill_discovery=False)
+
+    spec = build_member_deep_agent_spec(_agentic_retrieval_config(False), mode, "leader", base)
     rail_names = {rail.type for rail in (spec.rails or [])}
 
     assert spec.enable_skill_discovery is False
@@ -421,8 +450,12 @@ def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     assert not hasattr(spec, "agent_customizer")
 
 
-def test_enrich_team_spec_appends_after_existing_rails() -> None:
+def test_enrich_team_spec_appends_after_existing_rails(monkeypatch) -> None:
     """Provider rails are appended after a member's pre-existing rails."""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.config_specs._retrieval_enabled",
+        lambda config=None: False,
+    )
     spec = _make_team_spec()
     # Seed the leader with a non-swarm rail to prove ordering is preserved.
     spec.agents["leader"].rails = [RailSpec(type="skill_use")]
@@ -721,6 +754,7 @@ _EXPECTED_CODE_RAIL_NAMES: frozenset[str] = frozenset(
         registry.USER_HOOKS,
         registry.CODE_SKILL_USE,
         registry.CODE_WORKTREE,
+        registry.SKILL_RETRIEVAL_PROMPT,
         registry.CODE_CONFIRM_INTERRUPT,
         registry.MEMBER_SKILL_TOOLKIT,
         registry.TEAM_WORKSPACE_REPORT_PATH,

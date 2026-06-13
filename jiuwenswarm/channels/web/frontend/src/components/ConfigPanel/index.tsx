@@ -292,8 +292,13 @@ const SYMPHONY_KEYS = new Set([
 ]);
 const SKILL_RETRIEVAL_BOOLEAN_KEYS = new Set([
   "skill_retrieval_enabled",
-  "skill_retrieval_compact_codes_enabled",
-  "skill_retrieval_flatten_tree",
+  "skill_retrieval_build_postprocess_enabled",
+  "skill_retrieval_build_equivalence_enabled",
+  "skill_retrieval_retrieve_compact_codes_enabled",
+  "skill_retrieval_retrieve_flatten_tree",
+]);
+const MULTILINE_CONFIG_KEYS = new Set([
+  "skill_retrieval_build_root_categories",
 ]);
 const SKILL_RETRIEVAL_KEYS = new Set([
   "skill_retrieval_enabled",
@@ -301,14 +306,17 @@ const SKILL_RETRIEVAL_KEYS = new Set([
   "skill_retrieval_build_max_depth",
   "skill_retrieval_build_root_categories",
   "skill_retrieval_build_max_workers",
+  "skill_retrieval_build_max_retries",
   "skill_retrieval_build_request_timeout_seconds",
-  "skill_retrieval_retrieve_top_k",
-  "skill_retrieval_compact_codes_enabled",
-  "skill_retrieval_flatten_tree",
+  "skill_retrieval_build_classification_batch_limit",
+  "skill_retrieval_build_discovery_seed",
+  "skill_retrieval_build_postprocess_enabled",
+  "skill_retrieval_build_postprocess_max_passes",
+  "skill_retrieval_build_postprocess_min_skills",
+  "skill_retrieval_build_equivalence_enabled",
+  "skill_retrieval_retrieve_compact_codes_enabled",
+  "skill_retrieval_retrieve_flatten_tree",
   "skill_retrieval_retrieve_max_exposure_depth",
-  "skill_retrieval_retrieve_max_branch_choices",
-  "skill_retrieval_retrieve_max_parallel_branches",
-  "skill_retrieval_retrieve_request_timeout_seconds",
 ]);
 
 function classifyKey(key: string): string {
@@ -511,8 +519,6 @@ function getBooleanKeyLabel(key: string, t: (key: string) => string): string {
     a2ui_enabled: t('config.booleanLabels.enabled'),
     symphony_enabled: t('config.booleanLabels.enabled'),
     skill_retrieval_enabled: t('config.booleanLabels.enabled'),
-    skill_retrieval_compact_codes_enabled: t('config.booleanLabels.skillRetrievalCompact'),
-    skill_retrieval_flatten_tree: t('config.booleanLabels.skillRetrievalFlat'),
   };
   return labels[key] ?? key;
 }
@@ -526,6 +532,10 @@ function isSensitiveKey(key: string): boolean {
     lower.includes("password") ||
     lower.includes("proxy")
   );
+}
+
+function isMultilineConfigKey(key: string): boolean {
+  return MULTILINE_CONFIG_KEYS.has(key);
 }
 
 function normalizeConfigValue(value: unknown): string {
@@ -585,14 +595,17 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   skill_retrieval_build_max_depth: "config.keys.skillRetrievalBuildMaxDepth",
   skill_retrieval_build_root_categories: "config.keys.skillRetrievalBuildRootCategories",
   skill_retrieval_build_max_workers: "config.keys.skillRetrievalBuildMaxWorkers",
+  skill_retrieval_build_max_retries: "config.keys.skillRetrievalBuildMaxRetries",
   skill_retrieval_build_request_timeout_seconds: "config.keys.skillRetrievalBuildTimeout",
-  skill_retrieval_retrieve_top_k: "config.keys.skillRetrievalTopK",
-  skill_retrieval_compact_codes_enabled: "config.keys.skillRetrievalCompactCodes",
-  skill_retrieval_flatten_tree: "config.keys.skillRetrievalFlattenTree",
+  skill_retrieval_build_classification_batch_limit: "config.keys.skillRetrievalBuildClassificationBatchLimit",
+  skill_retrieval_build_discovery_seed: "config.keys.skillRetrievalBuildDiscoverySeed",
+  skill_retrieval_build_postprocess_enabled: "config.keys.skillRetrievalBuildPostprocessEnabled",
+  skill_retrieval_build_postprocess_max_passes: "config.keys.skillRetrievalBuildPostprocessMaxPasses",
+  skill_retrieval_build_postprocess_min_skills: "config.keys.skillRetrievalBuildPostprocessMinSkills",
+  skill_retrieval_build_equivalence_enabled: "config.keys.skillRetrievalBuildEquivalenceEnabled",
+  skill_retrieval_retrieve_compact_codes_enabled: "config.keys.skillRetrievalCompactCodes",
+  skill_retrieval_retrieve_flatten_tree: "config.keys.skillRetrievalFlattenTree",
   skill_retrieval_retrieve_max_exposure_depth: "config.keys.skillRetrievalMaxExposureDepth",
-  skill_retrieval_retrieve_max_branch_choices: "config.keys.skillRetrievalMaxBranchChoices",
-  skill_retrieval_retrieve_max_parallel_branches: "config.keys.skillRetrievalMaxParallelBranches",
-  skill_retrieval_retrieve_request_timeout_seconds: "config.keys.skillRetrievalRetrieveTimeout",
 };
 const KEY_PLACEHOLDER_I18N: Record<string, string> = {
   memory_forbidden_description: "config.keys.memoryForbiddenDescriptionPlaceholder",
@@ -613,16 +626,19 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   skill_retrieval_enabled: 0,
   skill_retrieval_build_branching_factor: 10,
   skill_retrieval_build_max_depth: 11,
-  skill_retrieval_build_root_categories: 12,
-  skill_retrieval_build_max_workers: 13,
+  skill_retrieval_build_max_workers: 12,
+  skill_retrieval_build_max_retries: 13,
   skill_retrieval_build_request_timeout_seconds: 14,
-  skill_retrieval_retrieve_top_k: 20,
-  skill_retrieval_compact_codes_enabled: 21,
-  skill_retrieval_flatten_tree: 22,
-  skill_retrieval_retrieve_max_exposure_depth: 23,
-  skill_retrieval_retrieve_max_branch_choices: 24,
-  skill_retrieval_retrieve_max_parallel_branches: 25,
-  skill_retrieval_retrieve_request_timeout_seconds: 26,
+  skill_retrieval_build_classification_batch_limit: 15,
+  skill_retrieval_build_discovery_seed: 16,
+  skill_retrieval_build_postprocess_enabled: 17,
+  skill_retrieval_build_postprocess_max_passes: 18,
+  skill_retrieval_build_postprocess_min_skills: 19,
+  skill_retrieval_build_equivalence_enabled: 20,
+  skill_retrieval_build_root_categories: 21,
+  skill_retrieval_retrieve_compact_codes_enabled: 31,
+  skill_retrieval_retrieve_flatten_tree: 32,
+  skill_retrieval_retrieve_max_exposure_depth: 33,
   memory_forbidden_enabled: 0,
   memory_forbidden_description: 1,
   model: 0,
@@ -794,6 +810,25 @@ function GroupSection({
                               </>
                             )}
                           </select>
+                        </div>
+                      </div>
+                    ) : isMultilineConfigKey(key) ? (
+                      <div className="flex items-start gap-2">
+                        <span
+                          className={`inline-flex w-3 justify-center shrink-0 font-semibold leading-none select-none pt-2 ${isRequiredModelField(key) ? "text-danger" : "text-transparent"
+                            }`}
+                          aria-hidden="true"
+                        >
+                          *
+                        </span>
+                        <div className="relative flex-1">
+                          <textarea
+                            value={draftValues[key] ?? value}
+                            onChange={(e) => onChange(key, e.target.value)}
+                            placeholder={KEY_PLACEHOLDER_I18N[key] ? t(KEY_PLACEHOLDER_I18N[key]) : t('config.enterValue')}
+                            className="w-full min-h-[320px] rounded-md border border-border bg-bg px-3 py-2 font-mono text-[12px] leading-5 outline-none focus:border-accent whitespace-pre"
+                            spellCheck={false}
+                          />
                         </div>
                       </div>
                     ) : (

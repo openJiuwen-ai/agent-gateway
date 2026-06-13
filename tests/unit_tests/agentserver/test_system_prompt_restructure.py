@@ -13,7 +13,9 @@ from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
 from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail as _runtime_mod
+from jiuwenswarm.agents.harness.common.rails import skill_retrieval_prompt_rail as _skill_retrieval_prompt_mod
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
+from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
 
 
 class _TestableJiuWenSwarmDeepAdapter(JiuWenSwarmDeepAdapter):
@@ -38,6 +40,29 @@ class _FakeAgent:
     def __init__(self, builder: SystemPromptBuilder) -> None:
         self.system_prompt_builder = builder
         self.prompt_attachment_manager = PromptAttachmentManager()
+
+
+class _FakeAbilityManager:
+    def __init__(self) -> None:
+        self._items = {
+            "list_skill": SimpleNamespace(name="list_skill"),
+            "search_skill": SimpleNamespace(name="search_skill"),
+        }
+
+    def get(self, name: str):
+        return self._items.get(name)
+
+    def remove(self, name: str):
+        return self._items.pop(name, None)
+
+    def add(self, ability):
+        self._items[ability.name] = ability
+
+
+class _FakeToolAgent(_FakeAgent):
+    def __init__(self, builder: SystemPromptBuilder) -> None:
+        super().__init__(builder)
+        self.ability_manager = _FakeAbilityManager()
 
 
 def test_build_agent_identity_prompt_contains_identity_section_only(monkeypatch):
@@ -242,10 +267,58 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     assert "当前语言：cn" in rendered
 
 
-def test_resolve_skill_mode_accepts_all_and_auto_list():
+@pytest.mark.asyncio
+async def test_skill_retrieval_prompt_hides_legacy_list_skill(monkeypatch):
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "render_skill_retrieval_prompt",
+        lambda manager, language: "# Agentic 技能检索\n使用 skill_branch_explore。",
+    )
+    builder = SystemPromptBuilder(language="cn")
+    builder.add_section(PromptSection(name="skills", content={"cn": "旧 list_skill 提示"}, priority=40))
+    agent = _FakeToolAgent(builder)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(
+            tools=[
+                SimpleNamespace(name="list_skill"),
+                SimpleNamespace(name="list_skills"),
+                SimpleNamespace(name="skill_branch_explore"),
+            ],
+        ),
+        session=_FakeSession(),
+        extra={},
+    )
+
+    rail = SkillRetrievalPromptRail()
+    rail.init(agent)
+    await rail.before_model_call(ctx)
+
+    assert [tool.name for tool in ctx.inputs.tools] == ["skill_branch_explore"]
+    assert agent.ability_manager.get("list_skill") is None
+    prompt = builder.build()
+    assert "旧 list_skill 提示" not in prompt
+    assert "Agentic 技能检索" in prompt
+
+    await rail.after_model_call(ctx)
+
+    assert agent.ability_manager.get("list_skill") is not None
+
+
+def test_resolve_skill_mode_accepts_all_and_auto_list(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
+        lambda: False,
+    )
     assert JiuWenSwarmDeepAdapter._resolve_skill_mode({"skill_mode": "all"}) == "all"
     assert JiuWenSwarmDeepAdapter._resolve_skill_mode({"skill_mode": "auto_list"}) == "auto_list"
     assert JiuWenSwarmDeepAdapter._resolve_skill_mode({"skill_mode": "invalid"}) == "all"
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
+        lambda: True,
+    )
+    assert JiuWenSwarmDeepAdapter._resolve_skill_mode({"skill_mode": "all"}) == "auto_list"
 
 
 def test_resolve_enable_task_loop_can_be_called_on_class(monkeypatch):

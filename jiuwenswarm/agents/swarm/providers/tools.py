@@ -7,7 +7,7 @@ elements, each self-gated by the config source and filtered against the swarm
 ``TOOL_WHITELIST``:
 
 * ``swarm.skill_toolkit`` — skill discovery / install / uninstall tools.
-* ``swarm.skill_retrieval`` — dispatch-backed installed skill retrieval tools.
+* ``swarm.skill_retrieval`` — agentic installed skill tree retrieval tools.
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
@@ -340,7 +340,7 @@ def build_skill_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[
 @harness_element(
     kind=ElementKind.TOOL,
     name=SKILL_RETRIEVAL,
-    description="Dispatch-backed installed skill retrieval tools bound to the member workspace.",
+    description="Agentic installed skill tree retrieval tools bound to the member workspace.",
     input_model=SkillToolkitInput,
 )
 def build_skill_retrieval(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:

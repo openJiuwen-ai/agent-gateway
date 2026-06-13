@@ -192,6 +192,9 @@ from jiuwenswarm.agents.harness.common.tools import (
     is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
+from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
+    SkillRetrievalPromptRail,
+)
 from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import MultiSessionToolkit
@@ -1856,6 +1859,8 @@ class JiuWenSwarmDeepAdapter:
     @staticmethod
     def _resolve_skill_mode(config: dict[str, Any]) -> str:
         """Validate configured skill mode and fallback safely on invalid values."""
+        if is_skill_retrieval_enabled():
+            return SkillUseRail.SKILL_MODE_AUTO_LIST
         raw_skill_mode = config.get("skill_mode", SkillUseRail.SKILL_MODE_ALL)
         valid_modes = {
             SkillUseRail.SKILL_MODE_AUTO_LIST,
@@ -2232,6 +2237,12 @@ class JiuWenSwarmDeepAdapter:
         self, config: dict[str, Any], include_tools: bool = False
     ) -> SkillUseRail | None:
         """Build SkillUseRail."""
+        if is_skill_retrieval_enabled():
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillUseRail skipped: "
+                "agentic skill retrieval is enabled"
+            )
+            return None
         try:
             skill_mode = self._resolve_skill_mode(config)
             logger.info("[JiuWenSwarmDeepAdapter] current skill_mode: %s", skill_mode)
@@ -2440,6 +2451,16 @@ class JiuWenSwarmDeepAdapter:
             rail = None
         return rail
 
+    def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
+        """Build lightweight agentic skill retrieval prompt guidance."""
+        if not is_skill_retrieval_enabled():
+            return None
+        try:
+            return SkillRetrievalPromptRail(manager=self._skill_manager)
+        except Exception as exc:
+            logger.warning("[JiuWenClawDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
+            return None
+
     def _build_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any], *, mode: str = "agent.plan"
     ) -> list[Any]:
@@ -2499,6 +2520,10 @@ class JiuWenSwarmDeepAdapter:
                 self._build_skill_rail,
                 {"config": config, "include_tools": self._skill_include_tools_for_profile()},
             ),
+        )
+        rail_infos.insert(
+            3 if self._filesystem_rail_enabled_for_profile() else 2,
+            _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
         )
 
         rails_list = []
@@ -2655,22 +2680,25 @@ class JiuWenSwarmDeepAdapter:
                     False,
                 )
 
-        # Reuse existing SkillUseRail to preserve dynamically loaded skills
-        # from activate_package() / load_harness_config()
-        if self._skill_rail is None:
-            self._skill_rail = self._build_skill_rail(
-                config,
-                include_tools=self._skill_include_tools_for_profile(),
-            )
+        if is_skill_retrieval_enabled():
+            self._skill_rail = None
         else:
-            # Update existing rail's skill_mode if changed
-            new_skill_mode = self._resolve_skill_mode(config)
-            if self._skill_rail.skill_mode != new_skill_mode:
-                self._skill_rail.skill_mode = new_skill_mode
-            # Update disabled_skills
-            new_disabled = self._skill_manager.list_execution_disabled_skills()
-            if self._skill_rail.disabled_skills != new_disabled:
-                self._skill_rail.disabled_skills = new_disabled
+            # Reuse existing SkillUseRail to preserve dynamically loaded skills
+            # from activate_package() / load_harness_config()
+            if self._skill_rail is None:
+                self._skill_rail = self._build_skill_rail(
+                    config,
+                    include_tools=self._skill_include_tools_for_profile(),
+                )
+            else:
+                # Update existing rail's skill_mode if changed
+                new_skill_mode = self._resolve_skill_mode(config)
+                if self._skill_rail.skill_mode != new_skill_mode:
+                    self._skill_rail.skill_mode = new_skill_mode
+                # Update disabled_skills
+                new_disabled = self._skill_manager.list_execution_disabled_skills()
+                if self._skill_rail.disabled_skills != new_disabled:
+                    self._skill_rail.disabled_skills = new_disabled
 
         if not self._filesystem_rail_enabled_for_profile():
             self._filesystem_rail = None
@@ -5761,6 +5789,18 @@ class JiuWenSwarmDeepAdapter:
                             raw_output = result_info.get("raw_output")
                             if raw_output is None:
                                 raw_output = result_info.get("rawOutput")
+                            if raw_output is None and "skill_tree" in result_info:
+                                raw_output = {}
+                                for key, value in result_info.items():
+                                    if key not in ("tool_name", "name", "tool_call_id", "toolCallId"):
+                                        raw_output[key] = value
+                            result_value = result_info.get("result")
+                            if (
+                                raw_output is None
+                                and isinstance(result_value, dict)
+                                and "skill_tree" in result_value
+                            ):
+                                raw_output = result_value
                             if raw_output is not None:
                                 result_payload["raw_output"] = raw_output
                             for key in (

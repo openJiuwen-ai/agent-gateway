@@ -218,11 +218,15 @@ function ToolDetailModal({ execution, onClose }: ToolDetailModalProps) {
                   )}
                 </span>
               </div>
-              {result.skillTree ? (
+              {result.skillTree && (
                 <SkillTreePath tree={result.skillTree} stepIntervalMs={0} />
-              ) : (
+              )}
+              {(!result.skillTree || result.result) && (
                 <pre
-                  className="p-4 rounded-lg overflow-auto whitespace-pre-wrap break-all"
+                  className={clsx(
+                    'p-4 rounded-lg overflow-auto whitespace-pre-wrap break-all',
+                    result.skillTree && 'mt-4'
+                  )}
                   style={{
                     fontFamily: 'var(--mono)',
                     fontSize: 'var(--font-size-sm)',
@@ -364,7 +368,7 @@ export function ToolGroupDisplay({
 
   const headerLabel = t('chatUi.toolGroup.executed', { totalPairs });
   const skillTreeExecutions = visibleExecutions.filter(
-    (execution) => execution.toolCall.name === 'skill_retrieve' && execution.result?.skillTree
+    (execution) => execution.result?.skillTree
   );
   if (visibleExecutions.length === 0) {
     return null;

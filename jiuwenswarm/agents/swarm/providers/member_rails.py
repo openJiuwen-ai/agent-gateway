@@ -30,6 +30,9 @@ from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_mana
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
 )
+from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
+    SkillRetrievalPromptRail,
+)
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -52,12 +55,45 @@ TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
 PLUGIN_RAILS = "swarm.plugin_rails"
+SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
     """Resolve the member workspace root path."""
     workspace = getattr(ctx, "workspace", None)
     return getattr(workspace, "root_path", None) if workspace else None
+
+
+class SkillRetrievalPromptInput(ConstructionInput):
+    """Construction inputs for the agentic skill retrieval prompt rail."""
+
+    workspace_root: str | None = context_field(
+        resolver=_workspace_root,
+        description="Member workspace root; the SkillManager resolves installed skills from it.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=SKILL_RETRIEVAL_PROMPT,
+    description="Lightweight prompt guidance for agentic installed-skill tree retrieval.",
+    input_model=SkillRetrievalPromptInput,
+)
+def _build_skill_retrieval_prompt_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> SkillRetrievalPromptRail | None:
+    """Build the skill retrieval prompt rail when the feature is enabled."""
+    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+        is_skill_retrieval_enabled,
+    )
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    if not is_skill_retrieval_enabled():
+        return None
+    inp = SkillRetrievalPromptInput.resolve(params, context)
+    manager = SkillManager(workspace_dir=inp.workspace_root)
+    return SkillRetrievalPromptRail(manager=manager)
 
 
 class RuntimePromptInput(ConstructionInput):
@@ -341,4 +377,5 @@ __all__ = [
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "PLUGIN_RAILS",
+    "SKILL_RETRIEVAL_PROMPT",
 ]
