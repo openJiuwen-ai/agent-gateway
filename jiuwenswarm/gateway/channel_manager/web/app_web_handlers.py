@@ -1245,8 +1245,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # tokens into reasoning_content while leaving content empty.  Treat a
         # non-empty reasoning_content as a valid response as well.
         reasoning_content = getattr(resp, "reasoning_content", None) if hasattr(resp, "reasoning_content") else None
-        has_valid_response = (isinstance(content, str) and content.strip()) or (
-                isinstance(reasoning_content, str) and reasoning_content.strip()
+        has_valid_response = (isinstance(content, str) and content) or (
+                isinstance(reasoning_content, str) and reasoning_content
         )
         if not has_valid_response:
             await channel.send_response(

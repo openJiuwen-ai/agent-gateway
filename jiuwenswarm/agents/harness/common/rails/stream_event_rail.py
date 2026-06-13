@@ -18,6 +18,7 @@ from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     ToolMessage,
+    UserMessage,
 )
 from openjiuwen.core.session.agent import Session
 from openjiuwen.core.session.stream import OutputSchema
@@ -294,6 +295,102 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if self._get_prompt_language() == "en":
             return f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result."
         return f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。"
+
+    def _tool_interrupt_placeholders_by_id(
+        self,
+        messages: list[Any],
+    ) -> dict[str, str]:
+        """Map tool_call_id to the exact placeholder content emitted by this rail."""
+        placeholders: dict[str, str] = {}
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            for tool_call in getattr(message, "tool_calls", None) or []:
+                tool_call_id = getattr(tool_call, "id", "")
+                if not tool_call_id:
+                    continue
+                placeholders[tool_call_id] = self._tool_interrupted_message(
+                    getattr(tool_call, "name", ""),
+                )
+        return placeholders
+
+    @staticmethod
+    def _tool_call_names_by_id(messages: list[Any]) -> dict[str, str]:
+        """Map tool_call_id back to the originating assistant tool name.
+
+        This is NOT enough to classify fake/real tool messages by itself.
+        We use it only to recover the expected tool name for a ToolMessage's
+        tool_call_id, then match that message content against known interrupt
+        placeholder templates for that tool.
+        """
+        names: dict[str, str] = {}
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            for tool_call in getattr(message, "tool_calls", None) or []:
+                tool_call_id = getattr(tool_call, "id", "")
+                if not tool_call_id:
+                    continue
+                names[tool_call_id] = str(getattr(tool_call, "name", "") or "")
+        return names
+
+    @staticmethod
+    def _tool_message_text(message: ToolMessage) -> str | None:
+        content = getattr(message, "content", None)
+        return content if isinstance(content, str) else None
+
+    @staticmethod
+    def _normalize_tool_interrupt_text(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _is_legacy_tool_interrupt_placeholder_text(
+        self,
+        content: str,
+        tool_name: str,
+    ) -> bool:
+        legacy_templates = [
+            f"[Tool execution interrupted] Tool {tool_name} was interrupted by user during execution, "
+            f"no result available.",
+            f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result.",
+            f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
+        ]
+        normalized_content = self._normalize_tool_interrupt_text(content)
+        return any(
+            normalized_content == self._normalize_tool_interrupt_text(template)
+            for template in legacy_templates
+        )
+
+    def _is_tool_interrupt_placeholder(
+        self,
+        message: Any,
+        placeholders_by_id: dict[str, str],
+        tool_names_by_id: dict[str, str],
+    ) -> bool:
+        """Classify whether a ToolMessage is an interrupt placeholder.
+
+        Decision rule:
+        1. tool_call_id identifies which assistant tool call this ToolMessage
+           belongs to.
+        2. tool_call_id -> tool_name lets us recover the expected tool name.
+        3. We then compare content against known interrupt placeholder text
+           variants for that tool. So fake/real is still determined by content,
+           not by tool_call_id alone.
+        """
+        if not isinstance(message, ToolMessage):
+            return False
+        tool_call_id = getattr(message, "tool_call_id", "")
+        if not tool_call_id:
+            return False
+        expected = placeholders_by_id.get(tool_call_id)
+        content = self._tool_message_text(message)
+        if not content:
+            return False
+        if expected and content == expected:
+            return True
+        tool_name = tool_names_by_id.get(tool_call_id, "")
+        if not tool_name:
+            return False
+        return self._is_legacy_tool_interrupt_placeholder_text(content, tool_name)
 
     def _resolve_sid(self, ctx: AgentCallbackContext, session: Session | None = None) -> str:
         """Resolve the per-session key used by this rail.
@@ -977,29 +1074,16 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         return s
 
     async def _fix_incomplete_tool_context(self, ctx: AgentCallbackContext) -> None:
-        """Ensure every assistant tool_call has a matching ToolMessage, without
-        disturbing the existing message order or content.
+        """Repair incomplete tool-call history with minimal, rule-based replay.
 
-        Reasoning models (e.g. GLM's interleaved / preserved thinking) require
-        the assistant reasoning + tool-call sequence to be replayed back to the
-        model faithfully across turns; reordering or editing those messages
-        corrupts the model's reasoning state and triggers degenerate behaviour
-        (redoing completed work, emitting malformed/garbled tool calls).
-
-        The previous implementation popped and rebuilt the whole message list
-        on every model call -- reordering tool results, rewriting tool_call
-        arguments, and inserting placeholders -- which broke that contract on
-        every turn. This version is intentionally minimal:
-
-        * It is a strict no-op when the context is already consistent (every
-          assistant tool_call already has a matching ToolMessage).
-        * When a result is genuinely missing, it only INSERTS a placeholder
-          ToolMessage right after the assistant that owns the call. It never
-          reorders, drops, or rewrites any existing message.
-
-        This keeps the behaviour model-agnostic: it neither adds nor removes
-        any model-specific fields (such as reasoning_content), it merely stops
-        scrambling the sequence the model produced.
+        Rule:
+        - For each assistant tool_calls block, only the window before the next
+          UserMessage counts as the "immediate response" area.
+        - If a tool_call_id has no ToolMessage in that window, insert one
+          immediately after the assistant.
+        - If a placeholder ToolMessage exists and a later real ToolMessage with
+          the same tool_call_id exists, replace the placeholder in-place with
+          the real ToolMessage and drop the later duplicate.
         """
         try:
             context = ctx.context
@@ -1038,52 +1122,106 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         if normalized != raw:
                             tc.arguments = normalized
 
-            # tool_call_ids that already have a ToolMessage result anywhere
-            # in the context. Computed once so we never insert a duplicate
-            # placeholder for a call whose real result simply appears later.
-            satisfied_ids = {
-                getattr(m, "tool_call_id", None)
-                for m in messages
-                if isinstance(m, ToolMessage)
-            }
-            satisfied_ids.discard(None)
-            satisfied_ids.discard("")
+            placeholders_by_id = self._tool_interrupt_placeholders_by_id(messages)
+            tool_names_by_id = self._tool_call_names_by_id(messages)
 
-            # Is any assistant tool_call missing its result?
+            real_tool_messages_by_id: dict[str, ToolMessage] = {}
+            for message in messages:
+                if not isinstance(message, ToolMessage):
+                    continue
+                tool_call_id = getattr(message, "tool_call_id", "")
+                if (
+                    tool_call_id
+                    and tool_call_id not in real_tool_messages_by_id
+                    and not self._is_tool_interrupt_placeholder(
+                        message, placeholders_by_id, tool_names_by_id)
+                ):
+                    real_tool_messages_by_id[tool_call_id] = message
+
+            missing_window_tool_calls: dict[int, list[Any]] = {}
             has_missing = False
-            for m in messages:
-                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
-                    for tc in m.tool_calls:
-                        tcid = getattr(tc, "id", "")
-                        if tcid and tcid not in satisfied_ids:
-                            has_missing = True
-                            break
-                if has_missing:
-                    break
+            has_replaceable_placeholder = False
+            for idx, message in enumerate(messages):
+                if not (isinstance(message, AssistantMessage) and getattr(message, "tool_calls", None)):
+                    continue
+
+                next_user_idx = len(messages)
+                probe_idx = idx + 1
+                while probe_idx < len(messages):
+                    if isinstance(messages[probe_idx], UserMessage):
+                        next_user_idx = probe_idx
+                        break
+                    probe_idx += 1
+
+                window_tool_ids: set[str] = set()
+                for window_message in messages[idx + 1:next_user_idx]:
+                    if isinstance(window_message, ToolMessage):
+                        tcid = getattr(window_message, "tool_call_id", "")
+                        if tcid:
+                            window_tool_ids.add(tcid)
+                        if (
+                            tcid
+                            and self._is_tool_interrupt_placeholder(
+                                window_message, placeholders_by_id, tool_names_by_id)
+                            and tcid in real_tool_messages_by_id
+                        ):
+                            has_replaceable_placeholder = True
+
+                missing_for_assistant = []
+                for tc in message.tool_calls:
+                    tc_id = getattr(tc, "id", "")
+                    if tc_id and tc_id not in window_tool_ids:
+                        missing_for_assistant.append(tc)
+                if missing_for_assistant:
+                    missing_window_tool_calls[idx] = missing_for_assistant
+                    has_missing = True
 
             # Already consistent: leave the context exactly as the model
             # produced it. This is the common path on every normal turn.
-            if not has_missing:
+            if not has_missing and not has_replaceable_placeholder:
                 return
 
-            # Repair: replay messages in their ORIGINAL order, inserting a
-            # placeholder result immediately after the assistant that owns
-            # each unmatched call. Nothing existing is reordered or dropped.
             rebuilt = context.pop_messages(size=len(messages))
             inserted = 0
-            for m in rebuilt:
-                await context.add_messages(m)
-                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
-                    for tc in m.tool_calls:
+            consumed_real_ids: set[str] = set()
+
+            for idx, message in enumerate(rebuilt):
+                if isinstance(message, AssistantMessage):
+                    await context.add_messages(message)
+                    for tc in missing_window_tool_calls.get(idx, []):
                         tcid = getattr(tc, "id", "")
-                        if tcid and tcid not in satisfied_ids:
-                            await context.add_messages(ToolMessage(
+                        replacement = real_tool_messages_by_id.get(tcid)
+                        await context.add_messages(
+                            replacement
+                            if replacement is not None
+                            else ToolMessage(
                                 content=self._tool_interrupted_message(
                                     getattr(tc, "name", ""),
                                 ),
                                 tool_call_id=tcid,
-                            ))
-                            inserted += 1
+                            )
+                        )
+                        inserted += 1
+                        if replacement is not None:
+                            consumed_real_ids.add(tcid)
+                    continue
+
+                if isinstance(message, ToolMessage):
+                    tcid = getattr(message, "tool_call_id", "")
+                    is_placeholder = self._is_tool_interrupt_placeholder(
+                        message,
+                        placeholders_by_id,
+                        tool_names_by_id,
+                    )
+                    if is_placeholder and tcid in real_tool_messages_by_id:
+                        if tcid not in consumed_real_ids:
+                            await context.add_messages(real_tool_messages_by_id[tcid])
+                            consumed_real_ids.add(tcid)
+                        continue
+                    if not is_placeholder and tcid in consumed_real_ids:
+                        continue
+
+                await context.add_messages(message)
             if inserted:
                 logger.info(
                     "Inserted %d placeholder tool result(s) for unmatched "
