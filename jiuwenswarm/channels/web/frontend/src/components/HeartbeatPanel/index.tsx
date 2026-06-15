@@ -185,7 +185,7 @@ export function HeartbeatPanel() {
       return;
     }
     const every = Number(everyInput);
-    if (!Number.isFinite(every) || every < 0) {
+    if (!Number.isFinite(every) || every <= 0) {
       setError(t('heartbeat.errors.invalidEvery'));
       return;
     }

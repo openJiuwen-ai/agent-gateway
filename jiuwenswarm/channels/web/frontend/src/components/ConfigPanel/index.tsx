@@ -2553,7 +2553,7 @@ export function ConfigPanel({
     if (!deleteTeamConfirm) return;
     const newTeams = draftTeams.filter((_, i) => i !== deleteTeamConfirm.idx);
     setDraftTeams(newTeams);
-    setAgentsTeamsEdited(true);
+    markAgentsTeamsEdited();
     setDeleteTeamConfirm(null);
   };
 
@@ -3297,7 +3297,7 @@ export function ConfigPanel({
                           markAgentsTeamsEdited();
                         }}
                         teams={draftTeams}
-                        onTeamsChange={(teams) => { setDraftTeams(teams); setAgentsTeamsEdited(true); }}
+                        onTeamsChange={(teams) => { setDraftTeams(teams); markAgentsTeamsEdited(); }}
                         availableModels={draftModels}
                         installedSkills={installedSkills}
                         onDeleteAgent={handleDeleteAgent}

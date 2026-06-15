@@ -438,7 +438,7 @@
     "errors": {
       "loadConfig": "Failed to load heartbeat settings",
       "saveConfig": "Failed to save heartbeat settings",
-      "invalidEvery": "Heartbeat interval must be a non-negative number",
+      "invalidEvery": "Heartbeat interval must be greater than 0",
       "invalidActiveHours": "active_hours must use HH:MM format (for example 08:00)",
       "invalidRange": "End time must be later than start time"
     }
