@@ -8,6 +8,7 @@ from jiuwenswarm.common.utils import logger
 
 
 _DEFAULT_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
+_DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)
 
 
 def _is_default_package_extension_dir(path: Path) -> bool:
@@ -31,15 +32,25 @@ def _split_extension_dirs(value: str) -> list[str]:
     return [p.strip() for p in value.split(";") if p.strip()]
 
 
+def _dedupe_extension_dirs(paths: list[str]) -> list[str]:
+    seen: set[tuple[str, ...]] = set()
+    result: list[str] = []
+    for path in paths:
+        key = tuple(part.lower() for part in Path(path).parts if part not in ("", "."))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
 def _extension_dir_paths_from_config(cfg: dict) -> list[str]:
     """读取 ``extensions.extension_dirs``（扩展包搜索目录：仅支持字符串，用 ';' 分割）。"""
     ext = cfg.get("extensions")
-    if not isinstance(ext, dict):
-        return []
-    dirs = ext.get("extension_dirs")
-    if isinstance(dirs, str):
-        return _split_extension_dirs(dirs)
-    return []
+    dirs = ext.get("extension_dirs") if isinstance(ext, dict) else None
+    paths = _split_extension_dirs(dirs) if isinstance(dirs, str) else []
+    paths.append(_DEFAULT_EXTENSION_DIR)
+    return _dedupe_extension_dirs(paths)
 
 
 class ExtensionManager:
