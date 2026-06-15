@@ -926,6 +926,12 @@ async def process_team_message_stream(
 
     try:
         if is_first_request:
+            # Sync team observability with current config before streaming.
+            # Runner.run_agent_team_streaming auto-attaches handlers when
+            # is_initialized() is True; this call ensures init/shutdown
+            # matches the latest config toggle.
+            from jiuwenswarm.agents.harness.team.team_manager import sync_team_observability
+            sync_team_observability()
             team_manager.ensure_team_shared_skills_ready_for_session(session_id, team_spec)
             await team_manager.prepare_runtime_activation(session_id, team_name)
             request_queue = asyncio.Queue()

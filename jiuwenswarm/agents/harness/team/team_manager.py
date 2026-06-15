@@ -72,6 +72,76 @@ _PG_POST_START_READY_MAX_SLEEP = 2.0
 _PG_POST_START_READY_BACKOFF = 1.45
 _PG_POST_START_LOG_EVERY_SEC = 5.0
 
+# ── Team Observability ──────────────────────────────────────
+# Tracks whether observability is currently active so we can
+# detect config toggles (enabled → disabled or vice-versa)
+# and init / shutdown accordingly on each team request.
+_observability_active: bool = False
+
+
+def sync_team_observability() -> None:
+    """Synchronize observability state with current config.
+
+    Called before each ``Runner.run_agent_team_streaming`` so that
+    hot-reloading the ``team_observability.enabled`` flag takes
+    effect immediately:
+
+    * disabled → enabled : ``init_observability()``
+    * enabled → disabled : ``shutdown_observability()``
+    * unchanged          : no-op
+    """
+    global _observability_active
+    cfg = get_config().get("team_observability", {}) or {}
+    want_enabled = bool(cfg.get("enabled", False))
+
+    if want_enabled and not _observability_active:
+        try:
+            from openjiuwen.agent_teams.observability import (
+                ObservabilityConfig,
+                init_observability,
+                is_initialized,
+            )
+            if is_initialized():
+                _observability_active = True
+                return
+            obs_cfg = ObservabilityConfig(
+                enabled=True,
+                service_name=cfg.get("service_name", "jiuwenswarm"),
+                exporter=cfg.get("exporter", "otlp_grpc"),
+                endpoint=cfg.get("endpoint", "http://localhost:4317"),
+                sample_rate=cfg.get("sample_rate", 1.0),
+                attribute_value_max_length=cfg.get("attribute_value_max_length", 10240),
+                redact_prompts=cfg.get("redact_prompts", False),
+                redact_completions=cfg.get("redact_completions", False),
+                langfuse_public_key=cfg.get("langfuse_public_key", ""),
+                langfuse_secret_key=cfg.get("langfuse_secret_key", ""),
+            )
+            init_observability(obs_cfg)
+            _observability_active = True
+            logger.info(
+                "[TeamObservability] enabled: exporter=%s endpoint=%s",
+                obs_cfg.exporter, obs_cfg.endpoint,
+            )
+        except Exception as exc:
+            logger.warning("[TeamObservability] init failed: %s", exc)
+
+    elif not want_enabled and _observability_active:
+        shutdown_team_observability()
+
+
+def shutdown_team_observability() -> None:
+    """Shutdown team observability (called on disable or process exit)."""
+    global _observability_active
+    if not _observability_active:
+        return
+    try:
+        from openjiuwen.agent_teams.observability import shutdown_observability
+        shutdown_observability()
+        _observability_active = False
+        logger.info("[TeamObservability] disabled")
+    except Exception as exc:
+        logger.warning("[TeamObservability] shutdown failed: %s", exc)
+
 
 @dataclass
 class TeamRailMountContext:
