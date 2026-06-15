@@ -800,6 +800,7 @@ async def _run(
         DiscordChannelConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig
     from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
     from jiuwenswarm.gateway.cron import CronController, CronJobStore, CronSchedulerService
@@ -936,6 +937,8 @@ async def _run(
         message_handler=message_handler,
     )
     await heartbeat_service.start()
+
+    _cleanup_task = start_background_cleanup()
 
     initial_channels_conf: dict = channels_cfg if isinstance(channels_cfg, dict) else {}
     channel_manager = ChannelManager(message_handler, config=initial_channels_conf)
@@ -1763,6 +1766,12 @@ async def _run(
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()
         await client.disconnect()
+
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
         logger.info("[App] Gateway stopped")
 

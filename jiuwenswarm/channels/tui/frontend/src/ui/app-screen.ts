@@ -2124,6 +2124,7 @@ export class AppScreen implements Component, Focusable {
       this.pendingQuestionAnswers.clear();
       this.questionList = null;
       this.questionDetailsMap = null;
+      this.setMouseTrackingEnabled(false);
       if (!this.editor.getText() && this.draftBeforeQuestion) {
         this.editor.setText(this.draftBeforeQuestion);
       }
