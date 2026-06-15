@@ -10,6 +10,7 @@
 - [Configuration](Configuration.md)
 - [Distributed Team](DistributedTeam.md)
 - [Multi-Instance](MultiInstance.md)
+- [Auto Harness Feature Overview](AutoHarness.md)
 - [User guide](README.md)
   - [Channels](Channels.md)
     - [Discord](Discord.md)

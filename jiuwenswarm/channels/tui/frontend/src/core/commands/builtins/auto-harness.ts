@@ -2153,6 +2153,13 @@ const scheduleCommand: SlashCommand = {
       ctx.addItem(
         addError(ctx.sessionId, "用法: /auto-harness schedule <子命令> [参数]\n子命令:\n  start   创建定时任务\n  list    列出所有任务\n  status  查看任务详情\n  logs    查看执行日志（实时跟踪或历史）\n  cancel  取消任务\n  delete  删除任务\n示例:\n  /auto-harness schedule list\n  /auto-harness schedule logs sch_abc123")
       );
+      return;
+    }
+    const validSubs = ["start", "list", "status", "logs", "cancel", "delete"];
+    if (!validSubs.includes(subcommand)) {
+      ctx.addItem(
+        addError(ctx.sessionId, `未知子命令 "${subcommand}"\n用法: /auto-harness schedule <start|list|status|logs|cancel|delete>`)
+      );
     }
   },
 };
@@ -2585,8 +2592,17 @@ const issueCommand: SlashCommand = {
     return subNames.filter((n) => n.startsWith(prefix));
   },
   action: (ctx, args) => {
-    if (!args.trim()) {
+    const text = args.trim();
+    if (!text) {
       ctx.addItem(addError(ctx.sessionId, "用法: /auto-harness issue <fix|scan|status|delete>\n示例:\n  /auto-harness issue fix 1272,1271\n  /auto-harness issue scan --repo jiuwenswarm\n  /auto-harness issue status\n  /auto-harness issue delete 123"));
+      return;
+    }
+    const subcommand = text.split(/\s+/)[0];
+    const validSubs = ["scan", "fix", "status", "delete"];
+    if (!validSubs.includes(subcommand)) {
+      ctx.addItem(
+        addError(ctx.sessionId, `未知子命令 "${subcommand}"\n用法: /auto-harness issue <scan|fix|status|delete>`)
+      );
     }
   },
 };
@@ -2612,6 +2628,14 @@ export function createAutoHarnessCommand(): SlashCommand {
       if (!text) {
         ctx.addItem(
           addError(ctx.sessionId, "用法: /auto-harness <run|schedule|issue> [参数]\n子命令:\n  run       创建并执行一次性任务\n  schedule  管理定时任务\n  issue     处理 GitCode issue\n示例:\n  /auto-harness run 优化上下文压缩能力\n  /auto-harness schedule list\n  /auto-harness issue fix 1272,1271")
+        );
+        return;
+      }
+      const subcommand = text.split(/\s+/)[0];
+      const validSubs = ["run", "schedule", "issue"];
+      if (!validSubs.includes(subcommand)) {
+        ctx.addItem(
+          addError(ctx.sessionId, `未知子命令 "${subcommand}"\n用法: /auto-harness <run|schedule|issue>\n示例:\n  /auto-harness run 优化上下文压缩能力\n  /auto-harness schedule list`)
         );
       }
     },
