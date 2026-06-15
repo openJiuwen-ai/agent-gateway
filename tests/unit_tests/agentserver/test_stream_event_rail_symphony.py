@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen.core.foundation.llm import UserMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage, UserMessage
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
@@ -21,10 +21,18 @@ class _StreamSession:
 
 class _ModelContext:
     def __init__(self, messages):
-        self.messages = messages
+        self.messages = list(messages)
 
     def get_messages(self):
         return list(self.messages)
+
+    def pop_messages(self, size):
+        popped = self.messages[:size]
+        self.messages = self.messages[size:]
+        return popped
+
+    async def add_messages(self, message):
+        self.messages.append(message)
 
 
 def _ctx(
@@ -47,6 +55,15 @@ def _ctx(
         exception=None,
         request_force_finish=force_finish_requests.append,
         force_finish_requests=force_finish_requests,
+    )
+
+
+def _model_ctx(messages):
+    return SimpleNamespace(
+        context=_ModelContext(messages),
+        inputs=SimpleNamespace(tools=[]),
+        session=None,
+        extra={},
     )
 
 
@@ -229,3 +246,48 @@ async def test_stream_event_rail_does_not_enable_symphony_status_events_for_othe
 
     assert not any(chunk.type == "chat.symphony_status" for chunk in session.chunks)
     assert ctx.force_finish_requests == []
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_removes_orphan_tool_messages_before_model_call():
+    rail = JiuSwarmStreamEventRail()
+    ctx = _model_ctx([
+        UserMessage(content="first request"),
+        ToolMessage(content="cancelled build result", tool_call_id="orphan-call"),
+        UserMessage(content="retry request"),
+    ])
+
+    await rail.before_model_call(ctx)
+
+    messages = ctx.context.get_messages()
+    assert [type(message) for message in messages] == [UserMessage, UserMessage]
+    assert all(not isinstance(message, ToolMessage) for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_inserts_missing_tool_result_after_cancelled_call():
+    rail = JiuSwarmStreamEventRail()
+    ctx = _model_ctx([
+        UserMessage(content="compose a skill plan"),
+        AssistantMessage(
+            content="",
+            tool_calls=[{
+                "type": "function",
+                "id": "compose-call",
+                "function": {
+                    "name": "symphony_compose_score",
+                    "arguments": "{\"query\":\"compose\"}",
+                },
+            }],
+        ),
+        UserMessage(content="retry request"),
+    ])
+
+    await rail.before_model_call(ctx)
+
+    messages = ctx.context.get_messages()
+    assert isinstance(messages[1], AssistantMessage)
+    assert isinstance(messages[2], ToolMessage)
+    assert messages[2].tool_call_id == "compose-call"
+    assert "symphony_compose_score" in messages[2].content
+    assert isinstance(messages[3], UserMessage)

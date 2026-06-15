@@ -561,6 +561,7 @@ export function SkillGraphPanel() {
   const externalBuildRunningRef = useRef(false);
   const observedBuildLogSignatureRef = useRef<string | null>(null);
   const autoFitRequestRef = useRef(0);
+  const canvasSizeRef = useRef({ width: 0, height: 0 });
   const minConfidenceTouchedRef = useRef(false);
   const dragRef = useRef<{ active: boolean; moved: boolean; x: number; y: number }>({
     active: false,
@@ -726,14 +727,24 @@ export function SkillGraphPanel() {
     if (autoFitRequest === 0 || visible.nodes.length === 0) return undefined;
     let firstFrame = 0;
     let secondFrame = 0;
+    let settleTimer = 0;
+    let finalTimer = 0;
     firstFrame = window.requestAnimationFrame(() => {
       secondFrame = window.requestAnimationFrame(() => {
         fitView();
       });
     });
+    settleTimer = window.setTimeout(() => {
+      fitView();
+    }, 320);
+    finalTimer = window.setTimeout(() => {
+      fitView();
+    }, 900);
     return () => {
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(settleTimer);
+      window.clearTimeout(finalTimer);
     };
   }, [autoFitRequest, fitView, visible.nodes.length, visible.edges.length]);
 
@@ -962,6 +973,10 @@ export function SkillGraphPanel() {
 
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
+      const previousSize = canvasSizeRef.current;
+      const becameVisible = (previousSize.width <= 0 || previousSize.height <= 0) && rect.width > 0 && rect.height > 0;
+      const resized = Math.abs(previousSize.width - rect.width) > 2 || Math.abs(previousSize.height - rect.height) > 2;
+      canvasSizeRef.current = { width: rect.width, height: rect.height };
       const dpr = window.devicePixelRatio || 1;
       canvas.width = Math.max(1, Math.floor(rect.width * dpr));
       canvas.height = Math.max(1, Math.floor(rect.height * dpr));
@@ -970,13 +985,16 @@ export function SkillGraphPanel() {
       if (transformRef.current.x === 0 && transformRef.current.y === 0) {
         transformRef.current = { x: rect.width / 2, y: rect.height / 2, scale: 1 };
       }
+      if ((becameVisible || resized) && visibleRef.current.nodes.length > 0) {
+        requestAutoFit();
+      }
     };
 
     resizeCanvas();
     const observer = new ResizeObserver(resizeCanvas);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, []);
+  }, [requestAutoFit]);
 
   useEffect(() => {
     let frame = 0;
