@@ -88,7 +88,7 @@ export interface ContextCompressionStats {
   trigger?: "manual" | "auto";
 }
 
-export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoStatus = "pending" | "in_progress" | "completed" | "error";
 
 export interface TodoItem {
   id: string;

@@ -2281,8 +2281,16 @@ export class CliPiAppState {
     ) {
       return null;
     }
-    if (status === "in_progress" || status === "completed" || status === "pending") {
+    if (
+      status === "in_progress" ||
+      status === "completed" ||
+      status === "pending" ||
+      status === "error"
+    ) {
       return status;
+    }
+    if (status === "failed") {
+      return "error";
     }
     return undefined;
   }

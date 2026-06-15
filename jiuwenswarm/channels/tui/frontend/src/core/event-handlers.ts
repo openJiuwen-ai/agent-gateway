@@ -907,8 +907,11 @@ function normalizeTodoStatus(status: unknown): TodoItem["status"] | null {
   if (status === "deleted" || status === "cancelled" || status === "canceled") {
     return null;
   }
-  if (status === "in_progress" || status === "completed") {
+  if (status === "in_progress" || status === "completed" || status === "error") {
     return status;
+  }
+  if (status === "failed") {
+    return "error";
   }
   return "pending";
 }
