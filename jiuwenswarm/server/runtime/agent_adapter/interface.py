@@ -173,13 +173,150 @@ _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
 )
 
+# /statusline prompt-type 模式：
+# 用户输入 "/statusline <描述>" → 直接注入 statusline-setup 指令到 prompt
+# 排除已知子命令（set, padding, clear, help, json）——这些由 TUI 前端本地处理，
+# 但如果消息经过 Gateway 传到 AgentServer，后端也需要区分。
+_STATUSLINE_KNOWN_SUBCOMMANDS = {"set", "padding", "clear", "help", "json", "get"}
+_STATUSLINE_PROMPT_REGEX = re.compile(
+    r"^/statusline\s+(?P<description>.+)$"
+)
+
+# 不调用 /skills，直接把指令文本嵌入 prompt
+_STATUSLINE_SETUP_PROMPT = """\
+You are a status line setup agent. Your job is to configure the user's TUI status line \
+by generating a shell command and writing it to the config file so the bottom bar \
+updates immediately.
+
+This is NOT about writing Python scripts or creating files — it's about writing a \
+**shell command** that runs every 2 seconds and whose stdout becomes the status bar text.
+
+## How the Status Line Works
+
+1. The TUI runs the configured shell command every 2 seconds
+2. Each time, it pipes a JSON object with session info as stdin to the command
+3. The command's stdout is displayed at the bottom of the TUI screen
+4. Config is stored in ~/.jiuwenswarm-tui/config.json under the "statusLine" field
+
+The shell command can do anything a normal shell command can — read JSON fields, \
+run git, check files, call system utilities, etc. The JSON input is just one \
+convenient data source, not a constraint.
+
+## Three Command Styles
+
+**Style A: Pure JSON fields** — for session info (model, tokens, mode, etc.)
+```
+input=$(cat); field1=$(echo "$input" | jq -r '.field1 // "default"'); \
+echo "label:$field1"
+```
+
+**Style B: Pure shell utilities** — for system info (git branch, disk, \
+time, etc.) — no `input=$(cat)` needed
+```
+branch=$(git branch --show-current 2>/dev/null || echo "?"); \
+time=$(date +%H:%M:%S); echo "$branch | $time"
+```
+
+**Style C: Mixed** — JSON fields + shell utilities (most common)
+```
+input=$(cat); model=$(echo "$input" | jq -r '.model // "?"'); \
+branch=$(git branch --show-current 2>/dev/null || echo "?"); \
+echo "$model | git:$branch"
+```
+
+## JSON Input Field Reference
+
+The command receives this JSON via stdin every 2 seconds:
+
+| Field | Description |
+|-------|-------------|
+| session_id | Current session ID |
+| session_name | Session title (set via /rename) |
+| cwd | Current working directory |
+| mode | Current mode (agent.plan / agent.fast / code.normal / code.team / team) |
+| model | Current model name |
+| provider | Model provider |
+| version | jiuwenswarm version |
+| connection | Connection state (idle / connecting / connected / reconnecting / auth_failed) |
+| is_processing | Is agent currently processing |
+| last_error | Most recent error message or null |
+| evolution_status | Evolution state (idle / running) |
+| active_subtask_count | Number of active subtasks |
+| todo_count | Number of todo items |
+| trusted_dirs | Trusted directory paths (array) |
+| usage.total_input_tokens | Session total input tokens |
+| usage.total_output_tokens | Session total output tokens |
+| usage.total_tokens | Session total tokens |
+| context_window.context_window_size | Max context window tokens |
+| context_window.used_percentage | Context used percentage (0-100) |
+| context_window.remaining_percentage | Context remaining percentage (0-100) |
+
+Common non-JSON shell approaches: git branch --show-current, \
+df -h, date, hostname -s, whoami, etc.
+
+## How to Apply the Config
+
+DO NOT use `python -c "..."` one-liners — they break on Windows due \
+to quoting and escaping issues. Instead, write a Python script file \
+and then execute it. This is the ONLY reliable way on Windows.
+
+Step 1: Write a Python script file (e.g. /tmp/update_statusline.py) \
+that merges the new statusLine into the config:
+```python
+import json, os
+d = os.path.expanduser('~/.jiuwenswarm-tui')
+os.makedirs(d, exist_ok=True)
+p = os.path.join(d, 'config.json')
+if not os.path.exists(p):
+    with open(p, 'w') as f:
+        f.write('{}\\n')
+with open(p) as f:
+    c = json.load(f)
+c['statusLine'] = {
+    'type': 'command',
+    'command': 'YOUR_COMMAND_HERE',
+    'padding': 0
+}
+with open(p, 'w') as f:
+    json.dump(c, f, indent=2)
+    f.write('\\n')
+print('StatusLine configured')
+```
+
+Step 2: Execute the script:
+```bash
+python /tmp/update_statusline.py
+```
+
+IMPORTANT: The TUI polls config.json every 2 seconds, so the status \
+bar updates automatically within 2 seconds after you write the config. \
+No restart needed.
+
+Guidelines:
+- Only write to ~/.jiuwenswarm-tui/config.json — never overwrite \
+  system files
+- Always merge with existing config — preserve trustedDirs, theme, etc.
+- Never hardcode secrets or API keys in the command
+- The statusLine command runs in bash (sh -c) context, NOT in \
+  PowerShell — so `$(cat)`, `$var`, `jq`, `echo` etc. are all \
+  standard bash/sh syntax
+- Commands should handle failures gracefully: use 2>/dev/null, \
+  || echo "fallback"
+- On Windows, $(cat) is automatically patched to read from a temp \
+  file by the TUI
+- DO NOT use `python -c` one-liners for config updates — they \
+  break on Windows. Always write a .py script file and execute it.
+- DO NOT read config.json with `cat` — use Python os.path.expanduser \
+  instead, as `~` may not resolve correctly in some shell environments
+"""
+
 
 def _handle_skills_use_slash_command(query: str) -> Tuple[list, str]:
     """Handle the /skills use slash command"""
     stripped = query.strip()
     if not stripped.startswith("/skills use"):
         return [], query
-    
+
     skill_list = []
     matches = _SKILL_COMMAND_REGEX.match(stripped)
     if matches:
@@ -189,6 +326,41 @@ def _handle_skills_use_slash_command(query: str) -> Tuple[list, str]:
     else:
         logger.warning(f"Couldn't parse command: {stripped}")
         return [], query
+
+
+def _handle_statusline_prompt_command(query: str) -> Tuple[str, str]:
+    """处理 /statusline <prompt>
+
+    不调用 /skills 命令，不依赖 SkillUseRail，
+    直接把 statusline-setup 指令文本嵌入 user prompt。
+
+    _handle_statusline_prompt_command() → 返回 (statusline_prompt, description)
+    build_user_prompt() 把 statusline_prompt 嵌入到 user prompt 后面
+
+    Args:
+        query: 用户原始输入（含 "/statusline" 前缀）
+
+    Returns:
+        (statusline_prompt, description) — 注入的 prompt 文本和提取的描述
+        如果不是 /statusline prompt 模式，返回 ("", query)
+    """
+    stripped = query.strip()
+    if not stripped.startswith("/statusline"):
+        return "", query
+
+    match = _STATUSLINE_PROMPT_REGEX.match(stripped)
+    if match:
+        description = match.group("description").strip()
+        # 排除已知子命令——它们由 TUI 前端本地处理，不应被当作 prompt
+        first_word = description.split()[0] if description else ""
+        if first_word in _STATUSLINE_KNOWN_SUBCOMMANDS:
+            return "", query
+        if description:
+            # 把用户的描述转化为让 Agent 自动配置状态栏的 prompt
+            return _STATUSLINE_SETUP_PROMPT, description
+
+    # /statusline 无参数 → 不是 prompt 模式（TUI 应已拦截处理 help）
+    return "", query
 
 
 def build_user_prompt(content: str | dict, files: dict, channel: str, language: str, *,
@@ -210,8 +382,15 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
         skills_to_use, new_content = _handle_skills_use_slash_command(content)
         if new_content:
             content = new_content
+        # /statusline <prompt> prompt-type 命令（仿 Claude Code，不调用 /skills）
+        statusline_prompt, statusline_content = _handle_statusline_prompt_command(content)
+        if statusline_prompt:
+            content = statusline_content
     else:
         skills_to_use = []
+
+    # /skills use 命令的 skills_to_use 仍然保留（供 SkillUseRail 正常流程使用）
+    # /statusline 不走 SkillUseRail，直接注入 prompt 文本（见下方拼接）
 
     if language == "zh":
         prompt = "你收到一条消息：\n"
@@ -263,7 +442,20 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
         user_message_context["skills_to_use"] = skills_to_use
     if trusted_dirs:
         user_message_context["trusted_dirs"] = json.dumps(trusted_dirs, ensure_ascii=False)
-    return interaction_prefix + prompt + json.dumps(user_message_context, ensure_ascii=False)
+
+    # 仿 Claude Code statusline-setup: 把指令文本直接嵌入 prompt
+    base_prompt = interaction_prefix + prompt + json.dumps(user_message_context, ensure_ascii=False)
+    if statusline_prompt:
+        if language == "zh":
+            return base_prompt + "\n\n你必须按照以下指令配置状态栏：\n" + statusline_prompt
+        else:
+            return (
+                base_prompt
+                + "\n\nYou must follow these instructions "
+                + "to configure the status line:\n"
+                + statusline_prompt
+            )
+    return base_prompt
 
 
 
@@ -473,6 +665,15 @@ class JiuWenSwarm:
                     trusted_dirs=trusted_dirs,
                     metadata=request.metadata,
                 )
+                # 调试日志：确认 /statusline prompt 注入是否生效
+                if isinstance(query, str) and "/statusline" in query:
+                    logger.info(
+                        "[_build_inputs][STATUSLINE] 原始 query=%s, 最终 prompt 长度=%d, "
+                        "包含 statusline-setup 指令=%s",
+                        query[:200],
+                        len(final_query) if isinstance(final_query, str) else 0,
+                        "status line setup agent" in final_query if isinstance(final_query, str) else False,
+                    )
 
         inputs: dict[str, Any] = {
             "conversation_id": request.session_id,
