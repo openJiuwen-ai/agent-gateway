@@ -133,6 +133,37 @@ def test_toolkit_passes_fast_mode_to_rpc_handler():
     assert seen["mode"] == "fast"
 
 
+def test_toolkit_passes_candidate_skill_ids_to_rpc_handler():
+    registry = ExtensionRegistry.create_instance(
+        callback_framework=_CallbackFramework(),
+        config={},
+        logger=object(),
+    )
+    seen = {}
+
+    async def handler(params, request=None):
+        del request
+        seen.update(params)
+        return {"success": True, "params": params}
+
+    registry.register_rpc_handler("symphony.plan", handler)
+    registry.register_rpc_handler(
+        "symphony.score_status",
+        lambda _params, request=None: {"success": True, "exists": True, "stale": False},
+    )
+
+    result = asyncio.run(
+        SymphonyToolkit().plan(
+            "use installed skills",
+            candidate_skill_ids=[" skill-a ", "", "skill-a", "skill-b"],
+        )
+    )
+
+    assert result["success"] is True
+    assert "params" not in result
+    assert seen["candidate_skill_ids"] == ["skill-a", "skill-b"]
+
+
 def test_toolkit_reports_missing_handler():
     ExtensionRegistry.create_instance(
         callback_framework=_CallbackFramework(),
@@ -504,7 +535,7 @@ def test_toolkit_plan_returns_compact_plan_and_skill_retrieval():
                 }
             ],
             "skill_retrieval": {
-                "enabled": True,
+                "source": "input",
                 "used": True,
                 "candidate_skill_ids": ["skill-1", "skill-2"],
                 "candidate_count": 2,
@@ -570,6 +601,7 @@ def test_toolkit_plan_returns_compact_plan_and_skill_retrieval():
     skill_retrieval = result["skill_retrieval"]
     assert "build_progress" not in result["score_status"]
     assert result["score_build"] == {"rebuilt": False, "reason": "not_required"}
+    assert skill_retrieval["source"] == "input"
     assert skill_retrieval["candidate_skill_ids"] == ["skill-1", "skill-2"]
     assert skill_retrieval["candidate_count"] == 2
     assert len(skill_retrieval["candidate_records"]) == 10
@@ -731,8 +763,19 @@ def test_toolkit_get_tools_respects_symphony_enabled(monkeypatch):
         if tool.card.name == "symphony_compose_score"
     )
     assert compose_tool.card.input_params["properties"]["mode"]["enum"] == ["fast"]
+    assert compose_tool.card.input_params["properties"]["candidate_skill_ids"] == {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": (
+            "Optional installed skill worker_id values returned by "
+            "skill_branch_explore. When provided, Symphony composes "
+            "from these candidate skills and their eligible neighbors."
+        ),
+    }
     description = compose_tool.card.description
     assert "skill capabilities, skill chaining, skill ordering" in description
+    assert "skill_branch_explore" in description
+    assert "candidate_skill_ids" in description
     assert "search_skill to discover external skills" in description
     assert "install_skill" in description
     assert "symphony_refresh_score" in description

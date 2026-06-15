@@ -372,6 +372,7 @@ class SymphonyToolkit:
             payload,
             (
                 "enabled",
+                "source",
                 "used",
                 "candidate_skill_ids",
                 "candidate_count",
@@ -525,7 +526,12 @@ class SymphonyToolkit:
             or fallback
         ).strip()
 
-    async def plan(self, query: str, mode: str | None = None) -> dict[str, Any]:
+    async def plan(
+        self,
+        query: str,
+        mode: str | None = None,
+        candidate_skill_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         if not self.is_enabled():
             return self._compact_plan_payload(self._disabled_payload("symphony.plan"))
         status = await self.score_status()
@@ -555,6 +561,11 @@ class SymphonyToolkit:
         mode_text = str(mode or "").strip()
         if mode_text:
             params["mode"] = mode_text
+        normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
+            candidate_skill_ids
+        )
+        if normalized_candidate_skill_ids is not None:
+            params["candidate_skill_ids"] = normalized_candidate_skill_ids
         payload = await self._call_rpc("symphony.plan", params)
         if isinstance(payload, dict):
             payload.setdefault("score_status", status)
@@ -610,13 +621,15 @@ class SymphonyToolkit:
                 (
                     "MUST call before answering when the user says to use skill(s) "
                     "or 技能, or when skill capabilities, skill chaining, skill ordering, "
-                    "or a specialized toolchain could help complete the task. Do not manually "
-                    "list skill names or choose a skill chain before calling this tool. This is "
-                    "the Symphony entrypoint: it reads the score, refreshes stale or missing "
-                    "scores, then composes the skill execution graph. If no suitable candidates "
-                    "or a missing capability is reported, use search_skill to discover external "
-                    "skills; when installing a discovered skill is appropriate, call install_skill, "
-                    "then call symphony_refresh_score and retry this tool with the original query. "
+                    "or a specialized toolchain could help complete the task. Use skill_branch_peek "
+                    "and skill_branch_explore first when installed-skill retrieval can narrow "
+                    "the candidate skills, then pass returned worker_id values as candidate_skill_ids. "
+                    "This is the Symphony composition entrypoint: it reads the score, refreshes stale "
+                    "or missing scores, then composes the skill execution graph from the provided "
+                    "candidates or a default score subgraph. If no suitable candidates or a missing "
+                    "capability is reported, use search_skill to discover external skills; when "
+                    "installing a discovered skill is appropriate, call install_skill, then call "
+                    "symphony_refresh_score and retry this tool with the original query. "
                     "After it returns, present its content result directly to the user; "
                     "do not call individual skill tools just to manually recreate the plan. "
                     "Skip only clearly ordinary tasks that do not benefit from skill capabilities."
@@ -634,6 +647,15 @@ class SymphonyToolkit:
                             "description": (
                                 "Optional planning mode. The current Symphony runtime "
                                 "supports fast planning only."
+                            ),
+                        },
+                        "candidate_skill_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional installed skill worker_id values returned by "
+                                "skill_branch_explore. When provided, Symphony composes "
+                                "from these candidate skills and their eligible neighbors."
                             ),
                         },
                     },
@@ -664,3 +686,19 @@ def _copy_compact_fields(
             continue
         compact[key] = value
     return compact
+
+
+def _normalize_candidate_skill_ids(values: Any) -> list[str] | None:
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        current_skill_id = str(value or "").strip()
+        if not current_skill_id or current_skill_id in seen:
+            continue
+        seen.add(current_skill_id)
+        output.append(current_skill_id)
+    return output

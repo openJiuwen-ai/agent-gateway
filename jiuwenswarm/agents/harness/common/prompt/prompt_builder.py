@@ -41,10 +41,13 @@ When the user says to use skill(s) or 技能, or when you judge that skill
 capabilities, skill chaining, skill ordering, or a specialized toolchain could
 help complete the task, you MUST call `symphony_compose_score` with the original
 user task as `query` before answering.
-Do not manually list skill names, inspect skill folders, choose a skill chain,
-or recommend skills before calling `symphony_compose_score`. After it returns,
-present its returned `content` directly to the user. If Symphony reports
-missing inputs, ask for those inputs.
+When installed-skill retrieval is available and can narrow the search space,
+use `skill_branch_peek` / `skill_branch_explore` to shortlist candidate skills
+first, then pass the selected `worker_id` values as
+`symphony_compose_score.candidate_skill_ids`. Do not inspect skill folders
+manually or choose the execution chain yourself; Symphony owns ordering and
+graph composition. After it returns, present its returned `content` directly to
+the user. If Symphony reports missing inputs, ask for those inputs.
 
 If Symphony reports no suitable candidates, a missing capability, or caveats
 that point to a skill gap, use `search_skill` to discover external skills. When

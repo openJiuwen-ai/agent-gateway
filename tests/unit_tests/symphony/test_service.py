@@ -6,9 +6,6 @@ import pytest
 from jiuwenswarm.symphony.config import SymphonyOrchestrationConfig
 from jiuwenswarm.symphony.orchestration import service
 from jiuwenswarm.symphony.orchestration.artifacts import ScoreArtifacts
-from jiuwenswarm.symphony.orchestration.skill_retrieval import (
-    OrchestrationSkillRetrievalSelection,
-)
 
 
 class _FakeLLMClient:
@@ -288,7 +285,7 @@ async def test_plan_from_score_fast_rejects_low_confidence_edge_once(
     assert "illegal can_feed edges" in result["detail"]
 
 
-async def test_plan_from_score_fast_uses_retrieved_candidates_and_neighbors(
+async def test_plan_from_score_fast_uses_input_candidates_and_neighbors(
     monkeypatch,
     tmp_path,
 ):
@@ -330,15 +327,69 @@ async def test_plan_from_score_fast_uses_retrieved_candidates_and_neighbors(
         }
     )
     monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
-    monkeypatch.setattr(
-        service,
-        "select_orchestration_skill_candidates",
-        lambda **kwargs: OrchestrationSkillRetrievalSelection(
-            enabled=True,
-            used=True,
-            candidate_skill_ids=("skill-b",),
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "use beta",
+        llm_client=llm,
+        orchestration_config=SymphonyOrchestrationConfig(
+            mode="fast",
+            min_edge_confidence=0.7,
         ),
+        candidate_skill_ids=["skill-b"],
     )
+
+    prompt_payload = json.loads(llm.calls[0]["user_content"])
+    prompt_skill_ids = {skill["id"] for skill in prompt_payload["skills"]}
+    assert prompt_skill_ids == {"skill-a", "skill-b", "skill-c"}
+    assert "skill-d" not in prompt_skill_ids
+    assert result["skill_retrieval"]["source"] == "input"
+    assert result["skill_retrieval"]["used"] is True
+    assert result["skill_retrieval"]["candidate_skill_ids"] == ["skill-b"]
+
+
+async def test_plan_from_score_fast_without_candidates_uses_default_subgraph(
+    monkeypatch,
+    tmp_path,
+):
+    artifacts = _artifacts(tmp_path)
+    artifacts.skills.extend(
+        [
+            {
+                "id": "skill-d",
+                "name": "Delta Skill",
+                "description": "Unrelated high-confidence source.",
+                "inputs": [],
+                "outputs": [{"name": "delta", "type": "markdown"}],
+            },
+            {
+                "id": "skill-e",
+                "name": "Echo Skill",
+                "description": "Unrelated high-confidence target.",
+                "inputs": [{"name": "delta", "type": "markdown"}],
+                "outputs": [{"name": "echo", "type": "markdown"}],
+            },
+        ]
+    )
+    artifacts.graph["edges"].append(
+        {
+            "type": "can_feed",
+            "source": "skill-d",
+            "target": "skill-e",
+            "confidence": 0.99,
+            "method": "llm",
+            "evidence": {"reasons": ["unrelated"]},
+        }
+    )
+    llm = _FakeLLMClient(
+        {
+            "title": "Default fast plan",
+            "status": "ready",
+            "steps": [{"skill_id": "skill-d", "reason": "Default seed."}],
+            "can_feed_edges": [],
+        }
+    )
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
 
     result = await service.plan_from_score(
         tmp_path,
@@ -352,10 +403,65 @@ async def test_plan_from_score_fast_uses_retrieved_candidates_and_neighbors(
 
     prompt_payload = json.loads(llm.calls[0]["user_content"])
     prompt_skill_ids = {skill["id"] for skill in prompt_payload["skills"]}
+    assert {"skill-d", "skill-e"}.issubset(prompt_skill_ids)
+    assert result["skill_retrieval"] == {
+        "source": "input",
+        "used": False,
+        "candidate_skill_ids": [],
+        "candidate_count": 0,
+        "fallback_reason": "candidate_skill_ids not provided",
+    }
+
+
+@pytest.mark.parametrize(
+    ("candidate_skill_ids", "fallback_reason"),
+    [
+        ([], "candidate_skill_ids is empty"),
+        (
+            ["missing-skill", "missing-skill", ""],
+            "candidate_skill_ids did not match current score",
+        ),
+    ],
+)
+async def test_plan_from_score_fast_falls_back_for_empty_or_unknown_candidates(
+    monkeypatch,
+    tmp_path,
+    candidate_skill_ids,
+    fallback_reason,
+):
+    artifacts = _artifacts(tmp_path)
+    llm = _FakeLLMClient(
+        {
+            "title": "Fallback fast plan",
+            "status": "ready",
+            "steps": [{"skill_id": "skill-a", "reason": "Fallback seed."}],
+            "can_feed_edges": [],
+        }
+    )
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "use beta",
+        llm_client=llm,
+        orchestration_config=SymphonyOrchestrationConfig(
+            mode="fast",
+            min_edge_confidence=0.7,
+        ),
+        candidate_skill_ids=candidate_skill_ids,
+    )
+
+    prompt_payload = json.loads(llm.calls[0]["user_content"])
+    prompt_skill_ids = {skill["id"] for skill in prompt_payload["skills"]}
     assert prompt_skill_ids == {"skill-a", "skill-b", "skill-c"}
-    assert "skill-d" not in prompt_skill_ids
-    assert result["skill_retrieval"]["used"] is True
-    assert result["skill_retrieval"]["candidate_skill_ids"] == ["skill-b"]
+    assert result.get("success") is not False
+    assert result["skill_retrieval"] == {
+        "source": "input",
+        "used": False,
+        "candidate_skill_ids": [],
+        "candidate_count": 0,
+        "fallback_reason": fallback_reason,
+    }
 
 
 async def test_plan_from_score_rejects_non_fast_mode(monkeypatch, tmp_path):

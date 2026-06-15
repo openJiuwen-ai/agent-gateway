@@ -29,6 +29,22 @@ SYMPHONY_PLAN = "symphony.plan"
 logger = logging.getLogger(__name__)
 
 
+def _candidate_skill_ids_from_params(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return []
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        current_skill_id = str(item or "").strip()
+        if not current_skill_id or current_skill_id in seen:
+            continue
+        seen.add(current_skill_id)
+        output.append(current_skill_id)
+    return output
+
+
 class SymphonyExtension(BaseExtension):
     """Register explicit Symphony RPC methods."""
 
@@ -149,6 +165,9 @@ class SymphonyExtension(BaseExtension):
         query = str(params.get("query") or "").strip()
         if not query:
             return {"success": False, "detail": "query is required"}
+        candidate_skill_ids = _candidate_skill_ids_from_params(
+            params.get("candidate_skill_ids")
+        )
         config = load_symphony_config()
         score_dir = config.paths.score_dir
         orchestration_config = config.orchestration
@@ -182,6 +201,7 @@ class SymphonyExtension(BaseExtension):
             query,
             LLMConfig.from_default_model(),
             orchestration_config=orchestration_config,
+            candidate_skill_ids=candidate_skill_ids,
         )
         if payload.get("success") is False:
             return {
