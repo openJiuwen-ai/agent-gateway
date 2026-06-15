@@ -1197,16 +1197,19 @@ class JiuWenSwarm:
 
         session_id = self._session_manager.get_session_id(request.session_id)
         query = request.params.get("query", "")
-        append_history_record(
-            session_id=session_id,
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            role="user",
-            content=_history_user_content(request.params, query),
-            timestamp=time.time(),
-            channel_metadata=request.metadata,
-            mode=request.params.get("mode", "unknown"),
-        )
+        source = request.params.get("source", "")
+        _interrupt_sources = {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+        if source not in _interrupt_sources:
+            append_history_record(
+                session_id=session_id,
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                role="user",
+                content=query,
+                timestamp=time.time(),
+                channel_metadata=request.metadata,
+                mode=request.params.get("mode", "unknown"),
+            )
 
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
@@ -1317,16 +1320,19 @@ class JiuWenSwarm:
             and isinstance(request.params.get("activate_response"), dict)
         )
 
-        append_history_record(
-            session_id=session_id,
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            role="user",
-            content=_history_user_content(request.params, query),
-            timestamp=time.time(),
-            channel_metadata=request.metadata,
-            mode=request.params.get("mode", "unknown"),
-        )
+        source = request.params.get("source", "")
+        _interrupt_sources = {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+        if source not in _interrupt_sources:
+            append_history_record(
+                session_id=session_id,
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                role="user",
+                content=query,
+                timestamp=time.time(),
+                channel_metadata=request.metadata,
+                mode=request.params.get("mode", "unknown"),
+            )
 
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
