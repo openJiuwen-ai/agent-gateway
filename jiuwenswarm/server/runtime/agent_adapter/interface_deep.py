@@ -653,6 +653,16 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] cleanup_session(%s) failed: %s",
                         sid, exc,
                     )
+            if cleanup_rail:
+                circuit_breaker_rail = getattr(self, "_circuit_breaker_rail", None)
+                if circuit_breaker_rail is not None:
+                    try:
+                        circuit_breaker_rail.cleanup_session(sid)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] circuit_breaker cleanup_session(%s) failed: %s",
+                            sid, exc,
+                        )
         else:
             self._active_session_ids[sid] = count - 1
 
