@@ -323,6 +323,27 @@ async function listMemory(ctx: import("../types.js").CommandContext): Promise<vo
     });
     const files = payload.files ?? [];
 
+    // Patch backend relative_path fallback: when the backend returns
+    // relative_path === path (absolute path) for files outside workspace/project_dir,
+    // use frontend discovery to compute a correct relative path.
+    const projectDir = ctx.getCurrentProjectDir();
+    if (projectDir && files.some((f) => f.relative_path === f.path)) {
+      const discovered = discoverMemoryFilesFromFs(projectDir);
+      const frontendByPath = new Map<string, MemoryFile>();
+      for (const d of discovered) {
+        frontendByPath.set(normalizePathKey(d.path), d);
+      }
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        if (f.relative_path === f.path) {
+          const frontend = frontendByPath.get(normalizePathKey(f.path));
+          if (frontend && frontend.relative_path !== frontend.path) {
+            files[i] = { ...f, relative_path: frontend.relative_path };
+          }
+        }
+      }
+    }
+
     if (files.length === 0) {
       ctx.addItem(addInfo(ctx.sessionId, "No memory files found.", "m"));
       return;
@@ -384,10 +405,31 @@ async function editMemoryInteractive(
     // (e.g. empty dirs without .git/.jiuwen markers), causing JIUWENSWARM.md
     // to never be discovered even if it exists on disk.
     const discovered = discoverMemoryFilesFromFs(projectDir);
-    const seenPaths = new Set(files.map((f) => normalizePathKey(f.path)));
 
-    // Merge: backend results take precedence; frontend-discovered files fill gaps.
-    const mergedFiles: MemoryFile[] = [...files];
+    // Build a frontend lookup by normalized path for relative_path patching.
+    // When the backend's _relative_path() falls back to the absolute path itself
+    // (i.e. relative_path === path, e.g. parent-directory memory files outside
+    // both workspace and project_dir), the frontend's own discovery can provide
+    // a correct relative path like "../JIUWENSWARM.md".  Use it to fix the
+    // backend's stale relative_path instead of discarding the frontend entry.
+    const frontendByPath = new Map<string, MemoryFile>();
+    for (const f of discovered) {
+      frontendByPath.set(normalizePathKey(f.path), f);
+    }
+
+    // Merge: backend results take precedence, but patch stale relative_path
+    // with frontend-computed values when the backend fell back to abs_path.
+    const seenPaths = new Set(files.map((f) => normalizePathKey(f.path)));
+    const mergedFiles: MemoryFile[] = files.map((f) => {
+      if (f.relative_path === f.path) {
+        const frontend = frontendByPath.get(normalizePathKey(f.path));
+        if (frontend && frontend.relative_path !== frontend.path) {
+          return { ...f, relative_path: frontend.relative_path };
+        }
+      }
+      return f;
+    });
+    // Frontend-discovered files fill gaps (files the backend didn't find at all).
     for (const f of discovered) {
       if (!seenPaths.has(normalizePathKey(f.path))) {
         mergedFiles.push(f);
