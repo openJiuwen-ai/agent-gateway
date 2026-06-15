@@ -8,9 +8,10 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
-from openjiuwen.agent_teams.paths import get_agent_teams_home
+from openjiuwen.agent_teams.paths import get_agent_teams_home, team_home
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
@@ -47,7 +48,6 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     evolution_progress_status_from_event,
     evolution_slash_command_name,
     evolution_slash_result,
-    evolution_status_response,
     extract_evolution_request_id,
     group_evolution_approvals,
     is_evolution_outcome_event,
@@ -59,10 +59,13 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     team_evolution_end_update,
     terminal_progress_from_events,
     terminal_stage,
-    validate_evolution_log_writable,
     validate_evolution_skill,
     validate_team_evolution_skill,
     visible_evolution_progress_from_events,
+)
+from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
+    EvolutionSlashContext,
+    handle_evolution_slash_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -633,126 +636,66 @@ async def _handle_team_slash_command(
     channel_id: str | None,
     session_id: str,
     query: str,
+    *,
+    defer_missing_rail: bool = False,
+    skills_dir: str | list[str] | None = None,
+    language: str = "cn",
 ) -> dict[str, Any] | None:
     """Handle team-only slash commands before entering the team stream."""
-    evolve_list_result = await _handle_team_evolve_list_command(channel_id, session_id, query)
-    if evolve_list_result is not None:
-        return evolve_list_result
-
     stripped = str(query or "").strip()
     if not (
-        stripped.startswith("/evolve_simplify")
+        stripped.startswith("/evolve_list")
+        or stripped.startswith("/evolve_rebuild")
+        or stripped.startswith("/evolve_simplify")
         or stripped == "/evolve"
         or stripped.startswith("/evolve ")
     ):
         return None
 
-    tm = get_team_manager(channel_id)
-    rail = tm.get_team_skill_rail(session_id)
-    if rail is None:
-        return {
-            "output": "团队技能演进不可用：未找到 TeamSkillEvolutionRail。",
-            "result_type": "error",
-        }
-
-    store = rail.store
-
-    if stripped.startswith("/evolve_simplify"):
-        parts = stripped.split(maxsplit=2)
-        skill_name = parts[1] if len(parts) > 1 else ""
-        user_intent = parts[2] if len(parts) > 2 else None
-
-        if not skill_name:
-            return {
-                "output": "请指定 Skill 名称：`/evolve_simplify <skill_name> [user_intent]`",
-                "result_type": "error",
-            }
-
-        validation_error = validate_team_evolution_skill(store, skill_name, require_skill_md=True)
-        if validation_error is not None:
-            return {"output": validation_error, "result_type": "error"}
-
-        writable_error = validate_evolution_log_writable(store, skill_name)
-        if writable_error is not None:
-            return {"output": writable_error, "result_type": "error"}
-
-        try:
-            simplify_result = await rail.request_simplify(skill_name, user_intent)
-        except Exception as exc:
-            logger.warning(
-                "[TeamHelpers] evolve_simplify failed: session_id=%s error=%s",
-                session_id,
-                exc,
-            )
-            return {
-                "output": f"团队技能整理分析失败：{exc}",
-                "result_type": "error",
-            }
-
-        return _approval_result_from_event_or_items(
-            skill_name=skill_name,
-            event=getattr(simplify_result, "approval_event", None),
-            items=list(getattr(simplify_result, "actions", []) or []),
-            no_changes_output=f"Skill '{skill_name}' 经验库状态良好，无需整理。",
-            invalid_output=f"Skill '{skill_name}' 精简方案已生成，但审批事件为空或格式无效。",
-        )
-
-    parts = stripped.split(maxsplit=2)
-    if len(parts) < 2:
+    if stripped == "/evolve" or (
+        stripped.startswith("/evolve ") and len(stripped.split(maxsplit=2)) < 3
+    ):
         return {
             "output": "请补充演进意图：`/evolve <skill_name> <user_query>`",
             "result_type": "error",
         }
 
-    skill_name = parts[1].strip()
-    user_query = parts[2].strip() if len(parts) > 2 else ""
-
-    if not user_query:
+    resolved_skills_dir = skills_dir or _resolve_team_slash_skills_dir(session_id)
+    if resolved_skills_dir is None:
+        if defer_missing_rail:
+            return None
         return {
-            "output": "请补充演进意图：`/evolve <skill_name> <user_query>`",
+            "output": "团队技能演进不可用：未找到团队 Skill 目录。",
             "result_type": "error",
         }
 
-    validation_error = validate_team_evolution_skill(store, skill_name, require_skill_md=True)
-    if validation_error is not None:
-        return {"output": validation_error, "result_type": "error"}
-
-    writable_error = validate_evolution_log_writable(store, skill_name)
-    if writable_error is not None:
-        return {"output": writable_error, "result_type": "error"}
-
-    try:
-        evolve_result = await rail.request_user_evolution(skill_name, user_query)
-    except Exception as exc:
-        logger.warning(
-            "[TeamHelpers] evolve failed: session_id=%s error=%s",
-            session_id,
-            exc,
-        )
-        return {
-            "output": f"团队技能演进请求失败：{exc}",
-            "result_type": "error",
-        }
-
-    if isinstance(evolve_result, str) and evolve_result.strip():
-        return {
-            "output": f"Skill '{skill_name}' 演进请求已提交，请等待审批。",
-            "result_type": "answer",
-        }
-    status_response = evolution_status_response(
-        evolve_result,
-        generation_failed_output="llm error",
-        no_records_output="已请求团队 Skill 演进，但本次未生成可保存经验。",
+    return await handle_evolution_slash_command(
+        stripped,
+            EvolutionSlashContext(
+                mode="team",
+                session_id=session_id,
+                skills_dir=resolved_skills_dir,
+                evolution_enabled=True,
+                language=language,
+        ),
     )
-    if status_response is not None:
-        return status_response
-    return _approval_result_from_event_or_items(
-        skill_name=skill_name,
-        event=getattr(evolve_result, "approval_event", None),
-        items=list(getattr(evolve_result, "records", []) or []),
-        no_changes_output=f"Skill '{skill_name}' 未生成新的团队技能演进经验。",
-        invalid_output=f"Skill '{skill_name}' 已生成团队技能演进经验，但审批事件为空或格式无效。",
-    )
+
+
+def _resolve_team_slash_skills_dir(session_id: str) -> str | None:
+    metadata = get_session_metadata(session_id)
+    team_name = str(metadata.get("team_name") or "").strip()
+    if not team_name:
+        return None
+    return str(team_home(team_name) / "team-workspace" / "skills")
+
+
+def _team_spec_skills_dir(team_spec: Any) -> str:
+    workspace = getattr(team_spec, "workspace", None)
+    root_path = str(getattr(workspace, "root_path", "") or "").strip()
+    if root_path:
+        return str(Path(root_path) / "skills")
+    team_name = str(getattr(team_spec, "team_name", "") or "").strip()
+    return str(team_home(team_name) / "team-workspace" / "skills")
 
 
 async def process_team_message_stream(
@@ -792,6 +735,7 @@ async def process_team_message_stream(
     debug = False
     if is_first_request:
         query, hide_dm, debug = _extract_query_directives(str(query or ""))
+        query_text = query if isinstance(query, str) else ""
         if hide_dm or debug:
             logger.info(
                 "[TeamHelpers] query directives captured for first team request: "
@@ -801,62 +745,6 @@ async def process_team_message_stream(
                 hide_dm,
                 debug,
             )
-
-    slash_result = await _handle_team_slash_command(
-        channel_id,
-        session_id,
-        query_text,
-    )
-    if slash_result is not None:
-        approval_chunks = slash_result.get("approval_chunks")
-        if isinstance(approval_chunks, list) and approval_chunks:
-            for chunk in approval_chunks:
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=channel_id,
-                    payload=chunk,
-                    is_complete=False,
-                )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=channel_id,
-                payload={"event_type": "chat.done"},
-                is_complete=True,
-            )
-            return
-
-        slash_result = evolution_slash_result(
-            evolution_slash_command_name(query_text),
-            slash_result,
-            warning_phrases=TEAM_EVOLUTION_SLASH_WARNING_PHRASES,
-        )
-        result_type = str(slash_result.get("result_type", "answer")).strip().lower()
-        content = str(slash_result.get("output", ""))
-        slash_meta = {
-            "source": slash_result.get("source"),
-            "slash_command": slash_result.get("slash_command"),
-            "display_level": slash_result.get("display_level"),
-        }
-        payload = (
-            {"event_type": "chat.error", "error": content, **slash_meta}
-            if result_type == "error"
-            else {"event_type": "chat.final", "content": content, **slash_meta}
-        )
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=channel_id,
-            payload=payload,
-            is_complete=False,
-        )
-        yield _team_processing_done_chunk(rid, channel_id, session_id)
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=channel_id,
-            payload=None,
-            is_complete=True,
-        )
-        return
 
     try:
         request_metadata = dict(request.metadata or {})
@@ -901,28 +789,71 @@ async def process_team_message_stream(
         return
 
     team_name = team_spec.team_name
+    team_skills_dir = _team_spec_skills_dir(team_spec)
+    ensure_ready = getattr(team_manager, "ensure_team_shared_skills_ready_for_session", None)
+    if callable(ensure_ready):
+        ensure_ready(session_id, team_spec)
 
-    followup_prompt, rebuild_error = await _resolve_team_rebuild_followup(
+    slash_result = await _handle_team_slash_command(
         channel_id,
         session_id,
         query_text,
+        skills_dir=team_skills_dir,
     )
-    if rebuild_error is not None:
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=channel_id,
-            payload={"event_type": "chat.error", "error": rebuild_error},
-            is_complete=False,
-        )
-        yield AgentResponseChunk(
-            request_id=rid,
-            channel_id=channel_id,
-            payload=None,
-            is_complete=True,
-        )
-        return
-    if followup_prompt is not None:
-        query = followup_prompt
+    if slash_result is not None:
+        approval_chunks = slash_result.get("approval_chunks")
+        if isinstance(approval_chunks, list) and approval_chunks:
+            for chunk in approval_chunks:
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=channel_id,
+                    payload=chunk,
+                    is_complete=False,
+                )
+            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload={"event_type": "chat.done"},
+                is_complete=True,
+            )
+            return
+
+        prompt = str(slash_result.get("followup_prompt", "") or "").strip()
+        if prompt:
+            query = prompt
+        else:
+            slash_result = evolution_slash_result(
+                evolution_slash_command_name(query_text),
+                slash_result,
+                warning_phrases=TEAM_EVOLUTION_SLASH_WARNING_PHRASES,
+            )
+            result_type = str(slash_result.get("result_type", "answer")).strip().lower()
+            content = str(slash_result.get("output", ""))
+            slash_meta = {
+                "source": slash_result.get("source"),
+                "slash_command": slash_result.get("slash_command"),
+                "display_level": slash_result.get("display_level"),
+            }
+            payload = (
+                {"event_type": "chat.error", "error": content, **slash_meta}
+                if result_type == "error"
+                else {"event_type": "chat.final", "content": content, **slash_meta}
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=payload,
+                is_complete=False,
+            )
+            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=None,
+                is_complete=True,
+            )
+            return
 
     try:
         if is_first_request:
@@ -932,7 +863,6 @@ async def process_team_message_stream(
             # matches the latest config toggle.
             from jiuwenswarm.agents.harness.team.team_manager import sync_team_observability
             sync_team_observability()
-            team_manager.ensure_team_shared_skills_ready_for_session(session_id, team_spec)
             await team_manager.prepare_runtime_activation(session_id, team_name)
             request_queue = asyncio.Queue()
             waiter_key = (_resolve_channel_id(channel_id), session_id)

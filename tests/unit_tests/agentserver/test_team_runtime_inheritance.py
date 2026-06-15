@@ -212,12 +212,19 @@ def test_build_member_rails_wires_team_trajectory_registry_to_evolution_rails(
     class _FakeTeamSkillEvolutionRail:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.experience_manager = SimpleNamespace(
+                experience_submission_service=object()
+            )
 
     class _FakeSkillEvolutionRail:
         def __init__(self, **kwargs):
             self.bound_sink = None
             self.bound_team_id = None
             self.bound_member_role = None
+            self._review_runtime = kwargs.get("review_runtime")
+            self.experience_manager = SimpleNamespace(
+                experience_submission_service=object()
+            )
 
         def set_trajectory_sink(self, sink, *, team_id, member_role):
             self.bound_sink = sink
@@ -294,6 +301,9 @@ def test_build_member_rails_creates_leader_team_skill_evolution_rail_with_auto_s
     class _FakeTeamSkillEvolutionRail:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
+            self.experience_manager = SimpleNamespace(
+                experience_submission_service=object()
+            )
 
     if env_auto_scan is None:
         monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
@@ -321,14 +331,84 @@ def test_build_member_rails_creates_leader_team_skill_evolution_rail_with_auto_s
     assert team_skill_rails[0].kwargs["auto_scan"] is expected_auto_scan
 
 
+def test_build_member_rails_wires_leader_team_skill_evolution_active_review_rails(
+    tmp_path,
+    monkeypatch,
+):
+    class _FakeEvolutionInterruptRail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _FakeTeamSkillEvolutionRail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.experience_manager = SimpleNamespace(
+                experience_submission_service=object()
+            )
+
+    monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.EvolutionInterruptRail",
+        _FakeEvolutionInterruptRail,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.TeamSkillEvolutionRail",
+        _FakeTeamSkillEvolutionRail,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.build_evolution_llm",
+        lambda config=None: (object(), "model"),
+    )
+
+    rails = build_member_rails(
+        member_info=MemberInfo(role="leader"),
+        runtime=RuntimeInfo(channel="web"),
+        team_workspace=TeamWorkspaceInfo(
+            skills_dir=str(tmp_path / "skills"),
+            config={"evolution": {"auto_scan": False}},
+        ),
+    )
+
+    interrupt_index = next(
+        index for index, rail in enumerate(rails) if isinstance(rail, _FakeEvolutionInterruptRail)
+    )
+    team_index = next(
+        index for index, rail in enumerate(rails) if isinstance(rail, _FakeTeamSkillEvolutionRail)
+    )
+    assert interrupt_index < team_index
+
+    interrupt_rail = rails[interrupt_index]
+    team_rail = rails[team_index]
+    assert "review_runtime" in team_rail.kwargs
+    assert interrupt_rail.kwargs["review_runtime"] is team_rail.kwargs["review_runtime"]
+    assert (
+        interrupt_rail.kwargs["submission_service"]
+        is team_rail.experience_manager.experience_submission_service
+    )
+    assert interrupt_rail.kwargs["auto_save"] is False
+    assert interrupt_rail.kwargs["language"] == "cn"
+
+
 def test_build_member_rails_keeps_member_skill_evolution_when_auto_scan_disabled(
     tmp_path, monkeypatch
 ):
+    class _FakeEvolutionInterruptRail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     class _FakeSkillEvolutionRail:
         def __init__(self, **kwargs):
             self.auto_scan = kwargs["auto_scan"]
+            self._review_runtime = kwargs.get("review_runtime")
+            self.experience_manager = SimpleNamespace(
+                experience_submission_service=object()
+            )
 
     monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_runtime_inheritance.EvolutionInterruptRail",
+        _FakeEvolutionInterruptRail,
+    )
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.team_runtime_inheritance.SkillEvolutionRail",
         _FakeSkillEvolutionRail,
@@ -350,6 +430,11 @@ def test_build_member_rails_keeps_member_skill_evolution_when_auto_scan_disabled
     evo_rails = [rail for rail in rails if isinstance(rail, _FakeSkillEvolutionRail)]
     assert len(evo_rails) == 1
     assert evo_rails[0].auto_scan is False
+    interrupt_index = next(
+        index for index, rail in enumerate(rails) if isinstance(rail, _FakeEvolutionInterruptRail)
+    )
+    skill_index = next(index for index, rail in enumerate(rails) if isinstance(rail, _FakeSkillEvolutionRail))
+    assert interrupt_index < skill_index
 
 
 def test_build_member_rails_keeps_team_skill_create_when_auto_scan_disabled(

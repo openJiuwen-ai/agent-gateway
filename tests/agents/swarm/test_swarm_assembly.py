@@ -33,8 +33,9 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
     RailSpec,
+    register_rail_provider,
 )
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail, ToolCallInputs
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 
 from jiuwenswarm.agents.swarm import (
@@ -58,9 +59,6 @@ from jiuwenswarm.agents.swarm.providers import (
     member_rails,
     runtime_tools,
     tools,
-)
-from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
-    resolve_model_config,
 )
 from jiuwenswarm.common.config import get_config
 
@@ -190,7 +188,7 @@ def test_runtime_prompt_rail_resolves_via_registry() -> None:
     rail = RailSpec(type=registry.RUNTIME_PROMPT).build(language="cn", context=fake_ctx)
 
     assert rail is not None
-    assert type(rail).__name__ == "RuntimePromptRail"
+    assert rail.__class__.__name__ == "RuntimePromptRail"
 
 
 @pytest.mark.asyncio
@@ -298,8 +296,19 @@ def test_unknown_swarm_rail_type_raises() -> None:
 @pytest.mark.parametrize(
     ("role", "extra_rails"),
     [
-        ("leader", {registry.TEAM_SKILL_EVOLUTION, registry.TEAM_SKILL_CREATE}),
-        ("teammate", {registry.MEMBER_SKILL_EVOLUTION}),
+        (
+            "leader",
+            {
+                registry.TEAM_SKILL_EVOLUTION,
+                registry.TEAM_SKILL_CREATE,
+            },
+        ),
+        (
+            "teammate",
+            {
+                registry.MEMBER_SKILL_EVOLUTION,
+            },
+        ),
     ],
 )
 def test_build_member_capability_specs_rail_names(
@@ -778,6 +787,164 @@ def test_vision_audio_config_params_empty_when_unconfigured() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_team_skill_evolution_provider_passes_review_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeTeamSkillEvolutionRail:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.swarm_context = {}
+            self.approval_submission_service = object()
+
+        def bind_swarm_context(self, **kwargs) -> None:
+            self.swarm_context.update(kwargs)
+
+    class _FakeEvolutionInterruptRail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        evolution_rails,
+        "SwarmTeamSkillEvolutionRail",
+        _FakeTeamSkillEvolutionRail,
+    )
+    monkeypatch.setattr(evolution_rails, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
+    monkeypatch.setattr(
+        evolution_rails,
+        "_build_evolution_llm_from",
+        lambda config: (object(), "model"),
+    )
+    monkeypatch.setattr(evolution_rails, "load_execution_disabled_skills", lambda: [])
+
+    ctx = SwarmBuildContext(
+        language="cn",
+        role="leader",
+        session_id="sess",
+        channel="web",
+        team_id="t",
+        team_ws_root=str(tmp_path),
+        team_skills_dir=str(tmp_path / "skills"),
+        trajectory_registry=object(),
+        config={},
+    )
+
+    built = evolution_rails.build_team_skill_evolution_rail(
+        {"evolution_model_config": {}, "auto_scan": False},
+        ctx,
+    )
+
+    assert len(built) == 2
+    interrupt_rail, rail = built
+    assert isinstance(rail, _FakeTeamSkillEvolutionRail)
+    assert isinstance(interrupt_rail, _FakeEvolutionInterruptRail)
+    assert "review_runtime" in rail.kwargs
+    assert rail.kwargs["review_runtime"] is not None
+    assert interrupt_rail.kwargs == {
+        "review_runtime": rail.kwargs["review_runtime"],
+        "submission_service": rail.approval_submission_service,
+        "auto_save": False,
+        "language": "cn",
+    }
+
+
+def test_member_skill_evolution_provider_passes_review_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeMemberSkillEvolutionRail:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+            self.swarm_context = {}
+            self.bound_sink = None
+            self.approval_submission_service = object()
+
+        def set_trajectory_sink(self, sink, *, team_id, member_role) -> None:
+            self.bound_sink = (sink, team_id, member_role)
+
+        def bind_swarm_context(self, **kwargs) -> None:
+            self.swarm_context.update(kwargs)
+
+    class _FakeEvolutionInterruptRail:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(
+        evolution_rails,
+        "SwarmMemberSkillEvolutionRail",
+        _FakeMemberSkillEvolutionRail,
+    )
+    monkeypatch.setattr(evolution_rails, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
+    monkeypatch.setattr(
+        evolution_rails,
+        "_build_evolution_llm_from",
+        lambda config: (object(), "model"),
+    )
+    monkeypatch.setattr(evolution_rails, "load_execution_disabled_skills", lambda: [])
+
+    registry_obj = object()
+    ctx = SwarmBuildContext(
+        language="en",
+        role="teammate",
+        session_id="sess",
+        channel="web",
+        team_id="t",
+        team_skills_dir=str(tmp_path / "skills"),
+        trajectory_registry=registry_obj,
+        config={},
+    )
+
+    built = evolution_rails.build_member_skill_evolution_rail(
+        {"evolution_model_config": {}, "auto_scan": False},
+        ctx,
+    )
+
+    assert len(built) == 2
+    interrupt_rail, rail = built
+    assert isinstance(rail, _FakeMemberSkillEvolutionRail)
+    assert isinstance(interrupt_rail, _FakeEvolutionInterruptRail)
+    assert "review_runtime" in rail.kwargs
+    assert rail.kwargs["review_runtime"] is not None
+    assert rail.kwargs["language"] == "en"
+    assert interrupt_rail.kwargs == {
+        "review_runtime": rail.kwargs["review_runtime"],
+        "submission_service": rail.approval_submission_service,
+        "auto_save": True,
+        "language": "en",
+    }
+    assert rail.bound_sink == (registry_obj, "t", "teammate")
+
+
+def test_rail_spec_build_flattens_single_and_list_provider_returns() -> None:
+    """Declarative rail providers may return either one rail or a rail stack."""
+    single_rail = AgentRail()
+    first_stack_rail = AgentRail()
+    second_stack_rail = AgentRail()
+
+    register_rail_provider("swarm.test_single_rail", lambda params, ctx: single_rail)
+    register_rail_provider(
+        "swarm.test_rail_stack",
+        lambda params, ctx: [first_stack_rail, second_stack_rail],
+    )
+
+    spec = DeepAgentSpec(
+        rails=[
+            RailSpec(type="swarm.test_single_rail"),
+            RailSpec(type="swarm.test_rail_stack"),
+        ],
+    )
+
+    parts = spec.resolve_parts(context=SwarmBuildContext(language="cn"))
+
+    assert parts.rails[:3] == [
+        single_rail,
+        first_stack_rail,
+        second_stack_rail,
+    ]
+
+
 def test_team_skill_create_rail_registers_full_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -960,10 +1127,14 @@ def test_code_member_builds_declaratively_without_post_processing(
     """
     register_swarm_providers()
     config = get_config()
-    model_client_config, _, _ = resolve_model_config(config)
     base = DeepAgentSpec(
         model=TeamModelConfig(
-            model_client_config=ModelClientConfig(**model_client_config)
+            model_client_config=ModelClientConfig(
+                client_provider="OpenAI",
+                api_key="test-key",
+                api_base="https://example.test/v1",
+                verify_ssl=False,
+            )
         ),
         workspace=WorkspaceSpec(root_path=str(tmp_path), language="en"),
     )
@@ -998,7 +1169,7 @@ def test_code_member_builds_declaratively_without_post_processing(
     rails = list(getattr(agent, "_pending_rails", [])) + list(
         getattr(agent, "_registered_rails", [])
     )
-    rail_types = {type(rail).__name__ for rail in rails}
+    rail_types = {rail.__class__.__name__ for rail in rails}
 
     # Zero post-processing: the legacy code customizer is never invoked.
     assert post_processing_calls == []

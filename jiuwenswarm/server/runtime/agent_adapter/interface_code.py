@@ -1016,6 +1016,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         rail_specs = (
             ("_task_planning_rail", "TaskPlanningRail"),
             ("_skill_evolution_rail", "SkillEvolutionRail"),
+            ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
         )
 
         for attr, label in rail_specs:

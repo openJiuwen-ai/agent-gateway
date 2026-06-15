@@ -27,6 +27,7 @@ from openjiuwen.agent_teams.rails.builtin_elements import (
     HEARTBEAT as _OJ_HEARTBEAT,
     LSP as _OJ_LSP,
     SECURITY as _OJ_SECURITY,
+    SUBAGENT as _OJ_SUBAGENT,
     SYS_OPERATION as _OJ_SYS_OPERATION,
     TASK_PLANNING as _OJ_TASK_PLANNING,
     VISION as _OJ_VISION,
@@ -86,6 +87,7 @@ SKILL_RETRIEVAL_PROMPT = _member_rails.SKILL_RETRIEVAL_PROMPT
 TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
+EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
 
 # Code-mode (code.team / team.plan) swarm-owned rail provider names.
 CODE_EXTRA_TOOLS = _tools.CODE_EXTRA_TOOLS
@@ -116,6 +118,7 @@ AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 # Generic rails provided + registered by openjiuwen (referenced by bare name).
 SYS_OPERATION = _OJ_SYS_OPERATION
 TASK_PLANNING = _OJ_TASK_PLANNING
+SUBAGENT = _OJ_SUBAGENT
 SECURITY = _OJ_SECURITY
 HEARTBEAT = _OJ_HEARTBEAT
 CODE_LSP = _OJ_LSP

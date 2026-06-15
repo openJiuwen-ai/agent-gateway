@@ -821,6 +821,38 @@ class JiuWenSwarm:
             )
             return interactive_input
 
+        if source == "skill_evolution_approval":
+            answer = answers[0] if answers else {}
+            selected_options = answer.get("selected_options", []) if isinstance(answer, dict) else []
+            custom_input = answer.get("custom_input", "") if isinstance(answer, dict) else ""
+            value = str(selected_options[0] if selected_options else "").strip()
+            action_by_value = {
+                "accept": "allow_once",
+                "接收": "allow_once",
+                "接受": "allow_once",
+                "allow_once": "allow_once",
+                "本次允许": "allow_once",
+                "Allow Once": "allow_once",
+                "allow_always": "allow_always",
+                "总是允许": "allow_always",
+                "Always Allow": "allow_always",
+                "reject": "reject",
+                "拒绝": "reject",
+                "Reject": "reject",
+            }
+            action = action_by_value.get(value)
+            if action is None:
+                action = "reject"
+            payload = {"action": action}
+            if custom_input:
+                payload["feedback"] = custom_input
+            interactive_input.update(request_id, payload)
+            logger.info(
+                "[JiuWenSwarm] SkillEvolutionApproval InteractiveInput.update: request_id=%s payload=%s",
+                request_id, payload
+            )
+            return interactive_input
+
         if source and source not in {
             "permission_interrupt",
             "confirm_interrupt",

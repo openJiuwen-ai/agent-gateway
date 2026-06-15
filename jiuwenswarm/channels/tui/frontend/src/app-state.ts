@@ -1272,12 +1272,18 @@ export class CliPiAppState {
       return;
     }
     const source = this.pendingQuestion.source;
-
-    if (
+    const approvalTransport =
+      this.pendingQuestion.evolutionMeta &&
+      typeof this.pendingQuestion.evolutionMeta.approval_transport === "string"
+        ? this.pendingQuestion.evolutionMeta.approval_transport
+        : undefined;
+    const shouldResumeInterrupt =
       source === "permission_interrupt" ||
       source === "confirm_interrupt" ||
-      source === "ask_user_interrupt"
-    ) {
+      source === "ask_user_interrupt" ||
+      (source === "skill_evolution_approval" && approvalTransport === "interrupt");
+
+    if (shouldResumeInterrupt) {
       const resumeMode = this.pendingQuestion.resumeMode ?? this.mode;
       this.sendEventOnly(
         "chat.send",

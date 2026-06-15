@@ -56,11 +56,13 @@ from openjiuwen.harness.rails import (
     TaskPlanningRail,
     SecurityRail,
     SkillEvolutionRail,
+    EvolutionInterruptRail,
     SkillCreateRail,
     SubagentRail,
     SysOperationRail,
     HeartbeatRail,
-    MemoryRail
+    MemoryRail,
+    configure_skill_evolution_runtime,
 )
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
@@ -73,7 +75,6 @@ from openjiuwen.harness.tools import (
     WebPaidSearchTool,
     create_audio_tools,
     create_vision_tools,
-    TodoModifyTool,
 )
 
 try:
@@ -107,6 +108,7 @@ from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    SKILL_EVOLUTION_APPROVAL_SCHEMA,
     build_permission_rail,
     convert_interactions_to_ask_user_question,
 )
@@ -149,15 +151,18 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     EVOLUTION_ACCEPT_LABELS,
     EVOLUTION_EXECUTE_LABELS,
     EvolutionPushContext,
+    REGULAR_EVOLUTION_SLASH_WARNING_PHRASES,
     TEAM_EVOLUTION_EVENT_TIMEOUT_SEC,
     TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES,
     TEAM_EVOLUTION_IDLE_SLEEP_SEC,
+    TEAM_EVOLUTION_NOOP_STAGES,
     approve_evolution_records,
     answers_select_option,
     approved_record_ids_from_answers,
     build_evolution_status_update,
     evolution_outcome_from_event,
     evolution_meta_from_params,
+    evolution_slash_command_name,
     evolution_slash_result,
     evolution_status_response,
     is_evolution_approval_event,
@@ -173,6 +178,11 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     validate_evolution_log_writable,
     validate_evolution_skill,
     visible_evolution_progress_from_events,
+    visible_regular_evolution_start_progress,
+)
+from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
+    EvolutionSlashContext,
+    handle_evolution_slash_command,
 )
 from jiuwenswarm.server.utils.stream_utils import parse_ask_user_question_payload
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
@@ -241,16 +251,10 @@ from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_mana
 from jiuwenswarm.gateway.cron import CronTargetChannel
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.utils import (
-    get_agent_memory_dir,
     get_agent_skills_dir,
     get_agent_workspace_dir,
     get_checkpoint_dir,
     get_config_dir,
-    get_deepagent_agent_md_path,
-    get_deepagent_heartbeat_path,
-    get_deepagent_identity_md_path,
-    get_deepagent_soul_md_path,
-    get_deepagent_user_md_path,
     get_env_file,
     get_prompt_attachment_dir,
     reset_free_search_runtime_flags,
@@ -569,6 +573,7 @@ class JiuWenSwarmDeepAdapter:
         self._external_memory_rail_registered: bool = False
         self._heartbeat_rail: HeartbeatRail | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
+        self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
         self._skill_create_rail: SkillCreateRail | None = None
         self._subagent_rail: SubagentRail | None = None
         self._permission_rail: Any = None
@@ -2334,6 +2339,73 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    async def _ensure_active_evolution_rails_registered(self) -> None:
+        """Configure, register, and cache single-agent skill evolution rails."""
+        if self._instance is None:
+            return
+
+        _env_auto_scan = os.getenv("EVOLUTION_AUTO_SCAN")
+        if _env_auto_scan is not None:
+            evolution_auto_scan = _env_auto_scan.lower() in ("true", "1", "yes")
+        else:
+            evolution_auto_scan = self._config_cache.get("evolution", {}).get("auto_scan", False)
+
+        disabled_skills = (
+            self._skill_manager.list_execution_disabled_skills()
+            if self._skill_manager is not None
+            else []
+        )
+        await configure_skill_evolution_runtime(
+            self._instance,
+            skills_dir=str(get_agent_skills_dir()),
+            llm=self._model,
+            model=self._default_model_name
+            or self._config_cache.get("model_name", "gpt-4"),
+            auto_scan=evolution_auto_scan,
+            auto_save=False,
+            disabled_skills=disabled_skills,
+            language=self._resolve_runtime_language(),
+        )
+        self._refresh_active_evolution_rail_refs()
+
+    def _refresh_active_evolution_rail_refs(self) -> None:
+        """Refresh cached rail references after agent-core runtime configure."""
+        if self._instance is None:
+            return
+        find_rails = getattr(self._instance, "find_rails_by_type", None)
+        if not callable(find_rails):
+            return
+
+        regular_rails = find_rails((SkillEvolutionRail,))
+        self._skill_evolution_rail = None
+        for rail in regular_rails:
+            if isinstance(rail, SkillEvolutionRail) and not isinstance(
+                rail, EvolutionInterruptRail
+            ):
+                self._skill_evolution_rail = rail
+                break
+        interrupt_rails = find_rails((EvolutionInterruptRail,))
+        self._evolution_interrupt_rail = next(iter(interrupt_rails), None)
+        subagent_rails = find_rails((SubagentRail,))
+        self._subagent_rail = next(iter(subagent_rails), None)
+
+    def _sync_active_evolution_review_agent_after_reload(self) -> None:
+        """Restore SkillEvolutionRail-owned review subagent after DeepAgent hot reload."""
+        if self._instance is None or self._skill_evolution_rail is None:
+            return
+        if not self._config_cache.get("evolution", {}).get("enabled", False):
+            return
+
+        register_review_agent = getattr(
+            self._skill_evolution_rail,
+            "_register_evolution_review_agent",
+            None,
+        )
+        if callable(register_review_agent):
+            register_review_agent(self._instance)
+
+        self._refresh_active_evolution_rail_refs()
+
     def _build_skill_create_rail(self, config: dict[str, Any]) -> SkillCreateRail | None:
         """Build SkillCreateRail for new skill creation proposals.
 
@@ -3216,6 +3288,7 @@ class JiuWenSwarmDeepAdapter:
             rails=rails_list,
         )
         self._instance.configure(deep_cfg)
+        self._sync_active_evolution_review_agent_after_reload()
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
 
         logger.info("[JiuWenSwarmDeepAdapter] 配置已热更新（configure），未重启进程")
@@ -3320,14 +3393,10 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] ContextProcessorRail unregistered for plan mode (disabled)"
                 )
 
-        # SkillEvolutionRail
+        # SkillEvolutionRail runtime configure creates/reuses and registers its rail set.
         evolution_enabled = self._config_cache.get("evolution", {}).get("enabled", False)
         if evolution_enabled:
-            if self._skill_evolution_rail is None:
-                self._skill_evolution_rail = self._build_skill_evolution_rail(self._config_cache)
-            if self._skill_evolution_rail is not None:
-                await self._instance.register_rail(self._skill_evolution_rail)
-                logger.info("[JiuWenSwarmDeepAdapter] SkillEvolutionRail registered for plan mode")
+            await self._ensure_active_evolution_rails_registered()
         else:
             # evolution disabled: unregister if exists
             if self._skill_evolution_rail is not None:
@@ -3358,19 +3427,13 @@ class JiuWenSwarmDeepAdapter:
                 self._skill_create_rail = None
                 logger.info("[JiuWenSwarmDeepAdapter] SkillCreateRail unregistered (skill_create=false)")
 
-        # 注册 subagent rail（plan 模式下启用）
-        if self._subagent_rail is None:
-            self._subagent_rail = self._build_subagent_rail()
-            if self._subagent_rail is not None:
-                await self._instance.register_rail(self._subagent_rail)
-                logger.info("[JiuWenSwarmDeepAdapter] SubagentRail registered for plan mode")
-
     async def _update_agent_mode_rails(self, mode: str | None = None) -> None:
         """agent 模式：卸载 plan 专属 rails，按需注册 agent 专属 rails。"""
         # 卸载 plan 专属 rails
         rail_specs = (
             ("_task_planning_rail", "TaskPlanningRail"),
             ("_skill_evolution_rail", "SkillEvolutionRail"),
+            ("_evolution_interrupt_rail", "EvolutionInterruptRail"),
             ("_skill_create_rail", "SkillCreateRail"),
             ("_subagent_rail", "SubagentRail"),
         )
@@ -4191,6 +4254,14 @@ class JiuWenSwarmDeepAdapter:
             )
         elif request_id.startswith("skill_evolve_"):
             resolved = await self._handle_evolution_approval(request_id, answers)
+        elif self._is_interrupt_skill_evolution_approval_params(request_id, request.params):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] interrupt evolution approval received via "
+                "chat.user_answer; gateway should route it as chat.send: request_id=%s",
+                request_id,
+            )
+        elif self._is_regular_skill_evolution_approval_params(request.params):
+            resolved = await self._handle_evolution_approval(request_id, answers)
 
         return AgentResponse(
             request_id=request.request_id,
@@ -4199,6 +4270,39 @@ class JiuWenSwarmDeepAdapter:
             payload={"accepted": True, "resolved": resolved},
             metadata=request.metadata,
         )
+
+    @staticmethod
+    def _is_interrupt_skill_evolution_approval_params(request_id: str, params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        if isinstance(request_id, str) and request_id.startswith("call_"):
+            return JiuWenSwarmDeepAdapter._is_regular_skill_evolution_approval_params(params)
+        evolution_meta = evolution_meta_from_params(params)
+        return (
+            evolution_meta.get("approval_transport") == "interrupt"
+            and JiuWenSwarmDeepAdapter._is_regular_skill_evolution_approval_params(params)
+        )
+
+    @staticmethod
+    def _is_regular_skill_evolution_approval_params(params: Any) -> bool:
+        if not isinstance(params, dict):
+            return False
+        if params.get("source") == "skill_evolution_approval":
+            return True
+        if params.get("approval_schema") == SKILL_EVOLUTION_APPROVAL_SCHEMA:
+            return True
+        approval_detail = params.get("approval_detail")
+        if (
+            isinstance(approval_detail, dict)
+            and approval_detail.get("schema") == SKILL_EVOLUTION_APPROVAL_SCHEMA
+        ):
+            return True
+        evolution_meta = evolution_meta_from_params(params)
+        if evolution_meta.get("event_kind") != "approval":
+            return False
+        approval_kind = evolution_meta.get("approval_kind")
+        rail_kind = evolution_meta.get("rail_kind")
+        return approval_kind in (None, "", "evolve") and rail_kind in (None, "", "regular")
 
     async def handle_heartbeat(self, request: AgentRequest) -> AgentResponse | None:
         """Handle heartbeat request. Returns None to continue normal flow.
@@ -4447,7 +4551,8 @@ class JiuWenSwarmDeepAdapter:
     async def _handle_evolve_command(self, query: str, session_id: str) -> dict[str, Any]:
         """/evolve [<skill_name> [<user_query>...]] handler using the active SDK path.
 
-        Uses SkillEvolutionRail.request_user_evolution to return structured
+        Newer regular SkillEvolutionRail returns a follow-up prompt for the
+        agent-driven active review path. Older SDKs may still return structured
         approval data directly. Passive/background evolution still uses the
         host-event drain path.
 
@@ -4532,7 +4637,6 @@ class JiuWenSwarmDeepAdapter:
             evolve_result = await rail.request_user_evolution(
                 skill_name,
                 evolution_intent,
-                auto_approve=False,
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] evolve generate failed (skill=%s): %s", skill_name, exc)
@@ -4540,6 +4644,10 @@ class JiuWenSwarmDeepAdapter:
                 "output": f"演进经验生成失败：{exc}",
                 "result_type": "error",
             }
+
+        followup_prompt = str(getattr(evolve_result, "followup_prompt", "") or "").strip()
+        if followup_prompt:
+            return self._followup_response("run_evolve_followup", followup_prompt, skill_name)
 
         status_response = evolution_status_response(
             evolve_result,
@@ -4779,6 +4887,10 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] evolve_simplify failed: %s", exc)
             return {"output": f"智能整理分析失败：{exc}", "result_type": "error"}
 
+        followup_prompt = str(getattr(simplify_result, "followup_prompt", "") or "").strip()
+        if followup_prompt:
+            return self._followup_response("run_simplify_followup", followup_prompt, skill_name)
+
         return self._approval_response_from_simplify_result(
             skill_name=skill_name,
             simplify_result=simplify_result,
@@ -4816,12 +4928,7 @@ class JiuWenSwarmDeepAdapter:
                 "result_type": "error",
             }
 
-        return {
-            "action": "run_rebuild_followup",
-            "followup_prompt": followup_prompt,
-            "skill_name": skill_name,
-            "result_type": "followup",
-        }
+        return self._followup_response("run_rebuild_followup", followup_prompt, skill_name)
 
     async def _handle_evolve_rollback_command(self, query: str) -> dict[str, Any]:
         """/evolve_rollback <skill_name> [version] — Rollback skill to archived version."""
@@ -4934,11 +5041,20 @@ class JiuWenSwarmDeepAdapter:
         return True
 
     @staticmethod
-    def _extract_rebuild_followup_prompt(slash_result: dict[str, Any] | None) -> str | None:
-        """Return followup prompt when slash_result requests rebuild continuation."""
+    def _followup_response(action: str, followup_prompt: str, skill_name: str) -> dict[str, Any]:
+        return {
+            "action": action,
+            "followup_prompt": followup_prompt,
+            "skill_name": skill_name,
+            "result_type": "followup",
+        }
+
+    @staticmethod
+    def _extract_followup_prompt(slash_result: dict[str, Any] | None) -> str | None:
+        """Return follow-up prompt when a slash command should continue as an agent turn."""
         if not isinstance(slash_result, dict):
             return None
-        if slash_result.get("action") != "run_rebuild_followup":
+        if slash_result.get("result_type") != "followup":
             return None
         prompt = slash_result.get("followup_prompt")
         if not isinstance(prompt, str):
@@ -4946,7 +5062,7 @@ class JiuWenSwarmDeepAdapter:
         prompt = prompt.strip()
         return prompt or None
 
-    def _ensure_evolution_rail_for_slash(self, mode: str) -> str | None:
+    async def _ensure_evolution_rail_for_slash(self, mode: str) -> str | None:
         """Check evolution availability for slash commands; lazily init rail if needed.
 
         Returns None when the rail is (or becomes) available, or an error message string.
@@ -4956,8 +5072,7 @@ class JiuWenSwarmDeepAdapter:
             return f"{display_mode} 模式下演进功能不可用。"
         if not self._config_cache.get("evolution", {}).get("enabled", False):
             return "演进功能未启用。"
-        if self._skill_evolution_rail is None:
-            self._skill_evolution_rail = self._build_skill_evolution_rail(self._config_cache)
+        await self._ensure_active_evolution_rails_registered()
         if self._skill_evolution_rail is None:
             return "演进功能初始化失败。"
 
@@ -4984,32 +5099,25 @@ class JiuWenSwarmDeepAdapter:
 
         stripped = query.strip()
 
-        if stripped.startswith("/evolve_simplify"):
-            err = self._ensure_evolution_rail_for_slash(mode)
-            if err:
-                return evolution_slash_result(
-                    "evolve_simplify",
-                    {"output": err, "result_type": "error"},
-                )
+        slash_result = await handle_evolution_slash_command(
+            stripped,
+            EvolutionSlashContext(
+                mode=mode,
+                session_id=session_id,
+                skills_dir=str(get_agent_skills_dir()),
+                evolution_enabled=bool(self._config_cache.get("evolution", {}).get("enabled", False)),
+                language=self._resolve_runtime_language(),
+            ),
+        )
+        if slash_result is not None:
             return evolution_slash_result(
-                "evolve_simplify",
-                await self._handle_evolve_simplify_command(stripped),
-            )
-
-        if stripped.startswith("/evolve_rebuild"):
-            err = self._ensure_evolution_rail_for_slash(mode)
-            if err:
-                return evolution_slash_result(
-                    "evolve_rebuild",
-                    {"output": err, "result_type": "error"},
-                )
-            return evolution_slash_result(
-                "evolve_rebuild",
-                await self._handle_evolve_rebuild_command(stripped),
+                evolution_slash_command_name(stripped),
+                slash_result,
+                warning_phrases=REGULAR_EVOLUTION_SLASH_WARNING_PHRASES,
             )
 
         if stripped.startswith("/evolve_rollback"):
-            err = self._ensure_evolution_rail_for_slash(mode)
+            err = await self._ensure_evolution_rail_for_slash(mode)
             if err:
                 return evolution_slash_result(
                     "evolve_rollback",
@@ -5018,30 +5126,6 @@ class JiuWenSwarmDeepAdapter:
             return evolution_slash_result(
                 "evolve_rollback",
                 await self._handle_evolve_rollback_command(stripped),
-            )
-
-        if stripped.startswith("/evolve_list"):
-            err = self._ensure_evolution_rail_for_slash(mode)
-            if err:
-                return evolution_slash_result(
-                    "evolve_list",
-                    {"output": err, "result_type": "error"},
-                )
-            return evolution_slash_result(
-                "evolve_list",
-                await self._handle_evolve_list_command(stripped),
-            )
-
-        if stripped == "/evolve" or stripped.startswith("/evolve "):
-            err = self._ensure_evolution_rail_for_slash(mode)
-            if err:
-                return evolution_slash_result(
-                    "evolve",
-                    {"output": err, "result_type": "error"},
-                )
-            return evolution_slash_result(
-                "evolve",
-                await self._handle_evolve_command(stripped, session_id),
             )
 
         return None
@@ -5135,10 +5219,11 @@ class JiuWenSwarmDeepAdapter:
 
         slash_result = await self._handle_slash_command(query, session_id, mode)
         if slash_result is not None:
-            followup_prompt = self._extract_rebuild_followup_prompt(slash_result)
+            followup_prompt = self._extract_followup_prompt(slash_result)
             if followup_prompt is not None:
                 inputs = dict(inputs)
                 inputs["query"] = followup_prompt
+                inputs["_invoke_turn_id"] = request.request_id
             else:
                 approval_chunks = slash_result.get("approval_chunks")
                 if approval_chunks:
@@ -5324,10 +5409,11 @@ class JiuWenSwarmDeepAdapter:
         # 拦截斜杠命令
         slash_result = await self._handle_slash_command(query, session_id, mode)
         if slash_result is not None:
-            followup_prompt = self._extract_rebuild_followup_prompt(slash_result)
+            followup_prompt = self._extract_followup_prompt(slash_result)
             if followup_prompt is not None:
                 inputs = dict(inputs)
                 inputs["query"] = followup_prompt
+                inputs["_invoke_turn_id"] = request.request_id
             else:
                 approval_chunks = slash_result.get("approval_chunks", [])
                 if approval_chunks:
@@ -6669,7 +6755,6 @@ class JiuWenSwarmDeepAdapter:
         Returns:
             完整上下文的 token 总数
         """
-        from openjiuwen.core.foundation.llm import SystemMessage
         from openjiuwen.core.foundation.tool import ToolInfo
 
         token_counter = context.token_counter()
@@ -6800,13 +6885,19 @@ class JiuWenSwarmDeepAdapter:
                 last_event_at = time.monotonic()
 
                 visible_progress_statuses = visible_evolution_progress_from_events(events)
-                just_started = False
-                if not active and visible_progress_statuses:
-                    start_stage = visible_progress_statuses[0].stage
-                    start_message = visible_progress_statuses[0].message
+                just_started_with_progress = None
+                if not active:
+                    start_progress_statuses = visible_regular_evolution_start_progress(
+                        visible_progress_statuses
+                    )
+                    if start_progress_statuses:
+                        just_started_with_progress = start_progress_statuses[0]
+
+                if just_started_with_progress is not None:
+                    start_stage = just_started_with_progress.stage
+                    start_message = just_started_with_progress.message
                     await _push_status("start", start_stage, start_message)
                     active = True
-                    just_started = True
 
                 await push_evolution_progress(
                     push_context,
@@ -6816,11 +6907,13 @@ class JiuWenSwarmDeepAdapter:
                     build_push_message=build_server_push_message,
                 )
 
-                progress_statuses_to_push = (
-                    visible_progress_statuses[1:]
-                    if just_started
-                    else visible_progress_statuses
-                )
+                progress_statuses_to_push = visible_progress_statuses
+                if just_started_with_progress is not None:
+                    progress_statuses_to_push = [
+                        progress_status
+                        for progress_status in visible_progress_statuses
+                        if progress_status is not just_started_with_progress
+                    ]
                 for progress_status in progress_statuses_to_push:
                     if progress_status.terminal:
                         continue
@@ -6850,7 +6943,13 @@ class JiuWenSwarmDeepAdapter:
                         end_stage = "hidden"
                     else:
                         end_stage = stage or "completed"
-                    if not active and end_stage == "hidden":
+                    if (
+                        not active
+                        and (
+                            end_stage == "hidden"
+                            or end_stage in TEAM_EVOLUTION_NOOP_STAGES
+                        )
+                    ):
                         await _cleanup_evolution_rail()
                         return
                     if not active:
@@ -6874,7 +6973,13 @@ class JiuWenSwarmDeepAdapter:
                     end_stage = terminal_stage(terminal) or "no_evolution_generated"
                     if end_stage in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES:
                         end_stage = "hidden"
-                    if not active and end_stage == "hidden":
+                    if (
+                        not active
+                        and (
+                            end_stage == "hidden"
+                            or end_stage in TEAM_EVOLUTION_NOOP_STAGES
+                        )
+                    ):
                         await _cleanup_evolution_rail()
                         return
                     if not active:
