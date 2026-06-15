@@ -3383,10 +3383,9 @@ export class AppScreen implements Component, Focusable {
       const phaseCompleted =
         phase.completed_agent_count ??
         phase.agents.filter((agent) => agent.status === "completed").length;
-      const selectedMark = phase.id === activePhaseId ? palette.text.accent("•") : " ";
       return {
         value: phase.id,
-        label: `${selectedMark} ${formatWorkflowStatus(phase.status)} ${phase.name}`,
+        label: `${formatWorkflowStatus(phase.status)} ${phase.name}`,
         description: `${phaseCompleted}/${phaseTotal}`,
       };
     });
