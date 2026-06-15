@@ -229,9 +229,8 @@ export function TeamSkillsHubModal({
           throw new Error(data.detail || t("skills.teamskillshub.errors.installFailed"));
         }
         const skillName = data.skill?.name || item.name;
-        const displayName = item.display_name || skillName;
         setInstalledNames((prev) => new Set([...prev, skillName]));
-        showMessage("success", t("skills.teamskillshub.messages.installed", { name: displayName }));
+        showMessage("success", t("skills.teamskillshub.messages.installed", { name: skillName }));
         await onInstalled?.(skillName);
       } catch (error) {
         console.error(error);
@@ -292,7 +291,7 @@ export function TeamSkillsHubModal({
                     const isInstalled =
                       installedNames.has(item.name) || (installedSkillNames?.has(item.name) ?? false);
                     const isInstalling = installingAssetId === item.asset_id;
-                    const avatar = getSkillAvatar(item.display_name || item.name);
+                    const avatar = getSkillAvatar(item.name);
                     return (
                       <div
                         key={item.asset_id}
@@ -307,7 +306,7 @@ export function TeamSkillsHubModal({
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="text-base font-semibold text-text-strong truncate">
-                                  {item.display_name || item.name}
+                                  {item.name}
                                 </div>
                                 <div className="text-sm text-text-muted mt-1 line-clamp-3">
                                   {item.summary || t("skills.noDescription")}
@@ -345,7 +344,7 @@ export function TeamSkillsHubModal({
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="text-sm font-semibold text-text-strong truncate">
-                                  {item.display_name || item.name}
+                                  {item.name}
                                 </div>
                                 <div className="text-xs text-text-muted mt-1 line-clamp-2">
                                   {item.summary || t("skills.noDescription")}
@@ -485,7 +484,7 @@ export function TeamSkillsHubModal({
                     const isInstalled =
                       installedNames.has(item.name) || (installedSkillNames?.has(item.name) ?? false);
                     const isInstalling = installingAssetId === item.asset_id;
-                    const avatar = getSkillAvatar(item.display_name || item.name);
+                    const avatar = getSkillAvatar(item.name);
                     return (
                       <div
                         key={item.asset_id}
@@ -497,7 +496,7 @@ export function TeamSkillsHubModal({
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="text-base font-semibold text-text-strong truncate">
-                              {item.display_name || item.name}
+                              {item.name}
                             </div>
                             <div className="text-sm text-text-muted mt-1 line-clamp-3">
                               {item.summary || t("skills.noDescription")}
