@@ -1505,8 +1505,11 @@ export class AppScreen implements Component, Focusable {
           return;
         }
         // Printable character → append to search query
-        if (data.length === 1 && !matchesKey(data, "up") && !matchesKey(data, "tab")) {
-          this.statusViewState.searchQuery += data;
+        // Use getPrintableChar() to handle Kitty CSI-u sequences (VSCode terminal)
+        // and UTF-8 multi-byte chars (IME input), not just raw data.length === 1
+        const searchPrintableChar = this.getPrintableChar(data);
+        if (searchPrintableChar !== undefined && !matchesKey(data, "up") && !matchesKey(data, "tab")) {
+          this.statusViewState.searchQuery += searchPrintableChar;
           this.rebuildStatusViewTabList();
           this.tui.requestRender();
           return;
@@ -1527,6 +1530,7 @@ export class AppScreen implements Component, Focusable {
         return;
       }
       // On config tab, / enters search mode; printable chars also enter search mode
+      // Use getPrintableChar() for Kitty CSI-u (VSCode) + UTF-8 multi-byte (IME) support
       if (this.statusViewState.tab === "config") {
         if (data === "/") {
           this.statusViewState.searchMode = true;
@@ -1534,9 +1538,10 @@ export class AppScreen implements Component, Focusable {
           this.tui.requestRender();
           return;
         }
-        if (data.length === 1 && !matchesKey(data, "up") && !matchesKey(data, "down") && !matchesKey(data, "return") && !matchesKey(data, "tab") && !matchesKey(data, "backspace") && !matchesKey(data, "delete") && !matchesKey(data, "escape")) {
+        const initialPrintableChar = this.getPrintableChar(data);
+        if (initialPrintableChar !== undefined && !matchesKey(data, "up") && !matchesKey(data, "down") && !matchesKey(data, "return") && !matchesKey(data, "tab") && !matchesKey(data, "backspace") && !matchesKey(data, "delete") && !matchesKey(data, "escape")) {
           this.statusViewState.searchMode = true;
-          this.statusViewState.searchQuery = data;
+          this.statusViewState.searchQuery = initialPrintableChar;
           this.rebuildStatusViewTabList();
           this.tui.requestRender();
           return;
