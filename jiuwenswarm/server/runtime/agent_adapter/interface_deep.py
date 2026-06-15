@@ -1188,7 +1188,7 @@ class JiuWenSwarmDeepAdapter:
                 "skipping browser subagent registration"
             )
 
-        # ── 加载自定义 agent（.jiuwenclaw/agents/*.md）──
+        # ── 加载自定义 agent（.jiuwenswarm/agents/*.md）──
         try:
             subagents.extend(
                 _load_custom_subagents(
@@ -2585,7 +2585,7 @@ class JiuWenSwarmDeepAdapter:
                 visible_skill_names=self._visible_skill_names_for_list_skill,
             )
         except Exception as exc:
-            logger.warning("[JiuWenClawDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
+            logger.warning("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
             return None
 
     def _build_agent_rails(

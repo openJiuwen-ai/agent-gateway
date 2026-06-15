@@ -725,7 +725,7 @@ class JiuWenSwarm:
                 expanded.mkdir(parents=True, exist_ok=True)
             except OSError as exc:
                 logger.warning(
-                    "[JiuWenClaw] workspace_dir %s mkdir failed (%s); "
+                    "[JiuWenSwarm] workspace_dir %s mkdir failed (%s); "
                     "request falls back to params.cwd or the global default",
                     workspace_dir, exc,
                 )

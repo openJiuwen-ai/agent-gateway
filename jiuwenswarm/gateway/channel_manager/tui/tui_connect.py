@@ -739,7 +739,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("preferred_language", "zh")
         
-        # Auto-Harness config values (from ~/.jiuwenclaw/auto-harness/config.yaml)
+        # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)
         # 合并显示：用户名、邮箱、Access Token 三项
         try:
             ah_config = _get_auto_harness_config()

@@ -1290,7 +1290,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     def _build_skill_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
         """构建 SkillRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
         if not is_skill_retrieval_enabled():
-            logger.info("[JiuwenClawCodeAdapter] SkillRetrievalToolkit skipped: disabled")
+            logger.info("[JiuwenSwarmCodeAdapter] SkillRetrievalToolkit skipped: disabled")
             return None
         try:
             skill_retrieval_toolkit = SkillRetrievalToolkit(
@@ -1298,12 +1298,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 visible_skill_names=self._visible_skill_names_for_list_skill,
             )
             logger.info(
-                "[JiuwenClawCodeAdapter] SkillRetrievalToolkit built: tools=%s",
+                "[JiuwenSwarmCodeAdapter] SkillRetrievalToolkit built: tools=%s",
                 [t.card.name for t in skill_retrieval_toolkit.get_tools()],
             )
             return skill_retrieval_toolkit.get_tools()
         except Exception as exc:
-            logger.warning("[JiuwenClawCodeAdapter] skill_retrieval build failed: %s", exc)
+            logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
             return None
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:
