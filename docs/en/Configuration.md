@@ -6,7 +6,7 @@ This document details each configuration option in the JiuwenSwarm frontend pane
 
 ---
 
-## 1. Configuration entry
+## 1. Configuration Entry
 
 Open **Configuration** from the left navigation bar to view and edit settings for models, third-party services, free search, and more. Click **Save** after changes; whether you need to wait for services to become ready depends on your deployment.
 
@@ -20,6 +20,7 @@ The configuration panel contains the following main sections:
 - **Self-Evolution Configuration**: Automatic skill improvement (see [5. Self-Evolution Configuration](#5-self-evolution-configuration))
 - **Context Compression**: Dialogue history management (see [6. Context Compression](#6-context-compression))
 - **Tool Security Guardrails**: Tool invocation permission checks (see [7. Tool Security Guardrails](#7-tool-security-guardrails))
+- **Memory Sensitive-Info Filtering**: Memory system privacy protection settings (see [8. Memory Sensitive-Info Filtering](#8-memory-sensitive-info-filtering))
 
 The panel also includes **Free Search Engine Configuration**, **Multi-Agent / Team Configuration**, **A2UI**, **Agentic Skill Retrieval**, **Memory Sensitive-Info Filtering**, and **Email Configuration** sections. Configure them as needed.
 
@@ -82,7 +83,6 @@ Each model entry contains the following fields:
 | Field | Required | Description |
 |------|---------|------|
 | `model_name` | Yes | Model name at the API layer (e.g., `gpt-4o`, `deepseek-chat`) |
-| `alias` | No | Display name / switch identifier; defaults to `model_name` if empty |
 | `api_base` | Yes | API endpoint for this model |
 | `api_key` | Yes | API key for this model |
 | `model_provider` | Yes | Provider (e.g., `OpenAI`, `DeepSeek`) |
@@ -98,13 +98,13 @@ The first item in the list is the default model; you can drag to reorder or clic
 
 ### 2.4 Multimodal Model Usage Examples
 
-Once video, audio, or vision models are configured, JiuwenSwarm enables corresponding multimodal features automatically.
+Once video, audio, or vision models are configured, JiuwenSwarm enables corresponding multimodal features automatically. Below are application scenarios for each model type:
 
 #### Video Model
 
 Using **GLM-4.6V-Flash11** video understanding API as an example:
 
-When you send a video file to JiuwenSwarm, the system will invoke the video model for analysis:
+When you send a video file to JiuwenSwarm and ask a question, the system will invoke the video model for analysis:
 
 ```
 User: Analyze this video and list the main scenes.
@@ -152,7 +152,7 @@ JiuwenSwarm: Extracted sales data:
 Showing an upward trend...
 ```
 
-![Vision Model](../assets/images/config-vision-model-test-en.png)
+![Vision Model](../assets/images/config-vision-model-test.png)
 
 ---
 
@@ -170,21 +170,11 @@ Embedding models convert text into vector representations and form the core of J
 
 ### 3.2 Configuration Fields
 
-| Field              | Description                     | Remarks                                   |
-| ------------------ | ------------------------------- | ----------------------------------------- |
-| `embed_api_base`   | Base URL for embedding API      | Embedding service API endpoint            |
-| `embed_api_key`    | Embedding service API key       | Obtained from the service provider        |
-| `embed_model`      | Embedding model name            | Chinese-optimized embedding recommended   |
-
-#### Configuration Example
-
-**SiliconFlow**
-
-```
-embed_api_base: https://api.siliconflow.cn/v1
-embed_api_key: sk-your-siliconflow-api-key
-embed_model: BAAI/bge-large-zh-v1.5
-```
+| Field              | Description                     | Reference Format                        | Remarks                                   |
+| ------------------ | ------------------------------- | --------------------------------------- | ----------------------------------------- |
+| `embed_api_base`   | Base URL for embedding API      | `https://api.siliconflow.cn/v1`         | Embedding service API endpoint            |
+| `embed_api_key`    | Embedding service API key       | `sk-xxxxxxxxxxxxxxxx`                   | Obtained from the service provider        |
+| `embed_model`      | Embedding model name            | `BAAI/xxx`                              | Chinese-optimized embedding recommended   |
 
 ---
 
@@ -194,14 +184,14 @@ This section summarizes configuration for search and external services. All item
 
 | Field | Description | Reference |
 | --- | --- | --- |
-| `jina_api_key` | Jina; fetch and some search flows | [Jina](https://jina.ai/) |
+| `jina_api_key` | Jina; web scraping and some search capabilities | [Jina](https://jina.ai/) |
 | `bocha_api_key` | Bocha Web Search | [Bocha Open Platform](https://open.bochaai.com/) |
-| `serper_api_key` | Serper | [Serper](https://serper.dev/) |
+| `serper_api_key` | Serper Search | [Serper](https://serper.dev/) |
 | `perplexity_api_key` | Perplexity | [Perplexity](https://www.perplexity.ai/) |
-| `github_token` | GitHub; SkillNet, etc. | [GitHub tokens](https://github.com/settings/tokens) |
+| `github_token` | GitHub; SkillNet, etc. | [GitHub Tokens](https://github.com/settings/tokens) |
 | `teamskills_user_token` | TeamSkillsHub user token | [TeamSkillsHub](https://teamskills.openjiuwen.com) |
 
-> ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back; exact behavior depends on your product version.
+> ⚠️ **Note**: All optional. If unset, related features may be unavailable or fall back to degraded strategies; exact behavior depends on your product version.
 
 Two additional related configuration groups:
 
@@ -223,7 +213,7 @@ The frontend shows two options under **Self-Evolution Configuration**:
 - **Auto-detect evolution signals**: disabled by default. When enabled, the system scans failures, corrections, and other evolution signals after chat and tool execution. This maps to `react.evolution.auto_scan`; env `EVOLUTION_AUTO_SCAN` takes precedence.
 - **Auto-suggest new skill creation**: disabled by default. When enabled, the system can propose creating a new Skill when no suitable Skill exists. This maps to `react.evolution.skill_create`; env `SKILL_CREATE` takes precedence.
 
-> 📖 For details on the self-evolution mechanism, see [Skill self-evolution](SkillSelfEvolution.md).
+> 📖 For details on the self-evolution mechanism, see [Skill Self-Evolution](SkillSelfEvolution.md).
 
 ---
 
@@ -247,7 +237,25 @@ When enabled, the system will:
 2. Archive low-priority content when thresholds are reached
 3. Preserve lightweight indexes to free space for ongoing tasks
 
-> 📖 For details, see [Context Compression & Offloading](ContextCompression.md).
+### Compute Affinity (KV Release)
+
+**Compute Affinity (KV Release)** is an advanced optimization feature of context compression for managing GPU memory usage.
+
+- **Field**: `context_engine.kv_release_enabled`
+- **Default**: `false` (disabled)
+- **Purpose**: When enabled, the system dynamically releases KV Cache (key-value cache) that is no longer needed during conversations, saving GPU memory and allowing longer dialogue contexts.
+
+**KV Cache Explanation**:
+- KV Cache is a cache used by large language models during inference to store intermediate computation results
+- As conversation rounds increase, KV Cache continues to grow, consuming significant GPU memory
+- With KV Release enabled, the system intelligently determines and releases cache data from historical conversations that are no longer needed
+
+**Applicable Scenarios**:
+- Long-running conversations requiring extensive history retention
+- Environments with limited GPU memory
+- Tasks requiring ultra-long context processing
+
+> 📖 For details on the context compression mechanism, see [Context Compression & Offloading](ContextCompression.md).
 
 ---
 
@@ -295,11 +303,37 @@ permissions:
 
 ---
 
-## 8. Advanced Configuration
+## 8. Memory Sensitive-Info Filtering
+
+Memory sensitive-info filtering protects user privacy by preventing sensitive information from being written to the memory system.
+
+### Toggle
+
+- **Field**: `memory.filter_enabled`
+- **Default**: `true` (enabled)
+- **Purpose**: When enabled, the system automatically detects and filters sensitive information before writing to memory.
+
+### Filtered Content Types
+
+The system automatically identifies and filters the following types of sensitive information:
+
+| Type | Description | Example |
+| --- | --- | --- |
+| **Personal Identity Information** | Names, ID numbers, phone numbers, etc. | Zhang San, 110101199001011234 |
+| **Bank Account Information** | Bank card numbers, Alipay/WeChat accounts | 622202\*\*\*\*\*1234 |
+| **Address Information** | Detailed home or company addresses | No. X Street, Chaoyang District, Beijing |
+| **Email Addresses** | Personal or work email | xxx@example.com |
+| **Passwords / Keys** | Various passwords, API keys, etc. | password123, sk-xxxx |
+
+> 📖 For details on the memory system, see the [Memory](Memory.md) documentation.
+
+---
+
+## 9. Advanced Configuration
 
 Beyond the **Configuration** page, the product may use a **main configuration** for timeouts, temperature, heartbeat interval, context thresholds, and toggles that work together with **context compression**, **permissions**, **memory restrictions**, and similar UI switches. **This document does not state where those files live on disk**; for offline edits or bulk rollout, contact your administrator.
 
-### 8.1 Common logical keys (conceptual paths)
+### 9.1 Common logical keys (conceptual paths)
 
 These are **conceptual** paths in the main configuration for cross-reference with ops or release notes; they are **not** a one-to-one list of every UI field.
 
@@ -315,11 +349,11 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 
 <a id="dotenv-configuration"></a>
 
-### 8.2 Runtime parameters outside the Configuration page
+### 9.2 Runtime parameters outside the Configuration page
 
 Fine-grained options for browser automation, network proxies, or some search paths may be supplied by the **runtime or deployment template** and **may not** appear on the **Configuration** page. Typical users only need required UI fields and business keys; leave the rest to admins or ops.
 
-### 8.3 Precedence (conceptual)
+### 9.3 Precedence (conceptual)
 
 Generally, from highest to lowest: **values you save in the web Configuration UI** → **environment-injected variables** → **built-in product defaults**. Exact behavior depends on your version and deployment.
 
@@ -327,7 +361,7 @@ Generally, from highest to lowest: **values you save in the web Configuration UI
 
 ---
 
-## 9. FAQ
+## FAQ
 
 ### Q: Configurations not taking effect after saving?
 
@@ -340,37 +374,5 @@ A: Model information is displayed on the configuration panel. You may also check
 ### Q: Are multimodal models required?
 
 A: No. Video, audio, and vision models are optional and only required for their respective multimodal functions.
-
-### Q: Which embedding model is recommended?
-
-A: `BAAI/bge-large-zh-v1.5` is recommended for high-quality Chinese embeddings. Other models may be selected based on language requirements.
-
-### Q: How to test if the configured model is working?
-
-A: After configuration, you can test the model with these methods:
-
-1. **Send a simple message**: Send a simple message like "Hello" via the web frontend and check if you receive a normal response
-2. **Check logs**: Review backend logs to confirm successful model calls without errors
-3. **Test multimodal**: If multimodal models are configured, send images/audio/video to test
-
-![Model Test Example](../assets/images/config-model-test.png)
-
-### Q: How to troubleshoot configuration errors?
-
-A: When configuration issues occur, follow these steps:
-
-1. **Check API Key**: Verify the API Key is correct, not expired, and has sufficient quota
-2. **Check API Base**: Verify the API address is correct, note that `/chat/completions` suffix should not be included
-3. **Check Model Name**: Verify the model name is correct, different providers may have different naming conventions
-4. **View Logs**: Backend logs will show specific error messages like authentication failure, model not found, etc.
-
-Common errors and solutions:
-
-| Error Message | Possible Cause | Solution |
-| ------------ | -------------- | -------- |
-| `401 Unauthorized` | Invalid or expired API Key | Check and update API Key |
-| `404 Not Found` | Incorrect API address or model name | Check api_base and model configuration |
-| `429 Too Many Requests` | Rate limit exceeded | Wait and retry, or upgrade plan |
-| `Connection Error` | Network issue or API address unreachable | Check network connection and API address |
 
 ---
