@@ -4,7 +4,10 @@ import sys
 import types
 from types import SimpleNamespace
 
-from jiuwenswarm.symphony.agent import AgenticRetrievalToolKit
+import pytest
+
+from jiuwenswarm.symphony.agent import AgenticRetrievalToolKit, AgenticToolResult
+from jiuwenswarm.agents.harness.common.tools import skill_retrieval_toolkits as _toolkit_mod
 
 
 def _node(
@@ -22,7 +25,7 @@ def _node(
     )
 
 
-def _toolkit() -> AgenticRetrievalToolKit:
+def _toolkit(visible_skill_names: set[str] | None = None) -> AgenticRetrievalToolKit:
     pdf_item = SimpleNamespace(
         payload="pdf-reader",
         item_id="pdf-reader",
@@ -65,7 +68,22 @@ def _toolkit() -> AgenticRetrievalToolKit:
         metadata={"skill_path": "/home/doujzc/.openjiuwen/skills/pdf-reader/SKILL.md"},
     )
     loaded_index = SimpleNamespace(tree_root=root, catalog_records=[record])
-    return AgenticRetrievalToolKit(loaded_index=loaded_index, progressive_config=object(), top_k=5)
+    return AgenticRetrievalToolKit(
+        loaded_index=loaded_index,
+        progressive_config=object(),
+        top_k=5,
+        visible_skill_names=visible_skill_names,
+    )
+
+
+def _skill_tree_from_detailed_output(result: AgenticToolResult) -> dict:
+    assert "skill_tree" not in result
+    assert "skill_tree" not in str(result)
+    detailed_output = result.detailed_output
+    assert isinstance(detailed_output, dict)
+    skill_tree = detailed_output.get("skill_tree")
+    assert isinstance(skill_tree, dict)
+    return skill_tree
 
 
 def test_skill_branch_peek_returns_branch_summary_only() -> None:
@@ -77,15 +95,18 @@ def test_skill_branch_peek_returns_branch_summary_only() -> None:
     assert "## input `ROOT`" in markdown
     assert "Root description must not be rendered" not in markdown
     assert "1. `OfficeDocs`" in markdown
-    assert "2. `SearchResearch`" in markdown
+    assert "SearchResearch" not in markdown
     assert "covers: 3 branches, 1 skill" in markdown
     assert "SKILL.md" not in markdown
     assert "pdf-reader" not in markdown
-    assert result["skill_tree"]["query"] == "skill_branch_peek: ROOT"
-    assert result["skill_tree"]["candidate_count"] == 0
-    assert result["skill_tree"]["steps"][0]["event_type"] == "fragment_built"
-    assert result["skill_tree"]["steps"][0]["node_id"] == "ROOT"
-    assert result["skill_tree"]["steps"][0]["branches"][0]["id"] == "OfficeDocs"
+    assert isinstance(result, AgenticToolResult)
+    tree = _skill_tree_from_detailed_output(result)
+    assert tree["query"] == "skill_branch_peek: ROOT"
+    assert tree["candidate_count"] == 0
+    assert tree["steps"][0]["event_type"] == "fragment_built"
+    assert tree["steps"][0]["node_id"] == "ROOT"
+    assert tree["steps"][0]["branches"][0]["id"] == "OfficeDocs"
+    assert len(tree["steps"][0]["branches"]) == 1
 
 
 def test_skill_branch_peek_leaf_and_unknown_errors() -> None:
@@ -185,7 +206,8 @@ def test_skill_branch_explore_renders_next_boundary(monkeypatch) -> None:
     assert "SKILL.md" not in markdown
     assert "Terminal Skill Candidates" not in markdown
     assert "Covers:" not in markdown
-    tree = result["skill_tree"]
+    assert isinstance(result, AgenticToolResult)
+    tree = _skill_tree_from_detailed_output(result)
     assert tree["query"] == "skill_branch_explore: OfficeDocs.Documents"
     assert tree["candidate_count"] == 0
     assert [step["event_type"] for step in tree["steps"]] == ["fragment_built", "fragment_continue"]
@@ -259,7 +281,8 @@ def test_skill_branch_explore_renders_terminal_skills_with_read_info(monkeypatch
     assert "- Select when:" not in markdown
     assert "- Don't select when:" not in markdown
     assert "- Read:" not in markdown
-    tree = result["skill_tree"]
+    assert isinstance(result, AgenticToolResult)
+    tree = _skill_tree_from_detailed_output(result)
     assert tree["query"] == "skill_branch_explore: OfficeDocs.Documents.Pdf"
     assert tree["candidate_count"] == 1
     assert [step["event_type"] for step in tree["steps"]] == [
@@ -302,6 +325,49 @@ def test_root_prompt_contains_first_level_categories_only() -> None:
     assert "- `OfficeDocs`" in markdown
     assert "1. `OfficeDocs`" not in markdown
     assert "`OfficeDocs`" in markdown
-    assert "`SearchResearch`" in markdown
     assert "`OfficeDocs.Documents`" not in markdown
     assert "pdf-reader" not in markdown
+    assert "`SearchResearch`" not in markdown
+
+
+def test_visible_skill_filter_hides_unavailable_branches() -> None:
+    toolkit = _toolkit(visible_skill_names=set())
+
+    peek = toolkit.skill_branch_peek(["ROOT"])
+    assert peek["success"] is True
+    assert "No child branches." in peek["result"]
+    assert "OfficeDocs" not in peek["result"]
+    assert "pdf-reader" not in peek["result"]
+
+    explore = toolkit.skill_branch_explore(["OfficeDocs"])
+    assert explore["success"] is False
+    assert "Unknown branch node id" in explore["result"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_toolkit_methods_return_build_and_missing_index_results(monkeypatch) -> None:
+    monkeypatch.setattr(
+        _toolkit_mod,
+        "build_skill_index",
+        lambda manager: {
+            "success": True,
+            "result": "# Skill Index Build\n\nSkill index build started in the background.",
+        },
+    )
+    monkeypatch.setattr(
+        _toolkit_mod,
+        "skill_branch_explore",
+        lambda node_ids, manager: {
+            "success": False,
+            "result": "# Skill Tree Retrieval Unavailable\n\nCall `skill_index_build`.",
+        },
+    )
+    toolkit = _toolkit_mod.SkillRetrievalToolkit(manager=SimpleNamespace())
+
+    build_result = await toolkit.skill_index_build()
+    explore_result = await toolkit.skill_branch_explore(["OfficeDocs"])
+
+    assert build_result["success"] is True
+    assert "started in the background" in build_result["result"]
+    assert explore_result["success"] is False
+    assert "skill_index_build" in explore_result["result"]

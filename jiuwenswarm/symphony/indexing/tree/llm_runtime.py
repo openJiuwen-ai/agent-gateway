@@ -208,6 +208,7 @@ class TreeLLMRuntime:
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=max_tokens,
                     timeout=mcfg.build.timeout,
+                    stream=False,
                     extra_body=self.merged_extra_body(),
                 )
             finish_reason = response.choices[0].finish_reason

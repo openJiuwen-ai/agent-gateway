@@ -142,6 +142,7 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_TEAMSKILLS_HUB_DELETE: "handle_skills_team_skills_hub_delete",
     ReqMethod.SKILLS_RETRIEVAL_STATUS: "handle_skills_retrieval_status",
     ReqMethod.SKILLS_RETRIEVAL_INDEX_BUILD: "handle_skills_retrieval_index_build",
+    ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: "handle_skills_retrieval_index_cancel",
     ReqMethod.SKILLS_RETRIEVAL_SEARCH: "handle_skills_retrieval_search",
     ReqMethod.SKILLS_RETRIEVAL_TREE: "handle_skills_retrieval_tree",
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",

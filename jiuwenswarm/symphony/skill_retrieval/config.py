@@ -26,6 +26,7 @@ class BuildSettings:
     max_workers: int = 2
     max_retries: int = 2
     request_timeout_seconds: float = 420.0
+    total_timeout_seconds: float = 0.0
     classification_batch_limit: int = 32
     discovery_seed: int = 42
     postprocess_enabled: bool = True
@@ -39,7 +40,7 @@ class RetrieveSettings:
     top_k: int = 10
     compact_codes_enabled: bool = False
     flatten_tree: bool = False
-    max_exposure_depth: int = 99
+    max_exposure_depth: int = 1
     max_branch_choices: int = 2
     max_parallel_branches: int = 2
     max_tokens: int = 96
@@ -140,6 +141,7 @@ def _load_build(raw: dict[str, Any]) -> BuildSettings:
         max_workers=_as_int(raw.get("max_workers"), 2),
         max_retries=_as_non_negative_int(raw.get("max_retries"), 2),
         request_timeout_seconds=_as_float(raw.get("request_timeout_seconds"), 420.0),
+        total_timeout_seconds=_as_float(raw.get("total_timeout_seconds"), 0.0),
         classification_batch_limit=_as_int(raw.get("classification_batch_limit"), 32),
         discovery_seed=_as_raw_int(raw.get("discovery_seed"), 42),
         postprocess_enabled=_as_bool(raw.get("postprocess_enabled"), True),
@@ -154,7 +156,7 @@ def _load_retrieve(raw: dict[str, Any]) -> RetrieveSettings:
         top_k=_as_int(raw.get("top_k"), 10),
         compact_codes_enabled=_as_bool(raw.get("compact_codes_enabled"), False),
         flatten_tree=_as_bool(raw.get("flatten_tree"), False),
-        max_exposure_depth=_as_int(raw.get("max_exposure_depth"), 99),
+        max_exposure_depth=_as_int(raw.get("max_exposure_depth"), 1),
     )
 
 

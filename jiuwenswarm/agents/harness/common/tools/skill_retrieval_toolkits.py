@@ -12,7 +12,9 @@ from jiuwenswarm.symphony.agent import (
     build_skill_index,
     is_agentic_retrieval_enabled,
     skill_branch_explore,
+    skill_branch_explore_for_visible_skills,
     skill_branch_peek,
+    skill_branch_peek_for_visible_skills,
 )
 
 
@@ -23,17 +25,45 @@ def is_skill_retrieval_enabled() -> bool:
 class SkillRetrievalToolkit:
     """Expose agentic installed-skill tree retrieval to agents."""
 
-    def __init__(self, manager: SkillManager) -> None:
+    def __init__(
+        self,
+        manager: SkillManager,
+        *,
+        visible_skill_names: set[str] | frozenset[str] | Callable[[], set[str] | frozenset[str] | None] | None = None,
+    ) -> None:
         self._manager = manager
+        self._visible_skill_names = visible_skill_names
 
     async def skill_index_build(self) -> dict[str, Any]:
         return await asyncio.to_thread(build_skill_index, self._manager)
 
     async def skill_branch_peek(self, node_ids: list[str]) -> dict[str, Any]:
-        return await asyncio.to_thread(skill_branch_peek, node_ids, self._manager)
+        visible_skill_names = self._resolve_visible_skill_names()
+        if visible_skill_names is None:
+            return await asyncio.to_thread(skill_branch_peek, node_ids, self._manager)
+        return await asyncio.to_thread(
+            skill_branch_peek_for_visible_skills,
+            node_ids,
+            self._manager,
+            visible_skill_names=visible_skill_names,
+        )
 
     async def skill_branch_explore(self, node_ids: list[str]) -> dict[str, Any]:
-        return await asyncio.to_thread(skill_branch_explore, node_ids, self._manager)
+        visible_skill_names = self._resolve_visible_skill_names()
+        if visible_skill_names is None:
+            return await asyncio.to_thread(skill_branch_explore, node_ids, self._manager)
+        return await asyncio.to_thread(
+            skill_branch_explore_for_visible_skills,
+            node_ids,
+            self._manager,
+            visible_skill_names=visible_skill_names,
+        )
+
+    def _resolve_visible_skill_names(self) -> set[str] | frozenset[str] | None:
+        provider = self._visible_skill_names
+        if callable(provider):
+            return provider()
+        return provider
 
     def get_tools(self) -> list[Tool]:
         def make_tool(name: str, description: str, input_params: dict, func: Callable[..., Any]) -> Tool:
@@ -49,7 +79,7 @@ class SkillRetrievalToolkit:
             make_tool(
                 name="skill_index_build",
                 description=(
-                    "Build or refresh the local tree index for installed enabled skills. "
+                    "Build or refresh the local tree index for installed skills. "
                     "Do not call this proactively. First call skill_branch_explore or skill_branch_peek; "
                     "call skill_index_build only if those tools return a failure result that explicitly "
                     "says the index is missing or stale and instructs you to build it."

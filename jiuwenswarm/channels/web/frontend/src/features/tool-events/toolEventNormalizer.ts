@@ -146,9 +146,7 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
       : success ? undefined : '❌';
   const skillTree =
     parseSkillTreePath(toolResultPayload.raw_output) ??
-    parseSkillTreePath(toolResultPayload.rawOutput) ??
-    parseSkillTreePath(toolResultPayload) ??
-    parseSkillTreePath(toolResultPayload.result);
+    parseSkillTreePath(toolResultPayload.rawOutput);
 
   return {
     toolName,

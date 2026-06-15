@@ -67,9 +67,9 @@ def _workspace_root(ctx: SwarmBuildContext) -> str | None:
 class SkillRetrievalPromptInput(ConstructionInput):
     """Construction inputs for the agentic skill retrieval prompt rail."""
 
-    workspace_root: str | None = context_field(
-        resolver=_workspace_root,
-        description="Member workspace root; the SkillManager resolves installed skills from it.",
+    global_skills_dir: str | None = context_field(
+        attr="global_skills_dir",
+        description="Global installed skills source directory.",
     )
 
 
@@ -87,13 +87,17 @@ def _build_skill_retrieval_prompt_rail(
     from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
         is_skill_retrieval_enabled,
     )
+    from jiuwenswarm.agents.swarm.providers.tools import visible_skill_names_for_list_skill
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
     if not is_skill_retrieval_enabled():
         return None
-    inp = SkillRetrievalPromptInput.resolve(params, context)
-    manager = SkillManager(workspace_dir=inp.workspace_root)
-    return SkillRetrievalPromptRail(manager=manager)
+    SkillRetrievalPromptInput.resolve(params, context)
+    manager = SkillManager()
+    return SkillRetrievalPromptRail(
+        manager=manager,
+        visible_skill_names=lambda: visible_skill_names_for_list_skill(context),
+    )
 
 
 class RuntimePromptInput(ConstructionInput):

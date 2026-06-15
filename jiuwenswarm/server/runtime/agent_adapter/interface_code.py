@@ -1291,7 +1291,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.info("[JiuwenClawCodeAdapter] SkillRetrievalToolkit skipped: disabled")
             return None
         try:
-            skill_retrieval_toolkit = SkillRetrievalToolkit(manager=self._skill_manager)
+            skill_retrieval_toolkit = SkillRetrievalToolkit(
+                manager=self._skill_manager,
+                visible_skill_names=self._visible_skill_names_for_list_skill,
+            )
             logger.info(
                 "[JiuwenClawCodeAdapter] SkillRetrievalToolkit built: tools=%s",
                 [t.card.name for t in skill_retrieval_toolkit.get_tools()],

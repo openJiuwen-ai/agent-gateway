@@ -19,6 +19,9 @@ from jiuwenswarm.symphony.skill_retrieval.config import RetrieveSettings, load_s
 from jiuwenswarm.symphony.skill_retrieval.dispatch_imports import dispatch_import_path
 from jiuwenswarm.symphony.skill_retrieval.index_service import SkillIndexService
 from jiuwenswarm.symphony.skill_retrieval.markdown import render_disabled
+from jiuwenswarm.symphony.skill_retrieval.api import build_skill_index as start_background_skill_index_build
+
+from .tool_result import AgenticToolResult
 
 
 @dataclass(frozen=True)
@@ -94,11 +97,13 @@ class AgenticRetrievalToolKit:
         loaded_index: Any,
         progressive_config: Any,
         top_k: int,
+        visible_skill_names: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._loaded_index = loaded_index
         self._root = loaded_index.tree_root
         self._progressive_config = progressive_config
         self._top_k = max(1, int(top_k))
+        self._visible_skill_names = _normalize_visible_skill_names(visible_skill_names)
         self._node_by_id: dict[str, Any] = {}
         self._path_by_id: dict[str, tuple[str, ...]] = {}
         self._stats_by_id: dict[str, _NodeStats] = {}
@@ -108,13 +113,12 @@ class AgenticRetrievalToolKit:
             payload = str(getattr(record, "payload", "") or "").strip()
             if payload:
                 self._catalog_by_payload[payload] = record
-                self._leaf_ids.add(payload)
             worker_id = str(getattr(record, "worker_id", "") or "").strip()
-            if worker_id:
-                self._leaf_ids.add(worker_id)
             name = str(getattr(record, "name", "") or "").strip()
-            if name:
-                self._leaf_ids.add(name)
+            if self._is_visible_skill(payload, worker_id, name):
+                for value in (payload, worker_id, name):
+                    if value:
+                        self._leaf_ids.add(value)
         self._index_nodes(self._root, ("ROOT",))
         self._analyze_node(self._root)
 
@@ -124,6 +128,7 @@ class AgenticRetrievalToolKit:
         index_dir: str | Path,
         *,
         retrieve_settings: RetrieveSettings | None = None,
+        visible_skill_names: set[str] | frozenset[str] | None = None,
     ) -> "AgenticRetrievalToolKit":
         """Load an existing symphony skill index from *index_dir*."""
         with dispatch_import_path():
@@ -135,6 +140,7 @@ class AgenticRetrievalToolKit:
             loaded_index=loaded_index,
             progressive_config=progressive_config,
             top_k=top_k,
+            visible_skill_names=visible_skill_names,
         )
 
     def skill_branch_peek(self, node_ids: Sequence[str]) -> dict[str, Any]:
@@ -304,7 +310,7 @@ class AgenticRetrievalToolKit:
                 "## 第一层分类",
             ]
 
-        children = list(getattr(self._root, "children", ()) or [])
+        children = self._visible_child_branches(self._root)
         if not children:
             lines.append("No first-level branches are available." if language == "en" else "当前索引树没有第一层分支。")
             return "\n".join(lines)
@@ -342,7 +348,12 @@ class AgenticRetrievalToolKit:
                 else:
                     missing.append(node_id)
             else:
-                nodes.append(node)
+                if node_id == "ROOT" and default_root:
+                    nodes.append(node)
+                elif self._analyze_node(node).skill_count > 0:
+                    nodes.append(node)
+                else:
+                    missing.append(node_id)
 
         if leaf_ids:
             return [], (
@@ -377,17 +388,67 @@ class AgenticRetrievalToolKit:
         for item in items:
             for attr_name in ("payload", "item_id", "label"):
                 value = str(getattr(item, attr_name, "") or "").strip()
-                if value:
+                if value and self._is_visible_item(item):
                     self._leaf_ids.add(value)
-        branch_count = 1
-        skill_count = len(items)
+        skill_count = sum(1 for item in items if self._is_visible_item(item))
+        child_branch_count = 0
         for child in tuple(getattr(node, "children", ()) or ()):
             child_stats = self._analyze_node(child)
-            branch_count += child_stats.branch_count
-            skill_count += child_stats.skill_count
+            if child_stats.skill_count > 0:
+                child_branch_count += child_stats.branch_count
+                skill_count += child_stats.skill_count
+        branch_count = 1 + child_branch_count if skill_count > 0 else 0
         stats = _NodeStats(branch_count=branch_count, skill_count=skill_count)
         self._stats_by_id[node_id] = stats
         return stats
+
+    def _visible_child_branches(self, node: Any) -> list[Any]:
+        return [
+            child
+            for child in list(getattr(node, "children", ()) or [])
+            if self._analyze_node(child).skill_count > 0
+        ]
+
+    def _is_visible_item(self, item: Any) -> bool:
+        return self._is_visible_skill(
+            str(getattr(item, "payload", "") or "").strip(),
+            str(getattr(item, "item_id", "") or "").strip(),
+            str(getattr(item, "label", "") or "").strip(),
+        )
+
+    def _is_visible_resolution(self, resolution: Any | None) -> bool:
+        if resolution is None:
+            return False
+        item = getattr(resolution, "item", None)
+        record = None
+        payload = ""
+        if item is not None:
+            payload = str(getattr(item, "payload", "") or "").strip()
+            record = self._catalog_by_payload.get(payload)
+        worker_id = str(getattr(record, "worker_id", "") if record is not None else "").strip()
+        name = str(getattr(record, "name", "") if record is not None else "").strip()
+        return self._is_visible_skill(
+            payload,
+            worker_id,
+            name,
+            str(getattr(item, "item_id", "") if item is not None else "").strip(),
+            str(getattr(item, "label", "") if item is not None else "").strip(),
+            str(getattr(resolution, "canonical_id", "") or "").strip(),
+            str(getattr(resolution, "label", "") or "").strip(),
+        )
+
+    def _is_visible_skill(self, *values: str) -> bool:
+        visible = self._visible_skill_names
+        if visible is None:
+            return True
+        return any(str(value or "").strip() in visible for value in values)
+
+    def _is_visible_exposed_branch(self, node: Any, resolution: Any | None) -> bool:
+        node_id = _exposed_node_id(node, resolution)
+        indexed_node = self._node_by_id.get(node_id)
+        if indexed_node is None:
+            return True
+        return self._analyze_node(indexed_node).skill_count > 0
 
     def _render_peek_node(self, lines: list[str], node: Any) -> None:
         node_id = str(getattr(node, "node_id", "") or "ROOT").strip() or "ROOT"
@@ -398,7 +459,7 @@ class AgenticRetrievalToolKit:
         if parts.dont_select_when:
             lines.append(f"avoid: {_compact(parts.dont_select_when, 180)}")
 
-        children = list(getattr(node, "children", ()) or [])
+        children = self._visible_child_branches(node)
         if not children:
             lines.append("No child branches.")
             return
@@ -451,8 +512,20 @@ class AgenticRetrievalToolKit:
             children,
             resolution_by_canonical_id,
         )
+        terminal_children = [
+            child
+            for child in terminal_children
+            if self._is_visible_resolution(_resolution_for_exposed(child, resolution_by_canonical_id))
+        ]
+        branch_children = [
+            child
+            for child in branch_children
+            if self._is_visible_exposed_branch(child, _resolution_for_exposed(child, resolution_by_canonical_id))
+        ]
 
+        rendered = False
         if terminal_children:
+            rendered = True
             lines.append("")
             lines.append("### skills")
             lines.append(
@@ -467,6 +540,7 @@ class AgenticRetrievalToolKit:
                 self._render_terminal_skill(lines, index=index, resolution=resolution)
 
         for child in branch_children:
+            rendered = True
             resolution = _resolution_for_exposed(child, resolution_by_canonical_id)
             node_id = _exposed_node_id(child, resolution)
             description = (
@@ -482,6 +556,8 @@ class AgenticRetrievalToolKit:
                 lines.append(f"use: {_compact(parts.select_when, 180)}")
             if parts.dont_select_when:
                 lines.append(f"avoid: {_compact(parts.dont_select_when, 180)}")
+        if not rendered:
+            lines.append("No exposed branches or visible skills.")
 
     def _render_terminal_skill(self, lines: list[str], *, index: int, resolution: Any) -> None:
         entry = self._skill_entry_from_resolution(resolution)
@@ -499,7 +575,7 @@ class AgenticRetrievalToolKit:
 
     def _skill_tree_peek_step(self, *, order: int, node: Any) -> dict[str, Any]:
         node_id = str(getattr(node, "node_id", "") or "ROOT").strip() or "ROOT"
-        children = tuple(getattr(node, "children", ()) or ())
+        children = tuple(self._visible_child_branches(node))
         return {
             "order": order,
             "event_type": "fragment_built",
@@ -532,6 +608,16 @@ class AgenticRetrievalToolKit:
             children,
             resolution_by_canonical_id,
         )
+        terminal_children = [
+            child
+            for child in terminal_children
+            if self._is_visible_resolution(_resolution_for_exposed(child, resolution_by_canonical_id))
+        ]
+        branch_children = [
+            child
+            for child in branch_children
+            if self._is_visible_exposed_branch(child, _resolution_for_exposed(child, resolution_by_canonical_id))
+        ]
         branch_ids = [
             _named_id(_exposed_node_id(child, _resolution_for_exposed(child, resolution_by_canonical_id)))
             for child in branch_children
@@ -657,10 +743,10 @@ class AgenticRetrievalToolKit:
 
 
 def build_skill_index(manager: Any | None = None) -> dict[str, Any]:
-    """Build or reuse the installed-skill retrieval index."""
+    """Start a background build or reuse request for the installed-skill retrieval index."""
     resolved_manager = _resolve_manager(manager)
     _clear_runtime_caches()
-    payload = SkillIndexService(resolved_manager).build_index()
+    payload = start_background_skill_index_build(resolved_manager, force=False, source="tool")
     _clear_runtime_caches()
     return _tool_payload(
         bool(payload.get("success")),
@@ -678,30 +764,66 @@ def is_agentic_retrieval_enabled() -> bool:
 
 def skill_branch_peek(node_ids: Sequence[str], manager: Any | None = None) -> dict[str, Any]:
     """Peek child branch summaries from the current skill tree index."""
+    return skill_branch_peek_for_visible_skills(node_ids, manager=manager, visible_skill_names=None)
+
+
+def skill_branch_peek_for_visible_skills(
+    node_ids: Sequence[str],
+    manager: Any | None = None,
+    *,
+    visible_skill_names: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Peek child branch summaries within the caller-visible skill set."""
     status, settings, _ = _ready_status(manager)
     if not status.get("success"):
         return _tool_payload(False, str(status.get("result") or ""))
     toolkit = _cached_toolkit(
         str(status["index_dir"]),
         retrieve_settings=settings.retrieve,
+        visible_skill_names=visible_skill_names,
     )
     return toolkit.skill_branch_peek(node_ids)
 
 
 def skill_branch_explore(node_ids: Sequence[str], manager: Any | None = None) -> dict[str, Any]:
     """Explore branch nodes using the current disclosure settings."""
+    return skill_branch_explore_for_visible_skills(node_ids, manager=manager, visible_skill_names=None)
+
+
+def skill_branch_explore_for_visible_skills(
+    node_ids: Sequence[str],
+    manager: Any | None = None,
+    *,
+    visible_skill_names: set[str] | frozenset[str] | None = None,
+) -> dict[str, Any]:
+    """Explore branch nodes within the caller-visible skill set."""
     status, settings, _ = _ready_status(manager)
     if not status.get("success"):
         return _tool_payload(False, str(status.get("result") or ""))
     toolkit = _cached_toolkit(
         str(status["index_dir"]),
         retrieve_settings=settings.retrieve,
+        visible_skill_names=visible_skill_names,
     )
     return toolkit.skill_branch_explore(node_ids)
 
 
 def render_skill_retrieval_prompt(manager: Any | None = None, *, language: str = "cn") -> str:
     """Render the prompt section used by jiuwenswarm when agentic retrieval is enabled."""
+    return render_skill_retrieval_prompt_for_visible_skills(
+        manager,
+        language=language,
+        visible_skill_names=None,
+    )
+
+
+def render_skill_retrieval_prompt_for_visible_skills(
+    manager: Any | None = None,
+    *,
+    language: str = "cn",
+    visible_skill_names: set[str] | frozenset[str] | None = None,
+) -> str:
+    """Render the agentic retrieval prompt for the caller-visible skill set."""
     status, settings, _ = _ready_status(manager, allow_stale=False, prompt_mode=True)
     if not status.get("enabled", False):
         return ""
@@ -724,6 +846,7 @@ def render_skill_retrieval_prompt(manager: Any | None = None, *, language: str =
     toolkit = _cached_toolkit(
         str(status["index_dir"]),
         retrieve_settings=settings.retrieve,
+        visible_skill_names=visible_skill_names,
     )
     return toolkit.root_prompt_markdown(language=language)
 
@@ -758,18 +881,25 @@ def _cached_toolkit(
     index_dir: str | Path,
     *,
     retrieve_settings: RetrieveSettings | None,
+    visible_skill_names: set[str] | frozenset[str] | None,
 ) -> AgenticRetrievalToolKit:
     path = Path(index_dir).expanduser().resolve()
+    visible = _normalize_visible_skill_names(visible_skill_names)
     key = (
         str(path),
         _index_artifact_signature(path),
         _retrieve_settings_signature(retrieve_settings),
+        _visible_skill_signature(visible),
     )
     with _CACHE_LOCK:
         entry = _TOOLKIT_CACHE.get(key)
         if entry is not None:
             return entry.toolkit
-        toolkit = AgenticRetrievalToolKit.from_index(path, retrieve_settings=retrieve_settings)
+        toolkit = AgenticRetrievalToolKit.from_index(
+            path,
+            retrieve_settings=retrieve_settings,
+            visible_skill_names=visible,
+        )
         _TOOLKIT_CACHE.clear()
         _TOOLKIT_CACHE[key] = _ToolkitCacheEntry(toolkit=toolkit)
         return toolkit
@@ -851,6 +981,20 @@ def _file_signature(path: Path) -> tuple[int, int] | None:
 
 def _retrieve_settings_signature(settings: RetrieveSettings | None) -> tuple[Any, ...]:
     return _settings_signature(settings or RetrieveSettings())
+
+
+def _normalize_visible_skill_names(
+    visible_skill_names: set[str] | frozenset[str] | None,
+) -> frozenset[str] | None:
+    if visible_skill_names is None:
+        return None
+    return frozenset(str(name or "").strip() for name in visible_skill_names if str(name or "").strip())
+
+
+def _visible_skill_signature(visible_skill_names: frozenset[str] | None) -> tuple[str, ...] | None:
+    if visible_skill_names is None:
+        return None
+    return tuple(sorted(visible_skill_names))
 
 
 def _settings_signature(settings: Any) -> tuple[tuple[str, str], ...]:
@@ -942,8 +1086,10 @@ def _tool_payload(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"success": bool(success), "result": str(result or "")}
     if skill_tree is not None:
-        payload["skill_tree"] = skill_tree
-    return payload
+        detailed_output = dict(payload)
+        detailed_output["skill_tree"] = skill_tree
+        return AgenticToolResult(payload, detailed_output=detailed_output)
+    return AgenticToolResult(payload)
 
 
 def _agentic_build_result(result: str) -> str:

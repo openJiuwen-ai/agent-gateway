@@ -4,6 +4,7 @@ import json
 import logging
 import shutil
 import time
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,15 @@ CATALOG_FILENAME = "catalog.jsonl"
 MANIFEST_FILENAME = "manifest.json"
 STATE_FILENAME = "state.json"
 LOGGER = logging.getLogger(__name__)
+BUILD_LOG_LIMIT = 40
+
+
+class SkillIndexBuildCancelled(RuntimeError):
+    pass
+
+
+class SkillIndexBuildTimeout(RuntimeError):
+    pass
 
 
 class SkillIndexService:
@@ -34,68 +44,146 @@ class SkillIndexService:
         state = _read_state(settings)
         expected = _expected_fingerprint(inventory, settings)
         complete = _is_complete_index(index_dir)
-        fresh = complete and state.get("fingerprint") == expected
+        manifest_matches = complete and _manifest_matches_inventory(index_dir, inventory)
+        fresh = complete and manifest_matches and state.get("fingerprint") == expected
+        build_state = _build_state_from_state(state)
         return {
             "enabled": settings.enabled,
             "artifact_root": str(settings.artifact_root),
             "index_dir": str(index_dir),
             "index_exists": complete,
             "fresh": fresh,
+            "installed_count": inventory.count,
             "installed_enabled_count": inventory.count,
-            "indexed_count": int(state.get("indexed_count") or 0) if complete else 0,
+            "indexed_count": int(state.get("indexed_count") or 0) if complete and manifest_matches else 0,
             "built_at": str(state.get("built_at") or ""),
             "inventory_fingerprint": inventory.fingerprint,
             "fingerprint": str(state.get("fingerprint") or ""),
             "build_branching_factor": settings.build.branching_factor,
             "build_max_depth": settings.build.max_depth,
             "build_request_timeout_seconds": settings.build.request_timeout_seconds,
+            "build_total_timeout_seconds": settings.build.total_timeout_seconds,
+            "build_status": build_state.get("status", "idle"),
+            "build_stage": build_state.get("stage", ""),
+            "build_message": build_state.get("message", ""),
+            "build_error": build_state.get("error", ""),
+            "build_progress": build_state.get("progress", 0.0),
+            "build_started_at": build_state.get("started_at", ""),
+            "build_finished_at": build_state.get("finished_at", ""),
+            "build_elapsed_seconds": build_state.get("elapsed_seconds", 0.0),
+            "build_cancel_requested": bool(build_state.get("cancel_requested", False)),
+            "build_logs": build_state.get("logs", []),
             "retrieval_top_k": settings.retrieve.top_k,
             "retrieval_compact_codes_enabled": settings.retrieve.compact_codes_enabled,
             "retrieval_flatten_tree": settings.retrieve.flatten_tree,
             "retrieval_max_exposure_depth": settings.retrieve.max_exposure_depth,
         }
 
-    def build_index(self) -> dict[str, Any]:
+    def build_index(
+        self,
+        *,
+        force: bool = False,
+        cancel_check: Any | None = None,
+        source: str = "manual",
+    ) -> dict[str, Any]:
         started = time.monotonic()
         settings = load_settings()
         if not settings.enabled:
             return {"success": False, "result": render_disabled()}
 
+        _write_build_state(
+            settings,
+            status="running",
+            stage="scan",
+            message=f"Scanning installed skills ({source}).",
+            progress=0.05,
+            started_at=_now_iso(),
+            clear_error=True,
+        )
+        self._check_cancel_or_timeout(settings, started, cancel_check, stage="scan")
         inventory = scan_skill_inventory(self._manager)
         if inventory.count == 0:
             _cleanup_index(settings)
+            _write_build_state(
+                settings,
+                status="failed",
+                stage="scan",
+                message="No installed skills were found.",
+                error="No installed skills were found under the agent skills directory.",
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+            )
             return {
                 "success": False,
                 "result": render_build_failure(
-                    "No enabled installed skills were found under the agent skills directory."
+                    "No installed skills were found under the agent skills directory."
                 ),
             }
 
         settings.artifact_root.mkdir(parents=True, exist_ok=True)
         _tmp_dir(settings).mkdir(parents=True, exist_ok=True)
         expected = _expected_fingerprint(inventory, settings)
-
-        recovered = self._recover_index(settings=settings, inventory=inventory, expected_fingerprint=expected)
         state = _read_state(settings)
-        if _is_complete_index(_index_dir(settings)) and state.get("fingerprint") == expected:
+
+        recovered = False
+        if not force:
+            recovered = self._recover_index(
+                settings=settings,
+                inventory=inventory,
+                expected_fingerprint=expected,
+            )
+        state = _read_state(settings)
+        index_dir = _index_dir(settings)
+        index_complete = _is_complete_index(index_dir)
+        manifest_matches = index_complete and _manifest_matches_inventory(index_dir, inventory)
+        fingerprint_matches = state.get("fingerprint") == expected
+        fresh_index_available = index_complete and manifest_matches and fingerprint_matches
+        if not force and fresh_index_available:
+            _write_build_state(
+                settings,
+                status="success",
+                stage="reuse",
+                message="Existing index is fresh; reused without rebuilding.",
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+                inventory=inventory,
+                fingerprint=expected,
+            )
             return {
                 "success": True,
                 "result": render_build_success(
                     reused=True,
                     inventory=inventory,
-                    index_dir=str(_index_dir(settings)),
+                    index_dir=str(index_dir),
                     elapsed_seconds=time.monotonic() - started,
                 ),
                 "recovered": recovered,
             }
 
         if not settings.llm.model or not settings.llm.api_key:
+            if _is_stale_index(settings, inventory, expected):
+                _cleanup_index(settings)
+            error = (
+                "Offline dispatch tree build requires a model and API key. "
+                "Configure `models.defaults[0].model_client_config` or `symphony.skill_retrieval.llm`."
+            )
+            _write_build_state(
+                settings,
+                status="failed",
+                stage="llm_config",
+                message="Build LLM configuration is missing.",
+                error=error,
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+                inventory=inventory,
+                fingerprint=expected,
+            )
             return {
                 "success": False,
-                "result": render_build_failure(
-                    "Offline dispatch tree build requires a model and API key. "
-                    "Configure `models.defaults[0].model_client_config` or `symphony.skill_retrieval.llm`."
-                ),
+                "result": render_build_failure(error),
             }
 
         build_root = (
@@ -104,18 +192,98 @@ class SkillIndexService:
         build_index_dir = build_root / "index"
         try:
             build_index_dir.mkdir(parents=True, exist_ok=True)
-            if _is_complete_index(_index_dir(settings)) and state.get("fingerprint") != expected:
-                logging.info("execute incremental build")
-                self.incremental_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
-            else:
-                logging.info("execute full build")
+            self._check_cancel_or_timeout(settings, started, cancel_check, stage="build")
+            _write_build_state(
+                settings,
+                status="running",
+                stage="build",
+                message="Building dispatch skill tree index.",
+                progress=0.35,
+                inventory=inventory,
+                fingerprint=expected,
+            )
+            if force:
+                LOGGER.info("[skill-index] stage=build status=running detail=force_full_rebuild")
                 self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+            elif index_complete and not fingerprint_matches:
+                LOGGER.info("[skill-index] stage=build status=running detail=incremental")
+                try:
+                    self.incremental_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+                except Exception as exc:
+                    LOGGER.info(
+                        "[skill-index] stage=build status=running "
+                        "detail=incremental_failed_full_rebuild error=%s",
+                        exc,
+                    )
+                    shutil.rmtree(build_index_dir, ignore_errors=True)
+                    build_index_dir.mkdir(parents=True, exist_ok=True)
+                    self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+            else:
+                LOGGER.info("[skill-index] stage=build status=running detail=full")
+                self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
+            self._check_cancel_or_timeout(settings, started, cancel_check, stage="publish")
             if not _is_complete_index(build_index_dir):
                 raise RuntimeError("dispatch build finished without complete index artifacts")
+            _write_build_state(
+                settings,
+                status="running",
+                stage="publish",
+                message="Publishing skill retrieval index.",
+                progress=0.9,
+            )
             _publish_index(settings=settings, candidate_dir=build_index_dir)
-            _write_state(settings, inventory=inventory, fingerprint=expected)
-        except Exception as exc:
+            _write_state(
+                settings,
+                inventory=inventory,
+                fingerprint=expected,
+                elapsed_seconds=time.monotonic() - started,
+            )
+        except SkillIndexBuildCancelled as exc:
+            _write_build_state(
+                settings,
+                status="cancelled",
+                stage="cancelled",
+                message=str(exc),
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+                inventory=inventory,
+                fingerprint=expected,
+            )
             return {"success": False, "result": render_build_failure(str(exc))}
+        except SkillIndexBuildTimeout as exc:
+            if _is_stale_index(settings, inventory, expected):
+                _cleanup_index(settings)
+            _write_build_state(
+                settings,
+                status="failed",
+                stage="timeout",
+                message="Skill index build timed out.",
+                error=str(exc),
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+                inventory=inventory,
+                fingerprint=expected,
+            )
+            return {"success": False, "result": render_build_failure(str(exc))}
+        except Exception as exc:
+            if _is_stale_index(settings, inventory, expected):
+                _cleanup_index(settings)
+            error = _normalize_build_error(exc)
+            _write_build_state(
+                settings,
+                status="failed",
+                stage="failed",
+                message="Skill index build failed.",
+                error=error,
+                progress=1.0,
+                finished_at=_now_iso(),
+                elapsed_seconds=time.monotonic() - started,
+                inventory=inventory,
+                fingerprint=expected,
+            )
+            return {"success": False, "result": render_build_failure(error)}
         finally:
             if _is_complete_index(_index_dir(settings)) and build_root.exists():
                 shutil.rmtree(build_root, ignore_errors=True)
@@ -129,6 +297,33 @@ class SkillIndexService:
                 elapsed_seconds=time.monotonic() - started,
             ),
         }
+
+    @staticmethod
+    def request_cancel() -> dict[str, Any]:
+        settings = load_settings()
+        _write_build_state(
+            settings,
+            status="running",
+            stage="cancel_requested",
+            message="Cancellation requested by user.",
+            cancel_requested=True,
+        )
+        return {"success": True, "result": "# Skill Index Build\n\nCancellation requested."}
+
+    @staticmethod
+    def mark_background_started(*, source: str = "manual") -> None:
+        settings = load_settings()
+        if not settings.enabled:
+            return
+        _write_build_state(
+            settings,
+            status="running",
+            stage="queued",
+            message=f"Skill index build queued ({source}).",
+            progress=0.01,
+            started_at=_now_iso(),
+            clear_error=True,
+        )
 
     def incremental_build(
         self,
@@ -160,42 +355,49 @@ class SkillIndexService:
                         add_index_path = output_dir.parent / "added-skills"
                     else:
                         add_index_path = output_dir
-                    IndexBuilder.add(
-                        item_paths=added_paths,
-                        base_index_dir=existing_index,
-                        output_dir=add_index_path,
-                        item_type="skill",
-                        config=config,
-                    )
+                    with _suppress_dispatch_console():
+                        IndexBuilder.add(
+                            item_paths=added_paths,
+                            base_index_dir=existing_index,
+                            output_dir=add_index_path,
+                            item_type="skill",
+                            config=config,
+                        )
                 if removed_paths:
                     source = add_index_path if added_paths else existing_index
-                    IndexBuilder.delete(
-                        item_paths=removed_paths,
-                        base_index_dir=source,
-                        output_dir=output_dir,
-                        item_type="skill",
-                        config=config,
-                    )
+                    with _suppress_dispatch_console():
+                        IndexBuilder.delete(
+                            item_paths=removed_paths,
+                            base_index_dir=source,
+                            output_dir=output_dir,
+                            item_type="skill",
+                            config=config,
+                        )
         finally:
             if add_index_path and add_index_path != output_dir:
                 shutil.rmtree(add_index_path, ignore_errors=True)
 
-    @staticmethod
-    def tree() -> dict[str, Any]:
+    def tree(self, *, language: str = "cn") -> dict[str, Any]:
         settings = load_settings()
         if not settings.enabled:
             return {"success": False, "result": render_disabled()}
 
         index_dir = _index_dir(settings)
-        if not _is_complete_index(index_dir):
+        inventory = scan_skill_inventory(self._manager)
+        state = _read_state(settings)
+        expected = _expected_fingerprint(inventory, settings)
+        if (
+            not _is_complete_index(index_dir)
+            or not _manifest_matches_inventory(index_dir, inventory)
+            or state.get("fingerprint") != expected
+        ):
             return {
                 "success": False,
-                "result": (
-                    "# Skill Index Tree\n\n"
-                    "The installed-skill retrieval index has not been built yet.\n\n"
-                    "Use `skill_index_build` or the web page build button to build the index, "
-                    "or ignore retrieval and continue with the original jiuwenswarm flow."
-                ),
+                "result": _missing_tree_markdown(language),
+                "nodes": [],
+                "branch_count": 0,
+                "leaf_count": 0,
+                "index_dir": str(index_dir),
             }
 
         tree_path = index_dir / TREE_INDEX_FILENAME
@@ -241,13 +443,17 @@ class SkillIndexService:
             )
 
             build = settings.build
+            llm_config = BuildLLMConfig(
+                model=settings.llm.model,
+                api_key=settings.llm.api_key,
+                base_url=settings.llm.base_url,
+                seed=settings.llm.seed,
+            )
+            for attr in ("stream", "streaming", "enable_streaming"):
+                if hasattr(llm_config, attr):
+                    setattr(llm_config, attr, False)
             return BuildConfig(
-                llm_config=BuildLLMConfig(
-                    model=settings.llm.model,
-                    api_key=settings.llm.api_key,
-                    base_url=settings.llm.base_url,
-                    seed=settings.llm.seed,
-                ),
+                llm_config=llm_config,
                 taxonomy_config=TaxonomyBuildConfig(
                     branching_factor=build.branching_factor,
                     max_depth=build.max_depth,
@@ -268,6 +474,24 @@ class SkillIndexService:
             )
 
     @staticmethod
+    def _check_cancel_or_timeout(
+        settings: SkillRetrievalSettings,
+        started: float,
+        cancel_check: Any | None,
+        *,
+        stage: str,
+    ) -> None:
+        state = _read_state(settings)
+        cancel_requested = bool(_build_state_from_state(state).get("cancel_requested", False))
+        if cancel_requested or (callable(cancel_check) and bool(cancel_check())):
+            raise SkillIndexBuildCancelled(f"Skill index build cancelled at stage `{stage}`.")
+        total_timeout = float(settings.build.total_timeout_seconds or 0.0)
+        if total_timeout > 0 and time.monotonic() - started > total_timeout:
+            raise SkillIndexBuildTimeout(
+                f"Skill index build exceeded total timeout {total_timeout:.1f}s at stage `{stage}`."
+            )
+
+    @staticmethod
     def _run_dispatch_build(
         *,
         settings: SkillRetrievalSettings,
@@ -281,12 +505,13 @@ class SkillIndexService:
             _ensure_tree_builder_compat(TreeBuilder)
 
             config = SkillIndexService._make_build_config(settings)
-            IndexBuilder.build(
-                item_paths=inventory.item_paths,
-                output_dir=output_dir,
-                item_type="skill",
-                config=config,
-            )
+            with _suppress_dispatch_console():
+                IndexBuilder.build(
+                    item_paths=inventory.item_paths,
+                    output_dir=output_dir,
+                    item_type="skill",
+                    config=config,
+                )
 
     @staticmethod
     def _recover_index(
@@ -358,6 +583,23 @@ def _record_recovery_failure(candidate: Path, exc: Exception) -> None:
     LOGGER.debug("Skipping unusable skill retrieval index recovery candidate %s: %s", candidate, exc)
 
 
+class _NullWriter:
+    @staticmethod
+    def write(text: str) -> int:
+        return len(text)
+
+    @staticmethod
+    def flush() -> None:
+        return None
+
+
+@contextmanager
+def _suppress_dispatch_console():
+    sink = _NullWriter()
+    with redirect_stdout(sink), redirect_stderr(sink):
+        yield
+
+
 def _tmp_dir(settings: SkillRetrievalSettings) -> Path:
     return settings.artifact_root / "tmp"
 
@@ -381,6 +623,10 @@ def _expected_fingerprint(inventory: SkillInventory, settings: SkillRetrievalSet
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def expected_index_fingerprint(inventory: SkillInventory, settings: SkillRetrievalSettings) -> str:
+    return _expected_fingerprint(inventory, settings)
+
+
 def _read_state(settings: SkillRetrievalSettings) -> dict[str, Any]:
     path = _state_file(settings)
     if not path.is_file():
@@ -392,16 +638,196 @@ def _read_state(settings: SkillRetrievalSettings) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _write_state(settings: SkillRetrievalSettings, *, inventory: SkillInventory, fingerprint: str) -> None:
+def _write_state(
+    settings: SkillRetrievalSettings,
+    *,
+    inventory: SkillInventory,
+    fingerprint: str,
+    elapsed_seconds: float | None = None,
+) -> None:
+    state = _read_state(settings)
+    build_state = _build_state_from_state(state)
+    logs = build_state.get("logs", [])
+    elapsed = (
+        float(elapsed_seconds)
+        if elapsed_seconds is not None
+        else build_state.get("elapsed_seconds", 0.0)
+    )
     payload = {
         "schema_version": 1,
-        "built_at": datetime.now(timezone.utc).isoformat(),
+        "built_at": _now_iso(),
         "fingerprint": fingerprint,
         "indexed_count": inventory.count,
         "index_dir": str(_index_dir(settings)),
         "inventory": inventory.to_state_payload(),
+        "build": {
+            "status": "success",
+            "stage": "success",
+            "message": "Skill retrieval index build completed.",
+            "error": "",
+            "progress": 1.0,
+            "started_at": build_state.get("started_at", ""),
+            "finished_at": _now_iso(),
+            "elapsed_seconds": elapsed,
+            "cancel_requested": False,
+            "logs": _append_log(logs, stage="success", status="success", message="Build completed."),
+        },
     }
+    settings.artifact_root.mkdir(parents=True, exist_ok=True)
     _state_file(settings).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _write_build_state(
+    settings: SkillRetrievalSettings,
+    *,
+    status: str,
+    stage: str,
+    message: str,
+    error: str | None = None,
+    progress: float | None = None,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    elapsed_seconds: float | None = None,
+    cancel_requested: bool | None = None,
+    inventory: SkillInventory | None = None,
+    fingerprint: str | None = None,
+    clear_error: bool = False,
+) -> None:
+    settings.artifact_root.mkdir(parents=True, exist_ok=True)
+    state = _read_state(settings)
+    build_state = _build_state_from_state(state)
+    next_build = dict(build_state)
+    next_build.update(
+        {
+            "status": status,
+            "stage": stage,
+            "message": message,
+            "progress": _coerce_progress(progress if progress is not None else next_build.get("progress", 0.0)),
+        }
+    )
+    if error is not None:
+        next_build["error"] = str(error)
+    elif clear_error:
+        next_build["error"] = ""
+    if started_at is not None:
+        next_build["started_at"] = started_at
+        next_build["finished_at"] = ""
+        next_build["elapsed_seconds"] = 0.0
+        next_build["cancel_requested"] = False
+    if finished_at is not None:
+        next_build["finished_at"] = finished_at
+    if elapsed_seconds is not None:
+        next_build["elapsed_seconds"] = float(elapsed_seconds)
+    if cancel_requested is not None:
+        next_build["cancel_requested"] = bool(cancel_requested)
+    next_build["logs"] = _append_log(
+        next_build.get("logs", []),
+        stage=stage,
+        status=status,
+        message=message if error in (None, "") else f"{message} {error}",
+    )
+    state["schema_version"] = int(state.get("schema_version") or 1)
+    if fingerprint:
+        state["fingerprint"] = fingerprint
+    if inventory is not None:
+        state["inventory"] = inventory.to_state_payload()
+        state["indexed_count"] = inventory.count if status == "success" else int(state.get("indexed_count") or 0)
+    state["build"] = next_build
+    _state_file(settings).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    LOGGER.info("[skill-index] stage=%s status=%s detail=%s", stage, status, message)
+
+
+def _build_state_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    raw = state.get("build") if isinstance(state, dict) else None
+    if not isinstance(raw, dict):
+        return {
+            "status": "idle",
+            "stage": "",
+            "message": "",
+            "error": "",
+            "progress": 0.0,
+            "started_at": "",
+            "finished_at": "",
+            "elapsed_seconds": 0.0,
+            "cancel_requested": False,
+            "logs": [],
+        }
+    out = dict(raw)
+    out["status"] = str(out.get("status") or "idle")
+    out["stage"] = str(out.get("stage") or "")
+    out["message"] = str(out.get("message") or "")
+    out["error"] = str(out.get("error") or "")
+    out["progress"] = _coerce_progress(out.get("progress", 0.0))
+    out["started_at"] = str(out.get("started_at") or "")
+    out["finished_at"] = str(out.get("finished_at") or "")
+    try:
+        out["elapsed_seconds"] = float(out.get("elapsed_seconds") or 0.0)
+    except (TypeError, ValueError):
+        out["elapsed_seconds"] = 0.0
+    out["cancel_requested"] = bool(out.get("cancel_requested", False))
+    logs = out.get("logs")
+    out["logs"] = logs[-BUILD_LOG_LIMIT:] if isinstance(logs, list) else []
+    return out
+
+
+def _append_log(logs: Any, *, stage: str, status: str, message: str) -> list[dict[str, Any]]:
+    current = list(logs) if isinstance(logs, list) else []
+    current.append(
+        {
+            "time": _now_iso(),
+            "stage": stage,
+            "status": status,
+            "message": str(message or ""),
+        }
+    )
+    return current[-BUILD_LOG_LIMIT:]
+
+
+def _coerce_progress(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_stale_index(settings: SkillRetrievalSettings, inventory: SkillInventory, expected: str) -> bool:
+    index_dir = _index_dir(settings)
+    if not _is_complete_index(index_dir):
+        return False
+    state = _read_state(settings)
+    return not _manifest_matches_inventory(index_dir, inventory) or state.get("fingerprint") != expected
+
+
+def _normalize_build_error(exc: Exception) -> str:
+    text = str(exc)
+    if "set to false for non-streaming calls" in text:
+        return (
+            f"{text}\n\n"
+            "The skill index builder uses non-streaming LLM calls. If this remote model rejects the request, "
+            "check the provider's non-streaming parameter compatibility or use another build model."
+        )
+    return text
+
+
+def _missing_tree_markdown(language: str) -> str:
+    normalized = str(language or "").lower()
+    if normalized.startswith("zh") or normalized.startswith("cn"):
+        return (
+            "# 技能索引树\n\n"
+            "当前没有可用的已安装技能检索索引，或索引已与当前已安装/启用技能不一致。\n\n"
+            "可以点击页面上的“构建索引”重新构建；也可以忽略该能力，继续使用 jiuwenswarm 原有流程。"
+        )
+    return (
+        "# Skill Index Tree\n\n"
+        "No usable installed-skill retrieval index is available, or the index no longer matches the current "
+        "installed/enabled skills.\n\n"
+        "Use the web page build button to rebuild the index, or ignore retrieval and continue with the original "
+        "jiuwenswarm flow."
+    )
 
 
 def _is_complete_index(path: Path) -> bool:

@@ -42,6 +42,9 @@ _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modi
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
+    detailed_output = getattr(result, "detailed_output", None)
+    if detailed_output is not None:
+        return detailed_output
     if isinstance(result, (dict, list)):
         return result
     return None

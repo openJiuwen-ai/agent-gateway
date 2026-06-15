@@ -171,7 +171,7 @@ symphony:
         assert migrated["symphony"]["fingerprint"]["normalization"]["workers"] == 1
 
     @staticmethod
-    def test_update_skill_retrieval_keeps_public_build_and_retrieve_config(
+    def test_update_skill_retrieval_preserves_existing_hidden_config(
         monkeypatch: pytest.MonkeyPatch,
         temp_config_file: Path,
     ):
@@ -243,9 +243,12 @@ symphony:
             "equivalence_enabled": False,
         }
         assert section["retrieve"] == {
+            "top_k": 6,
             "compact_codes_enabled": True,
             "flatten_tree": True,
             "max_exposure_depth": 12,
+            "max_branch_choices": 5,
+            "max_parallel_branches": 4,
         }
 
 

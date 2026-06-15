@@ -62,7 +62,7 @@ symphony:
     retrieve:
       compact_codes_enabled: false
       flatten_tree: false
-      max_exposure_depth: 99
+      max_exposure_depth: 1
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
 # gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。

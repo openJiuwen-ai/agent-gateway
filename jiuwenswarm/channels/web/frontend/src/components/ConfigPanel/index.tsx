@@ -283,7 +283,19 @@ const AGENT_KEYS = new Set(["name", "model", "skills"]);
 const TEAM_KEYS = new Set(["team_name", "lifecycle", "teammate_mode", "spawn_mode"]);
 const FREE_SEARCH_BOOLEAN_KEYS = new Set(["free_search_ddg_enabled", "free_search_bing_enabled"]);
 const FREE_SEARCH_KEYS = new Set([...FREE_SEARCH_BOOLEAN_KEYS]);
-const HIDDEN_CONFIG_KEYS = new Set(["free_search_proxy_url"]);
+const HIDDEN_CONFIG_KEYS = new Set([
+  "free_search_proxy_url",
+  "skill_retrieval_build_branching_factor",
+  "skill_retrieval_build_root_categories",
+  "skill_retrieval_build_request_timeout_seconds",
+  "skill_retrieval_build_discovery_seed",
+  "skill_retrieval_build_postprocess_enabled",
+  "skill_retrieval_build_postprocess_max_passes",
+  "skill_retrieval_build_postprocess_min_skills",
+  "skill_retrieval_build_equivalence_enabled",
+  "skill_retrieval_retrieve_compact_codes_enabled",
+  "skill_retrieval_retrieve_flatten_tree",
+]);
 const MEMORY_KEYS = new Set(["memory_forbidden_enabled", "memory_forbidden_description"]);
 const A2UI_KEYS = new Set(["a2ui_enabled"]);
 const SYMPHONY_BOOLEAN_KEYS = new Set(["symphony_enabled"]);
@@ -292,30 +304,17 @@ const SYMPHONY_KEYS = new Set([
 ]);
 const SKILL_RETRIEVAL_BOOLEAN_KEYS = new Set([
   "skill_retrieval_enabled",
-  "skill_retrieval_build_postprocess_enabled",
-  "skill_retrieval_build_equivalence_enabled",
-  "skill_retrieval_retrieve_compact_codes_enabled",
-  "skill_retrieval_retrieve_flatten_tree",
 ]);
 const MULTILINE_CONFIG_KEYS = new Set([
   "skill_retrieval_build_root_categories",
 ]);
 const SKILL_RETRIEVAL_KEYS = new Set([
   "skill_retrieval_enabled",
-  "skill_retrieval_build_branching_factor",
   "skill_retrieval_build_max_depth",
-  "skill_retrieval_build_root_categories",
   "skill_retrieval_build_max_workers",
   "skill_retrieval_build_max_retries",
-  "skill_retrieval_build_request_timeout_seconds",
+  "skill_retrieval_build_total_timeout_seconds",
   "skill_retrieval_build_classification_batch_limit",
-  "skill_retrieval_build_discovery_seed",
-  "skill_retrieval_build_postprocess_enabled",
-  "skill_retrieval_build_postprocess_max_passes",
-  "skill_retrieval_build_postprocess_min_skills",
-  "skill_retrieval_build_equivalence_enabled",
-  "skill_retrieval_retrieve_compact_codes_enabled",
-  "skill_retrieval_retrieve_flatten_tree",
   "skill_retrieval_retrieve_max_exposure_depth",
 ]);
 
@@ -597,6 +596,7 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   skill_retrieval_build_max_workers: "config.keys.skillRetrievalBuildMaxWorkers",
   skill_retrieval_build_max_retries: "config.keys.skillRetrievalBuildMaxRetries",
   skill_retrieval_build_request_timeout_seconds: "config.keys.skillRetrievalBuildTimeout",
+  skill_retrieval_build_total_timeout_seconds: "config.keys.skillRetrievalBuildTotalTimeout",
   skill_retrieval_build_classification_batch_limit: "config.keys.skillRetrievalBuildClassificationBatchLimit",
   skill_retrieval_build_discovery_seed: "config.keys.skillRetrievalBuildDiscoverySeed",
   skill_retrieval_build_postprocess_enabled: "config.keys.skillRetrievalBuildPostprocessEnabled",
@@ -624,21 +624,12 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   free_search_bing_enabled: 1,
   symphony_enabled: 0,
   skill_retrieval_enabled: 0,
-  skill_retrieval_build_branching_factor: 10,
-  skill_retrieval_build_max_depth: 11,
-  skill_retrieval_build_max_workers: 12,
-  skill_retrieval_build_max_retries: 13,
-  skill_retrieval_build_request_timeout_seconds: 14,
-  skill_retrieval_build_classification_batch_limit: 15,
-  skill_retrieval_build_discovery_seed: 16,
-  skill_retrieval_build_postprocess_enabled: 17,
-  skill_retrieval_build_postprocess_max_passes: 18,
-  skill_retrieval_build_postprocess_min_skills: 19,
-  skill_retrieval_build_equivalence_enabled: 20,
-  skill_retrieval_build_root_categories: 21,
-  skill_retrieval_retrieve_compact_codes_enabled: 31,
-  skill_retrieval_retrieve_flatten_tree: 32,
-  skill_retrieval_retrieve_max_exposure_depth: 33,
+  skill_retrieval_retrieve_max_exposure_depth: 10,
+  skill_retrieval_build_max_depth: 20,
+  skill_retrieval_build_max_workers: 21,
+  skill_retrieval_build_max_retries: 22,
+  skill_retrieval_build_total_timeout_seconds: 23,
+  skill_retrieval_build_classification_batch_limit: 24,
   memory_forbidden_enabled: 0,
   memory_forbidden_description: 1,
   model: 0,

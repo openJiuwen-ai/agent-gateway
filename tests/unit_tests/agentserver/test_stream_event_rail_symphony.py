@@ -7,6 +7,7 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
+from jiuwenswarm.symphony.agent import AgenticToolResult
 
 
 class _StreamSession:
@@ -121,6 +122,37 @@ async def test_stream_event_rail_continues_after_symphony_skill_gap_result():
     assert tool_results[0]["followup_action"] == "external_skill_discovery"
     assert not any(chunk.type == "chat.final" for chunk in session.chunks)
     assert ctx.force_finish_requests == []
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_uses_agentic_tool_detailed_output_as_raw_output():
+    rail = JiuSwarmStreamEventRail()
+    session = _StreamSession()
+    detailed_output = {
+        "success": True,
+        "result": "# Skill Branch Explore",
+        "skill_tree": {
+            "query": "skill_branch_explore: OfficeDocs",
+            "steps": [{"order": 0, "node_id": "OfficeDocs"}],
+            "candidates": [],
+        },
+    }
+    result = AgenticToolResult(
+        {"success": True, "result": "# Skill Branch Explore"},
+        detailed_output=detailed_output,
+    )
+    ctx = _ctx(session, "skill_branch_explore", tool_result=result)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    tool_results = [
+        chunk.payload.get("tool_result")
+        for chunk in session.chunks
+        if chunk.type == "tool_result"
+    ]
+    assert tool_results[0]["raw_output"] == detailed_output
+    assert "skill_tree" not in tool_results[0]["result"]
 
 
 @pytest.mark.asyncio

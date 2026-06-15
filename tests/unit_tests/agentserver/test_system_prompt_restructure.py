@@ -271,8 +271,13 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
 async def test_skill_retrieval_prompt_hides_legacy_list_skill(monkeypatch):
     monkeypatch.setattr(
         _skill_retrieval_prompt_mod,
-        "render_skill_retrieval_prompt",
-        lambda manager, language: "# Agentic 技能检索\n使用 skill_branch_explore。",
+        "is_agentic_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "render_skill_retrieval_prompt_for_visible_skills",
+        lambda manager, language, visible_skill_names=None: "# Agentic 技能检索\n使用 skill_branch_explore。",
     )
     builder = SystemPromptBuilder(language="cn")
     builder.add_section(PromptSection(name="skills", content={"cn": "旧 list_skill 提示"}, priority=40))
@@ -303,6 +308,100 @@ async def test_skill_retrieval_prompt_hides_legacy_list_skill(monkeypatch):
     await rail.after_model_call(ctx)
 
     assert agent.ability_manager.get("list_skill") is not None
+    assert "旧 list_skill 提示" in builder.build()
+
+
+@pytest.mark.asyncio
+async def test_skill_retrieval_prompt_clears_section_when_disabled(monkeypatch):
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "is_agentic_retrieval_enabled",
+        lambda: False,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    builder.add_section(PromptSection(name="skill_retrieval", content={"cn": "残留 Agentic 技能检索"}, priority=41))
+    agent = _FakeToolAgent(builder)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(tools=[SimpleNamespace(name="list_skill")]),
+        session=_FakeSession(),
+        extra={},
+    )
+
+    rail = SkillRetrievalPromptRail()
+    rail.init(agent)
+    await rail.before_model_call(ctx)
+
+    assert [tool.name for tool in ctx.inputs.tools] == ["list_skill"]
+    assert "残留 Agentic 技能检索" not in builder.build()
+    assert agent.ability_manager.get("list_skill") is not None
+
+
+@pytest.mark.asyncio
+async def test_skill_retrieval_prompt_disabled_restores_hidden_skills_section(monkeypatch):
+    enabled = True
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "is_agentic_retrieval_enabled",
+        lambda: enabled,
+    )
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "render_skill_retrieval_prompt_for_visible_skills",
+        lambda manager, language, visible_skill_names=None: "# Agentic 技能检索\n使用 skill_branch_explore。",
+    )
+    builder = SystemPromptBuilder(language="cn")
+    builder.add_section(PromptSection(name="skills", content={"cn": "原生技能提示"}, priority=40))
+    agent = _FakeToolAgent(builder)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(tools=[SimpleNamespace(name="skill_branch_explore")]),
+        session=_FakeSession(),
+        extra={},
+    )
+
+    rail = SkillRetrievalPromptRail()
+    rail.init(agent)
+    await rail.before_model_call(ctx)
+    assert "原生技能提示" not in builder.build()
+
+    enabled = False
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "Agentic 技能检索" not in prompt
+    assert "原生技能提示" in prompt
+
+
+@pytest.mark.asyncio
+async def test_skill_retrieval_prompt_render_empty_restores_native_skills(monkeypatch):
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "is_agentic_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "render_skill_retrieval_prompt_for_visible_skills",
+        lambda manager, language, visible_skill_names=None: "",
+    )
+    builder = SystemPromptBuilder(language="cn")
+    builder.add_section(PromptSection(name="skills", content={"cn": "原生技能提示"}, priority=40))
+    agent = _FakeToolAgent(builder)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(tools=[SimpleNamespace(name="list_skill")]),
+        session=_FakeSession(),
+        extra={},
+    )
+
+    rail = SkillRetrievalPromptRail()
+    rail.init(agent)
+    await rail.before_model_call(ctx)
+
+    assert "原生技能提示" in builder.build()
+    assert agent.ability_manager.get("list_skill") is not None
+    assert [tool.name for tool in ctx.inputs.tools] == ["list_skill"]
 
 
 def test_resolve_skill_mode_accepts_all_and_auto_list(monkeypatch):
@@ -319,6 +418,52 @@ def test_resolve_skill_mode_accepts_all_and_auto_list(monkeypatch):
         lambda: True,
     )
     assert JiuWenSwarmDeepAdapter._resolve_skill_mode({"skill_mode": "all"}) == "auto_list"
+
+
+def test_deep_adapter_visible_skill_names_match_list_skill(monkeypatch, tmp_path):
+    for name in ("alpha", "beta", "_internal", ".hidden"):
+        skill_dir = tmp_path / name
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+    (tmp_path / "not-a-skill").mkdir()
+
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter.set_skill_manager(
+        SimpleNamespace(list_execution_disabled_skills=lambda: ["beta"])
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_agent_skills_dir",
+        lambda: tmp_path,
+    )
+
+    assert adapter._visible_skill_names_for_list_skill() == {"alpha"}
+
+
+def test_deep_adapter_skill_retrieval_prompt_uses_visible_skill_provider(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeRail:
+        def __init__(self, *, manager, visible_skill_names):
+            captured["manager"] = manager
+            captured["visible_skill_names"] = visible_skill_names
+
+    manager = SimpleNamespace(list_execution_disabled_skills=lambda: [])
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter.set_skill_manager(manager)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SkillRetrievalPromptRail",
+        FakeRail,
+    )
+
+    rail = adapter._build_skill_retrieval_prompt_rail()
+
+    assert isinstance(rail, FakeRail)
+    assert captured["manager"] is manager
+    assert captured["visible_skill_names"] == adapter._visible_skill_names_for_list_skill
 
 
 def test_resolve_enable_task_loop_can_be_called_on_class(monkeypatch):

@@ -272,18 +272,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                 raw_output = result_info.get("raw_output")
                 if raw_output is None:
                     raw_output = result_info.get("rawOutput")
-                if raw_output is None and "skill_tree" in result_info:
-                    raw_output = {}
-                    for key, value in result_info.items():
-                        if key not in ("tool_name", "name", "tool_call_id", "toolCallId"):
-                            raw_output[key] = value
-                result_value = result_info.get("result")
-                if (
-                    raw_output is None
-                    and isinstance(result_value, dict)
-                    and "skill_tree" in result_value
-                ):
-                    raw_output = result_value
                 if raw_output is not None:
                     result_payload["raw_output"] = raw_output
                 for key in (

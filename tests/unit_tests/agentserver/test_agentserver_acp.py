@@ -230,7 +230,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     }
 
 
-def test_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
+def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
     raw_output = {
         "success": True,
         "result": "# Skill Branch Explore",
@@ -247,7 +247,8 @@ def test_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
                 "tool_result": {
                     "tool_call_id": "call-1",
                     "tool_name": "skill_branch_explore",
-                    **raw_output,
+                    "result": "# Skill Branch Explore",
+                    "raw_output": raw_output,
                 }
             },
         )
@@ -259,7 +260,7 @@ def test_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
     assert parsed["raw_output"] == raw_output
 
 
-def test_interface_deep_parse_stream_chunk_uses_skill_tree_result_as_raw_output():
+def test_interface_deep_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
     parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
     raw_output = {
         "success": True,
@@ -277,7 +278,8 @@ def test_interface_deep_parse_stream_chunk_uses_skill_tree_result_as_raw_output(
                 "tool_result": {
                     "tool_call_id": "call-1",
                     "tool_name": "skill_branch_explore",
-                    **raw_output,
+                    "result": "# Skill Branch Explore",
+                    "raw_output": raw_output,
                 }
             },
         )
@@ -287,6 +289,45 @@ def test_interface_deep_parse_stream_chunk_uses_skill_tree_result_as_raw_output(
     assert parsed["tool_name"] == "skill_branch_explore"
     assert parsed["tool_call_id"] == "call-1"
     assert parsed["raw_output"] == raw_output
+
+
+def test_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="tool_result",
+            payload={
+                "tool_result": {
+                    "tool_call_id": "call-1",
+                    "tool_name": "skill_branch_explore",
+                    "result": "# Skill Branch Explore",
+                    "skill_tree": {"steps": [{"node_id": "SoftwareEngineering"}]},
+                }
+            },
+        )
+    )
+
+    assert parsed["event_type"] == "chat.tool_result"
+    assert "raw_output" not in parsed
+
+
+def test_interface_deep_parse_stream_chunk_does_not_lift_top_level_skill_tree_to_raw_output():
+    parse_chunk = getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk")
+    parsed = parse_chunk(
+        types.SimpleNamespace(
+            type="tool_result",
+            payload={
+                "tool_result": {
+                    "tool_call_id": "call-1",
+                    "tool_name": "skill_branch_explore",
+                    "result": "# Skill Branch Explore",
+                    "skill_tree": {"steps": [{"node_id": "SoftwareEngineering"}]},
+                }
+            },
+        )
+    )
+
+    assert parsed["event_type"] == "chat.tool_result"
+    assert "raw_output" not in parsed
 
 
 def test_parse_stream_chunk_preserves_symphony_status_payload():

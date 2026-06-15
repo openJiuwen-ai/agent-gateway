@@ -20,26 +20,6 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
-_SKILL_RETRIEVAL_PUBLIC_BUILD_KEYS = {
-    "branching_factor",
-    "max_depth",
-    "root_categories",
-    "max_workers",
-    "max_retries",
-    "request_timeout_seconds",
-    "classification_batch_limit",
-    "discovery_seed",
-    "postprocess_enabled",
-    "postprocess_max_passes",
-    "postprocess_min_skills",
-    "equivalence_enabled",
-}
-_SKILL_RETRIEVAL_PUBLIC_RETRIEVE_KEYS = {
-    "compact_codes_enabled",
-    "flatten_tree",
-    "max_exposure_depth",
-}
-
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -307,28 +287,7 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
     if "skill_retrieval" not in symphony or symphony["skill_retrieval"] is None:
         symphony["skill_retrieval"] = {}
     section = symphony["skill_retrieval"]
-
-    def prune_internal_keys() -> None:
-        build = section.get("build")
-        if isinstance(build, dict):
-            for key in list(build.keys()):
-                if key not in _SKILL_RETRIEVAL_PUBLIC_BUILD_KEYS:
-                    build.pop(key, None)
-            if not build:
-                section.pop("build", None)
-        retrieve = section.get("retrieve")
-        if isinstance(retrieve, dict):
-            for key in list(retrieve.keys()):
-                if key not in _SKILL_RETRIEVAL_PUBLIC_RETRIEVE_KEYS:
-                    retrieve.pop(key, None)
-            if not retrieve:
-                section.pop("retrieve", None)
-        elif "retrieve" in section:
-            section.pop("retrieve", None)
-
-    prune_internal_keys()
     _merge_config_dict(section, updates)
-    prune_internal_keys()
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

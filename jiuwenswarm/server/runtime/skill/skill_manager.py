@@ -545,7 +545,16 @@ class SkillManager:
         """构建或复用本地 skill retrieval 索引."""
         from jiuwenswarm.symphony.skill_retrieval import build_skill_index
 
-        return await asyncio.to_thread(build_skill_index, self)
+        params = params or {}
+        force = bool(params.get("force", False))
+        source = str(params.get("source") or "web").strip() or "web"
+        return await asyncio.to_thread(build_skill_index, self, force=force, source=source)
+
+    async def handle_skills_retrieval_index_cancel(self, params: dict) -> dict:
+        """请求暂停/取消本地 skill retrieval 索引构建."""
+        from jiuwenswarm.symphony.skill_retrieval import cancel_skill_index_build
+
+        return await asyncio.to_thread(cancel_skill_index_build, self)
 
     async def handle_skills_retrieval_search(self, params: dict) -> dict:
         """基于本地索引检索已安装 skills."""
@@ -558,7 +567,8 @@ class SkillManager:
         """返回本地 skill retrieval 树索引概览."""
         from jiuwenswarm.symphony.skill_retrieval import get_skill_retrieval_tree
 
-        return await asyncio.to_thread(get_skill_retrieval_tree, self)
+        language = str((params or {}).get("language") or "cn").strip() or "cn"
+        return await asyncio.to_thread(get_skill_retrieval_tree, self, language=language)
 
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""

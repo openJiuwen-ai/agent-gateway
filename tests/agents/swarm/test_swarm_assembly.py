@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from openjiuwen.agent_teams.schema import deep_agent_spec as das
+from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
@@ -354,6 +355,74 @@ def test_member_skill_toolkit_carries_selected_skills() -> None:
 
     # Blank entries are stripped; order is preserved.
     assert toolkit.params == {"skills": ["alpha", "beta"]}
+
+
+def test_swarm_skill_retrieval_tools_use_global_skill_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skill retrieval indexes globally installed skills, not member workspace skills."""
+    calls: list[str | None] = []
+
+    class FakeSkillManager:
+        def __init__(self, workspace_dir: str | None = None) -> None:
+            calls.append(workspace_dir)
+
+    class FakeToolkit:
+        def __init__(
+            self,
+            manager: FakeSkillManager,
+            visible_skill_names: object | None = None,
+        ) -> None:
+            self.manager = manager
+            self.visible_skill_names = visible_skill_names
+
+        @staticmethod
+        def get_tools() -> list:
+            return []
+
+    monkeypatch.setattr(tools, "is_skill_retrieval_enabled", lambda: True)
+    monkeypatch.setattr(tools, "SkillManager", FakeSkillManager)
+    monkeypatch.setattr(tools, "SkillRetrievalToolkit", FakeToolkit)
+
+    factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL].factory_ref)
+    built = factory({}, SwarmBuildContext())
+
+    assert built == []
+    assert calls == [None]
+
+
+def test_swarm_skill_retrieval_prompt_uses_global_skill_manager(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The retrieval prompt must match the same global index as the retrieval tools."""
+    workspace_root = str(tmp_path / "member-workspace")
+    calls: list[str | None] = []
+
+    class FakeSkillManager:
+        def __init__(self, workspace_dir: str | None = None) -> None:
+            calls.append(workspace_dir)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits.is_skill_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.SkillManager",
+        FakeSkillManager,
+    )
+
+    factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL_PROMPT].factory_ref)
+    rail = factory(
+        {},
+        SwarmBuildContext(
+            global_skills_dir=str(tmp_path / "global-skills"),
+            workspace=types.SimpleNamespace(root_path=workspace_root),
+        ),
+    )
+
+    assert rail is not None
+    assert calls == [None]
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])

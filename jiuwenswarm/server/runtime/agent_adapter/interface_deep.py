@@ -1886,6 +1886,27 @@ class JiuWenSwarmDeepAdapter:
         )
         return SkillUseRail.SKILL_MODE_ALL
 
+    def _visible_skill_names_for_list_skill(self) -> set[str]:
+        """Return the skill names exposed by the matching SkillUseRail setup."""
+        skills_dir = get_agent_skills_dir()
+        disabled_skills = set(
+            self._skill_manager.list_execution_disabled_skills()
+            if self._skill_manager is not None
+            else []
+        )
+        visible: set[str] = set()
+        try:
+            for child in sorted(skills_dir.iterdir(), key=lambda path: path.name.lower()):
+                if not child.is_dir() or child.name.startswith("_") or child.name.startswith("."):
+                    continue
+                if child.name in disabled_skills:
+                    continue
+                if (child / "SKILL.md").is_file():
+                    visible.add(child.name)
+        except OSError as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] failed to scan visible skills: %s", exc)
+        return visible
+
     @staticmethod
     def _build_response_prompt_rail() -> ResponsePromptRail | None:
         """Build ResponsePromptRail so message rules keep priority ordering."""
@@ -2466,7 +2487,10 @@ class JiuWenSwarmDeepAdapter:
         if not is_skill_retrieval_enabled():
             return None
         try:
-            return SkillRetrievalPromptRail(manager=self._skill_manager)
+            return SkillRetrievalPromptRail(
+                manager=self._skill_manager,
+                visible_skill_names=self._visible_skill_names_for_list_skill,
+            )
         except Exception as exc:
             logger.warning("[JiuWenClawDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
             return None
@@ -2878,7 +2902,10 @@ class JiuWenSwarmDeepAdapter:
 
         if is_skill_retrieval_enabled():
             try:
-                skill_retrieval_toolkit = SkillRetrievalToolkit(manager=self._skill_manager)
+                skill_retrieval_toolkit = SkillRetrievalToolkit(
+                    manager=self._skill_manager,
+                    visible_skill_names=self._visible_skill_names_for_list_skill,
+                )
                 skill_retrieval_tool_names: list[str] = []
                 for tool in skill_retrieval_toolkit.get_tools():
                     if not Runner.resource_mgr.get_tool(tool.card.id):
@@ -5799,18 +5826,6 @@ class JiuWenSwarmDeepAdapter:
                             raw_output = result_info.get("raw_output")
                             if raw_output is None:
                                 raw_output = result_info.get("rawOutput")
-                            if raw_output is None and "skill_tree" in result_info:
-                                raw_output = {}
-                                for key, value in result_info.items():
-                                    if key not in ("tool_name", "name", "tool_call_id", "toolCallId"):
-                                        raw_output[key] = value
-                            result_value = result_info.get("result")
-                            if (
-                                raw_output is None
-                                and isinstance(result_value, dict)
-                                and "skill_tree" in result_value
-                            ):
-                                raw_output = result_value
                             if raw_output is not None:
                                 result_payload["raw_output"] = raw_output
                             for key in (

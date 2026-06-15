@@ -24,9 +24,11 @@ The generic web / vision / audio tools are provided by openjiuwen
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from openjiuwen.agent_teams.harness.manifest import (
     ConstructionInput,
@@ -94,6 +96,7 @@ VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
+_CODE_MODES = frozenset({"code.team", "team.plan"})
 
 # xiaoyi phone tool objects, gated by ``channels.xiaoyi.phone_tools_enabled``.
 _XIAOYI_PHONE_TOOLS = (
@@ -150,6 +153,75 @@ def _mark_stateless(tools: list[Any]) -> list[Any]:
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
     """Resolve the member workspace root path (None when absent)."""
     return getattr(ctx.workspace, "root_path", None) if ctx.workspace else None
+
+
+def _scan_skill_names_from_dirs(skill_dirs: list[str], disabled_skills: set[str]) -> set[str]:
+    names: set[str] = set()
+    for raw_dir in skill_dirs:
+        root = Path(raw_dir).expanduser()
+        if not root.is_dir():
+            continue
+        for child in sorted(root.iterdir(), key=lambda path: path.name.lower()):
+            if not child.is_dir() or child.name.startswith("_") or child.name.startswith("."):
+                continue
+            if child.name in disabled_skills:
+                continue
+            if (child / "SKILL.md").is_file():
+                names.add(child.name)
+    return names
+
+
+def _collect_disabled_skills_from_state(skill_dirs: list[str]) -> set[str]:
+    disabled: set[str] = set()
+    for raw_dir in skill_dirs:
+        state_path = Path(raw_dir).expanduser() / "skills_state.json"
+        if not state_path.is_file():
+            continue
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            logger.warning("[swarm.skill_retrieval] failed to read skills state: %s", state_path)
+            continue
+        skill_configs = data.get("skill_configs", {})
+        if not isinstance(skill_configs, dict):
+            continue
+        for name, cfg in skill_configs.items():
+            if isinstance(cfg, dict) and cfg.get("enabled") is False:
+                disabled.add(str(name))
+    return disabled
+
+
+def _list_skill_dirs_for_context(ctx: SwarmBuildContext) -> list[str]:
+    workspace = getattr(ctx, "workspace", None)
+    if workspace is None:
+        return []
+
+    skill_dirs: list[str] = []
+    get_node_path = getattr(workspace, "get_node_path", None)
+    if callable(get_node_path):
+        skills_base = get_node_path("skills")
+        if skills_base:
+            skill_dirs.append(str(skills_base))
+
+    list_team_links = getattr(workspace, "list_team_links", None)
+    if callable(list_team_links):
+        for _team_id, target_path in list_team_links():
+            skill_dirs.append(str(Path(target_path) / "skills"))
+    return skill_dirs
+
+
+def visible_skill_names_for_list_skill(ctx: SwarmBuildContext) -> set[str]:
+    """Return the skill names that the matching SkillUseRail would expose."""
+    if ctx.mode in _CODE_MODES:
+        from jiuwenswarm.common.utils import get_agent_skills_dir
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        skill_dirs = [str(Path(ctx.global_skills_dir) if ctx.global_skills_dir else get_agent_skills_dir())]
+        return _scan_skill_names_from_dirs(skill_dirs, set(load_execution_disabled_skills()))
+
+    skill_dirs = _list_skill_dirs_for_context(ctx)
+    disabled_skills = _collect_disabled_skills_from_state(skill_dirs)
+    return _scan_skill_names_from_dirs(skill_dirs, disabled_skills)
 
 
 def _parse_int(value: Any, default: int) -> int:
@@ -263,14 +335,22 @@ def _build_skill_toolkit_tools(workspace_root: str | None) -> list[Any]:
         return []
 
 
-def _build_skill_retrieval_tools(workspace_root: str | None) -> list[Any]:
-    """Build the installed-skill retrieval tools bound to the member workspace."""
+VisibleSkillNamesProvider = Callable[[], set[str] | frozenset[str] | None]
+
+
+def _build_skill_retrieval_tools(
+    visible_skill_names: set[str] | frozenset[str] | VisibleSkillNamesProvider | None = None,
+) -> list[Any]:
+    """Build installed-skill retrieval tools against the global installed skill root."""
     if not is_skill_retrieval_enabled():
         logger.info("[swarm.skill_retrieval] skipped: disabled")
         return []
     try:
-        manager = SkillManager(workspace_dir=workspace_root)
-        toolkit = SkillRetrievalToolkit(manager=manager)
+        manager = SkillManager()
+        if visible_skill_names is None:
+            toolkit = SkillRetrievalToolkit(manager=manager)
+        else:
+            toolkit = SkillRetrievalToolkit(manager=manager, visible_skill_names=visible_skill_names)
         return list(toolkit.get_tools())
     except Exception as exc:
         logger.warning("[swarm.skill_retrieval] construction failed: %s", exc)
@@ -325,6 +405,15 @@ class SkillToolkitInput(ConstructionInput):
     )
 
 
+class SkillRetrievalInput(ConstructionInput):
+    """Construction inputs for global installed-skill retrieval tools."""
+
+    global_skills_dir: str | None = context_field(
+        attr="global_skills_dir",
+        description="Global installed skills source directory.",
+    )
+
+
 @harness_element(
     kind=ElementKind.TOOL,
     name=SKILL_TOOLKIT,
@@ -340,13 +429,15 @@ def build_skill_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[
 @harness_element(
     kind=ElementKind.TOOL,
     name=SKILL_RETRIEVAL,
-    description="Agentic installed skill tree retrieval tools bound to the member workspace.",
-    input_model=SkillToolkitInput,
+    description="Agentic installed skill tree retrieval tools for globally installed skills.",
+    input_model=SkillRetrievalInput,
 )
 def build_skill_retrieval(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
     """Build the whitelist-filtered installed-skill retrieval tools."""
-    inp = SkillToolkitInput.resolve(params, ctx)
-    return _filter_whitelist(_build_skill_retrieval_tools(inp.workspace_root))
+    SkillRetrievalInput.resolve(params, ctx)
+    return _filter_whitelist(
+        _build_skill_retrieval_tools(lambda: visible_skill_names_for_list_skill(ctx))
+    )
 
 
 @harness_element(
