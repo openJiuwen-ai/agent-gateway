@@ -39,6 +39,11 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.common.utils import logger
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
+_IMAGE_CONTENT_TYPES = frozenset({"image", "image_url", "input_image"})
+_IMAGE_CONTENT_OMITTED = (
+    "[Image content omitted from chat-model context. Use the original image "
+    "path or a vision tool when image analysis is required.]"
+)
 
 
 def _structured_tool_result_payload(result: Any) -> Any | None:
@@ -98,6 +103,50 @@ def _parse_tool_call_arguments(tool_call: Any) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _is_image_content_block(part: Any) -> bool:
+    if not isinstance(part, dict):
+        return False
+    block_type = str(part.get("type") or "").strip().lower()
+    if block_type in _IMAGE_CONTENT_TYPES:
+        return True
+    return "image_url" in part or "image" in part
+
+
+def _text_from_content_part(part: Any) -> str | None:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict) and isinstance(part.get("text"), str):
+        return part["text"]
+    return None
+
+
+def _strip_image_content_blocks(content: Any) -> tuple[Any, int]:
+    if not isinstance(content, list):
+        return content, 0
+
+    kept_parts: list[Any] = []
+    removed = 0
+    for part in content:
+        if _is_image_content_block(part):
+            removed += 1
+            continue
+        kept_parts.append(part)
+
+    if not removed:
+        return content, 0
+    if not kept_parts:
+        return _IMAGE_CONTENT_OMITTED, removed
+
+    text_parts: list[str] = []
+    for part in kept_parts:
+        text = _text_from_content_part(part)
+        if text is None:
+            return kept_parts, removed
+        if text:
+            text_parts.append(text)
+    return "\n".join(text_parts).strip() or _IMAGE_CONTENT_OMITTED, removed
 
 
 def _extract_tool_interrupt(value: Any) -> Any | None:
@@ -395,6 +444,30 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return False
         return self._is_legacy_tool_interrupt_placeholder_text(content, tool_name)
 
+    def _read_image_multimodal_enabled(self) -> bool:
+        deep_config = (
+            getattr(self._deep_agent, "deep_config", None)
+            or getattr(self._deep_agent, "_deep_config", None)
+        )
+        return bool(getattr(deep_config, "enable_read_image_multimodal", False))
+
+    @staticmethod
+    def _strip_image_content_from_model_context(context: Any) -> None:
+        removed_total = 0
+        for message in context.get_messages():
+            sanitized_content, removed = _strip_image_content_blocks(
+                getattr(message, "content", None)
+            )
+            if not removed:
+                continue
+            message.content = sanitized_content
+            removed_total += removed
+        if removed_total:
+            logger.info(
+                "Removed %d image content block(s) from chat-model context",
+                removed_total,
+            )
+
     def _resolve_sid(self, ctx: AgentCallbackContext, session: Session | None = None) -> str:
         """Resolve the per-session key used by this rail.
 
@@ -597,6 +670,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
         if ctx.context is not None:
             await self._fix_incomplete_tool_context(ctx)
+            if not self._read_image_multimodal_enabled():
+                self._strip_image_content_from_model_context(ctx.context)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
         await self._emit_context_usage(

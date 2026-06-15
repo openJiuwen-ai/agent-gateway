@@ -1,7 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 import sys
 from enum import IntEnum
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from openjiuwen.harness.prompts import SystemPromptBuilder, PromptSection, resolve_language
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
@@ -20,11 +21,16 @@ def _get_config_dir() -> "Path":
     return get_user_workspace_dir() / "config"
 
 
-def _symphony_routing_prompt() -> str:
+def _symphony_routing_prompt(config_base: dict[str, Any] | None = None) -> str:
     try:
         from jiuwenswarm.symphony.config import load_symphony_config
 
-        if not load_symphony_config().enabled:
+        config = (
+            load_symphony_config()
+            if config_base is None
+            else load_symphony_config(config_base)
+        )
+        if not config.enabled:
             return ""
     except Exception:
         return ""
@@ -37,8 +43,8 @@ help complete the task, you MUST call `symphony_compose_score` with the original
 user task as `query` before answering.
 Do not manually list skill names, inspect skill folders, choose a skill chain,
 or recommend skills before calling `symphony_compose_score`. After it returns,
-present its returned `content` or `markdown` directly to the user. If Symphony
-reports missing inputs, ask for those inputs.
+present its returned `content` directly to the user. If Symphony reports
+missing inputs, ask for those inputs.
 
 If Symphony reports no suitable candidates, a missing capability, or caveats
 that point to a skill gap, use `search_skill` to discover external skills. When
@@ -161,7 +167,10 @@ After completing a system task, notify the user via a reply.
 # ─── identity section (general agent only) ──────
 
 
-def _identity_prompt(language: str) -> PromptSection:
+def _identity_prompt(
+    language: str,
+    config_base: dict[str, Any] | None = None,
+) -> PromptSection:
     config_dir = _get_config_dir()
     workspace_dir = get_agent_workspace_dir()
     memory_dir = get_agent_memory_dir()
@@ -169,7 +178,7 @@ def _identity_prompt(language: str) -> PromptSection:
     todo_dir = get_deepagent_todo_dir()
     os_type = sys.platform
     shell_env_prompt = build_shell_environment_prompt(language, os_type)
-    symphony_routing_prompt = _symphony_routing_prompt()
+    symphony_routing_prompt = _symphony_routing_prompt(config_base)
 
     if language == "cn":
         content = f"""你是一个私人智能体，由 JiuwenSwarm 创建。像一个有温度的人类助手一样与用户互动。
@@ -326,7 +335,10 @@ When the `send_file_to_user` tool is available in your tool list, you **must** p
 # ─── entry point (general agent) ────────────────
 
 
-def build_agent_identity_prompt(language: str) -> str:
+def build_agent_identity_prompt(
+    language: str,
+    config_base: dict[str, Any] | None = None,
+) -> str:
     """Build the system prompt for the general (non-code) agent.
 
     Contains only the identity section. Code mode uses its own
@@ -335,7 +347,7 @@ def build_agent_identity_prompt(language: str) -> str:
     resolved_language = resolve_language(language)
     builder = SystemPromptBuilder(language=resolved_language)
 
-    builder.add_section(_identity_prompt(resolved_language))
+    builder.add_section(_identity_prompt(resolved_language, config_base))
 
     return builder.build()
 

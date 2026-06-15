@@ -10,6 +10,7 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 )
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
 from jiuwenswarm.agents.harness.common.rails import runtime_prompt_rail as _runtime_mod
@@ -48,20 +49,42 @@ class _FakeAbilityManager:
             "list_skill": SimpleNamespace(name="list_skill"),
             "search_skill": SimpleNamespace(name="search_skill"),
         }
+        self.added: list[str] = []
+        self.removed: list[str] = []
 
     def get(self, name: str):
         return self._items.get(name)
 
     def remove(self, name: str):
+        self.removed.append(name)
         return self._items.pop(name, None)
 
     def add(self, ability):
+        self.added.append(ability.name)
         self._items[ability.name] = ability
 
 
 class _FakeToolAgent(_FakeAgent):
     def __init__(self, builder: SystemPromptBuilder) -> None:
         super().__init__(builder)
+        self.ability_manager = _FakeAbilityManager()
+
+
+class _FakeResourceManager:
+    def __init__(self) -> None:
+        self.added: list[str] = []
+        self.removed: list[str] = []
+
+    def add_tool(self, tool: SimpleNamespace) -> None:
+        self.added.append(tool.card.name)
+
+    def remove_tool(self, tool_id: str) -> None:
+        self.removed.append(tool_id)
+
+
+class _FakeRuntimeInstance:
+    def __init__(self) -> None:
+        self.card = SimpleNamespace(id="jiuwenswarm")
         self.ability_manager = _FakeAbilityManager()
 
 
@@ -79,7 +102,7 @@ def test_build_agent_identity_prompt_contains_identity_section_only(monkeypatch)
     assert "skill capabilities, skill chaining, skill ordering" in prompt_inline
     assert "use `search_skill` to discover external skills" in prompt_inline
     assert "call `symphony_refresh_score`" in prompt_inline
-    assert "present its returned `content` or" in prompt
+    assert "present its returned `content` directly" in prompt
     assert "# 消息说明" not in prompt
 
 
@@ -93,6 +116,78 @@ def test_build_agent_identity_prompt_omits_symphony_when_disabled(monkeypatch):
 
     assert "## Symphony Routing" not in prompt
     assert "`symphony_compose_score`" not in prompt
+
+
+def test_build_agent_identity_prompt_respects_config_snapshot():
+    enabled_prompt = build_agent_identity_prompt(
+        language="zh",
+        config_base={"symphony": {"enabled": True}},
+    )
+    disabled_prompt = build_agent_identity_prompt(
+        language="zh",
+        config_base={"symphony": {"enabled": False}},
+    )
+
+    assert "## Symphony Routing" in enabled_prompt
+    assert "`symphony_compose_score`" in enabled_prompt
+    assert "## Symphony Routing" not in disabled_prompt
+    assert "`symphony_compose_score`" not in disabled_prompt
+
+
+def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
+    fake_resource = _FakeResourceManager()
+    fake_instance = _FakeRuntimeInstance()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = fake_instance
+    adapter._tool_cards = []
+    adapter._symphony_tools = []
+    adapter._symphony_tools_registered = False
+    seen_configs: list[dict] = []
+
+    tools = [
+        SimpleNamespace(card=SimpleNamespace(id=name, name=name))
+        for name in (
+            "symphony_read_score",
+            "symphony_refresh_score",
+            "symphony_compose_score",
+        )
+    ]
+
+    class FakeSymphonyToolkit:
+        def get_tools(self, config_base=None):
+            seen_configs.append(config_base)
+            return tools
+
+    monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
+    monkeypatch.setattr(interface_module, "SymphonyToolkit", FakeSymphonyToolkit)
+
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+
+    assert seen_configs == [{"symphony": {"enabled": True}}]
+    assert adapter._symphony_tools_registered is True
+    assert [card.name for card in adapter._tool_cards] == [
+        "symphony_read_score",
+        "symphony_refresh_score",
+        "symphony_compose_score",
+    ]
+    assert fake_resource.added == [
+        "symphony_read_score",
+        "symphony_refresh_score",
+        "symphony_compose_score",
+    ]
+    assert fake_instance.ability_manager.added == fake_resource.added
+
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": False}})
+
+    assert adapter._symphony_tools == []
+    assert adapter._symphony_tools_registered is False
+    assert adapter._tool_cards == []
+    assert fake_resource.removed == [
+        "symphony_read_score",
+        "symphony_refresh_score",
+        "symphony_compose_score",
+    ]
+    assert fake_instance.ability_manager.removed == fake_resource.removed
 
 
 @pytest.mark.asyncio

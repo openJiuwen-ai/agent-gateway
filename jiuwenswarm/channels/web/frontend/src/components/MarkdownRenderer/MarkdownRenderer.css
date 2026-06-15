@@ -119,26 +119,21 @@
 
 /* Canvas */
 .mermaid-canvas {
-  position: relative;
-  overflow: hidden;
-  user-select: none;
-  touch-action: none;
-  cursor: grab;
-}
-
-.mermaid-canvas--dragging {
-  cursor: grabbing;
+  overflow: auto;
+  padding: 16px;
 }
 
 /* SVG wrapper */
 .mermaid-svg-wrapper {
-  position: absolute;
-  left: 50%;
-  top: 50%;
+  display: flex;
+  width: 100%;
+  justify-content: center;
 }
 
 /* Prevent Mermaid from squeezing wide diagrams into the container width. */
 .mermaid-svg-wrapper svg {
+  width: 100%;
+  height: auto;
   max-width: none !important;
 }
 

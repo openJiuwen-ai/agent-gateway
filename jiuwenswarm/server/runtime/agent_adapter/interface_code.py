@@ -494,6 +494,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             workspace=workspace,
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
+            enable_read_image_multimodal=False,
             auto_create_workspace=False
         )
 

@@ -51,6 +51,7 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     is_skill_retrieval_enabled,
 )
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
@@ -84,6 +85,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import TOOL_WHITELIST
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ USER_TODOS = "swarm.user_todos"
 VIDEO = "swarm.video"
 IMAGE_GEN = "swarm.image_gen"
 XIAOYI_PHONE = "swarm.xiaoyi_phone"
+SYMPHONY_TOOLKIT = "swarm.symphony_toolkit"
 CODE_EXTRA_TOOLS = "swarm.code_extra_tools"
 _CODE_MODES = frozenset({"code.team", "team.plan"})
 
@@ -396,6 +399,17 @@ def _build_xiaoyi_phone_tools(ctx: SwarmBuildContext) -> list[Any]:
     return _mark_stateless(list(_XIAOYI_PHONE_TOOLS))
 
 
+def _build_symphony_tools(ctx: SwarmBuildContext) -> list[Any]:
+    """Build Symphony tools for the team leader."""
+    if getattr(ctx, "role", "") != "leader":
+        return []
+    try:
+        return list(SymphonyToolkit().get_tools(get_config()))
+    except Exception as exc:
+        logger.warning("[swarm.symphony_toolkit] construction failed: %s", exc)
+        return []
+
+
 class SkillToolkitInput(ConstructionInput):
     """Construction inputs for the skill-toolkit tool."""
 
@@ -480,6 +494,16 @@ def build_xiaoyi_phone(params: dict[str, Any], ctx: SwarmBuildContext) -> list[A
     return _filter_whitelist(_build_xiaoyi_phone_tools(ctx))
 
 
+@harness_element(
+    kind=ElementKind.TOOL,
+    name=SYMPHONY_TOOLKIT,
+    description="Symphony planning tools (leader only, gated by symphony.enabled).",
+)
+def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build Symphony tools for the leader; teammates get no tools."""
+    return _build_symphony_tools(ctx)
+
+
 class CodeExtraToolsInput(ConstructionInput):
     """Construction inputs for the code-extra tools."""
 
@@ -516,9 +540,11 @@ __all__ = [
     "VIDEO",
     "IMAGE_GEN",
     "XIAOYI_PHONE",
+    "SYMPHONY_TOOLKIT",
     "CODE_EXTRA_TOOLS",
     "vision_model_config_params",
     "audio_dedicated_configured",
     "audio_model_config_params",
+    "build_symphony_toolkit",
     "build_code_extra_tools",
 ]

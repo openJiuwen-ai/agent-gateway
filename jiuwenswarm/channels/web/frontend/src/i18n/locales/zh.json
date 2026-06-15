@@ -1519,13 +1519,5 @@
   },
   "security": {
     "contentRetracted": "内容已因安全原因撤回"
-  },
-  "mermaid": {
-    "image": "图片",
-    "code": "代码",
-    "copyCode": "复制代码",
-    "zoomIn": "放大",
-    "zoomOut": "缩小",
-    "fitView": "适应视图"
   }
 }

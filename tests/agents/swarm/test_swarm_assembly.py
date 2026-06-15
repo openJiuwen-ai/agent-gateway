@@ -99,6 +99,7 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # MEMBER_SKILL_TOOLKIT rail is the sole registrar of skill tools.
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
+        registry.SYMPHONY_TOOLKIT,
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
@@ -699,6 +700,49 @@ def test_image_gen_tool_gated_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert [tool.card.name for tool in built] == ["generate_image"]
 
 
+def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Symphony tools are built only for the team leader."""
+    seen_configs: list[dict] = []
+    fake_tool = types.SimpleNamespace(
+        card=types.SimpleNamespace(name="symphony_compose_score")
+    )
+
+    class FakeSymphonyToolkit:
+        @staticmethod
+        def get_tools(config_base):
+            seen_configs.append(config_base)
+            return [fake_tool] if config_base["symphony"]["enabled"] else []
+
+    monkeypatch.setattr(tools, "SymphonyToolkit", FakeSymphonyToolkit)
+    monkeypatch.setattr(
+        tools,
+        "get_config",
+        lambda: {"symphony": {"enabled": True}},
+    )
+
+    leader = SwarmBuildContext(role="leader")
+    teammate = SwarmBuildContext(role="teammate")
+
+    built = tools.build_symphony_toolkit({}, leader)
+
+    assert [tool.card.name for tool in built] == ["symphony_compose_score"]
+    assert tools.build_symphony_toolkit({}, teammate) == []
+    assert seen_configs == [{"symphony": {"enabled": True}}]
+
+
+def test_symphony_toolkit_respects_disabled_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provider delegates symphony.enabled gating to SymphonyToolkit."""
+    monkeypatch.setattr(
+        tools,
+        "get_config",
+        lambda: {"symphony": {"enabled": False}},
+    )
+
+    assert tools.build_symphony_toolkit({}, SwarmBuildContext(role="leader")) == []
+
+
 def test_vision_model_config_params_gating(monkeypatch: pytest.MonkeyPatch) -> None:
     """Vision config params are empty without a dedicated model, filled when complete."""
     assert tools.vision_model_config_params({}) == {}
@@ -856,6 +900,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.XIAOYI_PHONE,
+        registry.SYMPHONY_TOOLKIT,
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,

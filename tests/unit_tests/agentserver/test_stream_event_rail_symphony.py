@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from openjiuwen.core.foundation.llm import UserMessage
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
@@ -16,6 +17,14 @@ class _StreamSession:
 
     async def write_stream(self, chunk):
         self.chunks.append(chunk)
+
+
+class _ModelContext:
+    def __init__(self, messages):
+        self.messages = messages
+
+    def get_messages(self):
+        return list(self.messages)
 
 
 def _ctx(
@@ -39,6 +48,58 @@ def _ctx(
         request_force_finish=force_finish_requests.append,
         force_finish_requests=force_finish_requests,
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_strips_image_blocks_when_read_image_multimodal_disabled():
+    rail = JiuSwarmStreamEventRail()
+    message = UserMessage(
+        content=[
+            {"type": "text", "text": "Image loaded from read_file: C:/tmp/blog.png"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc"},
+            },
+        ],
+    )
+    ctx = SimpleNamespace(
+        session=None,
+        inputs=SimpleNamespace(tools=[]),
+        context=_ModelContext([message]),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    assert message.content == "Image loaded from read_file: C:/tmp/blog.png"
+
+
+@pytest.mark.asyncio
+async def test_stream_event_rail_keeps_image_blocks_when_read_image_multimodal_enabled():
+    rail = JiuSwarmStreamEventRail()
+    rail.init(
+        SimpleNamespace(
+            deep_config=SimpleNamespace(enable_read_image_multimodal=True),
+        )
+    )
+    content = [
+        {"type": "text", "text": "Image loaded from read_file: C:/tmp/blog.png"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc"},
+        },
+    ]
+    message = UserMessage(content=list(content))
+    ctx = SimpleNamespace(
+        session=None,
+        inputs=SimpleNamespace(tools=[]),
+        context=_ModelContext([message]),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    assert message.content == content
 
 
 @pytest.mark.asyncio
@@ -71,6 +132,7 @@ async def test_stream_event_rail_force_finishes_symphony_compose_score_result():
         "content": "## Symphony plan\n\n```mermaid\nflowchart LR\n  A --> B\n```",
         "mermaid": "flowchart LR\n  A --> B",
         "score_status": {"success": True, "exists": True, "stale": False},
+        "score_build": {"rebuilt": False, "reason": "not_required"},
     }
     ctx = _ctx(session, "symphony_compose_score", tool_result=result)
 
@@ -88,6 +150,7 @@ async def test_stream_event_rail_force_finishes_symphony_compose_score_result():
             tool_results.append(tool_result)
     assert tool_results[0]["raw_output"] == result
     assert tool_results[0]["score_status"] == result["score_status"]
+    assert tool_results[0]["score_build"] == result["score_build"]
     assert tool_results[0]["direct_display"] is True
     direct_messages = [chunk for chunk in session.chunks if chunk.type == "chat.final"]
     assert direct_messages == []

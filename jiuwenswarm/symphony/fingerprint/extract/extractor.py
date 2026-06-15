@@ -310,6 +310,12 @@ command when the caller must provide them for normal execution. Do not turn
 environment setup, API keys, permissions, installed tools, caches, or persistent
 local configuration into inputs; mention them in warnings when relevant.
 
+If an input is a user's natural-language task, request, instruction, topic, or
+free-form text to be interpreted by the Skill, name it text, query, or topic
+instead of command. Reserve command for true control commands such as CLI
+subcommands, action enums, command-line flags, execution switches, or a closed
+set of operation names.
+
 Set required=true only when the caller must provide the value for normal
 execution. Use required=false for optional preferences, limits, defaults, or
 output format choices that the Skill can infer or default.

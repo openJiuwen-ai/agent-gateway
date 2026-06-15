@@ -210,6 +210,14 @@ def test_plan_presentation_uses_recommended_plan(monkeypatch, tmp_path):
                             "confidence": 0.91,
                         }
                     ],
+                    "missing_inputs": [
+                        {
+                            "skill_id": "imap-smtp-email",
+                            "name": "收件邮箱地址",
+                            "type": "unknown",
+                            "reason": "需要用户提供收件邮箱地址才能发送邮件",
+                        }
+                    ],
                 }
             ],
             "execution_graph": {
@@ -235,10 +243,28 @@ def test_plan_presentation_uses_recommended_plan(monkeypatch, tmp_path):
     assert result["markdown"] == result["content"]
     assert result["direct_display"] is True
     assert result["display_format"] == "markdown"
-    assert "Status: `ready`" in result["content"]
+    assert "Status:" not in result["content"]
+    assert result["result"]["recommended_plans"][0]["status"] == "ready"
     assert "Best match." in result["content"]
+    assert "Missing inputs:" not in result["content"]
+    assert "收件邮箱地址" not in result["content"]
+    assert "imap-smtp-email" not in result["content"]
+    assert result["result"]["recommended_plans"][0]["missing_inputs"] == [
+        {
+            "skill_id": "imap-smtp-email",
+            "name": "收件邮箱地址",
+            "type": "unknown",
+            "reason": "需要用户提供收件邮箱地址才能发送邮件",
+        }
+    ]
+    assert (
+        result["result"]["recommended_plans"][0]["can_feed_edges"][0]["confidence"]
+        == 0.91
+    )
     assert 'N1["Skill 1"]' in result["mermaid"]
-    assert "N1 -->|0.91| N2" in result["mermaid"]
+    assert "N1 --> N2" in result["mermaid"]
+    assert "-->|" not in result["mermaid"]
+    assert "0.91" not in result["mermaid"]
 
 
 def test_build_score_awaits_service_and_records_build_log(monkeypatch, tmp_path):
@@ -438,6 +464,39 @@ def test_graph_ignores_request_score_dir_param(monkeypatch, tmp_path):
 
     assert result["success"] is False
     assert result["score_dir"] == str(configured_score_dir.resolve())
+
+
+def test_graph_includes_orchestration_min_edge_confidence(monkeypatch, tmp_path):
+    configured_score_dir = tmp_path / "configured"
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.load_symphony_config",
+        lambda: symphony_config_from_dict(
+            {
+                "paths": {
+                    "skills_root": str(tmp_path / "skills"),
+                    "score_dir": str(configured_score_dir),
+                },
+                "orchestration": {"min_edge_confidence": 0.33},
+            }
+        ),
+    )
+
+    class _Artifacts:
+        score_dir = configured_score_dir.resolve()
+        manifest = {"created_at": "2026-06-14T00:00:00+00:00"}
+        skills = {"skills": []}
+        graph = {"nodes": [], "edges": []}
+        lookup = {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.symphony.extension.load_score_artifacts",
+        lambda score_dir: _Artifacts(),
+    )
+
+    result = asyncio.run(SymphonyExtension().graph({}))
+
+    assert result["success"] is True
+    assert result["orchestration_min_edge_confidence"] == 0.33
 
 
 def test_build_log_payload_reports_running_progress(tmp_path):

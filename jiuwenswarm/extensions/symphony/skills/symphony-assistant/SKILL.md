@@ -15,9 +15,9 @@ Use this skill when a task may benefit from selecting, combining, ordering, or d
 
 1. If the user says to use skill(s) or 技能, or if skill capabilities, skill chaining, skill ordering, or a specialized toolchain could help, always call `symphony_compose_score` with the original user task as `query`.
 2. Do not manually list skill folders, list skill names, or choose a skill chain before calling `symphony_compose_score`.
-3. Treat `symphony_compose_score` as the only planning entrypoint: it reads the Symphony score, refreshes missing or stale scores, and returns the Mermaid/Markdown execution graph.
-4. The `symphony_compose_score` result may already be displayed directly to the user; otherwise, present its returned `content` or `markdown` directly.
-5. Treat the returned plan, Mermaid graph, missing inputs, and caveats as the source of truth.
+3. Treat `symphony_compose_score` as the only planning entrypoint: it reads the Symphony score, refreshes missing or stale scores, and returns the user-facing plan Markdown and Mermaid execution graph.
+4. The `symphony_compose_score` result may already be displayed directly to the user; otherwise, present its returned `content` directly.
+5. Treat the returned plan, Mermaid graph, structured missing inputs, and caveats as the source of truth.
 6. Do not call individual skill tools just to manually recreate or verify the Symphony plan.
 7. If Symphony reports missing inputs, ask the user for those inputs instead of inventing them.
 8. If Symphony reports no suitable candidates, a missing capability, or caveats that point to a skill gap, use `search_skill` to discover external skills. When installing a discovered skill is appropriate, call `install_skill`; after a successful install, call `symphony_refresh_score` and then call `symphony_compose_score` again with the original user task.

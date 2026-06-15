@@ -115,18 +115,25 @@ class SymphonyExtension(BaseExtension):
         del params, request
         config = load_symphony_config()
         score_dir = config.paths.score_dir
+        orchestration_min_edge_confidence = config.orchestration.min_edge_confidence
 
         def load() -> dict[str, Any]:
             try:
                 artifacts = load_score_artifacts(score_dir)
             except FileNotFoundError as exc:
                 payload = _missing_artifacts_payload(score_dir, exc)
+                payload["orchestration_min_edge_confidence"] = (
+                    orchestration_min_edge_confidence
+                )
                 payload.update(_build_log_payload(score_dir))
                 return payload
             payload = {
                 "success": True,
                 "score_dir": str(artifacts.score_dir),
                 "score_manifest": artifacts.manifest,
+                "orchestration_min_edge_confidence": (
+                    orchestration_min_edge_confidence
+                ),
                 "skills": artifacts.skills,
                 "graph": artifacts.graph,
                 "score_lookup": artifacts.lookup,
@@ -563,12 +570,9 @@ def _compact_details(details: dict[str, Any]) -> str:
 def _build_presentation(payload: dict[str, Any]) -> dict[str, str]:
     plan = select_primary_plan(payload)
     title = str(plan.get("title") or "Symphony plan").strip()
-    status = str(plan.get("status") or payload.get("status") or "unknown").strip()
     mermaid = _plan_to_mermaid(plan, payload.get("execution_graph") or {})
     lines = [
         f"## {title}",
-        "",
-        f"Status: `{status}`",
         "",
         "```mermaid",
         mermaid,
@@ -577,9 +581,6 @@ def _build_presentation(payload: dict[str, Any]) -> dict[str, str]:
     reason = str(plan.get("reason") or payload.get("reason") or "").strip()
     if reason:
         lines.extend(["", reason])
-    missing_inputs = plan.get("missing_inputs") or payload.get("missing_inputs") or []
-    if missing_inputs:
-        lines.extend(["", "Missing inputs:", json.dumps(missing_inputs, ensure_ascii=False, indent=2)])
     return {"markdown": "\n".join(lines), "mermaid": mermaid}
 
 
@@ -612,9 +613,7 @@ def _plan_to_mermaid(plan: dict[str, Any], graph: dict[str, Any]) -> str:
         source = str(edge.get("source") or "")
         target = str(edge.get("target") or "")
         if source in node_keys and target in node_keys:
-            confidence = edge.get("confidence")
-            label = f"{float(confidence):.2f}" if isinstance(confidence, (int, float)) else "can_feed"
-            lines.append(f"  {node_keys[source]} -->|{label}| {node_keys[target]}")
+            lines.append(f"  {node_keys[source]} --> {node_keys[target]}")
     return "\n".join(lines)
 
 

@@ -81,6 +81,7 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registers the same-named tools, logging a refresh + duplicate-ability
     # warning per tool every build; the rail is the sole registrar.
     registry.SKILL_RETRIEVAL,
+    registry.SYMPHONY_TOOLKIT,
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
@@ -129,6 +130,7 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # See _COMMON_TOOL_NAMES: skill tools come from the MEMBER_SKILL_TOOLKIT
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
+    registry.SYMPHONY_TOOLKIT,
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,

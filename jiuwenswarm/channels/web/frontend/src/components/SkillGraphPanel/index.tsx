@@ -50,6 +50,8 @@ type SkillGraphPayload = {
   build_progress?: BuildProgress;
   llm_token_usage?: LLMTokenUsageSummary;
   manifest?: RawRecord;
+  score_manifest?: RawRecord;
+  orchestration_min_edge_confidence?: number;
   graph?: {
     nodes?: RawRecord[];
     edges?: RawRecord[];
@@ -134,6 +136,7 @@ const NODE_COLORS: Record<string, string> = {
 };
 
 const INDEX_UPDATE_TIMEOUT_MS = 1_800_000;
+const DEFAULT_MIN_CONFIDENCE = 0.7;
 
 type SymphonyBuildMode = 'incremental' | 'full';
 
@@ -146,6 +149,30 @@ function asRecord(value: unknown): RawRecord {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as RawRecord)
     : {};
+}
+
+function confidenceValue(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function payloadManifest(payload: SkillGraphPayload | null | undefined): RawRecord {
+  return asRecord(payload?.score_manifest ?? payload?.manifest);
+}
+
+function graphConfidenceFloor(payload: SkillGraphPayload | null | undefined): number {
+  const thresholds = asRecord(payloadManifest(payload).thresholds);
+  return confidenceValue(thresholds.can_feed, 0);
+}
+
+function graphDefaultConfidence(payload: SkillGraphPayload | null | undefined): number {
+  const floor = graphConfidenceFloor(payload);
+  const defaultConfidence = confidenceValue(
+    payload?.orchestration_min_edge_confidence,
+    DEFAULT_MIN_CONFIDENCE,
+  );
+  return Math.max(floor, defaultConfidence);
 }
 
 function asArray(value: unknown): RawRecord[] {
@@ -534,6 +561,7 @@ export function SkillGraphPanel() {
   const externalBuildRunningRef = useRef(false);
   const observedBuildLogSignatureRef = useRef<string | null>(null);
   const autoFitRequestRef = useRef(0);
+  const minConfidenceTouchedRef = useRef(false);
   const dragRef = useRef<{ active: boolean; moved: boolean; x: number; y: number }>({
     active: false,
     moved: false,
@@ -545,7 +573,7 @@ export function SkillGraphPanel() {
   const [payload, setPayload] = useState<SkillGraphPayload | null>(null);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [query, setQuery] = useState('');
-  const [minConfidence, setMinConfidence] = useState(0.7);
+  const [minConfidence, setMinConfidence] = useState(DEFAULT_MIN_CONFIDENCE);
   const [loading, setLoading] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [buildMode, setBuildMode] = useState<SymphonyBuildMode | null>(null);
@@ -728,6 +756,12 @@ export function SkillGraphPanel() {
       const normalized = normalizeGraph(data);
       setPayload(data);
       setGraph(normalized);
+      setMinConfidence((current) => {
+        if (!minConfidenceTouchedRef.current) {
+          return graphDefaultConfidence(data);
+        }
+        return Math.max(graphConfidenceFloor(data), confidenceValue(current, 1));
+      });
       selectedRef.current = null;
       setSelectedNode(null);
       requestAutoFit();
@@ -1153,7 +1187,9 @@ export function SkillGraphPanel() {
   const canPauseBuild = (updating || isGraphBuildRunning) && !pausingBuild;
   const isIncrementalBuild = updating && buildMode === 'incremental';
   const isFullBuild = updating && buildMode === 'full';
-  const createdAt = asString(payload?.manifest?.created_at);
+  const manifest = payloadManifest(payload);
+  const graphMinConfidence = graphConfidenceFloor(payload);
+  const createdAt = asString(manifest.created_at);
   const graphUpdatedAt = createdAt ? new Date(createdAt).toLocaleString() : '';
   const currentProgressPercent = progressPercent(buildProgress);
   const progressLabel = buildProgress?.label || (updating ? '正在刷新技能总谱' : '暂无构建日志');
@@ -1189,11 +1225,14 @@ export function SkillGraphPanel() {
             <span>最小置信度 {Math.round(minConfidence * 100)}%</span>
             <input
               type="range"
-              min={0}
+              min={graphMinConfidence}
               max={1}
               step={0.05}
               value={minConfidence}
-              onChange={(event) => setMinConfidence(Number(event.target.value))}
+              onChange={(event) => {
+                minConfidenceTouchedRef.current = true;
+                setMinConfidence(Number(event.target.value));
+              }}
             />
           </label>
         </div>

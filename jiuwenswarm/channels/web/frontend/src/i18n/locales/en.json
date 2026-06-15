@@ -1517,13 +1517,5 @@
       "sendFile": "Send File",
       "sendFileDesc": "Send files to user"
     }
-  },
-  "mermaid": {
-    "image": "Image",
-    "code": "Code",
-    "copyCode": "Copy code",
-    "zoomIn": "Zoom in",
-    "zoomOut": "Zoom out",
-    "fitView": "Fit view"
   }
 }

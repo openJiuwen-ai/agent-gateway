@@ -195,6 +195,7 @@ from jiuwenswarm.agents.harness.common.tools import (
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
 )
+from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import MultiSessionToolkit
@@ -586,6 +587,8 @@ class JiuWenSwarmDeepAdapter:
         self._xiaoyi_phone_tools_registered: bool = False
         self._paid_search_registered: bool = False
         self._paid_search_tool: WebPaidSearchTool | None = None
+        self._symphony_tools: list[Any] = []
+        self._symphony_tools_registered: bool = False
         self._skill_manager: SkillManager | None = None
         self._a2x_client: Any | None = None
         self._a2x_config: dict[str, Any] = {}
@@ -1702,6 +1705,24 @@ class JiuWenSwarmDeepAdapter:
         if self._paid_search_tool is not None:
             self._prioritize_paid_search_tool_card()
 
+    def _sync_symphony_tools_for_runtime(self, config_base: dict[str, Any]) -> None:
+        """Sync Symphony tool registration after config reload."""
+        try:
+            enabled = bool(load_symphony_config(config_base).enabled)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] symphony config reload failed: %s",
+                exc,
+            )
+            enabled = False
+        self._symphony_tools, self._symphony_tools_registered = self._sync_tool_group(
+            current_tools=self._symphony_tools,
+            registered=self._symphony_tools_registered,
+            enabled=enabled,
+            create_fn=lambda: SymphonyToolkit().get_tools(config_base),
+            warn_label="symphony tools",
+        )
+
     @staticmethod
     async def set_checkpoint() -> None:
         await ensure_persistent_checkpointer()
@@ -2634,13 +2655,14 @@ class JiuWenSwarmDeepAdapter:
         *,
         model: Model,
         config: dict[str, Any],
+        config_base: dict[str, Any] | None = None,
         agent_card: AgentCard,
         tool_cards: list[Any],
         rails: list[Any] | None = None,
     ) -> DeepAgentConfig:
         """与 create_deep_agent() 中 DeepAgentConfig 构造保持一致."""
         resolved_language = self._resolve_runtime_language()
-        config_base = get_config()
+        config_base = config_base or get_config()
         workspace_obj = Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
         normalized_tool_cards = [
             tool.card if hasattr(tool, "card") else tool for tool in (tool_cards or [])
@@ -2651,9 +2673,10 @@ class JiuWenSwarmDeepAdapter:
             card=agent_card,
             system_prompt=build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
+                config_base=config_base,
             ),
             context_engine_config=_deep_agent_context_engine_config(config),
-            enable_task_loop=self._resolve_enable_task_loop(config, get_config()),
+            enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             max_iterations=config.get("max_iterations", 15),
             subagents=configured_subagents,
             add_general_purpose_agent=should_add_general_agent,
@@ -2667,6 +2690,7 @@ class JiuWenSwarmDeepAdapter:
             rails=rails,
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
+            enable_read_image_multimodal=False,
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
@@ -2924,16 +2948,21 @@ class JiuWenSwarmDeepAdapter:
         try:
             symphony_toolkit = SymphonyToolkit()
             symphony_tool_names: list[str] = []
-            for tool in symphony_toolkit.get_tools():
+            symphony_tools = symphony_toolkit.get_tools(config_base)
+            for tool in symphony_tools:
                 if not Runner.resource_mgr.get_tool(tool.card.id):
                     Runner.resource_mgr.add_tool(tool)
                 tool_cards.append(tool.card)
                 symphony_tool_names.append(tool.card.name)
+            self._symphony_tools = list(symphony_tools)
+            self._symphony_tools_registered = bool(symphony_tools)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SymphonyToolkit registered: tools=%s",
                 symphony_tool_names,
             )
         except Exception as exc:
+            self._symphony_tools = []
+            self._symphony_tools_registered = False
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] orchestration tools registration failed: %s",
                 exc,
@@ -3023,6 +3052,7 @@ class JiuWenSwarmDeepAdapter:
             card=agent_card,
             system_prompt=build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
+                config_base=config_base,
             ),
             tools=tool_cards if tool_cards else [],
             subagents=configured_subagents,
@@ -3044,6 +3074,7 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(config),
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
+            enable_read_image_multimodal=False,
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
@@ -3160,6 +3191,7 @@ class JiuWenSwarmDeepAdapter:
         agent_card = AgentCard(name=self._agent_name, id='jiuwenswarm')
         self._sync_multimodal_tools_for_runtime()
         self._sync_paid_search_tool_for_runtime()
+        self._sync_symphony_tools_for_runtime(config_base)
 
         if not self._filesystem_rail_enabled_for_profile() and self._filesystem_rail is not None:
             try:
@@ -3178,6 +3210,7 @@ class JiuWenSwarmDeepAdapter:
         deep_cfg = self._make_deep_agent_config(
             model=model,
             config=config,
+            config_base=config_base,
             agent_card=agent_card,
             tool_cards=self._tool_cards if self._tool_cards else [],
             rails=rails_list,

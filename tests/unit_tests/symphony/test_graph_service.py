@@ -31,6 +31,7 @@ from jiuwenswarm.symphony.graph import (
     RelationCandidate,
     SkillRegistry,
 )
+from jiuwenswarm.symphony.graph.candidates.generator import CandidateGenerator
 from jiuwenswarm.symphony.score_state import (
     ScoreState,
     ScoreStateEntry,
@@ -1262,6 +1263,109 @@ async def test_normalizer_resolves_single_skill_candidates_together(tmp_path):
     )
 
     assert resolver.calls == [[["source_text", "summary_text"]]]
+
+
+@pytest.mark.asyncio
+async def test_normalizer_aliases_natural_language_command_input_to_text(tmp_path):
+    resolver = _CreateNewIONameResolver()
+    normalizer = SkillFingerprintNormalizer(io_name_resolver=resolver)
+
+    result = await normalizer.normalize_single(
+        _raw_manifest(tmp_path, "calendar-memo"),
+        ExtractedSkillSchema(
+            inputs=[
+                ParameterSpec(
+                    name="command",
+                    type="text",
+                    description="用户指令，如 '添加 明天下午3点 团队周会'",
+                )
+            ],
+            outputs=[ArtifactSpec(name="result", type="markdown")],
+        ),
+    )
+
+    assert resolver.calls == [[["result"]]]
+    assert result.fingerprint.inputs[0].name == "text"
+    assert normalizer.io_name_vocabulary.lookup("command") == "text"
+    name_decisions = [
+        decision
+        for decision in result.decisions
+        if decision.field == "name" and decision.token == "command"
+    ]
+    assert len(name_decisions) == 1
+    assert name_decisions[0].method == "semantic_alias"
+    assert name_decisions[0].normalized_value == "text"
+
+
+@pytest.mark.asyncio
+async def test_normalizer_keeps_control_command_input_as_command(tmp_path):
+    resolver = _CreateNewIONameResolver()
+    normalizer = SkillFingerprintNormalizer(io_name_resolver=resolver)
+
+    result = await normalizer.normalize_single(
+        _raw_manifest(tmp_path, "cli-skill"),
+        ExtractedSkillSchema(
+            inputs=[
+                ParameterSpec(
+                    name="command",
+                    type="text",
+                    description="CLI subcommand to run. Allowed values: start, stop",
+                )
+            ],
+        ),
+    )
+
+    assert resolver.calls == [[["command"]]]
+    assert result.fingerprint.inputs[0].name == "command"
+    assert normalizer.io_name_vocabulary.lookup("command") == "command"
+
+
+@pytest.mark.asyncio
+async def test_normalized_calendar_memo_input_enables_expected_candidates(tmp_path):
+    resolver = _CreateNewIONameResolver()
+    normalizer = SkillFingerprintNormalizer(io_name_resolver=resolver)
+    calendar_result = await normalizer.normalize_single(
+        _raw_manifest(tmp_path, "calendar-memo"),
+        ExtractedSkillSchema(
+            inputs=[
+                ParameterSpec(
+                    name="command",
+                    type="text",
+                    description="用户指令，如 '添加 明天下午3点 团队周会'",
+                )
+            ],
+            outputs=[ArtifactSpec(name="result", type="markdown")],
+        ),
+    )
+    registry = SkillRegistry(
+        skills={
+            calendar_result.fingerprint.id: calendar_result.fingerprint,
+            "speech-to-text": SkillFingerprint(
+                id="speech-to-text",
+                name="speech-to-text",
+                description="Transcribe audio to text.",
+                version="1.0.0",
+                inputs=[ParameterSpec(name="audio", type="audio")],
+                outputs=[ArtifactSpec(name="text", type="text")],
+            ),
+            "general-writing": SkillFingerprint(
+                id="general-writing",
+                name="general-writing",
+                description="Write markdown content.",
+                version="1.0.0",
+                inputs=[ParameterSpec(name="text", type="text")],
+                outputs=[ArtifactSpec(name="writing_output", type="markdown")],
+            ),
+        }
+    )
+
+    candidate_keys = {
+        candidate.key
+        for candidate in CandidateGenerator().generate(registry)
+    }
+
+    assert "speech-to-text->calendar-memo" in candidate_keys
+    assert "general-writing->calendar-memo" in candidate_keys
 
 
 @pytest.mark.asyncio
