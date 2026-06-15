@@ -772,6 +772,44 @@ interface LogEntry {
   tool_call_id?: string;
 }
 
+// Drain remaining logs from completed execution history
+async function drainHistoryLogs(
+  ctx: CommandContext,
+  task_id: string,
+  offset: number,
+  parseState: ParseState | undefined,
+  setParseState: (state: ParseState | undefined) => void
+): Promise<void> {
+  let historyOffset = offset;
+  let hasMoreHistory = true;
+  while (hasMoreHistory) {
+    const historyResult = await ctx.request<{
+      error?: string;
+      logs?: Array<LogEntry>;
+      has_more?: boolean;
+    }>("schedule.logs", {
+      task_id,
+      log_type: "history",
+      history_index: 0,
+      offset: historyOffset,
+      limit: 3000,
+    }, 120000);
+
+    if (historyResult.error || !historyResult.logs || historyResult.logs.length === 0) break;
+
+    const result = parseAndAggregateLogs(historyResult.logs, parseState);
+    setParseState(result.state);
+    for (const section of result.sections) {
+      const formattedLine = formatLogSection(section);
+      if (formattedLine) {
+        ctx.addItem(addInfo(ctx.sessionId, formattedLine, "i"));
+      }
+    }
+    historyOffset += historyResult.logs.length;
+    hasMoreHistory = historyResult.has_more ?? false;
+  }
+}
+
 // Stream logs for currently running task (tail -f style)
 async function streamCurrentLogs(
   ctx: CommandContext,
@@ -859,8 +897,15 @@ async function streamCurrentLogs(
 
       // Check for error - likely means execution finished
       if (result.error) {
-        // Execution finished - show completion message
-        if (result.error.includes("当前无正在执行的日志") || result.error.includes("不存在")) {
+        if (result.error.includes("当前无正在执行的日志")) {
+          // Task completed — pull remaining logs from execution history
+          await drainHistoryLogs(ctx, task_id, offset, parseState,
+            (updatedState) => { parseState = updatedState; });
+          ctx.addItem(addInfo(ctx.sessionId, `\n✅ 任务执行完成\n`));
+          return;
+        }
+        // Other errors (e.g. task doesn't exist) — show message directly
+        if (result.error.includes("不存在")) {
           ctx.addItem(addInfo(ctx.sessionId, `\n✅ 任务执行完成\n`));
           return;
         }
@@ -920,6 +965,9 @@ async function streamCurrentLogs(
   if (pollCount >= maxPolls) {
     ctx.addItem(addInfo(ctx.sessionId, `\n⏱️ 日志跟踪已超时退出 \n💡 任务仍在后台运行，可使用 /auto-harness schedule logs ${task_id} 继续查看\n`));
   } else {
+    // Try to read remaining logs from completed execution history
+    await drainHistoryLogs(ctx, task_id, offset, parseState,
+      (updatedState) => { parseState = updatedState; });
     ctx.addItem(addInfo(ctx.sessionId, `\n✅ 任务执行完成\n执行ID: ${executionId}\n`));
   }
 }
@@ -1049,6 +1097,8 @@ interface ParsedLogSection {
   extensions_by_name?: Record<string, ExtensionProgressInfo>;
   // Gap count for inline progress bar display
   gap_count?: number;
+  // Skipped stages (issue-fix skips assess/plan)
+  skipped_stages?: string[];
   // Stage messages (for meta_evolve_pipeline CI fix tracking)
   stage_messages?: string[];
   ci_fix_count?: number;
@@ -1328,6 +1378,18 @@ function formatAssistantContent(content: string): string {
   return formattedLines.join('\n');
 }
 
+// Helper: extract PR URL from stage messages (publish stage)
+function extractPrUrl(messages: string[]): string | undefined {
+  const urlRegex = /https:\/\/gitcode\.com\/[^\s)>\"]+/;
+  for (const msg of messages) {
+    const match = msg.match(urlRegex);
+    if (match && /(?:pulls|pull_requests|merge_requests)\/\d+/.test(match[0])) {
+      return match[0];
+    }
+  }
+  return undefined;
+}
+
 // Format log section for display (compact for streaming, detailed for history)
 function formatLogSection(section: ParsedLogSection, detailed: boolean = false): string | null {
   switch (section.type) {
@@ -1369,7 +1431,7 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
           }
         }
 
-        const progressBar = formatStageProgress(section.stages, effectiveCompleted, activeStage, section.gap_count, section.extension_order?.length, effectiveSuccessSet, effectiveResultSet);
+        const progressBar = formatStageProgress(section.stages, effectiveCompleted, activeStage, section.gap_count, section.extension_order?.length, effectiveSuccessSet, effectiveResultSet, section.skipped_stages);
         const icon = section.status === "success" ? "✅" : section.status === "failed" ? "❌" : "⏸️";
         const color = section.status === "success" ? ANSI.green : section.status === "failed" ? ANSI.red : ANSI.yellow;
         const statusText = section.status === "success" ? "完成" : section.status === "failed" ? "失败" : section.status;
@@ -1394,6 +1456,18 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
             detailLines.push(`  🔄 修复循环: ${section.ci_fix_count} 次`);
           }
         }
+        // publish 阶段：显示 PR 链接和任务总结
+        if (section.stage === 'publish' && section.stage_messages) {
+          const prUrl = extractPrUrl(section.stage_messages);
+          if (prUrl) {
+            detailLines.push(`  🔗 PR: ${prUrl}`);
+          }
+          const summaryMsg = section.stage_messages.find(m => m.includes('任务总结'));
+          if (summaryMsg) {
+            const trimmed = summaryMsg.length > 120 ? summaryMsg.substring(0, 120) + '…' : summaryMsg;
+            detailLines.push(`  📋 ${trimmed}`);
+          }
+        }
         // Extension status matrix shown AFTER stage-specific content, only during build_verify
         // (activate stage shows merge/activation info lines instead, not the matrix)
         if (section.stage !== 'activate' && section.extension_order && section.extensions_by_name && section.extension_order.length > 0) {
@@ -1416,7 +1490,8 @@ function formatLogSection(section: ParsedLogSection, detailed: boolean = false):
         section.gap_count,
         section.extension_order?.length,
         new Set(section.stages_with_success_result || []),
-        new Set(section.stages_with_result || [])
+        new Set(section.stages_with_result || []),
+        section.skipped_stages
       );
       const showContent = section.content && section.content !== stageDisplayName;
       const normalizedContent = (section.content || "").trim();
@@ -1500,7 +1575,9 @@ function formatStageProgress(
   extensionCount?: number,
   // Track which stages succeeded vs failed (for warning icon display)
   stagesWithSuccessResult?: Set<string>,
-  stagesWithResult?: Set<string>
+  stagesWithResult?: Set<string>,
+  // Skipped stages (issue-fix: assess/plan are skipped, shown differently)
+  skippedStages?: string[]
 ): string {
   if (!stages || stages.length === 0) return "";
 
@@ -1515,8 +1592,10 @@ function formatStageProgress(
   const bar = `${ANSI.green}${"█".repeat(filledLength)}${ANSI.reset}${ANSI.gray}${"░".repeat(barLength - filledLength)}${ANSI.reset}`;
 
   // Create stage status line with icons and names
+  const skippedSet = new Set(skippedStages || []);
   const parts = stages.map((s) => {
-    const isCompleted = completedStages?.includes(s.slot);
+    const isSkipped = skippedSet.has(s.slot);
+    const isCompleted = !isSkipped && completedStages?.includes(s.slot);
     const isCurrent = currentStage === s.slot;
     const hasSuccess = stagesWithSuccessResult?.has(s.slot);
     const hasResult = stagesWithResult?.has(s.slot);
@@ -1530,7 +1609,9 @@ function formatStageProgress(
       inlineCount = ` (${extensionCount})`;
     }
 
-    if (isCompleted) {
+    if (isSkipped) {
+      return `${ANSI.dimGray}⊘ ${s.display_name}${ANSI.reset}`;
+    } else if (isCompleted) {
       // 成功→✓(绿)；失败(hasResult无success)→⚠(黄)
       if (hasSuccess) {
         return `${ANSI.green}✓ ${s.display_name}${inlineCount}${ANSI.reset}`;
@@ -1577,6 +1658,8 @@ interface ParseState {
   stagesWithResult: Set<string>;
   // 已出现过的阶段(任意status)
   stagesAppeared: Set<string>;
+  // 已跳过的阶段(issue-fix 模式下 assess/plan)
+  skippedStages: string[];
 }
 
 function parseAndAggregateLogs(
@@ -1597,6 +1680,7 @@ function parseAndAggregateLogs(
   const stagesWithSuccessResult: Set<string> = initialState?.stagesWithSuccessResult ?? new Set<string>();
   const stagesWithResult: Set<string> = initialState?.stagesWithResult ?? new Set<string>();
   const stagesAppeared: Set<string> = initialState?.stagesAppeared ?? new Set<string>();
+  const skippedStages: string[] = initialState?.skippedStages ?? [];
 
   // Note: pipeline type is determined dynamically in the loop when pipelineInfo is set
 
@@ -1621,7 +1705,8 @@ function parseAndAggregateLogs(
 
       case "chat.error":
         const errorMsg = log.error || content || "未知错误";
-        hasFailure = true;  // Chat error indicates execution failure
+        // chat.error 不表示任务失败（如 learnings 阶段的 chat.error 不影响 publish 成功），
+        // 仅由 stage_result 的状态来判定任务成败。
         sections.push({ type: "error", content: errorMsg });
         break;
 
@@ -1639,6 +1724,17 @@ function parseAndAggregateLogs(
           break;
         }
 
+        // Detect issue-fix skip message and mark assess/plan as skipped
+        if (content.includes("显式 GitCode issue 修复任务，跳过 assess/plan")) {
+          for (const skipped of ["assess", "plan"]) {
+            if (!completedStages.includes(skipped)) {
+              completedStages.push(skipped);
+              skippedStages.push(skipped);
+              stagesWithResult.add(skipped);
+            }
+          }
+        }
+
         // Regular stage message
         const stage = log.stage || "";
         if (currentStage !== stage) {
@@ -1652,6 +1748,7 @@ function parseAndAggregateLogs(
           stages: pipelineInfo?.stages,
           pipeline: pipelineInfo?.pipeline,
           completed_stages: [...completedStages],
+          skipped_stages: [...skippedStages],
         });
         break;
 
@@ -1757,6 +1854,7 @@ function parseAndAggregateLogs(
             extension_order: [...extensionOrder],
             extensions_by_name: extensionsSnapshot,
             gap_count: gapCount,
+            skipped_stages: [...skippedStages],
           });
           break;
         }
@@ -1852,6 +1950,7 @@ function parseAndAggregateLogs(
           gap_count: gapCount,
           stage_messages: stageMessages.length > 0 ? stageMessages : undefined,
           ci_fix_count: ciFixCount,
+          skipped_stages: [...skippedStages],
         });
         break;
 
@@ -1872,15 +1971,17 @@ function parseAndAggregateLogs(
           finalStatus = hasBuildVerifyAppeared && hasActivateSuccess ? "success" : "failed";
         } else if (pipelineType === "meta_evolve_pipeline") {
           // Rule: every stage must have harness.stage_result with success status
-          // Get all expected stages from pipelineInfo
+          // (issue-fix 模式下跳过的阶段视为成功)
           const expectedStages = pipelineInfo?.stages?.map(s => s.slot) || [];
-          // Check if all expected stages have reported success
+          const skippedSet = new Set(skippedStages);
           const allStagesSuccessful = expectedStages.length > 0 &&
-            expectedStages.every(stage => stagesWithSuccessResult.has(stage));
+            expectedStages.every(stage =>
+              stagesWithSuccessResult.has(stage) || skippedSet.has(stage)
+            );
           finalStatus = allStagesSuccessful ? "success" : "failed";
         } else {
-          // For other pipelines: any failure means task failed
-          finalStatus = hasFailure ? "failed" : (log.status || "success");
+          // 仅根据 stage_result 判断任务成败，chat.error 不影响最终状态
+          finalStatus = hasFailure ? "failed" : "success";
         }
 
         sections.push({
@@ -1939,7 +2040,7 @@ function parseAndAggregateLogs(
     }
   }
 
-  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount, hasFailure, stagesWithSuccessResult, stagesWithResult, stagesAppeared } };
+  return { sections, state: { pipelineInfo, completedStages, currentStage, extensionOrder, extensionsByName, gapCount, ciFixCount, hasFailure, stagesWithSuccessResult, stagesWithResult, stagesAppeared, skippedStages } };
 }
 
 // Format log section for history display (detailed with colors)
@@ -2441,8 +2542,8 @@ const issueStatusCommand: SlashCommand = {
             : (issue.status || "unknown"));
 
       // 终态任务进度显示100%或0%
-      const terminalStatuses = new Set(["success", "failed", "pr_created", "completed", "skipped", "needs_human"]);
-      const finalProgress = terminalStatuses.has(effectiveStatus) ? (effectiveStatus === "success" || effectiveStatus === "pr_created" ? 100 : 0) : progressPercent;
+      const terminalStatuses = new Set(["success", "failed", "pr_created", "completed", "completed_without_pr", "complete", "skipped", "needs_human"]);
+      const finalProgress = terminalStatuses.has(effectiveStatus) ? (effectiveStatus === "success" || effectiveStatus === "pr_created" || effectiveStatus === "completed" || effectiveStatus === "completed_without_pr" || effectiveStatus === "complete" ? 100 : 0) : progressPercent;
 
       let details = "";
       if (issue.pr_url) {

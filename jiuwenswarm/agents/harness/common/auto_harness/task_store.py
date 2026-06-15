@@ -155,22 +155,10 @@ class TaskStore:
     async def summarize_task_progress(self, task: dict[str, Any]) -> dict[str, Any]:
         """Read the latest task log and return a compact progress summary.
 
-        智能状态查询：
-        - 终态任务：不读取日志，直接返回状态
-        - 运行中任务：反向读取关键事件（stage_result）
+        对所有任务（含终态）都读取日志获取阶段数据。
+        终态任务读取完整日志（以运行 enrichers 提取 PR URL 等），
+        运行中任务反向读取关键事件以提升性能。
         """
-        task_status = str(task.get("status") or "")
-
-        # 终态任务：不读取日志
-        if task_status in TERMINAL_STATUSES:
-            return {
-                "summary": f"终态: {task_status}",
-                "stages": [],
-                "completed_stages": [],
-                "current_stage": "",
-                "failed_stage": "",
-            }
-
         log_path = resolve_latest_task_log_path(task, self._runs_dir)
         if not log_path:
             return {
@@ -189,14 +177,20 @@ class TaskStore:
                 "failed_stage": "",
             }
 
-        # 运行中任务：反向读取关键事件
-        key_events = await asyncio.to_thread(read_key_events_reverse, log_path, 20)
-        if key_events:
-            progress = summarize_progress_from_key_events(key_events)
-        else:
-            # 关键事件为空，读取完整日志
+        task_status = str(task.get("status") or "")
+        if task_status in TERMINAL_STATUSES:
+            # 终态任务：读取完整日志以运行 enrichers（如提取 PR URL）
             logs = await asyncio.to_thread(self.read_log, log_path, 0, -1)
             progress = self.summarize_progress_from_logs(logs)
+        else:
+            # 运行中任务：反向读取关键事件
+            key_events = await asyncio.to_thread(read_key_events_reverse, log_path, 20)
+            if key_events:
+                progress = summarize_progress_from_key_events(key_events)
+            else:
+                # 关键事件为空，读取完整日志
+                logs = await asyncio.to_thread(self.read_log, log_path, 0, -1)
+                progress = self.summarize_progress_from_logs(logs)
 
         progress["log_path"] = str(log_path)
         return progress

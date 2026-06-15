@@ -220,6 +220,8 @@ class IssueFixService:
                     task_status = str(task.get("status") or "")
                     enriched["task_status"] = task_status
                     enriched["progress"] = await self._task_store.summarize_task_progress(task)
+                    if enriched["progress"].get("pr_url"):
+                        enriched["pr_url"] = enriched["progress"]["pr_url"]
 
                     # 轻量 reconcile：TaskStore 已是终态但 IssueState 仍显示进行中，
                     # 同步 IssueState 反映真实状态（不检查 PR，留待 fix reconcile 处理）

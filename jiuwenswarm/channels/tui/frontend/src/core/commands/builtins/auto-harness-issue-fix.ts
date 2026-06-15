@@ -470,11 +470,11 @@ export function formatIssueTable(rows: IssueListRow[]): string {
   const COL_STATUS = 10;    // "created  "
   const COL_STAGE = 14;     // "implement    "
   const COL_PROGRESS = 30;  // "██░░░░░░░░  "
-  const COL_DETAILS = 30;   // Details column
+  const COL_DETAILS = 50;   // Details column
 
   // Header
   lines.push(`┌${"─".repeat(COL_ISSUE)}┬${"─".repeat(COL_STATUS)}┬${"─".repeat(COL_STAGE)}┬${"─".repeat(COL_PROGRESS)}┬${"─".repeat(COL_DETAILS)}┐`);
-  lines.push(`│${matrixPadRight("Issue", COL_ISSUE)}│${matrixPadRight("Status", COL_STATUS)}│${matrixPadRight("Stage", COL_STAGE)}│${matrixPadRight("Progress", COL_PROGRESS)}│${matrixPadRight("DeTails", COL_DETAILS)}│`);
+  lines.push(`│${matrixPadRight("Issue", COL_ISSUE)}│${matrixPadRight("Status", COL_STATUS)}│${matrixPadRight("Stage", COL_STAGE)}│${matrixPadRight("Progress", COL_PROGRESS)}│${matrixPadRight("Details", COL_DETAILS)}│`);
   lines.push(`├${"─".repeat(COL_ISSUE)}┼${"─".repeat(COL_STATUS)}┼${"─".repeat(COL_STAGE)}┼${"─".repeat(COL_PROGRESS)}┼${"─".repeat(COL_DETAILS)}┤`);
 
   // Rows with separators between each row

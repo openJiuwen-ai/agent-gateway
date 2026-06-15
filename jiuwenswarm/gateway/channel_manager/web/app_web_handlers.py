@@ -2859,7 +2859,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "download_token": download_info["download_token"],
                 "filename": download_info["name"],
                 "file_size": download_info["size"],
-                "expires_at": download_info["expires_at"],
                 "message": "Package exported successfully",
             })
             # No cleanup here - file will be served via HTTP download endpoint

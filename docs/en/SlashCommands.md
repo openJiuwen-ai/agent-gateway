@@ -34,7 +34,7 @@ Executed locally in the terminal UI, not through Gateway control pipeline.
 | `/hooks` | Browse configured hooks (read-only, see below) |
 | `/sandbox` | Set sandbox mode (see below) |
 | `/agents` | Manage Agent configs (list, get, create, update, enable, disable, delete, see below) |
-| `/auto-harness` | Auto-Harness task management (`run`/`schedule`, see below) |
+| `/auto-harness` | Auto-Harness task management (`run`/`schedule`/`issue`, see below) |
 
 > Note: `/mode` controlled switching logic is primarily on Gateway side, see "`/mode` and `/switch`" below. The TUI local command additionally supports `/mode plan` and `/mode team.normal`; see the TUI guide for details.
 
@@ -973,6 +973,10 @@ If configuration is incomplete, the task creation will prompt the missing fields
 | `/auto-harness schedule logs <task_id> [--history <n>]` | View task execution logs |
 | `/auto-harness schedule cancel <task_id>` | Cancel a task |
 | `/auto-harness schedule delete <task_id>` | Delete a task |
+| `/auto-harness issue fix <issue_numbers>` | Create fix tasks for GitCode issues |
+| `/auto-harness issue scan [--repo <repo>] [--page <n>] [--labels <labels>] [--force-refresh]` | Scan repo GitCode issues |
+| `/auto-harness issue status` | View GitCode issue processing status |
+| `/auto-harness issue delete <issue_numbers>` | Delete issue processing records |
 
 #### `/auto-harness run` (One-time Execution)
 
@@ -1008,6 +1012,61 @@ If configuration is incomplete, the task creation will prompt the missing fields
 - Modes:
   - Default: Stream current running logs in real-time (`tail -f` mode); Ctrl+C to interrupt
   - `--history <n>`: View historical execution logs (`view` mode, `n` is the history index, 0 = most recent)
+
+### `/auto-harness issue` (GitCode Issue Auto-Fix)
+
+Manage GitCode issue auto-processing: scan issue matrix, create fix tasks, view status, clean up records.
+
+Requires `git.user_name`, `git.user_email` and `gitcode.access_token` (or `GITCODE_ACCESS_TOKEN` env var) to be configured.
+
+#### Subcommands
+
+| Command | Description |
+|---|---|
+| `/auto-harness issue fix <issue_numbers>` | Create fix tasks for GitCode issues |
+| `/auto-harness issue scan [--repo <repo>] [options]` | Scan repo issues |
+| `/auto-harness issue status` | View issue processing status |
+| `/auto-harness issue delete <issue_numbers>` | Delete issue processing records |
+
+#### `/auto-harness issue fix` (Create Fix Task)
+
+- Usage: `/auto-harness issue fix <issue_numbers>`
+- Parameters:
+  - `<issue_numbers>`: Issue number(s), comma-separated, e.g. `1272,1271,1270`
+  - `--repo <repo>`: Target repository (`jiuwenswarm` / `agent_core`); interactively selected if not specified
+- Issues with bound PRs (open or merged) are automatically skipped
+- Examples:
+  - `/auto-harness issue fix 1286`
+  - `/auto-harness issue fix 1272,1271,1270`
+
+#### `/auto-harness issue scan` (Scan Issue)
+
+- Usage: `/auto-harness issue scan`
+- Parameters:
+  - `--repo <repo>`: Target repository; interactively selected if not specified
+  - `--page <n>`: Page number, default 1
+  - `--labels <labels>`: Label filter, comma-separated; defaults to bug type only
+  - `--force-refresh`: Force refresh from GitCode API (uses cache by default)
+- Displays: issue number, title, labels, difficulty, last updated
+- Examples:
+  - `/auto-harness issue scan`
+  - `/auto-harness issue scan --repo jiuwenswarm --page 1`
+  - `/auto-harness issue scan --repo agent_core --force-refresh`
+
+#### `/auto-harness issue status` (View Status)
+
+- Usage: `/auto-harness issue status` (no parameters)
+- Lists all issue processing records in table format: number, status, stage, progress, details
+- Example: `/auto-harness issue status`
+
+#### `/auto-harness issue delete` (Delete Records)
+
+- Usage: `/auto-harness issue delete <issue_numbers>`
+- Parameters:
+  - `<issue_numbers>`: Issue number(s) to delete
+- Examples:
+  - `/auto-harness issue delete 123`
+  - `/auto-harness issue delete 123 456`
 
 ---
 

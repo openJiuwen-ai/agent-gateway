@@ -34,7 +34,7 @@
 | `/hooks` | 浏览已配置的 hooks（只读，见下文） |
 | `/sandbox` | 设置沙箱模式（见下文） |
 | `/agents` | 管理 Agent 配置（list, get, create, update, enable, disable, delete，见下文） |
-| `/auto-harness` | Auto-Harness 任务管理（`run`/`schedule`，见下文） |
+| `/auto-harness` | Auto-Harness 任务管理（`run`/`schedule`/`issue`，见下文） |
 
 > 说明：本页的 `/mode` 与 `/switch` 以 Gateway 受控通道行为为主。TUI 本地命令另支持 `/mode plan`、`/mode team.normal`，详见 [TUI 使用指南](TUI使用指南.md)。
 
@@ -986,6 +986,10 @@ Pipeline 执行过程中，扩展包**默认自动激活生效**，无需用户�
 | `/auto-harness schedule logs <task_id> [--history <n>]` | 查看任务执行日志 |
 | `/auto-harness schedule cancel <task_id>` | 取消任务 |
 | `/auto-harness schedule delete <task_id>` | 删除任务 |
+| `/auto-harness issue fix <issue_numbers>` | 指定 GitCode issue 创建独立修复任务 |
+| `/auto-harness issue scan [--repo <repo>] [--page <n>] [--labels <labels>] [--force-refresh]` | 扫描仓库 GitCode issue |
+| `/auto-harness issue status` | 查看 GitCode issue 处理状态列表 |
+| `/auto-harness issue delete <issue_numbers>` | 删除 issue 处理记录 |
 
 #### `/auto-harness run`（一次性执行）
 
@@ -1021,6 +1025,61 @@ Pipeline 执行过程中，扩展包**默认自动激活生效**，无需用户�
 - 模式：
   - 默认：实时跟踪当前运行日志（`tail -f` 模式），支持 Ctrl+C 中断
   - `--history <n>`：查看历史执行日志（`view` 模式，`n` 为历史索引，0 为最近一次）
+
+### `/auto-harness issue`（GitCode Issue 自动处理）
+
+管理 GitCode issue 的自动处理：扫描 issue 矩阵、创建修复任务、查看处理状态、清理记录。
+
+需要先配置 `git.user_name`、`git.user_email` 和 `gitcode.access_token`（或 `GITCODE_ACCESS_TOKEN` 环境变量）。
+
+#### 子命令
+
+| 命令 | 说明 |
+|---|---|
+| `/auto-harness issue fix <issue_numbers>` | 为指定 GitCode issue 创建修复任务 |
+| `/auto-harness issue scan [--repo <repo>] [选项]` | 扫描仓库 GitCode issue |
+| `/auto-harness issue status` | 查看 issue 处理状态 |
+| `/auto-harness issue delete <issue_numbers>` | 删除 issue 处理记录 |
+
+#### `/auto-harness issue fix`（创建修复任务）
+
+- 用法：`/auto-harness issue fix <issue_numbers>`
+- 参数：
+  - `<issue_numbers>`：issue 编号，多个用逗号分隔，如 `1272,1271,1270`
+  - `--repo <repo>`：目标仓库，支持 `jiuwenswarm` / `agent_core`，未指定时交互选择
+- 已关联 PR（open 或 merged）的 issue 自动跳过，不会创建重复任务
+- 示例：
+  - `/auto-harness issue fix 1286`
+  - `/auto-harness issue fix 1272,1271,1270`
+
+#### `/auto-harness issue scan`（扫描 Issue ）
+
+- 用法：`/auto-harness issue scan`
+- 参数：
+  - `--repo <repo>`：目标仓库，未指定时交互选择
+  - `--page <n>`：页码，默认 1
+  - `--labels <labels>`：标签过滤，逗号分隔，默认只显示 bug 类型
+  - `--force-refresh`：强制从 GitCode API 刷新数据（默认使用缓存）
+- 展示内容：issue 编号、标题、标签、难度评估、更新时间
+- 示例：
+  - `/auto-harness issue scan`
+  - `/auto-harness issue scan --repo jiuwenswarm --page 1`
+  - `/auto-harness issue scan --repo agent_core --force-refresh`
+
+#### `/auto-harness issue status`（查看处理状态）
+
+- 用法：`/auto-harness issue status`（无参数）
+- 以表格列出所有 issue 处理记录：编号、状态、阶段、进度、详情
+- 示例：`/auto-harness issue status`
+
+#### `/auto-harness issue delete`（删除记录）
+
+- 用法：`/auto-harness issue delete <issue_numbers>`
+- 参数：
+  - `<issue_numbers>`：要删除的 issue 编号
+- 示例：
+  - `/auto-harness issue delete 123`
+  - `/auto-harness issue delete 123 456`
 
 ---
 
