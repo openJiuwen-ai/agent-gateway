@@ -10,6 +10,7 @@ import { MessageItem, getMessageActor } from './MessageItem';
 import { ToolGroupDisplay } from './ToolGroupDisplay';
 import { useChatStore, useSessionStore } from '../../stores';
 import { isTeamMemberCollaborationMessage } from './teamEventUtils';
+import { isA2UIClientEventContent } from '../../features/a2ui/a2uiContent';
 
 interface MessageListProps {
   messages: Message[];
@@ -19,6 +20,7 @@ interface ChatTimelineListProps {
   messages: Message[];
   executions?: ToolExecution[];
   mode?: string;
+  disableA2UIInteraction?: boolean;
 }
 
 type TimelineItem =
@@ -83,7 +85,11 @@ function buildTimelineItems(
   executions: ToolExecution[]
 ): TimelineItem[] {
   const messageItems: TimelineItem[] = messages
-    .filter((msg) => msg.role !== 'tool')
+    .filter((msg) => {
+      if (msg.role === 'tool') return false;
+      if (msg.role === 'user' && isA2UIClientEventContent(msg.content)) return false;
+      return true;
+    })
     .map((message, index) => ({
       type: 'message',
       key: `message-${message.id}-${index}`,
@@ -221,6 +227,7 @@ export function ChatTimelineList({
   messages,
   executions = [],
   mode = 'default',
+  disableA2UIInteraction = false,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const renderItems = useMemo(
@@ -241,6 +248,7 @@ export function ChatTimelineList({
               key={item.key}
               message={item.message}
               showAvatar={item.showAvatar}
+              disableA2UIInteraction={disableA2UIInteraction}
             />
           );
         }

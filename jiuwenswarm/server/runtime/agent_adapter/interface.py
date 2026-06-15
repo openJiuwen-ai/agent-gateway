@@ -101,6 +101,10 @@ def _append_compact_history_from_payload(
     )
 
 
+def _contains_a2ui_marker(value: Any) -> bool:
+    return isinstance(value, str) and "<a2ui-json>" in value
+
+
 load_dotenv(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
 
@@ -681,6 +685,8 @@ class JiuWenSwarm:
             "channel": channel,
             "language": language,
         }
+        if request.metadata and request.metadata.get("skip_a2ui") is True:
+            inputs["skip_a2ui"] = True
 
         # 传递 enable_memory 参数
         enable_memory = request.metadata.get("enable_memory", True) if request.metadata else True
@@ -734,6 +740,42 @@ class JiuWenSwarm:
         # 返回原始 query（未经 build_user_prompt 包装）
         # Team 模式需要使用原始 query，而不是 JSON 包装后的 prompt
         return inputs, memory_mode, query
+
+    def _make_retry_without_a2ui_call(
+            self,
+            *,
+            adapter: AgentAdapter,
+            request: AgentRequest,
+    ):
+        async def retry_without_a2ui_call(query: str) -> str | None:
+            if getattr(adapter, "_instance", None) is None:
+                return None
+            try:
+                modified_request = AgentRequest(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    chat_id=request.chat_id,
+                    req_method=request.req_method,
+                    params={**request.params, "query": query},
+                    is_stream=False,
+                    timestamp=request.timestamp,
+                    metadata={**(request.metadata or {}), "skip_a2ui": True},
+                )
+                retry_inputs, _, _ = self._build_inputs(modified_request)
+                retry_inputs["_invoke_turn_id"] = request.request_id
+                result = await adapter.process_message_impl(modified_request, retry_inputs)
+                if result.ok and result.payload.get("content"):
+                    return str(result.payload["content"])
+            except Exception as exc:
+                logger.warning(
+                    "Retry without A2UI failed: request_id=%s error=%s",
+                    request.request_id,
+                    exc,
+                )
+            return None
+
+        return retry_without_a2ui_call
 
     @staticmethod
     def _build_interactive_input_from_answers(
@@ -1196,12 +1238,17 @@ class JiuWenSwarm:
             content = result.payload["content"]
             content_str = content if isinstance(content, str) else str(content)
             repair_call = getattr(adapter, "repair_model_response", None)
+            retry_without_a2ui_call = self._make_retry_without_a2ui_call(
+                adapter=adapter,
+                request=request,
+            )
             content_str = await finalize_assistant_response_if_a2ui(
                 content_str,
                 channel=request.channel_id,
                 user_query=raw_query,
                 request_id=request.request_id or "",
                 repair_call=repair_call,
+                retry_without_a2ui_call=retry_without_a2ui_call,
             )
             if isinstance(content, str):
                 result.payload["content"] = content_str
@@ -1366,6 +1413,7 @@ class JiuWenSwarm:
         else:
             await self._session_manager.submit_task(session_id, run_stream_task)
 
+        suppress_a2ui_stream = False
         try:
             while not stream_done.is_set() or not stream_queue.empty():
                 try:
@@ -1423,6 +1471,16 @@ class JiuWenSwarm:
                                     mode=request.params.get("mode", "unknown"),
                                 )
 
+                            payload_content = str(data.payload.get("content", ""))
+                            if et == "chat.delta" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
+                                suppress_a2ui_stream = True
+                                final_answer_chunks.append(payload_content)
+                                continue
+                            if et == "chat.final" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
+                                suppress_a2ui_stream = True
+                                final_answer_content = payload_content
+                                continue
+
                             if should_record:
                                 payload_dict = dict(data.payload)
                                 extra_fields = {k: v for k, v in payload_dict.items() if
@@ -1463,6 +1521,16 @@ class JiuWenSwarm:
                                 mode=request.params.get("mode", "unknown"),
                             )
 
+                        payload_content = str(data.get("content", ""))
+                        if et == "chat.delta" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
+                            suppress_a2ui_stream = True
+                            final_answer_chunks.append(payload_content)
+                            continue
+                        if et == "chat.final" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
+                            suppress_a2ui_stream = True
+                            final_answer_content = payload_content
+                            continue
+
                         if should_record:
                             extra_fields = {k: v for k, v in data.items() if k not in ("event_type", "content")}
                             if et == EventType.TEAM_MESSAGE.value and "event" in data:
@@ -1498,14 +1566,22 @@ class JiuWenSwarm:
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
         repair_call = getattr(adapter, "repair_model_response", None)
+        retry_without_a2ui_call = self._make_retry_without_a2ui_call(
+            adapter=adapter,
+            request=request,
+        )
+        
         finalized_assistant_message = await finalize_assistant_response_if_a2ui(
             assistant_message,
             channel=cid,
             user_query=raw_query,
             request_id=rid or "",
             repair_call=repair_call,
+            retry_without_a2ui_call=retry_without_a2ui_call,
         )
-        if finalized_assistant_message and finalized_assistant_message != assistant_message:
+        if finalized_assistant_message and (
+                finalized_assistant_message != assistant_message or suppress_a2ui_stream
+        ):
             append_history_record(
                 session_id=session_id,
                 request_id=rid,

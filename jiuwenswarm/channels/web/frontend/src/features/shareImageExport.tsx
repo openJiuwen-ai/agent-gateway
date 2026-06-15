@@ -13,6 +13,7 @@ import {
 import { isUserMember } from '../utils/teamMemberAvatar';
 import { parseHistoryJsonFileToPreviewMessages } from './historyRestore';
 import { parseTeamHistoryPanelRecords } from './teamHistoryPanelRestore';
+import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { getSvgNaturalHeight, getSvgNaturalWidth } from '../utils/svgDimensions';
 import './shareImageExport.css';
 
@@ -41,9 +42,22 @@ const SHARE_IMAGE_WIDTH = 750;
 const SHARE_IMAGE_PIXEL_RATIO = 3;
 const OPENJIUWEN_WEBSITE_URL = 'https://openjiuwen.com';
 const JIUWENSWARM_REPO_URL = 'https://gitcode.com/openJiuwen/jiuwenswarm';
+const TRANSPARENT_IMAGE_DATA_URL = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Filter out A2UI client event messages from the message list.
+ * These messages are internal interaction events and should not be included in exports.
+ */
+function filterA2UIClientEvents(messages: unknown[]): unknown[] {
+  return messages.filter((msg) => {
+    if (!isRecord(msg)) return true;
+    if (msg.role === 'user' && isA2UIClientEventContent(msg.content)) return false;
+    return true;
+  });
 }
 
 function normalizeMode(records: unknown[]): string {
@@ -140,9 +154,11 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
         return null;
       }
       const messages = parseHistoryJsonFileToPreviewMessages(snapshot.records, snapshot.session_id);
+      // Filter out A2UI client event messages from exports
+      const filteredMessages = filterA2UIClientEvents(messages) as typeof messages;
       return {
         mode: normalizeMode(snapshot.records),
-        messages,
+        messages: filteredMessages,
         groupMessages: collectGroupMessages(snapshot),
       };
     }, [snapshot]);
@@ -184,6 +200,7 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
                 messages={data.messages}
                 executions={[]}
                 mode={data.mode}
+                disableA2UIInteraction={true}
               />
             ) : (
               <div className="share-image-empty">{t('share.noMainConversation')}</div>
@@ -229,21 +246,72 @@ function nextFrame(): Promise<void> {
   });
 }
 
-async function waitForImages(node: HTMLElement): Promise<void> {
+interface ImageSnapshot {
+  image: HTMLImageElement;
+  src: string | null;
+  srcset: string | null;
+  sizes: string | null;
+}
+
+function replaceBrokenImageForExport(image: HTMLImageElement, snapshots: ImageSnapshot[]): void {
+  snapshots.push({
+    image,
+    src: image.getAttribute('src'),
+    srcset: image.getAttribute('srcset'),
+    sizes: image.getAttribute('sizes'),
+  });
+  image.removeAttribute('srcset');
+  image.removeAttribute('sizes');
+  image.src = TRANSPARENT_IMAGE_DATA_URL;
+}
+
+async function waitForImage(image: HTMLImageElement): Promise<boolean> {
+  if (image.complete) {
+    return image.naturalWidth > 0;
+  }
+  if (typeof image.decode === 'function') {
+    await image.decode();
+    return image.naturalWidth > 0;
+  }
+  return new Promise<boolean>((resolve) => {
+    image.addEventListener('load', () => resolve(image.naturalWidth > 0), { once: true });
+    image.addEventListener('error', () => resolve(false), { once: true });
+  });
+}
+
+async function prepareImagesForExport(node: HTMLElement): Promise<() => void> {
   const images = Array.from(node.querySelectorAll('img'));
+  const snapshots: ImageSnapshot[] = [];
+
   await Promise.all(images.map(async (image) => {
-    if (image.complete && image.naturalWidth > 0) {
-      return;
+    try {
+      if (await waitForImage(image)) {
+        return;
+      }
+    } catch {
+      // Ignore broken or undecodable images in share export. A2UI Image can
+      // intentionally contain an invalid URL to demonstrate fallback UI.
     }
-    if (typeof image.decode === 'function') {
-      await image.decode();
-      return;
+
+    replaceBrokenImageForExport(image, snapshots);
+    try {
+      await waitForImage(image);
+    } catch {
+      // The transparent data URL should decode, but keep export tolerant.
     }
-    await new Promise<void>((resolve, reject) => {
-      image.addEventListener('load', () => resolve(), { once: true });
-      image.addEventListener('error', () => reject(new Error('share_image_asset_failed')), { once: true });
-    });
   }));
+
+  return () => {
+    for (const snapshot of snapshots) {
+      const { image, src, srcset, sizes } = snapshot;
+      if (src === null) image.removeAttribute('src');
+      else image.setAttribute('src', src);
+      if (srcset === null) image.removeAttribute('srcset');
+      else image.setAttribute('srcset', srcset);
+      if (sizes === null) image.removeAttribute('sizes');
+      else image.setAttribute('sizes', sizes);
+    }
+  };
 }
 
 interface SvgSnapshot {
@@ -357,18 +425,19 @@ async function waitForMermaidDiagrams(node: HTMLElement): Promise<void> {
 
 export async function exportShareImageNode(node: HTMLElement): Promise<string> {
   await document.fonts?.ready;
-  await waitForImages(node);
-  await waitForMermaidDiagrams(node);
-  await nextFrame();
-
-  // Scale down wide Mermaid diagrams so they are not clipped in the exported
-  // image. toPng reads the DOM synchronously, so the restore callback must be
-  // called after the render completes.
-  const restoreMermaidDiagrams = fitMermaidDiagramsForExport(node);
-  await nextFrame();
-
-  const backgroundColor = window.getComputedStyle(node).backgroundColor;
+  const restoreImages = await prepareImagesForExport(node);
+  let restoreMermaidDiagrams = (): void => {};
   try {
+    await waitForMermaidDiagrams(node);
+    await nextFrame();
+
+    // Scale down wide Mermaid diagrams so they are not clipped in the exported
+    // image. toPng reads the DOM synchronously, so the restore callback must be
+    // called after the render completes.
+    restoreMermaidDiagrams = fitMermaidDiagramsForExport(node);
+    await nextFrame();
+
+    const backgroundColor = window.getComputedStyle(node).backgroundColor;
     return await toPng(node, {
       cacheBust: true,
       pixelRatio: SHARE_IMAGE_PIXEL_RATIO,
@@ -378,5 +447,6 @@ export async function exportShareImageNode(node: HTMLElement): Promise<string> {
     });
   } finally {
     restoreMermaidDiagrams();
+    restoreImages();
   }
 }

@@ -81,6 +81,7 @@ function TeamLeaderPlainTextMessage({
   isStreaming = false,
   showAvatar = true,
   fileItems,
+  disableA2UIInteraction = false,
 }: {
   member?: string;
   content: string;
@@ -88,6 +89,7 @@ function TeamLeaderPlainTextMessage({
   isStreaming?: boolean;
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
+  disableA2UIInteraction?: boolean;
 }) {
   return (
     <TeamMemberMessageFrame
@@ -102,6 +104,7 @@ function TeamLeaderPlainTextMessage({
           content={content}
           messageId={messageId}
           isStreaming={isStreaming}
+          disableInteraction={disableA2UIInteraction}
           testId="team-leader-message-body"
         />
       </div>
@@ -178,12 +181,14 @@ interface MessageItemProps {
   message: Message;
   autoSpeak?: boolean;
   showAvatar?: boolean;
+  disableA2UIInteraction?: boolean;
 }
 
 export function MessageItem({
   message,
   autoSpeak = false,
   showAvatar = true,
+  disableA2UIInteraction = false,
 }: MessageItemProps) {
   const { t } = useTranslation();
   const {
@@ -465,6 +470,7 @@ export function MessageItem({
 	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
+	           disableA2UIInteraction={disableA2UIInteraction}
 	         />
 	       );
 	     }
@@ -518,6 +524,7 @@ export function MessageItem({
                   content={content}
                   messageId={id}
                   isStreaming={true}
+                  disableInteraction={disableA2UIInteraction}
                   testId="thinking-body"
                 />
               )
@@ -531,6 +538,7 @@ export function MessageItem({
                   <A2UIMessageContent
                     content={content}
                     messageId={id}
+                    disableInteraction={disableA2UIInteraction}
                     testId="thinking-body"
                   />
                 )}

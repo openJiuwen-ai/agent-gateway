@@ -416,6 +416,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
                 <ChatTimelineList
                   messages={historyMessages}
                   mode={historyPreviewMode ?? undefined}
+                  disableA2UIInteraction={true}
                 />
               </div>
             )

@@ -1463,8 +1463,10 @@
     "restarting": "Restarting service",
     "restartSuccess": "Restart successful",
     "configApplied": "Config applied",
+    "a2uiRefresh": "Config applied",
     "restartWaiting": "Waiting for backend to restart and reconnect...",
     "configAppliedDesc": "Config hot-reloaded, this dialog will close in 5 seconds.",
+    "a2uiRefreshDesc": "The page will refresh in 5 seconds.",
     "restartSuccessDesc": "Backend started successfully, this dialog will close in 5 seconds."
   },
   "extensions": {
