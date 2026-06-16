@@ -2489,8 +2489,8 @@ export class AppScreen implements Component, Focusable {
         this.editor.addToHistory(text);
         this.editor.setText("");
         this.state.addItem(addCommandEcho(snapshot.sessionId, text));
-        // 默认列出全部项目的会话；进入后可按 Ctrl+A 切回仅当前项目
-        await this.openResumeSessionList(true);
+        // 默认仅列出当前项目的会话；进入后可按 Ctrl+A 查看全部项目
+        await this.openResumeSessionList(false);
         return;
       }
       if (/^\/model\s*$/.test(text)) {

@@ -1201,7 +1201,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 ch_meta.get("project_dir") or ch_meta.get("cwd") or ""
             ).strip()
             if not session_project:
-                return True  # 无项目信息的会话作为兜底保留
+                return False  # 无项目信息的会话无法匹配当前项目，排除
             try:
                 session_project = os.path.realpath(session_project)
             except OSError:
