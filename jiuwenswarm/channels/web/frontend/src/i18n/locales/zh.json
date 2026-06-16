@@ -385,6 +385,7 @@
       "wechat": "微信",
       "discord": "Discord",
       "heartbeat": "心跳",
+      "tui": "TUI",
       "unknown": "未知"
     },
     "errors": {

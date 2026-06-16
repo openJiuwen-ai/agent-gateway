@@ -385,6 +385,7 @@
       "wechat": "WeChat",
       "discord": "Discord",
       "heartbeat": "Heartbeat",
+      "tui": "TUI",
       "unknown": "Unknown"
     },
     "errors": {
