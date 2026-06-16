@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Team agent streaming helpers."""
 
@@ -1114,6 +1114,20 @@ async def _consume_stream_with_query(
                             "task_count": parsed.get("task_count"),
                         },
                     )
+                    continue
+                elif parsed.get("event_type") == "chat.error":
+                    _broadcast_event(channel_id, session_id, parsed)
+                    if is_leader:
+                        _broadcast_event(
+                            channel_id,
+                            session_id,
+                            {
+                                "event_type": "chat.final",
+                                "content": "",
+                                "session_id": session_id,
+                                "rid": round_id,
+                            },
+                        )
                     continue
                 _broadcast_event(channel_id, session_id, parsed)
 

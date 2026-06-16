@@ -1589,6 +1589,126 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     assert broadcasted[3]["member_name"] == "analyst"
 
 
+@pytest.mark.anyio
+async def test_consume_stream_with_query_broadcasts_leader_task_failed_detail_and_final(monkeypatch):
+    broadcasted: list[dict] = []
+    detail = (
+        "[181001] model call failed, reason: openAI API async stream error: "
+        "BadRequestError: deepseek-v4-X is invalid, use deepseek-v4-pro or deepseek-v4-flash"
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+            },
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager:
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        lambda channel_id, session_id, event: broadcasted.append(event),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-leader-error",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    assert [event["event_type"] for event in broadcasted] == [
+        "chat.processing_status",
+        "chat.error",
+        "chat.final",
+    ]
+    assert "deepseek-v4-X" in broadcasted[1]["error"]
+    assert "deepseek-v4-pro" in broadcasted[1]["error"]
+    assert broadcasted[1]["rid"] == 1
+    assert broadcasted[2] == {
+        "event_type": "chat.final",
+        "content": "",
+        "session_id": "sess-leader-error",
+        "rid": 1,
+    }
+    assert not any(
+        event.get("event_type") == "chat.processing_status" and event.get("is_processing") is False
+        for event in broadcasted
+    )
+
+
+@pytest.mark.anyio
+async def test_consume_stream_with_query_does_not_final_teammate_task_failed(monkeypatch):
+    broadcasted: list[dict] = []
+    detail = (
+        "[181001] model call failed, reason: openAI API async stream error: "
+        "BadRequestError: deepseek-v4-X is invalid, use deepseek-v4-pro or deepseek-v4-flash"
+    )
+
+    async def _fake_stream(**kwargs):
+        yield SimpleNamespace(
+            type="controller_output",
+            payload={
+                "type": "task_failed",
+                "data": [{"type": "text", "text": detail}],
+            },
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+    class _FakeManager:
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            pass
+
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        lambda channel_id, session_id, event: broadcasted.append(event),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-teammate-error",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+    )
+
+    assert [event["event_type"] for event in broadcasted] == [
+        "chat.processing_status",
+        "chat.error",
+    ]
+    assert "deepseek-v4-X" in broadcasted[1]["error"]
+    assert broadcasted[1]["role"] == TeamRole.TEAMMATE.value
+    assert broadcasted[1]["member_name"] == "analyst"
+
+
 def test_extract_query_directives_strips_hide_dm_prefix_and_flags():
     cleaned, hide_dm, debug = team_helpers._extract_query_directives(  # pylint: disable=protected-access
         "/hide_dm please summarize"
