@@ -306,10 +306,188 @@ type FileViewerState = {
   searchTerm: string;    // Search term
 };
 
-class ComposerAutocompleteProvider implements AutocompleteProvider {
-  constructor(private readonly inner: AutocompleteProvider) {}
+const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
-  getSuggestions(
+function findLastPathDelimiter(text: string): number {
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (PATH_DELIMITERS.has(text[i] ?? "")) return i;
+  }
+  return -1;
+}
+
+function isPathTokenStart(text: string, index: number): boolean {
+  return index === 0 || PATH_DELIMITERS.has(text[index - 1] ?? "");
+}
+
+function extractQuotedAtPrefix(text: string): string | null {
+  let inQuotes = false;
+  let quoteStart = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') {
+      inQuotes = !inQuotes;
+      if (inQuotes) quoteStart = i;
+    }
+  }
+  if (!inQuotes) return null;
+  if (quoteStart > 0 && text[quoteStart - 1] === "@") {
+    if (!isPathTokenStart(text, quoteStart - 1)) return null;
+    return text.slice(quoteStart - 1);
+  }
+  if (!isPathTokenStart(text, quoteStart)) return null;
+  return text.slice(quoteStart);
+}
+
+function extractAtPrefix(textBeforeCursor: string): string | null {
+  const quotedPrefix = extractQuotedAtPrefix(textBeforeCursor);
+  if (quotedPrefix?.startsWith('@"')) return quotedPrefix;
+  const lastDelim = findLastPathDelimiter(textBeforeCursor);
+  const tokenStart = lastDelim === -1 ? 0 : lastDelim + 1;
+  if (textBeforeCursor[tokenStart] === "@") {
+    return textBeforeCursor.slice(tokenStart);
+  }
+  return null;
+}
+
+interface ParsedPathPrefix {
+  rawPrefix: string;
+  isAtPrefix: boolean;
+  isQuotedPrefix: boolean;
+}
+
+function parseAtPathPrefix(prefix: string): ParsedPathPrefix {
+  if (prefix.startsWith('@"')) return { rawPrefix: prefix.slice(2), isAtPrefix: true, isQuotedPrefix: true };
+  if (prefix.startsWith('"')) return { rawPrefix: prefix.slice(1), isAtPrefix: false, isQuotedPrefix: true };
+  if (prefix.startsWith("@")) return { rawPrefix: prefix.slice(1), isAtPrefix: true, isQuotedPrefix: false };
+  return { rawPrefix: prefix, isAtPrefix: false, isQuotedPrefix: false };
+}
+
+function expandHomePrefix(filePath: string): string {
+  if (filePath.startsWith("~/")) {
+    const expanded = path.join(os.homedir(), filePath.slice(2));
+    return filePath.endsWith("/") && !expanded.endsWith(path.sep) ? `${expanded}/` : expanded;
+  }
+  if (filePath === "~") return os.homedir();
+  return filePath;
+}
+
+function buildAtCompletionValue(filePath: string, opts: { isAtPrefix: boolean; isQuotedPrefix: boolean }): string {
+  const needsQuotes = opts.isQuotedPrefix || filePath.includes(" ");
+  const at = opts.isAtPrefix ? "@" : "";
+  if (!needsQuotes) return `${at}${filePath}`;
+  return `${at}"${filePath}"`;
+}
+
+function fallbackAtFileSuggestions(
+  textBeforeCursor: string,
+  cwd: string,
+): { items: AutocompleteItem[]; prefix: string } | null {
+  const atPrefix = extractAtPrefix(textBeforeCursor);
+  if (!atPrefix) return null;
+
+  const { rawPrefix, isAtPrefix, isQuotedPrefix } = parseAtPathPrefix(atPrefix);
+  let expandedPrefix = rawPrefix;
+  if (expandedPrefix.startsWith("~")) {
+    expandedPrefix = expandHomePrefix(expandedPrefix);
+  }
+
+  const isRootPrefix =
+    rawPrefix === "" ||
+    rawPrefix === "./" ||
+    rawPrefix === "../" ||
+    rawPrefix === "~" ||
+    rawPrefix === "~/" ||
+    rawPrefix === "/" ||
+    (isAtPrefix && rawPrefix === "");
+
+  let searchDir: string;
+  let searchPrefix: string;
+
+  if (isRootPrefix) {
+    searchDir = rawPrefix.startsWith("~") || expandedPrefix.startsWith("/") ? expandedPrefix : path.join(cwd, expandedPrefix);
+    searchPrefix = "";
+  } else if (rawPrefix.endsWith("/")) {
+    searchDir = rawPrefix.startsWith("~") || expandedPrefix.startsWith("/") ? expandedPrefix : path.join(cwd, expandedPrefix);
+    searchPrefix = "";
+  } else {
+    const dir = path.dirname(expandedPrefix);
+    const file = path.basename(expandedPrefix);
+    searchDir = rawPrefix.startsWith("~") || expandedPrefix.startsWith("/") ? dir : path.join(cwd, dir);
+    searchPrefix = file;
+  }
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(searchDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const suggestions: AutocompleteItem[] = [];
+  for (const entry of entries) {
+    if (!entry.name.toLowerCase().startsWith(searchPrefix.toLowerCase())) continue;
+
+    let isDirectory = entry.isDirectory();
+    if (!isDirectory && entry.isSymbolicLink()) {
+      try {
+        isDirectory = fs.statSync(path.join(searchDir, entry.name)).isDirectory();
+      } catch {
+        continue;
+      }
+    }
+
+    const name = entry.name;
+    const displayPrefix = rawPrefix;
+    let relativePath: string;
+
+    if (displayPrefix.endsWith("/")) {
+      relativePath = displayPrefix + name;
+    } else if (displayPrefix.includes("/") || displayPrefix.includes("\\")) {
+      if (displayPrefix.startsWith("~/")) {
+        const homeRelativeDir = displayPrefix.slice(2);
+        const parentDir = path.dirname(homeRelativeDir);
+        relativePath = `~/${parentDir === "." ? name : path.join(parentDir, name)}`;
+      } else if (displayPrefix.startsWith("/")) {
+        const parentDir = path.dirname(displayPrefix);
+        relativePath = parentDir === "/" ? `/${name}` : `${parentDir}/${name}`;
+      } else {
+        relativePath = path.join(path.dirname(displayPrefix), name);
+        if (displayPrefix.startsWith("./") && !relativePath.startsWith("./")) {
+          relativePath = `./${relativePath}`;
+        }
+      }
+    } else {
+      relativePath = displayPrefix.startsWith("~") ? `~/${name}` : name;
+    }
+
+    relativePath = relativePath.replace(/\\/g, "/");
+    const pathValue = isDirectory ? `${relativePath}/` : relativePath;
+    const value = buildAtCompletionValue(pathValue, { isAtPrefix, isQuotedPrefix });
+    const displayLabel = relativePath + (isDirectory ? "/" : "");
+    suggestions.push({
+      value,
+      label: displayLabel,
+      description: isDirectory ? "directory" : undefined,
+    });
+  }
+
+  suggestions.sort((a, b) => {
+    const aIsDir = a.value.endsWith("/");
+    const bIsDir = b.value.endsWith("/");
+    if (aIsDir && !bIsDir) return -1;
+    if (!aIsDir && bIsDir) return 1;
+    return a.label.localeCompare(b.label);
+  });
+
+  return suggestions.length > 0 ? { items: suggestions, prefix: atPrefix } : null;
+}
+
+class ComposerAutocompleteProvider implements AutocompleteProvider {
+  constructor(
+    private readonly inner: AutocompleteProvider,
+    private readonly cwd: string,
+  ) {}
+
+  async getSuggestions(
     lines: string[],
     cursorLine: number,
     cursorCol: number,
@@ -321,10 +499,20 @@ class ComposerAutocompleteProvider implements AutocompleteProvider {
       textBeforeCursor.startsWith("/") && !textBeforeCursor.includes(" ");
 
     if (isCommandNameCompletion && cursorCol !== currentLine.length) {
-      return Promise.resolve(null);
+      return null;
     }
 
-    return this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
+    const innerResult = await this.inner.getSuggestions(lines, cursorLine, cursorCol, options);
+    if (innerResult) return innerResult;
+
+    if (options.signal.aborted) return null;
+
+    const atPrefix = extractAtPrefix(textBeforeCursor);
+    if (atPrefix) {
+      return fallbackAtFileSuggestions(textBeforeCursor, this.cwd);
+    }
+
+    return null;
   }
 
   applyCompletion(
@@ -342,7 +530,16 @@ class ComposerAutocompleteProvider implements AutocompleteProvider {
       return { lines, cursorLine, cursorCol };
     }
 
-    return this.inner.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+    const result = this.inner.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+
+    if (prefix.startsWith("@") && !result.lines[result.cursorLine]?.endsWith(" ")) {
+      const line = result.lines[result.cursorLine] ?? "";
+      const newLines = [...result.lines];
+      newLines[result.cursorLine] = line + " ";
+      return { lines: newLines, cursorLine: result.cursorLine, cursorCol: result.cursorCol + 1 };
+    }
+
+    return result;
   }
 }
 
@@ -5013,6 +5210,7 @@ export class AppScreen implements Component, Focusable {
         getCurrentCwd() || process.cwd(),
         resolveFdBinary(),
       ),
+      getCurrentCwd() || process.cwd(),
     );
   }
 
