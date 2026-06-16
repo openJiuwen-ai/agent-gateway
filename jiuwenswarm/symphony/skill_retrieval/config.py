@@ -7,7 +7,11 @@ from typing import Any
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import coerce_root_categories_value
+from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import (
+    DEFAULT_ROOT_CATEGORIES_TEXT,
+    coerce_root_categories_value,
+    parse_root_categories_text,
+)
 
 
 @dataclass(frozen=True)
@@ -172,7 +176,9 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 
 def _as_optional_root_categories(value: Any) -> Any:
-    return coerce_root_categories_value(value, allow_path=True)
+    return coerce_root_categories_value(value, allow_path=True) or parse_root_categories_text(
+        DEFAULT_ROOT_CATEGORIES_TEXT
+    )
 
 
 def _as_int(value: Any, default: int) -> int:

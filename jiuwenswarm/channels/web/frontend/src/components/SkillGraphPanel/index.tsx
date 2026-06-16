@@ -420,6 +420,10 @@ function isBuildRunningPayload(data: { build_progress?: BuildProgress }): boolea
   return data.build_progress?.status === 'running';
 }
 
+function isTerminalBuildStatus(status: BuildProgress['status'] | undefined): boolean {
+  return status === 'success' || status === 'error' || status === 'paused';
+}
+
 function buildStageLabel(stage: string, fallback: string, t: Translate): string {
   const key = BUILD_STAGE_TRANSLATION_KEYS[stage];
   if (!key) return fallback || stage || t('skills.graph.buildLogFallback');
@@ -710,6 +714,19 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     }
   }, []);
 
+  const resetBuildUiOnTerminalStatus = useCallback((data: { detail?: string; paused?: boolean; build_progress?: BuildProgress }): boolean => {
+    const status = data.build_progress?.status ?? (data.paused ? 'paused' : undefined);
+    if (!isTerminalBuildStatus(status)) return false;
+    externalBuildRunningRef.current = false;
+    setUpdating(false);
+    setBuildMode(null);
+    setLoading(false);
+    if (status === 'error') {
+      setError(data.detail || data.build_progress?.label || '技能总谱刷新失败');
+    }
+    return true;
+  }, []);
+
   useEffect(() => {
     graphRef.current = graph;
   }, [graph]);
@@ -934,7 +951,9 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         { timeoutMs: INDEX_UPDATE_TIMEOUT_MS },
       );
       applyBuildLog(data);
-      if (data.paused) {
+      const isPaused = data.paused || data.build_progress?.status === 'paused';
+      if (isPaused) {
+        resetBuildUiOnTerminalStatus(data);
         return;
       }
       if (!data.success) {
@@ -947,7 +966,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       setUpdating(false);
       setBuildMode(null);
     }
-  }, [applyBuildLog, loadGraph, t]);
+  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, t]);
 
   const pauseBuild = useCallback(async () => {
     setPausingBuild(true);
@@ -960,7 +979,11 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         { timeoutMs: 60_000 },
       );
       applyBuildLog(data);
-      if (!data.success && !data.paused) {
+      const isPaused = data.paused || data.build_progress?.status === 'paused';
+      if (resetBuildUiOnTerminalStatus(data)) {
+        return;
+      }
+      if (!data.success && !isPaused) {
         throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.pauseFailed', t));
       }
     } catch (err) {
@@ -968,7 +991,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     } finally {
       setPausingBuild(false);
     }
-  }, [applyBuildLog, t]);
+  }, [applyBuildLog, resetBuildUiOnTerminalStatus, t]);
 
   useEffect(() => {
     let stopped = false;
@@ -1006,6 +1029,13 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         if (!stopped) {
           setShowBuildLogPanel(true);
           applyBuildLog(data);
+          const status = data.build_progress?.status;
+          if (resetBuildUiOnTerminalStatus(data)) {
+            if (status === 'success') {
+              void loadGraph();
+            }
+            return;
+          }
         }
       } catch {
         // 轮询只用于补充进度日志；失败不覆盖主更新请求的错误处理。
@@ -1024,7 +1054,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, updating]);
+  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
     if (updating) return undefined;
