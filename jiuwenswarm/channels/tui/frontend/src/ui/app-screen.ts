@@ -78,6 +78,7 @@ import {
 } from "./components/team-shared.js";
 import { padToWidth, renderWrappedText } from "./rendering/text.js";
 import { chalk, editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
+import type { Hunk, GitDiffData, TurnDiff } from "../core/types.js";
 
 const END_CURSOR = "\x1b[7m \x1b[0m";
 const ENABLE_MOUSE_TRACKING = "\x1b[?1000h\x1b[?1006h";
@@ -315,6 +316,25 @@ type FileViewerState = {
   scrollOffset: number;  // Current scroll position
   searchMode: boolean;   // Whether in search mode
   searchTerm: string;    // Search term
+};
+
+interface DiffFileEntry {
+  filePath: string;
+  linesAdded: number;
+  linesRemoved: number;
+  isNewFile: boolean;
+  isUntracked: boolean;
+  hunks: Hunk[];
+  source: "working" | string;
+}
+
+type DiffViewerState = {
+  viewMode: "list" | "detail";
+  selectedIndex: number;
+  files: DiffFileEntry[];
+  scrollOffset: number;
+  title: string;
+  subtitle: string;
 };
 
 const PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
@@ -1116,6 +1136,8 @@ export class AppScreen implements Component, Focusable {
   private composerAttachments: FileAttachment[] = [];
   /** FileViewer state for viewing large content (e.g., formatted logs) */
   private fileViewerState: FileViewerState | null = null;
+  /** DiffViewer state for interactive diff browsing */
+  private diffViewerState: DiffViewerState | null = null;
   /** Previous session title for terminal window title sync. */
   private previousSessionTitle: string = "";
 
@@ -1410,6 +1432,277 @@ export class AppScreen implements Component, Focusable {
     return lines;
   }
 
+  /** Enter DiffViewer mode to browse git/turn diffs interactively */
+  enterDiffViewer(payload: Record<string, unknown>): void {
+    const turns = (payload.turns || []) as TurnDiff[];
+    const gitDiff = (payload.gitDiff || null) as GitDiffData | null;
+    const files: DiffFileEntry[] = [];
+
+    if (gitDiff) {
+      for (const f of Object.values(gitDiff.files)) {
+        files.push({
+          filePath: f.filePath,
+          linesAdded: f.linesAdded,
+          linesRemoved: f.linesRemoved,
+          isNewFile: f.isNewFile,
+          isUntracked: f.isNewFile,
+          hunks: f.hunks || [],
+          source: "working",
+        });
+      }
+    }
+
+    for (const turn of turns) {
+      for (const f of Object.values(turn.files)) {
+        files.push({
+          filePath: f.filePath,
+          linesAdded: f.linesAdded,
+          linesRemoved: f.linesRemoved,
+          isNewFile: f.isNewFile,
+          isUntracked: false,
+          hunks: f.hunks || [],
+          source: `Turn ${turn.turnIndex}`,
+        });
+      }
+    }
+
+    const totalAdded = files.reduce((s, f) => s + f.linesAdded, 0);
+    const totalRemoved = files.reduce((s, f) => s + f.linesRemoved, 0);
+    const title = `Diff`;
+    const subtitle = `${files.length} files changed  +${totalAdded} -${totalRemoved}`;
+
+    this.diffViewerState = {
+      viewMode: "list",
+      selectedIndex: 0,
+      files,
+      scrollOffset: 0,
+      title,
+      subtitle,
+    };
+    this.tui.requestRender();
+  }
+
+  exitDiffViewer(): void {
+    this.diffViewerState = null;
+    this.tui.requestRender();
+  }
+
+  private handleDiffViewerInput(data: string, height: number): void {
+    if (!this.diffViewerState) return;
+
+    if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
+      if (this.diffViewerState.viewMode === "detail") {
+        this.diffViewerState.viewMode = "list";
+        this.diffViewerState.scrollOffset = 0;
+      } else {
+        this.exitDiffViewer();
+      }
+      this.tui.requestRender();
+      return;
+    }
+
+    if (this.diffViewerState.viewMode === "list") {
+      const visibleFiles = Math.max(1, height - 5);
+      if (matchesKey(data, "up") || data.toLowerCase() === "k") {
+        if (this.diffViewerState.selectedIndex > 0) {
+          this.diffViewerState.selectedIndex--;
+          if (this.diffViewerState.selectedIndex < this.diffViewerState.scrollOffset) {
+            this.diffViewerState.scrollOffset = this.diffViewerState.selectedIndex;
+          }
+          this.tui.requestRender();
+        }
+        return;
+      }
+      if (matchesKey(data, "down") || data.toLowerCase() === "j") {
+        if (this.diffViewerState.selectedIndex < this.diffViewerState.files.length - 1) {
+          this.diffViewerState.selectedIndex++;
+          if (this.diffViewerState.selectedIndex >= this.diffViewerState.scrollOffset + visibleFiles) {
+            this.diffViewerState.scrollOffset = this.diffViewerState.selectedIndex - visibleFiles + 1;
+          }
+          this.tui.requestRender();
+        }
+        return;
+      }
+      if (matchesKey(data, "return")) {
+        const file = this.diffViewerState.files[this.diffViewerState.selectedIndex];
+        if (file) {
+          this.diffViewerState.viewMode = "detail";
+          this.diffViewerState.scrollOffset = 0;
+          this.tui.requestRender();
+        }
+        return;
+      }
+      if (matchesKey(data, "home") || data.toLowerCase() === "g") {
+        this.diffViewerState.selectedIndex = 0;
+        this.diffViewerState.scrollOffset = 0;
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "end") || data.toLowerCase() === "shift+g") {
+        this.diffViewerState.selectedIndex = Math.max(0, this.diffViewerState.files.length - 1);
+        this.diffViewerState.scrollOffset = Math.max(0, this.diffViewerState.files.length - visibleFiles);
+        this.tui.requestRender();
+        return;
+      }
+      return;
+    }
+
+    if (this.diffViewerState.viewMode === "detail") {
+      const file = this.diffViewerState.files[this.diffViewerState.selectedIndex];
+      if (!file) return;
+
+      if (matchesKey(data, "left") || data.toLowerCase() === "h") {
+        this.diffViewerState.viewMode = "list";
+        this.diffViewerState.scrollOffset = 0;
+        this.tui.requestRender();
+        return;
+      }
+
+      const totalLines = this._countDiffLines(file);
+      const availableHeight = Math.max(1, height - 3);
+
+      if (matchesKey(data, "up") || data.toLowerCase() === "k") {
+        this.diffViewerState.scrollOffset = Math.max(0, this.diffViewerState.scrollOffset - 1);
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "down") || data.toLowerCase() === "j") {
+        const maxScroll = Math.max(0, totalLines - availableHeight);
+        this.diffViewerState.scrollOffset = Math.min(maxScroll, this.diffViewerState.scrollOffset + 1);
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "pageUp")) {
+        this.diffViewerState.scrollOffset = Math.max(0, this.diffViewerState.scrollOffset - availableHeight);
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "pageDown")) {
+        const maxScroll = Math.max(0, totalLines - availableHeight);
+        this.diffViewerState.scrollOffset = Math.min(maxScroll, this.diffViewerState.scrollOffset + availableHeight);
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "home") || data.toLowerCase() === "g") {
+        this.diffViewerState.scrollOffset = 0;
+        this.tui.requestRender();
+        return;
+      }
+      if (matchesKey(data, "end") || data.toLowerCase() === "shift+g") {
+        const maxScroll = Math.max(0, totalLines - availableHeight);
+        this.diffViewerState.scrollOffset = maxScroll;
+        this.tui.requestRender();
+        return;
+      }
+      return;
+    }
+  }
+
+  private _countDiffLines(file: DiffFileEntry): number {
+    let count = 2;
+    for (const hunk of file.hunks) {
+      count++;
+      count += hunk.lines.length;
+    }
+    return count;
+  }
+
+  private _toRelativePath(absPath: string): string {
+    const cwd = getCurrentCwd() || process.cwd();
+    const normalized = path.resolve(absPath);
+    if (normalized.startsWith(cwd + path.sep) || normalized === cwd) {
+      const rel = path.relative(cwd, normalized);
+      return rel || path.basename(absPath);
+    }
+    return absPath;
+  }
+
+  private _renderDiffDetailLines(file: DiffFileEntry, width: number): string[] {
+    const lines: string[] = [];
+    const displayPath = this._toRelativePath(file.filePath);
+    const label = file.isUntracked ? "(untracked)" : file.isNewFile ? "(new)" : "";
+
+    lines.push(`│   ${displayPath} ${label} +${file.linesAdded} -${file.linesRemoved}`);
+    lines.push(`│   ${"─".repeat(Math.max(0, width - 4))}`);
+
+    for (const hunk of file.hunks) {
+      lines.push(`│     @@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+      for (const line of hunk.lines) {
+        const display = `│     ${line}`;
+        lines.push(truncateToWidth(display, width, ""));
+      }
+    }
+    return lines;
+  }
+
+  private renderDiffViewer(width: number): string[] {
+    if (!this.diffViewerState) return [];
+
+    const safeWidth = Math.max(1, width);
+    const lines: string[] = [];
+
+    // Title
+    lines.push(padToWidth(palette.border.panel(`━━━ ${this.diffViewerState.title} ━━━`), safeWidth));
+    // Subtitle
+    lines.push(padToWidth(palette.text.dim(`  ${this.diffViewerState.subtitle}`), safeWidth));
+    lines.push(padToWidth(palette.text.dim(`  ${"─".repeat(Math.max(0, safeWidth - 4))}`), safeWidth));
+
+    if (this.diffViewerState.viewMode === "list") {
+      const availableHeight = Math.max(1, this.tui.terminal.rows - 5);
+
+      for (let i = this.diffViewerState.scrollOffset; i < this.diffViewerState.files.length; i++) {
+        const file = this.diffViewerState.files[i]!;
+        const isSelected = i === this.diffViewerState.selectedIndex;
+        const pointer = isSelected ? "❯ " : "  ";
+        const relativePath = this._toRelativePath(file.filePath);
+        const displayPath = relativePath.length > safeWidth - 16
+          ? relativePath.slice(0, safeWidth - 19) + "..."
+          : relativePath;
+        const label = file.isUntracked ? "untracked" : file.source;
+        const stats = `+${file.linesAdded} -${file.linesRemoved}`;
+        const line = `${pointer}${displayPath}`;
+        const padded = padToWidth(line, safeWidth - stats.length - label.length - 3);
+        const fullLine = `${padded}${label} ${stats}`;
+        if (isSelected) {
+          lines.push(palette.text.accent(fullLine));
+        } else {
+          lines.push(fullLine);
+        }
+
+        if (lines.length >= availableHeight + 4) break;
+      }
+    } else {
+      const file = this.diffViewerState.files[this.diffViewerState.selectedIndex];
+      if (!file) return lines;
+
+      const detailLines = this._renderDiffDetailLines(file, safeWidth);
+      const availableHeight = Math.max(1, this.tui.terminal.rows - 4);
+
+      const offset = this.diffViewerState.scrollOffset;
+      const maxLines = Math.min(detailLines.length, offset + availableHeight);
+
+      for (let i = offset; i < maxLines; i++) {
+        lines.push(detailLines[i] || "");
+      }
+
+      const totalLines = detailLines.length;
+      const scrollPercent = totalLines > 0 ? Math.round((offset / totalLines) * 100) : 0;
+      const positionInfo = totalLines > availableHeight
+        ? ` [${offset + 1}-${Math.min(offset + availableHeight, totalLines)}/${totalLines} (${scrollPercent}%)]`
+        : "";
+      const hintText = `  ↑/↓ scroll · ← back · Esc back${positionInfo}`;
+      lines.push(padToWidth(palette.text.dim(hintText), safeWidth));
+      return lines;
+    }
+
+    const hintText = this.diffViewerState.files.length > 0
+      ? "  ↑/↓ to select · Enter to view · Esc to close"
+      : "  Esc to close";
+    lines.push(padToWidth(palette.text.dim(hintText), safeWidth));
+
+    return lines;
+  }
+
   /**
    * Ctrl+C / SIGINT 始终尝试向服务端发送当前 session 的中断请求。
    * 是否真的存在运行任务由服务端判断；CLI/TUI 本身不退出。
@@ -1427,6 +1720,12 @@ export class AppScreen implements Component, Focusable {
     // FileViewer mode: handle input separately
     if (this.fileViewerState) {
       this.handleFileViewerInput(data);
+      return;
+    }
+
+    // DiffViewer mode: handle input separately
+    if (this.diffViewerState) {
+      this.handleDiffViewerInput(data, this.tui.terminal.rows);
       return;
     }
 
@@ -1450,7 +1749,8 @@ export class AppScreen implements Component, Focusable {
       this.toolSelector !== null ||
       this.themeList !== null ||
       this.swarmWorkflowsViewState !== null ||
-      this.configEditorState !== null;
+      this.configEditorState !== null ||
+      this.diffViewerState !== null;
 
     if (!pendingQuestion && !hasOverlay && this.handleTranscriptScrollInput(data)) {
       return;
@@ -1879,6 +2179,11 @@ export class AppScreen implements Component, Focusable {
       return this.renderFileViewer(width);
     }
 
+    // DiffViewer mode: render diff viewer instead of normal view
+    if (this.diffViewerState) {
+      return this.renderDiffViewer(width);
+    }
+
     const snapshot = this.state.getSnapshot();
     const teamWorking =
       isTeamMode(snapshot.mode) &&
@@ -2248,6 +2553,9 @@ export class AppScreen implements Component, Focusable {
           },
           enterFileViewer: (content, title, source) => {
             this.enterFileViewer(content, title, source);
+          },
+          enterDiffViewer: (payload) => {
+            this.enterDiffViewer(payload);
           },
         });
       } finally {
