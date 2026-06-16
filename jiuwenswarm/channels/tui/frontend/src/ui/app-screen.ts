@@ -42,7 +42,11 @@ import {
   type ModelListPayload,
   isReservedMultimodalModelKey,
 } from "../core/commands/builtins/model.js";
-import type { SessionListPayload, SessionMeta } from "../core/commands/builtins/resume.js";
+import {
+  sanitizeSessionList,
+  type SessionListPayload,
+  type SessionMeta,
+} from "../core/commands/builtins/resume.js";
 import type { ConfigItemSchema } from "../core/commands/builtins/config.js";
 import type { McpListItem, McpListPayload } from "../core/commands/builtins/mcp.js";
 import { buildModeAutocompleteItems } from "../core/commands/builtins/mode.js";
@@ -996,7 +1000,7 @@ type ResumeItemOptions = {
 };
 
 function computeResumeItems(sessions: SessionMeta[], opts: ResumeItemOptions): SelectItem[] {
-  let list = sessions;
+  let list = sanitizeSessionList(sessions);
   // 按 git 分支过滤（对齐 Claude Code Ctrl+B）：严格匹配当前分支。
   // 无分支记录的存量会话、以及非 git/HEAD 会话都会被过滤掉；关掉 Ctrl+B 即可看到全部。
   if (opts.branchFilter && opts.currentBranch) {
@@ -1006,7 +1010,7 @@ function computeResumeItems(sessions: SessionMeta[], opts: ResumeItemOptions): S
   if (normalizedQuery) {
     list = list.filter((s) => {
       const label = getDisplayLabel(s).toLowerCase();
-      const sid = s.session_id.toLowerCase();
+      const sid = s.session_id.toLowerCase(); // session_id 已由 sanitizeSessionList 保证非空
       const proj = (s.project_dir ?? "").toLowerCase();
       return (
         label.includes(normalizedQuery) ||
@@ -2773,7 +2777,7 @@ export class AppScreen implements Component, Focusable {
       const payload = await this.state.request<SessionListPayload>("session.list", {
         all_projects: allProjects,
       });
-      const sessions = payload.sessions ?? [];
+      const sessions = sanitizeSessionList(payload.sessions);
       const total = payload.total ?? sessions.length;
       const currentBranch = payload.current_branch ?? "HEAD";
       // 全部项目仍为空：确无可恢复会话，直接提示，不打开选择器
@@ -2820,7 +2824,7 @@ export class AppScreen implements Component, Focusable {
       const payload = await this.state.request<SessionListPayload>("session.list", {
         all_projects: next,
       });
-      const sessions = payload.sessions ?? [];
+      const sessions = sanitizeSessionList(payload.sessions);
       const total = payload.total ?? sessions.length;
       const currentBranch = payload.current_branch ?? this.resumeSessionList.currentBranch;
       const items = computeResumeItems(sessions, {
@@ -3035,8 +3039,10 @@ export class AppScreen implements Component, Focusable {
       );
       const newTitle = resp.title ?? title;
       // 就地更新本地会话标题并重建列表项
-      const sessions = st.sessions.map((s) =>
-        s.session_id === sessionId ? { ...s, title: newTitle } : s,
+      const sessions = sanitizeSessionList(
+        st.sessions.map((s) =>
+          s.session_id === sessionId ? { ...s, title: newTitle } : s,
+        ),
       );
       const items = computeResumeItems(sessions, {
         query: st.searchQuery,

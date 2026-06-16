@@ -1173,6 +1173,23 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(resp.payload, dict)
             else []
         )
+        # 过滤掉 None/非 dict/无效 session_id，防止前端 SelectList.render() 崩溃
+        normalized_sessions = []
+        for s in all_sessions:
+            if not s or not isinstance(s, dict):
+                continue
+            raw_sid = s.get("session_id")
+            if isinstance(raw_sid, str):
+                session_id = raw_sid.strip()
+            elif raw_sid is not None:
+                session_id = str(raw_sid).strip()
+            else:
+                session_id = ""
+            if not session_id:
+                continue
+            s["session_id"] = session_id
+            normalized_sessions.append(s)
+        all_sessions = normalized_sessions
         # 按项目目录过滤 + 排除当前会话（对齐 Claude Code /resume 行为）
         # all_projects=True 时跳过项目过滤，列出所有项目的会话（对齐 CC 的 Ctrl+A）
         show_all_projects = (
