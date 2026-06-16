@@ -34,7 +34,7 @@ symphony:
   build:
     workers: 4
     batch_size: 16
-    require_consensus: true
+    require_consensus: false
     min_edge_confidence: 0.1
 
   orchestration:

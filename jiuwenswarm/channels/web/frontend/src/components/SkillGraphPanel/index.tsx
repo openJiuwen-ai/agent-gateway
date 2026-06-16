@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   AlertTriangle,
   Focus,
@@ -83,6 +91,14 @@ type SkillGraphStatus = {
   build_log?: BuildLogEntry[];
   build_progress?: BuildProgress;
   llm_token_usage?: LLMTokenUsageSummary;
+};
+
+export type SkillGraphPanelHandle = {
+  refresh: () => boolean;
+};
+
+type SkillGraphPanelProps = {
+  onReadingChange?: (reading: boolean) => void;
 };
 
 type GraphNode = {
@@ -640,7 +656,10 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
   ].map((item) => asString(item)).join('|');
 }
 
-export function SkillGraphPanel() {
+export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
+  { onReadingChange },
+  ref,
+) {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
@@ -1315,6 +1334,24 @@ export function SkillGraphPanel() {
   const detailOutputs = selectedNode ? asDetailItems(selectedNode.properties.outputs, t('skills.graph.required')) : [];
   const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
 
+  useImperativeHandle(ref, () => ({
+    refresh: () => {
+      if (isBusy) {
+        return false;
+      }
+      void loadGraph();
+      return true;
+    },
+  }), [isBusy, loadGraph]);
+
+  useEffect(() => {
+    onReadingChange?.(loading);
+  }, [loading, onReadingChange]);
+
+  useEffect(() => () => {
+    onReadingChange?.(false);
+  }, [onReadingChange]);
+
   return (
     <div className="skill-graph-panel">
       <aside className="skill-graph-panel__sidebar">
@@ -1582,4 +1619,4 @@ export function SkillGraphPanel() {
       </aside>
     </div>
   );
-}
+});
