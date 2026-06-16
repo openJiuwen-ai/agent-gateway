@@ -1494,7 +1494,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                   : "text-text-muted hover:text-text"
               }`}
             >
-              技能总谱
+              {t('skills.tabs.skillGraph')}
             </button>
             <button
               onClick={() => setActiveTab("index")}

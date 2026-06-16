@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Search,
 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
 import './SkillGraphPanel.css';
 
@@ -139,6 +140,55 @@ const INDEX_UPDATE_TIMEOUT_MS = 1_800_000;
 const DEFAULT_MIN_CONFIDENCE = 0.7;
 
 type SymphonyBuildMode = 'incremental' | 'full';
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+const BUILD_STAGE_TRANSLATION_KEYS: Record<string, string> = {
+  idle: 'idle',
+  'update.start': 'updateStart',
+  'update.pause_requested': 'updatePauseRequested',
+  'update.paused': 'updatePaused',
+  'scan.start': 'scanStart',
+  'scan.done': 'scanDone',
+  'diff.done': 'diffDone',
+  'fingerprint.reuse': 'fingerprintReuse',
+  'fingerprint.parse.start': 'fingerprintParseStart',
+  'fingerprint.extract.start': 'fingerprintExtractStart',
+  'fingerprint.normalize.start': 'fingerprintNormalizeStart',
+  'fingerprint.done': 'fingerprintDone',
+  'artifact.fingerprints.write.start': 'artifactFingerprintsWriteStart',
+  'artifact.fingerprints.write.done': 'artifactFingerprintsWriteDone',
+  'graph.build.start': 'graphBuildStart',
+  'graph.registry.start': 'graphRegistryStart',
+  'graph.registry.done': 'graphRegistryDone',
+  'graph.candidates.start': 'graphCandidatesStart',
+  'graph.candidates.done': 'graphCandidatesDone',
+  'graph.resolve.start': 'graphResolveStart',
+  'graph.resolve.progress': 'graphResolveProgress',
+  'graph.resolve.done': 'graphResolveDone',
+  'graph.materialize.start': 'graphMaterializeStart',
+  'graph.materialize.done': 'graphMaterializeDone',
+  'graph.score.start': 'graphScoreStart',
+  'graph.score.done': 'graphScoreDone',
+  'graph.build.done': 'graphBuildDone',
+  'artifact.graph.write.start': 'artifactGraphWriteStart',
+  'artifact.graph.write.done': 'artifactGraphWriteDone',
+  'state.write.start': 'stateWriteStart',
+  'state.write.done': 'stateWriteDone',
+  'update.failed': 'updateFailed',
+  'update.done': 'updateDone',
+};
+
+const SERVER_DETAIL_TRANSLATION_KEYS: Record<string, string> = {
+  '当前没有正在运行的技能总谱构建。': 'skills.graph.serverDetails.noRunningBuild',
+  '已请求暂停技能总谱构建，已完成的缓存和 checkpoint 会保留。': 'skills.graph.serverDetails.pauseRequested',
+  '已有技能总谱构建正在运行，请等待完成或先暂停当前构建。': 'skills.graph.serverDetails.buildRunning',
+  '技能总谱构建已暂停，可再次执行增量构建继续。': 'skills.graph.serverDetails.buildPaused',
+  '技能总谱不存在或不完整，请先构建总谱。': 'skills.graph.serverDetails.scoreMissing',
+};
+
+const SERVER_DETAIL_PREFIX_TRANSLATION_KEYS: Array<{ prefix: string; key: string }> = [
+  { prefix: 'Symphony 总谱构建失败:', key: 'skills.graph.errors.buildFailedWithDetail' },
+];
 
 function asString(value: unknown, fallback = ''): string {
   if (value === undefined || value === null) return fallback;
@@ -179,7 +229,7 @@ function asArray(value: unknown): RawRecord[] {
   return Array.isArray(value) ? value.filter((item): item is RawRecord => Boolean(item && typeof item === 'object')) : [];
 }
 
-function asDetailItems(value: unknown): DetailListItem[] {
+function asDetailItems(value: unknown, requiredLabel: string): DetailListItem[] {
   if (!Array.isArray(value)) return [];
   return value
     .map((item, index) => {
@@ -191,7 +241,7 @@ function asDetailItems(value: unknown): DetailListItem[] {
       if (!label) return null;
 
       const type = asString(record.type ?? record.kind ?? record.format).trim();
-      const required = record.required === true ? '必需' : '';
+      const required = record.required === true ? requiredLabel : '';
       const description = asString(record.description).trim();
       const meta = [type, required, description].filter(Boolean).join(' / ');
       return {
@@ -354,8 +404,31 @@ function isBuildRunningPayload(data: { build_progress?: BuildProgress }): boolea
   return data.build_progress?.status === 'running';
 }
 
-function buildLogSummary(entry: BuildLogEntry): string {
-  const label = asString(entry.label || entry.stage, '构建日志');
+function buildStageLabel(stage: string, fallback: string, t: Translate): string {
+  const key = BUILD_STAGE_TRANSLATION_KEYS[stage];
+  if (!key) return fallback || stage || t('skills.graph.buildLogFallback');
+  return t(`skills.graph.buildStages.${key}`, {
+    defaultValue: fallback || stage || t('skills.graph.buildLogFallback'),
+  });
+}
+
+function buildProgressLabel(progress: BuildProgress | null, updating: boolean, t: Translate): string {
+  if (progress) {
+    return buildStageLabel(
+      asString(progress.stage),
+      asString(progress.label, t('skills.graph.buildLogFallback')),
+      t,
+    );
+  }
+  return updating ? t('skills.graph.status.refreshing') : t('skills.graph.status.noBuildLogs');
+}
+
+function buildLogSummary(entry: BuildLogEntry, t: Translate): string {
+  const label = buildStageLabel(
+    asString(entry.stage),
+    asString(entry.label || entry.stage, t('skills.graph.buildLogFallback')),
+    t,
+  );
   const countKeys: Array<[string, string?]> = [
     ['current', 'total'],
     ['skill_count', undefined],
@@ -384,6 +457,18 @@ function formatBuildCount(value: unknown, total: unknown): string {
   return `${Math.max(0, Math.min(Math.round(parsedValue), Math.round(parsedTotal)))}/${Math.round(parsedTotal)}`;
 }
 
+function localizedServerDetail(detail: unknown, fallbackKey: string, t: Translate): string {
+  const text = asString(detail).trim();
+  if (!text) return t(fallbackKey);
+  const exactKey = SERVER_DETAIL_TRANSLATION_KEYS[text];
+  if (exactKey) return t(exactKey);
+  const prefixMatch = SERVER_DETAIL_PREFIX_TRANSLATION_KEYS.find(({ prefix }) => text.startsWith(prefix));
+  if (prefixMatch) {
+    return t(prefixMatch.key, { detail: text.slice(prefixMatch.prefix.length).trim() });
+  }
+  return text;
+}
+
 function normalizeTokenCount(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 0;
@@ -401,10 +486,14 @@ function tokenUsageTotal(usage: LLMTokenUsageSummary | null): LLMTokenUsageTotal
   };
 }
 
-function formatTokenUsage(usage: LLMTokenUsageSummary | null): string {
+function formatTokenUsage(usage: LLMTokenUsageSummary | null, t: Translate): string {
   const total = tokenUsageTotal(usage);
   if (!total) return '';
-  return `${(total.prompt_tokens || 0).toLocaleString()} in / ${(total.completion_tokens || 0).toLocaleString()} out / ${(total.total_tokens || 0).toLocaleString()} total`;
+  return t('skills.graph.tokenUsage', {
+    prompt: (total.prompt_tokens || 0).toLocaleString(),
+    completion: (total.completion_tokens || 0).toLocaleString(),
+    total: (total.total_tokens || 0).toLocaleString(),
+  });
 }
 
 function parseBuildLogTime(entry: BuildLogEntry | undefined): number {
@@ -552,6 +641,7 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export function SkillGraphPanel() {
+  const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const graphRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
   const visibleRef = useRef<NormalizedGraph>({ nodes: [], edges: [] });
@@ -762,7 +852,7 @@ export function SkillGraphPanel() {
           keepLoading = true;
           return;
         }
-        throw new Error(data.detail || '无法读取技能总谱，请先刷新总谱。');
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.readFailed', t));
       }
       const normalized = normalizeGraph(data);
       setPayload(data);
@@ -785,7 +875,7 @@ export function SkillGraphPanel() {
         setLoading(false);
       }
     }
-  }, [applyBuildLog, requestAutoFit]);
+  }, [applyBuildLog, requestAutoFit, t]);
 
   const restoreBuildStatus = useCallback(async (): Promise<boolean> => {
     const data = await webRequest<SkillGraphStatus>(
@@ -814,7 +904,7 @@ export function SkillGraphPanel() {
     setTokenUsage(null);
     setBuildProgress({
       stage: 'update.start',
-      label: force ? '准备全量重新构建技能总谱' : '准备增量构建技能总谱',
+      label: force ? t('skills.graph.status.prepareFull') : t('skills.graph.status.prepareIncremental'),
       percent: 3,
       status: 'running',
     });
@@ -829,7 +919,7 @@ export function SkillGraphPanel() {
         return;
       }
       if (!data.success) {
-        throw new Error(data.detail || '技能总谱刷新失败');
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.refreshFailed', t));
       }
       await loadGraph();
     } catch (err) {
@@ -838,7 +928,7 @@ export function SkillGraphPanel() {
       setUpdating(false);
       setBuildMode(null);
     }
-  }, [applyBuildLog, loadGraph]);
+  }, [applyBuildLog, loadGraph, t]);
 
   const pauseBuild = useCallback(async () => {
     setPausingBuild(true);
@@ -852,14 +942,14 @@ export function SkillGraphPanel() {
       );
       applyBuildLog(data);
       if (!data.success && !data.paused) {
-        throw new Error(data.detail || '技能总谱暂停失败');
+        throw new Error(localizedServerDetail(data.detail, 'skills.graph.errors.pauseFailed', t));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setPausingBuild(false);
     }
-  }, [applyBuildLog]);
+  }, [applyBuildLog, t]);
 
   useEffect(() => {
     let stopped = false;
@@ -1210,23 +1300,27 @@ export function SkillGraphPanel() {
   const createdAt = asString(manifest.created_at);
   const graphUpdatedAt = createdAt ? new Date(createdAt).toLocaleString() : '';
   const currentProgressPercent = progressPercent(buildProgress);
-  const progressLabel = buildProgress?.label || (updating ? '正在刷新技能总谱' : '暂无构建日志');
-  const progressTitle = isGraphBuildRunning ? '正在刷新技能总谱' : isGraphBuildPaused ? '技能总谱构建已暂停' : progressLabel;
+  const progressLabel = buildProgressLabel(buildProgress, updating, t);
+  const progressTitle = isGraphBuildRunning
+    ? t('skills.graph.status.refreshing')
+    : isGraphBuildPaused
+    ? t('skills.graph.status.paused')
+    : progressLabel;
   const recentBuildLog = compactBuildLog(buildLog).slice(-8);
-  const tokenUsageText = formatTokenUsage(tokenUsage);
+  const tokenUsageText = formatTokenUsage(tokenUsage, t);
   const elapsedText = buildElapsedText(buildLog, buildProgress, buildElapsedNow);
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
-  const detailInputs = selectedNode ? asDetailItems(selectedNode.properties.inputs) : [];
-  const detailOutputs = selectedNode ? asDetailItems(selectedNode.properties.outputs) : [];
-  const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks) : [];
+  const detailInputs = selectedNode ? asDetailItems(selectedNode.properties.inputs, t('skills.graph.required')) : [];
+  const detailOutputs = selectedNode ? asDetailItems(selectedNode.properties.outputs, t('skills.graph.required')) : [];
+  const detailTasks = selectedNode ? asDetailItems(selectedNode.properties.tasks, t('skills.graph.required')) : [];
 
   return (
     <div className="skill-graph-panel">
       <aside className="skill-graph-panel__sidebar">
         <div className="skill-graph-panel__stats skill-graph-panel__stats--compact">
-          <span><strong>{visibleSkillNodes.length}</strong>技能</span>
-          <span><strong>{visible.edges.length}</strong>边</span>
+          <span><strong>{visibleSkillNodes.length}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
+          <span><strong>{visible.edges.length}</strong>{t('skills.graph.stats.edgesSuffix')}</span>
         </div>
 
         <label className="skill-graph-panel__search">
@@ -1234,13 +1328,13 @@ export function SkillGraphPanel() {
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索技能"
+            placeholder={t('skills.graph.searchPlaceholder')}
           />
         </label>
 
         <div className="skill-graph-panel__filters">
           <label>
-            <span>最小置信度 {Math.round(minConfidence * 100)}%</span>
+            <span>{t('skills.graph.minConfidence', { percent: Math.round(minConfidence * 100) })}</span>
             <input
               type="range"
               min={graphMinConfidence}
@@ -1256,14 +1350,14 @@ export function SkillGraphPanel() {
         </div>
 
         <div className="skill-graph-panel__actions">
-          <button type="button" onClick={loadGraph} disabled={isBusy} title="读谱">
+          <button type="button" onClick={loadGraph} disabled={isBusy} title={t('skills.graph.actions.read')}>
             {loading ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RefreshCw size={16} aria-hidden="true" />}
           </button>
           <button
             type="button"
             onClick={() => void rebuildGraph('incremental')}
             disabled={isBusy}
-            title="增量构建"
+            title={t('skills.graph.actions.incrementalBuild')}
           >
             {isIncrementalBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <GitBranch size={16} aria-hidden="true" />}
           </button>
@@ -1271,7 +1365,7 @@ export function SkillGraphPanel() {
             type="button"
             onClick={pauseBuild}
             disabled={!canPauseBuild}
-            title="暂停构建"
+            title={t('skills.graph.actions.pauseBuild')}
           >
             {pausingBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}
           </button>
@@ -1279,11 +1373,11 @@ export function SkillGraphPanel() {
             type="button"
             onClick={() => void rebuildGraph('full')}
             disabled={isBusy}
-            title="全量重新构建"
+            title={t('skills.graph.actions.fullRebuild')}
           >
             {isFullBuild ? <Loader2 size={16} className="skill-graph-panel__spin" aria-hidden="true" /> : <RotateCcw size={16} aria-hidden="true" />}
           </button>
-          <button type="button" onClick={fitView} disabled={!visible.nodes.length} title="适配视图">
+          <button type="button" onClick={fitView} disabled={!visible.nodes.length} title={t('skills.graph.actions.fitView')}>
             <Focus size={16} aria-hidden="true" />
           </button>
         </div>
@@ -1304,12 +1398,12 @@ export function SkillGraphPanel() {
             ) : null}
             <div className="skill-graph-panel__log-list">
               {recentBuildLog.length === 0 ? (
-                <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">等待构建日志...</div>
+                <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.status.waitingBuildLogs')}</div>
               ) : (
                 recentBuildLog.map((entry, index) => (
                   <div className="skill-graph-panel__log-row" key={`${entry.ts || 'log'}-${entry.stage || index}-${index}`}>
                     <span>{buildLogTime(entry)}</span>
-                    <strong>{buildLogSummary(entry)}</strong>
+                    <strong>{buildLogSummary(entry, t)}</strong>
                   </div>
                 ))
               )}
@@ -1325,9 +1419,9 @@ export function SkillGraphPanel() {
         ) : null}
 
         <section className="skill-graph-panel__node-list">
-          <h3>技能列表</h3>
+          <h3>{t('skills.graph.skillList')}</h3>
           {visibleSkillNodes.length === 0 ? (
-            <div className="skill-graph-panel__empty">没有可显示的技能。</div>
+            <div className="skill-graph-panel__empty">{t('skills.graph.noVisibleSkills')}</div>
           ) : (
             [...visibleSkillNodes]
               .sort((a, b) => b.degree - a.degree)
@@ -1340,7 +1434,7 @@ export function SkillGraphPanel() {
                   onClick={() => selectNode(node)}
                 >
                   <span>{node.label}</span>
-                  <small>入度 {node.inDegree} · 出度 {node.outDegree}</small>
+                  <small>{t('skills.graph.degreeSummary', { inDegree: node.inDegree, outDegree: node.outDegree })}</small>
                 </button>
               ))
           )}
@@ -1350,7 +1444,7 @@ export function SkillGraphPanel() {
       <section className="skill-graph-panel__canvas-wrap">
         {graphUpdatedAt ? (
           <div className="skill-graph-panel__graph-meta">
-            更新时间 {graphUpdatedAt}
+            {t('skills.graph.updatedAt', { time: graphUpdatedAt })}
           </div>
         ) : null}
         <canvas
@@ -1392,7 +1486,7 @@ export function SkillGraphPanel() {
         {isBusy ? (
           <div className={`skill-graph-panel__loading${graphUpdatedAt ? ' skill-graph-panel__loading--below-meta' : ''}`}>
             <Loader2 size={18} className="skill-graph-panel__spin" aria-hidden="true" />
-            <span>{isGraphBuildRunning ? `${progressTitle} · ${currentProgressPercent}%` : '正在读取技能总谱'}</span>
+            <span>{isGraphBuildRunning ? `${progressTitle} · ${currentProgressPercent}%` : t('skills.graph.status.reading')}</span>
           </div>
         ) : null}
       </section>
@@ -1405,8 +1499,8 @@ export function SkillGraphPanel() {
               <p>{selectedNode.id}</p>
             </div>
             <div className="skill-graph-panel__detail-grid">
-              <span>入度<strong>{selectedNode.inDegree}</strong></span>
-              <span>出度<strong>{selectedNode.outDegree}</strong></span>
+              <span>{t('skills.graph.inDegree')}<strong>{selectedNode.inDegree}</strong></span>
+              <span>{t('skills.graph.outDegree')}<strong>{selectedNode.outDegree}</strong></span>
             </div>
             {asString(selectedNode.properties.description) ? (
               <p className="skill-graph-panel__description">
@@ -1415,9 +1509,9 @@ export function SkillGraphPanel() {
             ) : null}
             <div className="skill-graph-panel__io-sections">
               <section className="skill-graph-panel__io-section skill-graph-panel__io-section--input">
-                <h4>输入</h4>
+                <h4>{t('skills.graph.inputs')}</h4>
                 {detailInputs.length === 0 ? (
-                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">暂无输入</div>
+                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.noInputs')}</div>
                 ) : (
                   <div className="skill-graph-panel__tags">
                     {detailInputs.slice(0, 18).map((item) => (
@@ -1430,9 +1524,9 @@ export function SkillGraphPanel() {
                 )}
               </section>
               <section className="skill-graph-panel__io-section skill-graph-panel__io-section--output">
-                <h4>输出</h4>
+                <h4>{t('skills.graph.outputs')}</h4>
                 {detailOutputs.length === 0 ? (
-                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">暂无输出</div>
+                  <div className="skill-graph-panel__empty skill-graph-panel__empty--compact">{t('skills.graph.noOutputs')}</div>
                 ) : (
                   <div className="skill-graph-panel__tags">
                     {detailOutputs.slice(0, 18).map((item) => (
@@ -1446,7 +1540,7 @@ export function SkillGraphPanel() {
               </section>
               {detailTasks.length > 0 ? (
                 <section className="skill-graph-panel__io-section skill-graph-panel__io-section--task">
-                  <h4>任务</h4>
+                  <h4>{t('skills.graph.tasks')}</h4>
                   <div className="skill-graph-panel__tags">
                     {detailTasks.slice(0, 18).map((item) => (
                       <span key={item.key} title={item.meta || item.label}>
@@ -1459,9 +1553,9 @@ export function SkillGraphPanel() {
               ) : null}
             </div>
             <div className="skill-graph-panel__related">
-              <h4>相关边</h4>
+              <h4>{t('skills.graph.relatedEdges')}</h4>
               {relatedEdges.length === 0 ? (
-                <div className="skill-graph-panel__empty">暂无相关边。</div>
+                <div className="skill-graph-panel__empty">{t('skills.graph.noRelatedEdges')}</div>
               ) : (
                 relatedEdges.slice(0, 80).map((edge, index) => {
                   const otherId = edge.source === selectedNode.id ? edge.target : edge.source;
@@ -1483,7 +1577,7 @@ export function SkillGraphPanel() {
             </div>
           </>
         ) : (
-          <div className="skill-graph-panel__empty skill-graph-panel__detail-empty">选择一个技能查看指纹</div>
+          <div className="skill-graph-panel__empty skill-graph-panel__detail-empty">{t('skills.graph.selectSkillHint')}</div>
         )}
       </aside>
     </div>
