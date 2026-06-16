@@ -859,7 +859,7 @@ class JiuWenSwarmDeepAdapter:
         if not bucket:
             self._session_agent_tasks.pop(sid, None)
 
-    def _cancel_session_agent_tasks(self, session_id: str) -> int:
+    async def _cancel_session_agent_tasks(self, session_id: str) -> int:
         sid = self._resolve_interrupt_session_id(session_id)
         tasks_dict = getattr(self, "_session_agent_tasks", None)
         if not tasks_dict:
@@ -876,6 +876,11 @@ class JiuWenSwarmDeepAdapter:
                 cancelled,
                 sid,
             )
+            # 等待被取消的任务完成清理，避免僵尸调用：
+            # task.cancel() 只调度 CancelledError，不保证任务已停止。
+            # 如果不等待，后续 interrupt 处理（rail.abort, instance.abort）
+            # 可能与任务清理并发执行，且调用方可能在任务仍在运行时返回"成功"。
+            await asyncio.gather(*[t for t in tasks if t is not None], return_exceptions=True)
         return cancelled
 
     def _clear_a2x_runtime_state(self) -> None:
@@ -4042,7 +4047,7 @@ class JiuWenSwarmDeepAdapter:
     def _resolve_interrupt_session_id(session_id: str | None) -> str:
         return (session_id or "default").strip() or "default"
 
-    def _stop_session_interrupt_work(
+    async def _stop_session_interrupt_work(
         self,
         session_id: str | None,
         *,
@@ -4052,7 +4057,7 @@ class JiuWenSwarmDeepAdapter:
         """Per-session teardown: rail abort, shell kill, cancelled tool collection."""
         sid = self._resolve_interrupt_session_id(session_id)
         cancelled_tool_results: list[dict[str, Any]] = []
-        cancelled_tasks = self._cancel_session_agent_tasks(sid)
+        cancelled_tasks = await self._cancel_session_agent_tasks(sid)
         if self._stream_event_rail is not None:
             self._stream_event_rail.abort(session_id or sid)
             self._stream_event_rail.collect_cancelled_tool_updates(session_id or sid)
@@ -4183,7 +4188,7 @@ class JiuWenSwarmDeepAdapter:
 
         elif intent == "supplement":
             # supplement: 停止当前执行，但保留 todo（新任务会根据 todo 待办继续执行）
-            cancelled_tool_results = self._stop_session_interrupt_work(
+            cancelled_tool_results = await self._stop_session_interrupt_work(
                 request.session_id,
                 intent="supplement",
             )
@@ -4205,7 +4210,7 @@ class JiuWenSwarmDeepAdapter:
             # DeepAgent 的 _run_task_loop_stream 后台 Task 不会停止
             # （stream_task.cancel() 只取消了 chunk 转发 Task，不影响 _stream_process）。
             # SessionManager.cancel_session_task 仅管理非流式队列 Task，对流式后台 Task 无效。
-            cancelled_tool_results = self._stop_session_interrupt_work(
+            cancelled_tool_results = await self._stop_session_interrupt_work(
                 request.session_id,
                 intent="cancel",
                 reset_for_new_task=True,
