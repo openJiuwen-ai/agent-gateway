@@ -137,6 +137,54 @@ def _agentic_retrieval_config(enabled: bool = True) -> dict:
     return {"symphony": {"skill_retrieval": {"enabled": enabled}}}
 
 
+class _FakeEvolutionInterruptRail:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class _FakeEvolutionRail:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        self.swarm_context = {}
+        self.approval_submission_service = object()
+
+    def bind_swarm_context(self, **kwargs) -> None:
+        self.swarm_context.update(kwargs)
+
+
+class _FakeMemberSkillEvolutionRail(_FakeEvolutionRail):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bound_sink = None
+
+    def set_trajectory_sink(self, sink, *, team_id, member_role) -> None:
+        self.bound_sink = (sink, team_id, member_role)
+
+
+def _assert_evolution_approval_stack(
+    built: list[object],
+    rail_type: type,
+    *,
+    auto_save: bool,
+    language: str,
+):
+    assert len(built) == 2
+    interrupt_rail, rail = built
+    assert isinstance(rail, rail_type)
+    assert isinstance(interrupt_rail, _FakeEvolutionInterruptRail)
+    assert "review_runtime" in rail.kwargs
+    assert rail.kwargs["review_runtime"] is not None
+    assert rail.kwargs["fuzzy_review"] is False
+    assert interrupt_rail.kwargs == {
+        "review_runtime": rail.kwargs["review_runtime"],
+        "submission_service": rail.approval_submission_service,
+        "auto_save": auto_save,
+        "language": language,
+    }
+    return rail
+
+
 def test_register_swarm_providers_is_idempotent() -> None:
     """Two consecutive registrations must not raise and stay consistent."""
     register_swarm_providers()
@@ -824,24 +872,10 @@ def test_team_skill_evolution_provider_passes_review_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _FakeTeamSkillEvolutionRail:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-            self.swarm_context = {}
-            self.approval_submission_service = object()
-
-        def bind_swarm_context(self, **kwargs) -> None:
-            self.swarm_context.update(kwargs)
-
-    class _FakeEvolutionInterruptRail:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     monkeypatch.setattr(
         evolution_rails,
         "SwarmTeamSkillEvolutionRail",
-        _FakeTeamSkillEvolutionRail,
+        _FakeEvolutionRail,
     )
     monkeypatch.setattr(evolution_rails, "EvolutionInterruptRail", _FakeEvolutionInterruptRail)
     monkeypatch.setattr(
@@ -864,46 +898,25 @@ def test_team_skill_evolution_provider_passes_review_runtime(
     )
 
     built = evolution_rails.build_team_skill_evolution_rail(
-        {"evolution_model_config": {}, "auto_scan": False},
+        {"evolution_model_config": {}, "auto_scan": True},
         ctx,
     )
 
-    assert len(built) == 2
-    interrupt_rail, rail = built
-    assert isinstance(rail, _FakeTeamSkillEvolutionRail)
-    assert isinstance(interrupt_rail, _FakeEvolutionInterruptRail)
-    assert "review_runtime" in rail.kwargs
-    assert rail.kwargs["review_runtime"] is not None
-    assert interrupt_rail.kwargs == {
-        "review_runtime": rail.kwargs["review_runtime"],
-        "submission_service": rail.approval_submission_service,
-        "auto_save": False,
-        "language": "cn",
-    }
+    _assert_evolution_approval_stack(
+        built,
+        _FakeEvolutionRail,
+        auto_save=False,
+        language="cn",
+    )
+    rail = built[1]
+    assert rail.kwargs["auto_scan"] is False
+    assert rail.kwargs["completion_followup_enabled"] is True
 
 
 def test_member_skill_evolution_provider_passes_review_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _FakeMemberSkillEvolutionRail:
-        def __init__(self, *args, **kwargs):
-            self.args = args
-            self.kwargs = kwargs
-            self.swarm_context = {}
-            self.bound_sink = None
-            self.approval_submission_service = object()
-
-        def set_trajectory_sink(self, sink, *, team_id, member_role) -> None:
-            self.bound_sink = (sink, team_id, member_role)
-
-        def bind_swarm_context(self, **kwargs) -> None:
-            self.swarm_context.update(kwargs)
-
-    class _FakeEvolutionInterruptRail:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
     monkeypatch.setattr(
         evolution_rails,
         "SwarmMemberSkillEvolutionRail",
@@ -934,19 +947,14 @@ def test_member_skill_evolution_provider_passes_review_runtime(
         ctx,
     )
 
-    assert len(built) == 2
-    interrupt_rail, rail = built
-    assert isinstance(rail, _FakeMemberSkillEvolutionRail)
-    assert isinstance(interrupt_rail, _FakeEvolutionInterruptRail)
-    assert "review_runtime" in rail.kwargs
-    assert rail.kwargs["review_runtime"] is not None
+    rail = _assert_evolution_approval_stack(
+        built,
+        _FakeMemberSkillEvolutionRail,
+        auto_save=True,
+        language="en",
+    )
     assert rail.kwargs["language"] == "en"
-    assert interrupt_rail.kwargs == {
-        "review_runtime": rail.kwargs["review_runtime"],
-        "submission_service": rail.approval_submission_service,
-        "auto_save": True,
-        "language": "en",
-    }
+    assert rail.kwargs["auto_scan"] is False
     assert rail.bound_sink == (registry_obj, "t", "teammate")
 
 
