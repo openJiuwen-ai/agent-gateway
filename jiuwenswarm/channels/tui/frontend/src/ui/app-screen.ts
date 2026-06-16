@@ -5294,11 +5294,13 @@ export class AppScreen implements Component, Focusable {
   private buildSlashCommands(): TuiSlashCommand[] {
     const hasAnyCompletion = (cmd: SlashCommand): boolean =>
       !!cmd.completion || (cmd.subCommands?.some(hasAnyCompletion) ?? false);
-    return this.commands.getAll().map((command) => ({
-      name: command.name,
-      description: command.description,
-      getArgumentCompletions: hasAnyCompletion(command)
-        ? async (argumentPrefix: string): Promise<AutocompleteItem[] | null> => {
+    const result: TuiSlashCommand[] = [];
+    for (const command of this.commands.getAll()) {
+      result.push({
+        name: command.name,
+        description: command.description,
+        getArgumentCompletions: hasAnyCompletion(command)
+          ? async (argumentPrefix: string): Promise<AutocompleteItem[] | null> => {
             const trimmed = argumentPrefix.trim();
             // Traverse subcommand chain to find the deepest command with completion
             let currentCommand: typeof command = command;
@@ -5400,7 +5402,15 @@ export class AppScreen implements Component, Focusable {
             return null;
           }
         : undefined,
-    }));
+      });
+      for (const altName of command.altNames ?? []) {
+        result.push({
+          name: altName,
+          description: command.description,
+        });
+      }
+    }
+    return result;
   }
 
   private buildPendingQuestionLines(
