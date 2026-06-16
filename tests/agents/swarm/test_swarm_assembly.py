@@ -61,6 +61,13 @@ from jiuwenswarm.agents.swarm.providers import (
     runtime_tools,
     tools,
 )
+from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
+    resolve_model_config,
+)
+from jiuwenswarm.common.coding_memory_paths import (
+    resolve_project_coding_memory_dir,
+    resolve_project_coding_memory_workspace_path,
+)
 from jiuwenswarm.common.config import get_config
 
 logger = logging.getLogger(__name__)
@@ -1140,6 +1147,86 @@ def test_code_extra_tools_gated_by_config() -> None:
     assert isinstance(tools.build_code_extra_tools({}, enabled), list)
 
 
+def test_code_coding_memory_provider_mounts_workspace_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declarative coding-memory provider must also mount the workspace node."""
+    register_swarm_providers()
+
+    import jiuwenswarm.server.runtime.agent_adapter.interface_code as interface_code
+
+    project_dir = tmp_path / "project"
+    workspace_root = tmp_path / "member-workspace"
+    project_dir.mkdir()
+    workspace_root.mkdir()
+
+    created: dict[str, Any] = {}
+    rail = object()
+
+    def _fake_create_coding_memory_rail(
+        *,
+        project_dir: str | None,
+        agent_workspace_dir: str,
+        config: dict[str, Any] | None,
+    ) -> object:
+        created["project_dir"] = project_dir
+        created["agent_workspace_dir"] = agent_workspace_dir
+        created["config"] = config
+        return rail
+
+    monkeypatch.setattr(
+        interface_code,
+        "create_coding_memory_rail",
+        _fake_create_coding_memory_rail,
+    )
+
+    class Workspace:
+        def __init__(self, root_path: Path) -> None:
+            self.root_path = str(root_path)
+            self.directories: list[dict[str, Any]] = []
+
+        def set_directory(self, directory: dict[str, Any]) -> None:
+            self.directories.append(directory)
+
+    workspace = Workspace(workspace_root)
+    ctx = SwarmBuildContext(
+        mode="code.team",
+        project_dir=str(project_dir),
+        workspace=workspace,
+        config={},
+    )
+
+    built = code_rails.build_code_coding_memory({"embed_config": {}}, ctx)
+
+    assert built is rail
+    assert ctx.extras[code_rails.CODING_MEMORY_EXTRAS_KEY] is rail
+    assert created == {
+        "project_dir": str(project_dir),
+        "agent_workspace_dir": str(workspace_root),
+        "config": {"embed": {}},
+    }
+    assert workspace.directories == [
+        {
+            "name": "coding_memory",
+            "description": "Coding Agent memory",
+            "path": resolve_project_coding_memory_workspace_path(
+                project_dir=str(project_dir),
+            ),
+            "children": [
+                {
+                    "name": "MEMORY.md",
+                    "description": "Coding 记忆索引",
+                    "path": "MEMORY.md",
+                    "children": [],
+                    "is_file": True,
+                    "default_content": "",
+                }
+            ],
+        }
+    ]
+
+
 def test_code_member_builds_declaratively_without_post_processing(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1211,6 +1298,31 @@ def test_code_member_builds_declaratively_without_post_processing(
     assert agent.deep_config.system_prompt
     # CodingMemoryRail is published for the code_agent sub-agent to reuse.
     assert ctx.extras.get(code_rails.CODING_MEMORY_EXTRAS_KEY) is not None
+    coding_memory_dir = resolve_project_coding_memory_dir(
+        agent_workspace_dir=str(tmp_path),
+        project_dir=str(tmp_path),
+    )
+    coding_memory_workspace_path = resolve_project_coding_memory_workspace_path(
+        project_dir=str(tmp_path),
+    )
+    coding_memory_node = next(
+        node
+        for node in agent.deep_config.workspace.directories
+        if node.get("name") == "coding_memory"
+    )
+    assert coding_memory_node["path"] == coding_memory_workspace_path
+    assert Path(coding_memory_node["path"]).is_absolute() is False
+    assert Path(coding_memory_dir).is_dir()
+    assert coding_memory_node["children"] == [
+        {
+            "name": "MEMORY.md",
+            "description": "Coding 记忆索引",
+            "path": "MEMORY.md",
+            "children": [],
+            "is_file": True,
+            "default_content": "",
+        }
+    ]
     logger.info("code member declarative build rail types: %s", sorted(rail_types))
 
 
