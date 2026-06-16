@@ -351,7 +351,7 @@ async def test_runtime_toolkit_methods_return_build_and_missing_index_results(mo
         "build_skill_index",
         lambda manager: {
             "success": True,
-            "result": "# Skill Index Build\n\nSkill index build started in the background.",
+            "result": "# Skill Retrieval Index\n\nThe index is ready.",
         },
     )
     monkeypatch.setattr(
@@ -368,6 +368,6 @@ async def test_runtime_toolkit_methods_return_build_and_missing_index_results(mo
     explore_result = await toolkit.skill_branch_explore(["OfficeDocs"])
 
     assert build_result["success"] is True
-    assert "started in the background" in build_result["result"]
+    assert "index is ready" in build_result["result"]
     assert explore_result["success"] is False
     assert "skill_index_build" in explore_result["result"]

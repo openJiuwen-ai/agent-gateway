@@ -47,7 +47,7 @@ class SkillRetrieveService:
             return {
                 "success": False,
                 "result": render_retrieve_failure(
-                    "Dispatch retrieval requires a model and API key. "
+                    "Skill retrieval requires a model and API key. "
                     "Configure `models.defaults[0].model_client_config` or `symphony.skill_retrieval.llm`."
                 ),
             }

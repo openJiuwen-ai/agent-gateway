@@ -37,6 +37,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
 )
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail, ToolCallInputs
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
+from openjiuwen.harness.rails import SkillUseRail
 
 from jiuwenswarm.agents.swarm import (
     SwarmBuildContext,
@@ -435,16 +436,41 @@ def test_swarm_skill_retrieval_prompt_uses_global_skill_manager(
     assert calls == [None]
 
 
+def test_code_skill_use_rail_kept_as_auto_list_when_retrieval_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Agentic retrieval hides list_skill later, but skill_tool stays available."""
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits.is_skill_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.utils.get_agent_skills_dir",
+        lambda: tmp_path,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.load_execution_disabled_skills",
+        lambda: [],
+    )
+
+    rail = code_rails.build_code_skill_use(
+        {"skill_mode": SkillUseRail.SKILL_MODE_ALL},
+        SwarmBuildContext(),
+    )
+
+    assert isinstance(rail, SkillUseRail)
+    assert rail.skill_mode == SkillUseRail.SKILL_MODE_AUTO_LIST
+
+
 @pytest.mark.parametrize("role", ["leader", "teammate"])
 def test_team_member_deep_agent_spec_uses_agentic_skill_disclosure(role: str) -> None:
-    """Chat-team members use lightweight skill exposure when retrieval is enabled."""
+    """Chat-team members keep skill_tool while retrieval owns discovery."""
     base = DeepAgentSpec(enable_skill_discovery=False)
 
     spec = build_member_deep_agent_spec(_agentic_retrieval_config(), "team", role, base)
-    rail_names = {rail.type for rail in (spec.rails or [])}
 
-    assert spec.enable_skill_discovery is False
-    assert "core.skill_use" not in rail_names
+    assert spec.enable_skill_discovery is True
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -458,15 +484,15 @@ def test_team_member_deep_agent_spec_keeps_core_skill_discovery_when_retrieval_d
 
 
 @pytest.mark.parametrize("mode", ["code.team", "team.plan"])
-def test_code_member_deep_agent_spec_omits_skill_use_rail_when_retrieval_enabled(mode: str) -> None:
-    """Code profiles also let agentic retrieval own skill discovery."""
+def test_code_member_deep_agent_spec_keeps_skill_use_rail_when_retrieval_enabled(mode: str) -> None:
+    """Code profiles keep skill_tool while retrieval owns discovery."""
     base = DeepAgentSpec(enable_skill_discovery=False)
 
     spec = build_member_deep_agent_spec(_agentic_retrieval_config(), mode, "leader", base)
     rail_names = {rail.type for rail in (spec.rails or [])}
 
     assert spec.enable_skill_discovery is False
-    assert registry.CODE_SKILL_USE not in rail_names
+    assert registry.CODE_SKILL_USE in rail_names
 
 
 @pytest.mark.parametrize("mode", ["code.team", "team.plan"])

@@ -24,7 +24,10 @@ _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
 class SkillRetrievalPromptRail(DeepAgentRail):
     """Inject lightweight skill-tree retrieval guidance into the system prompt."""
 
-    priority = 101
+    # openjiuwen's callback framework executes higher priorities first. Keep this
+    # below SkillUseRail(100) so the native skills section can be hidden after it
+    # is refreshed for the current model call.
+    priority = 99
     SECTION_NAME = "skill_retrieval"
     SECTION_PRIORITY = 41
 

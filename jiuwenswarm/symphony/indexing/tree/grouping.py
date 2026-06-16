@@ -155,6 +155,7 @@ class TreeGroupingEngine:
                     assignments.update(future.result())
                 except Exception as exc:
                     console.print(f"[red]Classification batch failed: {exc}[/red]")
+                    raise RuntimeError(f"Skill classification batch failed: {exc}") from exc
         return assignments
 
     @staticmethod
@@ -318,6 +319,7 @@ class TreeGroupingEngine:
                     payload = future.result()
                 except Exception as exc:
                     console.print(f"[red]Discovery batch failed: {exc}[/red]")
+                    raise RuntimeError(f"Skill group discovery batch failed: {exc}") from exc
                 else:
                     if payload:
                         collected.append((future_map[future], payload))

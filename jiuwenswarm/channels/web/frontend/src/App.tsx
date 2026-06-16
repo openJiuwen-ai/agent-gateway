@@ -446,14 +446,19 @@ function AppContent() {
   }, [request, t, setAvailableModels]);
 
   useEffect(() => {
-    if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
+    if (!FEATURE_APP_UPDATER_UI || !isConnected || !initialDataLoaded || startupUpdateCheckRef.current) {
       return;
     }
     startupUpdateCheckRef.current = true;
-    void request('updater.check', { manual: false }).catch((updateError) => {
-      console.warn('Startup updater check failed:', updateError);
-    });
-  }, [isConnected, request]);
+    const timeoutId = window.setTimeout(() => {
+      void request('updater.check', { manual: false }).catch((updateError) => {
+        console.warn('Startup updater check failed:', updateError);
+      });
+    }, 30000);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [initialDataLoaded, isConnected, request]);
 
   const clearRestartAutoCloseTimer = useCallback(() => {
     if (restartAutoCloseTimerRef.current != null) {

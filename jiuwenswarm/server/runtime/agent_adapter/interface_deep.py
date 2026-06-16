@@ -304,6 +304,13 @@ _ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
     }
 )
 _PLACEHOLDER_API_BASES = frozenset({"https://example.com/compatible-mode/v1"})
+_SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
+    {
+        "skill_index_build",
+        "skill_branch_explore",
+        "skill_branch_peek",
+    }
+)
 
 
 def _get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
@@ -594,6 +601,9 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool: WebPaidSearchTool | None = None
         self._symphony_tools: list[Any] = []
         self._symphony_tools_registered: bool = False
+        self._skill_retrieval_tools_registered: bool = False
+        self._skill_retrieval_tools: list[Any] = []
+        self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
         self._skill_manager: SkillManager | None = None
         self._a2x_client: Any | None = None
         self._a2x_config: dict[str, Any] = {}
@@ -1655,6 +1665,118 @@ class JiuWenSwarmDeepAdapter:
             if (item.card.name if hasattr(item, "card") else item.name) not in tool_names
         ]
 
+    def _drop_tool_names_from_runtime(self, tool_names: set[str] | frozenset[str]) -> None:
+        """Best-effort removal for tool cards that may predate tracked tool instances."""
+        if not tool_names:
+            return
+        card_ids = set(tool_names)
+        for item in self._tool_cards or []:
+            card = item.card if hasattr(item, "card") else item
+            if getattr(card, "name", None) in tool_names:
+                card_ids.add(getattr(card, "id", None) or card.name)
+        self._prune_tool_cards(set(tool_names))
+        if self._instance is not None and hasattr(self._instance, "ability_manager"):
+            for tool_name in tool_names:
+                try:
+                    self._instance.ability_manager.remove(tool_name)
+                except Exception:
+                    logger.debug(
+                        "[JiuWenSwarmDeepAdapter] ability remove skipped for %s",
+                        tool_name,
+                        exc_info=True,
+                    )
+        for tool_id in card_ids:
+            try:
+                Runner.resource_mgr.remove_tool(tool_id)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] resource remove skipped for %s",
+                    tool_id,
+                    exc_info=True,
+                )
+
+    def _create_skill_retrieval_tools(self) -> list[Any]:
+        """Create Agentic skill retrieval tools using the current visible-skill provider."""
+        if not is_skill_retrieval_enabled():
+            logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit skipped: disabled")
+            return []
+        skill_retrieval_toolkit = SkillRetrievalToolkit(
+            manager=self._skill_manager,
+            visible_skill_names=self._visible_skill_names_for_list_skill,
+        )
+        tools = skill_retrieval_toolkit.get_tools()
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit built: tools=%s",
+            [tool.card.name for tool in tools],
+        )
+        return tools
+
+    @staticmethod
+    def _skill_retrieval_tools_enabled_for_runtime(
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return whether runtime tool sync should expose Agentic skill retrieval tools."""
+        return is_skill_retrieval_enabled()
+
+    def _sync_skill_retrieval_tools_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Sync Agentic skill retrieval tool registration after config reload."""
+        enabled = self._skill_retrieval_tools_enabled_for_runtime(config_base)
+        tools, registered = self._sync_tool_group(
+            current_tools=self._skill_retrieval_tools,
+            registered=self._skill_retrieval_tools_registered,
+            enabled=enabled,
+            create_fn=self._create_skill_retrieval_tools,
+            warn_label="skill retrieval tools",
+        )
+        self._skill_retrieval_tools = tools
+        self._skill_retrieval_tools_registered = registered
+        if not enabled:
+            self._drop_tool_names_from_runtime(_SKILL_RETRIEVAL_TOOL_NAMES)
+
+    async def _sync_skill_retrieval_prompt_rail_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Sync Agentic skill retrieval prompt rail after config reload."""
+        if self._instance is None:
+            return
+
+        enabled = self._skill_retrieval_tools_enabled_for_runtime(config_base)
+        rail = self._skill_retrieval_prompt_rail
+        if enabled:
+            if rail is not None:
+                return
+            rail = self._build_skill_retrieval_prompt_rail()
+            if rail is None:
+                return
+            try:
+                await self._instance.register_rail(rail)
+            except Exception as exc:
+                self._skill_retrieval_prompt_rail = None
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail reload failed: %s",
+                    exc,
+                )
+                return
+            self._skill_retrieval_prompt_rail = rail
+            logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail registered")
+            return
+
+        if rail is None:
+            return
+        try:
+            await self._instance.unregister_rail(rail)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail unregister failed: %s",
+                exc,
+            )
+        finally:
+            self._skill_retrieval_prompt_rail = None
+
     def _sync_multimodal_tools_for_runtime(self) -> None:
         """Sync multimodal tool registration after config reload."""
         agent_id = self._instance.card.id if self._instance else None
@@ -2294,12 +2416,6 @@ class JiuWenSwarmDeepAdapter:
         self, config: dict[str, Any], include_tools: bool = False
     ) -> SkillUseRail | None:
         """Build SkillUseRail."""
-        if is_skill_retrieval_enabled():
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillUseRail skipped: "
-                "agentic skill retrieval is enabled"
-            )
-            return None
         try:
             skill_mode = self._resolve_skill_mode(config)
             logger.info("[JiuWenSwarmDeepAdapter] current skill_mode: %s", skill_mode)
@@ -2810,25 +2926,25 @@ class JiuWenSwarmDeepAdapter:
                     False,
                 )
 
-        if is_skill_retrieval_enabled():
-            self._skill_rail = None
+        # Reuse existing SkillUseRail to preserve dynamically loaded skills
+        # from activate_package() / load_harness_config().  When agentic
+        # retrieval is enabled, _resolve_skill_mode() forces AUTO_LIST; the
+        # SkillRetrievalPromptRail then hides list_skill and the native skills
+        # prompt while keeping skill_tool/read_file available.
+        if self._skill_rail is None:
+            self._skill_rail = self._build_skill_rail(
+                config,
+                include_tools=self._skill_include_tools_for_profile(),
+            )
         else:
-            # Reuse existing SkillUseRail to preserve dynamically loaded skills
-            # from activate_package() / load_harness_config()
-            if self._skill_rail is None:
-                self._skill_rail = self._build_skill_rail(
-                    config,
-                    include_tools=self._skill_include_tools_for_profile(),
-                )
-            else:
-                # Update existing rail's skill_mode if changed
-                new_skill_mode = self._resolve_skill_mode(config)
-                if self._skill_rail.skill_mode != new_skill_mode:
-                    self._skill_rail.skill_mode = new_skill_mode
-                # Update disabled_skills
-                new_disabled = self._skill_manager.list_execution_disabled_skills()
-                if self._skill_rail.disabled_skills != new_disabled:
-                    self._skill_rail.disabled_skills = new_disabled
+            # Update existing rail's skill_mode if changed.
+            new_skill_mode = self._resolve_skill_mode(config)
+            if self._skill_rail.skill_mode != new_skill_mode:
+                self._skill_rail.skill_mode = new_skill_mode
+            # Update disabled_skills.
+            new_disabled = self._skill_manager.list_execution_disabled_skills()
+            if self._skill_rail.disabled_skills != new_disabled:
+                self._skill_rail.disabled_skills = new_disabled
 
         if not self._filesystem_rail_enabled_for_profile():
             self._filesystem_rail = None
@@ -2998,23 +3114,25 @@ class JiuWenSwarmDeepAdapter:
 
         if is_skill_retrieval_enabled():
             try:
-                skill_retrieval_toolkit = SkillRetrievalToolkit(
-                    manager=self._skill_manager,
-                    visible_skill_names=self._visible_skill_names_for_list_skill,
-                )
+                self._skill_retrieval_tools = self._create_skill_retrieval_tools()
                 skill_retrieval_tool_names: list[str] = []
-                for tool in skill_retrieval_toolkit.get_tools():
+                for tool in self._skill_retrieval_tools:
                     if not Runner.resource_mgr.get_tool(tool.card.id):
                         Runner.resource_mgr.add_tool(tool)
                     tool_cards.append(tool.card)
                     skill_retrieval_tool_names.append(tool.card.name)
+                self._skill_retrieval_tools_registered = bool(self._skill_retrieval_tools)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit registered: tools=%s",
                     skill_retrieval_tool_names,
                 )
             except Exception as exc:
+                self._skill_retrieval_tools = []
+                self._skill_retrieval_tools_registered = False
                 logger.warning("[JiuWenSwarmDeepAdapter] skill retrieval tools registration failed: %s", exc)
         else:
+            self._skill_retrieval_tools = []
+            self._skill_retrieval_tools_registered = False
             logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalToolkit skipped: disabled")
 
         try:
@@ -3264,6 +3382,8 @@ class JiuWenSwarmDeepAdapter:
         self._sync_multimodal_tools_for_runtime()
         self._sync_paid_search_tool_for_runtime()
         self._sync_symphony_tools_for_runtime(config_base)
+        self._sync_skill_retrieval_tools_for_runtime(config_base)
+        await self._sync_skill_retrieval_prompt_rail_for_runtime(config_base)
 
         if not self._filesystem_rail_enabled_for_profile() and self._filesystem_rail is not None:
             try:

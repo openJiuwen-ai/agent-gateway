@@ -416,13 +416,15 @@ def build_code_skill_use(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
     try:
-        if is_skill_retrieval_enabled():
-            logger.info("[swarm.code_skill_use] skipped: agentic skill retrieval is enabled")
-            return None
         inp = CodeSkillUseInput.resolve(params, ctx)
+        skill_mode = (
+            SkillUseRail.SKILL_MODE_AUTO_LIST
+            if is_skill_retrieval_enabled()
+            else inp.skill_mode
+        )
         return SkillUseRail(
             skills_dir=str(get_agent_skills_dir()),
-            skill_mode=inp.skill_mode,
+            skill_mode=skill_mode,
             include_tools=inp.include_tools,
             disabled_skills=load_execution_disabled_skills(),
         )

@@ -9,6 +9,8 @@ from jiuwenswarm.symphony.skill_retrieval.build_coordinator import (
     cancel_skill_index_build,
     start_skill_index_build,
 )
+from jiuwenswarm.symphony.skill_retrieval import api as skill_retrieval_api
+from jiuwenswarm.symphony.skill_retrieval.api import build_skill_index
 from jiuwenswarm.symphony.skill_retrieval.config import (
     BuildSettings,
     LLMSettings,
@@ -160,6 +162,11 @@ def test_background_build_marks_shared_state(monkeypatch, tmp_path: Path) -> Non
     cancel_result = cancel_skill_index_build(manager)
     release.set()
     assert cancel_result["success"] is True
+    assert cancel_result["build_status"] == "cancelled"
+    state = json.loads((artifact_root / "state.json").read_text(encoding="utf-8"))
+    assert state["build"]["status"] == "cancelled"
+    assert state["build"]["stage"] == "cancelled"
+    assert state["build"]["cancel_requested"] is False
 
 
 def test_force_build_bypasses_fresh_index_reuse(monkeypatch, tmp_path: Path) -> None:
@@ -193,6 +200,7 @@ def test_force_build_bypasses_fresh_index_reuse(monkeypatch, tmp_path: Path) -> 
         "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
         lambda: settings,
     )
+    monkeypatch.setattr(SkillIndexService, "_check_build_llm_access", staticmethod(lambda settings: None))
     calls: list[str] = []
 
     def fake_run_dispatch_build(*, settings, inventory, output_dir):
@@ -241,6 +249,213 @@ def test_missing_llm_config_records_failure(monkeypatch, tmp_path: Path) -> None
     assert state["build"]["stage"] == "llm_config"
 
 
+def test_build_fails_when_llm_access_check_fails(monkeypatch, tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "enabled-skill")
+    artifact_root = tmp_path / "artifact"
+    settings = SkillRetrievalSettings(
+        enabled=True,
+        artifact_root=artifact_root,
+        llm=LLMSettings(model="model", api_key="bad-key", base_url="https://example.invalid"),
+        build=BuildSettings(),
+        retrieve=RetrieveSettings(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
+        lambda: settings,
+    )
+
+    def fail_llm_access(settings):
+        raise RuntimeError("Skill index build model is not reachable or rejected the request: unauthorized")
+
+    monkeypatch.setattr(SkillIndexService, "_check_build_llm_access", staticmethod(fail_llm_access))
+
+    result = SkillIndexService(SimpleNamespace(_skills_dir=skills_dir)).build_index(force=True)
+
+    assert result["success"] is False
+    assert "not reachable" in result["result"]
+    assert not (artifact_root / "index").exists()
+    state = json.loads((artifact_root / "state.json").read_text(encoding="utf-8"))
+    assert state["build"]["status"] == "failed"
+    assert state["build"]["stage"] == "failed"
+    assert "not reachable" in state["build"]["error"]
+
+
+def test_status_ignores_success_state_when_index_artifacts_are_deleted(monkeypatch, tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    _write_skill(skills_dir, "enabled-skill")
+    artifact_root = tmp_path / "artifact"
+    settings = SkillRetrievalSettings(
+        enabled=True,
+        artifact_root=artifact_root,
+        llm=LLMSettings(model="model", api_key="key", base_url=""),
+        build=BuildSettings(),
+        retrieve=RetrieveSettings(),
+    )
+    inventory = scan_skill_inventory(SimpleNamespace(_skills_dir=skills_dir))
+    artifact_root.mkdir(parents=True)
+    (artifact_root / "state.json").write_text(
+        json.dumps(
+            {
+                "fingerprint": expected_index_fingerprint(inventory, settings),
+                "indexed_count": inventory.count,
+                "build": {"status": "success", "stage": "success", "progress": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
+        lambda: settings,
+    )
+
+    status = SkillIndexService(SimpleNamespace(_skills_dir=skills_dir)).status()
+    tree = SkillIndexService(SimpleNamespace(_skills_dir=skills_dir)).tree(language="zh")
+
+    assert status["index_exists"] is False
+    assert status["fresh"] is False
+    assert status["build_status"] == "idle"
+    assert status["build_logs"] == []
+    assert "No usable skill index" in status["build_message"]
+    assert tree["success"] is False
+    assert tree["nodes"] == []
+
+
+def test_api_status_repairs_interrupted_running_state(monkeypatch, tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    artifact_root = tmp_path / "artifact"
+    artifact_root.mkdir()
+    (artifact_root / "state.json").write_text(
+        json.dumps({"build": {"status": "running", "stage": "build", "progress": 0.5}}),
+        encoding="utf-8",
+    )
+    settings = SkillRetrievalSettings(
+        enabled=True,
+        artifact_root=artifact_root,
+        llm=LLMSettings(model="model", api_key="key", base_url=""),
+        build=BuildSettings(),
+        retrieve=RetrieveSettings(),
+    )
+    monkeypatch.setattr(skill_retrieval_api, "_STARTUP_REPAIR_DONE", False)
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.build_coordinator.load_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
+        lambda: settings,
+    )
+
+    status = skill_retrieval_api.get_skill_retrieval_status(SimpleNamespace(_skills_dir=skills_dir))
+
+    assert status["build_status"] == "failed"
+    assert status["build_stage"] == "interrupted"
+    assert "interrupted" in status["build_error"]
+
+
+def test_api_status_keeps_active_build_running(monkeypatch, tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifact"
+    settings = SkillRetrievalSettings(
+        enabled=True,
+        artifact_root=artifact_root,
+        llm=LLMSettings(model="model", api_key="key", base_url=""),
+        build=BuildSettings(),
+        retrieve=RetrieveSettings(),
+    )
+    monkeypatch.setattr(skill_retrieval_api, "_STARTUP_REPAIR_DONE", False)
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.build_coordinator.load_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
+        lambda: settings,
+    )
+    release = threading.Event()
+    started = threading.Event()
+    manager = SimpleNamespace(_skills_dir=tmp_path / "skills")
+
+    def fake_build_index(self, *, force=False, cancel_check=None, source="manual"):
+        started.set()
+        release.wait(timeout=1)
+        return {"success": True, "result": "# ok"}
+
+    monkeypatch.setattr(SkillIndexService, "build_index", fake_build_index)
+
+    start_skill_index_build(manager, force=True, source="web")
+    assert started.wait(timeout=1)
+    status = skill_retrieval_api.get_skill_retrieval_status(manager)
+    release.set()
+
+    assert status["build_status"] == "running"
+    assert status["build_stage"] == "queued"
+
+
+def test_build_skill_index_api_waits_for_shared_background_build(monkeypatch, tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifact"
+    settings = SkillRetrievalSettings(
+        enabled=True,
+        artifact_root=artifact_root,
+        llm=LLMSettings(model="model", api_key="key", base_url=""),
+        build=BuildSettings(),
+        retrieve=RetrieveSettings(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.build_coordinator.load_settings",
+        lambda: settings,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
+        lambda: settings,
+    )
+    calls: list[tuple[bool, str]] = []
+    started = threading.Event()
+    release = threading.Event()
+    manager = SimpleNamespace(_skills_dir=tmp_path / "skills")
+
+    def fake_build_index(self, *, force=False, cancel_check=None, source="tool"):
+        calls.append((force, source))
+        started.set()
+        release.wait(timeout=1)
+        return {"success": True, "result": "# Skill Retrieval Index\n\nDone."}
+
+    monkeypatch.setattr(SkillIndexService, "build_index", fake_build_index)
+    monkeypatch.setattr(
+        SkillIndexService,
+        "status",
+        lambda self: {"build_status": "success", "index_exists": True, "fresh": True},
+    )
+
+    web_result = start_skill_index_build(manager, force=True, source="web")
+    assert started.wait(timeout=1)
+    state = json.loads((artifact_root / "state.json").read_text(encoding="utf-8"))
+    assert web_result["build_status"] == "running"
+    assert state["build"]["status"] == "running"
+
+    result_box: list[dict] = []
+    tool_thread = threading.Thread(
+        target=lambda: result_box.append(build_skill_index(manager, force=True, source="tool"))
+    )
+    tool_thread.start()
+    release.set()
+    tool_thread.join(timeout=1)
+
+    assert result_box == [
+        {
+            "success": True,
+            "result": (
+                "# Skill Index Build\n\n"
+                "Skill index build completed. You can now call `skill_branch_explore` "
+                "or `skill_branch_peek` to inspect installed skills."
+            ),
+        }
+    ]
+    assert calls == [(True, "web")]
+
+
 def test_tree_rejects_stale_manifest_and_uses_requested_language(monkeypatch, tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -275,10 +490,12 @@ def test_tree_rejects_stale_manifest_and_uses_requested_language(monkeypatch, tm
 
     assert zh["success"] is False
     assert zh["nodes"] == []
-    assert "技能索引树" in zh["result"]
+    assert "# 技能索引树" not in zh["result"]
+    assert "当前没有可用" in zh["result"]
     assert en["success"] is False
     assert en["nodes"] == []
-    assert "Skill Index Tree" in en["result"]
+    assert "# Skill Index Tree" not in en["result"]
+    assert "No usable" in en["result"]
 
 
 def test_build_error_normalizes_non_streaming_remote_model_error(monkeypatch, tmp_path: Path) -> None:
@@ -297,6 +514,7 @@ def test_build_error_normalizes_non_streaming_remote_model_error(monkeypatch, tm
         "jiuwenswarm.symphony.skill_retrieval.index_service.load_settings",
         lambda: settings,
     )
+    monkeypatch.setattr(SkillIndexService, "_check_build_llm_access", staticmethod(lambda settings: None))
 
     def raise_remote_error(*, settings, inventory, output_dir):
         raise RuntimeError("set to false for non-streaming calls")

@@ -58,7 +58,7 @@ symphony:
       postprocess_enabled: true
       postprocess_max_passes: 1
       postprocess_min_skills: 6
-      equivalence_enabled: true
+      equivalence_enabled: false
     retrieve:
       compact_codes_enabled: false
       flatten_tree: false

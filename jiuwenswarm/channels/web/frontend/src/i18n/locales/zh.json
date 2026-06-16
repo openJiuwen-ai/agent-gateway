@@ -1053,13 +1053,69 @@
       "indexedCount": "已索引 {{count}} 个",
       "installedCount": "已安装 {{count}} 个",
       "build": "构建索引",
+      "fullRebuild": "全量重新构建",
       "building": "构建中...",
       "buildFailed": "构建失败",
-      "cancel": "暂停构建",
-      "cancelling": "暂停中...",
-      "cancelled": "构建已暂停",
+      "cancel": "取消构建",
+      "cancelling": "取消中...",
+      "cancelled": "构建已取消",
       "buildStageUnknown": "等待构建状态",
       "buildProgress": "进度 {{progress}}%",
+      "buildMonitorTitle": "构建进度",
+      "buildMonitorSubtitle": "当前阶段：{{stage}}",
+      "buildPipelineTitle": "索引构建流程",
+      "buildMetric": {
+        "progress": "进度",
+        "skills": "技能",
+        "indexed": "索引"
+      },
+      "buildPipeline": {
+        "queued": {
+          "title": "准备构建任务",
+          "detail": "创建临时输出目录，解析构建配置和索引路径。"
+        },
+        "scan": {
+          "title": "扫描已安装技能",
+          "detail": "读取 {{count}} 个已安装且启用的技能，提取名称、描述和 SKILL.md。"
+        },
+        "llmCheck": {
+          "title": "检查模型连接",
+          "detail": "使用当前模型配置发送轻量请求，确认构建模型可访问。"
+        },
+        "build": {
+          "title": "构建技能树",
+          "detail": "根据技能能力进行分组、分类和分支描述生成，并写入树结构。"
+        },
+        "publish": {
+          "title": "发布索引产物",
+          "detail": "校验 tree_index.yaml、catalog.jsonl、manifest.json，并替换线上索引目录。"
+        },
+        "success": {
+          "title": "索引就绪",
+          "detail": "{{count}} 个技能可用于 Agentic 技能检索。"
+        }
+      },
+      "buildPhaseState": {
+        "done": "完成",
+        "active": "当前",
+        "pending": "等待",
+        "failed": "失败",
+        "cancelled": "取消"
+      },
+      "buildStages": {
+        "queued": "任务排队",
+        "scan": "扫描技能",
+        "llmCheck": "检查模型连接",
+        "buildTree": "构建技能树",
+        "publish": "发布索引",
+        "reuse": "复用索引",
+        "success": "构建完成",
+        "failed": "构建失败",
+        "timeout": "构建超时",
+        "llmConfig": "模型配置",
+        "cancelled": "已取消",
+        "interrupted": "构建中断"
+      },
       "treeTitle": "索引树",
       "treeCount": "{{branches}} 个分支 · {{skills}} 个技能",
       "noTree": "暂无索引树",

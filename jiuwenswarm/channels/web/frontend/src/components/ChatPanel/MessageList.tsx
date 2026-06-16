@@ -7,7 +7,7 @@
 import { useMemo } from 'react';
 import { Message, ToolExecution } from '../../types';
 import { MessageItem, getMessageActor } from './MessageItem';
-import { ToolGroupDisplay } from './ToolGroupDisplay';
+import { ToolGroupDisplay, collectViewedSkillIds } from './ToolGroupDisplay';
 import { useChatStore, useSessionStore } from '../../stores';
 import { isTeamMemberCollaborationMessage } from './teamEventUtils';
 import { isA2UIClientEventContent } from '../../features/a2ui/a2uiContent';
@@ -51,6 +51,9 @@ type RenderItem =
       key: string;
       showAvatar: boolean;
       executions: ToolExecution[];
+      collapseSkillTreeWhenContentStarts: boolean;
+      turnId: number;
+      viewedSkillIds: string[];
     };
 
 /**
@@ -121,18 +124,22 @@ function isFinalMessage(message: Message): boolean {
 
 function buildRenderItems(items: TimelineItem[], isTeamMode: boolean): RenderItem[] {
   const renderItems: RenderItem[] = [];
+  let currentTurnId = 0;
   let currentSegment = {
     toolExecutions: [] as ToolExecution[],
     messages: [] as { key: string; message: Message }[],
   };
 
-  const flushCurrentSegment = () => {
+  const flushCurrentSegment = (collapseSkillTreeWhenContentStarts = false) => {
     if (currentSegment.toolExecutions.length > 0) {
       renderItems.push({
         type: 'toolGroup',
         key: `tool-group-${currentSegment.toolExecutions[0].toolCallId}`,
         showAvatar: true,
         executions: currentSegment.toolExecutions,
+        collapseSkillTreeWhenContentStarts,
+        turnId: currentTurnId,
+        viewedSkillIds: [],
       });
       currentSegment.toolExecutions = [];
     }
@@ -147,12 +154,12 @@ function buildRenderItems(items: TimelineItem[], isTeamMode: boolean): RenderIte
     currentSegment.messages = [];
   };
 
-  const flushSegmentIfPresent = () => {
+  const flushSegmentIfPresent = (collapseSkillTreeWhenContentStarts = false) => {
     if (
       currentSegment.toolExecutions.length > 0 ||
       currentSegment.messages.length > 0
     ) {
-      flushCurrentSegment();
+      flushCurrentSegment(collapseSkillTreeWhenContentStarts);
     }
   };
 
@@ -174,11 +181,12 @@ function buildRenderItems(items: TimelineItem[], isTeamMode: boolean): RenderIte
         showAvatar: true,
         message: item.message,
       });
+      currentTurnId += 1;
       continue;
     }
 
     if (isFinalMessage(item.message)) {
-      flushSegmentIfPresent();
+      flushSegmentIfPresent(true);
       renderItems.push({
         type: 'message',
         key: item.key,
@@ -192,6 +200,24 @@ function buildRenderItems(items: TimelineItem[], isTeamMode: boolean): RenderIte
   }
 
   flushSegmentIfPresent();
+
+  const viewedSkillIdsByTurn = new Map<number, string[]>();
+  for (const renderItem of renderItems) {
+    if (renderItem.type !== 'toolGroup') {
+      continue;
+    }
+    const viewedSkillIds = collectViewedSkillIds(renderItem.executions);
+    if (viewedSkillIds.length === 0) {
+      continue;
+    }
+    const current = viewedSkillIdsByTurn.get(renderItem.turnId) || [];
+    viewedSkillIdsByTurn.set(renderItem.turnId, Array.from(new Set([...current, ...viewedSkillIds])));
+  }
+  for (const renderItem of renderItems) {
+    if (renderItem.type === 'toolGroup') {
+      renderItem.viewedSkillIds = viewedSkillIdsByTurn.get(renderItem.turnId) || [];
+    }
+  }
 
   if (!isTeamMode) {
     for (const renderItem of renderItems) {
@@ -258,6 +284,8 @@ export function ChatTimelineList({
             executions={item.executions}
             showAvatar={item.showAvatar}
             teamLayout={isTeamMode}
+            collapseSkillTreeWhenContentStarts={item.collapseSkillTreeWhenContentStarts}
+            viewedSkillIds={item.viewedSkillIds}
           />
         );
       })}

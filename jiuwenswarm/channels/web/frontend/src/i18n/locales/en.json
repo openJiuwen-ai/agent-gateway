@@ -1054,13 +1054,69 @@
       "indexedCount": "{{count}} indexed",
       "installedCount": "{{count}} installed",
       "build": "Build Index",
+      "fullRebuild": "Full Rebuild",
       "building": "Building...",
       "buildFailed": "Build failed",
-      "cancel": "Pause Build",
-      "cancelling": "Pausing...",
-      "cancelled": "Build paused",
+      "cancel": "Cancel Build",
+      "cancelling": "Cancelling...",
+      "cancelled": "Build cancelled",
       "buildStageUnknown": "Waiting for build status",
       "buildProgress": "Progress {{progress}}%",
+      "buildMonitorTitle": "Build Progress",
+      "buildMonitorSubtitle": "Current stage: {{stage}}",
+      "buildPipelineTitle": "Index Build Flow",
+      "buildMetric": {
+        "progress": "Progress",
+        "skills": "Skills",
+        "indexed": "Indexed"
+      },
+      "buildPipeline": {
+        "queued": {
+          "title": "Prepare Build",
+          "detail": "Create temporary output directories and resolve build configuration and index paths."
+        },
+        "scan": {
+          "title": "Scan Installed Skills",
+          "detail": "Read {{count}} installed and enabled skills, then extract name, description, and SKILL.md."
+        },
+        "llmCheck": {
+          "title": "Check Model Connectivity",
+          "detail": "Send a lightweight request with the current model configuration before building the index."
+        },
+        "build": {
+          "title": "Build Skill Tree",
+          "detail": "Group skills by capability, classify them into branches, generate branch descriptions, and write the tree."
+        },
+        "publish": {
+          "title": "Publish Artifacts",
+          "detail": "Validate tree_index.yaml, catalog.jsonl, and manifest.json, then replace the live index directory."
+        },
+        "success": {
+          "title": "Index Ready",
+          "detail": "{{count}} skills are available for Agentic skill retrieval."
+        }
+      },
+      "buildPhaseState": {
+        "done": "Done",
+        "active": "Current",
+        "pending": "Pending",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "buildStages": {
+        "queued": "Queued",
+        "scan": "Scanning skills",
+        "llmCheck": "Checking model connectivity",
+        "buildTree": "Building skill tree",
+        "publish": "Publishing index",
+        "reuse": "Reusing index",
+        "success": "Build complete",
+        "failed": "Build failed",
+        "timeout": "Build timed out",
+        "llmConfig": "Model config",
+        "cancelled": "Cancelled",
+        "interrupted": "Interrupted"
+      },
       "treeTitle": "Index Tree",
       "treeCount": "{{branches}} branches · {{skills}} skills",
       "noTree": "No index tree",

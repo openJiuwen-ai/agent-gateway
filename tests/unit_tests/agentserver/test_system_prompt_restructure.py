@@ -5,6 +5,7 @@ import pytest
 
 from openjiuwen.core.foundation.llm import Model
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentManager,
 )
@@ -51,6 +52,13 @@ class _FakeAbilityManager:
         }
         self.added: list[str] = []
         self.removed: list[str] = []
+
+    def add_ability(self, card, tool=None):
+        self._items[card.name] = card
+        return SimpleNamespace(added=True)
+
+    def remove_ability(self, name: str):
+        return self._items.pop(name, None)
 
     def get(self, name: str):
         return self._items.get(name)
@@ -407,6 +415,56 @@ async def test_skill_retrieval_prompt_hides_legacy_list_skill(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_skill_retrieval_prompt_hides_native_skill_prompt_after_skill_use_rail(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "is_agentic_retrieval_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        _skill_retrieval_prompt_mod,
+        "render_skill_retrieval_prompt_for_visible_skills",
+        lambda manager, language, visible_skill_names=None: "# Agentic 技能检索\n使用 skill_branch_explore。",
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeToolAgent(builder)
+    agent.card = SimpleNamespace(id="test-agent")
+    agent.deep_config = SimpleNamespace(enable_read_image_multimodal=False)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=SimpleNamespace(
+            tools=[
+                SimpleNamespace(name="list_skill"),
+                SimpleNamespace(name="skill_branch_explore"),
+            ],
+        ),
+        session=_FakeSession(),
+        extra={},
+    )
+    skill_rail = SkillUseRail(
+        str(tmp_path),
+        skill_mode=SkillUseRail.SKILL_MODE_AUTO_LIST,
+        include_tools=False,
+    )
+    retrieval_rail = SkillRetrievalPromptRail()
+    skill_rail.init(agent)
+    retrieval_rail.init(agent)
+
+    rails = sorted([skill_rail, retrieval_rail], key=lambda rail: rail.priority, reverse=True)
+    await rails[0].before_model_call(ctx)
+    await rails[1].before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "需要时先调用 list_skill 查看可用技能" not in prompt
+    assert "# 技能" not in prompt
+    assert "Agentic 技能检索" in prompt
+    assert [tool.name for tool in ctx.inputs.tools] == ["skill_branch_explore"]
+
+
+@pytest.mark.asyncio
 async def test_skill_retrieval_prompt_clears_section_when_disabled(monkeypatch):
     monkeypatch.setattr(
         _skill_retrieval_prompt_mod,
@@ -559,6 +617,71 @@ def test_deep_adapter_skill_retrieval_prompt_uses_visible_skill_provider(monkeyp
     assert isinstance(rail, FakeRail)
     assert captured["manager"] is manager
     assert captured["visible_skill_names"] == adapter._visible_skill_names_for_list_skill
+
+
+@pytest.mark.asyncio
+async def test_deep_adapter_skill_retrieval_prompt_rail_sync_hot_toggles(monkeypatch):
+    registered: list[object] = []
+    unregistered: list[object] = []
+
+    class FakeDeepAgent:
+        async def register_rail(self, rail):
+            registered.append(rail)
+
+        async def unregister_rail(self, rail):
+            unregistered.append(rail)
+
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter._instance = FakeDeepAgent()
+    rail = SimpleNamespace(name="skill_retrieval_prompt")
+    monkeypatch.setattr(adapter, "_build_skill_retrieval_prompt_rail", lambda: rail)
+    monkeypatch.setattr(
+        adapter,
+        "_skill_retrieval_tools_enabled_for_runtime",
+        lambda config_base=None: True,
+    )
+
+    await adapter._sync_skill_retrieval_prompt_rail_for_runtime()
+    await adapter._sync_skill_retrieval_prompt_rail_for_runtime()
+
+    assert adapter._skill_retrieval_prompt_rail is rail
+    assert registered == [rail]
+    assert unregistered == []
+
+    monkeypatch.setattr(
+        adapter,
+        "_skill_retrieval_tools_enabled_for_runtime",
+        lambda config_base=None: False,
+    )
+
+    await adapter._sync_skill_retrieval_prompt_rail_for_runtime()
+
+    assert adapter._skill_retrieval_prompt_rail is None
+    assert unregistered == [rail]
+
+
+def test_code_adapter_skill_retrieval_sync_respects_configured_tools(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    adapter = JiuwenSwarmCodeAdapter()
+    monkeypatch.setattr(
+        interface_module,
+        "is_skill_retrieval_enabled",
+        lambda: True,
+    )
+
+    assert (
+        adapter._skill_retrieval_tools_enabled_for_runtime(
+            {"modes": {"code": {"tools": ["skill_toolkit"]}}}
+        )
+        is False
+    )
+    assert (
+        adapter._skill_retrieval_tools_enabled_for_runtime(
+            {"modes": {"code": {"tools": ["skill_toolkit", "skill_retrieval"]}}}
+        )
+        is True
+    )
 
 
 def test_resolve_enable_task_loop_can_be_called_on_class(monkeypatch):

@@ -19,7 +19,7 @@ from jiuwenswarm.symphony.skill_retrieval.config import RetrieveSettings, load_s
 from jiuwenswarm.symphony.skill_retrieval.dispatch_imports import dispatch_import_path
 from jiuwenswarm.symphony.skill_retrieval.index_service import SkillIndexService
 from jiuwenswarm.symphony.skill_retrieval.markdown import render_disabled
-from jiuwenswarm.symphony.skill_retrieval.api import build_skill_index as start_background_skill_index_build
+from jiuwenswarm.symphony.skill_retrieval.api import build_skill_index as build_skill_index_blocking
 
 from .tool_result import AgenticToolResult
 
@@ -743,10 +743,10 @@ class AgenticRetrievalToolKit:
 
 
 def build_skill_index(manager: Any | None = None) -> dict[str, Any]:
-    """Start a background build or reuse request for the installed-skill retrieval index."""
+    """Build or reuse the installed-skill retrieval index before the agent continues."""
     resolved_manager = _resolve_manager(manager)
     _clear_runtime_caches()
-    payload = start_background_skill_index_build(resolved_manager, force=False, source="tool")
+    payload = build_skill_index_blocking(resolved_manager, force=False, source="tool")
     _clear_runtime_caches()
     return _tool_payload(
         bool(payload.get("success")),

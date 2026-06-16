@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
 import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from dataclasses import asdict
@@ -23,6 +24,11 @@ MANIFEST_FILENAME = "manifest.json"
 STATE_FILENAME = "state.json"
 LOGGER = logging.getLogger(__name__)
 BUILD_LOG_LIMIT = 40
+TREE_BUILD_PROGRESS_START = 0.35
+TREE_BUILD_PROGRESS_END = 0.85
+TREE_BUILD_PROGRESS_MIN_INTERVAL_SECONDS = 1.0
+TREE_BUILD_PROGRESS_MIN_DELTA = 0.01
+TREE_BUILD_PROGRESS_LLM_HINT_LIMIT = 0.12
 
 
 class SkillIndexBuildCancelled(RuntimeError):
@@ -47,6 +53,8 @@ class SkillIndexService:
         manifest_matches = complete and _manifest_matches_inventory(index_dir, inventory)
         fresh = complete and manifest_matches and state.get("fingerprint") == expected
         build_state = _build_state_from_state(state)
+        if build_state.get("status") == "success" and not fresh:
+            build_state = _stale_success_build_state()
         return {
             "enabled": settings.enabled,
             "artifact_root": str(settings.artifact_root),
@@ -56,9 +64,9 @@ class SkillIndexService:
             "installed_count": inventory.count,
             "installed_enabled_count": inventory.count,
             "indexed_count": int(state.get("indexed_count") or 0) if complete and manifest_matches else 0,
-            "built_at": str(state.get("built_at") or ""),
+            "built_at": str(state.get("built_at") or "") if complete else "",
             "inventory_fingerprint": inventory.fingerprint,
-            "fingerprint": str(state.get("fingerprint") or ""),
+            "fingerprint": str(state.get("fingerprint") or "") if complete else "",
             "build_branching_factor": settings.build.branching_factor,
             "build_max_depth": settings.build.max_depth,
             "build_request_timeout_seconds": settings.build.request_timeout_seconds,
@@ -95,10 +103,11 @@ class SkillIndexService:
             settings,
             status="running",
             stage="scan",
-            message=f"Scanning installed skills ({source}).",
+            message="Scanning installed skills.",
             progress=0.05,
             started_at=_now_iso(),
             clear_error=True,
+            clear_logs=True,
         )
         self._check_cancel_or_timeout(settings, started, cancel_check, stage="scan")
         inventory = scan_skill_inventory(self._manager)
@@ -166,7 +175,7 @@ class SkillIndexService:
             if _is_stale_index(settings, inventory, expected):
                 _cleanup_index(settings)
             error = (
-                "Offline dispatch tree build requires a model and API key. "
+                "Offline skill tree build requires a model and API key. "
                 "Configure `models.defaults[0].model_client_config` or `symphony.skill_retrieval.llm`."
             )
             _write_build_state(
@@ -191,39 +200,53 @@ class SkillIndexService:
         )
         build_index_dir = build_root / "index"
         try:
+            _write_build_state(
+                settings,
+                status="running",
+                stage="llm_check",
+                message="Checking skill index build model connectivity.",
+                progress=0.2,
+                inventory=inventory,
+                fingerprint=expected,
+            )
+            self._check_cancel_or_timeout(settings, started, cancel_check, stage="llm_check")
+            self._check_build_llm_access(settings)
             build_index_dir.mkdir(parents=True, exist_ok=True)
             self._check_cancel_or_timeout(settings, started, cancel_check, stage="build")
             _write_build_state(
                 settings,
                 status="running",
                 stage="build",
-                message="Building dispatch skill tree index.",
+                message="Building installed skill tree index.",
                 progress=0.35,
                 inventory=inventory,
                 fingerprint=expected,
             )
             if force:
-                LOGGER.info("[skill-index] stage=build status=running detail=force_full_rebuild")
+                LOGGER.info(
+                    "[skill-index] stage=build status=running "
+                    "detail=Starting full rebuild because force rebuild was requested."
+                )
                 self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
             elif index_complete and not fingerprint_matches:
-                LOGGER.info("[skill-index] stage=build status=running detail=incremental")
+                LOGGER.info("[skill-index] stage=build status=running detail=Starting incremental rebuild.")
                 try:
                     self.incremental_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
                 except Exception as exc:
                     LOGGER.info(
                         "[skill-index] stage=build status=running "
-                        "detail=incremental_failed_full_rebuild error=%s",
+                        "detail=Incremental rebuild failed; falling back to full rebuild. error=%s",
                         exc,
                     )
                     shutil.rmtree(build_index_dir, ignore_errors=True)
                     build_index_dir.mkdir(parents=True, exist_ok=True)
                     self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
             else:
-                LOGGER.info("[skill-index] stage=build status=running detail=full")
+                LOGGER.info("[skill-index] stage=build status=running detail=Starting full rebuild.")
                 self._run_dispatch_build(settings=settings, inventory=inventory, output_dir=build_index_dir)
             self._check_cancel_or_timeout(settings, started, cancel_check, stage="publish")
             if not _is_complete_index(build_index_dir):
-                raise RuntimeError("dispatch build finished without complete index artifacts")
+                raise RuntimeError("skill index build finished without complete index artifacts")
             _write_build_state(
                 settings,
                 status="running",
@@ -303,10 +326,12 @@ class SkillIndexService:
         settings = load_settings()
         _write_build_state(
             settings,
-            status="running",
-            stage="cancel_requested",
-            message="Cancellation requested by user.",
-            cancel_requested=True,
+            status="cancelled",
+            stage="cancelled",
+            message="Skill index build cancellation requested by user.",
+            progress=1.0,
+            finished_at=_now_iso(),
+            cancel_requested=False,
         )
         return {"success": True, "result": "# Skill Index Build\n\nCancellation requested."}
 
@@ -319,10 +344,11 @@ class SkillIndexService:
             settings,
             status="running",
             stage="queued",
-            message=f"Skill index build queued ({source}).",
+            message="Skill index build queued.",
             progress=0.01,
             started_at=_now_iso(),
             clear_error=True,
+            clear_logs=True,
         )
 
     def incremental_build(
@@ -348,31 +374,35 @@ class SkillIndexService:
         add_index_path: Path | None = None
         try:
             with dispatch_import_path():
+                from indexing.tree.builder import TreeBuilder
                 from indexing.workflows.index_builder import IndexBuilder
+
+                _ensure_tree_builder_compat(TreeBuilder)
                 config = self._make_build_config(settings)
-                if added_paths:
+                with _capture_tree_build_progress(TreeBuilder, settings=settings, inventory=inventory):
+                    if added_paths:
+                        if removed_paths:
+                            add_index_path = output_dir.parent / "added-skills"
+                        else:
+                            add_index_path = output_dir
+                        with _suppress_dispatch_console():
+                            IndexBuilder.add(
+                                item_paths=added_paths,
+                                base_index_dir=existing_index,
+                                output_dir=add_index_path,
+                                item_type="skill",
+                                config=config,
+                            )
                     if removed_paths:
-                        add_index_path = output_dir.parent / "added-skills"
-                    else:
-                        add_index_path = output_dir
-                    with _suppress_dispatch_console():
-                        IndexBuilder.add(
-                            item_paths=added_paths,
-                            base_index_dir=existing_index,
-                            output_dir=add_index_path,
-                            item_type="skill",
-                            config=config,
-                        )
-                if removed_paths:
-                    source = add_index_path if added_paths else existing_index
-                    with _suppress_dispatch_console():
-                        IndexBuilder.delete(
-                            item_paths=removed_paths,
-                            base_index_dir=source,
-                            output_dir=output_dir,
-                            item_type="skill",
-                            config=config,
-                        )
+                        source = add_index_path if added_paths else existing_index
+                        with _suppress_dispatch_console():
+                            IndexBuilder.delete(
+                                item_paths=removed_paths,
+                                base_index_dir=source,
+                                output_dir=output_dir,
+                                item_type="skill",
+                                config=config,
+                            )
         finally:
             if add_index_path and add_index_path != output_dir:
                 shutil.rmtree(add_index_path, ignore_errors=True)
@@ -506,12 +536,46 @@ class SkillIndexService:
 
             config = SkillIndexService._make_build_config(settings)
             with _suppress_dispatch_console():
-                IndexBuilder.build(
-                    item_paths=inventory.item_paths,
-                    output_dir=output_dir,
-                    item_type="skill",
-                    config=config,
-                )
+                with _capture_tree_build_progress(TreeBuilder, settings=settings, inventory=inventory):
+                    IndexBuilder.build(
+                        item_paths=inventory.item_paths,
+                        output_dir=output_dir,
+                        item_type="skill",
+                        config=config,
+                    )
+
+    @staticmethod
+    def _check_build_llm_access(settings: SkillRetrievalSettings) -> None:
+        try:
+            from openai import OpenAI
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("The openai package is required to build the skill index.") from exc
+
+        client = OpenAI(
+            api_key=settings.llm.api_key,
+            base_url=settings.llm.base_url or None,
+        )
+        try:
+            client.chat.completions.create(
+                model=settings.llm.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": "Reply with OK. This is a connectivity check before building a local skill index.",
+                    }
+                ],
+                max_tokens=8,
+                timeout=settings.build.request_timeout_seconds,
+                stream=False,
+                extra_body={
+                    "thinking": {"type": "disabled"},
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                },
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Skill index build model is not reachable or rejected the request: {exc}") from exc
 
     @staticmethod
     def _recover_index(
@@ -537,13 +601,10 @@ class SkillIndexService:
 
 
 def _cleanup_index(settings: SkillRetrievalSettings) -> None:
-    """Remove existing index and state when no skills are available."""
+    """Remove existing index artifacts while preserving build state for UI reporting."""
     index_dir = _index_dir(settings)
     if index_dir.exists():
         shutil.rmtree(index_dir, ignore_errors=True)
-    state_file = _state_file(settings)
-    if state_file.exists():
-        state_file.unlink()
 
 
 def _index_dir(settings: SkillRetrievalSettings) -> Path:
@@ -577,6 +638,103 @@ def _ensure_tree_builder_compat(tree_builder_cls: type) -> None:
 def _write_tree_yaml(tree_builder: Any, tree_dict: dict[str, Any]) -> None:
     writer = getattr(tree_builder, "_preset_writer")
     writer.write_yaml(tree_dict)
+
+
+@contextmanager
+def _capture_tree_build_progress(
+    tree_builder_cls: type,
+    *,
+    settings: SkillRetrievalSettings,
+    inventory: SkillInventory,
+):
+    original_tree_progress = getattr(tree_builder_cls, "_tree_progress", None)
+    if not callable(original_tree_progress):
+        yield
+        return
+
+    reporter = _SkillTreeBuildProgressReporter(settings=settings, total=inventory.count)
+
+    def wrapped_tree_progress(builder: Any, *args: Any, **kwargs: Any) -> Any:
+        progress = original_tree_progress(builder, *args, **kwargs)
+        return _TreeProgressProxy(progress, reporter)
+
+    setattr(tree_builder_cls, "_tree_progress", wrapped_tree_progress)
+    try:
+        yield
+    finally:
+        setattr(tree_builder_cls, "_tree_progress", original_tree_progress)
+
+
+class _TreeProgressProxy:
+    def __init__(self, progress: Any, reporter: "_SkillTreeBuildProgressReporter") -> None:
+        self._progress = progress
+        self._reporter = reporter
+
+    def __enter__(self) -> "_TreeProgressProxy":
+        self._progress.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> Any:
+        return self._progress.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._progress, name)
+
+    def update(self, task_id: Any, *args: Any, **kwargs: Any) -> Any:
+        result = self._progress.update(task_id, *args, **kwargs)
+        self._reporter.record_update(kwargs)
+        return result
+
+
+class _SkillTreeBuildProgressReporter:
+    def __init__(self, *, settings: SkillRetrievalSettings, total: int) -> None:
+        self._settings = settings
+        self._total = max(0, int(total or 0))
+        self._leaf = 0
+        self._llm = 0
+        self._pending = 0
+        self._last_write = 0.0
+        self._last_progress = TREE_BUILD_PROGRESS_START
+        self._lock = threading.Lock()
+
+    def record_update(self, fields: dict[str, Any]) -> None:
+        if not fields:
+            return
+        with self._lock:
+            if "leaf" in fields:
+                self._leaf = max(self._leaf, _coerce_nonnegative_int(fields.get("leaf")))
+            elif "completed" in fields:
+                self._leaf = max(self._leaf, _coerce_nonnegative_int(fields.get("completed")))
+            if "llm" in fields:
+                self._llm = max(self._llm, _coerce_nonnegative_int(fields.get("llm")))
+            if "pending" in fields:
+                self._pending = _coerce_nonnegative_int(fields.get("pending"))
+            self._maybe_write()
+
+    def _maybe_write(self) -> None:
+        state = _read_state(self._settings)
+        build_state = _build_state_from_state(state)
+        if build_state.get("status") != "running" or build_state.get("stage") != "build":
+            return
+
+        now = time.monotonic()
+        current_progress = _coerce_progress(build_state.get("progress", 0.0))
+        progress = max(current_progress, self._last_progress, self._compute_progress())
+        progress = min(TREE_BUILD_PROGRESS_END, max(TREE_BUILD_PROGRESS_START, progress))
+        progress_changed = progress - self._last_progress >= TREE_BUILD_PROGRESS_MIN_DELTA
+        interval_elapsed = now - self._last_write >= TREE_BUILD_PROGRESS_MIN_INTERVAL_SECONDS
+        if not progress_changed or not interval_elapsed:
+            return
+
+        _write_build_progress(self._settings, progress=progress)
+        self._last_write = now
+        self._last_progress = progress
+
+    def _compute_progress(self) -> float:
+        leaf_ratio = min(1.0, self._leaf / self._total) if self._total > 0 else 0.0
+        llm_hint = min(TREE_BUILD_PROGRESS_LLM_HINT_LIMIT, self._llm * 0.01)
+        effective_ratio = max(leaf_ratio, llm_hint)
+        return TREE_BUILD_PROGRESS_START + (TREE_BUILD_PROGRESS_END - TREE_BUILD_PROGRESS_START) * effective_ratio
 
 
 def _record_recovery_failure(candidate: Path, exc: Exception) -> None:
@@ -625,6 +783,21 @@ def _expected_fingerprint(inventory: SkillInventory, settings: SkillRetrievalSet
 
 def expected_index_fingerprint(inventory: SkillInventory, settings: SkillRetrievalSettings) -> str:
     return _expected_fingerprint(inventory, settings)
+
+
+def _stale_success_build_state() -> dict[str, Any]:
+    return {
+        "status": "idle",
+        "stage": "",
+        "message": "No usable skill index is available. Rebuild the index to use Agentic skill retrieval.",
+        "error": "",
+        "progress": 0.0,
+        "started_at": "",
+        "finished_at": "",
+        "elapsed_seconds": 0.0,
+        "cancel_requested": False,
+        "logs": [],
+    }
 
 
 def _read_state(settings: SkillRetrievalSettings) -> dict[str, Any]:
@@ -692,6 +865,7 @@ def _write_build_state(
     inventory: SkillInventory | None = None,
     fingerprint: str | None = None,
     clear_error: bool = False,
+    clear_logs: bool = False,
 ) -> None:
     settings.artifact_root.mkdir(parents=True, exist_ok=True)
     state = _read_state(settings)
@@ -720,14 +894,15 @@ def _write_build_state(
         next_build["elapsed_seconds"] = float(elapsed_seconds)
     if cancel_requested is not None:
         next_build["cancel_requested"] = bool(cancel_requested)
+    logs = [] if clear_logs else next_build.get("logs", [])
     next_build["logs"] = _append_log(
-        next_build.get("logs", []),
+        logs,
         stage=stage,
         status=status,
         message=message if error in (None, "") else f"{message} {error}",
     )
     state["schema_version"] = int(state.get("schema_version") or 1)
-    if fingerprint:
+    if fingerprint and status == "success":
         state["fingerprint"] = fingerprint
     if inventory is not None:
         state["inventory"] = inventory.to_state_payload()
@@ -735,6 +910,40 @@ def _write_build_state(
     state["build"] = next_build
     _state_file(settings).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     LOGGER.info("[skill-index] stage=%s status=%s detail=%s", stage, status, message)
+
+
+def repair_interrupted_build_state() -> bool:
+    settings = load_settings()
+    build_state = _build_state_from_state(_read_state(settings))
+    if build_state.get("status") != "running":
+        return False
+
+    message = "Previous skill index build was interrupted before it completed. Rebuild the index to continue."
+    _write_build_state(
+        settings,
+        status="failed",
+        stage="interrupted",
+        message=message,
+        error=message,
+        progress=1.0,
+        finished_at=_now_iso(),
+        cancel_requested=False,
+    )
+    return True
+
+
+def _write_build_progress(settings: SkillRetrievalSettings, *, progress: float) -> None:
+    state = _read_state(settings)
+    build_state = _build_state_from_state(state)
+    if build_state.get("status") != "running" or build_state.get("stage") != "build":
+        return
+    next_progress = _coerce_progress(progress)
+    if next_progress <= _coerce_progress(build_state.get("progress", 0.0)):
+        return
+    build_state["progress"] = next_progress
+    state["build"] = build_state
+    settings.artifact_root.mkdir(parents=True, exist_ok=True)
+    _state_file(settings).write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _build_state_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -790,6 +999,13 @@ def _coerce_progress(value: Any) -> float:
         return 0.0
 
 
+def _coerce_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -817,12 +1033,10 @@ def _missing_tree_markdown(language: str) -> str:
     normalized = str(language or "").lower()
     if normalized.startswith("zh") or normalized.startswith("cn"):
         return (
-            "# 技能索引树\n\n"
             "当前没有可用的已安装技能检索索引，或索引已与当前已安装/启用技能不一致。\n\n"
             "可以点击页面上的“构建索引”重新构建；也可以忽略该能力，继续使用 jiuwenswarm 原有流程。"
         )
     return (
-        "# Skill Index Tree\n\n"
         "No usable installed-skill retrieval index is available, or the index no longer matches the current "
         "installed/enabled skills.\n\n"
         "Use the web page build button to rebuild the index, or ignore retrieval and continue with the original "

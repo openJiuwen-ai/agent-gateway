@@ -63,9 +63,7 @@ from jiuwenswarm.agents.harness.common.rails import (
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode
 from jiuwenswarm.agents.harness.common.tools import (
-    SkillRetrievalToolkit,
     SkillToolkit,
-    is_skill_retrieval_enabled,
 )
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
@@ -1287,21 +1285,33 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] skill_toolkit build failed: %s", exc)
             return None
 
+    def _skill_retrieval_tools_enabled_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Respect code-mode configured tools during runtime skill retrieval sync."""
+        if not super()._skill_retrieval_tools_enabled_for_runtime(config_base):
+            return False
+        config = config_base if isinstance(config_base, dict) else get_config()
+        configured_tools = config.get("modes", {}).get("code", {}).get("tools") or []
+        return "skill_retrieval" in configured_tools
+
     def _build_skill_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
         """构建 SkillRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
-        if not is_skill_retrieval_enabled():
+        if not self._skill_retrieval_tools_enabled_for_runtime():
             logger.info("[JiuwenSwarmCodeAdapter] SkillRetrievalToolkit skipped: disabled")
             return None
         try:
-            skill_retrieval_toolkit = SkillRetrievalToolkit(
-                manager=self._skill_manager,
-                visible_skill_names=self._visible_skill_names_for_list_skill,
-            )
+            tools = self._create_skill_retrieval_tools()
+            if not tools:
+                return None
+            self._skill_retrieval_tools = tools
+            self._skill_retrieval_tools_registered = bool(tools)
             logger.info(
                 "[JiuwenSwarmCodeAdapter] SkillRetrievalToolkit built: tools=%s",
-                [t.card.name for t in skill_retrieval_toolkit.get_tools()],
+                [tool.card.name for tool in tools],
             )
-            return skill_retrieval_toolkit.get_tools()
+            return tools
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
             return None
