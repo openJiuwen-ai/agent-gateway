@@ -170,8 +170,19 @@ type ResumeSessionListState = {
   currentBranch: string;
   /** 非空时进入只读预览态（Space 触发，对齐 Claude Code preview）：展示选中会话的信息卡 */
   preview: SessionMeta | null;
+  /** 预览时的最新对话摘要列表 */
+  previewMessages: PreviewMessage[];
+  /** 预览消息是否仍在请求中（用于区分"加载中"与"已加载但为空"） */
+  previewLoading: boolean;
   /** 非空时进入重命名态（Ctrl+R 触发，对齐 Claude Code Ctrl+R）：编辑选中会话标题 */
   rename: { sessionId: string; value: string } | null;
+};
+
+/** 预览消息摘要 */
+type PreviewMessage = {
+  role: string;
+  summary: string;
+  event_type: string;
 };
 
 type ModelListState = {
@@ -1620,14 +1631,14 @@ export class AppScreen implements Component, Focusable {
         if (matchesKey(data, "return")) {
           void this.handleResumeSessionSelection(this.resumeSessionList.preview.session_id);
         } else if (matchesKey(data, "space") || matchesKey(data, "escape")) {
-          this.resumeSessionList = { ...this.resumeSessionList, preview: null };
+          this.resumeSessionList = { ...this.resumeSessionList, preview: null, previewMessages: [], previewLoading: false };
           this.tui.requestRender();
         }
         return;
       }
       // Space 打开选中会话的预览（牺牲在搜索框输入空格的能力，按用户要求）
       if (matchesKey(data, "space")) {
-        this.openResumeSessionPreview();
+        void this.openResumeSessionPreview();
         return;
       }
       // Ctrl+R 重命名选中会话
@@ -2480,6 +2491,8 @@ export class AppScreen implements Component, Focusable {
         branchFilterEnabled: false,
         currentBranch,
         preview: null,
+        previewMessages: [],
+        previewLoading: false,
         rename: null,
       };
       this.tui.requestRender();
@@ -2517,6 +2530,8 @@ export class AppScreen implements Component, Focusable {
         branchFilterEnabled,
         currentBranch,
         preview: null,
+        previewMessages: [],
+        previewLoading: false,
         rename: null,
       };
       this.tui.requestRender();
@@ -2642,8 +2657,8 @@ export class AppScreen implements Component, Focusable {
     this.tui.requestRender();
   }
 
-  /** 打开选中会话的只读预览（信息卡）。Space 触发，对齐 Claude Code 的 preview。 */
-  private openResumeSessionPreview(): void {
+  /** 打开选中会话的只读预览（信息卡 + 最新对话）。Space 触发，对齐 Claude Code 的 preview。 */
+  private async openResumeSessionPreview(): Promise<void> {
     if (!this.resumeSessionList) return;
     const selected = this.resumeSessionList.list.getSelectedItem();
     if (!selected) return;
@@ -2651,8 +2666,36 @@ export class AppScreen implements Component, Focusable {
       (s) => s.session_id === selected.value,
     );
     if (!session) return;
-    this.resumeSessionList = { ...this.resumeSessionList, preview: session };
+    // 先设置 preview 状态并标记加载中，显示基本信息
+    this.resumeSessionList = {
+      ...this.resumeSessionList,
+      preview: session,
+      previewMessages: [],
+      previewLoading: true,
+    };
     this.tui.requestRender();
+    // 异步获取预览消息
+    try {
+      const resp = await this.state.request<{ session_id: string; preview_messages: PreviewMessage[] }>(
+        "session.preview",
+        { session_id: session.session_id, count: 2 },
+      );
+      if (this.resumeSessionList && this.resumeSessionList.preview?.session_id === session.session_id) {
+        this.resumeSessionList = {
+          ...this.resumeSessionList,
+          previewMessages: resp.preview_messages ?? [],
+          previewLoading: false,
+        };
+        this.tui.requestRender();
+      }
+    } catch (error) {
+      // 获取失败不影响预览基本信息显示，但需结束加载态
+      console.debug("[openResumeSessionPreview] session.preview failed:", error);
+      if (this.resumeSessionList && this.resumeSessionList.preview?.session_id === session.session_id) {
+        this.resumeSessionList = { ...this.resumeSessionList, previewLoading: false };
+        this.tui.requestRender();
+      }
+    }
   }
 
   /** 进入重命名态，初始值取当前标题。Ctrl+R 触发，对齐 Claude Code。 */
@@ -2729,25 +2772,59 @@ export class AppScreen implements Component, Focusable {
     ].filter((l) => l !== "");
   }
 
-  private buildResumeSessionPreviewLines(width: number, session: SessionMeta): string[] {
+  private buildResumeSessionPreviewLines(width: number, session: SessionMeta, previewMessages: PreviewMessage[]): string[] {
     const title = session.title?.trim() || "(untitled)";
     const project = session.project_dir?.trim() || "-";
-    const branch = session.git_branch?.trim() || "(unknown)";
-    const msgs = session.message_count ?? 0;
-    const lastActive = formatRelativeTime(session.last_message_at);
-    const created = formatRelativeTime(session.created_at);
-    const row = (k: string, v: string) =>
-      padToWidth(`${palette.text.dim(k.padEnd(11))}${palette.text.primary(v)}`, width);
+
+    // 构建预览消息行：每条对话按宽度换行展示，内容超长时优先保留后半部分（末尾若干行）
+    const MAX_LINES_PER_MSG = 5;
+    const indent = "  ";
+    const contentWidth = Math.max(1, width - indent.length);
+    const messageLines: string[] = [];
+    if (previewMessages.length > 0) {
+      previewMessages.forEach((msg, msgIdx) => {
+        const isUser = msg.role === "user";
+        const roleLabel = isUser ? "You:" : "Assistant:";
+        const roleColor = isUser ? palette.text.accent : palette.text.primary;
+        messageLines.push(padToWidth(roleColor(roleLabel), width));
+        // 按宽度换行，内容过长时只保留末尾 MAX_LINES_PER_MSG 行（展示对话后半部分）
+        const wrapped = renderWrappedText(contentWidth, msg.summary.trim());
+        let shown = wrapped;
+        let headTruncated = false;
+        if (wrapped.length > MAX_LINES_PER_MSG) {
+          shown = wrapped.slice(wrapped.length - MAX_LINES_PER_MSG);
+          headTruncated = true;
+        }
+        if (headTruncated) {
+          // 用纯 ASCII 省略号另起一行标记“上文已截断”，避免 U+2026 在部分终端按 2 列
+          // 渲染、而 visibleWidth 按 1 列计算导致该行超宽
+          messageLines.push(padToWidth(palette.text.dim(`${indent}...`), width));
+        }
+        shown.forEach((line) => {
+          messageLines.push(padToWidth(palette.text.dim(`${indent}${line}`), width));
+        });
+        // 消息之间留空行分隔（最后一条不加）
+        if (msgIdx < previewMessages.length - 1) {
+          messageLines.push("");
+        }
+      });
+    } else if (this.resumeSessionList?.previewLoading) {
+      // 请求进行中：显示加载提示
+      messageLines.push(padToWidth(palette.text.dim("Loading recent messages..."), width));
+    } else {
+      // 请求已完成但无可展示对话（如全部为 tool_call/tool_result，被后端过滤）
+      messageLines.push(padToWidth(palette.text.dim("No conversation to preview"), width));
+    }
+
     return [
       padToWidth(palette.status.warning("Session preview"), width),
       padToWidth(palette.text.primary(title), width),
       "",
-      row("ID", session.session_id),
-      row("Project", project),
-      row("Branch", branch),
-      row("Messages", String(msgs)),
-      row("Last active", lastActive),
-      row("Created", created),
+      padToWidth(`${palette.text.dim("Project:   ")}${palette.text.primary(project)}`, width),
+      "",
+      padToWidth(palette.text.dim("Recent conversation"), width),
+      "",
+      ...messageLines,
       "",
       padToWidth(palette.text.dim("Enter resume · Space/Esc back"), width),
     ];
@@ -2783,7 +2860,7 @@ export class AppScreen implements Component, Focusable {
       return this.buildResumeSessionRenameLines(width, session, r.value);
     }
     if (this.resumeSessionList.preview !== null) {
-      return this.buildResumeSessionPreviewLines(width, this.resumeSessionList.preview);
+      return this.buildResumeSessionPreviewLines(width, this.resumeSessionList.preview, this.resumeSessionList.previewMessages);
     }
     const showAll = this.resumeSessionList.showAllProjects;
     const branchOn = this.resumeSessionList.branchFilterEnabled;
