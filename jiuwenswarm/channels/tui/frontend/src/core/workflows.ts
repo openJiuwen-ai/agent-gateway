@@ -168,12 +168,13 @@ export function workflowStatusBannerText(status: WorkflowStatus): string | null 
 }
 
 export function countWorkflowAgents(workflow: WorkflowRun): number {
-  return workflow.phases.reduce((total, phase) => total + phase.agents.length, 0);
+  return (workflow.phases ?? []).reduce((total, phase) => total + (phase.agents ?? []).length, 0);
 }
 
 export function countCompletedWorkflowAgents(workflow: WorkflowRun): number {
-  return workflow.phases.reduce(
-    (total, phase) => total + phase.agents.filter((agent) => agent.status === "completed").length,
+  return (workflow.phases ?? []).reduce(
+    (total, phase) =>
+      total + (phase.agents ?? []).filter((agent) => agent.status === "completed").length,
     0,
   );
 }
@@ -185,11 +186,38 @@ export function findWorkflowAgent(
 ): WorkflowAgentLookup | null {
   const workflow = workflows.find((item) => item.id === workflowId);
   if (!workflow) return null;
-  for (const phase of workflow.phases) {
-    const agent = phase.agents.find((item) => item.id === agentId);
+  for (const phase of workflow.phases ?? []) {
+    const agent = (phase.agents ?? []).find((item) => item.id === agentId);
     if (agent) return { workflow, phase, agent };
   }
   return null;
+}
+
+export function normalizeWorkflowRun(workflow: WorkflowRun): WorkflowRun {
+  return {
+    ...workflow,
+    logs: Array.isArray(workflow.logs)
+      ? workflow.logs.filter((log): log is string => typeof log === "string")
+      : undefined,
+    phases: Array.isArray(workflow.phases)
+      ? workflow.phases.map((phase) => ({
+          ...phase,
+          agents: Array.isArray(phase.agents)
+            ? phase.agents.map((agent) => ({
+                ...agent,
+                activity: Array.isArray(agent.activity)
+                  ? agent.activity.filter(
+                      (activity): activity is WorkflowAgentActivity =>
+                        Boolean(
+                          activity && typeof activity === "object" && !Array.isArray(activity),
+                        ),
+                    )
+                  : undefined,
+              }))
+            : [],
+        }))
+      : [],
+  };
 }
 
 function mergeWorkflowAgent(
@@ -241,7 +269,8 @@ export function mergeWorkflowRun(
     ? incoming.logs.filter((log): log is string => typeof log === "string")
     : undefined;
 
-  for (const incomingPhase of incoming.phases ?? []) {
+  const incomingPhases = Array.isArray(incoming.phases) ? incoming.phases : [];
+  for (const incomingPhase of incomingPhases) {
     const index = mergedPhases.findIndex((phase) => phase.id === incomingPhase.id);
     const nextPhase = mergeWorkflowPhase(
       index === -1 ? undefined : mergedPhases[index],
@@ -274,19 +303,9 @@ export function applyWorkflowUpdate(
 ): WorkflowRun[] {
   const index = workflows.findIndex((workflow) => workflow.id === incoming.id);
   if (index === -1) {
-    // Normalize incoming workflow to ensure phases and agents are arrays
-    const normalized: WorkflowRun = {
-      ...incoming,
-      phases: Array.isArray(incoming.phases)
-        ? incoming.phases.map((phase) => ({
-            ...phase,
-            agents: Array.isArray(phase.agents) ? phase.agents : [],
-          }))
-        : [],
-    };
-    return [normalized, ...workflows];
+    return [normalizeWorkflowRun(incoming), ...workflows];
   }
   return workflows.map((workflow, itemIndex) =>
-    itemIndex === index ? mergeWorkflowRun(workflow, incoming) : workflow,
+    itemIndex === index ? normalizeWorkflowRun(mergeWorkflowRun(workflow, incoming)) : workflow,
   );
 }

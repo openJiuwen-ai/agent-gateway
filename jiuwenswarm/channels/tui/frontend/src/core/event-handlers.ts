@@ -1059,17 +1059,6 @@ function handleWorkflowUpdated(
     return false;
   }
 
-  // Normalize phases and agents to ensure they are arrays
-  const wf = workflow as Record<string, unknown>;
-  if (!Array.isArray(wf.phases)) {
-    wf.phases = [];
-  }
-  for (const phase of wf.phases as Record<string, unknown>[]) {
-    if (!Array.isArray(phase.agents)) {
-      phase.agents = [];
-    }
-  }
-
   delegate.applyWorkflowUpdate(workflow as unknown as WorkflowRun);
   return true;
 }

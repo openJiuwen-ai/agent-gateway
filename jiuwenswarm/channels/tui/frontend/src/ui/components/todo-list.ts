@@ -33,7 +33,8 @@ function todoLabel(todo: TodoItem, animationPhase: number = 0): string {
   if (todo.status === "error") {
     return `${palette.status.error("✗")} ${text}`;
   }
-  const prefix = todo.status === "in_progress" ? spinner : "○";
+  const prefix =
+    todo.status === "in_progress" ? palette.status.info(spinner) : palette.status.warning("○");
   return `${prefix} ${text}`;
 }
 

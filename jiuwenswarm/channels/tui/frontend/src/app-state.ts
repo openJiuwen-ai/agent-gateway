@@ -62,7 +62,7 @@ import {
   getCurrentCwd,
 } from "./core/tui-trusted-dirs-store.js";
 import { loadTuiConfig } from "./core/tui-config-store.js";
-import { applyWorkflowUpdate, type WorkflowRun } from "./core/workflows.js";
+import { applyWorkflowUpdate, normalizeWorkflowRun, type WorkflowRun } from "./core/workflows.js";
 import { execFile, spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -902,9 +902,9 @@ export class CliPiAppState {
       workflowRuns: this.workflowRuns.map((workflow) => ({
         ...workflow,
         logs: workflow.logs ? [...workflow.logs] : undefined,
-        phases: workflow.phases.map((phase) => ({
+        phases: (workflow.phases ?? []).map((phase) => ({
           ...phase,
-          agents: phase.agents.map((agent) => ({
+          agents: (phase.agents ?? []).map((agent) => ({
             ...agent,
             activity: agent.activity ? [...agent.activity] : undefined,
           })),
@@ -1147,7 +1147,7 @@ export class CliPiAppState {
   };
 
   readonly setWorkflowRuns = (workflows: WorkflowRun[]): void => {
-    this.workflowRuns = workflows;
+    this.workflowRuns = workflows.map((workflow) => normalizeWorkflowRun(workflow));
     this.emitChange();
   };
 
