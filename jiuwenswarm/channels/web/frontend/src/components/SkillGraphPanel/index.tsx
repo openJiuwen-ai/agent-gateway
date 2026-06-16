@@ -535,8 +535,13 @@ function formatElapsedTime(ms: number): string {
     : `${minutes}:${paddedSeconds}`;
 }
 
-function buildElapsedText(entries: BuildLogEntry[], progress: BuildProgress | null, now: number): string {
-  const start = parseBuildLogTime(entries[0]);
+function buildElapsedText(
+  entries: BuildLogEntry[],
+  progress: BuildProgress | null,
+  now: number,
+  startTime: number | null,
+): string {
+  const start = startTime || parseBuildLogTime(entries[0]);
   if (!start) return '';
   const latest = parseBuildLogTime(entries[entries.length - 1]);
   const end = progress?.status === 'running' ? now : latest || now;
@@ -698,15 +703,28 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   const [tokenUsage, setTokenUsage] = useState<LLMTokenUsageSummary | null>(null);
   const [showBuildLogPanel, setShowBuildLogPanel] = useState(false);
   const [buildElapsedNow, setBuildElapsedNow] = useState(() => Date.now());
+  const [buildElapsedStart, setBuildElapsedStart] = useState<number | null>(null);
+  const buildProgressStatusRef = useRef<BuildProgress['status'] | undefined>(undefined);
   const [autoFitRequest, setAutoFitRequest] = useState(0);
 
   const applyBuildLog = useCallback((data: { build_log?: BuildLogEntry[]; build_progress?: BuildProgress; llm_token_usage?: LLMTokenUsageSummary }) => {
+    const nextStatus = data.build_progress?.status;
+    const resetElapsedStart = nextStatus === 'running' && buildProgressStatusRef.current !== 'running';
     if (Array.isArray(data.build_log)) {
-      setBuildLog(data.build_log);
-      observedBuildLogSignatureRef.current = buildLogSignature(data.build_log);
+      const nextBuildLog = data.build_log;
+      const nextStart = parseBuildLogTime(nextBuildLog[0]);
+      setBuildElapsedStart((current) => {
+        if (!nextBuildLog.length) return null;
+        if (!nextStart) return resetElapsedStart ? null : current;
+        if (resetElapsedStart || current === null || nextStart < current) return nextStart;
+        return current;
+      });
+      setBuildLog(nextBuildLog);
+      observedBuildLogSignatureRef.current = buildLogSignature(nextBuildLog);
     }
     if (data.build_progress) {
       setBuildProgress(data.build_progress);
+      buildProgressStatusRef.current = data.build_progress.status;
     }
     const nextTokenUsage = data.llm_token_usage || data.build_progress?.llm_token_usage;
     if (tokenUsageTotal(nextTokenUsage || null)) {
@@ -933,6 +951,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
 
   const rebuildGraph = useCallback(async (mode: SymphonyBuildMode) => {
     const force = mode === 'full';
+    setBuildElapsedStart(null);
     setUpdating(true);
     setBuildMode(mode);
     setShowBuildLogPanel(true);
@@ -1357,7 +1376,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     : progressLabel;
   const recentBuildLog = compactBuildLog(buildLog).slice(-8);
   const tokenUsageText = formatTokenUsage(tokenUsage, t);
-  const elapsedText = buildElapsedText(buildLog, buildProgress, buildElapsedNow);
+  const elapsedText = buildElapsedText(buildLog, buildProgress, buildElapsedNow, buildElapsedStart);
   const buildMetricsText = [tokenUsageText, elapsedText].filter(Boolean).join(' · ');
 
   const detailInputs = selectedNode ? asDetailItems(selectedNode.properties.inputs, t('skills.graph.required')) : [];
