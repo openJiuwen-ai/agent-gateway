@@ -20,6 +20,7 @@ import {
 import { createExitCommand } from "./builtins/exit.js";
 import { createHelpCommand } from "./builtins/help.js";
 import { createHooksCommand } from "./builtins/hooks.js";
+import { createKeybindingsCommand } from "./builtins/keybindings.js";
 import { createInitCommand } from "./builtins/init.js";
 import { createModelCommand } from "./builtins/model.js";
 import { createMcpCommand } from "./builtins/mcp.js";
@@ -50,6 +51,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createAgentsCommand(),
     createHelpCommand(() => commands),
     createHooksCommand(),
+    createKeybindingsCommand(),
     createBranchCommand(),
     createClearCommand(),
     createInitCommand(),

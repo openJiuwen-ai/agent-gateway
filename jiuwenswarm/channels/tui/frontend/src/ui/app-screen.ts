@@ -80,6 +80,7 @@ import {
   stripBracketedPasteMarkers,
 } from "../core/pasted-text.js";
 import { handleAppScreenKeyInput } from "./keymap.js";
+import { resolveAction } from "../core/keybindings/resolver.js";
 import { buildAppScreenLines } from "./screen-layout.js";
 import { buildTranscriptLines } from "./transcript-renderer.js";
 import {
@@ -1365,56 +1366,38 @@ export class AppScreen implements Component, Focusable {
     const contentLines = this.fileViewerState.content.split("\n");
     const height = this.tui.terminal.rows;
     const availableHeight = Math.max(1, height - 2); // Reserve for title + hint
+    const maxScroll = Math.max(0, contentLines.length - availableHeight);
 
-    // Esc or q to exit
-    if (matchesKey(data, "escape") || data.toLowerCase() === "q") {
-      this.exitFileViewer();
-      return;
-    }
-
-    // Scroll up (up arrow or k)
-    if (matchesKey(data, "up") || data.toLowerCase() === "k") {
-      this.fileViewerState.scrollOffset = Math.max(0, this.fileViewerState.scrollOffset - 1);
-      this.tui.requestRender();
-      return;
-    }
-
-    // Scroll down (down arrow or j)
-    if (matchesKey(data, "down") || data.toLowerCase() === "j") {
-      const maxScroll = Math.max(0, contentLines.length - availableHeight);
-      this.fileViewerState.scrollOffset = Math.min(maxScroll, this.fileViewerState.scrollOffset + 1);
-      this.tui.requestRender();
-      return;
-    }
-
-    // Page up
-    if (matchesKey(data, "pageUp")) {
-      this.fileViewerState.scrollOffset = Math.max(0, this.fileViewerState.scrollOffset - availableHeight);
-      this.tui.requestRender();
-      return;
-    }
-
-    // Page down
-    if (matchesKey(data, "pageDown")) {
-      const maxScroll = Math.max(0, contentLines.length - availableHeight);
-      this.fileViewerState.scrollOffset = Math.min(maxScroll, this.fileViewerState.scrollOffset + availableHeight);
-      this.tui.requestRender();
-      return;
-    }
-
-    // Go to top (Home)
-    if (matchesKey(data, "home") || data.toLowerCase() === "g") {
-      this.fileViewerState.scrollOffset = 0;
-      this.tui.requestRender();
-      return;
-    }
-
-    // Go to bottom (End)
-    if (matchesKey(data, "end") || data.toLowerCase() === "shift+g") {
-      const maxScroll = Math.max(0, contentLines.length - availableHeight);
-      this.fileViewerState.scrollOffset = maxScroll;
-      this.tui.requestRender();
-      return;
+    switch (resolveAction("FileViewer", data)) {
+      case "fileViewer:exit":
+        this.exitFileViewer();
+        return;
+      case "fileViewer:lineUp":
+        this.fileViewerState.scrollOffset = Math.max(0, this.fileViewerState.scrollOffset - 1);
+        this.tui.requestRender();
+        return;
+      case "fileViewer:lineDown":
+        this.fileViewerState.scrollOffset = Math.min(maxScroll, this.fileViewerState.scrollOffset + 1);
+        this.tui.requestRender();
+        return;
+      case "fileViewer:pageUp":
+        this.fileViewerState.scrollOffset = Math.max(0, this.fileViewerState.scrollOffset - availableHeight);
+        this.tui.requestRender();
+        return;
+      case "fileViewer:pageDown":
+        this.fileViewerState.scrollOffset = Math.min(maxScroll, this.fileViewerState.scrollOffset + availableHeight);
+        this.tui.requestRender();
+        return;
+      case "fileViewer:top":
+        this.fileViewerState.scrollOffset = 0;
+        this.tui.requestRender();
+        return;
+      case "fileViewer:bottom":
+        this.fileViewerState.scrollOffset = maxScroll;
+        this.tui.requestRender();
+        return;
+      default:
+        return;
     }
   }
 
@@ -1781,7 +1764,9 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    if (!pendingQuestion && snapshot.cancellableWork && matchesKey(data, "escape") && !hasOverlay) {
+    const isCancelWorkKey = !hasOverlay && resolveAction("Global", data) === "app:cancelWork";
+
+    if (!pendingQuestion && snapshot.cancellableWork && isCancelWorkKey) {
       if (isTeamMode(snapshot.mode)) {
         this.state.pause();
       } else {
@@ -1791,7 +1776,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     // 检查不可中断命令列表（ESC 显示提示）
-    if (!pendingQuestion && snapshot.runningCommand && UNINTERRUPTIBLE_COMMANDS.includes(snapshot.runningCommand) && matchesKey(data, "escape") && !hasOverlay) {
+    if (!pendingQuestion && snapshot.runningCommand && UNINTERRUPTIBLE_COMMANDS.includes(snapshot.runningCommand) && isCancelWorkKey) {
       this.transientNotice = `${snapshot.runningCommand} 命令执行中，无法中断`;
       if (this.transientNoticeTimer) {
         clearTimeout(this.transientNoticeTimer);
@@ -1899,15 +1884,15 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (permissionRequest && activeQuestion) {
-      const lower = data.toLowerCase();
-      if (lower === "y") {
+      const confirmAction = resolveAction("Confirmation", data);
+      if (confirmAction === "confirm:yes") {
         const allow = activeQuestion.options.find((option) => isAllowOption(option.label));
         if (allow) {
           this.handleQuestionSelection(allow.label);
           return;
         }
       }
-      if (lower === "n") {
+      if (confirmAction === "confirm:no") {
         const reject = activeQuestion.options.find((option) => isRejectOption(option.label));
         if (reject) {
           this.handleQuestionSelection(reject.label);
@@ -1961,13 +1946,15 @@ export class AppScreen implements Component, Focusable {
         }
         return;
       }
-      // Space 打开选中会话的预览（牺牲在搜索框输入空格的能力，按用户要求）
-      if (matchesKey(data, "space")) {
+      const resumeAction = resolveAction("ResumeList", data);
+      // These shortcuts must win over search-text input: the default for
+      // resume:preview is Space, which would otherwise be typed into the query
+      // (intentionally sacrificing the ability to type a space in search).
+      if (resumeAction === "resume:preview") {
         void this.openResumeSessionPreview();
         return;
       }
-      // Ctrl+R 重命名选中会话
-      if (matchesKey(data, "ctrl+r")) {
+      if (resumeAction === "resume:rename") {
         this.openResumeRename();
         return;
       }
@@ -1978,11 +1965,11 @@ export class AppScreen implements Component, Focusable {
       } else if (matchesKey(data, "backspace")) {
         const newQuery = this.resumeSessionList.searchQuery.slice(0, -1);
         this.updateResumeSearchQuery(newQuery);
-      } else if (matchesKey(data, "ctrl+a")) {
+      } else if (resumeAction === "resume:toggleAllProjects") {
         void this.toggleResumeAllProjects();
-      } else if (matchesKey(data, "ctrl+b")) {
+      } else if (resumeAction === "resume:toggleBranchFilter") {
         this.toggleResumeBranchFilter();
-      } else if (matchesKey(data, "escape")) {
+      } else if (resumeAction === "resume:close") {
         if (this.resumeSessionList.searchQuery) {
           this.updateResumeSearchQuery("");
         } else {
@@ -2019,11 +2006,11 @@ export class AppScreen implements Component, Focusable {
           this.tui.requestRender();
           return;
         }
-        if (matchesKey(data, "left")) {
+        if (resolveAction("StatusView", data) === "status:prevTab") {
           this.switchStatusViewTab(-1);
           return;
         }
-        if (matchesKey(data, "right")) {
+        if (resolveAction("StatusView", data) === "status:nextTab") {
           this.switchStatusViewTab(1);
           return;
         }
@@ -2050,17 +2037,18 @@ export class AppScreen implements Component, Focusable {
         return;
       }
       // Normal mode: Esc to close, / or printable char on config tab enters search
-      if (matchesKey(data, "escape")) {
-        this.closeStatusView();
-        return;
-      }
-      if (matchesKey(data, "left")) {
-        this.switchStatusViewTab(-1);
-        return;
-      }
-      if (matchesKey(data, "right")) {
-        this.switchStatusViewTab(1);
-        return;
+      switch (resolveAction("StatusView", data)) {
+        case "status:close":
+          this.closeStatusView();
+          return;
+        case "status:prevTab":
+          this.switchStatusViewTab(-1);
+          return;
+        case "status:nextTab":
+          this.switchStatusViewTab(1);
+          return;
+        default:
+          break;
       }
       // On config tab, / enters search mode; printable chars also enter search mode
       // Use getPrintableChar() for Kitty CSI-u (VSCode) + UTF-8 multi-byte (IME) support
@@ -2110,7 +2098,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.mcpDetail !== null) {
-      if (matchesKey(data, "escape")) {
+      if (resolveAction("Overlay", data) === "overlay:close") {
         this.mcpDetail = null;
         this.openMcpList();
         return;
@@ -2123,7 +2111,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.mcpToolDetail !== null) {
-      if (matchesKey(data, "escape")) {
+      if (resolveAction("Overlay", data) === "overlay:close") {
         const serverName = this.mcpToolDetail.serverName;
         this.mcpToolDetail = null;
         void this.openMcpToolsList(serverName);
@@ -2133,7 +2121,7 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.mcpTools !== null) {
-      if (matchesKey(data, "escape")) {
+      if (resolveAction("Overlay", data) === "overlay:close") {
         const serverName = this.mcpTools.serverName;
         this.mcpTools = null;
         void this.handleMcpSelection(serverName);
@@ -2156,25 +2144,25 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (!snapshot.pendingQuestion && this.showTeamPanel) {
-      if (matchesKey(data, "left")) {
-        this.viewedTeamMemberId = null;
-        this.tui.requestRender();
-        return;
-      }
-      if (matchesKey(data, "return")) {
-        this.viewedTeamMemberId = this.selectedTeamMemberId;
-        this.tui.requestRender();
-        return;
-      }
-      if (matchesKey(data, "up")) {
-        this.moveTeamPanelSelection(snapshot, -1);
-        this.tui.requestRender();
-        return;
-      }
-      if (matchesKey(data, "down")) {
-        this.moveTeamPanelSelection(snapshot, 1);
-        this.tui.requestRender();
-        return;
+      switch (resolveAction("TeamPanel", data)) {
+        case "team:back":
+          this.viewedTeamMemberId = null;
+          this.tui.requestRender();
+          return;
+        case "team:viewMember":
+          this.viewedTeamMemberId = this.selectedTeamMemberId;
+          this.tui.requestRender();
+          return;
+        case "team:prev":
+          this.moveTeamPanelSelection(snapshot, -1);
+          this.tui.requestRender();
+          return;
+        case "team:next":
+          this.moveTeamPanelSelection(snapshot, 1);
+          this.tui.requestRender();
+          return;
+        default:
+          break;
       }
     }
 
@@ -2720,27 +2708,27 @@ export class AppScreen implements Component, Focusable {
     }
 
     const pageSize = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
-    if (matchesKey(data, "pageUp") || matchesKey(data, "shift+pageUp")) {
-      this.transcriptScrollOffset += pageSize;
-      this.tui.requestRender();
-      return true;
+    const scrollAction = resolveAction("Scroll", data);
+    switch (scrollAction) {
+      case "scroll:pageUp":
+        this.transcriptScrollOffset += pageSize;
+        this.tui.requestRender();
+        return true;
+      case "scroll:pageDown":
+        this.transcriptScrollOffset = Math.max(0, this.transcriptScrollOffset - pageSize);
+        this.tui.requestRender();
+        return true;
+      case "scroll:top":
+        this.transcriptScrollOffset = Number.MAX_SAFE_INTEGER;
+        this.tui.requestRender();
+        return true;
+      case "scroll:bottom":
+        this.transcriptScrollOffset = 0;
+        this.tui.requestRender();
+        return true;
+      default:
+        return false;
     }
-    if (matchesKey(data, "pageDown") || matchesKey(data, "shift+pageDown")) {
-      this.transcriptScrollOffset = Math.max(0, this.transcriptScrollOffset - pageSize);
-      this.tui.requestRender();
-      return true;
-    }
-    if (matchesKey(data, "ctrl+home")) {
-      this.transcriptScrollOffset = Number.MAX_SAFE_INTEGER;
-      this.tui.requestRender();
-      return true;
-    }
-    if (matchesKey(data, "ctrl+end")) {
-      this.transcriptScrollOffset = 0;
-      this.tui.requestRender();
-      return true;
-    }
-    return false;
   }
 
   private clearPendingSubmittedInput(requestRender = true): void {
@@ -4109,7 +4097,8 @@ export class AppScreen implements Component, Focusable {
   private handleSwarmWorkflowsInput(data: string): void {
     const state = this.swarmWorkflowsViewState;
     if (!state) return;
-    if (matchesKey(data, "escape")) {
+    const action = resolveAction("SwarmWorkflows", data);
+    if (action === "swarm:back") {
       if (state.phase === "list") {
         this.closeSwarmWorkflowsView();
       } else if (state.phase === "workflow") {
@@ -4130,7 +4119,7 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
-    if (matchesKey(data, "left")) {
+    if (action === "swarm:left") {
       if (state.phase === "agent") {
         const lookup = findWorkflowAgent(
           this.state.getSnapshot().workflowRuns,
@@ -4157,7 +4146,7 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
-    if (state.phase === "workflow" && (matchesKey(data, "right") || data === "\t")) {
+    if (state.phase === "workflow" && action === "swarm:nextFocus") {
       const nextFocus = state.focus === "phases" ? "agents" : "phases";
       this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(
         state.workflowId,
@@ -4167,25 +4156,25 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
       return;
     }
-    if (state.phase === "workflow" && matchesKey(data, "l")) {
+    if (state.phase === "workflow" && action === "swarm:logs") {
       this.openSwarmWorkflowLogs(state.workflowId);
       return;
     }
     if (state.phase === "agent") {
-      if (matchesKey(data, "p")) {
+      if (action === "swarm:viewPrompt") {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "prompt");
         return;
       }
-      if (matchesKey(data, "o")) {
+      if (action === "swarm:viewOutcome") {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "outcome");
         return;
       }
-      if (matchesKey(data, "e")) {
+      if (action === "swarm:viewError") {
         this.openSwarmWorkflowAgentText(state.workflowId, state.agentId, "error");
         return;
       }
     }
-    if (matchesKey(data, "r")) {
+    if (action === "swarm:refresh") {
       void this.openSwarmWorkflowsView();
       this.tui.requestRender();
       return;
