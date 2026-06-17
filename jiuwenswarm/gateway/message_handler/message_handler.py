@@ -22,6 +22,10 @@ from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
     ParsedControlAction,
     parse_channel_control_text,
 )
+from jiuwenswarm.gateway.message_handler.prompts.review_prompt import build_review_prompt
+from jiuwenswarm.gateway.message_handler.prompts.security_review_prompt import (
+    build_security_review_prompt,
+)
 from jiuwenswarm.extensions.hook_event import GatewayHookEvents
 from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
 from jiuwenswarm.common.hooks_config import load_hooks_config
@@ -1125,6 +1129,55 @@ class MessageHandler(ABC):
                 )
             )
             return True
+
+        if parsed.action is ParsedControlAction.REVIEW_BAD:
+            asyncio.create_task(
+                self._send_channel_notice(
+                    user_infos,
+                    ch,
+                    msg.session_id,
+                    "非法指令，/review 参数过长或含有非法控制字符",
+                )
+            )
+            return True
+
+        if parsed.action is ParsedControlAction.REVIEW_OK:
+            # /review [args]：注入 review prompt，转发 Agent 执行 gh pr list/view/diff 并分析
+            pr_arg = parsed.pr_arg or ""
+            review_prompt = build_review_prompt(pr_arg)
+            if msg.params is None:
+                msg.params = {}
+            msg.params["query"] = review_prompt
+            logger.info(
+                "[MessageHandler] /review prompt injected channel=%s pr_arg=%s",
+                channel_type,
+                pr_arg or "<none>",
+            )
+            return False  # 继续转发给 AgentServer，让 Agent 执行审查
+
+        if parsed.action is ParsedControlAction.SECURITY_REVIEW_BAD:
+            asyncio.create_task(
+                self._send_channel_notice(
+                    user_infos,
+                    ch,
+                    msg.session_id,
+                    "非法指令，/security-review 参数过长或含有非法控制字符",
+                )
+            )
+            return True
+
+        if parsed.action is ParsedControlAction.SECURITY_REVIEW_OK:
+            extra_arg = parsed.security_review_arg or ""
+            security_prompt = build_security_review_prompt(extra_arg)
+            if msg.params is None:
+                msg.params = {}
+            msg.params["query"] = security_prompt
+            logger.info(
+                "[MessageHandler] /security-review prompt injected channel=%s extra_arg=%s",
+                channel_type,
+                extra_arg or "<none>",
+            )
+            return False
 
         return False
 
@@ -2856,6 +2909,58 @@ class MessageHandler(ABC):
                     content = msg.params.get("query") or msg.params.get("content") or ""
                     attachments = msg.params.get("attachments")
                     if isinstance(content, str):
+                        # ---- Resolve /review and /security-review slash commands (all channels) ----
+                        stripped = content.strip()
+                        if stripped:
+                            parsed = parse_channel_control_text(stripped)
+                            if parsed.action is ParsedControlAction.REVIEW_BAD:
+                                asyncio.create_task(
+                                    self._send_channel_notice(
+                                        {"id": msg.id, "meta_data": msg.metadata},
+                                        msg.channel_id,
+                                        msg.session_id,
+                                        "非法指令，/review 参数过长或含有非法控制字符",
+                                    )
+                                )
+                                continue
+                            if parsed.action is ParsedControlAction.REVIEW_OK:
+                                pr_arg = parsed.pr_arg or ""
+                                review_prompt = build_review_prompt(pr_arg)
+                                msg.params = dict(msg.params)
+                                msg.params["query"] = review_prompt
+                                if "content" in msg.params:
+                                    msg.params["content"] = review_prompt
+                                content = review_prompt
+                                logger.info(
+                                    "[MessageHandler] /review prompt injected for chat.send channel=%s pr_arg=%s",
+                                    getattr(msg, "channel_id", ""),
+                                    pr_arg or "<none>",
+                                )
+                            elif parsed.action is ParsedControlAction.SECURITY_REVIEW_BAD:
+                                asyncio.create_task(
+                                    self._send_channel_notice(
+                                        {"id": msg.id, "meta_data": msg.metadata},
+                                        msg.channel_id,
+                                        msg.session_id,
+                                        "非法指令，/security-review 参数过长或含有非法控制字符",
+                                    )
+                                )
+                                continue
+                            elif parsed.action is ParsedControlAction.SECURITY_REVIEW_OK:
+                                extra_arg = parsed.security_review_arg or ""
+                                security_prompt = build_security_review_prompt(extra_arg)
+                                msg.params = dict(msg.params)
+                                msg.params["query"] = security_prompt
+                                if "content" in msg.params:
+                                    msg.params["content"] = security_prompt
+                                content = security_prompt
+                                logger.info(
+                                    "[MessageHandler] /security-review prompt injected "
+                                    "for chat.send channel=%s extra_arg=%s",
+                                    getattr(msg, "channel_id", ""),
+                                    extra_arg or "<none>",
+                                )
+
                         cwd = None
                         if isinstance(msg.metadata, dict):
                             cwd = msg.metadata.get("cwd")
