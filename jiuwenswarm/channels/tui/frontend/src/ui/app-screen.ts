@@ -6058,14 +6058,17 @@ export class AppScreen implements Component, Focusable {
       pendingQuestion.source === "permission_interrupt" ||
       pendingQuestion.source === "confirm_interrupt"
         ? 4
-        : 6;
-    // For memory edit, use a layout that shows short labels with full-path details sub-lines.
+        : 20;
+    // For memory edit, use a layout that mirrors Claude Code's /memory selector:
+    //   - Short labels ("Project memory", "User memory", ".jiuwen/rules/foo.md")
+    //   - Descriptions ("Checked in at ./JIUWENSWARM.md", "Saved in ~/.jiuwen/...")
+    //   - Allow wider primary column so rule paths aren't truncated
     // For rewind and other questions with details sub-lines, use a narrower label column
     // so the description starts sooner and details can align beneath it.
     const layout = planApprovalRequest
       ? getPlanApprovalListLayout()
       : pendingQuestion.source === "local_command_memory_edit"
-        ? { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 30 }
+        ? { minPrimaryColumnWidth: 20, maxPrimaryColumnWidth: 50 }
         : detailsMap.size > 0
           ? { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 }
           : { minPrimaryColumnWidth: 34, maxPrimaryColumnWidth: 42 };
