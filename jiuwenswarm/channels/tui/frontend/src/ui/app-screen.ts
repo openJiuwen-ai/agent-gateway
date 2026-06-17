@@ -72,6 +72,13 @@ import {
   setCurrentProjectDir,
 } from "../core/tui-trusted-dirs-store.js";
 import { consumeParseError } from "../core/tui-config-store.js";
+import {
+  expandPastedTextMarkers,
+  formatPastedTextMarker,
+  normalizePastedText,
+  shouldCollapsePastedText,
+  stripBracketedPasteMarkers,
+} from "../core/pasted-text.js";
 import { handleAppScreenKeyInput } from "./keymap.js";
 import { buildAppScreenLines } from "./screen-layout.js";
 import { buildTranscriptLines } from "./transcript-renderer.js";
@@ -1138,6 +1145,10 @@ export class AppScreen implements Component, Focusable {
   private lastTranscriptLineWidth = 0;
   /** Image attachments keyed by composer `@path` tokens (e.g. cached base64 for terminal preview). */
   private composerAttachments: FileAttachment[] = [];
+  private pastedTextById = new Map<number, string>();
+  private pastedTextIdByContent = new Map<string, number>();
+  private nextPastedTextId = 1;
+  private pastedTextClearTimer: ReturnType<typeof setTimeout> | null = null;
   /** FileViewer state for viewing large content (e.g., formatted logs) */
   private fileViewerState: FileViewerState | null = null;
   /** DiffViewer state for interactive diff browsing */
@@ -1163,6 +1174,11 @@ export class AppScreen implements Component, Focusable {
       this.editor.setAutocompleteProvider(this.composerAutocompleteProvider);
     };
     this.editor.onChange = () => {
+      if (!this.editor.getText()) {
+        this.schedulePastedTextStateClear();
+      } else {
+        this.cancelPastedTextStateClear();
+      }
       this.tui.requestRender();
     };
     this.editor.onSubmit = async (value) => {
@@ -1181,6 +1197,11 @@ export class AppScreen implements Component, Focusable {
     // check input emptiness and populate the input field after auto-restore.
     this.state.setInputRef((text: string) => {
       this.editor.setText(text);
+      if (!text) {
+        this.schedulePastedTextStateClear();
+      } else {
+        this.cancelPastedTextStateClear();
+      }
     });
     this.state.getInputValueRef(() => this.editor.getText());
     // Initialize project scope from the user's actual cwd
@@ -2164,13 +2185,22 @@ export class AppScreen implements Component, Focusable {
     // Only intercept when the paste is *pure* file paths (drag-and-drop).
     // If there's command text interleaved, treat it as a normal paste.
     if (!snapshot.pendingQuestion && data.length > 4) {
-      const pastedContent = data.replace(/\x1b\[200~/, "").replace(/\x1b\[201~/, "");
+      const hasPasteStart = data.includes("\x1b[200~");
+      const hasPasteEnd = data.includes("\x1b[201~");
+      if (hasPasteStart !== hasPasteEnd) {
+        this.editor.handleInput(data);
+        return;
+      }
+      const pastedContent = stripBracketedPasteMarkers(data);
       const filePaths = extractFilePathsFromPaste(pastedContent);
       if (filePaths.length > 0 && isPurePathPaste(pastedContent)) {
         // 若解析出路径但无一通过附件校验（扩展名不在白名单等），须把原文交给编辑器，避免粘贴被吞掉
         if (this.handleDroppedFiles(filePaths)) {
           return;
         }
+      }
+      if (this.handlePastedTextCollapse(pastedContent)) {
+        return;
       }
     }
 
@@ -2286,7 +2316,8 @@ export class AppScreen implements Component, Focusable {
   }
 
   private async handleSubmit(raw: string): Promise<void> {
-    const text = raw.trim();
+    const editorText = raw.trim();
+    const text = this.expandPastedText(editorText).trim();
     if (!text) return;
 
     // 更新用户活动时间戳（用于 auto-recap 空闲检测）
@@ -2307,7 +2338,7 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    const { content, attachments } = this.buildOutgoingMessage(text);
+    const { content, attachments } = this.buildOutgoingMessage(editorText);
 
     const snapshot = this.state.getSnapshot();
     if (!content && !(snapshot.pendingQuestion && this.otherInputMode)) return;
@@ -4480,9 +4511,10 @@ export class AppScreen implements Component, Focusable {
   }
 
   private buildOutgoingMessage(text: string): { content: string; attachments: FileAttachment[] } {
+    const expandedText = this.expandPastedText(text);
     return {
-      content: text.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim(),
-      attachments: this.collectComposerAttachments(text),
+      content: this.expandPastedText(text.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").trim()),
+      attachments: this.collectComposerAttachments(expandedText),
     };
   }
 
@@ -5292,6 +5324,35 @@ export class AppScreen implements Component, Focusable {
     this.tui.requestRender();
   }
 
+  private clearPastedTextState(): void {
+    this.cancelPastedTextStateClear();
+    this.pastedTextById.clear();
+    this.pastedTextIdByContent.clear();
+    this.nextPastedTextId = 1;
+  }
+
+  private cancelPastedTextStateClear(): void {
+    if (!this.pastedTextClearTimer) {
+      return;
+    }
+    clearTimeout(this.pastedTextClearTimer);
+    this.pastedTextClearTimer = null;
+  }
+
+  private schedulePastedTextStateClear(): void {
+    if (this.pastedTextClearTimer) {
+      clearTimeout(this.pastedTextClearTimer);
+    }
+    // Editor clears text and emits onChange("") before onSubmit(value), so keep paste data for that submit.
+    this.pastedTextClearTimer = setTimeout(() => {
+      this.clearPastedTextState();
+    }, 0);
+  }
+
+  private expandPastedText(text: string): string {
+    return expandPastedTextMarkers(text, this.pastedTextById);
+  }
+
   private syncComposerAttachmentsFromEditor(): void {
     if (this.syncingComposerInput) {
       return;
@@ -5372,6 +5433,25 @@ export class AppScreen implements Component, Focusable {
 
   private isComposerImageFile(path: string): boolean {
     return this.isAcceptedAttachment(path) && isImageAttachment(path);
+  }
+
+  private handlePastedTextCollapse(text: string): boolean {
+    const normalizedText = normalizePastedText(text);
+    if (!shouldCollapsePastedText(normalizedText)) {
+      return false;
+    }
+
+    let pasteId = this.pastedTextIdByContent.get(normalizedText);
+    if (!pasteId) {
+      pasteId = this.nextPastedTextId;
+      this.nextPastedTextId += 1;
+      this.pastedTextIdByContent.set(normalizedText, pasteId);
+      this.pastedTextById.set(pasteId, normalizedText);
+    }
+
+    this.editor.insertTextAtCursor(formatPastedTextMarker(pasteId, normalizedText));
+    this.tui.requestRender();
+    return true;
   }
 
   /** Handle pasted/dragged content - detects file paths and converts to @path references. */
