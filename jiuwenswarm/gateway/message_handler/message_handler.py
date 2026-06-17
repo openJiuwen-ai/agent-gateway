@@ -31,11 +31,10 @@ logger = logging.getLogger(__name__)
 
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
-# TUI/ACP/legacy CLI: one in-flight chat replaces any prior work on that channel.
+# ACP: one in-flight chat replaces any prior work on that channel.
+# TUI/CLI 已移除此列表：多窗口 TUI 各自维护独立 session，互不干扰。
 _SINGLE_USER_CHANNEL_IDS = frozenset({
     ChannelType.ACP.value,
-    ChannelType.CLI.value,
-    "cli",
 })
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
 _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
@@ -424,7 +423,7 @@ class MessageHandler(ABC):
 
     @staticmethod
     def _is_single_user_channel(channel_id: str) -> bool:
-        """Channels where only one user interacts at a time (TUI, ACP, CLI)."""
+        """Channels where a new chat.send replaces all in-flight work on that channel (ACP only)."""
         return channel_id in _SINGLE_USER_CHANNEL_IDS
 
     def _clone_message_for_session_cancel(
@@ -481,7 +480,8 @@ class MessageHandler(ABC):
         """Cancel in-flight stream work on *msg.channel_id* before starting a new chat.send.
 
         Stops both gateway stream consumers and AgentServer work (via interrupt).
-        Single-user channels (TUI/ACP) also drop orphan tasks from other session_ids.
+        ACP also drops orphan tasks from other session_ids; TUI/CLI only cancel
+        streams that share the same session_id as the incoming chat.send.
         """
         channel_id = msg.channel_id
         new_session_id = msg.session_id

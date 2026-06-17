@@ -94,21 +94,23 @@ async def test_cancel_stream_tasks_only_affects_same_channel() -> None:
         handler, rid="rid-web", channel_id="web", session_id="sess_web",
     )
 
+    # TUI is no longer single-user: different session on same channel does NOT cancel.
     cancelled = await handler.cancel_stream_tasks_for_channel(
         _chat_send_message(channel_id="tui", session_id="sess_new"),
     )
 
-    assert cancelled == 1
-    assert tui_task.cancelled()
+    assert cancelled == 0
+    assert not tui_task.cancelled()
     assert not web_task.cancelled()
-    assert "rid-tui" not in getattr(handler, "_stream_tasks")
+    assert "rid-tui" in getattr(handler, "_stream_tasks")
     assert "rid-web" in getattr(handler, "_stream_tasks")
     await asyncio.sleep(0)
-    assert len(_FakeAgentClient.sent_requests) == 1
+    assert len(_FakeAgentClient.sent_requests) == 0
 
 
 @pytest.mark.asyncio
-async def test_single_user_channel_cancels_orphan_session_on_same_channel() -> None:
+async def test_tui_no_longer_cancels_orphan_session() -> None:
+    """TUI is no longer single-user: different session does not cancel orphan stream."""
     handler = _TestMessageHandler.create()
     orphan_task = _seed_stream_task(
         handler, rid="rid-orphan", channel_id="tui", session_id="sess_orphan",
@@ -118,10 +120,10 @@ async def test_single_user_channel_cancels_orphan_session_on_same_channel() -> N
         _chat_send_message(channel_id="tui", session_id="sess_new"),
     )
 
-    assert cancelled == 1
-    assert orphan_task.cancelled()
+    assert cancelled == 0
+    assert not orphan_task.cancelled()
     await asyncio.sleep(0)
-    assert len(_FakeAgentClient.sent_requests) == 1
+    assert len(_FakeAgentClient.sent_requests) == 0
 
 
 @pytest.mark.asyncio
@@ -146,8 +148,8 @@ async def test_web_channel_only_cancels_matching_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_without_session_id_still_notifies_agent() -> None:
-    """Streams missing session metadata must still send chat.interrupt."""
+async def test_tui_keeps_streams_on_different_session() -> None:
+    """TUI is no longer single-user: different session preserves all in-flight streams."""
     handler = _TestMessageHandler.create()
     _seed_stream_task(
         handler, rid="rid-peer", channel_id="tui", session_id="sess_resolved",
@@ -167,17 +169,17 @@ async def test_stream_without_session_id_still_notifies_agent() -> None:
         _chat_send_message(channel_id="tui", session_id="sess_new"),
     )
 
-    assert cancelled == 2
-    assert orphan_task.cancelled()
+    assert cancelled == 0
+    assert not orphan_task.cancelled()
     await asyncio.sleep(0)
-    assert len(_FakeAgentClient.sent_requests) == 1
+    assert len(_FakeAgentClient.sent_requests) == 0
 
 
-def test_is_single_user_channel_includes_cli_alias() -> None:
+def test_is_single_user_channel_acp_only() -> None:
     _is_single_user_channel = getattr(MessageHandler, "_is_single_user_channel")
-    assert _is_single_user_channel("tui")
+    assert not _is_single_user_channel("tui")
     assert _is_single_user_channel("acp")
-    assert _is_single_user_channel("cli")
+    assert not _is_single_user_channel("cli")
     assert not _is_single_user_channel("web")
 
 

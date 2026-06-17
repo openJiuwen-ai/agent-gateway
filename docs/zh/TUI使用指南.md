@@ -10,6 +10,21 @@
 - TUI 通过 **WebSocket** 连接本机 Gateway 的 TUI 端点（默认 `ws://127.0.0.1:19001/tui`）。请先按 [快速开始(TUI)](Quickstart_tui.md) 启动后端服务，再打开 TUI。
 - TUI 需要 **交互式 TTY**；在管道或非 TTY 环境下会报错退出。
 
+### 多窗口 TUI
+
+同一套 **Gateway 后端**（同一 `GATEWAY_PORT`，默认 `ws://127.0.0.1:19001/tui`）可**同时打开多个 TUI 终端窗口**。每个窗口维护独立的 `session_id` 与进行中的对话/任务：
+
+| 行为 | 说明 |
+|------|------|
+| **事件隔离** | Gateway 按 `session_id` 将流式响应、工具输出等事件精确投递到对应窗口，不会串到其他窗口。 |
+| **并发任务** | 不同 session 可并行执行 Agent 任务。 |
+| **同窗口新消息** | 在同一窗口（相同 `session_id`）再次发送聊天，仍会取消该 session 上旧的流式任务。 |
+| **与 ACP 差异** | ACP 仍为 single-user channel（新消息会取消同 channel 上所有进行中任务）；TUI/CLI 已改为按 session 隔离。 |
+
+**打开多窗口**：在多个终端分别运行 `jiuwenswarm-tui` 或 `jiuwenswarm-cli` 即可。需要恢复特定会话时使用 `--session <id>` 或 `/resume`。
+
+> **与「单机多实例」的区别**：[单机多实例运行](单机多实例运行.md) 指不同工作区、不同端口的独立后端；**多窗口 TUI** 指多个终端共享同一 Gateway 后端。二者可同时使用（例如 `dev` 实例上开两个 TUI 窗口），但不要混淆端口与工作区。
+
 ---
 
 ## CLI 参考
@@ -520,6 +535,8 @@
 | 文件路径不在允许范围 | 使用 `/workspace add` 将仓库根或子目录加入可信列表 |
 | 连接失败 | 检查 Gateway 是否监听、`--url` 是否正确、防火墙 |
 | 未安装 `rg` | 安装 ripgrep 以改善搜索体验（欢迎屏提示） |
+| Cron 通知出现在所有 TUI 窗口 | 预期行为：`targets=tui` 的定时任务会广播到所有已连接终端，详见 [定时任务](定时任务.md#5-推送到-tui-频道) |
+| 多窗口之间聊天/流式输出串台 | 请确认 Gateway 为 multi-tui 版本；各窗口应使用不同 `session_id`，事件按 session 精确路由 |
 
 ---
 
