@@ -373,19 +373,24 @@ def _build_team_capability_specs(
 
 def _build_code_capability_specs(
     config: dict[str, Any],
+    mode: str,
     role: str,
 ) -> tuple[list[RailSpec], list[BuiltinToolSpec]]:
     """Build the code profile (code.team / team.plan) rail/tool specs for a member."""
+    is_team_plan_leader = mode == "team.plan" and role == "leader"
     rails_specs: list[RailSpec] = [
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _CODE_RAIL_NAMES
     ]
-    rails_specs.append(
-        RailSpec(
-            type=registry.CODE_CONFIRM_INTERRUPT,
-            params={"tool_names": ["switch_mode", "exit_plan_mode"]},
+    if is_team_plan_leader:
+        rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
+    if mode != "team.plan":
+        rails_specs.append(
+            RailSpec(
+                type=registry.CODE_CONFIRM_INTERRUPT,
+                params={"tool_names": ["switch_mode", "exit_plan_mode"]},
+            )
         )
-    )
     rails_specs.append(
         RailSpec(
             type=registry.MEMBER_SKILL_TOOLKIT,
@@ -426,7 +431,7 @@ def build_member_capability_specs(
         A ``(rails_specs, tool_specs)`` tuple of openjiuwen specs.
     """
     if _is_code_mode(mode):
-        return _build_code_capability_specs(config, role)
+        return _build_code_capability_specs(config, mode, role)
     return _build_team_capability_specs(config, role)
 
 

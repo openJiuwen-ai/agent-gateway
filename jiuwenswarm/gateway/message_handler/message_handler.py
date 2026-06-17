@@ -266,6 +266,21 @@ class MessageHandler(ABC):
             return ""
         return self._session_last_user_query.get(str(session_id), "")
 
+    def _attach_original_request_to_ask_user_answer(self, msg: "Message") -> "Message":
+        if not isinstance(msg.params, dict):
+            return msg
+        if str(msg.params.get("source") or "").strip() != "ask_user_interrupt":
+            return msg
+        if msg.params.get("original_request"):
+            return msg
+        original_request = self._get_session_last_user_query(msg.session_id)
+        if not original_request:
+            return msg
+
+        params = dict(msg.params)
+        params["original_request"] = original_request
+        return replace(msg, params=params)
+
     @staticmethod
     def _is_chat_send_message(msg: "Message") -> bool:
         method = getattr(msg, "req_method", None)
@@ -279,8 +294,27 @@ class MessageHandler(ABC):
         return str(msg.params.get("mode") or "").strip().lower() == "team"
 
     @classmethod
+    def _is_interrupt_resume_chat_send(cls, msg: "Message") -> bool:
+        if not isinstance(msg.params, dict):
+            return False
+        source = str(msg.params.get("source") or "").strip()
+        answers = msg.params.get("answers")
+        request_id = str(msg.params.get("request_id") or "").strip()
+        if bool(request_id) and isinstance(answers, list) and source in {
+            "ask_user_interrupt",
+            "confirm_interrupt",
+            "permission_interrupt",
+        }:
+            return True
+        return cls._is_interrupt_evolution_approval_answer_payload(msg.params)
+
+    @classmethod
     def _should_cancel_existing_stream_before_chat_send(cls, msg: "Message") -> bool:
-        return cls._is_chat_send_message(msg) and not cls._is_team_chat_send(msg)
+        return (
+            cls._is_chat_send_message(msg)
+            and not cls._is_team_chat_send(msg)
+            and not cls._is_interrupt_resume_chat_send(msg)
+        )
 
     def _get_channel_default_state(self, channel_id: str) -> ChannelControlState:
         """从 config.yaml 读取 Channel 的默认 session_id / mode."""
@@ -1586,6 +1620,7 @@ class MessageHandler(ABC):
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        msg = self._attach_original_request_to_ask_user_answer(msg)
         if msg.channel_id != _ACP_CHANNEL_ID:
             return msg
         if msg.req_method in (ReqMethod.INITIALIZE, ReqMethod.SESSION_CREATE):

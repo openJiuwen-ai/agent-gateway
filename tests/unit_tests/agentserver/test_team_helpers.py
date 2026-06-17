@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -962,6 +963,51 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
     ]
 
 
+def test_sync_team_identity_metadata_persists_ready_team_for_any_activation(monkeypatch):
+    updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda session_id: {})
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: updates.append(kwargs))
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="web",
+        session_id="sess-runtime",
+        mode="team",
+        ready_team_name="ready-team",
+        activation_kind="resume",
+    )
+
+    assert updates == [
+        {
+            "session_id": "sess-runtime",
+            "channel_id": "web",
+            "mode": "team",
+            "team_name": "ready-team",
+        }
+    ]
+
+
+def test_sync_team_identity_metadata_keeps_existing_conflicting_team(monkeypatch):
+    updates: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda session_id: {"team_name": "existing-team"},
+    )
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: updates.append(kwargs))
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="web",
+        session_id="sess-runtime",
+        mode="team",
+        ready_team_name="ready-team",
+        activation_kind="resume",
+    )
+
+    assert updates == []
+
+
 @pytest.mark.anyio
 async def test_consume_monitor_events_only_broadcasts_monitor_events(monkeypatch):
     broadcasted: list[dict[str, object]] = []
@@ -1111,6 +1157,349 @@ async def test_process_team_message_stream_emits_processing_done_for_followup(mo
     assert chunks[0].is_complete is False
     assert chunks[1].payload is None
     assert chunks[1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_passes_interactive_input_to_followup(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    approval_input = InteractiveInput()
+    approval_input.update(
+        "exit_plan_mode_call_1",
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+
+    class _FakeManager:
+        interact_calls: list[tuple[str, Any]] = []
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-plan-followup"
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: Any):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-plan-followup",
+        request_id="req-team-plan-followup",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team.plan"},
+    )
+    inputs = {"query": approval_input}
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        inputs,
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-plan-followup", approval_input),
+    ]
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_resumes_active_session_without_stream_task(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    ask_answer_input = InteractiveInput()
+    ask_answer_input.update(
+        "tool-ask-1",
+        {
+            "answers": {"你希望用什么技术实现？": "浏览器（HTML/CSS/JS）"},
+            "original_request": "做一个斗地主游戏",
+        },
+    )
+
+    class _FakeManager:
+        active_session_id = "sess-team-ask-followup"
+        pending_session_id = None
+        interact_calls: list[tuple[str, Any]] = []
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-ask-followup"
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: Any):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
+            pytest.fail("active team sessions should not be treated as first requests")
+
+        @staticmethod
+        async def prepare_runtime_activation(*_args, **_kwargs):
+            pytest.fail("active team sessions should not be recreated")
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-ask-followup",
+        request_id="req-team-ask-followup",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team.plan", "source": "ask_user_interrupt"},
+    )
+    inputs = {"query": ask_answer_input}
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        inputs,
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-ask-followup", ask_answer_input),
+    ]
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_resumes_structured_team_plan_confirm_after_runtime_recovery(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    approval_input = InteractiveInput()
+    approval_input.update(
+        "exit_plan_mode_call_1",
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+
+    captured: dict[str, Any] = {}
+
+    class _FakeManager:
+        active_session_id = None
+        pending_session_id = None
+        runtime_ready = False
+        interact_calls: list[tuple[str, Any]] = []
+
+        @classmethod
+        async def session_has_runtime(cls, session_id: str) -> bool:
+            assert session_id == "sess-team-plan-resume"
+            return cls.runtime_ready
+
+        @classmethod
+        async def wait_for_resumable_runtime(cls, session_id: str, **_kwargs) -> bool:
+            assert session_id == "sess-team-plan-resume"
+            cls.runtime_ready = True
+            cls.active_session_id = session_id
+            return True
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-plan-resume"
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
+
+        @classmethod
+        async def interact(cls, session_id: str, query: Any):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
+            captured["skills_ready"] = (session_id, spec.team_name)
+
+        @staticmethod
+        async def prepare_runtime_activation(session_id: str, team_name: str):
+            raise AssertionError("prepare_runtime_activation should not run for resumed approval")
+
+        @staticmethod
+        def register_stream_task(session_id: str, task: asyncio.Task) -> None:
+            raise AssertionError("register_stream_task should not run for resumed approval")
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *args, **kwargs: None)
+
+    request = SimpleNamespace(
+        session_id="sess-team-plan-resume",
+        request_id="req-team-plan-resume",
+        channel_id="web",
+        metadata=None,
+        params={
+            "mode": "team.plan",
+            "source": "confirm_interrupt",
+            "plan_approval_kind": "plan_approval",
+            "plan_content": "# 团队计划",
+            "plan_language": "cn",
+        },
+    )
+    inputs = {"query": approval_input}
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        inputs,
+        object(),
+    ):
+        chunks.append(chunk)
+
+    await asyncio.sleep(0)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-plan-resume", approval_input),
+    ]
+    assert "skills_ready" not in captured
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_rejects_orphaned_interactive_input(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    ask_answer_input = InteractiveInput()
+    ask_answer_input.update(
+        "tool-ask-1",
+        {
+            "answers": {"你希望用什么技术实现？": "浏览器（HTML/CSS/JS）"},
+            "original_request": "做一个斗地主游戏",
+        },
+    )
+
+    class _FakeManager:
+        active_session_id = None
+        pending_session_id = None
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-orphan-answer"
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**_kwargs):
+            pytest.fail("orphaned interactive inputs should not recreate team runtime")
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(*_args, **_kwargs):
+            pytest.fail("orphaned interactive inputs should not activate team runtime")
+
+        @staticmethod
+        async def prepare_runtime_activation(*_args, **_kwargs):
+            pytest.fail("orphaned interactive inputs should not activate team runtime")
+
+        @staticmethod
+        async def interact(*_args, **_kwargs):
+            pytest.fail("orphaned interactive inputs cannot resume a missing runtime")
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-orphan-answer",
+        request_id="req-team-orphan-answer",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team.plan", "source": "ask_user_interrupt"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        {"query": ask_answer_input},
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert chunks[0].payload == {
+        "event_type": "chat.error",
+        "error": "Team runtime is not active, please restart the task",
+    }
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_recovers_paused_runtime_for_interactive_input(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    approval_input = InteractiveInput()
+    approval_input.update(
+        "exit_plan_mode_call_1",
+        {"approved": True, "auto_confirm": False, "feedback": ""},
+    )
+
+    class _FakeManager:
+        active_session_id = None
+        pending_session_id = None
+        runtime_ready = False
+        interact_calls: list[tuple[str, Any]] = []
+
+        @classmethod
+        async def session_has_runtime(cls, session_id: str) -> bool:
+            assert session_id == "sess-team-plan-recover"
+            return cls.runtime_ready
+
+        @classmethod
+        async def wait_for_resumable_runtime(cls, session_id: str, **_kwargs) -> bool:
+            assert session_id == "sess-team-plan-recover"
+            cls.runtime_ready = True
+            cls.active_session_id = session_id
+            return True
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-plan-recover"
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**_kwargs):
+            return SimpleNamespace(team_name="unit-team")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: Any):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-plan-recover",
+        request_id="req-team-plan-recover",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team.plan", "source": "confirm_interrupt"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        {"query": approval_input},
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-plan-recover", approval_input),
+    ]
+    assert chunks[0].payload == {
+        "event_type": "chat.processing_status",
+        "session_id": "sess-team-plan-recover",
+        "is_processing": False,
+        "is_complete": True,
+    }
+    assert chunks[-1].is_complete is True
 
 
 @pytest.mark.anyio

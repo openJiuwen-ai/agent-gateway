@@ -104,7 +104,6 @@ const SWARM_WORKFLOW_AGENT_TEXT_PREVIEW_ROWS = 6;
 const PERMISSION_TOOL_RE = /工具\s+`([^`]+)`\s+需要授权/;
 const CONFIRM_TOOL_RE = /(?:Tool|工具)\s*:\s*`([^`]+)`/i;
 const CONFIRM_ACTION_RE = /\*\*(?:Agent wants to|Tool `[^`]+` requires your approval)([^*]*)\*\*/i;
-const PLAN_APPROVAL_RE = /\*\*(?:Plan Approval|计划审批)\*\*/i;
 const PLAN_REJECT_INPUT_RE = /(\s+\[ .+ \])$/;
 const PERMISSION_RISK_RE = /安全风险评估：\**\s*([^\s*]+)?\s*\**([^*\n]+?风险)\**/m;
 const PERMISSION_QUOTE_RE = /^>\s*(.+)$/gm;
@@ -607,8 +606,14 @@ function resolveFdBinary(): string | null {
   return null;
 }
 
-export function isPlanApprovalRequest(source: string | undefined, questionText: string): boolean {
-  return source === "confirm_interrupt" && PLAN_APPROVAL_RE.test(questionText);
+export function isPlanApprovalRequest(
+  source: string | undefined,
+  planApprovalKind?: string,
+): boolean {
+  if (planApprovalKind) {
+    return source === "confirm_interrupt" && planApprovalKind === "plan_approval";
+  }
+  return false;
 }
 
 function isPermissionRequest(source: string | undefined, questionText: string): boolean {
@@ -624,12 +629,12 @@ function isPermissionRequest(source: string | undefined, questionText: string): 
 
 export function getPendingQuestionTitle(
   source: string | undefined,
-  questionText: string,
   progress: string,
   activeQuestionIndex: number,
   total: number,
+  planApprovalKind?: string,
 ): string {
-  if (isPlanApprovalRequest(source, questionText)) {
+  if (isPlanApprovalRequest(source, planApprovalKind)) {
     return progress
       ? `Exit Plan and Execute: ${activeQuestionIndex + 1}/${total}`
       : "Exit Plan and Execute:";
@@ -835,18 +840,18 @@ function isRejectOption(label: string): boolean {
 
 export function shouldCollectPlanRejectFeedback(
   source: string | undefined,
-  questionText: string,
   label: string,
+  planApprovalKind?: string,
 ): boolean {
-  return isPlanApprovalRequest(source, questionText) && isRejectOption(label);
+  return isPlanApprovalRequest(source, planApprovalKind) && isRejectOption(label);
 }
 
 export function shouldAppendPlanRejectFeedback(
   source: string | undefined,
-  questionText: string,
   label: string,
+  planApprovalKind?: string,
 ): boolean {
-  return shouldCollectPlanRejectFeedback(source, questionText, label);
+  return shouldCollectPlanRejectFeedback(source, label, planApprovalKind);
 }
 
 export function getPlanRejectFeedbackHint(
@@ -2359,8 +2364,8 @@ export class AppScreen implements Component, Focusable {
           const label = this.pendingQuestionAnswers.get(index) ?? "";
           const isPlanRejectFeedback = shouldAppendPlanRejectFeedback(
             pendingQuestion.source,
-            question.question,
             label,
+            pendingQuestion.planApprovalKind,
           );
           if (label === "Other" || isPlanRejectFeedback) {
             return {
@@ -5829,18 +5834,33 @@ export class AppScreen implements Component, Focusable {
 
     const total = pendingQuestion.questions.length;
     const progress = total > 1 ? ` (${this.activeQuestionIndex + 1}/${total})` : "";
-    const permissionRequest = isPermissionRequest(pendingQuestion.source, question.question);
-    const planApprovalRequest = isPlanApprovalRequest(pendingQuestion.source, question.question);
+    const planApprovalRequest = isPlanApprovalRequest(
+      pendingQuestion.source,
+      pendingQuestion.planApprovalKind,
+    );
+    const permissionRequest = !planApprovalRequest &&
+      isPermissionRequest(pendingQuestion.source, question.question);
     const lines: string[] = [];
 
-    if (permissionRequest && !this.otherInputMode) {
-      const summary = parsePermissionSummary(question.question);
+    if (planApprovalRequest && !this.otherInputMode) {
       const title = getPendingQuestionTitle(
         pendingQuestion.source,
-        question.question,
         progress,
         this.activeQuestionIndex,
         total,
+        pendingQuestion.planApprovalKind,
+      );
+      lines.push(
+        ...wrapPlainText(title, width).map((line) => padToWidth(palette.status.warning(line), width)),
+      );
+    } else if (permissionRequest && !this.otherInputMode) {
+      const summary = parsePermissionSummary(question.question);
+      const title = getPendingQuestionTitle(
+        pendingQuestion.source,
+        progress,
+        this.activeQuestionIndex,
+        total,
+        pendingQuestion.planApprovalKind,
       );
       lines.push(...renderPermissionBlock(width, summary, title));
     } else if (this.otherInputMode) {
@@ -5951,8 +5971,8 @@ export class AppScreen implements Component, Focusable {
         !!selected &&
         shouldAppendPlanRejectFeedback(
           snapshot.pendingQuestion.source,
-          question.question,
           selected.value,
+          snapshot.pendingQuestion.planApprovalKind,
         );
       const printableChar = this.getPrintableChar(data);
       if (
@@ -6006,7 +6026,7 @@ export class AppScreen implements Component, Focusable {
 
     const planApprovalRequest = isPlanApprovalRequest(
       snapshot.pendingQuestion.source,
-      question.question,
+      snapshot.pendingQuestion.planApprovalKind,
     );
     const rowItems = planApprovalRequest
       ? buildPlanApprovalQuestionItems(
@@ -6054,7 +6074,11 @@ export class AppScreen implements Component, Focusable {
     const selected = this.questionList.getSelectedItem();
     return !!question &&
       !!selected &&
-      shouldAppendPlanRejectFeedback(pendingQuestion.source, question.question, selected.value);
+      shouldAppendPlanRejectFeedback(
+        pendingQuestion.source,
+        selected.value,
+        pendingQuestion.planApprovalKind,
+      );
   }
 
   private isInlinePlanRejectCursorInput(data: string): boolean {
@@ -6086,7 +6110,10 @@ export class AppScreen implements Component, Focusable {
     }
 
     const question = pendingQuestion.questions[this.activeQuestionIndex];
-    const planApprovalRequest = isPlanApprovalRequest(pendingQuestion.source, question?.question ?? "");
+    const planApprovalRequest = isPlanApprovalRequest(
+      pendingQuestion.source,
+      pendingQuestion.planApprovalKind,
+    );
     if (!question || question.options.length === 0) {
       this.questionList = null;
       this.questionDetailsMap = null;
@@ -6100,8 +6127,8 @@ export class AppScreen implements Component, Focusable {
       !!currentSelectedValue &&
       shouldAppendPlanRejectFeedback(
         pendingQuestion.source,
-        question.question,
         currentSelectedValue,
+        pendingQuestion.planApprovalKind,
       );
 
     const items: SelectItem[] = planApprovalRequest
@@ -6195,8 +6222,8 @@ export class AppScreen implements Component, Focusable {
       pendingQuestion.questions[this.activeQuestionIndex] ?? pendingQuestion.questions[0];
     const collectPlanRejectFeedback = shouldCollectPlanRejectFeedback(
       pendingQuestion.source,
-      question?.question ?? "",
       label,
+      pendingQuestion.planApprovalKind,
     );
 
     if (label === "Other") {
@@ -6231,7 +6258,11 @@ export class AppScreen implements Component, Focusable {
       if (
         index === this.activeQuestionIndex &&
         collectPlanRejectFeedback &&
-        shouldAppendPlanRejectFeedback(pendingQuestion.source, question.question, answerValue)
+        shouldAppendPlanRejectFeedback(
+          pendingQuestion.source,
+          answerValue,
+          pendingQuestion.planApprovalKind,
+        )
       ) {
         const feedback = this.editor.getText().trim();
         if (feedback) {

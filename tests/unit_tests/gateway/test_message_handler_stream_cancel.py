@@ -197,6 +197,80 @@ def test_team_chat_send_keeps_existing_team_stream() -> None:
     )
 
 
+def test_ask_user_answer_chat_send_keeps_existing_stream() -> None:
+    _should_cancel_existing_stream_before_chat_send = getattr(
+        MessageHandler,
+        "_should_cancel_existing_stream_before_chat_send",
+    )
+    msg = _chat_send_message(
+        channel_id="tui",
+        session_id="sess_team",
+        mode="team.plan",
+    )
+    msg.params.update(
+        {
+            "query": "",
+            "source": "ask_user_interrupt",
+            "request_id": "call_ask_1",
+            "answers": [
+                {
+                    "question": "你希望用什么技术实现？",
+                    "selected_options": ["浏览器（HTML/CSS/JS）"],
+                }
+            ],
+        }
+    )
+
+    assert not _should_cancel_existing_stream_before_chat_send(msg)
+
+
+def test_confirm_interrupt_answer_chat_send_keeps_existing_stream() -> None:
+    _should_cancel_existing_stream_before_chat_send = getattr(
+        MessageHandler,
+        "_should_cancel_existing_stream_before_chat_send",
+    )
+    msg = _chat_send_message(
+        channel_id="tui",
+        session_id="sess_team",
+        mode="team.plan",
+    )
+    msg.params.update(
+        {
+            "query": "",
+            "source": "confirm_interrupt",
+            "request_id": "call_confirm_1",
+            "answers": [{"selected_options": ["批准"], "custom_input": ""}],
+            "plan_approval_kind": "plan_approval",
+            "plan_content": "# 团队计划",
+            "plan_language": "cn",
+        }
+    )
+
+    assert not _should_cancel_existing_stream_before_chat_send(msg)
+
+
+def test_permission_interrupt_answer_chat_send_keeps_existing_stream() -> None:
+    _should_cancel_existing_stream_before_chat_send = getattr(
+        MessageHandler,
+        "_should_cancel_existing_stream_before_chat_send",
+    )
+    msg = _chat_send_message(
+        channel_id="tui",
+        session_id="sess_perm",
+        mode="code.plan",
+    )
+    msg.params.update(
+        {
+            "query": "",
+            "source": "permission_interrupt",
+            "request_id": "call_perm_1",
+            "answers": [{"selected_options": ["allow_once"], "custom_input": ""}],
+        }
+    )
+
+    assert not _should_cancel_existing_stream_before_chat_send(msg)
+
+
 # ── cancel_agent_sessions_on_disconnect ─────────────────────────
 #
 # Regression: when the user's WebSocket closes but `_session_to_client`
