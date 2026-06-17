@@ -549,6 +549,9 @@ class _RuntimeCronToolContext:
 
 
 class JiuWenSwarmDeepAdapter:
+    SESSION_ADAPTER_IDLE_TTL_SEC = 2 * 60 * 60
+    SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
+
     """Deep SDK 适配器，实现 AgentAdapter 协议.
 
     封装所有 Deep SDK 专属逻辑：
@@ -621,6 +624,14 @@ class JiuWenSwarmDeepAdapter:
         self._vision_tools: list[Any] = []
         self._audio_tools: list[Any] = []
         self._instance_overrides: dict[str, Any] = {}
+        self._is_session_scoped_adapter: bool = False
+        self._parent_session_id: str | None = None
+        self._session_adapters: dict[str, JiuWenSwarmDeepAdapter] = {}
+        self._session_adapter_locks: dict[str, asyncio.Lock] = {}
+        self._session_adapter_last_used: dict[str, float] = {}
+        self._session_instance_config: dict[str, Any] | None = None
+        self._session_instance_mode: str = "agent.plan"
+        self._session_instance_sub_mode: str | None = None
         self._xiaoyi_phone_tools_registered: bool = False
         self._paid_search_registered: bool = False
         self._paid_search_tool: WebPaidSearchTool | None = None
@@ -652,6 +663,97 @@ class JiuWenSwarmDeepAdapter:
     def set_skill_manager(self, skill_manager: SkillManager) -> None:
         """Inject shared SkillManager from facade for tool reuse."""
         self._skill_manager = skill_manager
+        for adapter in getattr(self, "_session_adapters", {}).values():
+            adapter.set_skill_manager(skill_manager)
+
+    @staticmethod
+    def _session_adapter_key(session_id: str | None) -> str:
+        sid = str(session_id or "").strip()
+        return sid or "default"
+
+    def _new_session_scoped_adapter(self, session_id: str) -> "JiuWenSwarmDeepAdapter":
+        """Create a child adapter that owns one DeepAgent for a single session."""
+        adapter = type(self)()
+        adapter.mark_as_session_scoped(session_id)
+        if self._skill_manager is not None:
+            adapter.set_skill_manager(self._skill_manager)
+        return adapter
+
+    def mark_as_session_scoped(self, session_id: str) -> None:
+        self._is_session_scoped_adapter = True
+        self._parent_session_id = session_id
+
+    def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
+        sid = self._session_adapter_key(session_id)
+        return self._session_adapters.get(sid)
+
+    def _touch_session_adapter(self, session_id: str | None) -> None:
+        self._session_adapter_last_used[self._session_adapter_key(session_id)] = time.time()
+
+    async def _evict_idle_session_adapters(self) -> None:
+        if self._is_session_scoped_adapter:
+            return
+
+        now = time.time()
+        evicted = 0
+        for sid, adapter in list(self._session_adapters.items()):
+            if evicted >= self.SESSION_ADAPTER_EVICT_BATCH_SIZE:
+                break
+            last_used = self._session_adapter_last_used.get(sid, 0.0)
+            if now - last_used < self.SESSION_ADAPTER_IDLE_TTL_SEC:
+                continue
+            if adapter.is_session_active(sid):
+                continue
+            if adapter.is_deep_agent_executing_for_session(sid):
+                continue
+            try:
+                await adapter.cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] idle session adapter cleanup failed: session_id=%s error=%s",
+                    sid,
+                    exc,
+                )
+                continue
+            self._session_adapters.pop(sid, None)
+            self._session_adapter_locks.pop(sid, None)
+            self._session_adapter_last_used.pop(sid, None)
+            evicted += 1
+
+    async def _get_or_create_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter":
+        """Return the session-owned adapter, creating and initializing it once."""
+        if self._is_session_scoped_adapter:
+            self._touch_session_adapter(session_id)
+            return self
+
+        sid = self._session_adapter_key(session_id)
+        existing = self._session_adapters.get(sid)
+        if existing is not None:
+            self._touch_session_adapter(sid)
+            return existing
+
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            existing = self._session_adapters.get(sid)
+            if existing is not None:
+                self._touch_session_adapter(sid)
+                return existing
+
+            adapter = self._new_session_scoped_adapter(sid)
+            config = (
+                dict(self._session_instance_config)
+                if isinstance(self._session_instance_config, dict)
+                else None
+            )
+            await adapter.create_instance(
+                config,
+                mode=self._session_instance_mode,
+                sub_mode=self._session_instance_sub_mode,
+            )
+            self._session_adapters[sid] = adapter
+            self._touch_session_adapter(sid)
+            logger.info("[JiuWenSwarmDeepAdapter] session scoped DeepAgent created: session_id=%s", sid)
+            return adapter
 
     @staticmethod
     def _get_a2x_config(config_base: dict[str, Any]) -> dict[str, Any]:
@@ -716,6 +818,9 @@ class JiuWenSwarmDeepAdapter:
             return True
         return self._session_has_registered_tasks(sid)
 
+    def is_session_active(self, session_id: str) -> bool:
+        return self._is_session_active(session_id)
+
     def _session_has_registered_tasks(self, session_id: str) -> bool:
         tasks = getattr(self, "_session_agent_tasks", {}).get(session_id)
         return bool(tasks and any(not task.done() for task in tasks))
@@ -756,6 +861,9 @@ class JiuWenSwarmDeepAdapter:
                 return True
             return self._is_related_session(session_id, loop_sid)
         return False
+
+    def is_deep_agent_executing_for_session(self, session_id: str) -> bool:
+        return self._is_deep_agent_executing_for_session(session_id)
 
     def _is_session_live(self, session_id: str) -> bool:
         sid = self._resolve_interrupt_session_id(session_id)
@@ -3248,6 +3356,10 @@ class JiuWenSwarmDeepAdapter:
             mode: 实例化模式，默认 "agent.plan"，使用 create_deep_agent。
             sub_mode: 子模式
         """
+        self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
+        self._session_instance_mode = mode
+        self._session_instance_sub_mode = sub_mode
+
         await self.set_checkpoint()
 
         self._dreaming_mode = mode if mode and mode.startswith("agent") else "agent"
@@ -3268,7 +3380,8 @@ class JiuWenSwarmDeepAdapter:
         self._prompt_attachment_loader.ensure_layout()
 
         model = self._create_model(config_base)
-        await self._try_init_a2x_client(config_base)
+        if self._is_session_scoped_adapter:
+            await self._try_init_a2x_client(config_base)
         agent_card = AgentCard(name=self._agent_name, id='jiuwenswarm')
 
         tool_cards = await self._get_tool_cards(agent_card.id)
@@ -3426,8 +3539,9 @@ class JiuWenSwarmDeepAdapter:
         self._config_cache = config.copy()
 
         model = self._create_model(config_base)
-        await self._try_init_a2x_client(config_base, reload=True)
-        self._sync_a2x_runtime_state()
+        if self._is_session_scoped_adapter:
+            await self._try_init_a2x_client(config_base, reload=True)
+            self._sync_a2x_runtime_state()
         self._agent_name = self._instance_overrides.get("agent_name", config.get("agent_name", "main_agent"))
         agent_card = AgentCard(name=self._agent_name, id='jiuwenswarm')
         self._sync_multimodal_tools_for_runtime()
@@ -3461,6 +3575,17 @@ class JiuWenSwarmDeepAdapter:
         self._instance.configure(deep_cfg)
         self._sync_active_evolution_review_agent_after_reload()
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
+
+        if not self._is_session_scoped_adapter:
+            for session_id, adapter in list(self._session_adapters.items()):
+                try:
+                    await adapter.reload_agent_config(config_base, env_overrides)
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session adapter reload failed: session_id=%s error=%s",
+                        session_id,
+                        exc,
+                    )
 
         logger.info("[JiuWenSwarmDeepAdapter] 配置已热更新（configure），未重启进程")
 
@@ -4015,6 +4140,18 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        if not self._is_session_scoped_adapter:
+            for adapter in list(self._session_adapters.values()):
+                try:
+                    await adapter.cleanup()
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: %s",
+                        exc,
+                    )
+            self._session_adapters.clear()
+            self._session_adapter_locks.clear()
+            self._session_adapter_last_used.clear()
         await self._close_a2x_client()
 
     def _collect_registered_ability_names(self) -> set[str]:
@@ -4126,6 +4263,13 @@ class JiuWenSwarmDeepAdapter:
         Returns:
             AgentResponse 包含 interrupt_result 事件数据
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(request.session_id)
+            try:
+                return await session_adapter.process_interrupt(request)
+            finally:
+                await self._evict_idle_session_adapters()
+
         intent = request.params.get("intent", "cancel")
         new_input = request.params.get("new_input")
 
@@ -4334,6 +4478,10 @@ class JiuWenSwarmDeepAdapter:
         与 process_interrupt 的 session guard 不同，gateway 断开意味着前端已无法接收响应，
         继续运行没有意义，因此不需要 other_sessions 保护。
         """
+        if not self._is_session_scoped_adapter:
+            for adapter in list(self._session_adapters.values()):
+                await adapter.abort_on_gateway_disconnect()
+
         if self._stream_event_rail is not None:
             # Abort all active sessions on this shared adapter.
             # Use list() snapshot since abort() doesn't mutate the Counter.
@@ -4402,6 +4550,13 @@ class JiuWenSwarmDeepAdapter:
 
     async def handle_user_answer(self, request: AgentRequest) -> AgentResponse:
         """Handle chat.user_answer request."""
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(request.session_id)
+            try:
+                return await session_adapter.handle_user_answer(request)
+            finally:
+                await self._evict_idle_session_adapters()
+
         request_id = (
             request.params.get("request_id", "") if isinstance(request.params, dict) else ""
         )
@@ -4485,6 +4640,12 @@ class JiuWenSwarmDeepAdapter:
         sid = str(request.session_id or "")
         if not sid.startswith("heartbeat"):
             return None
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(request.session_id)
+            try:
+                return await session_adapter.handle_heartbeat(request)
+            finally:
+                await self._evict_idle_session_adapters()
 
         content = ""
         try:
@@ -5066,6 +5227,13 @@ class JiuWenSwarmDeepAdapter:
         Returns:
             AgentResponse 包含执行结果
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(request.session_id)
+            try:
+                return await session_adapter.process_message_impl(request, inputs)
+            finally:
+                await self._evict_idle_session_adapters()
+
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
@@ -5182,6 +5350,15 @@ class JiuWenSwarmDeepAdapter:
         Yields:
             AgentResponseChunk 流式响应块
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(request.session_id)
+            try:
+                async for chunk in session_adapter.process_message_stream_impl(request, inputs):
+                    yield chunk
+                return
+            finally:
+                await self._evict_idle_session_adapters()
+
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
@@ -6140,6 +6317,17 @@ class JiuWenSwarmDeepAdapter:
             - result: "busy" | "compressed" | "noop"
             - stats: 压缩统计信息（仅当 result == "compressed" 时）
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(session_id)
+            try:
+                return await session_adapter.compress_context(
+                    session_id=session_id,
+                    session=session,
+                    return_state=return_state,
+                )
+            finally:
+                await self._evict_idle_session_adapters()
+
         if self._instance is None or self._instance.react_agent is None:
             raise ValueError("Agent instance not available")
 
@@ -6218,6 +6406,13 @@ class JiuWenSwarmDeepAdapter:
             - message_count: 对话消息数量
             - context_occupancy: 上下文占用详情（来自 deepagent）
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(session_id)
+            try:
+                return await session_adapter.get_context_usage(session_id=session_id)
+            finally:
+                await self._evict_idle_session_adapters()
+
         if self._instance is None:
             raise ValueError("Agent instance not available")
 
@@ -6319,6 +6514,14 @@ class JiuWenSwarmDeepAdapter:
 
         取最近30条消息 → fast model → 1-3句摘要。
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = self._get_cached_session_adapter(session_id)
+            if session_adapter is not None:
+                try:
+                    return await session_adapter.generate_recap(session_id=session_id)
+                finally:
+                    await self._evict_idle_session_adapters()
+
         from jiuwenswarm.server.runtime.agent_adapter.recap_prompts import (
             RECENT_MESSAGE_WINDOW,
             build_recap_prompt,
