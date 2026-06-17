@@ -166,6 +166,7 @@ def _update_auto_harness_gitcode_access_token(value: str) -> None:
 CLI_FORWARD_REQ_METHODS = frozenset(
     {
         "command.add_dir",
+        "command.btw",
         "command.chrome",
         "command.compact",
         "command.compact_partial",
@@ -267,6 +268,7 @@ CLI_FORWARD_REQ_METHODS = frozenset(
 CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     {
         "command.add_dir",
+        "command.btw",
         "command.chrome",
         "command.compact",
         "command.compact_partial",

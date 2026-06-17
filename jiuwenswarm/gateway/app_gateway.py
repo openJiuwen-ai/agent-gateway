@@ -448,14 +448,19 @@ class GatewayServer:
             if ws is None:
                 channel_id = getattr(msg, "channel_id", None)
                 # 多 TUI 窗口：有 session_id 时精确路由；无 session_id 时广播（如 cron 推送到 TUI）。
-                if channel_id and channel_id != "acp" and msg.type != "res":
+                if channel_id and channel_id != "acp":
+                    if msg.type == "res":
+                        payload_data = dict(msg.payload or {}) if isinstance(msg.payload, dict) else {}
+                        frame = {"type": "res", "id": msg.id, "ok": bool(msg.ok), "payload": payload_data}
+                    else:
+                        frame = _build_event_frame(msg)
+
                     session_id = self._extract_routing_session_id(msg, include_top_level=False)
                     if session_id:
                         session_key = self._client_route_key(channel_id, session_id)
                         if session_key:
                             client = self._session_to_client.get(session_key)
                             if client is not None and not bool(getattr(client, "closed", False)):
-                                frame = _build_event_frame(msg)
                                 data = json.dumps(frame, ensure_ascii=False)
                                 try:
                                     await client.send(data)
@@ -469,11 +474,11 @@ class GatewayServer:
                     elif not self._extract_routing_session_id(msg, include_top_level=True):
                         clients = self._find_channel_clients(channel_id)
                         if clients:
-                            frame = _build_event_frame(msg)
                             data = json.dumps(frame, ensure_ascii=False)
                             logger.info(
-                                "[GatewayServer] broadcast fallback (no session_id): channel_id=%s clients=%d id=%s",
-                                channel_id, len(clients), getattr(msg, "id", None),
+                                "[GatewayServer] broadcast fallback (no session_id): "
+                                "channel_id=%s clients=%d id=%s type=%s",
+                                channel_id, len(clients), getattr(msg, "id", None), msg.type,
                             )
                             await asyncio.gather(
                                 *[c.send(data) for c in clients],

@@ -314,7 +314,7 @@ def _load_logging_config_from_yaml() -> dict[str, Any]:
         if isinstance(raw, dict):
             return raw
     except Exception as e:
-        logger.error(f"load logging config failed, caused by={e}")
+        logger.warning("load logging config failed, caused by=%s", e)
     return {}
 
 
@@ -1897,5 +1897,5 @@ def wait_for_pid_exit(pid: int, timeout: float = 60.0) -> None:
     logger.warning("process %d did not exit within %.1f seconds", pid, timeout)
 
 
-setup_logger()
 logger = logging.getLogger(__name__)
+setup_logger()

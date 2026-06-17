@@ -1,6 +1,7 @@
 /** 内置 slash 与 Gateway 受控指令对齐时参见仓库 `jiuwenswarm/gateway/slash_command.py`（SSOT）与 `docs/zh/CLI_COMMANDS.md`。 */
 import type { SlashCommand } from "./types.js";
 import { createBranchCommand } from "./builtins/branch.js";
+import { createBtwCommand } from "./builtins/btw.js";
 import { createClearCommand } from "./builtins/clear.js";
 import { createColorCommand } from "./builtins/color.js";
 import { createCompactCommand } from "./builtins/compact.js";
@@ -56,6 +57,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createHooksCommand(),
     createKeybindingsCommand(),
     createBranchCommand(),
+    createBtwCommand(),
     createClearCommand(),
     createInitCommand(),
     createColorCommand(),

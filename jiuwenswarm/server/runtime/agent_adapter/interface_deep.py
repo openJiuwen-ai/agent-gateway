@@ -521,6 +521,29 @@ _MODE_DISPLAY_MAP: dict[str, dict[str, str]] = {
 }
 
 
+def _try_add_cache_control(msg: Any) -> None:
+    """Add cache_control to the last content block of a message.
+
+    Only modifies dict-based content blocks (safe for openjiuwen message types
+    where content is ``Union[str, List[Union[str, dict]]]``). If the last block
+    is a dict, we add ``cache_control: {"type": "ephemeral"}`` to it.
+
+    Mark the last pre-prompt message for prompt caching, 
+    while the btw/recap prompt itself carries no marker
+    (skipCacheWrite — the side response doesn't create a new cache entry).
+
+    String content is left untouched — converting it to a list would change
+    the wire format and break the byte-identical prefix needed for cache hits.
+    """
+    content = getattr(msg, "content", None)
+    if content is None:
+        return
+    if isinstance(content, list) and len(content) > 0:
+        last_block = content[-1]
+        if isinstance(last_block, dict):
+            last_block["cache_control"] = {"type": "ephemeral"}
+
+
 class _RuntimeCronToolContext:
     """Stable cron tool context proxy backed by per-task contextvars."""
 
@@ -652,6 +675,10 @@ class JiuWenSwarmDeepAdapter:
         self._is_proactive_memory: bool | None = None
         self._model_cache: dict[str, Model] = {}
         self._model_name_to_keys: dict[str, list[str]] = {}
+        # Cache system prompt to avoid re-building on every btw/recap call.
+        # The system prompt is derived from project context (CLAUDE.md, skills, etc.)
+        # which doesn't change within a session, so caching is safe.
+        self._last_system_prompt: str = ""
         self._default_model_name: str = ""
         self._registered_mcp_server_ids: set[str] = set()
         self._registered_mcp_servers: dict[str, McpServerConfig] = {}
@@ -6432,11 +6459,7 @@ class JiuWenSwarmDeepAdapter:
         from openjiuwen.core.foundation.tool import ToolInfo
 
         # 系统提示词
-        system_prompt = ""
-        if hasattr(react_agent, "prompt_builder") and react_agent.prompt_builder is not None:
-            system_prompt = react_agent.prompt_builder.build()
-        elif hasattr(react_agent, "system_prompt_builder") and react_agent.system_prompt_builder is not None:
-            system_prompt = react_agent.system_prompt_builder.build()
+        system_prompt = self._get_agent_system_prompt()
         if system_prompt and token_counter:
             system_prompt_tokens = token_counter.count(system_prompt) or 0
         elif system_prompt:
@@ -6611,39 +6634,76 @@ class JiuWenSwarmDeepAdapter:
             logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages disk fallback failed: %s", exc)
             return []
 
+    def _get_agent_system_prompt(self) -> str:
+        """Return the current agent's system prompt, or empty string if unavailable.
+
+        Result is cached since the system prompt is derived from project context
+        (CLAUDE.md, skills, etc.) which doesn't change within a session.
+        Reusing the same bytes is critical for prompt cache prefix matching.
+        """
+        if self._last_system_prompt:
+            return self._last_system_prompt
+        if self._instance is None or self._instance.react_agent is None:
+            return ""
+        react_agent = self._instance.react_agent
+        if hasattr(react_agent, "prompt_builder") and react_agent.prompt_builder is not None:
+            self._last_system_prompt = react_agent.prompt_builder.build()
+            return self._last_system_prompt
+        if hasattr(react_agent, "system_prompt_builder") and react_agent.system_prompt_builder is not None:
+            self._last_system_prompt = react_agent.system_prompt_builder.build()
+            return self._last_system_prompt
+        return ""
+
     async def _call_model_for_recap(
         self,
         messages: list[Any],
         prompt: str,
+        system_prompt: str = "",
+        enable_prompt_caching: bool = True,
     ) -> str | None:
-        """调用 fast model 生成 recap 摘要。
+        """调用 model 生成简短回答（单轮、无工具）。
 
-        - 不传 system prompt（空）
+        - system_prompt 非空时以 SystemMessage 形式前置
         - prompt 作为最后一条 user message 追加到对话末尾
-        - 不传 tools
-        - 不启用 thinking
+        - 不传 tools（通过 btw prompt 中的 <system-reminder> 告知模型无工具可用）
+        - 不设置 temperature（继承模型默认值，与主 agent 保持一致以复用 prompt cache）
+
+        prompt cache 策略：
+        - 保持消息原始格式（保留 structured content blocks，包括 tool_use/tool_result）
+        - 最后一条 pre-prompt 消息添加 cache_control: {type: "ephemeral"} marker
+        - btw prompt 不添加 cache_control（skipCacheWrite — 侧问题响应不写入 cache）
         """
-        from openjiuwen.core.foundation.llm.schema.message import UserMessage, AssistantMessage
+        from openjiuwen.core.foundation.llm.schema.message import (
+            AssistantMessage,
+            SystemMessage,
+            UserMessage,
+        )
 
         if self._model is None:
-            logger.error("[generate_recap] no model instance available")
+            logger.error("[oneshot] no model instance available")
             return None
 
         recap_messages: list[Any] = []
 
+        if system_prompt:
+            recap_messages.append(SystemMessage(content=system_prompt))
+
         for msg in messages:
             role = getattr(msg, "role", None) or ""
             content = getattr(msg, "content", None) or ""
-            if isinstance(content, list):
-                # Multimodal content — extract text parts only
-                content = " ".join(
-                    str(p) for p in content
-                    if isinstance(p, str) or (isinstance(p, dict) and p.get("type") == "text")
-                )
-            content = str(content)
-            if not content.strip():
+
+            # Skip truly empty messages
+            if isinstance(content, str) and not content.strip():
+                continue
+            if isinstance(content, (list, tuple)) and len(content) == 0:
+                continue
+            if content is None:
                 continue
 
+            # Keep original content format (string or list of structured blocks).
+            # This is critical for prompt cache prefix matching — converting to
+            # plain text with str() would strip tool_use/tool_result blocks and
+            # break byte-identical prefix matching with the main agent's calls.
             if role == "user":
                 recap_messages.append(UserMessage(content=content))
             elif role == "assistant":
@@ -6651,18 +6711,81 @@ class JiuWenSwarmDeepAdapter:
             else:
                 recap_messages.append(UserMessage(content=content))
 
-        # Prompt 作为最后一条 user message 追加
+        # Mark the last pre-prompt message for prompt caching.
+        # The btw prompt itself does NOT carry a cache_control marker
+        # skipCacheWrite — the side-question
+        # response doesn't create a new cache entry.
+        if enable_prompt_caching and recap_messages:
+            _try_add_cache_control(recap_messages[-1])
+
+        # Append btw prompt as final user message (no cache_control → skipCacheWrite)
         recap_messages.append(UserMessage(content=prompt))
 
         try:
-            result = await self._model.invoke(
-                recap_messages,
-                temperature=0,
-            )
-            return getattr(result, "content", None) or str(result)
+            # No temperature override — inherit model default to match main agent
+            # API params (thinking config is part of the Anthropic cache key).
+            result = await self._model.invoke(recap_messages)
+            content = getattr(result, "content", None) or str(result)
+            # Log cache metrics for observability
+            usage = getattr(result, "usage_metadata", None)
+            if usage and getattr(usage, "cache_tokens", 0) > 0:
+                logger.info(
+                    "[btw/recap] cache hit: cache_tokens=%s, input_tokens=%s, output_tokens=%s",
+                    getattr(usage, "cache_tokens", 0),
+                    getattr(usage, "input_tokens", 0),
+                    getattr(usage, "output_tokens", 0),
+                )
+            return content
         except Exception:
             logger.exception("[generate_recap] model call failed")
             return None
+
+    async def generate_btw_answer(self, session_id: str, question: str) -> dict[str, Any]:
+        """回答 /btw 侧问题：独立、无工具、单轮 LLM 查询。
+
+        prompt cache 策略：
+        - 共享主 agent 的 system prompt（项目上下文、skills、CLAUDE.md 等）
+        - 保持消息原始格式（含 structured content blocks）以实现 byte-identical 前缀
+        - 最后一条 pre-prompt 消息添加 cache_control marker（ephemeral）
+        - btw prompt 不添加 cache_control（skipCacheWrite）
+        - 直接调用模型（无工具、单轮）
+        - 不修改对话历史（read-only）
+
+        Args:
+            session_id: 会话ID
+            question: 用户侧问题
+
+        Returns:
+            {"status": "ok", "answer": "..."} 或 {"status": "no_context"|"failed", ...}
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.recap_prompts import (
+            RECENT_MESSAGE_WINDOW,
+            _build_btw_prompt,
+        )
+
+        # 1) 获取 system prompt（与主 agent 相同，已缓存）
+        system_prompt = self._get_agent_system_prompt()
+
+        # 2) 获取最近对话消息（保持原始格式，不做 str() 转换）
+        messages = self._get_recent_messages(session_id, window=RECENT_MESSAGE_WINDOW)
+        if not messages and not system_prompt:
+            return {"status": "no_context"}
+
+        # 3) 构建 btw prompt（system prompt 通过 SystemMessage 传递，不嵌入文本）
+        prompt = _build_btw_prompt(
+            question=question,
+            language=self._resolve_prompt_language(),
+        )
+
+        # 4) 调用模型 — system_prompt 作为 SystemMessage 前置，prompt 作为 UserMessage
+        # enable_prompt_caching=True 启用 cache_control marker
+        answer = await self._call_model_for_recap(
+            messages, prompt, system_prompt=system_prompt, enable_prompt_caching=True,
+        )
+        if not answer:
+            return {"status": "failed", "error": "Model returned empty response"}
+
+        return {"status": "ok", "answer": answer.strip()}
 
     async def repair_model_response(self, prompt: str) -> str | None:
         """Run a focused repair prompt using the currently selected chat model."""
@@ -6830,11 +6953,7 @@ class JiuWenSwarmDeepAdapter:
         total_tokens = 0
 
         # 1. 计算系统消息的 tokens
-        system_prompt = ""
-        if hasattr(react_agent, "prompt_builder") and react_agent.prompt_builder is not None:
-            system_prompt = react_agent.prompt_builder.build()
-        elif hasattr(react_agent, "system_prompt_builder") and react_agent.system_prompt_builder is not None:
-            system_prompt = react_agent.system_prompt_builder.build()
+        system_prompt = self._get_agent_system_prompt()
 
         if system_prompt:
             if token_counter is not None:

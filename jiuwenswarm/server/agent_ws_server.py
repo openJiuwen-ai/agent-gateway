@@ -455,7 +455,7 @@ def _reject_extra_sandbox_files_params(params: dict[str, Any]) -> None:
 def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
     """在用户消息中注入 <system-reminder> 告知 LLM 调用 enter_plan_mode.
 
-    对齐 Claude Code：plan 模式行为指令不进 system prompt，
+    plan 模式行为指令不进 system prompt，
     而是通过对话中的 tool_result 传递。此提醒是进入 plan 模式后的
     第一个引导，告诉 LLM 调用 enter_plan_mode 以获取完整指令。
 
@@ -1053,6 +1053,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.COMMAND_RECAP:
                 await self._handle_command_recap(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.COMMAND_BTW:
+                await self._handle_command_btw(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.COMMAND_DIFF:
                 await self._handle_command_diff(ws, request, send_lock)
                 return
@@ -1453,7 +1456,7 @@ class AgentWebSocketServer:
         此处只需 post_run 持久化到 checkpointer.
 
         切换到 plan 模式且尚未调用 enter_plan_mode 时，注入 <system-reminder>
-        告知 LLM 调用 enter_plan_mode（对齐 Claude Code：plan 指令不进 system prompt）。
+        告知 LLM 调用 enter_plan_mode。
 
         ``exit_plan_mode`` now restores mode immediately inside the tool
         (via ``restore_mode_after_plan_exit``), so this method no longer needs
@@ -2885,6 +2888,83 @@ class AgentWebSocketServer:
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.recap failed: %s", e)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "status": "failed",
+                    "error": str(e),
+                },
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_command_btw(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """处理 /btw 命令：独立、无工具、单轮 LLM 侧问题查询。
+
+        - 获取当前会话上下文（最近消息）
+        - 用隔离的 LLM 查询回答问题
+        - 不修改对话历史
+        - 不使用任何工具（纯文本回答）
+        - 仅单轮（无后续 token 消耗）
+        """
+        try:
+            session_id = request.session_id or "default"
+            params = request.params or {}
+            channel_id = request.channel_id or "default"
+            question = (params.get("question") or "").strip()
+
+            logger.info(
+                "[AgentWebSocketServer] command.btw received: session_id=%s question=%s",
+                session_id,
+                question[:100] if question else "",
+            )
+
+            if not question:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={"status": "failed", "error": "Question is required"},
+                )
+                wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+                async with send_lock:
+                    await ws.send(json.dumps(wire, ensure_ascii=False))
+                return
+
+            mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent.plan"))
+            agent_mode = "agent" if mode == "auto_harness" else mode
+
+            agent = await self._agent_manager.get_agent(
+                channel_id=channel_id,
+                mode=agent_mode,
+                project_dir=resolve_request_project_dir(request),
+                sub_mode=sub_mode,
+            )
+
+            if agent is None:
+                raise ValueError("Failed to get agent")
+
+            result_data = await agent.generate_btw_answer(
+                session_id=session_id,
+                question=question,
+            )
+
+            logger.info(
+                "[AgentWebSocketServer] command.btw result: status=%s",
+                result_data.get("status"),
+            )
+
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=result_data,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.btw failed: %s", e)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

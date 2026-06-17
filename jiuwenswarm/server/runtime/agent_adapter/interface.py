@@ -1924,6 +1924,27 @@ class JiuWenSwarm:
             direction=direction,
         )
 
+    async def generate_btw_answer(self, session_id: str, question: str) -> dict[str, Any]:
+        """回答 /btw 侧问题：独立、无工具、单轮 LLM 查询。
+
+        将最近对话上下文 + 用户问题发送给模型，模型仅基于已有上下文回答，
+        不使用工具、不修改对话历史。
+
+        Args:
+            session_id: 会话ID
+            question: 用户侧问题
+
+        Returns:
+            包含 btw 结果的字典:
+            - status: "ok" | "no_context" | "failed"
+            - answer: 回答文本（仅当 status == "ok" 时）
+            - error: 错误信息（仅当 status == "failed" 时）
+        """
+        adapter = self._adapter
+        if adapter is None:
+            raise ValueError("Agent adapter not available")
+        return await adapter.generate_btw_answer(session_id=session_id, question=question)
+
     # ---------- 资源清理 ----------
 
     async def cancel_inflight_work(self, log_prefix: str = "[gateway disconnect] ") -> None:

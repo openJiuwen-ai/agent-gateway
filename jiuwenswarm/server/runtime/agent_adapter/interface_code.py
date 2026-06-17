@@ -105,7 +105,7 @@ Do NOT proceed to implement anything until the user approves your plan via
 
 # ---------------------------------------------------------------------------
 # Plan mode instructions for enter_plan_mode tool_result
-# (aligned with Claude Code: instructions live in conversation, not system prompt)
+# instructions live in conversation, not system prompt
 # ---------------------------------------------------------------------------
 
 _ENTER_PLAN_MODE_INSTRUCTIONS_EN = """
@@ -167,8 +167,7 @@ ask_user is only for clarifying requirements — do not use it for approval ques
 
 # ---------------------------------------------------------------------------
 # Plan mode exit notification appended to exit_plan_mode tool_result.
-# Aligned with Claude Code's plan_mode_exit attachment: explicitly tells the
-# model it can now edit files. Without this, the model only sees
+# Explicitly tells the model it can now edit files. Without this, the model only sees
 # MODE_INSTRUCTIONS removed from system prompt but receives no explicit signal.
 # ---------------------------------------------------------------------------
 
