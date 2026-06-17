@@ -30,6 +30,7 @@ interface MemoryStatusResult {
   enabled: boolean;
   proactive: boolean;
   forbidden_enabled: boolean;
+  auto_memory_enabled: boolean;
   index?: {
     available: boolean;
     provider?: string | null;
@@ -76,6 +77,7 @@ interface MemoryOpenResult {
   project_memory_dir: string;
   project_dir?: string;
   coding_memory_dir?: string;
+  auto_memory_dir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +383,7 @@ async function showMemoryOverview(ctx: import("../types.js").CommandContext): Pr
     items.push({ label: "Enabled", value: payload.enabled ? "✓ on" : "✗ off" });
     items.push({ label: "Proactive", value: payload.proactive ? "✓ on" : "✗ off" });
     items.push({ label: "Forbidden Filter", value: payload.forbidden_enabled ? "✓ on" : "✗ off" });
+    items.push({ label: "Auto Memory", value: payload.auto_memory_enabled ? "✓ on" : "✗ off" });
 
     if (payload.index) {
       items.push({
@@ -853,6 +856,7 @@ const TOGGLE_KEYS = [
   { key: "memory_enabled", label: "Enabled", config_path: "modes.agent.<mode>.memory.enabled" },
   { key: "memory_proactive", label: "Proactive", config_path: "modes.agent.<mode>.memory.is_proactive" },
   { key: "memory_forbidden_enabled", label: "Forbidden Filter", config_path: "memory.forbidden_memory_definition.enabled" },
+  { key: "auto_memory_enabled", label: "Auto Memory", config_path: "auto_memory_enabled" },
 ];
 
 async function toggleMemory(
@@ -882,7 +886,9 @@ async function showToggleList(
       let current: boolean;
       if (t.key === "memory_enabled") current = payload.enabled;
       else if (t.key === "memory_proactive") current = payload.proactive;
-      else current = payload.forbidden_enabled;
+      else if (t.key === "memory_forbidden_enabled") current = payload.forbidden_enabled;
+      else if (t.key === "auto_memory_enabled") current = payload.auto_memory_enabled;
+      else current = false;
 
       return {
         label: t.key,
@@ -962,6 +968,9 @@ async function openMemoryDir(
     if (payload.coding_memory_dir) {
       items.push({ label: "Coding Memory Dir", value: payload.coding_memory_dir });
     }
+    if (payload.auto_memory_dir) {
+      items.push({ label: "Auto Memory Dir", value: payload.auto_memory_dir });
+    }
 
     ctx.addItem(
       makeItem(ctx.sessionId, "info", "Memory Directories", "m", {
@@ -985,17 +994,145 @@ async function openMemoryDir(
   }
 }
 
+const OPEN_FOLDER_PREFIX = "__open_folder__";
+
+async function showAutoMemoryInteractive(
+  ctx: import("../types.js").CommandContext,
+): Promise<void> {
+  const mode = modeToShort(ctx.mode);
+  const workspaceDir = ctx.getWorkspaceDir() || "";
+  const projectDir = ctx.getCurrentProjectDir() || workspaceDir;
+
+  try {
+    // Get memory status and files
+    const statusPayload = await ctx.request<MemoryStatusResult>("memory.status", {
+      detailed: true,
+      mode,
+    });
+
+    const listPayload = await ctx.request<{ files: MemoryFile[] }>("memory.list", {
+      mode,
+      include_project: true,
+      project_dir: projectDir,
+    });
+
+    const autoMemoryEnabled = statusPayload.auto_memory_enabled ?? false;
+    const files = listPayload.files ?? [];
+
+    // Build memory file options (Project and User memory)
+    const projectMemoryPath = join(projectDir, "JIUWENSWARM.md");
+    const userMemoryPath = join(workspaceDir, "JIUWENSWARM.local.md");
+
+    const hasProjectMemory = files.some(
+      (f) => f.path === projectMemoryPath || f.relative_path === "JIUWENSWARM.md",
+    );
+    const hasUserMemory = files.some(
+      (f) => f.path === userMemoryPath || f.relative_path === "JIUWENSWARM.local.md",
+    );
+
+    // Add memory file options
+    const memoryOptions: { label: string; description: string; value: string }[] = [];
+
+    // Project memory
+    memoryOptions.push({
+      label: "Project memory",
+      value: projectMemoryPath,
+      description: hasProjectMemory ? `Saved in ./JIUWENSWARM.md` : "Saved in ./JIUWENSWARM.md (new)",
+    });
+
+    // User memory (local)
+    memoryOptions.push({
+      label: "User memory",
+      value: userMemoryPath,
+      description: hasUserMemory ? "Saved in ./JIUWENSWARM.local.md" : "Saved in ./JIUWENSWARM.local.md (new)",
+    });
+
+    // Add open folder option at the bottom (only when auto-memory enabled)
+    if (autoMemoryEnabled) {
+      memoryOptions.push({
+        label: "Open auto-memory folder",
+        value: `${OPEN_FOLDER_PREFIX}auto`,
+        description: "",
+      });
+    }
+
+    // Build toggle option at the top - align with Claude Code format: "Auto-memory: on/off"
+    const toggleOption: { label: string; description: string; value: string } = {
+      label: `Auto-memory: ${autoMemoryEnabled ? "on" : "off"}`,
+      value: "__toggle__",
+      description: "Press Enter to toggle",
+    };
+
+    // Combine all options: toggle at top, then files, then open folder
+    const allOptions = [toggleOption, ...memoryOptions];
+
+    let selectedValue: string | undefined;
+    try {
+      const [answer] = await ctx.askQuestions(
+        [
+          {
+            header: "Memory",
+            question: "Select an action:",
+            options: allOptions.map((opt) => ({
+              label: opt.label,
+              description: opt.description,
+            })),
+          },
+        ],
+        "local_command_memory",
+      );
+      selectedValue = answer?.selected_options?.[0]
+        ? allOptions.find((opt) => opt.label === answer.selected_options[0])?.value
+        : undefined;
+    } catch {
+      ctx.addItem(addInfo(ctx.sessionId, "Cancelled Memory interaction.", "i"));
+      return;
+    }
+
+    if (!selectedValue) {
+      ctx.addItem(addInfo(ctx.sessionId, "Cancelled Memory interaction.", "i"));
+      return;
+    }
+
+    // Handle selected action
+    if (selectedValue === "__toggle__") {
+      await toggleByKey(ctx, "auto_memory_enabled");
+    } else if (selectedValue.startsWith(OPEN_FOLDER_PREFIX)) {
+      // Open coding memory folder in system file explorer (unified with Auto Memory)
+      const openPayload = await ctx.request<MemoryOpenResult>("memory.open", {
+        project_dir: projectDir,
+      });
+      // Use coding_memory_dir as the unified memory location
+      const targetDir = openPayload.coding_memory_dir || openPayload.auto_memory_dir;
+      if (targetDir && ctx.openFolder) {
+        ctx.openFolder(targetDir);
+        ctx.addItem(
+          addInfo(ctx.sessionId, "Opened memory folder", "m"),
+        );
+      }
+    } else {
+      // Edit the selected memory file
+      await editMemoryByPath(ctx, selectedValue);
+    }
+  } catch (err) {
+    ctx.addItem(
+      addError(ctx.sessionId, `Failed to show Memory interface: ${err instanceof Error ? err.message : String(err)}`),
+    );
+  }
+}
+
 export function createMemoryCommand(): SlashCommand {
   return {
     name: "memory",
     altNames: ["mem"],
-    description: "Edit memory files (list, edit, status, toggle, open)",
+    description: "Manage memory settings and files (Auto-memory, edit, toggle, open)",
     usage: "/memory [list|edit|status|toggle|open] [args]",
-    example: "/memory edit",
+    example: "/memory",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     action: async (ctx) => {
       await showMemorySelector(ctx);
+      await showAutoMemoryInteractive(ctx);
     },
     completion: async () => {
       return ["list", "edit", "status", "toggle", "open"];

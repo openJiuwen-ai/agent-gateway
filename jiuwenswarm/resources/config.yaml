@@ -64,6 +64,11 @@ symphony:
       flatten_tree: false
       max_exposure_depth: 1
 
+# Auto Memory：对话结束后自动提取记忆，按项目隔离存储
+# 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
+# 类似 Claude Code 的 auto-memory 功能
+auto_memory_enabled: true
+
 # 日志目录：~/.jiuwenswarm/agent/.logs/
 # gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。

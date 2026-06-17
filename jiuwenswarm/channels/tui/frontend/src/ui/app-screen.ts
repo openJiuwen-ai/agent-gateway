@@ -18,7 +18,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import type { CliPiAppState } from "../app-state.js";
-import { openFileInEditor as openInExternalEditor } from "../core/utils/editor.js";
+import { openFileInEditor as openInExternalEditor, openFolderInExplorer } from "../core/utils/editor.js";
 import {
   extractAttachmentsFromText,
   extractFilePathsFromPaste,
@@ -2554,6 +2554,9 @@ export class AppScreen implements Component, Focusable {
           },
           openInEditor: (filePath: string) => {
             openInExternalEditor(this.tui, filePath);
+          },
+          openFolder: (folderPath: string) => {
+            openFolderInExplorer(folderPath);
           },
           enterFileViewer: (content, title, source) => {
             this.enterFileViewer(content, title, source);
@@ -5855,15 +5858,6 @@ export class AppScreen implements Component, Focusable {
   ): boolean {
     if (!snapshot.pendingQuestion) {
       return false;
-    }
-
-    const mouse = parseSgrMouseRelease(data);
-    if (mouse?.button === 0 && this.questionList !== null) {
-      const hit = this.questionOptionRows.find((entry) => entry.row === mouse.row);
-      if (hit) {
-        this.handleQuestionSelection(hit.value);
-        return true;
-      }
     }
 
     if (this.questionList !== null) {
