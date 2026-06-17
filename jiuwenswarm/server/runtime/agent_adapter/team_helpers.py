@@ -1257,7 +1257,7 @@ def _persist_team_history_event(
         role="assistant",
         content="",
         timestamp=timestamp,
-        event_type=event_type,
+        event_type=evt_type,
         extra={
             "session_id": session_id,
             "event": dict(payload),
