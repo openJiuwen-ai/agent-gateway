@@ -3900,7 +3900,14 @@ export class AppScreen implements Component, Focusable {
   }
 
   private async openSwarmWorkflowsView(): Promise<void> {
-    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(true);
+    const selectedWorkflowId =
+      this.swarmWorkflowsViewState?.phase === "list"
+        ? this.swarmWorkflowsViewState.list.getSelectedItem()?.value
+        : this.swarmWorkflowsViewState?.phase === "workflow" ||
+            this.swarmWorkflowsViewState?.phase === "agent"
+          ? this.swarmWorkflowsViewState.workflowId
+          : undefined;
+    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(true, selectedWorkflowId);
     this.tui.requestRender();
     try {
       await this.state.loadWorkflowSnapshot();
@@ -3910,7 +3917,7 @@ export class AppScreen implements Component, Focusable {
         addError(this.state.getSnapshot().sessionId, `workflow list failed: ${message}`),
       );
     }
-    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false);
+    this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false, selectedWorkflowId);
     this.tui.requestRender();
   }
 
@@ -3930,7 +3937,10 @@ export class AppScreen implements Component, Focusable {
     const current = this.swarmWorkflowsViewState;
     if (!current) return;
     if (current.phase === "list") {
-      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(
+        false,
+        current.list.getSelectedItem()?.value,
+      );
       return;
     }
     if (current.phase === "workflow") {
@@ -3950,7 +3960,7 @@ export class AppScreen implements Component, Focusable {
       current.agentId,
     );
     if (!lookup) {
-      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false, current.workflowId);
     } else {
       this.swarmWorkflowsViewState = {
         phase: "agent",
@@ -3960,7 +3970,10 @@ export class AppScreen implements Component, Focusable {
     }
   }
 
-  private buildSwarmWorkflowsListState(loading = false): SwarmWorkflowsViewState {
+  private buildSwarmWorkflowsListState(
+    loading = false,
+    selectedWorkflowId?: string,
+  ): SwarmWorkflowsViewState {
     const workflows = this.state.getSnapshot().workflowRuns;
     const items: SelectItem[] = workflows.map((workflow) => {
       const total = workflow.agent_count ?? countWorkflowAgents(workflow);
@@ -3976,6 +3989,12 @@ export class AppScreen implements Component, Focusable {
       minPrimaryColumnWidth: 24,
       maxPrimaryColumnWidth: 42,
     });
+    const selectedWorkflowIndex = selectedWorkflowId
+      ? items.findIndex((workflow) => workflow.value === selectedWorkflowId)
+      : -1;
+    if (selectedWorkflowIndex >= 0) {
+      list.setSelectedIndex(selectedWorkflowIndex);
+    }
     list.onSelect = (item) => {
       this.swarmWorkflowsViewState = this.buildSwarmWorkflowDetailState(item.value);
       this.tui.requestRender();
@@ -3993,7 +4012,7 @@ export class AppScreen implements Component, Focusable {
     selectedAgentId?: string,
   ): SwarmWorkflowsViewState {
     const workflow = this.state.getSnapshot().workflowRuns.find((item) => item.id === workflowId);
-    if (!workflow) return this.buildSwarmWorkflowsListState();
+    if (!workflow) return this.buildSwarmWorkflowsListState(false, workflowId);
     const selectedPhaseIndex = Math.max(
       0,
       workflow.phases.findIndex((phase) => phase.id === selectedPhaseId),
@@ -4038,7 +4057,7 @@ export class AppScreen implements Component, Focusable {
       this.tui.requestRender();
     };
     phaseList.onCancel = () => {
-      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+      this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false, workflowId);
       this.tui.requestRender();
     };
 
@@ -4094,7 +4113,7 @@ export class AppScreen implements Component, Focusable {
       if (state.phase === "list") {
         this.closeSwarmWorkflowsView();
       } else if (state.phase === "workflow") {
-        this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState();
+        this.swarmWorkflowsViewState = this.buildSwarmWorkflowsListState(false, state.workflowId);
       } else {
         const lookup = findWorkflowAgent(
           this.state.getSnapshot().workflowRuns,
@@ -4133,7 +4152,7 @@ export class AppScreen implements Component, Focusable {
                 "phases",
                 state.agentList.getSelectedItem()?.value,
               )
-            : this.buildSwarmWorkflowsListState();
+            : this.buildSwarmWorkflowsListState(false, state.workflowId);
       }
       this.tui.requestRender();
       return;
