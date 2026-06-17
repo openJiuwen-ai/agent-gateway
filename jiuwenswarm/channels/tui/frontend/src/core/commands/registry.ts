@@ -35,6 +35,7 @@ import { createRenameCommand } from "./builtins/rename.js";
 import { createRewindCommand } from "./builtins/rewind.js";
 import { createSandboxCommand } from "./builtins/sandbox.js";
 import { createSessionCommand } from "./builtins/session.js";
+import { createSimplifyCommand } from "./builtins/simplify.js";
 import { createStatusCommand } from "./builtins/status.js";
 import { createStatusLineCommand } from "./builtins/statusline.js";
 import { createSkillsCommand } from "./builtins/skills.js";
@@ -79,6 +80,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createRewindCommand(),
     createSandboxCommand(),
     createSessionCommand(),
+    createSimplifyCommand(),
     createSkillsCommand(),
     createStatusCommand(),
     createStatusLineCommand(),
