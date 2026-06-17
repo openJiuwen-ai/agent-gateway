@@ -341,7 +341,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     """Code 模式适配器 — 配置驱动注册 rails/tools.
 
     继承 JiuWenSwarmDeepAdapter，只重写：
-    - create_instance(): 统一使用 create_deep_agent()，不传多模态/上下文引擎参数
+    - create_instance(): 统一使用 create_deep_agent()，不传多模态/上下文引擎参数（completion_timeout 从配置读取）
     - _build_agent_rails(): 固定 Rails (含 LspRail/ProjectMemoryRail/CodingMemoryRail) + 从 config.yaml 读取动态 Rails
     - _get_tool_cards(): 从 config.yaml 读取动态 Tools
     - _build_configured_subagents(): 固定 explore_agent/plan_agent + 按配置启用 code_agent/browser_agent
@@ -424,7 +424,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """初始化 DeepAgent 实例（code 模式）.
 
         统一使用 create_deep_agent()，不传 vision_model_config /
-        audio_model_config / context_engine_config / completion_timeout。
+        audio_model_config / context_engine_config。
+        completion_timeout 从配置读取，可在 react / modes.code 中自定义。
         """
         await self.set_checkpoint()
 
@@ -495,7 +496,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
             enable_read_image_multimodal=False,
-            auto_create_workspace=False
+            auto_create_workspace=False,
+            completion_timeout=config.get("completion_timeout", 3600.0),
         )
 
         await self._instance.ensure_initialized()
@@ -521,7 +523,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
 
         # code 模式不传: vision_model_config, audio_model_config,
-        # context_engine_config, completion_timeout
+        # context_engine_config（completion_timeout 已从配置读取传入）
 
         self._registered_mcp_server_ids.clear()
         self._registered_mcp_servers.clear()
