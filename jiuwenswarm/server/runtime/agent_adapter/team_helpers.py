@@ -1012,6 +1012,11 @@ async def _consume_stream_with_query(
             if parsed is not None:
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
+                # Skip non-leader __interaction__ (permission ASK) — approval
+                # is routed internally via the leader; only leader
+                # interactions are forwarded to the frontend.
+                if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
+                    continue
                 parsed["rid"] = round_id
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
