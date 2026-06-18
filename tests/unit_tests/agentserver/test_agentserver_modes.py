@@ -737,6 +737,86 @@ def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_u
     assert chunks[-1].is_complete is True
 
 
+def test_process_message_stream_treats_plain_team_query_as_first_request_after_round_end(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+
+    class FakeSessionManager:
+        submit_task_calls = []
+
+        @staticmethod
+        def get_session_id(session_id=None):
+            return session_id or "default"
+
+        @classmethod
+        async def submit_task(cls, session_id, task_factory):
+            cls.submit_task_calls.append(session_id)
+            await task_factory()
+
+    class FakeAdapter:
+        seen_inputs = None
+
+        @staticmethod
+        async def process_message_stream_impl(request, inputs):
+            _ = request
+            FakeAdapter.seen_inputs = inputs
+            yield AgentResponseChunk(
+                request_id="req-team-fresh-round",
+                channel_id="web",
+                payload={"event_type": "chat.done"},
+                is_complete=True,
+            )
+
+    class FakeTeamManager:
+        active_session_id = None
+        pending_session_id = None
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return False
+
+        @staticmethod
+        async def session_has_runtime(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return True
+
+    fake_adapter = FakeAdapter()
+
+    monkeypatch.setattr(interface_module, "SessionManager", FakeSessionManager)
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda self, mode="agent": fake_adapter,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda _channel_id: FakeTeamManager(),
+    )
+
+    request = AgentRequest(
+        request_id="req-team-fresh-round",
+        channel_id="web",
+        session_id="team-session",
+        params={
+            "query": "你好",
+            "mode": "team",
+        },
+        is_stream=True,
+    )
+
+    async def collect_chunks():
+        return [chunk async for chunk in interface_module.JiuWenSwarm().process_message_stream(request)]
+
+    chunks = asyncio.run(collect_chunks())
+
+    assert FakeSessionManager.submit_task_calls == ["team-session"]
+    assert fake_adapter.seen_inputs["query"] == "你好"
+    assert chunks[0].payload == {"event_type": "chat.done"}
+    assert chunks[-1].is_complete is True
+
+
 @pytest.mark.parametrize(
     "params",
     [

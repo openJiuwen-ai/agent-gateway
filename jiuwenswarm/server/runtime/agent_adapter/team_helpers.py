@@ -208,9 +208,10 @@ def _normalize_team_query(query: Any, *, channel_id: str | None, language: str) 
 
 
 async def _team_session_has_runtime(team_manager: Any, session_id: str) -> bool:
-    session_has_runtime = getattr(team_manager, "session_has_runtime", None)
-    if callable(session_has_runtime):
-        return bool(await session_has_runtime(session_id))
+    # Keep ordinary team first-request detection scoped to claw-local
+    # live markers only. Resumable Runner-pool entries are reserved for
+    # InteractiveInput recovery and must not make a fresh text request
+    # look like a follow-up after the previous round has ended.
     return (
         getattr(team_manager, "active_session_id", None) == session_id
         or getattr(team_manager, "pending_session_id", None) == session_id
@@ -1132,6 +1133,9 @@ async def _consume_stream_with_query(
     finally:
         team_manager = get_team_manager(channel_id)
         team_manager.clear_pending_runtime(session_id)
+        clear_active_runtime = getattr(team_manager, "clear_active_runtime", None)
+        if callable(clear_active_runtime):
+            clear_active_runtime(session_id)
         team_manager.pop_stream_task(session_id)
 
 

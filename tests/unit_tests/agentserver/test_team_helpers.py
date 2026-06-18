@@ -889,6 +889,10 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
             calls.append(f"clear:{session_id}")
 
         @staticmethod
+        def clear_active_runtime(session_id: str) -> None:
+            calls.append(f"clear_active:{session_id}")
+
+        @staticmethod
         def pop_stream_task(session_id: str):
             calls.append(f"pop:{session_id}")
             return None
@@ -960,6 +964,11 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
         "hooks:sess-runtime:ready-team:web",
         "monitor:sess-runtime:ready-team",
         "watcher:sess-runtime:runtime_ready",
+    ]
+    assert calls[-3:] == [
+        "clear:sess-runtime",
+        "clear_active:sess-runtime",
+        "pop:sess-runtime",
     ]
 
 
@@ -1499,6 +1508,84 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
         "is_processing": False,
         "is_complete": True,
     }
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_treats_plain_query_as_first_request_after_round_end(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    class _FakeManager:
+        active_session_id = None
+        pending_session_id = None
+
+        @staticmethod
+        async def session_has_runtime(session_id: str) -> bool:
+            assert session_id == "sess-team-new-round"
+            return True
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-new-round"
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**_kwargs):
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
+            captured["skills_ready"] = (session_id, spec.team_name)
+
+        @staticmethod
+        async def prepare_runtime_activation(session_id: str, team_name: str):
+            captured["prepared"] = (session_id, team_name)
+
+        @staticmethod
+        def register_stream_task(session_id: str, task: object) -> None:
+            captured["registered"] = session_id
+
+        @staticmethod
+        async def interact(*_args, **_kwargs):
+            raise AssertionError("plain text query after round end should start a new team round")
+
+    async def _fake_consume_stream_with_query(
+        channel_id: str | None,
+        session_id: str,
+        spec: object,
+        query: str,
+        *,
+        round_id: int,
+        envs: dict | None = None,
+    ) -> None:
+        _ = channel_id, spec, envs
+        captured["consumed"] = (session_id, query, round_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda session_id: 1)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _fake_consume_stream_with_query)
+
+    request = SimpleNamespace(
+        session_id="sess-team-new-round",
+        request_id="req-team-new-round",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        {"query": "你好"},
+        object(),
+    ):
+        chunks.append(chunk)
+    await asyncio.sleep(0)
+
+    assert captured["prepared"] == ("sess-team-new-round", "unit-team")
+    assert captured["registered"] == "sess-team-new-round"
+    assert captured["consumed"] == ("sess-team-new-round", "你好", 1)
+    assert captured["skills_ready"] == ("sess-team-new-round", "unit-team")
     assert chunks[-1].is_complete is True
 
 
