@@ -1072,7 +1072,6 @@ _EXPECTED_CODE_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SECURITY,
         registry.CODE_LSP,
         registry.CODE_PROJECT_MEMORY,
-        registry.PERMISSION_INTERRUPT,
         registry.SYS_OPERATION,
         registry.CODE_CODING_MEMORY,
         registry.CODE_AGENT_MODE,
