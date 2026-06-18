@@ -3548,7 +3548,7 @@ export class AppScreen implements Component, Focusable {
       }
 
       const selectItems: SelectItem[] = items.map((x) => ({
-        label: `${x.name} | ${x.transport}${x.enabled ? " · ✔ enabled" : " · ◯ disabled"}`,
+        label: `${x.name} | ${x.transport}${x.enabled ? " · ✔ enabled" : " · ○ disabled"}`,
         value: x.name,
       }));
       const list = new SelectList(
@@ -3676,7 +3676,7 @@ export class AppScreen implements Component, Focusable {
 
     // Detail fields
     boxedLines.push(padToWidth(
-      `  Status: ${enabled ? palette.status.success("✔ enabled") : palette.text.dim("◯ disabled")}`,
+      `  Status: ${enabled ? palette.status.success("✔ enabled") : palette.text.dim("○ disabled")}`,
       contentWidth,
     ));
     if (info.transport) {
