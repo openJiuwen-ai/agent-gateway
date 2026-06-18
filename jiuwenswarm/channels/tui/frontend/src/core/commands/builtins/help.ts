@@ -24,7 +24,7 @@ const COMMAND_GROUPS: Record<string, { name: string; commands: string[] }> = {
   },
   config: {
     name: "Config",
-    commands: ["config", "workspace", "permissions"],
+    commands: ["config", "workspace", "diff", "plan", "permissions"],
   },
 };
 

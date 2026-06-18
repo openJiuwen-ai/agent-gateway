@@ -10,7 +10,7 @@ import { createContextCommand } from "./builtins/context.js";
 import { createCronCommand } from "./builtins/cron.js";
 import { createCopyCommand } from "./builtins/copy.js";
 import { createRecapCommand } from "./builtins/recap.js";
-// Re-enable next release: import { createDiffCommand } from "./builtins/diff.js";
+import { createDiffCommand } from "./builtins/diff.js";
 import { createExportCommand } from "./builtins/export.js";
 import {
   createEvolveCommand,
@@ -30,7 +30,7 @@ import { createPluginCommand } from "./builtins/plugin.js";
 import { createReloadPluginsCommand } from "./builtins/reload-plugins.js";
 import { createModeCommand } from "./builtins/mode.js";
 import { createPermissionsCommand } from "./builtins/permissions.js";
-// Re-enable next release: import { createPlanCommand } from "./builtins/plan.js";
+import { createPlanCommand } from "./builtins/plan.js";
 import { createResumeCommand } from "./builtins/resume.js";
 import { createRenameCommand } from "./builtins/rename.js";
 import { createRewindCommand } from "./builtins/rewind.js";
@@ -67,7 +67,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createCronCommand(),
     createRecapCommand(),
     createCopyCommand(),
-    // createDiffCommand(),
+    createDiffCommand(),
     createExportCommand(),
     createEvolveCommand(),
     createEvolveListCommand(),
@@ -78,7 +78,7 @@ export function createBuiltinCommands(): SlashCommand[] {
     createMcpCommand(),
     createModeCommand(),
     createPermissionsCommand(),
-    // createPlanCommand(),
+    createPlanCommand(),
     createResumeCommand(),
     createRenameCommand(),
     createRewindCommand(),
