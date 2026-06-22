@@ -883,7 +883,26 @@ async def process_team_message_stream(
                 session_id,
                 rid,
             )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            # NOTE: do NOT emit is_processing=False here.
+            # A follow-up request only enqueues the query into the running
+            # team stream; the actual LLM work still happens inside
+            # _consume_stream_with_query. The real "round complete" signal
+            # will be broadcast by that background stream once team.completed
+            # arrives, and forwarded to the frontend via the long-lived
+            # waiter that was registered by the first request.
+            # The deferred placeholder below tells the Gateway not to
+            # auto-emit is_processing=False when this short stream ends,
+            # which prevents the frontend from flashing
+            # "finished -> wait -> running again" before the LLM replies.
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload={
+                    "event_type": "chat.processing_status_deferred",
+                    "session_id": session_id,
+                },
+                is_complete=False,
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,

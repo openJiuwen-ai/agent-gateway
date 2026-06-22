@@ -1116,7 +1116,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_emits_processing_done_for_followup(monkeypatch):
+async def test_process_team_message_stream_emits_deferred_marker_for_followup(monkeypatch):
     class _FakeManager:
         interact_calls: list[tuple[str, str]] = []
 
@@ -1156,12 +1156,14 @@ async def test_process_team_message_stream_emits_processing_done_for_followup(mo
     assert _FakeManager.interact_calls == [
         ("sess-team-followup", "$human-reporter claim task"),
     ]
+    # follow-up short stream must NOT emit is_processing=False directly;
+    # it emits an internal deferred marker so the Gateway suppresses the
+    # auto-complete signal. The real round-complete event is broadcast
+    # later by the background team stream on team.completed.
     assert len(chunks) == 2
     assert chunks[0].payload == {
-        "event_type": "chat.processing_status",
+        "event_type": "chat.processing_status_deferred",
         "session_id": "sess-team-followup",
-        "is_processing": False,
-        "is_complete": True,
     }
     assert chunks[0].is_complete is False
     assert chunks[1].payload is None
@@ -1503,10 +1505,8 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
         ("sess-team-plan-recover", approval_input),
     ]
     assert chunks[0].payload == {
-        "event_type": "chat.processing_status",
+        "event_type": "chat.processing_status_deferred",
         "session_id": "sess-team-plan-recover",
-        "is_processing": False,
-        "is_complete": True,
     }
     assert chunks[-1].is_complete is True
 
@@ -1650,10 +1650,8 @@ async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypa
     assert "submitDietForm" in prompt
     assert "dietType" in prompt
     assert chunks[0].payload == {
-        "event_type": "chat.processing_status",
+        "event_type": "chat.processing_status_deferred",
         "session_id": "sess-team-a2ui",
-        "is_processing": False,
-        "is_complete": True,
     }
     assert chunks[1].is_complete is True
 

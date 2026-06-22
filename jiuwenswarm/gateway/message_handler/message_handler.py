@@ -3149,12 +3149,23 @@ class MessageHandler(ABC):
                     continue
                 await self._handle_evolution_chunk(chunk, session_id, request_metadata)
                 # 携带 request metadata，供 Feishu/Xiaoyi 用平台身份回发
-                # 检查是否是 processing_status=false 事件
+                # Detect processing_status=false event
                 payload = chunk.payload or {}
                 if isinstance(payload, dict):
-                    if payload.get("event_type") == "chat.processing_status":
+                    event_type = payload.get("event_type")
+                    if event_type == "chat.processing_status":
                         if payload.get("is_processing") is False:
                             has_processing_status_false = True
+                    elif event_type == "chat.processing_status_deferred":
+                        # Internal placeholder from the cluster-mode
+                        # follow-up short stream: the real round-complete
+                        # signal will be broadcast by the background team
+                        # stream on team.completed. This marker only
+                        # prevents the Gateway from auto-emitting
+                        # is_processing=False when this short stream
+                        # ends, and is NOT forwarded to the frontend.
+                        has_processing_status_false = True
+                        continue
 
                 out = self._chunk_to_message(
                     chunk,
