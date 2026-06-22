@@ -69,6 +69,7 @@ test = [
 ]
 
 [project.scripts]
+jiuwenswarm = "jiuwenswarm.cli.main:main"
 jiuwenswarm-app = "jiuwenswarm.app:main"
 jiuwenswarm-agentserver = "jiuwenswarm.server.app_agentserver:main"
 jiuwenswarm-gateway = "jiuwenswarm.gateway.app_gateway:main"
@@ -76,7 +77,6 @@ jiuwenswarm-web = "jiuwenswarm.channels.web.app_web:main"
 jiuwenswarm-start = "jiuwenswarm.start_services:main"
 jiuwenswarm-init = "jiuwenswarm.init_workspace:main"
 jiuwenswarm-desktop = "jiuwenswarm.channels.desktop.desktop_app:main"
-jiuwenswarm-tui = "jiuwenswarm.channels.acp.app_acp:main"
 jiuwenswarm-acp = "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect:main"
 jiuwenswarm-acp-chat = "jiuwenswarm.acp.cli:main"
 jiuwenbox = "jiuwenbox.cli.jiuwenbox:main"
@@ -91,7 +91,7 @@ package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 [tool.setuptools.packages.find]
 where = [".", "jiuwenbox/src"]
 include = ["jiuwenswarm*", "jiuwenbox*"]
-exclude = ["jiuwenswarm.cli*", "jiuwenswarm.web*"]
+exclude = ["jiuwenswarm.web*"]
 namespaces = false
 
 [tool.setuptools.package-data]
