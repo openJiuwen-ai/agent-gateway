@@ -1949,6 +1949,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
             type="answer",
             payload={"output": {"output": "human answer"}, "result_type": "answer"},
             role=SimpleNamespace(value=TeamRole.HUMAN_AGENT.value),
+            source_member="human_agent",
         )
 
     class _FakeRunner:
@@ -2019,15 +2020,19 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         "team.runtime_ready",
         "chat.final",
         "chat.final",
+        "chat.final",
     ]
     # All events before round_complete carry is_processing=True, is_complete=False
     assert broadcasted[0]["is_processing"] is True
     assert broadcasted[0]["is_complete"] is False
     assert broadcasted[2]["content"] == "leader answer"
-    # Teammate event includes role and member_name
+    # Member events keep the frontend-compatible teammate role and include member_name.
     assert broadcasted[3]["content"] == "teammate answer"
     assert broadcasted[3]["role"] == TeamRole.TEAMMATE.value
     assert broadcasted[3]["member_name"] == "analyst"
+    assert broadcasted[4]["content"] == "human answer"
+    assert broadcasted[4]["role"] == TeamRole.TEAMMATE.value
+    assert broadcasted[4]["member_name"] == "human_agent"
 
 
 @pytest.mark.anyio

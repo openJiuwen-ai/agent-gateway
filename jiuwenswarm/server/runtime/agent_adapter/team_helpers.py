@@ -410,14 +410,14 @@ def _is_leader_output(chunk: Any) -> bool:
 
 
 def _is_teammate_output(chunk: Any) -> bool:
-    """Return whether a team OutputSchema chunk is from a teammate."""
+    """Return whether a team OutputSchema chunk is from a non-leader member."""
     role = getattr(chunk, "role", None)
     if role is None:
         return False
-    if role == TeamRole.TEAMMATE:
-        return True
+    if role == TeamRole.LEADER:
+        return False
     role_value = getattr(role, "value", role)
-    return str(role_value).strip().lower() == TeamRole.TEAMMATE.value
+    return str(role_value).strip().lower() != TeamRole.LEADER.value
 
 
 def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]:
