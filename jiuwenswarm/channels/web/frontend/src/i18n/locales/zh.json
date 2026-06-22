@@ -947,6 +947,8 @@
       "fillPath": "请先填写 Chrome 路径",
       "savePath": "请先保存 Chrome 路径"
     },
+    "showBrowser": "显示浏览器",
+    "showBrowserDesc": "执行浏览器任务时打开可见的浏览器窗口。",
     "errors": {
       "loadPath": "加载 Chrome 路径失败",
       "savePath": "保存 Chrome 路径失败",

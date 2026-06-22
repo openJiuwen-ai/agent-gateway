@@ -1634,7 +1634,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws,
                 req_id,
                 ok=True,
-                payload={"chrome_path": ""},
+                payload={"chrome_path": "", "headless": True},
             )
             return
 
@@ -1644,15 +1644,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         config = _resolve_env_vars(config_base)
         browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
         chrome_path = ""
+        headless = True
         if isinstance(browser_cfg, dict):
             value = browser_cfg.get("chrome_path", "")
             if isinstance(value, str):
                 chrome_path = value
+            raw_headless = browser_cfg.get("headless", True)
+            headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
-        await channel.send_response(ws, req_id, ok=True, payload={"chrome_path": chrome_path})
+        await channel.send_response(ws, req_id, ok=True, payload={"chrome_path": chrome_path, "headless": headless})
 
     async def _path_set(ws, req_id, params, session_id):
-        """更新 browser.chrome_path 并写回 config。"""
+        """更新 browser.chrome_path / browser.headless 并写回 config。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -1663,15 +1666,33 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         chrome_path = chrome_path.strip()
 
+        raw_headless = params.get("headless", True)
+        headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
+
         try:
-            update_browser_in_config({"chrome_path": chrome_path})
+            update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
             await _clear_agent_config_cache(_resolve(agent_client))
         except Exception as e:  # noqa: BLE001
             logger.warning("[path.set] 写回 config.yaml 失败: %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
             return
 
-        await channel.send_response(ws, req_id, ok=True, payload={"chrome_path": chrome_path})
+        # When switching to headless, purge any persisted headed-Chrome profile so the
+        # managed driver doesn't reuse an existing visible window on the next browser task.
+        if headless:
+            try:
+                from pathlib import Path as _Path
+                _profile_store = _Path(
+                    os.getenv("BROWSER_PROFILE_STORE_PATH", "").strip()
+                    or str(get_user_workspace_dir() / ".browser" / "profiles.json")
+                ).expanduser()
+                if _profile_store.exists():
+                    _profile_store.unlink()
+                    logger.info("[path.set] Cleared browser profile store for headless mode: %s", _profile_store)
+            except Exception as _e:
+                logger.debug("[path.set] Could not clear browser profile store: %s", _e)
+
+        await channel.send_response(ws, req_id, ok=True, payload={"chrome_path": chrome_path, "headless": headless})
 
     async def _memory_compute(ws, req_id, params, session_id):
 

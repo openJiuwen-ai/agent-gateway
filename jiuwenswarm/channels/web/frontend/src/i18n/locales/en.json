@@ -948,6 +948,8 @@
       "fillPath": "Enter a Chrome path first",
       "savePath": "Save the Chrome path first"
     },
+    "showBrowser": "Show Browser",
+    "showBrowserDesc": "Open a visible browser window when running browser tasks.",
     "errors": {
       "loadPath": "Failed to load Chrome path",
       "savePath": "Failed to save Chrome path",
