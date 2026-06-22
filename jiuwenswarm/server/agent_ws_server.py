@@ -2337,6 +2337,25 @@ class AgentWebSocketServer:
             dispatch_permissions_config_request
 
         resp = dispatch_permissions_config_request(request)
+
+        # After any successful mutation (delete / update / set / create),
+        # reload agent config so the PermissionInterruptRail picks up the
+        # change immediately instead of waiting for the next tool call's
+        # get_permissions_snapshot refresh.
+        read_only_methods = {
+            ReqMethod.PERMISSIONS_TOOLS_GET,
+            ReqMethod.PERMISSIONS_RULES_GET,
+            ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
+        }
+        if resp.ok and request.req_method not in read_only_methods:
+            try:
+                await self._agent_manager.reload_agents_config()
+            except Exception:
+                logger.debug(
+                    "[AgentWebSocketServer] post-permissions reload failed (non-critical)",
+                    exc_info=True,
+                )
+
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
