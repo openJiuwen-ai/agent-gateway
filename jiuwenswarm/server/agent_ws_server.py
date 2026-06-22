@@ -3446,15 +3446,32 @@ class AgentWebSocketServer:
                             logger.info("[command.mcp] add pre-check ok: %s", check_msg)
 
                 if not pre_check_failed:
+                    # 对于 update，先读旧配置，判断是否真有变化
+                    name = server_payload.get("name", "")
+                    old_item = get_mcp_server_config(name) if name else None
+
                     _, created = upsert_mcp_server_in_config(server_payload)
                     applied = True
                     error_message = ""
-                    try:
-                        await self._agent_manager.reload_agents_config(get_config(), None)
-                    except Exception as reload_exc:  # noqa: BLE001
-                        applied = False
-                        error_message = str(reload_exc)
-                        logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+
+                    # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
+                    # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
+                    config_changed = created
+                    if not created and old_item is not None:
+                        config_changed = (dict(old_item) != dict(server_payload))
+                        if not config_changed:
+                            logger.info(
+                                "[command.mcp] add/update skipped reload: '%s' config unchanged", name
+                            )
+
+                    if config_changed:
+                        try:
+                            await self._agent_manager.reload_agents_config(get_config(), None)
+                        except Exception as reload_exc:  # noqa: BLE001
+                            applied = False
+                            error_message = str(reload_exc)
+                            logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+
                     resp_payload: dict[str, Any] = {
                         "type": "added" if created else "updated",
                         "name": server_payload["name"],
@@ -3473,15 +3490,40 @@ class AgentWebSocketServer:
                 if not name:
                     raise ValueError("MCP server name is required")
                 enabled = action == "enable"
+
+                # 读取旧状态以判断 enabled 是否真的变化（容忍读取失败/不存在，
+                # 此时回退为"按变化处理"，由 set_mcp_server_enabled_in_config 自己
+                # 校验存在性并在缺失时抛 KeyError 交外层统一处理）。
+                old_enabled = None
+                try:
+                    old_item = get_mcp_server_config(name)
+                    if old_item is not None:
+                        old_enabled = bool(old_item.get("enabled", True))
+                except Exception:  # noqa: BLE001
+                    old_enabled = None
+
+                # set_mcp_server_enabled_in_config 在 server 不存在时抛 KeyError，
+                # 由外层统一返回 MCP_NOT_FOUND。
                 item = set_mcp_server_enabled_in_config(name, enabled)
+
+                # 只有 enabled 状态真的改变才需要 reload；无法判断旧状态时保守 reload。
+                config_changed = (old_enabled is None) or (old_enabled != enabled)
+                if not config_changed:
+                    logger.info(
+                        "[command.mcp] %s skipped reload: '%s' already %s",
+                        action, name, "enabled" if enabled else "disabled",
+                    )
+
                 applied = True
                 error_message = ""
-                try:
-                    await self._agent_manager.reload_agents_config(get_config(), None)
-                except Exception as reload_exc:  # noqa: BLE001
-                    applied = False
-                    error_message = str(reload_exc)
-                    logger.warning("[command.mcp] reload after %s failed: %s", action, reload_exc)
+                if config_changed:
+                    try:
+                        await self._agent_manager.reload_agents_config(get_config(), None)
+                    except Exception as reload_exc:  # noqa: BLE001
+                        applied = False
+                        error_message = str(reload_exc)
+                        logger.warning("[command.mcp] reload after %s failed: %s", action, reload_exc)
+
                 payload = {
                     "type": "enabled" if enabled else "disabled",
                     "name": name,
@@ -3500,6 +3542,8 @@ class AgentWebSocketServer:
                 name = str(params.get("name", "")).strip()
                 if not name:
                     raise ValueError("MCP server name is required")
+                # remove_mcp_server_in_config 在 server 不存在时抛 KeyError，
+                # 由外层统一返回 MCP_NOT_FOUND，且不会触发 reload（删除不存在 = 无变化）。
                 removed = remove_mcp_server_in_config(name)
                 applied = True
                 error_message = ""
