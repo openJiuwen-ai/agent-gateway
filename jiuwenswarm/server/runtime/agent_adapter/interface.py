@@ -1581,6 +1581,42 @@ class JiuWenSwarm:
         stream_done = asyncio.Event()
         final_answer_content = ""
         final_answer_chunks: list[str] = []
+        durable_pending_final_chunks: list[str] = []
+        durable_pending_reasoning_chunks: list[str] = []
+        durable_final_content = ""
+
+        def _consume_durable_reasoning_content() -> str:
+            nonlocal durable_pending_reasoning_chunks
+            reasoning_text = "".join(durable_pending_reasoning_chunks)
+            durable_pending_reasoning_chunks = []
+            return reasoning_text if reasoning_text.strip() else ""
+
+        def _attach_reasoning_content(extra_fields: dict[str, Any] | None = None) -> dict[str, Any] | None:
+            reasoning_text = _consume_durable_reasoning_content()
+            if not reasoning_text:
+                return extra_fields
+            merged = dict(extra_fields) if isinstance(extra_fields, dict) else {}
+            merged["reasoning_content"] = reasoning_text
+            return merged
+
+        def _persist_pending_final_text() -> None:
+            nonlocal durable_pending_final_chunks, durable_final_content
+            pending_text = "".join(durable_pending_final_chunks)
+            durable_pending_final_chunks = []
+            if not pending_text or pending_text == durable_final_content:
+                return
+            append_history_record(
+                session_id=session_id,
+                request_id=rid,
+                channel_id=cid,
+                role="assistant",
+                event_type="chat.final",
+                content=pending_text,
+                timestamp=time.time(),
+                extra=_attach_reasoning_content(),
+                mode=request.params.get("mode", "unknown"),
+            )
+            durable_final_content = pending_text
 
         async def run_stream_task():
             try:
@@ -1672,14 +1708,25 @@ class JiuWenSwarm:
                                 )
 
                             payload_content = str(data.payload.get("content", ""))
-                            if et == "chat.delta" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
-                                suppress_a2ui_stream = True
+                            if et == "chat.delta":
                                 final_answer_chunks.append(payload_content)
-                                continue
-                            if et == "chat.final" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
-                                suppress_a2ui_stream = True
-                                final_answer_content = payload_content
-                                continue
+                                if suppress_a2ui_stream or _contains_a2ui_marker(payload_content):
+                                    suppress_a2ui_stream = True
+                                    continue
+                                durable_pending_final_chunks.append(payload_content)
+                                should_record = False
+                            elif et == "chat.reasoning":
+                                durable_pending_reasoning_chunks.append(payload_content)
+                                should_record = False
+                            elif et == "chat.tool_call":
+                                _persist_pending_final_text()
+                            elif et == "chat.final":
+                                if suppress_a2ui_stream or _contains_a2ui_marker(payload_content):
+                                    suppress_a2ui_stream = True
+                                    final_answer_content = payload_content
+                                    durable_pending_final_chunks = []
+                                    continue
+                                durable_pending_final_chunks = []
 
                             if should_record:
                                 payload_dict = dict(data.payload)
@@ -1691,6 +1738,8 @@ class JiuWenSwarm:
                                         for k, v in event_data.items():
                                             if k not in ("type", "timestamp", "content"):
                                                 extra_fields[k] = v
+                                if et in {"chat.final", "chat.tool_call"}:
+                                    extra_fields = _attach_reasoning_content(extra_fields)
                                 append_history_record(
                                     session_id=session_id,
                                     request_id=rid,
@@ -1702,10 +1751,10 @@ class JiuWenSwarm:
                                     extra=extra_fields if extra_fields else None,
                                     mode=request.params.get("mode", "unknown"),
                                 )
+                                if et == "chat.final":
+                                    durable_final_content = str(data.payload.get("content", ""))
                             if et == "chat.final":
                                 final_answer_content = str(data.payload.get("content", ""))
-                            elif et == "chat.delta":
-                                final_answer_chunks.append(str(data.payload.get("content", "")))
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
@@ -1722,14 +1771,25 @@ class JiuWenSwarm:
                             )
 
                         payload_content = str(data.get("content", ""))
-                        if et == "chat.delta" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
-                            suppress_a2ui_stream = True
+                        if et == "chat.delta":
                             final_answer_chunks.append(payload_content)
-                            continue
-                        if et == "chat.final" and (suppress_a2ui_stream or _contains_a2ui_marker(payload_content)):
-                            suppress_a2ui_stream = True
-                            final_answer_content = payload_content
-                            continue
+                            if suppress_a2ui_stream or _contains_a2ui_marker(payload_content):
+                                suppress_a2ui_stream = True
+                                continue
+                            durable_pending_final_chunks.append(payload_content)
+                            should_record = False
+                        elif et == "chat.reasoning":
+                            durable_pending_reasoning_chunks.append(payload_content)
+                            should_record = False
+                        elif et == "chat.tool_call":
+                            _persist_pending_final_text()
+                        elif et == "chat.final":
+                            if suppress_a2ui_stream or _contains_a2ui_marker(payload_content):
+                                suppress_a2ui_stream = True
+                                final_answer_content = payload_content
+                                durable_pending_final_chunks = []
+                                continue
+                            durable_pending_final_chunks = []
 
                         if should_record:
                             extra_fields = {k: v for k, v in data.items() if k not in ("event_type", "content")}
@@ -1739,6 +1799,8 @@ class JiuWenSwarm:
                                     for k, v in event_data.items():
                                         if k not in ("type", "timestamp", "content"):
                                             extra_fields[k] = v
+                            if et in {"chat.final", "chat.tool_call"}:
+                                extra_fields = _attach_reasoning_content(extra_fields)
                             append_history_record(
                                 session_id=session_id,
                                 request_id=rid,
@@ -1750,10 +1812,10 @@ class JiuWenSwarm:
                                 extra=extra_fields if extra_fields else None,
                                 mode=request.params.get("mode", "unknown"),
                             )
+                            if et == "chat.final":
+                                durable_final_content = str(data.get("content", ""))
                         if et == "chat.final":
                             final_answer_content = str(data.get("content", ""))
-                        elif et == "chat.delta":
-                            final_answer_chunks.append(str(data.get("content", "")))
                         yield AgentResponseChunk(
                             request_id=rid,
                             channel_id=cid,
@@ -1790,6 +1852,7 @@ class JiuWenSwarm:
                 event_type="chat.final",
                 content=finalized_assistant_message,
                 timestamp=time.time(),
+                extra=_attach_reasoning_content(),
                 mode=request.params.get("mode", "unknown"),
             )
             final_answer_content = finalized_assistant_message

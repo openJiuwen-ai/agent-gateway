@@ -39,7 +39,12 @@ from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist imp
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
-from jiuwenswarm.server.runtime.session.session_history import append_compact_history_records, read_team_history_records
+from jiuwenswarm.server.runtime.session.session_history import (
+    append_compact_history_records,
+    history_exists,
+    load_history_records,
+    read_team_history_records,
+)
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     find_auto_managed_match,
@@ -2597,6 +2602,7 @@ class AgentWebSocketServer:
                     payload={
                         "event_type": "history.message",
                         "message": item,
+                        "session_id": str(session_id or ""),
                         "total_pages": total_pages,
                         "page_idx": page,
                     },
@@ -2616,6 +2622,7 @@ class AgentWebSocketServer:
             payload={
                 "event_type": "history.message",
                 "status": "done",
+                "session_id": str(session_id or ""),
                 "total_pages": total_pages,
                 "page_idx": page,
             },
@@ -5244,11 +5251,11 @@ class AgentWebSocketServer:
         if not isinstance(page_idx, int) or page_idx <= 0:
             return None
 
-        history_path: Path = get_agent_sessions_dir() / session_id.strip() / "history.json"
-        if not history_path.exists():
+        normalized_session_id = session_id.strip()
+        if not history_exists(normalized_session_id):
             return None
         try:
-            raw = json.loads(history_path.read_text(encoding="utf-8"))
+            raw = load_history_records(normalized_session_id)
         except Exception:
             return None
         if not isinstance(raw, list):
@@ -5270,7 +5277,7 @@ class AgentWebSocketServer:
         page_messages = ordered[start:end]
         logger.debug(
             "[history.get] session_id=%s page_idx=%s raw_total=%s restorable_total=%s total_pages=%s returned=%s",
-            session_id.strip(),
+            normalized_session_id,
             page_idx,
             len(raw),
             total,

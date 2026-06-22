@@ -143,7 +143,7 @@ from jiuwenswarm.agents.harness.common.memory.config import (
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
-from jiuwenswarm.server.runtime.session.session_history import append_history_record
+from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
 from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
@@ -6721,7 +6721,7 @@ class JiuWenSwarmDeepAdapter:
         """从当前 agent 对话上下文中提取最近N条消息。
 
         当 context_engine 中没有该 session 的上下文时（例如 /resume 之后），
-        回退到从磁盘读取 history.json。
+        回退到从磁盘读取兼容格式的 history 文件。
         """
         # --- 快速路径：context_engine 已加载 ---
         if self._instance is not None and self._instance.react_agent is not None:
@@ -6735,17 +6735,13 @@ class JiuWenSwarmDeepAdapter:
                 except Exception as exc:
                     logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages from context_engine failed: %s", exc)
 
-        # --- 回退路径：从磁盘读取 history.json ---
+        # --- 回退路径：从磁盘读取兼容格式 history ---
         # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，
         # 但磁盘上已有该 session 的历史消息。
         try:
             from types import SimpleNamespace
 
-            from jiuwenswarm.common.utils import get_agent_sessions_dir
-            from jiuwenswarm.server.runtime.session.session_history import _read_history
-
-            history_path = get_agent_sessions_dir() / session_id / "history.json"
-            records = _read_history(history_path)
+            records = load_history_records(session_id)
             if not records:
                 logger.debug(
                     "[JiuWenSwarmDeepAdapter] _get_recent_messages: no history records on disk for session %s",
