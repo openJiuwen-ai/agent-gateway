@@ -18,7 +18,8 @@ from pydantic import ValidationError
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox import __version__
 from jiuwenbox.server.audit_logger import AuditLogger
-from jiuwenbox.models.sandbox import InvalidSandboxIdError
+from jiuwenbox.models.sandbox import InvalidJobIdError, InvalidSandboxIdError
+from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError
 from jiuwenbox.server.sandbox_manager import (
     SandboxConflictError,
     SandboxManager,
@@ -412,6 +413,17 @@ def create_app() -> FastAPI:
     @application.exception_handler(InvalidSandboxIdError)
     async def invalid_sandbox_id_handler(request: Request, exc: InvalidSandboxIdError):
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    @application.exception_handler(InvalidJobIdError)
+    async def invalid_job_id_handler(request: Request, exc: InvalidJobIdError):
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    @application.exception_handler(BackgroundJobNotFoundError)
+    async def background_job_not_found_handler(
+        request: Request,
+        exc: BackgroundJobNotFoundError,
+    ):
+        return JSONResponse(status_code=404, content={"error": str(exc)})
 
     @application.exception_handler(PolicyValidationError)
     async def policy_validation_error_handler(request: Request, exc: PolicyValidationError):

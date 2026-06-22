@@ -249,7 +249,7 @@ present:
 # CLI flag (recommended)
 sudo ./run_docker.sh --save-logs /tmp/jiuwenbox-logs
 
-# Equivalent env-var form (kept for backward compatibility)
+# Equivalent env-var form
 sudo env JIUWENBOX_SAVE_LOGS_HOST_DIR=/tmp/jiuwenbox-logs ./run_docker.sh
 
 ls /tmp/jiuwenbox-logs
@@ -865,11 +865,15 @@ you can also run it as `python -m jiuwenbox.cli.jiuwenbox`.
 jiuwenbox health
 
 # Sandbox lifecycle
-ID=$(jiuwenbox sandbox create --output plain)
+ID=$(jiuwenbox sandbox create | jq -r .id)
 jiuwenbox sandbox exec "$ID" -- python3 -c 'print("hi")'
+JOB=$(jiuwenbox sandbox bg-exec "$ID" --job-id http-srv -- python3 -m http.server 18080 | jq -r .job_id)
+jiuwenbox sandbox bg-get "$ID" "$JOB"
+jiuwenbox sandbox bg-list "$ID"
+jiuwenbox sandbox bg-kill "$ID" "$JOB"
 jiuwenbox sandbox upload "$ID" ./data.csv /tmp/data.csv
 jiuwenbox sandbox download "$ID" /tmp/result.json - | jq .
-jiuwenbox sandbox ls --output table
+jiuwenbox sandbox ls
 jiuwenbox sandbox rm "$ID" --yes
 
 # Policy
@@ -886,14 +890,14 @@ Global flags:
 | --- | --- | --- | --- |
 | `--base-url` | `http://127.0.0.1:8321` | `JIUWENBOX_URL` | Server endpoint. Accepts `http://host:port` or `unix:///abs/socket/path` |
 | `--timeout` | `30` | `JIUWENBOX_TIMEOUT` | HTTP timeout seconds |
-| `--output / -o` | `json` | – | `json` \| `table` \| `plain` |
 | `--verbose / -v` | off | – | Debug logging on stderr |
 | `--no-color` | off | `NO_COLOR` | Disable ANSI colors on stderr |
 
 Exit codes: `0` success / sandbox exec returned 0, `1` HTTP 4xx/5xx, `2`
-connection failure, `3` local argument or file error, `130` Ctrl+C; the
+connection failure, `3` local argument or file error, or `sandbox bg-get` /
+`sandbox bg-kill` when the job is missing (404), `130` Ctrl+C; the
 `sandbox exec` subcommand transparently propagates the in-sandbox process
-exit code.
+exit code; `sandbox bg-exec` returns `3` when `started=false`.
 
 ## License
 

@@ -227,7 +227,7 @@ Docker 部署：传 `--save-logs DIR`（或设环境变量
 # CLI 参数（推荐）
 sudo ./run_docker.sh --save-logs /tmp/jiuwenbox-logs
 
-# 等价的环境变量写法（保留以兼容老脚本）
+# 等价的环境变量写法
 sudo env JIUWENBOX_SAVE_LOGS_HOST_DIR=/tmp/jiuwenbox-logs ./run_docker.sh
 
 ls /tmp/jiuwenbox-logs
@@ -824,11 +824,15 @@ export JIUWENBOX_TEST_LLM_MODEL="YOUR_MODEL"
 jiuwenbox health
 
 # 沙箱生命周期
-ID=$(jiuwenbox sandbox create --output plain)
+ID=$(jiuwenbox sandbox create | jq -r .id)
 jiuwenbox sandbox exec "$ID" -- python3 -c 'print("hi")'
+JOB=$(jiuwenbox sandbox bg-exec "$ID" --job-id http-srv -- python3 -m http.server 18080 | jq -r .job_id)
+jiuwenbox sandbox bg-get "$ID" "$JOB"
+jiuwenbox sandbox bg-list "$ID"
+jiuwenbox sandbox bg-kill "$ID" "$JOB"
 jiuwenbox sandbox upload "$ID" ./data.csv /tmp/data.csv
 jiuwenbox sandbox download "$ID" /tmp/result.json - | jq .
-jiuwenbox sandbox ls --output table
+jiuwenbox sandbox ls
 jiuwenbox sandbox rm "$ID" --yes
 
 # 沙箱策略
@@ -845,13 +849,13 @@ jiuwenbox proxy logs openai --lines 50
 | --- | --- | --- | --- |
 | `--base-url` | `http://127.0.0.1:8321` | `JIUWENBOX_URL` | jiuwenbox 服务地址。接受 `http://host:port` 或 `unix:///abs/socket/path` |
 | `--timeout` | `30` | `JIUWENBOX_TIMEOUT` | HTTP 超时秒数 |
-| `--output / -o` | `json` | – | `json` \| `table` \| `plain` |
 | `--verbose / -v` | 关闭 | – | stderr 打印 debug 日志 |
 | `--no-color` | 关闭 | `NO_COLOR` | 关闭 stderr ANSI 颜色 |
 
 退出码：`0` 成功 / `sandbox exec` 沙箱内退出码为 0；`1` HTTP 4xx/5xx；`2`
-连接失败；`3` 本地参数 / 文件错误；`130` Ctrl+C。`sandbox exec` 子命令
-会透传沙箱内进程的退出码。
+连接失败；`3` 本地参数 / 文件错误，或 `sandbox bg-get` / `sandbox bg-kill`
+遇到 job 不存在（404）；`130` Ctrl+C。`sandbox exec` 子命令
+会透传沙箱内进程的退出码；`sandbox bg-exec` 在 `started=false` 时返回 `3`。
 
 ## License
 
