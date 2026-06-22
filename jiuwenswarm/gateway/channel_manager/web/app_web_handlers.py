@@ -2338,6 +2338,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         jobs = await cc.list_jobs()
         await channel.send_response(ws, req_id, ok=True, payload={"jobs": jobs})
 
+    async def _cron_job_meta(ws, req_id, params, session_id):
+        cc = _get_cron()
+        if cc is None:
+            await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload=cc.job_metadata())
+
     async def _cron_job_get(ws, req_id, params, session_id):
         cc = _get_cron()
         if cc is None:
@@ -2365,6 +2372,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         try:
+            if session_id:
+                params["session_id"] = session_id
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except Exception as e:  # noqa: BLE001
@@ -2544,6 +2553,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("channel.wechat.get_login_ui", _channel_wechat_get_login_ui)
     channel.register_method("channel.wechat.unbind", _channel_wechat_unbind)
     channel.register_method("cron.job.list", _cron_job_list)
+    channel.register_method("cron.job.meta", _cron_job_meta)
     channel.register_method("cron.job.get", _cron_job_get)
     channel.register_method("cron.job.create", _cron_job_create)
     channel.register_method("cron.job.update", _cron_job_update)

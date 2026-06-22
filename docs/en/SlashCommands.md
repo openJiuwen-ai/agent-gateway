@@ -380,18 +380,20 @@ Manage cron jobs via RPC calls to the backend `CronController`, sharing the same
 | `description` | Yes | Job description — the input prompt the Agent receives when executing |
 | `targets` | No | Push channel, default `tui`; options: `tui`, `web`, `feishu`, `whatsapp`, `wecom`, `xiaoyi`, `wechat`, `dingtalk`, or `feishu_enterprise:<app_id>`. With `targets=tui`, results broadcast to all connected TUI windows; see [Scheduled tasks — Push to TUI](ScheduledTasks.md#5-push-to-the-tui-channel) |
 | `timezone` | No | IANA timezone, default `Asia/Shanghai` |
-| `mode` | No | Execution mode: `agent` (default, suitable for simple reminder-type tasks) or `plan` (for more complex reasoning tasks, allowing the Agent to plan the steps first before executing) |
+| `mode` | No | Execution mode, default `agent.fast`. Options: `agent`, `agent.fast`, `agent.plan`, `plan`, `team`, `team.plan`, `code.team`. Team modes use streaming multi-agent execution; see [Scheduled tasks — Team mode](ScheduledTasks.md#6-team-mode-and-swarmflow-multi-agent-scheduled-jobs) |
+| `timeout_seconds` | No | Per-run timeout in seconds (60–259200). Default 600 for normal modes, 1200 for team modes |
 | `wake_offset_seconds` | No | Wake-up offset in seconds, default 300 |
 | `delete_after_run` | No | Auto-delete after one run, default false |
 
 - `add` examples:
   - `/cron add name=minute-test cron_expr="0 * * * *" description="Tell me the current time" targets=tui`
-  - `/cron add name=morning-brief cron_expr="0 9 * * *" description="Generate today's morning briefing" targets=tui mode=plan`
+  - `/cron add name=morning-brief cron_expr="0 9 * * *" description="Generate today's morning briefing" targets=tui mode=agent.plan`
+  - `/cron add name=model-weekly cron_expr="0 9 * * 1" description="Compare GLM vs DeepSeek and output a report" targets=tui mode=team`
   - `/cron add name=reminder cron_expr="0 30 17 29 4 ? 2026" description="Don't forget the meeting" targets=tui delete_after_run=true`
   - `/cron add name=weekly-report cron_expr="0 9 * * 1" description="Generate weekly report" targets=web`
 
 - `update` usage: Only pass the fields you want to change, e.g., `/cron update <id> name=new-name enabled=false`
-- `show` display: full job details in key-value format (id, name, status, cron_expr, timezone, description, targets, mode, wake_offset_seconds, delete_after_run)
+- `show` display: full job details in key-value format (id, name, status, cron_expr, timezone, description, targets, mode, timeout_seconds, wake_offset_seconds, delete_after_run)
 - `list` display: sequence number, full job ID, name, cron expression, enabled status, description snippet
 - `preview` display: wake_at and push_at timestamps for each upcoming execution
 

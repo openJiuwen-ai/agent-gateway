@@ -404,18 +404,20 @@
 | `description` | 是 | 任务描述，即 Agent 执行时收到的输入指令 |
 | `targets` | 否 | 推送渠道，默认 `tui`；可选：`tui`、`web`、`feishu`、`whatsapp`、`wecom`、`xiaoyi`、`wechat`、`dingtalk` 或 `feishu_enterprise:<app_id>`。`targets=tui` 时结果会广播到所有已连接的 TUI 窗口，详见 [定时任务 — 推送到 TUI](定时任务.md#5-推送到-tui-频道) |
 | `timezone` | 否 | IANA 时区，默认 `Asia/Shanghai` |
-| `mode` | 否 | 执行模式：`agent`（默认，适用于简单提醒类任务）或 `plan`（较复杂的推理任务，让Agent先规划步骤再执行） |
+| `mode` | 否 | 执行模式，默认 `agent.fast`。可选：`agent`、`agent.fast`、`agent.plan`、`plan`、`team`、`team.plan`、`code.team`。`team` 系列走多 Agent 流式执行，详见 [定时任务 — Team 模式](定时任务.md#6-team-模式与-swarmflow多智能体定时任务) |
+| `timeout_seconds` | 否 | 单次执行超时（秒），范围 60～259200。未设置时普通模式默认 600，Team 模式默认 1200 |
 | `wake_offset_seconds` | 否 | 提前唤醒秒数，默认 300 |
 | `delete_after_run` | 否 | 执行一次后自动删除，默认 false |
 
 - `add` 示例：
   - `/cron add name=每分钟测试 cron_expr="0 * * * *" description="告诉我现在几点了" targets=tui`
-  - `/cron add name=晨报 cron_expr="0 9 * * *" description="生成今日晨报摘要" targets=tui mode=plan`
+  - `/cron add name=晨报 cron_expr="0 9 * * *" description="生成今日晨报摘要" targets=tui mode=agent.plan`
+  - `/cron add name=模型周报 cron_expr="0 9 * * 1" description="对比 GLM 与 DeepSeek 并输出报告" targets=tui mode=team`
   - `/cron add name=提醒 cron_expr="0 30 17 29 4 ? 2026" description="别忘了开会" targets=tui delete_after_run=true`
   - `/cron add name=每周一报 cron_expr="0 9 * * 1" description="生成本周周报" targets=web`
 
 - `update` 用法：只需传入要修改的字段，如 `/cron update <id> name=新名称 enabled=false`
-- `show` 显示内容：以 key-value 格式展示任务全部字段（id、name、status、cron_expr、timezone、description、targets、mode、wake_offset_seconds、delete_after_run）
+- `show` 显示内容：以 key-value 格式展示任务全部字段（id、name、status、cron_expr、timezone、description、targets、mode、timeout_seconds、wake_offset_seconds、delete_after_run）
 - `list` 显示内容：序号、完整 job ID、名称、cron 表达式、启用状态、描述摘要
 - `preview` 显示内容：每次执行计划的唤醒时间和推送时间
 
