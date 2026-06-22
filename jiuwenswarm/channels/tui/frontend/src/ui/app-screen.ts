@@ -88,7 +88,7 @@ import {
   orderedMemberIds,
   teamWorkingStartedAtMs,
 } from "./components/team-shared.js";
-import { padToWidth, renderWrappedText } from "./rendering/text.js";
+import { padToWidth, prefixedLines, renderStyledMarkdownLines, renderWrappedText } from "./rendering/text.js";
 import { chalk, editorTheme, palette, selectListTheme, setCurrentThemeName } from "./theme.js";
 import type { Hunk, GitDiffData, TurnDiff } from "../core/types.js";
 
@@ -186,14 +186,16 @@ type ResumeSessionListState = {
   previewMessages: PreviewMessage[];
   /** 预览消息是否仍在请求中（用于区分"加载中"与"已加载但为空"） */
   previewLoading: boolean;
+  /** 预览消息滚动偏移（行数），正数表示向上滚动查看更早内容 */
+  previewScrollOffset: number;
   /** 非空时进入重命名态（Ctrl+R 触发，对齐 Claude Code Ctrl+R）：编辑选中会话标题 */
   rename: { sessionId: string; value: string } | null;
 };
 
-/** 预览消息摘要 */
+/** 预览消息（完整对话内容，对齐 Claude Code session preview） */
 type PreviewMessage = {
   role: string;
-  summary: string;
+  content: string;
   event_type: string;
 };
 
@@ -1944,10 +1946,32 @@ export class AppScreen implements Component, Focusable {
       // 只读预览态：Enter 恢复该会话，Space/Esc 返回列表，其余按键忽略
       if (this.resumeSessionList.preview !== null) {
         if (matchesKey(data, "return")) {
+          this.setMouseTrackingEnabled(false);
           void this.handleResumeSessionSelection(this.resumeSessionList.preview.session_id);
         } else if (matchesKey(data, "space") || matchesKey(data, "escape")) {
           this.resumeSessionList = { ...this.resumeSessionList, preview: null, previewMessages: [], previewLoading: false };
+          this.setMouseTrackingEnabled(false);
           this.tui.requestRender();
+        } else {
+          // Handle scroll in preview
+          const wheelOffset = getSgrMouseWheelOffset(data, this.resumeSessionList.previewScrollOffset);
+          if (wheelOffset !== null) {
+            this.resumeSessionList = { ...this.resumeSessionList, previewScrollOffset: Math.max(0, wheelOffset) };
+            this.tui.requestRender();
+            return;
+          }
+          const pageSize = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
+          const scrollAction = resolveAction("Scroll", data);
+          if (scrollAction === "scroll:pageUp" || matchesKey(data, "pageUp")) {
+            this.resumeSessionList = { ...this.resumeSessionList, previewScrollOffset: this.resumeSessionList.previewScrollOffset + pageSize };
+            this.tui.requestRender();
+            return;
+          }
+          if (scrollAction === "scroll:pageDown" || matchesKey(data, "pageDown")) {
+            this.resumeSessionList = { ...this.resumeSessionList, previewScrollOffset: Math.max(0, this.resumeSessionList.previewScrollOffset - pageSize) };
+            this.tui.requestRender();
+            return;
+          }
         }
         return;
       }
@@ -2832,6 +2856,7 @@ export class AppScreen implements Component, Focusable {
         preview: null,
         previewMessages: [],
         previewLoading: false,
+        previewScrollOffset: 0,
         rename: null,
       };
       this.tui.requestRender();
@@ -2871,6 +2896,7 @@ export class AppScreen implements Component, Focusable {
         preview: null,
         previewMessages: [],
         previewLoading: false,
+        previewScrollOffset: 0,
         rename: null,
       };
       this.tui.requestRender();
@@ -3011,13 +3037,15 @@ export class AppScreen implements Component, Focusable {
       preview: session,
       previewMessages: [],
       previewLoading: true,
+      previewScrollOffset: 0,
     };
+    this.setMouseTrackingEnabled(true);
     this.tui.requestRender();
     // 异步获取预览消息
     try {
       const resp = await this.state.request<{ session_id: string; preview_messages: PreviewMessage[] }>(
         "session.preview",
-        { session_id: session.session_id, count: 2 },
+        { session_id: session.session_id, count: 30 },
       );
       if (this.resumeSessionList && this.resumeSessionList.preview?.session_id === session.session_id) {
         this.resumeSessionList = {
@@ -3117,44 +3145,57 @@ export class AppScreen implements Component, Focusable {
     const title = session.title?.trim() || "(untitled)";
     const project = session.project_dir?.trim() || "-";
 
-    // 构建预览消息行：每条对话按宽度换行展示，内容超长时优先保留后半部分（末尾若干行）
-    const MAX_LINES_PER_MSG = 5;
-    const indent = "  ";
-    const contentWidth = Math.max(1, width - indent.length);
+    // Build preview message lines: full transcript style, matching Claude Code SessionPreview
     const messageLines: string[] = [];
     if (previewMessages.length > 0) {
       previewMessages.forEach((msg, msgIdx) => {
         const isUser = msg.role === "user";
-        const roleLabel = isUser ? "You:" : "Assistant:";
-        const roleColor = isUser ? palette.text.accent : palette.text.primary;
-        messageLines.push(padToWidth(roleColor(roleLabel), width));
-        // 按宽度换行，内容过长时只保留末尾 MAX_LINES_PER_MSG 行（展示对话后半部分）
-        const wrapped = renderWrappedText(contentWidth, msg.summary.trim());
-        let shown = wrapped;
-        let headTruncated = false;
-        if (wrapped.length > MAX_LINES_PER_MSG) {
-          shown = wrapped.slice(wrapped.length - MAX_LINES_PER_MSG);
-          headTruncated = true;
+        if (isUser) {
+          const lines = renderStyledMarkdownLines(
+            Math.max(1, width - 2),
+            msg.content,
+            { color: palette.text.dim },
+            0,
+            0,
+          );
+          messageLines.push(...prefixedLines(lines, width, "> ", palette.text.user, "  "));
+        } else {
+          const lines = renderStyledMarkdownLines(
+            width,
+            msg.content,
+            { color: palette.text.assistant },
+            0,
+            0,
+          );
+          messageLines.push(...lines);
         }
-        if (headTruncated) {
-          // 用纯 ASCII 省略号另起一行标记“上文已截断”，避免 U+2026 在部分终端按 2 列
-          // 渲染、而 visibleWidth 按 1 列计算导致该行超宽
-          messageLines.push(padToWidth(palette.text.dim(`${indent}...`), width));
-        }
-        shown.forEach((line) => {
-          messageLines.push(padToWidth(palette.text.dim(`${indent}${line}`), width));
-        });
-        // 消息之间留空行分隔（最后一条不加）
         if (msgIdx < previewMessages.length - 1) {
           messageLines.push("");
         }
       });
     } else if (this.resumeSessionList?.previewLoading) {
-      // 请求进行中：显示加载提示
-      messageLines.push(padToWidth(palette.text.dim("Loading recent messages..."), width));
+      messageLines.push(padToWidth(palette.text.dim("Loading session\u2026"), width));
     } else {
-      // 请求已完成但无可展示对话（如全部为 tool_call/tool_result，被后端过滤）
       messageLines.push(padToWidth(palette.text.dim("No conversation to preview"), width));
+    }
+
+    // Clip message lines to fit terminal height with scroll offset.
+    // Overhead: 7 header lines + 2 footer lines in this method,
+    // plus ~4 lines for status bar / welcome / transcript in the screen layout.
+    const overhead = 13;
+    const availableHeight = Math.max(3, this.tui.terminal.rows - overhead);
+    let visibleMessages = messageLines;
+    let scrollHint = "";
+    if (messageLines.length > availableHeight) {
+      const maxOffset = messageLines.length - availableHeight;
+      // previewScrollOffset can temporarily exceed maxOffset (pageUp past bounds);
+      // Math.min clamps it here so display is always correct.
+      const offset = Math.min(maxOffset, this.resumeSessionList?.previewScrollOffset ?? 0);
+      // start from the end of the conversation, moving backwards as offset increases
+      const start = messageLines.length - availableHeight - offset;
+      visibleMessages = messageLines.slice(start, start + availableHeight);
+      const pct = Math.round((offset / maxOffset) * 100);
+      scrollHint = `  \u2195 scroll (${pct}%)`;
     }
 
     return [
@@ -3165,9 +3206,9 @@ export class AppScreen implements Component, Focusable {
       "",
       padToWidth(palette.text.dim("Recent conversation"), width),
       "",
-      ...messageLines,
+      ...visibleMessages,
       "",
-      padToWidth(palette.text.dim("Enter resume · Space/Esc back"), width),
+      padToWidth(palette.text.dim(`Enter resume · Space/Esc back${scrollHint}`), width),
     ];
   }
 
@@ -3206,16 +3247,16 @@ export class AppScreen implements Component, Focusable {
     const showAll = this.resumeSessionList.showAllProjects;
     const branchOn = this.resumeSessionList.branchFilterEnabled;
     const scopeLabel = showAll ? "all projects" : "current dir";
-    const projectHint = showAll ? "Ctrl+A current dir" : "Ctrl+A all projects";
+    const projectHint = showAll ? "Ctrl+A to show current dir" : "Ctrl+A to show all projects";
     const branchHint = branchOn
-      ? `Ctrl+B all branches`
-      : `Ctrl+B branch:${this.resumeSessionList.currentBranch}`;
+      ? `Ctrl+B to show all branches`
+      : `Ctrl+B to filter by branch`;
     const toggleHint = `${projectHint} · ${branchHint}`;
     const scopeSuffix = branchOn ? ` · branch:${this.resumeSessionList.currentBranch}` : "";
     const searchBox = this.resumeSessionList.searchQuery
       ? padToWidth(palette.text.primary(`Search: ${this.resumeSessionList.searchQuery}${END_CURSOR}`), width)
       : padToWidth(
-          palette.text.dim(`Type to search · ↑/↓ choose · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc cancel`),
+          palette.text.dim(`Type to search · ↑/↓ to choose · Enter to resume · Space to preview · Ctrl+R to rename · ${toggleHint} · Esc to cancel`),
           width,
         );
     const st = this.resumeSessionList;
@@ -3246,8 +3287,8 @@ export class AppScreen implements Component, Focusable {
       padToWidth(
         palette.text.dim(
           this.resumeSessionList.searchQuery
-            ? `Backspace delete · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc clear`
-            : `↑/↓ choose · Enter resume · Space preview · Ctrl+R rename · ${toggleHint} · Esc cancel`
+            ? `Backspace to delete · Enter to resume · Space to preview · Ctrl+R to rename · ${toggleHint} · Esc to clear`
+            : `↑/↓ to choose · Enter to resume · Space to preview · Ctrl+R to rename · ${toggleHint} · Esc to cancel`
         ),
         width,
       ),
