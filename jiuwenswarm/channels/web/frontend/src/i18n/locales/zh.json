@@ -680,6 +680,7 @@
       "teamLifecycle": "生命周期",
       "teamTeammateMode": "成员模式",
       "teamSpawnMode": "启动模式",
+      "teamEnablePermissions": "安全护栏",
       "teamLeaderMemberName": "成员名称",
       "teamLeaderDisplayName": "显示名称",
       "teamLeaderPersona": "人设",

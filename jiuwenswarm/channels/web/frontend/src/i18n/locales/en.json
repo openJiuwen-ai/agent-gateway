@@ -681,6 +681,7 @@
       "teamLifecycle": "Lifecycle",
       "teamTeammateMode": "Teammate Mode",
       "teamSpawnMode": "Spawn Mode",
+      "teamEnablePermissions": "Safety Guardrail",
       "teamLeaderMemberName": "Member Name",
       "teamLeaderDisplayName": "Display Name",
       "teamLeaderPersona": "Persona",

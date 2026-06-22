@@ -619,6 +619,9 @@ def _flatten_modes_team_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
         flat[f"{team_prefix}lifecycle"] = str(team_spec.get("lifecycle") or "")
         flat[f"{team_prefix}teammate_mode"] = str(team_spec.get("teammate_mode") or "")
         flat[f"{team_prefix}spawn_mode"] = str(team_spec.get("spawn_mode") or "")
+        flat[f"{team_prefix}enable_permissions"] = (
+            "true" if bool(team_spec.get("enable_permissions", False)) else "false"
+        )
 
         agents = team_spec.get("agents")
         if not isinstance(agents, dict):
