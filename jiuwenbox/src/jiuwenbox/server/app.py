@@ -302,9 +302,22 @@ async def lifespan(_application: FastAPI):
     # 经 bind 并 listen 完成, socket inode 必然存在; 改 mode 不会和首个请求
     # 抢时序。
     _chmod_uds_socket_if_any()
+
+    from jiuwenbox.server.routes.mcp import mcp_server
+    _mcp_session_cm = mcp_server.session_manager.run()
+    await _mcp_session_cm.__aenter__()
+    logger.info("MCP session manager started")
+
     try:
         yield
     finally:
+        # Stop accepting MCP requests before tearing down managed resources.
+        try:
+            await _mcp_session_cm.__aexit__(None, None, None)
+            logger.info("MCP session manager stopped")
+        except Exception:
+            logger.exception("MCP session manager shutdown failed")
+
         # Stop proxies first so any in-flight clients are torn down before we
         # wipe sandbox descriptors. All steps below are best-effort: a failure
         # here cannot abort uvicorn's shutdown sequence so we just log and
@@ -452,11 +465,6 @@ def create_app() -> FastAPI:
         from jiuwenbox.models.common import HealthResponse
         from jiuwenbox.supervisor.landlock import detect_landlock_abi
 
-        # Proxy-only deployments never construct a SandboxManager. Reading
-        # the module global directly (instead of going through
-        # ``get_sandbox_manager``) avoids lazily spinning up
-        # ``ProcessRuntime`` from inside ``/health`` and lets us report
-        # zero active sandboxes truthfully.
         if _sandbox_manager is None:
             active = 0
         else:
@@ -468,6 +476,9 @@ def create_app() -> FastAPI:
             landlock_supported=detect_landlock_abi() > 0,
             sandboxes_active=active,
         )
+
+    from jiuwenbox.server.routes.mcp import mcp_server
+    application.mount("", mcp_server.streamable_http_app())
 
     return application
 

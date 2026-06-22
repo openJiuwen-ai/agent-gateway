@@ -573,6 +573,52 @@ sandbox:
 
 跨机部署要求 jiuwenbox 主机能访问 jiuwenswarm 的固有 agent 文件路径——`preserve_file_sharing_mode` 现在只支持 `mount` jiuwenswarm 会把 intrinsic 文件（`AGENT.md` / `HEARTBEAT.md` / `IDENTITY.md` / `SOUL.md` / `USER.md` / `memory/daily_memory/`）和 `project_dir` 通过 bind mount 暴露给沙箱，因此目标主机必须能在同样的 host path 下看到这些文件（例如共享文件系统、容器 volume 等）。
 
+## 远程 MCP
+
+JiuwenBox 支持三种访问方式：**REST API**、**CLI** 和**远程 MCP**。
+
+MCP 端点路径为 `/mcp`（Streamable HTTP 传输）。当前 MCP 工具为
+`sandbox_run_command`，用于在 JiuwenBox 沙箱内执行命令并返回结果。
+
+### 快速启动
+
+```bash
+JIUWENBOX_POLICY_PATH=/path/to/default-policy.yaml \
+python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
+```
+
+### OpenCode 配置
+
+```json
+{
+  "mcpServers": {
+    "jiuwenbox": {
+      "url": "http://YOUR_HOST:8321/mcp",
+      "type": "remote",
+      "enabled": true
+    }
+  }
+}
+```
+
+### 外部 IP 部署
+
+当 JiuwenBox 部署在外部 IP（非 `localhost` / `127.0.0.1`）时，
+需设置 `JIUWENBOX_MCP_ALLOWED_HOSTS` 以允许客户端主机访问：
+
+```bash
+JIUWENBOX_MCP_ALLOWED_HOSTS=10.0.0.5,10.0.0.5:8321 \
+JIUWENBOX_POLICY_PATH=/path/to/default-policy.yaml \
+python -m uvicorn jiuwenbox.server.app:app --host 0.0.0.0 --port 8321 --log-level debug
+```
+
+### 注意事项
+
+- 直接 `GET /mcp` 可能返回 **406 Not Acceptable**，因为该端点期望
+  MCP Streamable HTTP 协议帧。请使用正确的 MCP 客户端进行交互。
+- MCP 使客户端能够调用 JiuwenBox，但**不代表**所有命令都必须经过
+  沙箱。客户端自行决定哪些命令通过 MCP 路由。
+
 ## 推理隐私代理
 
 推理隐私代理用于在边缘服务器上安全访问 LLM API：
@@ -705,6 +751,22 @@ inference_privacy_proxies:
 python3 -m pytest tests/integration/test_server_api_default.py::TestPolicyEnforcement::test_network_mode_isolated_allows_external_http_requests -s --server-endpoint 127.0.0.1:8321
 python3 -m pytest tests/integration/test_server_api_default.py::TestPolicyEnforcement::test_network_mode_isolated_blocked_ip_rejects_egress -s --server-endpoint 127.0.0.1:8321
 ```
+
+### MCP 集成测试
+
+`test_mcp_default.py` 针对 `/mcp` Streamable HTTP 端点和 `sandbox_run_command`
+MCP 工具进行集成测试。执行 `./tests/test.sh default` 时会自动包含该文件，也可以单独运行：
+
+```bash
+# TCP
+python3 -m pytest tests/integration/test_mcp_default.py -v --server-endpoint 127.0.0.1:8321
+
+# UDS
+python3 -m pytest tests/integration/test_mcp_default.py -v --server-endpoint=unix:///tmp/jiuwenbox.sock
+```
+
+MCP 测试会建立真实的 MCP 客户端会话，在沙箱中执行命令，并验证沙箱自动创建 /
+复用 / 删除、stdin / env / workdir 透传、命令失败透传、timeout 截断以及并发会话等边界行为。
 
 ### 性能测试
 
