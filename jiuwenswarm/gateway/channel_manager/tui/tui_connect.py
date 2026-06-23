@@ -2151,8 +2151,18 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                                 resolve_env_vars(str((e.get("model_client_config") or {}).get("model_name", ""))),
                         "model_name": resolve_env_vars(str((e.get("model_client_config") or {}).get("model_name", ""))),
                         "api_base": resolve_env_vars(str((e.get("model_client_config") or {}).get("api_base", ""))),
+                        "api_key_prefix": (
+                            resolve_env_vars(
+                                str((e.get("model_client_config") or {}).get("api_key", ""))
+                            )[:8]
+                            if resolve_env_vars(
+                                str((e.get("model_client_config") or {}).get("api_key", ""))
+                            )
+                            else ""
+                        ),
+                        "is_current": i == 0,
                     }
-                    for e in _defs if isinstance(e, dict)
+                    for i, e in enumerate(_defs) if isinstance(e, dict)
                 ]
             else:
                 payload["current"] = os.getenv("MODEL_NAME", "unknown")
@@ -2160,7 +2170,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
 
         target = str(model_name).strip()
-        logger.info("[cli command.model] 切换模型: target=%s", target)
+        logger.info("[cli command.model] 切换模型: target=%s, model_index=%s, params=%s", target, model_index, params)
         _raw_defs_check = (get_config_raw().get("models") or {}).get("defaults") or []
         _valid_names: set[str] = set()
         for _e in _raw_defs_check:
@@ -2250,6 +2260,17 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 error=f"Model '{target}' missing required config: {', '.join(_missing_fields)}",
             )
             return
+        # 切换后确保目标条目 is_default=True，清除其他同名模型的 is_default
+        # AgentServer 用 is_default=True 确定默认模型，defaults[0] 位置不够——同名模型
+        # 需靠 is_default 标记来区分哪个是当前激活的
+        _target_model_name_resolved = resolve_env_vars(str(_target_mcc.get("model_name", "")))
+        _target_entry["is_default"] = True
+        for _e in _other_entries:
+            if isinstance(_e, dict):
+                _other_mcc = _e.get("model_client_config") or {}
+                _other_name = resolve_env_vars(str(_other_mcc.get("model_name", "")))
+                if _other_name == _target_model_name_resolved and _e.get("is_default") is True:
+                    _e["is_default"] = False
         update_default_models_in_config([_target_entry] + _other_entries)
         logger.info("[cli command.model] 切换，已更新 models.defaults 首位: %s", target)
         _target_model_name = resolve_env_vars(

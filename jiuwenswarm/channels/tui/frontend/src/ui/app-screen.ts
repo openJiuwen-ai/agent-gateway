@@ -3343,14 +3343,18 @@ export class AppScreen implements Component, Focusable {
       }
 
       const modelsMeta = payload.models ?? [];
-      // 与web端一致：同名模型通过编号区分（如 model_name #1, model_name #2）
-      // 后端 available_models 和 models 位置对齐，用索引匹配而非名称查找
+      // 优先用后端 is_current 标记判断当前模型（同名模型仅靠名字无法区分），
+      // 回退到 name-matching（兼容不带 is_current 的旧后端）
+      const currentIdx = selectableWithOrigIdx.findIndex((entry) => {
+        const meta = modelsMeta[entry.origIdx];
+        return meta?.is_current === true;
+      });
+      const fallbackCurrentIdx = currentIdx < 0 ? selectable.findIndex((m) => m === current) : currentIdx;
       const nameOccurrence: Record<string, number> = {};
-      const currentIdx = selectable.findIndex((m) => m === current);
       const items = selectableWithOrigIdx.map((entry, i) => {
         const m = entry.name;
         const meta = modelsMeta[entry.origIdx];
-        const isCurrent = i === currentIdx;
+        const isCurrent = i === fallbackCurrentIdx;
         const seq = (nameOccurrence[m] ?? 0) + 1;
         nameOccurrence[m] = seq;
         const sameNameTotal = selectable.filter((x) => x === m).length;
@@ -3364,7 +3368,15 @@ export class AppScreen implements Component, Focusable {
         } else {
           displayName = m;
         }
-        const suffix = meta?.api_base && sameNameTotal > 1 ? ` [${meta.api_base}]` : "";
+        // 同名模型显示 api_key_prefix + api_base 作为区分标识
+        const suffixParts: string[] = [];
+        if (sameNameTotal > 1 && meta?.api_key_prefix) {
+          suffixParts.push(`key:${meta.api_key_prefix}…`);
+        }
+        if (sameNameTotal > 1 && meta?.api_base) {
+          suffixParts.push(meta.api_base);
+        }
+        const suffix = suffixParts.length > 0 ? ` [${suffixParts.join(" | ")}]` : "";
         return {
           label: `${i + 1}. ${displayName}${suffix}${isCurrent ? " (current)" : ""}`,
           value: `${m}\x00${entry.origIdx}`,
