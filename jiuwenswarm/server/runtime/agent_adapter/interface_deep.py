@@ -240,7 +240,13 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     xiaoyi_gui_agent,
     image_reading,
 )
-from jiuwenswarm.common.config import get_config, get_default_models, get_sandbox_runtime, resolve_env_vars
+from jiuwenswarm.common.config import (
+    get_config,
+    get_default_models,
+    get_sandbox_runtime,
+    get_sandbox_startup_mode,
+    resolve_env_vars,
+)
 from jiuwenswarm.common.mcp_config import (
     build_mcp_server_config,
     extract_enabled_mcp_server_entries,
@@ -2269,8 +2275,10 @@ class JiuWenSwarmDeepAdapter:
             excluded_commands=runtime.get("excluded_commands"),
             idle_ttl_seconds=runtime.get("idle_ttl_seconds"),
             idle_check_interval=runtime.get("idle_check_interval"),
+            fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
             project_dir=project_dir,
             is_code_agent=self._is_code_agent,
+            startup_mode=get_sandbox_startup_mode(),
         )
 
     def _resolve_project_dir_for_sandbox(self) -> str | None:
@@ -2435,10 +2443,12 @@ class JiuWenSwarmDeepAdapter:
 
         extra = launcher.extra_params or {}
         extra["excluded_commands"] = list(runtime.get("excluded_commands") or [])
+        extra["fallback_on_failure"] = bool(runtime.get("fallback_on_failure", False))
         new_policy, upload_list = build_filesystem_policy(
             runtime.get("files") or {},
             project_dir=self._resolve_project_dir_for_sandbox(),
             is_code_agent=self._is_code_agent,
+            startup_mode=get_sandbox_startup_mode(),
         )
         extra["policy"] = new_policy
         # provider 侧契约: 沙箱 sysop 永远带这两个 key, mode 固定 ``mount``,

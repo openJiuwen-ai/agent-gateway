@@ -65,6 +65,7 @@ from jiuwenswarm.common.config import (
     get_mcp_servers,
     get_sandbox_endpoint,
     get_sandbox_runtime,
+    get_sandbox_startup_mode,
     get_sandbox_startup_mode_explicit,
     remove_mcp_server_in_config,
     resolve_preserve_file_sharing_mode_default,
@@ -3983,6 +3984,7 @@ class AgentWebSocketServer:
                 files,
                 project_dir=project_dir,
                 is_code_agent=is_code_agent,
+                startup_mode=get_sandbox_startup_mode(),
             )
         except FileNotFoundError as exc:
             raise ValueError(str(exc)) from exc
@@ -4019,6 +4021,7 @@ class AgentWebSocketServer:
             path,
             project_dir=project_dir,
             is_code_agent=is_code_agent,
+            startup_mode=get_sandbox_startup_mode(),
         )
         if match is not None:
             matched_bucket, canonical = match
@@ -4091,6 +4094,7 @@ class AgentWebSocketServer:
             path,
             project_dir=project_dir,
             is_code_agent=is_code_agent,
+            startup_mode=get_sandbox_startup_mode(),
         )
         if match is not None:
             matched_bucket, canonical = match
@@ -4247,6 +4251,7 @@ class AgentWebSocketServer:
                 files_runtime,
                 project_dir=project_dir,
                 is_code_agent=is_code_agent,
+                startup_mode=get_sandbox_startup_mode(),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[command.sandbox] attach effective_files failed: %s", exc)
