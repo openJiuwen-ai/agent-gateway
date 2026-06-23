@@ -1840,9 +1840,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_preview(ws, req_id, params, session_id):
         """获取 session 预览信息，包括最新几条完整对话内容。"""
-        import json
-        from pathlib import Path
-        from jiuwenswarm.common.utils import get_agent_sessions_dir
+        from jiuwenswarm.server.runtime.session.session_history import load_history_records
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1864,57 +1862,55 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         elif isinstance(raw_count, str) and raw_count.strip().isdigit():
             preview_count = max(1, min(int(raw_count.strip()), 100))
 
-        # 读取 history.json
-        history_path: Path = get_agent_sessions_dir() / target / "history.json"
+        # 读取历史记录（自动兼容 history.json 和 history.jsonl）
         preview_messages = []
-        if history_path.exists():
-            try:
-                raw = json.loads(history_path.read_text(encoding="utf-8"))
-                if isinstance(raw, list):
-                    # history.json 的写入很宽松：interface.py 中所有 event_type 以 "chat." 开头
-                    # 的记录（外加 team.message）都会以 role="assistant" 落盘，因此历史里混有大量
-                    # 非对话内容。预览只需展示真正代表"对话"的两类，用白名单显式放行：
-                    #   - chat.final ：assistant 的完整最终回复（单人模式与团队成员回复都用它）
-                    #   - team.message：团队消息
-                    # 刻意排除（均非完整对话文本，纳入会造成碎片化/重复/噪声）：
-                    #   - chat.delta（流式增量片段，内容已包含在 chat.final 中）
-                    #   - chat.reasoning（思考过程）/ chat.tool_call / chat.tool_update / chat.tool_result
-                    #   - chat.error / chat.processing_status / chat.usage_* / chat.media / chat.file 等
-                    # 注：用白名单而非黑名单，是为了让将来新增的 chat.* 状态类型不会意外混入预览。
-                    _chat_event_types = frozenset({
-                        "chat.final",  # assistant 最终回复
-                        "team.message",  # team 消息
-                    })
+        try:
+            raw = load_history_records(target)
+            if isinstance(raw, list):
+                # history.json 的写入很宽松：interface.py 中所有 event_type 以 "chat." 开头
+                # 的记录（外加 team.message）都会以 role="assistant" 落盘，因此历史里混有大量
+                # 非对话内容。预览只需展示真正代表"对话"的两类，用白名单显式放行：
+                #   - chat.final ：assistant 的完整最终回复（单人模式与团队成员回复都用它）
+                #   - team.message：团队消息
+                # 刻意排除（均非完整对话文本，纳入会造成碎片化/重复/噪声）：
+                #   - chat.delta（流式增量片段，内容已包含在 chat.final 中）
+                #   - chat.reasoning（思考过程）/ chat.tool_call / chat.tool_update / chat.tool_result
+                #   - chat.error / chat.processing_status / chat.usage_* / chat.media / chat.file 等
+                # 注：用白名单而非黑名单，是为了让将来新增的 chat.* 状态类型不会意外混入预览。
+                _chat_event_types = frozenset({
+                    "chat.final",  # assistant 最终回复
+                    "team.message",  # team 消息
+                })
 
-                    def _is_previewable(item):
-                        if not isinstance(item, dict):
-                            return False
-                        role = item.get("role")
-                        content = item.get("content")
-                        has_content = isinstance(content, str) and bool(content.strip())
-                        if role == "user":
-                            return has_content
-                        # 非 user 记录只放行白名单内的对话类型（不依赖 role，
-                        # 以兼容团队成员回复可能带 teammate 等非 assistant role 的情况）
-                        event_type = item.get("event_type")
-                        if event_type in _chat_event_types:
-                            return has_content
+                def _is_previewable(item):
+                    if not isinstance(item, dict):
                         return False
+                    role = item.get("role")
+                    content = item.get("content")
+                    has_content = isinstance(content, str) and bool(content.strip())
+                    if role == "user":
+                        return has_content
+                    # 非 user 记录只放行白名单内的对话类型（不依赖 role，
+                    # 以兼容团队成员回复可能带 teammate 等非 assistant role 的情况）
+                    event_type = item.get("event_type")
+                    if event_type in _chat_event_types:
+                        return has_content
+                    return False
 
-                    previewable = [item for item in raw if _is_previewable(item)]
-                    # 取时间顺序下最新的 N 条（保持原顺序：旧的在上、新的在下）
-                    recent = previewable[-preview_count:]
-                    for msg in recent:
-                        role = msg.get("role", "unknown")
-                        content = msg.get("content", "")
-                        event_type = msg.get("event_type", "")
-                        preview_messages.append({
-                            "role": role,
-                            "content": content if isinstance(content, str) else "",
-                            "event_type": event_type,
-                        })
-            except Exception as exc:
-                logger.warning("[session.preview] read history failed: %s", exc)
+                previewable = [item for item in raw if _is_previewable(item)]
+                # 取时间顺序下最新的 N 条（保持原顺序：旧的在上、新的在下）
+                recent = previewable[-preview_count:]
+                for msg in recent:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    event_type = msg.get("event_type", "")
+                    preview_messages.append({
+                        "role": role,
+                        "content": content if isinstance(content, str) else "",
+                        "event_type": event_type,
+                    })
+        except Exception as exc:
+            logger.warning("[session.preview] read history failed: %s", exc)
 
         await channel.send_response(
             ws, req_id, ok=True,
