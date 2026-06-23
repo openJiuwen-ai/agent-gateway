@@ -1106,7 +1106,7 @@ for (let i = payload.team.length; i < 10; i++) {
     return setA2UIActionHandler((message) => {
       const currentSessionId = sessionIdRef.current;
       if (!currentSessionId || currentSessionId === 'new') return;
-      void sendStructuredChatContent(
+      return sendStructuredChatContent(
         buildA2UIClientEventContent(message),
         currentSessionId,
       );

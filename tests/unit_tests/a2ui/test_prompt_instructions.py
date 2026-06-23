@@ -32,6 +32,24 @@ def test_a2ui_prompt_discourages_nested_templates():
     assert "flatten repeated item details" in instruction
 
 
+def test_a2ui_prompt_discourages_unsupported_popup_components():
+    instruction = build_a2ui_autonomy_instruction("en")
+
+    assert "modal" in instruction
+    assert "floating overlay" in instruction
+    assert "inline status" in instruction
+    assert "plain text" in instruction
+
+
+def test_a2ui_zh_prompt_discourages_unsupported_popup_components():
+    instruction = build_a2ui_autonomy_instruction("zh")
+
+    assert "弹窗" in instruction
+    assert "浮层" in instruction
+    assert "行内状态" in instruction
+    assert "纯文本" in instruction
+
+
 def test_a2ui_zh_prompt_section_is_readable():
     prompt = build_a2ui_prompt_section("zh")
 
