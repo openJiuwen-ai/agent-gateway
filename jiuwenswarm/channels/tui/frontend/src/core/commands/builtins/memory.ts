@@ -481,6 +481,7 @@ async function listMemory(ctx: import("../types.js").CommandContext): Promise<vo
  * never truncates the label.
  */
 // Sentinel values for non-file actions in the selector
+const ACTION_TOGGLE_MEMORY_ENABLED = "__toggle_memory_enabled__";
 const ACTION_TOGGLE_AUTO_MEMORY = "__toggle_auto_memory__";
 const ACTION_OPEN_AUTO_MEMORY_FOLDER = "__open_auto_memory_folder__";
 
@@ -495,6 +496,7 @@ async function showMemorySelector(ctx: import("../types.js").CommandContext): Pr
       ctx.request<MemoryStatusResult>("memory.status", { detailed: true, mode }),
     ]);
     const files = listPayload.files ?? [];
+    const memoryEnabled = statusPayload.enabled ?? false;
     const autoMemoryEnabled = statusPayload.auto_memory_enabled ?? false;
 
     // Frontend-side unguarded traversal to fill gaps
@@ -584,22 +586,30 @@ async function showMemorySelector(ctx: import("../types.js").CommandContext): Pr
 
     // Build options — EXACTLY aligned with Claude Code's /memory display
     // Aligned with Claude Code format:
-    //   1. Auto-memory: on/off              (toggle — always at top)
-    //   2. Project memory                  Checked in at ./CLAUDE.md
-    //   3. .claude/rules/git.md
-    //   4. User memory                     Saved in ~/.claude/CLAUDE.md
-    //   5. Open auto-memory folder         (only when auto-memory is on)
+    //   1. Memory: on/off                   (toggle — control CodingMemoryRail/ProjectMemoryRail)
+    //   2. Auto-memory: on/off              (toggle — control auto memory extraction)
+    //   3. Project memory                  Checked in at ./CLAUDE.md
+    //   4. .claude/rules/git.md
+    //   5. User memory                     Saved in ~/.claude/CLAUDE.md
+    //   6. Open auto-memory folder         (only when auto-memory is on)
 
     const options: { label: string; description: string | undefined; value: string }[] = [];
 
-    // 1. Auto-memory toggle — always at the top (aligned with Claude Code)
+    // 1. Memory enabled toggle — control CodingMemoryRail and ProjectMemoryRail loading
+    options.push({
+      label: `Memory: ${memoryEnabled ? "on" : "off"}`,
+      description: memoryEnabled ? "Press Enter to toggle" : "Memory disabled - files won't be auto-loaded",
+      value: ACTION_TOGGLE_MEMORY_ENABLED,
+    });
+
+    // 2. Auto-memory toggle — control auto memory extraction after conversation ends
     options.push({
       label: `Auto-memory: ${autoMemoryEnabled ? "on" : "off"}`,
       description: "Press Enter to toggle",
       value: ACTION_TOGGLE_AUTO_MEMORY,
     });
 
-    // 2. Memory file entries
+    // 3. Memory file entries
     for (const f of orderedFiles) {
       const filePathLower = filePathLowerFn(f.path);
       const displayPath = getDisplayPath(f.path, projectDir);
@@ -665,6 +675,11 @@ async function showMemorySelector(ctx: import("../types.js").CommandContext): Pr
     }
 
     // Handle selected action
+    if (selectedValue === ACTION_TOGGLE_MEMORY_ENABLED) {
+      await toggleByKey(ctx, "memory_enabled");
+      return;
+    }
+
     if (selectedValue === ACTION_TOGGLE_AUTO_MEMORY) {
       await toggleByKey(ctx, "auto_memory_enabled");
       return;
@@ -875,10 +890,15 @@ async function showMemoryStatus(
 }
 
 const TOGGLE_KEYS = [
-  { key: "memory_enabled", label: "Enabled", config_path: "modes.agent.<mode>.memory.enabled" },
-  { key: "memory_proactive", label: "Proactive", config_path: "modes.agent.<mode>.memory.is_proactive" },
-  { key: "memory_forbidden_enabled", label: "Forbidden Filter", config_path: "memory.forbidden_memory_definition.enabled" },
-  { key: "auto_memory_enabled", label: "Auto Memory", config_path: "auto_memory_enabled" },
+  {
+    key: "memory_enabled",
+    label: "Enabled",
+    getConfigPath: (mode: string) =>
+      mode === "code" ? "modes.code.memory.enabled" : `modes.agent.${mode}.memory.enabled`,
+  },
+  { key: "memory_proactive", label: "Proactive", getConfigPath: (mode: string) => `modes.agent.${mode}.memory.is_proactive` },
+  { key: "memory_forbidden_enabled", label: "Forbidden Filter", getConfigPath: () => "memory.forbidden_memory_definition.enabled" },
+  { key: "auto_memory_enabled", label: "Auto Memory", getConfigPath: () => "auto_memory_enabled" },
 ];
 
 async function toggleMemory(
@@ -915,7 +935,7 @@ async function showToggleList(
       return {
         label: t.key,
         value: `${t.label} ${current ? "✓ on" : "✗ off"}`,
-        description: t.config_path,
+        description: t.getConfigPath(mode),
       };
     });
 

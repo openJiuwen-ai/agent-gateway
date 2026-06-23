@@ -18,10 +18,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, AsyncIterator, Tuple
-
-if TYPE_CHECKING:
-    from openjiuwen.core.context_engine.engine import ContextEngine
+from typing import Any, AsyncIterator, Tuple
 
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -31,7 +28,7 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
     create_adapter,
     resolve_sdk_choice,
 )
-from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode
+from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
@@ -137,39 +134,51 @@ def _trigger_auto_memory_extraction(
         is_stream: Whether this is from stream mode (for logging).
     """
     project_dir = request.params.get("project_dir") if isinstance(request.params, dict) else None
-    mode_label = "(stream)" if is_stream else ""
-    logger.info("[auto_memory] Trigger check %s: enabled=%s", mode_label, True)
 
     if not project_dir:
-        logger.info("[auto_memory] Skipped %s: no project_dir", mode_label)
         return
 
-    # Get context_engine from adapter._instance.react_agent
-    # adapter is AgentAdapter (e.g., CodeAgentRail), adapter._instance is DeepAgent
-    context_engine = None
-    adapter_instance = getattr(adapter, "_instance", None)
-    if adapter_instance is not None:
-        react_agent = getattr(adapter_instance, "react_agent", None)
-        if react_agent is not None:
-            context_engine = getattr(react_agent, "context_engine", None)
-            logger.debug("[auto_memory] context_engine obtained: %s",
-                     type(context_engine).__name__ if context_engine else "None")
-        else:
-            logger.warning("[auto_memory] adapter._instance has no react_agent")
-    else:
-        logger.warning("[auto_memory] adapter has no _instance attribute")
+    messages = None
 
-    # Fire-and-forget: don't block on extraction
-    logger.info("[auto_memory] Launching extraction task %s", mode_label)
-    asyncio.create_task(
-        _execute_auto_memory_extraction(
-            project_dir=project_dir,
-            session_id=session_id,
-            request=request,
-            context_engine=context_engine,
-            parent_agent=adapter,  # Pass adapter (not adapter._instance) for cache sharing
+    # Directly read messages from session history file
+    try:
+        from jiuwenswarm.server.runtime.session.session_history import read_session_history_records
+        history_records = read_session_history_records(session_id)
+
+        # Convert history records to message format for memory extraction
+        # Each history record has: role, content, timestamp, etc.
+        messages = []
+        for record in history_records:
+            role = record.get("role", "unknown")
+            content = record.get("content", "")
+            # Skip empty content
+            if not content or not isinstance(content, str):
+                continue
+            # Create message dict in standard format
+            messages.append({"role": role, "content": content})
+    except Exception as e:
+        logger.warning("[auto_memory] Failed to read session history: %s", e, exc_info=True)
+        messages = None
+
+    # If we successfully got messages, proceed with auto memory extraction
+    if messages is None or len(messages) == 0:
+        return
+
+    # Launch auto memory extraction task
+    try:
+        asyncio.create_task(
+            _execute_auto_memory_extraction(
+                session_id=session_id,
+                project_dir=project_dir,
+                messages=messages,
+                parent_agent=adapter,  # Pass adapter for cache sharing
+            )
         )
-    )
+        mode = request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown"
+        logger.info("[auto_memory] Extraction task launched successfully for mode=%s", mode)
+    except Exception as e:
+        logger.error("[auto_memory] Failed to launch extraction task: %s", e, exc_info=True)
+
 
 logger = logging.getLogger(__name__)
 
@@ -1481,7 +1490,10 @@ class JiuWenSwarm:
                 await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
 
             # auto memory: extract memories after conversation ends
-            if is_auto_memory_enabled():
+            # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
+            mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
+            config = get_config()
+            if is_auto_memory_enabled() and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
         return result
@@ -1915,7 +1927,10 @@ class JiuWenSwarm:
             await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
 
         # auto memory: extract memories after conversation ends
-        if is_auto_memory_enabled():
+        # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
+        mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
+        config = get_config()
+        if is_auto_memory_enabled() and is_memory_enabled(mode, config):
             _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
         yield AgentResponseChunk(
