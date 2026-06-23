@@ -1945,6 +1945,21 @@ class JiuWenSwarm:
     def get_instance(self):
         return self._adapter._instance
 
+    async def apply_package_change_to_session_adapters(
+        self,
+        operation: str,
+        config_path: str,
+    ) -> None:
+        """Propagate a harness package load/unload to all live session adapters.
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return
+        method = getattr(adapter, "apply_package_change_to_session_adapters", None)
+        if method is None:
+            return
+        await method(operation, config_path)
+
     async def compress_context(
             self,
             session_id: str,

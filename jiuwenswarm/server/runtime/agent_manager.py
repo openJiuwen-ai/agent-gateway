@@ -345,6 +345,23 @@ class AgentManager:
                 if instance is None:
                     continue
 
+                fanout = getattr(
+                    agent,
+                    "apply_package_change_to_session_adapters",
+                    None,
+                )
+                if callable(fanout):
+                    try:
+                        await fanout(operation, config_path)
+                    except Exception as exc:
+                        logger.warning(
+                            "[AgentManager] session-adapter fanout failed for "
+                            "package %s on agent %s: %s",
+                            package_id,
+                            cache_key,
+                            exc,
+                        )
+
                 # Skip the instance that was already processed by the caller
                 if skip_instance is not None and instance is skip_instance:
                     logger.debug(

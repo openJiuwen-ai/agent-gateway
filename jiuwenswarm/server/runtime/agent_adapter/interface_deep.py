@@ -2629,6 +2629,62 @@ class JiuWenSwarmDeepAdapter:
 
         return loaded
 
+    async def apply_package_change(
+        self, operation: str, config_path: str
+    ) -> list[str] | None:
+        """Load/unload a single harness package on this adapter's DeepAgent.
+
+        Args:
+            operation: "activate" or "deactivate".
+            config_path: Absolute path to harness_config.yaml.
+
+        Returns:
+            Loaded/unloaded resource names, or ``None`` when there is no instance.
+        """
+        if self._instance is None:
+            return None
+        try:
+            if operation == "deactivate":
+                return await self._instance.unload_harness_config(config_path)
+            return await self._instance.load_harness_config(config_path)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] apply_package_change(%s) failed on %s: %s",
+                operation,
+                config_path,
+                exc,
+            )
+            return None
+
+    async def apply_package_change_to_session_adapters(
+        self,
+        operation: str,
+        config_path: str,
+    ) -> None:
+        """Propagate a harness package change to every live session adapter.
+
+        Args:
+            operation: "activate" or "deactivate".
+            config_path: Absolute path to harness_config.yaml.
+        """
+        if self._is_session_scoped_adapter:
+            # A session-scoped child only owns itself; nothing further to fan out.
+            return
+        if not self._session_adapters:
+            return
+        for sid, adapter in list(self._session_adapters.items()):
+            if adapter is self:
+                continue
+            try:
+                await adapter.apply_package_change(operation, config_path)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session adapter %s %s failed: %s",
+                    sid,
+                    operation,
+                    exc,
+                )
+
     def _build_skill_rail(
         self, config: dict[str, Any], include_tools: bool = False
     ) -> SkillUseRail | None:

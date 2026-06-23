@@ -297,6 +297,24 @@ def resolve_request_project_dir(request: AgentRequest) -> str | None:
     return None
 
 
+def _harness_error_code(exc: BaseException) -> str:
+    """Map a harness package exception to a wire ``code`` for the frontend.
+
+    Mirrors the import/export code mapping in app_web_handlers.py so the web UI
+    can localize the error via ``err.code`` instead of showing the raw backend
+    message (which is locale-unaware). Keep in sync with the frontend
+    ``resolveHarnessError`` code→i18n mapping.
+    """
+    msg = str(exc).lower()
+    if "already active" in msg or "already exists" in msg:
+        return "CONFLICT"
+    if "not found" in msg:
+        return "NOT_FOUND"
+    if "native" in msg:
+        return "BAD_REQUEST"
+    return "BAD_REQUEST"
+
+
 def resolve_agent_request_mode(raw_mode: Any) -> tuple[str, str | None, str]:
     """Resolve request params.mode into manager mode, sub_mode, and canonical value."""
     raw_value = getattr(raw_mode, "value", raw_mode)
@@ -5642,7 +5660,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": "missing package_id"},
+                payload={"error": "missing package_id", "code": "BAD_REQUEST"},
             )
             wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
             async with send_lock:
@@ -5687,7 +5705,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": _harness_error_code(exc)},
             )
         except Exception as exc:
             logger.exception("[AgentServer] harness.packages.activate failed: %s", exc)
@@ -5695,7 +5713,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -5714,7 +5732,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": "missing package_id"},
+                payload={"error": "missing package_id", "code": "BAD_REQUEST"},
             )
             wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
             async with send_lock:
@@ -5754,7 +5772,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": _harness_error_code(exc)},
             )
         except Exception as exc:
             logger.exception("[AgentServer] harness.packages.deactivate failed: %s", exc)
@@ -5762,7 +5780,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -5781,7 +5799,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": "missing package_id"},
+                payload={"error": "missing package_id", "code": "BAD_REQUEST"},
             )
             wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
             async with send_lock:
@@ -5793,7 +5811,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": "Cannot delete native agent version"},
+                payload={"error": "Cannot delete native agent version", "code": "BAD_REQUEST"},
             )
             wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
             async with send_lock:
@@ -5831,7 +5849,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": _harness_error_code(exc)},
             )
         except Exception as exc:
             logger.exception("[AgentServer] harness.packages.delete failed: %s", exc)
@@ -5839,7 +5857,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload={"error": str(exc), "code": "INTERNAL_ERROR"},
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
