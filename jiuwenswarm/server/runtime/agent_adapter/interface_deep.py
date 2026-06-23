@@ -241,6 +241,10 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     image_reading,
 )
 from jiuwenswarm.common.config import get_config, get_default_models, get_sandbox_runtime, resolve_env_vars
+from jiuwenswarm.common.mcp_config import (
+    build_mcp_server_config,
+    extract_enabled_mcp_server_entries,
+)
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
@@ -1441,69 +1445,11 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _build_mcp_server_config(entry: dict[str, Any]) -> McpServerConfig | None:
-        name = str(entry.get("name", "")).strip()
-        if not name:
-            return None
-        transport = str(entry.get("transport", "")).strip().lower()
-        if transport not in {"stdio", "sse"}:
-            return None
-        payload: dict[str, Any] = {
-            "server_name": name,
-            "client_type": transport,
-        }
-        if transport == "stdio":
-            command = str(entry.get("command", "")).strip()
-            if not command:
-                return None
-            params: dict[str, Any] = {"command": command}
-            args = entry.get("args")
-            if isinstance(args, list):
-                params["args"] = [str(item) for item in args]
-            cwd = entry.get("cwd")
-            if isinstance(cwd, str) and cwd.strip():
-                params["cwd"] = cwd.strip()
-            env = entry.get("env")
-            if isinstance(env, dict):
-                params["env"] = {str(k): str(v) for k, v in env.items()}
-            timeout_s = entry.get("timeout_s")
-            if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-                params["timeout_s"] = int(timeout_s)
-            payload["server_path"] = f"stdio://{name}"
-            payload["params"] = params
-        else:
-            url = str(entry.get("url", "")).strip()
-            if not url:
-                return None
-            payload["server_path"] = url
-            params: dict[str, Any] = {}
-            headers = entry.get("headers")
-            if isinstance(headers, dict):
-                params["headers"] = {str(k): str(v) for k, v in headers.items()}
-            timeout_s = entry.get("timeout_s")
-            if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-                params["timeout_s"] = int(timeout_s)
-            if params:
-                payload["params"] = params
-        return McpServerConfig(**payload)
+        return build_mcp_server_config(entry)
 
     @staticmethod
     def _extract_enabled_mcp_server_entries(config_base: dict[str, Any]) -> list[dict[str, Any]]:
-        if not isinstance(config_base, dict):
-            return []
-        mcp_cfg = config_base.get("mcp", {})
-        if not isinstance(mcp_cfg, dict):
-            return []
-        servers = mcp_cfg.get("servers", [])
-        if not isinstance(servers, list):
-            return []
-        result: list[dict[str, Any]] = []
-        for item in servers:
-            if not isinstance(item, dict):
-                continue
-            if not bool(item.get("enabled", True)):
-                continue
-            result.append(item)
-        return result
+        return extract_enabled_mcp_server_entries(config_base)
 
     async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         if self._instance is None:

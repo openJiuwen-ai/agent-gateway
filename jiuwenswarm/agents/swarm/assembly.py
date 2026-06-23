@@ -30,6 +30,7 @@ from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.registry import register_swarm_providers
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -90,6 +91,10 @@ def enrich_team_spec_for_swarm(
         trajectory_registry=InMemoryTrajectoryRegistry(),
         config=config,
     )
+    mcp_configs = build_enabled_mcp_server_configs(
+        config,
+        server_id_scope=f"team:{spec.team_name}",
+    )
 
     for role in _MEMBER_ROLES:
         if role in spec.agents:
@@ -99,6 +104,7 @@ def enrich_team_spec_for_swarm(
                 role,
                 spec.agents[role],
                 enable_permissions=spec.enable_permissions,
+                mcp_configs=mcp_configs,
             )
 
     spec.build_context = base
@@ -107,10 +113,11 @@ def enrich_team_spec_for_swarm(
     # cold recovery) can reconstruct the context via the registered factory.
     spec.build_context_seed = base.to_seed()
     logger.info(
-        "[swarm.assembly] enriched team spec '%s' (roles=%s, session=%s)",
+        "[swarm.assembly] enriched team spec '%s' (roles=%s, session=%s, mcps=%d)",
         spec.team_name,
         [role for role in _MEMBER_ROLES if role in spec.agents],
         session_id,
+        len(mcp_configs),
     )
 
 

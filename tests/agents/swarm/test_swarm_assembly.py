@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryRegistry
 from openjiuwen.agent_teams.schema import deep_agent_spec as das
 from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
 from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
@@ -35,8 +36,12 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
     RailSpec,
+    TeamModelConfig,
+    WorkspaceSpec,
     register_rail_provider,
 )
+from openjiuwen.core.foundation.llm import ModelClientConfig
+from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     AgentCallbackEvent,
@@ -51,10 +56,6 @@ from jiuwenswarm.agents.swarm import (
     enrich_team_spec_for_swarm,
     register_swarm_providers,
 )
-from openjiuwen.agent_teams.schema.deep_agent_spec import TeamModelConfig, WorkspaceSpec
-from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryRegistry
-from openjiuwen.core.foundation.llm import ModelClientConfig
-
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
@@ -566,6 +567,64 @@ def test_code_member_deep_agent_spec_keeps_skill_use_rail_when_retrieval_disable
     assert registry.CODE_SKILL_USE in rail_names
 
 
+def test_member_deep_agent_spec_merges_config_mcp_configs() -> None:
+    """Member specs inherit MCP declarations from config while preserving base MCPs."""
+    base_mcp = McpServerConfig(
+        server_id="base-id",
+        server_name="base_mcp",
+        server_path="stdio://base_mcp",
+        client_type="stdio",
+        params={"command": "python"},
+    )
+    config_mcp = McpServerConfig(
+        server_id="config-id",
+        server_name="config_mcp",
+        server_path="stdio://config_mcp",
+        client_type="stdio",
+        params={"command": "node"},
+    )
+    base = DeepAgentSpec(enable_skill_discovery=False, mcps=[base_mcp])
+
+    spec = build_member_deep_agent_spec(
+        _agentic_retrieval_config(),
+        "team",
+        "leader",
+        base,
+        mcp_configs=[config_mcp],
+    )
+
+    assert [cfg.server_name for cfg in (spec.mcps or [])] == ["base_mcp", "config_mcp"]
+    assert spec.mcps[1] is not config_mcp
+
+
+def test_member_deep_agent_spec_keeps_base_mcp_on_duplicate_name() -> None:
+    """An explicitly declared member MCP wins over config with the same server name."""
+    base_mcp = McpServerConfig(
+        server_id="base-id",
+        server_name="shared_mcp",
+        server_path="stdio://shared_mcp",
+        client_type="stdio",
+        params={"command": "python"},
+    )
+    config_mcp = McpServerConfig(
+        server_id="config-id",
+        server_name="shared_mcp",
+        server_path="stdio://shared_mcp",
+        client_type="stdio",
+        params={"command": "node"},
+    )
+
+    spec = build_member_deep_agent_spec(
+        _agentic_retrieval_config(),
+        "team",
+        "leader",
+        DeepAgentSpec(mcps=[base_mcp]),
+        mcp_configs=[config_mcp],
+    )
+
+    assert [cfg.server_id for cfg in (spec.mcps or [])] == ["base-id"]
+
+
 def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     """The enrichment seam must never accept a pre-built DeepAgent."""
     params = set(inspect.signature(enrich_team_spec_for_swarm).parameters)
@@ -630,6 +689,60 @@ def test_enrich_team_spec_appends_after_existing_rails(monkeypatch) -> None:
     assert leader_rail_types[0] == "skill_use"
     assert leader_rail_types.count("skill_use") == 1
     assert len(leader_rail_types) > 1
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan"])
+def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Enabled config MCP servers are mounted on every declarative team member."""
+    config = {
+        "mcp": {
+            "servers": [
+                {
+                    "name": "local_tool",
+                    "enabled": True,
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["server.py"],
+                    "cwd": str(tmp_path),
+                },
+                {
+                    "name": "disabled_tool",
+                    "enabled": False,
+                    "transport": "stdio",
+                    "command": "python",
+                },
+                {
+                    "name": "invalid_tool",
+                    "enabled": True,
+                    "transport": "stdio",
+                },
+            ],
+        },
+    }
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir",
+        lambda: tmp_path / "global-skills",
+    )
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    leader_mcps = spec.agents["leader"].mcps or []
+    teammate_mcps = spec.agents["teammate"].mcps or []
+    assert [cfg.server_name for cfg in leader_mcps] == ["local_tool"]
+    assert [cfg.server_name for cfg in teammate_mcps] == ["local_tool"]
+    assert leader_mcps[0].server_id == teammate_mcps[0].server_id
+    assert leader_mcps[0].client_type == "stdio"
+    assert leader_mcps[0].params == {
+        "command": "python",
+        "args": ["server.py"],
+        "cwd": str(tmp_path),
+    }
 
 
 def test_enrich_skips_absent_roles_gracefully() -> None:
