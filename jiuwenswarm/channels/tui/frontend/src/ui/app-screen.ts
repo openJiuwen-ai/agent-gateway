@@ -1797,6 +1797,14 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
+    // ESC 关闭 help 视图（只读，无输入栏）
+    if (!pendingQuestion && !hasOverlay && !snapshot.cancellableWork && isCancelWorkKey) {
+      if (this.state.dismissHelp()) {
+        this.tui.requestRender();
+        return;
+      }
+    }
+
     if (this.startupPromptList !== null && matchesKey(data, "ctrl+c")) {
       this.startupPromptList.handleInput(data);
       this.tui.requestRender();
@@ -2195,6 +2203,10 @@ export class AppScreen implements Component, Focusable {
       }
     }
 
+    if (!snapshot.pendingQuestion && this.state.isHelpVisible()) {
+      return;
+    }
+
     // Detect pasted file paths (drag-and-drop) in the terminal
     // When files are dragged in, they arrive as a pasted string.
     // Windows/PowerShell may not send bracketed paste markers,
@@ -2248,12 +2260,14 @@ export class AppScreen implements Component, Focusable {
     // search_list/select_value phase: no text input needed in the main editor.
     // The resume picker has its own search input, so hide the main editor while it is
     // open to avoid a misleading second input bar (restored on Esc). Mirrors Claude Code.
+    // /help is read-only transcript content — hide the composer until Esc dismisses it.
     const isConfigEditorActive = this.configEditorState !== null;
     const hideEditorForInlinePlanReject = this.isEditingInlinePlanReject(snapshot);
     const hideMainEditor =
       isConfigEditorActive ||
       hideEditorForInlinePlanReject ||
-      this.resumeSessionList !== null;
+      this.resumeSessionList !== null ||
+      this.state.isHelpVisible();
     const editorLines = hideMainEditor
       ? []
       : this.applySlashCommandHint(this.editor.render(width), width);

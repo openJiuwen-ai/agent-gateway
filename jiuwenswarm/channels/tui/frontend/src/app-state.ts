@@ -1202,6 +1202,19 @@ export class CliPiAppState {
     this.emitChange();
   };
 
+  readonly isHelpVisible = (): boolean => {
+    if (this.entries.length === 0) return false;
+    const lastEntry = this.entries[this.entries.length - 1];
+    return lastEntry?.kind === "info" && lastEntry.meta?.view === "help";
+  };
+
+  readonly dismissHelp = (): boolean => {
+    if (!this.isHelpVisible()) return false;
+    this.entries = this.entries.slice(0, -1);
+    this.emitChange();
+    return true;
+  };
+
   readonly beginDeferredTranscript = (): void => {
     this.deferTranscriptFrames = true;
   };
