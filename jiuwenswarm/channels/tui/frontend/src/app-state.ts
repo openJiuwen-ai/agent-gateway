@@ -2448,6 +2448,10 @@ export class CliPiAppState {
     if (this.connectionStatus !== "connected") {
       return;
     }
+    // 条件5：对话中至少要有用户或助手的消息可回顾（排除 command_echo / info 等系统条目）
+    if (!this.entries.some((e) => e.kind === "user" || e.kind === "assistant")) {
+      return;
+    }
 
     this.triggerAutoRecap();
   }
