@@ -3,11 +3,13 @@ import { CommandKind, type SlashCommand } from "../types.js";
 
 export interface ModelMeta {
   name: string;
+  alias?: string;
   model_name?: string;
-  client_provider?: string;
+  model_provider?: string;
   api_base?: string;
   api_key_prefix?: string;
   is_current?: boolean;
+  reasoning_level?: string;
 }
 
 export interface ModelListPayload {
@@ -26,9 +28,9 @@ export function isReservedMultimodalModelKey(name: string): boolean {
 export function createModelCommand(): SlashCommand {
   return {
     name: "model",
-    description: "View, add, or switch AI models defined in config.yaml",
+    description: "View, add, edit, delete, or switch AI models defined in config.yaml",
     usage: "/model [name] | /model add <name> <key=value>...",
-    example: "/model work (switch)\n/model add work model=gpt-4 api_key=xxx",
+    example: "/model work (switch)\n/model add work model_name=gpt-4 api_key=xxx model_provider=OpenAI",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     action: async (ctx, args) => {
@@ -53,7 +55,8 @@ export function createModelCommand(): SlashCommand {
         for (let i = 2; i < parts.length; i++) {
           const eqIdx = parts[i].indexOf("=");
           if (eqIdx > 0) {
-            const key = parts[i].substring(0, eqIdx);
+            const rawKey = parts[i].substring(0, eqIdx);
+            const key = rawKey === "model_provider" ? "provider" : rawKey;
             const val = parts[i].substring(eqIdx + 1);
             settings[key] = val;
           }

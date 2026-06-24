@@ -624,6 +624,10 @@ export class CliPiAppState {
     }
   }
 
+  readonly refreshModelInfo = async (): Promise<void> => {
+    await this.fetchModelInfo();
+  };
+
   private startMemoryRefresh(): void {
     this.stopMemoryRefresh();
     this.memoryRefreshTimer = setInterval(async () => {
