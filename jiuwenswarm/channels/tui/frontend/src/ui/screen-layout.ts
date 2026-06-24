@@ -59,7 +59,21 @@ function formatElapsed(ms: number | undefined): string {
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
-function renderRunningStatus(animationPhase: number, elapsedMs: number | undefined): string {
+function formatTokenCount(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens < 0) {
+    return "0";
+  }
+  if (tokens < 1000) {
+    return Math.floor(tokens).toLocaleString("en-US");
+  }
+  return `${(tokens / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+}
+
+function renderRunningStatus(
+  animationPhase: number,
+  elapsedMs: number | undefined,
+  usage: AppSnapshot["currentQueryUsage"],
+): string {
   const label = "Working";
   const sweep = animationPhase % (label.length + 3);
   const focus = sweep - 1;
@@ -72,7 +86,11 @@ function renderRunningStatus(animationPhase: number, elapsedMs: number | undefin
       return palette.text.subtle(char);
     })
     .join("");
-  return `• ${animatedLabel} (${formatElapsed(elapsedMs)} • esc to interrupt)`;
+  const totalTokens =
+    usage.total_tokens > 0 ? usage.total_tokens : usage.input_tokens + usage.output_tokens;
+  const tokenStatus =
+    totalTokens > 0 ? ` • ${formatTokenCount(totalTokens)} tokens` : "";
+  return `• ${animatedLabel} (${formatElapsed(elapsedMs)}${tokenStatus} • esc to interrupt)`;
 }
 
 function renderInterruptedStatus(): string {
@@ -139,7 +157,11 @@ function buildStatusLines(
             ? renderReconnectingStatus(runningElapsedMs)
             : snapshot.streamStalled
               ? renderNetworkOfflineStatus(snapshot.streamIdleMs, runningElapsedMs)
-              : renderRunningStatus(animationPhase, runningElapsedMs)
+              : renderRunningStatus(
+                  animationPhase,
+                  runningElapsedMs,
+                  snapshot.currentQueryUsage,
+                )
           : null;
 
   const lines = transientNotice ? [padToWidth(palette.status.warning(transientNotice), width)] : [];

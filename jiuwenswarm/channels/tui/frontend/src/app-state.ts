@@ -83,6 +83,12 @@ export interface SessionUsageSummary {
   byModel: ModelUsageEntry[];
 }
 
+export interface CurrentQueryUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
 interface VisibleUserRequest {
   requestId: string;
   content: string;
@@ -136,6 +142,7 @@ export interface AppSnapshot {
   runningCommand: string | null;
   streamStalled: boolean;
   streamIdleMs: number | null;
+  currentQueryUsage: CurrentQueryUsage;
 }
 
 function formatElapsed(ms: number): string {
@@ -286,6 +293,11 @@ export class CliPiAppState {
   private statusLineText: string | null = null;
   private statusLineTimer: ReturnType<typeof setInterval> | null = null;
   private usageByModel = new Map<string, ModelUsageEntry>();
+  private currentQueryUsage: CurrentQueryUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    total_tokens: 0,
+  };
   private modelInfo: { provider: string; model: string; version: string } = {
     provider: "",
     model: "",
@@ -442,20 +454,10 @@ export class CliPiAppState {
     },
     tryAutoRestoreAfterCancel: () => this.tryAutoRestoreAfterCancel(),
     appendUsageSummary: (usage, model) => {
-      const key = model || "unknown";
-      const existing = this.usageByModel.get(key);
-      const u = usage as Record<string, unknown>;
-      const entry: ModelUsageEntry = {
-        model: key,
-        input_tokens:
-          (existing?.input_tokens ?? 0) + (typeof u.input_tokens === "number" ? u.input_tokens : 0),
-        output_tokens:
-          (existing?.output_tokens ?? 0) +
-          (typeof u.output_tokens === "number" ? u.output_tokens : 0),
-        total_tokens:
-          (existing?.total_tokens ?? 0) + (typeof u.total_tokens === "number" ? u.total_tokens : 0),
-      };
-      this.usageByModel.set(key, entry);
+      this.appendUsageDelta(usage, model);
+    },
+    appendUsageMetadata: (usage) => {
+      this.updateCurrentUsageTokens(usage);
     },
     addWorkedForEntry: () => {
       if (this.turnStartedAt === null) return;
@@ -925,7 +927,9 @@ export class CliPiAppState {
       memoryWarnings: [...this.memoryWarnings],
       runningCommand: this.runningCommand,
       streamStalled: this.streamStalled,
-      streamIdleMs: this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
+      streamIdleMs:
+        this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
+      currentQueryUsage: { ...this.currentQueryUsage },
     };
   }
 
@@ -1052,6 +1056,53 @@ export class CliPiAppState {
     };
   }
 
+  private appendUsageDelta(usage: Record<string, unknown>, model?: string): void {
+    const key = model || "unknown";
+    const existing = this.usageByModel.get(key);
+    const inputDelta = this.safeTokenCount(usage.input_tokens);
+    const outputDelta = this.safeTokenCount(usage.output_tokens);
+    const totalDelta =
+      typeof usage.total_tokens === "number" && Number.isFinite(usage.total_tokens)
+        ? Math.max(0, usage.total_tokens)
+        : inputDelta + outputDelta;
+    const entry: ModelUsageEntry = {
+      model: key,
+      input_tokens: (existing?.input_tokens ?? 0) + inputDelta,
+      output_tokens: (existing?.output_tokens ?? 0) + outputDelta,
+      total_tokens: (existing?.total_tokens ?? 0) + totalDelta,
+    };
+    this.usageByModel.set(key, entry);
+  }
+
+  private updateCurrentUsageTokens(usage: Record<string, unknown>): void {
+    const inputDelta = this.safeTokenCount(usage.input_tokens);
+    const outputDelta = this.safeTokenCount(usage.output_tokens);
+    const totalDelta =
+      typeof usage.total_tokens === "number" && Number.isFinite(usage.total_tokens)
+        ? Math.max(0, usage.total_tokens)
+        : inputDelta + outputDelta;
+    if (inputDelta === 0 && outputDelta === 0 && totalDelta === 0) {
+      return;
+    }
+    this.currentQueryUsage = {
+      input_tokens: this.currentQueryUsage.input_tokens + inputDelta,
+      output_tokens: this.currentQueryUsage.output_tokens + outputDelta,
+      total_tokens: this.currentQueryUsage.total_tokens + totalDelta,
+    };
+  }
+
+  private safeTokenCount(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+  }
+
+  private resetCurrentUsageTokens(): void {
+    this.currentQueryUsage = {
+      input_tokens: 0,
+      output_tokens: 0,
+      total_tokens: 0,
+    };
+  }
+
   /** AppScreen 在初始化时注入 setInput 回调，使 app-state 可以填充输入框。 */
   setInputRef(ref: (text: string) => void): void {
     this._setInputRef = ref;
@@ -1166,6 +1217,7 @@ export class CliPiAppState {
     this.sessionId = newId;
     this.lastVisibleUserRequest = null;
     this.usageByModel.clear();
+    this.resetCurrentUsageTokens();
     this.workflowRuns = [];
     if (this.accentColor !== "default") {
       this.accentColor = "default";
@@ -1399,6 +1451,7 @@ export class CliPiAppState {
       true,
     );
     this.lastError = null;
+    this.resetCurrentUsageTokens();
     if (options?.logAsUser !== false) {
       this.lastVisibleUserRequest = { requestId, content, sessionId: this.sessionId };
       // 用户发言后重置自动回顾状态，允许下一次空闲时触发新的回顾
@@ -1440,6 +1493,7 @@ export class CliPiAppState {
       ...(attachments?.length ? { attachments } : {}),
     });
     this.lastError = null;
+    this.resetCurrentUsageTokens();
     // 用户发言后重置自动回顾状态（supplement 也是用户消息）
     this.autoRecapState = "idle";
     this.entries = [
