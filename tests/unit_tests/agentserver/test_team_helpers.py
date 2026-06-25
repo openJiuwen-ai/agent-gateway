@@ -1410,6 +1410,16 @@ async def test_process_team_message_stream_routes_evolution_interrupt_to_active_
         interact_calls: list[tuple[str, Any]] = []
 
         @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "sess-team-evolution-resume"
+            return True
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-evolution-resume"
+            return False
+
+        @staticmethod
         def has_stream_task(session_id: str) -> bool:
             assert session_id == "sess-team-evolution-resume"
             return True
@@ -3038,3 +3048,73 @@ async def test_try_finish_cron_team_stream_on_leader_final_without_team_complete
     assert processing_done[-1]["event_type"] == "chat.processing_status"
     assert processing_done[-1]["is_processing"] is False
     _TeamHelpersTestApi.clear_cron_team_waiter(waiter_key)
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(monkeypatch):
+    broadcast_events: list[dict] = []
+
+    class _FakeMonitorHandler:
+        @staticmethod
+        async def get_team_snapshot():
+            return {
+                "team_id": "team-snapshot-test",
+                "members": [
+                    {"member_id": "agent1", "status": "ready"},
+                    {"member_id": "agent2", "status": "busy"},
+                ],
+                "tasks": [
+                    {"task_id": "task-1", "status": "completed", "assignee": "agent1"},
+                    {"task_id": "task-2", "status": "in_progress", "assignee": "agent2"},
+                ],
+            }
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return _FakeMonitorHandler()
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        lambda cid, sid, event: broadcast_events.append(event),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-snapshot-test")
+
+    # Verify member snapshots
+    member_events = [e for e in broadcast_events if e.get("event_type") == "team.member"]
+    assert len(member_events) == 2
+    assert member_events[0]["event"]["member_id"] == "agent1"
+    assert member_events[0]["event"]["new_status"] == "ready"
+    assert member_events[1]["event"]["member_id"] == "agent2"
+    assert member_events[1]["event"]["new_status"] == "busy"
+
+    # Verify task snapshots
+    task_events = [e for e in broadcast_events if e.get("event_type") == "team.task"]
+    assert len(task_events) == 2
+    assert task_events[0]["event"]["task_id"] == "task-1"
+    assert task_events[0]["event"]["status"] == "completed"
+    assert task_events[1]["event"]["task_id"] == "task-2"
+    assert task_events[1]["event"]["status"] == "in_progress"
+
+
+@pytest.mark.anyio
+async def test_broadcast_team_state_snapshot_noop_when_no_monitor(monkeypatch):
+    broadcast_events: list[dict] = []
+
+    class _FakeManager:
+        @staticmethod
+        def get_monitor_handler(session_id: str):
+            return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers,
+        "_broadcast_event",
+        lambda cid, sid, event: broadcast_events.append(event),
+    )
+
+    await team_helpers._broadcast_team_state_snapshot("web", "sess-no-monitor")
+    assert broadcast_events == []
