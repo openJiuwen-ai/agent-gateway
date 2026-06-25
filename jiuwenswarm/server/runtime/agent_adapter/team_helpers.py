@@ -704,15 +704,18 @@ def ensure_team_evolution_watcher(
 
     rail = tm.get_team_skill_rail(session_id)
     if rail is None:
+        mark_deferred = getattr(tm, "mark_team_evolution_watcher_deferred", None)
+        if callable(mark_deferred):
+            mark_deferred(session_id)
         logger.warning(
             "[TeamHelpers] no TeamSkillEvolutionRail found, evolution watcher launch deferred: session_id=%s source=%s",
             session_id,
             source,
         )
         return
-    if not getattr(rail, "auto_scan", True):
+    if not getattr(rail, "auto_scan", True) and not getattr(rail, "completion_followup_enabled", False):
         logger.info(
-            "[TeamHelpers] evolution monitor skipped because auto_scan is disabled: "
+            "[TeamHelpers] evolution monitor skipped because team evolution is disabled: "
             "channel_id=%s session_id=%s source=%s",
             channel_id,
             session_id,

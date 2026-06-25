@@ -95,6 +95,15 @@ function pickString(...values: unknown[]) {
   return undefined;
 }
 
+function resolveInterruptResumeMode(sessionId: string): AgentMode {
+  const sessionStore = useSessionStore.getState();
+  const session =
+    sessionStore.currentSession?.session_id === sessionId
+      ? sessionStore.currentSession
+      : sessionStore.sessions.find((item) => item.session_id === sessionId);
+  return session?.team_name?.trim() ? 'team' : sessionStore.mode;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -1044,11 +1053,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (
           effectiveSource === 'permission_interrupt' ||
           effectiveSource === 'confirm_interrupt' ||
+          effectiveSource === 'ask_user_interrupt' ||
+          effectiveSource === 'evolution_interrupt' ||
           (effectiveSource === 'skill_evolution_approval' && approvalTransport === 'interrupt')
         ) {
+          const resolvedResumeMode = resolveInterruptResumeMode(sessionId);
           await request('chat.send', {
             session_id: sessionId,
             query: '',
+            mode: resolvedResumeMode,
             request_id: requestId,
             answers: answers,
             ...sourcePayload,

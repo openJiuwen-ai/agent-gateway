@@ -205,6 +205,8 @@ class TeamManager:
         self._team_live_rails: dict[str, list[tuple[Any, Any]]] = {}
         # session_id → evolution watcher task
         self._team_evolution_watchers: dict[str, asyncio.Task] = {}
+        # session_id → runtime_ready requested a watcher before the rail registered
+        self._pending_team_evolution_watcher_sessions: set[str] = set()
         # session_id -> team workspace skills directory used as the shared link view.
         self._team_shared_skill_link_targets: dict[str, Path] = {}
         # session_id → workflow handler instance
@@ -243,6 +245,15 @@ class TeamManager:
 
     def pop_team_evolution_watcher(self, session_id: str) -> asyncio.Task | None:
         return self._team_evolution_watchers.pop(session_id, None)
+
+    def mark_team_evolution_watcher_deferred(self, session_id: str) -> None:
+        self._pending_team_evolution_watcher_sessions.add(session_id)
+
+    def consume_team_evolution_watcher_deferred(self, session_id: str) -> bool:
+        if session_id not in self._pending_team_evolution_watcher_sessions:
+            return False
+        self._pending_team_evolution_watcher_sessions.discard(session_id)
+        return True
 
     @staticmethod
     def _is_distributed_mode(config_base: dict[str, Any]) -> bool:

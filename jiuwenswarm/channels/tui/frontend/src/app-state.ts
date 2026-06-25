@@ -1584,6 +1584,7 @@ export class CliPiAppState {
       source === "permission_interrupt" ||
       source === "confirm_interrupt" ||
       source === "ask_user_interrupt" ||
+      source === "evolution_interrupt" ||
       (source === "skill_evolution_approval" && approvalTransport === "interrupt");
 
     if (shouldResumeInterrupt) {

@@ -379,6 +379,15 @@ async def test_destroy_team_cleans_registered_evolution_rails(
     assert manager.get_team_skill_create_rail("sess-1") is None
 
 
+def test_team_manager_tracks_deferred_evolution_watcher() -> None:
+    manager = TeamManager()
+
+    manager.mark_team_evolution_watcher_deferred("sess-1")
+
+    assert manager.consume_team_evolution_watcher_deferred("sess-1") is True
+    assert manager.consume_team_evolution_watcher_deferred("sess-1") is False
+
+
 @pytest.mark.asyncio
 async def test_team_manager_keeps_single_session_per_channel(monkeypatch: pytest.MonkeyPatch) -> None:
     destroyed_sessions: list[str] = []

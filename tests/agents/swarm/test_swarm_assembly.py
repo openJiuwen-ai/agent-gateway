@@ -1084,6 +1084,60 @@ def test_team_skill_evolution_provider_passes_review_runtime(
     assert rail.kwargs["completion_followup_enabled"] is True
 
 
+def test_swarm_team_skill_evolution_registration_retries_deferred_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    class _FakeManager:
+        @staticmethod
+        def register_team_live_rail(session_id, agent, rail) -> None:
+            calls.append(f"live:{session_id}")
+
+        @staticmethod
+        def register_team_skill_rail(session_id, rail) -> None:
+            calls.append(f"skill:{session_id}")
+
+        @staticmethod
+        def consume_team_evolution_watcher_deferred(session_id) -> bool:
+            calls.append(f"consume:{session_id}")
+            return True
+
+    manager = _FakeManager()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_team_manager",
+        lambda channel: manager,
+    )
+    monkeypatch.setattr(evolution_rails.TeamSkillEvolutionRail, "init", lambda self, agent: None)
+    monkeypatch.setattr(evolution_rails, "_register_team_rail_context", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.ensure_team_evolution_watcher",
+        lambda channel, session_id, *, source: calls.append(f"watcher:{channel}:{session_id}:{source}"),
+    )
+
+    rail = evolution_rails.SwarmTeamSkillEvolutionRail.__new__(
+        evolution_rails.SwarmTeamSkillEvolutionRail
+    )
+    rail.bind_swarm_context(
+        channel="web",
+        session_id="sess-1",
+        team_ws_root=None,
+        team_skills_dir="/tmp/team-skills",
+        team_id="team-1",
+        config={},
+        trajectory_registry=object(),
+    )
+
+    rail.init(SimpleNamespace(card=SimpleNamespace(name="leader")))
+
+    assert calls == [
+        "live:sess-1",
+        "skill:sess-1",
+        "consume:sess-1",
+        "watcher:web:sess-1:rail_registered",
+    ]
+
+
 def test_member_skill_evolution_provider_passes_review_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

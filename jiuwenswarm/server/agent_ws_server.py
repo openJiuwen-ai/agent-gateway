@@ -35,6 +35,9 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentRe
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    is_interrupt_resume_payload,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
@@ -512,24 +515,6 @@ def _inject_plan_mode_activation_reminder(request: AgentRequest) -> None:
             "request.params is not a dict (type=%s), session=%s",
             type(request.params).__name__, request.session_id,
         )
-
-
-# ── Plan approval helpers ──────────────────────────────────────────────
-
-
-def _is_resuming_tool_interrupt(request: AgentRequest) -> bool:
-    """Return True when the request resumes a paused tool-call interrupt."""
-    params = request.params if isinstance(request.params, dict) else {}
-    request_id = str(params.get("request_id") or "").strip()
-    answers = params.get("answers")
-    if not request_id or not answers:
-        return False
-    source = str(params.get("source") or "").strip()
-    return source in {
-        "permission_interrupt",
-        "confirm_interrupt",
-        "ask_user_interrupt",
-    }
 
 
 class AgentWebSocketServer:
@@ -1439,11 +1424,6 @@ class AgentWebSocketServer:
                 session_id,
             )
 
-    @staticmethod
-    def _is_resuming_tool_interrupt(request: AgentRequest) -> bool:
-        """Return True when the request resumes a paused tool-call interrupt."""
-        return _is_resuming_tool_interrupt(request)
-
     async def _prepare_code_mode_chat_turn(
         self,
         request: AgentRequest,
@@ -1493,7 +1473,7 @@ class AgentWebSocketServer:
             return False
         if not self._should_sync_code_mode_state(request):
             return False
-        if self._is_resuming_tool_interrupt(request):
+        if is_interrupt_resume_payload(request.params):
             logger.info(
                 "[_ensure_code_mode_state] Skip mode sync while resuming tool interrupt "
                 "for session=%s source=%s",
@@ -5234,6 +5214,10 @@ class AgentWebSocketServer:
                 ok=False,
                 payload={"error": str(e)},
             )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
 
     async def send_push(self, msg) -> None:
         """AgentServer 主动向 Gateway 推送消息。

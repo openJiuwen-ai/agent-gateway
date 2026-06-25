@@ -875,11 +875,8 @@ async def test_ensure_team_evolution_watcher_starts_without_reasoning_gate(monke
 
 
 @pytest.mark.anyio
-async def test_ensure_team_evolution_watcher_skips_disabled_auto_scan(monkeypatch):
-    registered: dict[str, asyncio.Task] = {}
-
-    class _DisabledRail:
-        auto_scan = False
+async def test_ensure_team_evolution_watcher_defers_when_rail_missing(monkeypatch):
+    deferred: list[str] = []
 
     class _FakeManager:
         @staticmethod
@@ -888,7 +885,45 @@ async def test_ensure_team_evolution_watcher_skips_disabled_auto_scan(monkeypatc
 
         @staticmethod
         def get_team_skill_rail(session_id: str):
-            return _DisabledRail()
+            return None
+
+        @staticmethod
+        def mark_team_evolution_watcher_deferred(session_id: str) -> None:
+            deferred.append(session_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    _TeamHelpersTestApi.ensure_team_evolution_watcher("web", "sess-missing", source="runtime_ready")
+
+    assert deferred == ["sess-missing"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("completion_followup_enabled", "should_start"),
+    [(False, False), (True, True)],
+)
+async def test_ensure_team_evolution_watcher_respects_completion_followup(
+        monkeypatch,
+        completion_followup_enabled: bool,
+        should_start: bool,
+):
+    registered: dict[str, asyncio.Task] = {}
+
+    class _Rail:
+        pass
+
+    _Rail.auto_scan = False
+    _Rail.completion_followup_enabled = completion_followup_enabled
+
+    class _FakeManager:
+        @staticmethod
+        def get_team_evolution_watcher(session_id: str):
+            return None
+
+        @staticmethod
+        def get_team_skill_rail(session_id: str):
+            return _Rail()
 
         @staticmethod
         def register_team_evolution_watcher(
@@ -897,15 +932,26 @@ async def test_ensure_team_evolution_watcher_skips_disabled_auto_scan(monkeypatc
         ) -> None:
             registered[session_id] = task
 
+        @staticmethod
+        def pop_team_evolution_watcher(session_id: str):
+            return registered.pop(session_id, None)
+
     async def _fake_watch(channel_id, session_id, rail):
-        raise AssertionError("disabled team evolution watcher should not start")
+        await asyncio.sleep(3600)
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(team_helpers, "_watch_team_evolution_and_push", _fake_watch)
 
-    _TeamHelpersTestApi.ensure_team_evolution_watcher("web", "sess-disabled")
+    _TeamHelpersTestApi.ensure_team_evolution_watcher("web", "sess-1")
 
-    assert registered == {}
+    if not should_start:
+        assert registered == {}
+        return
+
+    watcher = registered["sess-1"]
+    watcher.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await watcher
 
 
 @pytest.mark.anyio
@@ -1323,6 +1369,76 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
     assert _FakeManager.interact_calls == [
         ("sess-team-ask-followup", ask_answer_input),
     ]
+    assert chunks[-1].is_complete is True
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_routes_evolution_interrupt_to_active_runtime(monkeypatch):
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    approval_input = InteractiveInput()
+    approval_input.update(
+        "team_skill_evolve_req1",
+        {"answers": {"approve": True}},
+    )
+
+    class _FakeManager:
+        active_session_id = "sess-team-evolution-resume"
+        pending_session_id = None
+        interact_calls: list[tuple[str, Any]] = []
+
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            assert session_id == "sess-team-evolution-resume"
+            return True
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False)
+
+        @staticmethod
+        def ensure_team_shared_skills_ready_for_session(session_id: str, spec: Any):
+            pytest.fail("active evolution interrupt resume should not prepare shared skills")
+
+        @staticmethod
+        async def prepare_runtime_activation(session_id: str, team_name: str):
+            pytest.fail("active evolution interrupt resume should not recreate runtime")
+
+        @staticmethod
+        def register_stream_task(session_id: str, task: asyncio.Task) -> None:
+            pytest.fail("active evolution interrupt resume should not start a stream task")
+
+        @classmethod
+        async def interact(cls, session_id: str, query: Any):
+            cls.interact_calls.append((session_id, query))
+            return True, None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-evolution-resume",
+        request_id="req-team-evolution-resume",
+        channel_id="web",
+        metadata=None,
+        params={"mode": "team", "source": "evolution_interrupt"},
+    )
+
+    chunks = []
+    async for chunk in team_helpers.process_team_message_stream(
+        request,
+        {"query": approval_input},
+        object(),
+    ):
+        chunks.append(chunk)
+
+    assert _FakeManager.interact_calls == [
+        ("sess-team-evolution-resume", approval_input),
+    ]
+    assert not any(
+        chunk.payload
+        and chunk.payload.get("error") == "Failed to send message, please try again later"
+        for chunk in chunks
+    )
     assert chunks[-1].is_complete is True
 
 
