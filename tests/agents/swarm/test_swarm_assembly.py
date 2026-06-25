@@ -48,6 +48,7 @@ from openjiuwen.core.single_agent.rail.base import (
     AgentRail,
     ToolCallInputs,
 )
+from openjiuwen.harness.tools.worktree import WorktreeConfig
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.rails import SkillUseRail
 
@@ -673,6 +674,57 @@ def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     assert not hasattr(spec, "agent_customizer")
 
 
+def test_enrich_team_spec_defaults_member_workspace_to_project_dir() -> None:
+    """Core receives project-rooted member workspaces from swarm enrichment."""
+    spec = _make_team_spec()
+    spec.worktree = WorktreeConfig(enabled=True)
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="code.team",
+        project_dir="/tmp/project",
+        channel_id="web",
+    )
+
+    assert spec.agents["leader"].workspace.root_path == "/tmp/project"
+    assert spec.agents["teammate"].workspace.root_path == "/tmp/project"
+
+
+def test_enrich_team_spec_leaves_workspace_when_worktree_disabled() -> None:
+    """Non-worktree teams keep their existing member workspace semantics."""
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="code.team",
+        project_dir="/tmp/project",
+        channel_id="web",
+    )
+
+    assert spec.agents["leader"].workspace is None
+    assert spec.agents["teammate"].workspace is None
+
+
+def test_enrich_team_spec_preserves_explicit_member_workspace() -> None:
+    """A configured member workspace is not overwritten by project_dir."""
+    spec = _make_team_spec()
+    spec.worktree = WorktreeConfig(enabled=True)
+    spec.agents["leader"].workspace = WorkspaceSpec(root_path="/tmp/custom")
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="code.team",
+        project_dir="/tmp/project",
+        channel_id="web",
+    )
+
+    assert spec.agents["leader"].workspace.root_path == "/tmp/custom"
+    assert spec.agents["teammate"].workspace.root_path == "/tmp/project"
+
+
 def test_enrich_team_spec_appends_after_existing_rails(monkeypatch) -> None:
     """Provider rails are appended after a member's pre-existing rails."""
     monkeypatch.setattr(
@@ -1192,7 +1244,6 @@ _EXPECTED_CODE_RAIL_NAMES: frozenset[str] = frozenset(
         registry.CODE_AGENT_RAIL,
         registry.USER_HOOKS,
         registry.CODE_SKILL_USE,
-        registry.CODE_WORKTREE,
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.CODE_CONFIRM_INTERRUPT,
         registry.MEMBER_SKILL_TOOLKIT,
@@ -1666,9 +1717,9 @@ def test_code_member_builds_declaratively_without_post_processing(
         "CodeTaskPlanningRail",
         "CodeAgentModeRail",
         "StructuredAskUserRail",
-        "WorktreeRail",
     ):
         assert expected in rail_types, (expected, sorted(rail_types))
+    assert "WorktreeRail" not in rail_types
     # The code system prompt is set declaratively on the spec.
     assert agent.deep_config.system_prompt
     # CodingMemoryRail is published for the code_agent sub-agent to reuse.
@@ -1861,7 +1912,7 @@ def test_rebuilt_member_spec_keeps_provider_declarations() -> None:
     rail_types = {rail.type for rail in teammate.rails}
     assert registry.CODE_TASK_PLANNING in rail_types
     assert registry.CODE_AGENT_MODE in rail_types
-    assert registry.CODE_WORKTREE in rail_types
+    assert registry.CODE_WORKTREE not in rail_types
     # The code runtime prompt replaces the chat-team common runtime prompt.
     assert registry.CODE_RUNTIME_PROMPT in rail_types
     assert registry.RUNTIME_PROMPT not in rail_types

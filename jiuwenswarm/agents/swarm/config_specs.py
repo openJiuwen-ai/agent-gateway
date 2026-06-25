@@ -110,7 +110,6 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
     registry.CODE_SKILL_USE,
-    registry.CODE_WORKTREE,
     registry.SKILL_RETRIEVAL_PROMPT,
 )
 

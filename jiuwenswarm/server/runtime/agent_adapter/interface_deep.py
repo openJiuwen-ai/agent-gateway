@@ -4187,7 +4187,7 @@ class JiuWenSwarmDeepAdapter:
             runtime_cwd = str(self._project_dir or "").strip()
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = workspace_root
-        init_cwd(runtime_cwd, workspace=workspace_root)
+        init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
 
     @dataclass
     class _RuntimeConfig:
