@@ -203,6 +203,35 @@ function buildStatusLineBar(snapshot: AppSnapshot, width: number): string[] {
   });
 }
 
+function renderBtwOverlay(
+  overlay: { question: string; answer: string },
+  width: number,
+): string[] {
+  const lines: string[] = [];
+  const safeWidth = Math.max(1, width);
+  // 确保与其他固定区块有视觉分隔
+  lines.push(" ".repeat(safeWidth));
+
+  // 标题行: 💡 /btw <question>
+  const headerText = `💡 /btw ${overlay.question}`;
+  lines.push(padToWidth(palette.text.accent(headerText), safeWidth));
+
+  // 分隔线
+  lines.push(padToWidth(palette.text.dim("─".repeat(Math.min(safeWidth, 80))), safeWidth));
+
+  // 回答内容：完整展示，不折叠（btw 本身是单轮简短回答，不会过长）
+  const answerLines = overlay.answer.split("\n");
+  for (const line of answerLines) {
+    lines.push(padToWidth(palette.text.secondary(line), safeWidth));
+  }
+
+  // 提示行: Esc to dismiss
+  lines.push(padToWidth(palette.text.dim("Esc to dismiss"), safeWidth));
+  lines.push(" ".repeat(safeWidth));
+
+  return lines;
+}
+
 function buildShortcutLines(width: number): string[] {
   const lines = [
     padToWidth(palette.text.secondary("Shortcuts"), width),
@@ -281,6 +310,9 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
           options.width,
         )
       : [];
+  const btwOverlayLines =
+    snapshot.btwOverlay ? renderBtwOverlay(snapshot.btwOverlay, options.width) : [];
+
   const fixedLines = [
     ...todoLines,
     ...(todoLines.length > 0 &&
@@ -291,6 +323,7 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
     ...miniTeamTreeLines,
     ...teamPanelLines,
     ...options.questionLines,
+    ...btwOverlayLines,
     ...options.editorLines,
     ...options.composerPreviewLines,
     ...statusLineBarLines,

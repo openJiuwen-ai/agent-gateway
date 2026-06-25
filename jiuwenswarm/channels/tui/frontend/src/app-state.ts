@@ -143,6 +143,10 @@ export interface AppSnapshot {
   streamStalled: boolean;
   streamIdleMs: number | null;
   currentQueryUsage: CurrentQueryUsage;
+  /** /btw 侧问题覆盖层：独立于 transcript 渲染，不受滚动影响 */
+  btwOverlay: { question: string; answer: string } | null;
+  /** BTW 是否处于活动状态（加载中或 overlay 可见），Esc 优先消费 */
+  btwActive: boolean;
 }
 
 function formatElapsed(ms: number): string {
@@ -320,6 +324,10 @@ export class CliPiAppState {
   private streamStalled = false;
   /** 当 closeUi 中 cancelBeforeExit 调 cancel({showNotice:false}) 时置 true，抑制 chat.interrupt_result 的 UI 通知。 */
   private suppressInterruptResult = false;
+  /** /btw 侧问题覆盖层：独立于 transcript 渲染 */
+  private btwOverlay: { question: string; answer: string } | null = null;
+  /** BTW 是否处于活动状态（加载中或 overlay 可见），用于 Esc 优先级判断 */
+  private _btwActive = false;
   /** 本地中断请求标志，cancel() 调用时立即置 true，用于 long-running 命令的中断检测。 */
   private interruptRequested = false;
   /** 当前正在执行的斜杠命令 WS 请求 ID，用于 Ctrl+C 时立即取消。 */
@@ -865,12 +873,15 @@ export class CliPiAppState {
       (s) => s.status !== "completed" && s.status !== "error",
     );
     // 与「Ctrl+C 强制结束当前任务」对齐：有任一进行中工作则为 true。
+    // 包含 activeCommandRequestId 以确保 /btw 等命令请求在等待响应期间
+    // 也能被 Esc 取消（WS 请求会被立即中止，避免等待超时）。
     const cancellableWork =
       isProcessing ||
       this.streamingState === StreamingState.Paused ||
       hasRunningTools ||
       hasActiveSubtasks ||
       this.evolutionStatus === "running" ||
+      this.activeCommandRequestId !== null ||
       (isTeamMode(this.mode) && isTeamWorking(this.teamMemberEvents, this.teamMessageEvents));
     return {
       connectionStatus: this.connectionStatus,
@@ -930,6 +941,9 @@ export class CliPiAppState {
       streamIdleMs:
         this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
       currentQueryUsage: { ...this.currentQueryUsage },
+      streamIdleMs: this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
+      btwOverlay: this.btwOverlay,
+      btwActive: this._btwActive,
     };
   }
 
@@ -990,6 +1004,9 @@ export class CliPiAppState {
       accentColor: snapshot.accentColor,
       updateSession: this.updateSession,
       addItem: this.addItem,
+      setBtwOverlay: this.setBtwOverlay,
+      clearBtwOverlay: this.clearBtwOverlay,
+      setBtwActive: this.setBtwActive,
       clearEntries: this.clearEntries,
       restoreHistory: this.restoreHistory,
       exitApp: () => {
@@ -1219,6 +1236,8 @@ export class CliPiAppState {
     this.usageByModel.clear();
     this.resetCurrentUsageTokens();
     this.workflowRuns = [];
+    this.btwOverlay = null;
+    this._btwActive = false;
     if (this.accentColor !== "default") {
       this.accentColor = "default";
       setCurrentAccentColor("default");
@@ -1254,8 +1273,36 @@ export class CliPiAppState {
     // 用户发言后重置自动回顾状态，允许下一次空闲时触发新的回顾
     if (item.kind === "user") {
       this.autoRecapState = "idle";
+      // 用户发送新消息时自动清除 /btw overlay
+      if (this.btwOverlay !== null) {
+        this.btwOverlay = null;
+        this._btwActive = false;
+      }
     }
     this.emitChange();
+  };
+
+  /** 设置 /btw 侧问题覆盖层（独立于 transcript 渲染，不受滚动影响） */
+  readonly setBtwOverlay = (question: string, answer: string): void => {
+    this.btwOverlay = { question, answer };
+    this.emitChange();
+  };
+
+  /** 设置 BTW 活动状态（加载中或 overlay 可见），用于 Esc 优先级判断 */
+  readonly setBtwActive = (active: boolean): void => {
+    if (this._btwActive !== active) {
+      this._btwActive = active;
+      this.emitChange();
+    }
+  };
+
+  /** 清除 /btw 侧问题覆盖层 */
+  readonly clearBtwOverlay = (): void => {
+    if (this.btwOverlay !== null) {
+      this.btwOverlay = null;
+      this._btwActive = false;
+      this.emitChange();
+    }
   };
 
   readonly isHelpVisible = (): boolean => {
@@ -1299,6 +1346,8 @@ export class CliPiAppState {
     this.entries = [];
     this.pendingQuestion = null;
     this.lastError = null;
+    this.btwOverlay = null;
+    this._btwActive = false;
     this.setStreamingStateInternal(StreamingState.Idle);
     this.collapsedToolGroupIds.clear();
     this.activeSubtasks.clear();

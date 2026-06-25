@@ -6732,10 +6732,14 @@ class JiuWenSwarmDeepAdapter:
     def _get_recent_messages(self, session_id: str, window: int = 30) -> list[Any]:
         """从当前 agent 对话上下文中提取最近N条消息。
 
-        当 context_engine 中没有该 session 的上下文时（例如 /resume 之后），
-        回退到从磁盘读取兼容格式的 history 文件。
+        查找顺序：
+        1. 当前 adapter 的 context_engine（session-scoped adapter 自身或已加载的 parent）
+        2. 父 adapter 查找 session-scoped child adapter 的 context_engine
+           （解决 /btw 等侧查询在 parent adapter 上执行时，会话上下文在 child adapter
+           中而 parent 的 context_engine 未加载该 session 的问题）
+        3. 回退到从磁盘读取兼容格式的 history 文件
         """
-        # --- 快速路径：context_engine 已加载 ---
+        # --- 快速路径：当前 adapter 的 context_engine 已加载 ---
         if self._instance is not None and self._instance.react_agent is not None:
             context_engine = self._instance.react_agent.context_engine
             context = context_engine.get_context(session_id=session_id)
@@ -6746,6 +6750,36 @@ class JiuWenSwarmDeepAdapter:
                         return all_messages[-window:]
                 except Exception as exc:
                     logger.debug("[JiuWenSwarmDeepAdapter] _get_recent_messages from context_engine failed: %s", exc)
+
+        # --- 中间路径：从 session-scoped child adapter 的 context_engine 查找 ---
+        # 当 /btw 等侧查询在 parent adapter 上执行时，会话上下文实际在
+        # session-scoped child adapter 的内存中（context_engine），而非磁盘。
+        # 直接从内存读取可避免与异步写队列的"写后读"竞态。
+        if not getattr(self, "_is_session_scoped_adapter", False):
+            session_adapter = self._get_cached_session_adapter(session_id)
+            if session_adapter is not None:
+                inst = getattr(session_adapter, "_instance", None)
+                if inst is not None and getattr(inst, "react_agent", None) is not None:
+                    ctx_eng = inst.react_agent.context_engine
+                    ctx = ctx_eng.get_context(session_id=session_id)
+                    if ctx is not None:
+                        try:
+                            all_msgs = list(ctx.get_messages() or [])
+                            if all_msgs:
+                                logger.debug(
+                                    "[JiuWenSwarmDeepAdapter] _get_recent_messages: "
+                                    "read %d messages from session-scoped adapter context_engine "
+                                    "for session %s",
+                                    len(all_msgs),
+                                    session_id,
+                                )
+                                return all_msgs[-window:]
+                        except Exception as exc:
+                            logger.debug(
+                                "[JiuWenSwarmDeepAdapter] _get_recent_messages "
+                                "from session-scoped adapter context_engine failed: %s",
+                                exc,
+                            )
 
         # --- 回退路径：从磁盘读取兼容格式 history ---
         # 典型场景：/resume 之后，context_engine 还未加载新 session 的上下文，

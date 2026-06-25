@@ -1800,6 +1800,20 @@ export class AppScreen implements Component, Focusable {
 
     const isCancelWorkKey = !hasOverlay && resolveAction("Global", data) === "app:cancelWork";
 
+    // BTW 浮层优先消费 Esc（不干扰主会话）
+    // 只要 btw 浮层弹窗存在（可见、加载中、正在输出），按一次 Esc 只关闭/终止 btw 旁路
+    if (!pendingQuestion && isCancelWorkKey && snapshot.btwActive) {
+      // 关闭 BTW overlay（如果可见）
+      if (snapshot.btwOverlay) {
+        this.state.clearBtwOverlay();
+      }
+      // 取消正在进行的 BTW WS 请求（加载中状态），不影响主会话
+      this.state.requestLocalInterrupt();
+      this.state.setBtwActive(false);
+      this.tui.requestRender();
+      return;
+    }
+
     if (!pendingQuestion && snapshot.cancellableWork && isCancelWorkKey) {
       if (isTeamMode(snapshot.mode)) {
         this.state.pause();
@@ -1822,6 +1836,15 @@ export class AppScreen implements Component, Focusable {
       }, 3500);
       this.tui.requestRender();
       return;
+    }
+
+    // ESC 关闭 /btw overlay（独立于 transcript 的覆盖层）
+    if (!pendingQuestion && !hasOverlay && !snapshot.cancellableWork && isCancelWorkKey) {
+      if (snapshot.btwOverlay) {
+        this.state.clearBtwOverlay();
+        this.tui.requestRender();
+        return;
+      }
     }
 
     // ESC 关闭 help 视图（只读，无输入栏）
