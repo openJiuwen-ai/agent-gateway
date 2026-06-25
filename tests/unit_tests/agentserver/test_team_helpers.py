@@ -16,6 +16,20 @@ from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 
 
+class _InactiveTeamRuntimeManagerMixin:
+    """Provide the session-scoped runtime state API for inactive test managers."""
+
+    @staticmethod
+    def is_runtime_active(session_id: str) -> bool:
+        _ = session_id
+        return False
+
+    @staticmethod
+    def is_runtime_pending(session_id: str) -> bool:
+        _ = session_id
+        return False
+
+
 class _FakeTransport:
     pushes: list[dict] = []
 
@@ -839,7 +853,7 @@ async def test_team_evolution_monitor_uses_sdk_timeout_before_legacy_fallback(mo
 async def test_ensure_team_evolution_watcher_starts_without_reasoning_gate(monkeypatch):
     registered: dict[str, asyncio.Task] = {}
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def get_team_evolution_watcher(session_id: str):
             return None
@@ -916,7 +930,7 @@ async def test_ensure_team_evolution_watcher_respects_completion_followup(
     _Rail.auto_scan = False
     _Rail.completion_followup_enabled = completion_followup_enabled
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def get_team_evolution_watcher(session_id: str):
             return None
@@ -958,7 +972,7 @@ async def test_ensure_team_evolution_watcher_respects_completion_followup(
 async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(monkeypatch):
     calls: list[str] = []
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def commit_runtime_ready(session_id: str, team_name: str) -> None:
             calls.append(f"commit:{session_id}:{team_name}")
@@ -1153,7 +1167,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     )
     captured_spec: list[object] = []
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
             return False
@@ -1202,7 +1216,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
 @pytest.mark.anyio
 async def test_process_team_message_stream_emits_deferred_marker_for_followup(monkeypatch):
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         interact_calls: list[tuple[str, str]] = []
 
         @staticmethod
@@ -1265,7 +1279,7 @@ async def test_process_team_message_stream_passes_interactive_input_to_followup(
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         interact_calls: list[tuple[str, Any]] = []
 
         @staticmethod
@@ -1320,10 +1334,18 @@ async def test_process_team_message_stream_resumes_active_session_without_stream
         },
     )
 
-    class _FakeManager:
-        active_session_id = "sess-team-ask-followup"
-        pending_session_id = None
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         interact_calls: list[tuple[str, Any]] = []
+
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "sess-team-ask-followup"
+            return True
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-ask-followup"
+            return False
 
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
@@ -1454,11 +1476,19 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
 
     captured: dict[str, Any] = {}
 
-    class _FakeManager:
-        active_session_id = None
-        pending_session_id = None
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         runtime_ready = False
         interact_calls: list[tuple[str, Any]] = []
+
+        @classmethod
+        def is_runtime_active(cls, session_id: str) -> bool:
+            assert session_id == "sess-team-plan-resume"
+            return cls.runtime_ready
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-plan-resume"
+            return False
 
         @classmethod
         async def session_has_runtime(cls, session_id: str) -> bool:
@@ -1469,7 +1499,6 @@ async def test_process_team_message_stream_resumes_structured_team_plan_confirm_
         async def wait_for_resumable_runtime(cls, session_id: str, **_kwargs) -> bool:
             assert session_id == "sess-team-plan-resume"
             cls.runtime_ready = True
-            cls.active_session_id = session_id
             return True
 
         @staticmethod
@@ -1546,9 +1575,16 @@ async def test_process_team_message_stream_rejects_orphaned_interactive_input(mo
         },
     )
 
-    class _FakeManager:
-        active_session_id = None
-        pending_session_id = None
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "sess-team-orphan-answer"
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-orphan-answer"
+            return False
 
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
@@ -1606,11 +1642,19 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
         {"approved": True, "auto_confirm": False, "feedback": ""},
     )
 
-    class _FakeManager:
-        active_session_id = None
-        pending_session_id = None
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         runtime_ready = False
         interact_calls: list[tuple[str, Any]] = []
+
+        @classmethod
+        def is_runtime_active(cls, session_id: str) -> bool:
+            assert session_id == "sess-team-plan-recover"
+            return cls.runtime_ready
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-plan-recover"
+            return False
 
         @classmethod
         async def session_has_runtime(cls, session_id: str) -> bool:
@@ -1621,7 +1665,6 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
         async def wait_for_resumable_runtime(cls, session_id: str, **_kwargs) -> bool:
             assert session_id == "sess-team-plan-recover"
             cls.runtime_ready = True
-            cls.active_session_id = session_id
             return True
 
         @staticmethod
@@ -1670,9 +1713,16 @@ async def test_process_team_message_stream_recovers_paused_runtime_for_interacti
 async def test_process_team_message_stream_treats_plain_query_as_first_request_after_round_end(monkeypatch):
     captured: dict[str, Any] = {}
 
-    class _FakeManager:
-        active_session_id = None
-        pending_session_id = None
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "sess-team-new-round"
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "sess-team-new-round"
+            return False
 
         @staticmethod
         async def session_has_runtime(session_id: str) -> bool:
@@ -1748,7 +1798,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
 async def test_process_team_message_stream_converts_a2ui_followup_event(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_A2UI_ENABLED", "true")
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         interact_calls: list[tuple[str, str]] = []
 
         @staticmethod
@@ -1816,7 +1866,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
     user_intent = "没有特殊要求时格式尽量简洁，如果使用颜色也需要保持美观"
     _write_team_skill(tmp_path, "xlsx")
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @classmethod
         def has_stream_task(cls, session_id: str) -> bool:
             return False
@@ -1885,7 +1935,7 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
     captured_queries: list[str] = []
     user_intent = "没有特殊要求时格式尽量简洁，如果使用颜色也需要保持美观"
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
             return False
@@ -1954,7 +2004,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
     captured_queries: list[str] = []
     _write_team_skill(tmp_path, "demo-skill")
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
             return False
@@ -2020,7 +2070,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
 async def test_process_team_message_stream_does_not_emit_evolution_status_for_no_evolve_records(monkeypatch, tmp_path):
     _write_team_skill(tmp_path, "demo-skill")
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
             return False
@@ -2112,7 +2162,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
         async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
             return None
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def commit_runtime_ready(session_id: str, team_name: str) -> None:
             ready_calls.append((session_id, team_name))
@@ -2210,7 +2260,7 @@ async def test_consume_stream_with_query_broadcasts_leader_task_failed_detail_an
     class _FakeRunner:
         run_agent_team_streaming = staticmethod(_fake_stream)
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def clear_pending_runtime(session_id: str) -> None:
             pass
@@ -2277,7 +2327,7 @@ async def test_consume_stream_with_query_does_not_final_teammate_task_failed(mon
     class _FakeRunner:
         run_agent_team_streaming = staticmethod(_fake_stream)
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def clear_pending_runtime(session_id: str) -> None:
             pass
@@ -2345,7 +2395,7 @@ async def test_consume_stream_with_query_deduplicates_ask_user_questions(monkeyp
     class _FakeRunner:
         run_agent_team_streaming = staticmethod(_fake_stream)
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def clear_pending_runtime(session_id: str) -> None:
             pass
@@ -2419,7 +2469,7 @@ async def test_consume_stream_with_query_propagates_hide_dm_to_monitor(monkeypat
             captured["hide_dm"] = hide_dm
             return None
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def commit_runtime_ready(session_id: str, team_name: str) -> None:
             pass
@@ -2649,7 +2699,7 @@ async def test_ensure_monitor_handlers_creates_workflow_handler_when_swarmflow_e
         async def get_agent_team_monitor(team_name: str, session_id: str, **kwargs):
             return _FakeMonitor()
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def get_monitor(sid: str):
             return None
@@ -2719,7 +2769,7 @@ async def test_ensure_monitor_handlers_skips_workflow_handler_when_swarmflow_dis
         async def get_agent_team_monitor(team_name: str, session_id: str, **kwargs):
             return _FakeMonitor()
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def get_monitor(sid: str):
             return None
@@ -2798,7 +2848,7 @@ async def test_consume_stream_with_query_calls_ensure_workflow_handler_after_run
     fake_team_agent = SimpleNamespace()
     fake_team_agent.add_event_listener = _record_add_event_listener
 
-    class _FakeManager:
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
         def commit_runtime_ready(session_id: str, team_name: str) -> None:
             calls.append(f"commit:{session_id}:{team_name}")

@@ -18,7 +18,7 @@ from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness import DeepAgent
 
-from jiuwenswarm.agents.harness.team import get_team_manager
+from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     _drain_cron_delegation_grace_events,
@@ -216,14 +216,14 @@ def _normalize_team_query(query: Any, *, channel_id: str | None, language: str) 
     return query
 
 
-async def _team_session_has_runtime(team_manager: Any, session_id: str) -> bool:
+async def _team_session_has_runtime(team_manager: TeamManager, session_id: str) -> bool:
     # Keep ordinary team first-request detection scoped to claw-local
     # live markers only. Resumable Runner-pool entries are reserved for
     # InteractiveInput recovery and must not make a fresh text request
     # look like a follow-up after the previous round has ended.
     return (
-        getattr(team_manager, "active_session_id", None) == session_id
-        or getattr(team_manager, "pending_session_id", None) == session_id
+        team_manager.is_runtime_active(session_id)
+        or team_manager.is_runtime_pending(session_id)
         or bool(team_manager.has_stream_task(session_id))
     )
 

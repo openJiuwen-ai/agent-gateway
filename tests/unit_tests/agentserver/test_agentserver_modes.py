@@ -855,9 +855,17 @@ def test_process_message_stream_treats_team_plan_confirm_resume_as_team_follow_u
             )
 
     class FakeTeamManager:
-        active_session_id = None
-        pending_session_id = None
         interact_calls = []
+
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return False
 
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
@@ -959,8 +967,15 @@ def test_process_message_stream_treats_plain_team_query_as_first_request_after_r
             )
 
     class FakeTeamManager:
-        active_session_id = None
-        pending_session_id = None
+        @staticmethod
+        def is_runtime_active(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return False
+
+        @staticmethod
+        def is_runtime_pending(session_id: str) -> bool:
+            assert session_id == "team-session"
+            return False
 
         @staticmethod
         def has_stream_task(session_id: str) -> bool:
