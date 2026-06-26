@@ -724,8 +724,11 @@ class CronSchedulerService:
                         run_id,
                         len(state.result_text or ""),
                     )
+                    push_dt = datetime.fromisoformat(state.push_at_iso)
+                    now_dt = datetime.fromtimestamp(self._now_fn(), tz=ZoneInfo(job.timezone))
+                    scheduled_dt = max(now_dt, push_dt)
                     self._schedule_event(
-                        datetime.fromtimestamp(self._now_fn(), tz=ZoneInfo(job.timezone)),
+                        scheduled_dt,
                         "push_update", job.id, run_id,
                     )
 
