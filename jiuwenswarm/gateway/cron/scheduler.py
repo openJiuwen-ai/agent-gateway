@@ -208,7 +208,7 @@ def _format_cron_broadcast_text(*, job_name: str, text: str, is_placeholder: boo
     if is_placeholder or body.startswith("[cron]"):
         return body
     name = str(job_name or "").strip() or "cron"
-    return f"[cron] {name} result:\n\n{body}"
+    return f"{name} result:\n\n{body}"
 
 
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
@@ -955,7 +955,7 @@ class CronSchedulerService:
             return
 
         # Not ready: send placeholder
-        placeholder = f"[cron] {job.name} 正在执行中，结果稍后补发（push_at={state.push_at_iso}）"
+        placeholder = f"{job.name} 正在执行中，结果稍后补发（push_at={state.push_at_iso}）"
         await self._push_to_targets(job, state, text=placeholder, is_placeholder=True)
         state.placeholder_sent = True
 

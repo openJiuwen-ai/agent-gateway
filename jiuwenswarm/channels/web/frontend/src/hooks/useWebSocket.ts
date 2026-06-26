@@ -1456,9 +1456,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const cronMeta = payload.cron as Record<string, unknown> | undefined;
           const cronRunId =
             typeof cronMeta?.run_id === 'string' ? cronMeta.run_id.trim() : '';
-          const isCronPlaceholderContent = /^\[cron\].*正在执行中/.test(content);
+          const isCronPlaceholderContent =
+            cronMeta?.is_placeholder === true ||
+            /正在执行中，结果稍后补发/.test(content) ||
+            /^\[cron\].*正在执行中/.test(content);
 
-          // 正式结果：替换同 run_id 的占位气泡，或最近的 [cron]…正在执行中…
+          // 正式结果：替换同 run_id 的占位气泡，或最近的定时任务「正在执行中」占位
           if (!isCronPlaceholderContent) {
             let placeholderId: string | null = null;
             if (cronRunId) {
@@ -1469,7 +1472,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               for (let i = messages.length - 1; i >= 0; i -= 1) {
                 const msg = messages[i];
                 if (msg.role !== 'assistant' || typeof msg.content !== 'string') continue;
-                if (/^\[cron\].*正在执行中/.test(msg.content)) {
+                if (
+                  /正在执行中，结果稍后补发/.test(msg.content) ||
+                  /^\[cron\].*正在执行中/.test(msg.content)
+                ) {
                   placeholderId = msg.id;
                   break;
                 }
