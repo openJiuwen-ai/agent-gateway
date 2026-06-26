@@ -941,7 +941,6 @@ export class CliPiAppState {
       streamIdleMs:
         this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
       currentQueryUsage: { ...this.currentQueryUsage },
-      streamIdleMs: this.lastStreamActivityAt === null ? null : Date.now() - this.lastStreamActivityAt,
       btwOverlay: this.btwOverlay,
       btwActive: this._btwActive,
     };
