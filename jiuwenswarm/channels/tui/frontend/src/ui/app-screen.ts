@@ -364,6 +364,9 @@ interface DiffFileEntry {
   linesRemoved: number;
   isNewFile: boolean;
   isUntracked: boolean;
+  isBinary: boolean;
+  isLargeFile: boolean;
+  isTruncated: boolean;
   hunks: Hunk[];
   source: "working" | string;
 }
@@ -1487,7 +1490,10 @@ export class AppScreen implements Component, Focusable {
           linesAdded: f.linesAdded,
           linesRemoved: f.linesRemoved,
           isNewFile: f.isNewFile,
-          isUntracked: f.isNewFile,
+          isUntracked: f.isUntracked ?? f.isNewFile,
+          isBinary: f.isBinary ?? false,
+          isLargeFile: f.isLargeFile ?? false,
+          isTruncated: f.isTruncated ?? false,
           hunks: f.hunks || [],
           source: "working",
         });
@@ -1501,7 +1507,10 @@ export class AppScreen implements Component, Focusable {
           linesAdded: f.linesAdded,
           linesRemoved: f.linesRemoved,
           isNewFile: f.isNewFile,
-          isUntracked: false,
+          isUntracked: f.isUntracked ?? false,
+          isBinary: f.isBinary ?? false,
+          isLargeFile: f.isLargeFile ?? false,
+          isTruncated: f.isTruncated ?? false,
           hunks: f.hunks || [],
           source: `Turn ${turn.turnIndex}`,
         });
@@ -1510,8 +1519,13 @@ export class AppScreen implements Component, Focusable {
 
     const totalAdded = files.reduce((s, f) => s + f.linesAdded, 0);
     const totalRemoved = files.reduce((s, f) => s + f.linesRemoved, 0);
-    const title = `Diff`;
-    const subtitle = `${files.length} files changed  +${totalAdded} -${totalRemoved}`;
+    const workingCount = gitDiff ? Object.keys(gitDiff.files).length : 0;
+    const turnCount = turns.length;
+    const title = `Diff (git diff HEAD)`;
+    const parts: string[] = [`${files.length} files changed  +${totalAdded} -${totalRemoved}`];
+    if (workingCount > 0) parts.push(`working:${workingCount}`);
+    if (turnCount > 0) parts.push(`turns:${turnCount}`);
+    const subtitle = parts.join("  ·  ");
 
     this.diffViewerState = {
       viewMode: "list",
@@ -1662,17 +1676,55 @@ export class AppScreen implements Component, Focusable {
   private _renderDiffDetailLines(file: DiffFileEntry, width: number): string[] {
     const lines: string[] = [];
     const displayPath = this._toRelativePath(file.filePath);
-    const label = file.isUntracked ? "(untracked)" : file.isNewFile ? "(new)" : "";
+    const label = file.isUntracked
+      ? palette.text.dim("(untracked)")
+      : file.isNewFile
+        ? palette.text.dim("(new)")
+        : "";
 
-    lines.push(`│   ${displayPath} ${label} +${file.linesAdded} -${file.linesRemoved}`);
+    const added = palette.status.success(`+${file.linesAdded}`);
+    const removed = palette.status.error(`-${file.linesRemoved}`);
+    lines.push(`│   ${displayPath} ${label} ${added} ${removed}`);
     lines.push(`│   ${"─".repeat(Math.max(0, width - 4))}`);
 
+    if (file.isUntracked) {
+      lines.push(palette.text.dim("│     New file not yet staged."));
+      lines.push(palette.text.dim(`│     Run \`git add ${displayPath}\` to see line counts.`));
+      return lines;
+    }
+
+    if (file.isBinary) {
+      lines.push(palette.text.dim("│     Binary file - cannot display diff"));
+      return lines;
+    }
+
+    if (file.isLargeFile) {
+      lines.push(palette.text.dim("│     Large file - diff exceeds 1 MB limit"));
+      return lines;
+    }
+
     for (const hunk of file.hunks) {
-      lines.push(`│     @@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`);
+      lines.push(
+        palette.text.dim(
+          `│     @@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`,
+        ),
+      );
       for (const line of hunk.lines) {
         const display = `│     ${line}`;
-        lines.push(truncateToWidth(display, width, ""));
+        let styled: string;
+        if (line.startsWith("+")) {
+          styled = palette.diff.add(display);
+        } else if (line.startsWith("-")) {
+          styled = palette.diff.remove(display);
+        } else {
+          styled = palette.diff.context(display);
+        }
+        lines.push(truncateToWidth(styled, width, ""));
       }
+    }
+
+    if (file.isTruncated) {
+      lines.push(palette.text.dim("│     … diff truncated (exceeded 400 line limit)"));
     }
     return lines;
   }
@@ -1692,6 +1744,10 @@ export class AppScreen implements Component, Focusable {
     if (this.diffViewerState.viewMode === "list") {
       const availableHeight = Math.max(1, this.tui.terminal.rows - 5);
 
+      if (this.diffViewerState.files.length === 0) {
+        lines.push(padToWidth(palette.text.dim("  No file changes in this session"), safeWidth));
+      }
+
       for (let i = this.diffViewerState.scrollOffset; i < this.diffViewerState.files.length; i++) {
         const file = this.diffViewerState.files[i]!;
         const isSelected = i === this.diffViewerState.selectedIndex;
@@ -1700,11 +1756,42 @@ export class AppScreen implements Component, Focusable {
         const displayPath = relativePath.length > safeWidth - 16
           ? relativePath.slice(0, safeWidth - 19) + "..."
           : relativePath;
-        const label = file.isUntracked ? "untracked" : file.source;
-        const stats = `+${file.linesAdded} -${file.linesRemoved}`;
+
+        // 构建右侧状态标签（对齐 Claude Code FileStats）:
+        // - untracked → "untracked"
+        // - binary → "Binary file"
+        // - large file → "Large file modified"
+        // - normal/truncated → +N -N [ (truncated)]
+        let statsLabel: string;
+        let statsStyled: string;
+        if (file.isUntracked) {
+          statsLabel = "untracked";
+          statsStyled = palette.text.dim("untracked");
+        } else if (file.isBinary) {
+          statsLabel = "Binary file";
+          statsStyled = palette.text.dim("Binary file");
+        } else if (file.isLargeFile) {
+          statsLabel = "Large file modified";
+          statsStyled = palette.text.dim("Large file modified");
+        } else {
+          const addPart = palette.status.success(`+${file.linesAdded}`);
+          const removePart = palette.status.error(`-${file.linesRemoved}`);
+          statsLabel = `+${file.linesAdded} -${file.linesRemoved}`;
+          statsStyled = `${addPart} ${removePart}`;
+          if (file.isTruncated) {
+            statsLabel += " (truncated)";
+            statsStyled += palette.text.dim(" (truncated)");
+          }
+        }
+
+        const sourceLabel = file.isUntracked
+          ? "untracked"
+          : file.isNewFile
+            ? "(new)"
+            : file.source;
         const line = `${pointer}${displayPath}`;
-        const padded = padToWidth(line, safeWidth - stats.length - label.length - 3);
-        const fullLine = `${padded}${label} ${stats}`;
+        const padded = padToWidth(line, safeWidth - statsLabel.length - sourceLabel.length - 3);
+        const fullLine = `${padded}${palette.text.dim(sourceLabel)} ${statsStyled}`;
         if (isSelected) {
           lines.push(palette.text.accent(fullLine));
         } else {
