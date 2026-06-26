@@ -247,7 +247,7 @@ jiuwenswarm-start app
 jiuwenswarm chat "Hello, introduce yourself"
 ```
 
-`jiuwenswarm chat` calls JiuwenSwarm's runtime through the Gateway's `/cli` WebSocket route, using the same MessageHandler and AgentServer path as the TUI.
+`jiuwenswarm chat` calls JiuwenSwarm's runtime through the Gateway's `/tui` WebSocket route (`channel_id="tui"`), sharing the same MessageHandler and AgentServer path as the TUI.
 
 ### Basic Usage
 
@@ -267,7 +267,7 @@ jiuwenswarm chat "Hello, introduce yourself"
 | `--cwd <path>` | Current dir | Working directory for file mentions and agent context |
 | `--project-dir <path>` | `--cwd` | Project identity for session and agent cache |
 | `--trusted-dir <path>` | `--project-dir` | Trusted directory (repeatable) |
-| `--gateway-url <url>` | `ws://127.0.0.1:19001/cli` | Explicit Gateway WebSocket URL |
+| `--gateway-url <url>` | `ws://127.0.0.1:19001/tui` | Explicit Gateway WebSocket URL |
 | `--name <instance>` | — | Named instance for env isolation |
 | `--dotenv <path>` | — | Path to .env file |
 | `--json` | — | Print one final JSON object |
@@ -375,4 +375,4 @@ jiuwenswarm chat --jsonl "analyze README" | jq
 
 ### Relationship with TUI
 
-`jiuwenswarm chat` uses an independent `/cli` route (`channel_id="cli"`), isolated from the TUI's `/tui` route. Both can be used simultaneously without interfering with each other. The first version of the terminal CLI does not aim to replicate all TUI slash commands.
+`jiuwenswarm chat` reuses the TUI's `/tui` route (`channel_id="tui"`), sharing the same MessageHandler and AgentServer pipeline. Only one TUI/CLI connection per `channel_id="tui"` is active at a time — opening the TUI while `jiuwenswarm chat` is running (or vice versa) will replace the previous WebSocket client on that channel. The first version of the terminal CLI does not aim to replicate all TUI slash commands.

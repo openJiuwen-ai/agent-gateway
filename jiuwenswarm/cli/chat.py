@@ -183,6 +183,11 @@ async def _run_interactive_loop(
 ) -> int:
     interrupted = False
     per_recv_timeout = timeout if timeout and timeout > 0 else 300.0
+    # In team mode the session is persistent: leader replies arrive as
+    # chat.final but the team keeps working (creating workflows, delegating
+    # to members, etc.). Only chat.processing_status(is_processing=False)
+    # or team.error should terminate the CLI stream.
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
 
     loop = asyncio.get_running_loop()
 
@@ -248,6 +253,13 @@ async def _run_interactive_loop(
             elif kind == "tool_result":
                 renderer.handle_tool_result(payload)
             elif kind == "final":
+                # team.error is broadcast through the chat.final envelope
+                # (gateway default for unknown EventType). Route it to the
+                # error handler so the message is shown instead of silently
+                # exiting on an empty content field.
+                if payload.get("event_type") == "team.error":
+                    renderer.handle_error(payload)
+                    return 1
                 renderer.handle_final(payload)
             elif kind == "error":
                 renderer.handle_error(payload)
@@ -282,6 +294,16 @@ async def _run_interactive_loop(
                     return 4
 
             if is_terminal_event(event_type, payload):
+                # In team mode, chat.final (leader reply) is not terminal —
+                # the team keeps working after the leader responds. Only
+                # processing_status(is_processing=False) or team.error ends
+                # the stream.
+                if team_mode and event_type == "chat.final":
+                    if payload.get("event_type") == "team.error":
+                        renderer.clear_loading()
+                        return 1
+                    # leader reply or team control event — keep listening
+                    continue
                 renderer.clear_loading()
                 if renderer.streamed_text and not renderer.streamed_text.endswith("\n"):
                     write_stdout("\n")
@@ -304,6 +326,7 @@ async def _run_jsonl_loop(
     renderer: JsonlRenderer,
     request: dict,
 ) -> int:
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
     await client.send_request(request)
     while True:
         data = await client.recv()
@@ -315,6 +338,15 @@ async def _run_jsonl_loop(
         if event_type == "chat.error":
             return 1
         if is_terminal_event(event_type, payload):
+            # team.error is wrapped in chat.final by the gateway; treat it
+            # as an error exit so callers can detect the failure.
+            if payload.get("event_type") == "team.error":
+                return 1
+            # In team mode, chat.final (leader reply) is not terminal —
+            # the team keeps working. Keep listening for
+            # processing_status(is_processing=False).
+            if team_mode and event_type == "chat.final":
+                continue
             return 0
 
 
@@ -323,6 +355,7 @@ async def _run_json_loop(
     renderer: JsonRenderer,
     request: dict,
 ) -> int:
+    team_mode = request.get("params", {}).get("mode", "") in ("team", "team.plan", "code.team")
     await client.send_request(request)
     has_error = False
     while True:
@@ -332,7 +365,14 @@ async def _run_json_loop(
         event_type = data.get("event", "")
         payload = data.get("payload", {})
         if event_type == "chat.final":
-            renderer.handle_event(event_type, payload)
+            # team.error is wrapped in chat.final by the gateway; route it
+            # through the error path so has_error is set and the JSON output
+            # reports ok=false.
+            if payload.get("event_type") == "team.error":
+                renderer.handle_error(payload)
+                has_error = True
+            else:
+                renderer.handle_event(event_type, payload)
         elif event_type == "chat.error":
             renderer.handle_error(payload)
             has_error = True
@@ -341,6 +381,12 @@ async def _run_json_loop(
         else:
             renderer.handle_event(event_type, payload)
         if is_terminal_event(event_type, payload):
+            if team_mode and event_type == "chat.final":
+                if payload.get("event_type") == "team.error":
+                    renderer.output()
+                    return 1
+                # leader reply — team keeps working, keep listening
+                continue
             renderer.output()
             return 1 if has_error else 0
 
