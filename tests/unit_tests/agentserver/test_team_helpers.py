@@ -2151,6 +2151,12 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
             role=TeamRole.LEADER,
         )
         yield SimpleNamespace(
+            type="llm_reasoning",
+            payload={"content": "teammate private reasoning"},
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
             type="answer",
             payload={"output": {"output": "teammate answer"}, "result_type": "answer"},
             role=TeamRole.TEAMMATE,
@@ -2238,6 +2244,7 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     assert broadcasted[0]["is_processing"] is True
     assert broadcasted[0]["is_complete"] is False
     assert broadcasted[2]["content"] == "leader answer"
+    assert all(event.get("content") != "teammate private reasoning" for event in broadcasted)
     # Member events keep the frontend-compatible teammate role and include member_name.
     assert broadcasted[3]["content"] == "teammate answer"
     assert broadcasted[3]["role"] == TeamRole.TEAMMATE.value
