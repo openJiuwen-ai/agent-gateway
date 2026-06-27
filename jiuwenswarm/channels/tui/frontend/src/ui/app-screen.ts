@@ -1973,64 +1973,71 @@ export class AppScreen implements Component, Focusable {
       return;
     }
 
-    const handled = handleAppScreenKeyInput(data, {
-      interruptTask: () => this.interruptTask(),
-      exitApp: () => this.exit(),
-      toggleTodos: () => {
-        this.todosCollapsed = !this.todosCollapsed;
-        this.tui.requestRender();
-      },
-      toggleTeamPanel: () => {
-        this.showTeamPanel = !this.showTeamPanel;
-        if (!this.showTeamPanel) {
-          this.viewedTeamMemberId = null;
-        }
-        this.tui.requestRender();
-      },
-      toggleTranscript: () => {
-        const snapshot = this.state.getSnapshot();
-        this.state.setTranscriptMode(
-          snapshot.transcriptMode === "detailed" ? "compact" : "detailed",
-        );
-      },
-      redraw: () => {
-        this.tui.invalidate();
-        this.tui.requestRender(true);
-        this.transientNotice = "Screen redrawn";
-        if (this.transientNoticeTimer) {
-          clearTimeout(this.transientNoticeTimer);
-        }
-        this.transientNoticeTimer = setTimeout(() => {
-          this.transientNotice = null;
-          this.transientNoticeTimer = null;
+    // Global ctrl+l/t/g/o only apply on the main screen — defer while an overlay
+    // or the team panel is active so context-specific bindings (e.g. ResumeList)
+    // can use the same physical keys.
+    const skipGlobalMainScreenKeys = hasOverlay || this.showTeamPanel;
+    let handled = false;
+    if (!skipGlobalMainScreenKeys) {
+      handled = handleAppScreenKeyInput(data, {
+        interruptTask: () => this.interruptTask(),
+        exitApp: () => this.exit(),
+        toggleTodos: () => {
+          this.todosCollapsed = !this.todosCollapsed;
           this.tui.requestRender();
-        }, 1200);
-        this.tui.requestRender();
-      },
-      clearInput: () => {
-        this.editor.setText("");
-        this.tui.requestRender();
-      },
-      isIdle: () => {
-        return !snapshot.isProcessing && !snapshot.pendingQuestion && !snapshot.cancellableWork;
-      },
-      hasServerTask: () => this.state.hasServerTask(),
-      requestLocalInterrupt: () => {
-        return this.state.requestLocalInterrupt();
-      },
-      showCtrlCExitHint: () => {
-        if (this.transientNoticeTimer) {
-          clearTimeout(this.transientNoticeTimer);
-        }
-        this.transientNotice = "Press Ctrl+C again to exit";
-        this.transientNoticeTimer = setTimeout(() => {
-          this.transientNotice = null;
-          this.transientNoticeTimer = null;
+        },
+        toggleTeamPanel: () => {
+          this.showTeamPanel = !this.showTeamPanel;
+          if (!this.showTeamPanel) {
+            this.viewedTeamMemberId = null;
+          }
           this.tui.requestRender();
-        }, 3000);
-        this.tui.requestRender();
-      },
-    });
+        },
+        toggleTranscript: () => {
+          const snapshot = this.state.getSnapshot();
+          this.state.setTranscriptMode(
+            snapshot.transcriptMode === "detailed" ? "compact" : "detailed",
+          );
+        },
+        redraw: () => {
+          this.tui.invalidate();
+          this.tui.requestRender(true);
+          this.transientNotice = "Screen redrawn";
+          if (this.transientNoticeTimer) {
+            clearTimeout(this.transientNoticeTimer);
+          }
+          this.transientNoticeTimer = setTimeout(() => {
+            this.transientNotice = null;
+            this.transientNoticeTimer = null;
+            this.tui.requestRender();
+          }, 1200);
+          this.tui.requestRender();
+        },
+        clearInput: () => {
+          this.editor.setText("");
+          this.tui.requestRender();
+        },
+        isIdle: () => {
+          return !snapshot.isProcessing && !snapshot.pendingQuestion && !snapshot.cancellableWork;
+        },
+        hasServerTask: () => this.state.hasServerTask(),
+        requestLocalInterrupt: () => {
+          return this.state.requestLocalInterrupt();
+        },
+        showCtrlCExitHint: () => {
+          if (this.transientNoticeTimer) {
+            clearTimeout(this.transientNoticeTimer);
+          }
+          this.transientNotice = "Press Ctrl+C again to exit";
+          this.transientNoticeTimer = setTimeout(() => {
+            this.transientNotice = null;
+            this.transientNoticeTimer = null;
+            this.tui.requestRender();
+          }, 3000);
+          this.tui.requestRender();
+        },
+      });
+    }
     if (handled) {
       return;
     }
