@@ -382,44 +382,114 @@ class DiffService:
         if not old_lines and not new_lines:
             return [], False
 
-        matcher = difflib.SequenceMatcher(None, old_lines, new_lines)
+        # Emit unified hunks with context_lines of surrounding context and
+        # merge adjacent changes whose context windows overlap, matching
+        # `git diff --unified=3` / jsdiff's structuredPatch. The previous
+        # implementation skipped equal opcodes entirely, producing context-less
+        # isolated hunks that showed far less content than `git diff`.
+        context_lines = 3
+        opcodes = difflib.SequenceMatcher(
+            None, old_lines, new_lines
+        ).get_opcodes()
+        n_old = len(old_lines)
+        n_new = len(new_lines)
+
         hunks: list[dict[str, Any]] = []
         total_lines = 0
         truncated = False
 
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        i = 0
+        while i < len(opcodes):
+            tag, i1, i2, j1, j2 = opcodes[i]
             if tag == "equal":
+                i += 1
                 continue
 
-            if total_lines >= max_lines:
-                truncated = True
-                break
+            # First change of this hunk is at opcodes[i]; absorb following
+            # changes whose separating equal run is short enough that their
+            # context windows bridge the gap (run length <= 2*context_lines).
+            change_start = i
+            o_lo = max(0, i1 - context_lines)
+            n_lo = max(0, j1 - context_lines)
+            last_i2 = i2
+            last_j2 = j2
+            k = i + 1
+            while k < len(opcodes):
+                ntag, ni1, ni2, nj1, nj2 = opcodes[k]
+                if ntag == "equal":
+                    if (ni2 - ni1) > 2 * context_lines:
+                        break
+                    k += 1
+                    continue
+                last_i2 = ni2
+                last_j2 = nj2
+                k += 1
 
-            old_start = i1 + 1
-            old_count = i2 - i1
-            new_start = j1 + 1
-            new_count = j2 - j1
+            o_hi = min(n_old, last_i2 + context_lines)
+            n_hi = min(n_new, last_j2 + context_lines)
+
+            # Include the leading equal opcode (i-1) and the trailing equal
+            # opcode (k, when present) so leading/trailing context lines are
+            # emitted; both are clamped to the window below.
+            start_idx = (
+                i - 1 if i - 1 >= 0 and opcodes[i - 1][0] == "equal" else i
+            )
+            end_idx = (
+                k + 1
+                if k < len(opcodes) and opcodes[k][0] == "equal"
+                else k
+            )
 
             lines: list[str] = []
-            remaining = max_lines - total_lines
-
-            for k in range(i1, min(i2, i1 + remaining)):
-                lines.append(f"-{old_lines[k].rstrip()}")
-                total_lines += 1
-
-            for k in range(j1, min(j2, j1 + max(0, remaining - (i2 - i1)))):
-                if total_lines >= max_lines:
+            for idx in range(start_idx, end_idx):
+                tag2, ii1, ii2, jj1, jj2 = opcodes[idx]
+                if tag2 == "equal":
+                    for m in range(max(ii1, o_lo), min(ii2, o_hi)):
+                        if total_lines >= max_lines:
+                            truncated = True
+                            break
+                        lines.append(f" {old_lines[m].rstrip()}")
+                        total_lines += 1
+                elif tag2 == "delete":
+                    for m in range(max(ii1, o_lo), min(ii2, o_hi)):
+                        if total_lines >= max_lines:
+                            truncated = True
+                            break
+                        lines.append(f"-{old_lines[m].rstrip()}")
+                        total_lines += 1
+                elif tag2 == "insert":
+                    for m in range(max(jj1, n_lo), min(jj2, n_hi)):
+                        if total_lines >= max_lines:
+                            truncated = True
+                            break
+                        lines.append(f"+{new_lines[m].rstrip()}")
+                        total_lines += 1
+                else:  # replace
+                    for m in range(max(ii1, o_lo), min(ii2, o_hi)):
+                        if total_lines >= max_lines:
+                            truncated = True
+                            break
+                        lines.append(f"-{old_lines[m].rstrip()}")
+                        total_lines += 1
+                    for m in range(max(jj1, n_lo), min(jj2, n_hi)):
+                        if total_lines >= max_lines:
+                            truncated = True
+                            break
+                        lines.append(f"+{new_lines[m].rstrip()}")
+                        total_lines += 1
+                if truncated:
                     break
-                lines.append(f"+{new_lines[k].rstrip()}")
-                total_lines += 1
 
             hunks.append({
-                "oldStart": old_start,
-                "oldLines": old_count,
-                "newStart": new_start,
-                "newLines": new_count,
+                "oldStart": o_lo + 1,
+                "oldLines": o_hi - o_lo,
+                "newStart": n_lo + 1,
+                "newLines": n_hi - n_lo,
                 "lines": lines,
             })
+            if truncated:
+                break
+            i = k
 
         return hunks, truncated
 

@@ -1558,13 +1558,12 @@ export class AppScreen implements Component, Focusable {
     }
 
     if (this.diffViewerState.viewMode === "list") {
-      const visibleFiles = Math.max(1, height - 5);
+      // List view paginates a 5-file centered window derived from
+      // selectedIndex at render time, so navigation only needs to move the
+      // selection; the window follows automatically.
       if (matchesKey(data, "up") || data.toLowerCase() === "k") {
         if (this.diffViewerState.selectedIndex > 0) {
           this.diffViewerState.selectedIndex--;
-          if (this.diffViewerState.selectedIndex < this.diffViewerState.scrollOffset) {
-            this.diffViewerState.scrollOffset = this.diffViewerState.selectedIndex;
-          }
           this.tui.requestRender();
         }
         return;
@@ -1572,9 +1571,6 @@ export class AppScreen implements Component, Focusable {
       if (matchesKey(data, "down") || data.toLowerCase() === "j") {
         if (this.diffViewerState.selectedIndex < this.diffViewerState.files.length - 1) {
           this.diffViewerState.selectedIndex++;
-          if (this.diffViewerState.selectedIndex >= this.diffViewerState.scrollOffset + visibleFiles) {
-            this.diffViewerState.scrollOffset = this.diffViewerState.selectedIndex - visibleFiles + 1;
-          }
           this.tui.requestRender();
         }
         return;
@@ -1590,13 +1586,11 @@ export class AppScreen implements Component, Focusable {
       }
       if (matchesKey(data, "home") || data.toLowerCase() === "g") {
         this.diffViewerState.selectedIndex = 0;
-        this.diffViewerState.scrollOffset = 0;
         this.tui.requestRender();
         return;
       }
       if (matchesKey(data, "end") || data.toLowerCase() === "shift+g") {
         this.diffViewerState.selectedIndex = Math.max(0, this.diffViewerState.files.length - 1);
-        this.diffViewerState.scrollOffset = Math.max(0, this.diffViewerState.files.length - visibleFiles);
         this.tui.requestRender();
         return;
       }
@@ -1742,63 +1736,95 @@ export class AppScreen implements Component, Focusable {
     lines.push(padToWidth(palette.text.dim(`  ${"─".repeat(Math.max(0, safeWidth - 4))}`), safeWidth));
 
     if (this.diffViewerState.viewMode === "list") {
-      const availableHeight = Math.max(1, this.tui.terminal.rows - 5);
+      // Paginate to MAX_VISIBLE files with the selected file centered,
+      // mirroring Claude Code's DiffFileList. When there are more files than
+      // the window, show ↑/↓ "N more files" hints above/below the window.
+      const MAX_VISIBLE = 5;
+      const total = this.diffViewerState.files.length;
 
-      if (this.diffViewerState.files.length === 0) {
+      if (total === 0) {
         lines.push(padToWidth(palette.text.dim("  No file changes in this session"), safeWidth));
-      }
-
-      for (let i = this.diffViewerState.scrollOffset; i < this.diffViewerState.files.length; i++) {
-        const file = this.diffViewerState.files[i]!;
-        const isSelected = i === this.diffViewerState.selectedIndex;
-        const pointer = isSelected ? "❯ " : "  ";
-        const relativePath = this._toRelativePath(file.filePath);
-        const displayPath = relativePath.length > safeWidth - 16
-          ? relativePath.slice(0, safeWidth - 19) + "..."
-          : relativePath;
-
-        // 构建右侧状态标签（对齐 Claude Code FileStats）:
-        // - untracked → "untracked"
-        // - binary → "Binary file"
-        // - large file → "Large file modified"
-        // - normal/truncated → +N -N [ (truncated)]
-        let statsLabel: string;
-        let statsStyled: string;
-        if (file.isUntracked) {
-          statsLabel = "untracked";
-          statsStyled = palette.text.dim("untracked");
-        } else if (file.isBinary) {
-          statsLabel = "Binary file";
-          statsStyled = palette.text.dim("Binary file");
-        } else if (file.isLargeFile) {
-          statsLabel = "Large file modified";
-          statsStyled = palette.text.dim("Large file modified");
+      } else {
+        let start: number;
+        let end: number;
+        if (total <= MAX_VISIBLE) {
+          start = 0;
+          end = total;
         } else {
-          const addPart = palette.status.success(`+${file.linesAdded}`);
-          const removePart = palette.status.error(`-${file.linesRemoved}`);
-          statsLabel = `+${file.linesAdded} -${file.linesRemoved}`;
-          statsStyled = `${addPart} ${removePart}`;
-          if (file.isTruncated) {
-            statsLabel += " (truncated)";
-            statsStyled += palette.text.dim(" (truncated)");
+          start = Math.max(0, this.diffViewerState.selectedIndex - Math.floor(MAX_VISIBLE / 2));
+          end = start + MAX_VISIBLE;
+          if (end > total) {
+            end = total;
+            start = Math.max(0, end - MAX_VISIBLE);
           }
         }
 
-        const sourceLabel = file.isUntracked
-          ? "untracked"
-          : file.isNewFile
-            ? "(new)"
-            : file.source;
-        const line = `${pointer}${displayPath}`;
-        const padded = padToWidth(line, safeWidth - statsLabel.length - sourceLabel.length - 3);
-        const fullLine = `${padded}${palette.text.dim(sourceLabel)} ${statsStyled}`;
-        if (isSelected) {
-          lines.push(palette.text.accent(fullLine));
-        } else {
-          lines.push(fullLine);
+        if (start > 0) {
+          const more = start;
+          lines.push(padToWidth(
+            palette.text.dim(`  ↑ ${more} more ${more === 1 ? "file" : "files"}`),
+            safeWidth,
+          ));
         }
 
-        if (lines.length >= availableHeight + 4) break;
+        for (let i = start; i < end; i++) {
+          const file = this.diffViewerState.files[i]!;
+          const isSelected = i === this.diffViewerState.selectedIndex;
+          const pointer = isSelected ? "❯ " : "  ";
+          const relativePath = this._toRelativePath(file.filePath);
+          const displayPath = relativePath.length > safeWidth - 16
+            ? relativePath.slice(0, safeWidth - 19) + "..."
+            : relativePath;
+
+          // 构建右侧状态标签（对齐 Claude Code FileStats）:
+          // - untracked → "untracked"
+          // - binary → "Binary file"
+          // - large file → "Large file modified"
+          // - normal/truncated → +N -N [ (truncated)]
+          let statsLabel: string;
+          let statsStyled: string;
+          if (file.isUntracked) {
+            statsLabel = "untracked";
+            statsStyled = palette.text.dim("untracked");
+          } else if (file.isBinary) {
+            statsLabel = "Binary file";
+            statsStyled = palette.text.dim("Binary file");
+          } else if (file.isLargeFile) {
+            statsLabel = "Large file modified";
+            statsStyled = palette.text.dim("Large file modified");
+          } else {
+            const addPart = palette.status.success(`+${file.linesAdded}`);
+            const removePart = palette.status.error(`-${file.linesRemoved}`);
+            statsLabel = `+${file.linesAdded} -${file.linesRemoved}`;
+            statsStyled = `${addPart} ${removePart}`;
+            if (file.isTruncated) {
+              statsLabel += " (truncated)";
+              statsStyled += palette.text.dim(" (truncated)");
+            }
+          }
+
+          const sourceLabel = file.isUntracked
+            ? "untracked"
+            : file.isNewFile
+              ? "(new)"
+              : file.source;
+          const line = `${pointer}${displayPath}`;
+          const padded = padToWidth(line, safeWidth - statsLabel.length - sourceLabel.length - 3);
+          const fullLine = `${padded}${palette.text.dim(sourceLabel)} ${statsStyled}`;
+          if (isSelected) {
+            lines.push(palette.text.accent(fullLine));
+          } else {
+            lines.push(fullLine);
+          }
+        }
+
+        if (end < total) {
+          const more = total - end;
+          lines.push(padToWidth(
+            palette.text.dim(`  ↓ ${more} more ${more === 1 ? "file" : "files"}`),
+            safeWidth,
+          ));
+        }
       }
     } else {
       const file = this.diffViewerState.files[this.diffViewerState.selectedIndex];
