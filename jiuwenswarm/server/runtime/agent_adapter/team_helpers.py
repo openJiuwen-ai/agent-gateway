@@ -693,6 +693,33 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
     return parsed
 
 
+_TEAM_TOOL_RESULT_TEXT_LIMIT = 512
+
+
+def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Trim large team tool result fields before forwarding them to clients."""
+    if parsed.get("event_type") != "chat.tool_result":
+        return parsed
+
+    next_event = dict(parsed)
+    truncated = False
+    original_size = 0
+    for key in ("result", "raw_output"):
+        value = next_event.get(key)
+        if not isinstance(value, str):
+            continue
+        original_size += len(value)
+        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
+            continue
+        next_event[key] = value[:_TEAM_TOOL_RESULT_TEXT_LIMIT]
+        truncated = True
+
+    if truncated:
+        next_event["truncated"] = True
+        next_event["original_size"] = original_size
+    return next_event
+
+
 def _is_duplicate_ask_user_question(
     parsed: dict[str, Any],
     emitted_request_ids: set[str],
@@ -1402,6 +1429,7 @@ async def _consume_stream_with_query(
                 parsed["rid"] = round_id
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
+                parsed = _truncate_team_tool_result_event(parsed)
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
