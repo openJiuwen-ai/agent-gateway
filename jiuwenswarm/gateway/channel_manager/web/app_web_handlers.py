@@ -746,6 +746,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return ref.get(key)
         return ref
 
+    def _schedule_clear_agent_config_cache(name: str) -> None:
+        asyncio.create_task(
+            _clear_agent_config_cache(_resolve(agent_client)),
+            name=f"{name}.clear_agent_config_cache",
+        )
+
     def _resolve_env_vars(value: Any) -> Any:
         """Recursively resolve environment variables in config values."""
         if isinstance(value, str):
@@ -1858,12 +1864,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 检查通过后再保存配置
             await hb.set_heartbeat_conf(every=every, target=target, active_hours=active_hours)
             payload = dict(hb.get_heartbeat_conf())
+            should_clear_agent_config_cache = False
             try:
                 update_heartbeat_in_config(payload)
-                await _clear_agent_config_cache(_resolve(agent_client))
+                should_clear_agent_config_cache = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("[heartbeat.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
+            try:
+                await channel.send_response(ws, req_id, ok=True, payload=payload)
+            finally:
+                if should_clear_agent_config_cache:
+                    _schedule_clear_agent_config_cache("heartbeat.set_conf")
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:
@@ -1933,12 +1944,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             await cm.set_conf("feishu", params)
             conf = cm.get_conf("feishu")
+            should_clear_agent_config_cache = False
             try:
                 update_channel_in_config("feishu", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
+                should_clear_agent_config_cache = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.feishu.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            try:
+                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            finally:
+                if should_clear_agent_config_cache:
+                    _schedule_clear_agent_config_cache("channel.feishu.set_conf")
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.feishu.set_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -2090,12 +2106,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             await cm.set_conf("dingtalk", params)
             conf = cm.get_conf("dingtalk")
+            should_clear_agent_config_cache = False
             try:
                 update_channel_in_config("dingtalk", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
+                should_clear_agent_config_cache = True
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.dingtalk.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            try:
+                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            finally:
+                if should_clear_agent_config_cache:
+                    _schedule_clear_agent_config_cache("channel.dingtalk.set_conf")
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.dingtalk.set_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
