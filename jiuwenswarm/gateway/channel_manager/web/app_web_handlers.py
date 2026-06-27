@@ -1831,6 +1831,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif active_hours and ("start" not in active_hours or "end" not in active_hours):
                     # 必须同时包含 start/end，否则视为清除时间段（始终生效）
                     active_hours = None
+
+            # 先检查：如果目标渠道是飞书，检测是否有可用的推送目标
+            if target == "feishu":
+                try:
+                    raw = get_config_raw() or {}
+                    ch_cfg = (raw.get("channels") or {}).get("feishu") or {}
+                    has_target = bool(
+                        str(ch_cfg.get("last_chat_id") or "").strip()
+                        or str(ch_cfg.get("chat_id") or "").strip()
+                    )
+                    if not has_target:
+                        await channel.send_response(
+                            ws, req_id, ok=False,
+                            error="feishuNoTarget",
+                            code="feishuNoTarget",
+                        )
+                        return
+                except Exception as e:
+                    logger.debug("[heartbeat.set_conf] 飞书目标检测异常: %s", e)
+                    await channel.send_response(
+                        ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR",
+                    )
+                    return
+
+            # 检查通过后再保存配置
             await hb.set_heartbeat_conf(every=every, target=target, active_hours=active_hours)
             payload = dict(hb.get_heartbeat_conf())
             try:
