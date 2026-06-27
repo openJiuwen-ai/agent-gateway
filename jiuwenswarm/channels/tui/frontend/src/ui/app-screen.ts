@@ -5208,12 +5208,16 @@ export class AppScreen implements Component, Focusable {
           const newQuery = state.searchQuery.slice(0, -1);
           this.updateConfigSearchQuery(newQuery);
         } else if (matchesKey(data, "escape")) {
-          // Layered ESC: clear search query first, then exit search mode
+          // Layered ESC: clear search query first; once the query is empty, a
+          // second ESC exits the editor entirely (back to StatusView config tab
+          // when invoked from /status, or closed when invoked via /config).
+          // We must NOT burn an ESC just to flip searchMode true→false while
+          // staying on the search_list — that is what forced the extra ESC.
           if (state.searchQuery) {
             this.updateConfigSearchQuery("");
             this.configEditorState = { ...this.configEditorState!, searchMode: false };
           } else {
-            this.configEditorState = { ...this.configEditorState!, searchMode: false };
+            this.closeConfigEditor();
           }
         } else if (matchesKey(data, "return") || matchesKey(data, "space")) {
           const selectedItem = state.list.getSelectedItem();
