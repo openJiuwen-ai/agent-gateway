@@ -3258,7 +3258,7 @@ class AgentWebSocketServer:
 
         name = str(entry.get("name", "")).strip()
         transport = str(entry.get("transport", "")).strip().lower()
-        if not name or transport not in {"stdio", "sse"}:
+        if not name or transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
             logger.warning("[command.mcp] _fetch skipped: name=%r transport=%r", name, transport)
             return []
 
@@ -3326,8 +3326,8 @@ class AgentWebSocketServer:
         transport = str(merged.get("transport", "")).strip().lower()
         if not name:
             raise ValueError("MCP server name is required")
-        if transport not in {"stdio", "sse"}:
-            raise ValueError("transport must be one of stdio|sse")
+        if transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
+            raise ValueError("transport must be one of stdio|sse|http")
 
         payload: dict[str, Any] = {
             "name": name,
