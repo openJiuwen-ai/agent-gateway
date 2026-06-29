@@ -5230,17 +5230,11 @@ export class AppScreen implements Component, Focusable {
           const newQuery = state.searchQuery.slice(0, -1);
           this.updateConfigSearchQuery(newQuery);
         } else if (matchesKey(data, "escape")) {
-          // Layered ESC: clear search query first; once the query is empty, a
-          // second ESC exits the editor entirely (back to StatusView config tab
-          // when invoked from /status, or closed when invoked via /config).
-          // We must NOT burn an ESC just to flip searchMode true→false while
-          // staying on the search_list — that is what forced the extra ESC.
-          if (state.searchQuery) {
-            this.updateConfigSearchQuery("");
-            this.configEditorState = { ...this.configEditorState!, searchMode: false };
-          } else {
-            this.closeConfigEditor();
-          }
+          // One-ESC exit: leave the editor entirely (back to the StatusView config
+          // tab when invoked from /status, or closed when invoked via /config).
+          // We do not first clear the search query — a single ESC returns to the
+          // original page, no intermediate search_list step.
+          this.closeConfigEditor();
         } else if (matchesKey(data, "return") || matchesKey(data, "space")) {
           const selectedItem = state.list.getSelectedItem();
           if (selectedItem) {
@@ -5282,20 +5276,10 @@ export class AppScreen implements Component, Focusable {
     // ── select_value phase ──
     if (state.phase === "select_value") {
       if (matchesKey(data, "escape")) {
-        // Return to search_list with saved list
-        const savedList = state.savedList;
-        this.configEditorState = {
-          ...state,
-          phase: state.previousPhase ?? "search_list",
-          selectedKey: null,
-          previousPhase: null,
-          savedList: null,
-          list: savedList ?? state.list,
-        };
-        // If no savedList, rebuild the flat list
-        if (!savedList) {
-          this.refreshConfigEditorList();
-        }
+        // One-ESC exit: leave the editor entirely (back to the StatusView config
+        // tab when invoked from /status, or closed when invoked via /config).
+        // We intentionally do NOT return to the search_list intermediate page.
+        this.closeConfigEditor();
         return;
       }
       // Delegate to list for navigation + selection
@@ -5306,20 +5290,11 @@ export class AppScreen implements Component, Focusable {
     // ── input_value phase ──
     if (state.phase === "input_value") {
       if (matchesKey(data, "escape")) {
-        // Return to search_list with saved list
-        const savedList = state.savedList;
-        this.configEditorState = {
-          ...state,
-          phase: state.previousPhase ?? "search_list",
-          selectedKey: null,
-          previousPhase: null,
-          savedList: null,
-          list: savedList ?? state.list,
-        };
-        if (!savedList) {
-          this.refreshConfigEditorList();
-        }
+        // One-ESC exit: leave the editor entirely (back to the StatusView config
+        // tab when invoked from /status, or closed when invoked via /config).
+        // We intentionally do NOT return to the search_list intermediate page.
         this.editor.setText("");
+        this.closeConfigEditor();
         return;
       }
       if (matchesKey(data, "return")) {
