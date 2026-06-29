@@ -428,6 +428,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         audio_model_config / context_engine_config。
         completion_timeout 从配置读取，可在 react / modes.code 中自定义。
         """
+        # Propagate create params to per-session child adapters (see
+        # JiuWenSwarmDeepAdapter._get_or_create_session_adapter).  The parent
+        # deep adapter sets these fields; code mode must do the same or every
+        # chat turn spawns a session adapter with project_dir=None → default
+        # coding_memory/.
+        self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
+        self._session_instance_mode = mode
+        self._session_instance_sub_mode = sub_mode
+
         await self.set_checkpoint()
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
