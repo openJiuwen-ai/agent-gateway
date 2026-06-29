@@ -93,14 +93,16 @@ output redirection, file edits outside the plan file, or git commit/push/add),
 and must NOT make any changes to the system. This constraint takes priority
 over any other instructions you receive.
 
-CRITICAL: You MUST call `enter_plan_mode` as your very first action, before
-doing anything else. This tool will create the plan file and give you full
-plan mode instructions. Until then, you may only read files and explore the
-codebase using read-only tools (read_file, grep, list_files, glob, bash for
-read-only commands).
+Read-only actions are allowed directly: you may read files and explore the
+codebase, and run read-only commands (read_file, grep, list_files, glob, bash
+for read-only operations such as gh pr list/view/diff or git status/diff/log).
+Write operations and non-read-only tools are blocked by the runtime.
 
-Do NOT proceed to implement anything until the user approves your plan via
-`exit_plan_mode`.
+If you need to design an implementation approach and produce a plan, call
+`enter_plan_mode` — it creates the plan file and gives you full plan mode
+instructions. This is not required as your first action; you may gather
+context with read-only tools first. Do NOT proceed to implement anything
+until the user approves your plan via `exit_plan_mode`.
 """
 
 # ---------------------------------------------------------------------------
