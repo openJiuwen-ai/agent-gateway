@@ -985,12 +985,24 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const handleCancelRetrievalBuild = useCallback(async () => {
     setRetrievalLoading("cancel");
     try {
-      await webRequest<{ success: boolean; result?: string }>(
+      const result = await webRequest<{ success: boolean; result?: string; build_status?: string }>(
         "skills.retrieval.index_cancel",
         withSession(),
         { timeoutMs: 30_000 }
       );
-      await fetchRetrievalStatus();
+      if (result.success) {
+        setRetrievalStatus((current) => current
+          ? {
+              ...current,
+              build_status: "cancelled",
+              build_stage: "cancelled",
+              build_message: result.result || current.build_message,
+              build_progress: 1,
+            }
+          : current);
+      } else {
+        await fetchRetrievalStatus();
+      }
     } catch (error) {
       console.error(error);
     } finally {
@@ -1414,39 +1426,54 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
     () => findSkillIndexNode(retrievalTreeNodes, selectedTreeNodeCid),
     [retrievalTreeNodes, selectedTreeNodeCid]
   );
+  const retrievalUsingExistingAfterFailure = Boolean(
+    retrievalStatus
+      && retrievalShowExistingIndexFailureNotice
+      && retrievalStatus.enabled !== false
+      && retrievalStatus.build_status === "failed"
+      && retrievalStatus.index_exists
+      && retrievalStatus.fresh
+  );
+  const retrievalUsingExistingAfterCancellation = Boolean(
+    retrievalStatus
+      && retrievalStatus.enabled !== false
+      && retrievalStatus.build_status === "cancelled"
+      && retrievalStatus.index_exists
+      && retrievalStatus.fresh
+  );
+  const retrievalUsingExistingAfterInterruptedBuild = (
+    retrievalUsingExistingAfterFailure
+    || retrievalUsingExistingAfterCancellation
+  );
   const retrievalStatusText = retrievalStatus
     ? retrievalStatus.enabled === false
       ? t('skills.retrieval.disabled')
       : retrievalStatus.build_status === "running"
       ? t('skills.retrieval.building')
+      : retrievalStatus.build_status === "failed" && !retrievalUsingExistingAfterFailure
+      ? t('skills.retrieval.buildFailed')
+      : retrievalStatus.build_status === "cancelled"
+      ? t('skills.retrieval.cancelled')
       : retrievalStatus.index_exists
       ? retrievalStatus.fresh
         ? t('skills.retrieval.ready')
         : t('skills.retrieval.stale')
-      : retrievalStatus.build_status === "failed"
-      ? t('skills.retrieval.buildFailed')
-      : retrievalStatus.build_status === "cancelled"
-      ? t('skills.retrieval.cancelled')
       : t('skills.retrieval.missing')
     : t('common.loading');
-  const retrievalLastBuildFailureText = retrievalStatus
-    && retrievalShowExistingIndexFailureNotice
-    && retrievalStatus.enabled !== false
-    && retrievalStatus.build_status === "failed"
-    && retrievalStatus.index_exists
-    && retrievalStatus.fresh
+  const retrievalLastBuildMessage = retrievalUsingExistingAfterFailure
     ? t('skills.retrieval.lastBuildFailedUsingExisting')
+    : retrievalUsingExistingAfterCancellation
+    ? t('skills.retrieval.lastBuildCancelledUsingExisting')
     : "";
   const retrievalBuildRunning = retrievalStatus?.build_status === "running";
   const retrievalBuildProgress = Math.round(Math.max(0, Math.min(1, retrievalStatus?.build_progress ?? 0)) * 100);
   const retrievalBuildLogs = Array.isArray(retrievalStatus?.build_logs)
     ? retrievalStatus.build_logs.slice(-12)
     : [];
-  const retrievalUsingExistingAfterFailure = Boolean(retrievalLastBuildFailureText);
   const retrievalHasBuildInfo = Boolean(
     retrievalStatus
       && retrievalStatus.enabled !== false
-      && !retrievalUsingExistingAfterFailure
+      && !retrievalUsingExistingAfterInterruptedBuild
       && (
         retrievalBuildRunning
         || ["success", "failed", "cancelled"].includes(String(retrievalStatus.build_status || ""))
@@ -1636,9 +1663,9 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                         })}`
                       : ""}
                   </div>
-                  {retrievalLastBuildFailureText ? (
+                  {retrievalLastBuildMessage ? (
                     <div className="mt-1 text-xs text-amber-600">
-                      {retrievalLastBuildFailureText}
+                      {retrievalLastBuildMessage}
                     </div>
                   ) : null}
                 </div>
