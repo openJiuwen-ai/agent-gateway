@@ -1490,6 +1490,7 @@
       "accept": "Accept",
       "reject": "Reject",
       "allowOnce": "Allow once",
+      "sessionAllow": "Session allow",
       "alwaysAllow": "Always allow",
       "acceptAll": "Accept all",
       "submit": "Submit",
