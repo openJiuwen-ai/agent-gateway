@@ -3568,20 +3568,27 @@ export class AppScreen implements Component, Focusable {
         } else {
           displayName = m;
         }
-        // 同名模型显示 api_key_prefix + api_base 作为区分标识
-        const suffixParts: string[] = [];
-        if (sameNameTotal > 1 && meta?.api_key_prefix) {
-          suffixParts.push(`key:${meta.api_key_prefix}…`);
+        // 仅当同名模型且 provider+api_base 也完全相同时（真正无法区分）才显示 key 末4位
+        // 避免泄露过多 key 明文，且只在必要时露出尾号
+        let labelSuffix = "";
+        if (sameNameTotal > 1 && meta?.api_key_suffix) {
+          const _mk = (mm: ModelMeta | undefined) =>
+            `${mm?.model_provider ?? ""}|${mm?.api_base ?? ""}`;
+          const myFingerprint = _mk(meta);
+          // selectableWithOrigIdx 与 selectable 同序，origIdx 索引回 modelsMeta
+          const conflictCount = selectableWithOrigIdx.reduce((acc, ent) => {
+            const xm = modelsMeta[ent.origIdx];
+            return xm && _mk(xm) === myFingerprint ? acc + 1 : acc;
+          }, 0);
+          if (conflictCount > 1) {
+            labelSuffix = ` […${meta.api_key_suffix}]`;
+          }
         }
-        if (sameNameTotal > 1 && meta?.api_base) {
-          suffixParts.push(meta.api_base);
-        }
-        const suffix = suffixParts.length > 0 ? ` [${suffixParts.join(" | ")}]` : "";
         const provider = meta?.model_provider ? ` · ${meta.model_provider}` : "";
         const apiBase = meta?.api_base ? ` · ${meta.api_base}` : "";
         const reasoning = meta?.reasoning_level ? ` · reasoning:${meta.reasoning_level}` : "";
         return {
-          label: `${i + 1}. ${displayName}${isCurrent ? " (current)" : ""}`,
+          label: `${i + 1}. ${displayName}${labelSuffix}${isCurrent ? " (current)" : ""}`,
           description: `${provider}${apiBase}${reasoning}`.replace(/^ · /, ""),
           value: `${m}${MODEL_VALUE_SEPARATOR}${entry.origIdx}`,
         };
