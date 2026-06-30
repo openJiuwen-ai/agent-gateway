@@ -132,6 +132,7 @@ type SkillIndexNode = {
   dont_select_when?: string;
   source_description?: string;
   worker_id?: string;
+  skill_name?: string;
   category?: string;
   keywords?: string[];
   examples?: string[];
@@ -214,6 +215,32 @@ function buildSkillIndexTree(nodes: SkillIndexNode[]): SkillIndexTreeNode[] {
 
 function getSkillIndexNodeLabel(node: SkillIndexNode): string {
   return String(node.label || node.worker_id || node.cid || "").trim() || "node";
+}
+
+function getSkillIndexSkillName(node: SkillIndexNode): string {
+  return String(node.skill_name || node.worker_id || node.label || "").trim();
+}
+
+function getSkillIndexNodeClassName(disabledLeaf: boolean, selected: boolean): string {
+  if (disabledLeaf) {
+    return selected
+      ? "border-zinc-400/40 bg-zinc-500/10 text-text-muted"
+      : "border-transparent text-text-muted opacity-75 hover:bg-secondary/50";
+  }
+  if (selected) {
+    return "border-accent/40 bg-accent/10 text-accent";
+  }
+  return "border-transparent text-text hover:bg-secondary/60";
+}
+
+function getSkillIndexNodeBadgeClassName(disabledLeaf: boolean, isLeaf: boolean): string {
+  if (disabledLeaf) {
+    return "border-zinc-400/25 bg-zinc-500/10 text-text-muted";
+  }
+  if (isLeaf) {
+    return "border-emerald-500/25 bg-emerald-500/10 text-emerald-600";
+  }
+  return "border-sky-500/25 bg-sky-500/10 text-sky-600";
 }
 
 function findSkillIndexNode(nodes: SkillIndexNode[], cid: string | null): SkillIndexNode | null {
@@ -448,6 +475,8 @@ function SkillIndexTreeView({
   emptyText,
   branchLabel,
   skillLabel,
+  disabledSkillNames,
+  disabledSkillLabel,
 }: {
   roots: SkillIndexTreeNode[];
   selectedCid: string | null;
@@ -455,6 +484,8 @@ function SkillIndexTreeView({
   emptyText: string;
   branchLabel: string;
   skillLabel: string;
+  disabledSkillNames: Set<string>;
+  disabledSkillLabel: string;
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
@@ -477,6 +508,7 @@ function SkillIndexTreeView({
     const isExpanded = expanded[node.cid] ?? false;
     const selected = selectedCid === node.cid;
     const isLeaf = node.type === "leaf";
+    const disabledLeaf = isLeaf && disabledSkillNames.has(getSkillIndexSkillName(node));
     return (
       <div key={node.cid}>
         <div
@@ -484,9 +516,7 @@ function SkillIndexTreeView({
           aria-selected={selected}
           aria-expanded={hasChildren ? isExpanded : undefined}
           className={`flex items-center gap-1 rounded-md border text-xs transition-colors ${
-            selected
-              ? "border-accent/40 bg-accent/10 text-accent"
-              : "border-transparent text-text hover:bg-secondary/60"
+            getSkillIndexNodeClassName(disabledLeaf, selected)
           }`}
           style={{ paddingLeft: `${8 + depth * 14}px` }}
         >
@@ -514,19 +544,24 @@ function SkillIndexTreeView({
           <button
             type="button"
             onClick={() => onSelect(node.cid)}
-            className="min-w-0 flex-1 h-7 flex items-center gap-2 text-left"
+            className="min-w-0 flex-1 min-h-7 py-1 flex items-center gap-2 text-left"
             title={getSkillIndexNodeLabel(node)}
           >
             <span
               className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] leading-none ${
-                isLeaf
-                  ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-600"
-                  : "border-sky-500/25 bg-sky-500/10 text-sky-600"
+                getSkillIndexNodeBadgeClassName(disabledLeaf, isLeaf)
               }`}
             >
               {isLeaf ? skillLabel : branchLabel}
             </span>
-            <span className="truncate">{getSkillIndexNodeLabel(node)}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{getSkillIndexNodeLabel(node)}</span>
+              {disabledLeaf ? (
+                <span className="block truncate text-[10px] leading-4 text-text-muted">
+                  {disabledSkillLabel}
+                </span>
+              ) : null}
+            </span>
           </button>
         </div>
         {hasChildren && isExpanded ? (
@@ -1422,6 +1457,10 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
     () => buildSkillIndexTree(retrievalTreeNodes),
     [retrievalTreeNodes]
   );
+  const disabledSkillNames = useMemo(
+    () => new Set(skills.filter((skill) => skill.enabled === false).map((skill) => skill.name)),
+    [skills]
+  );
   const selectedTreeNode = useMemo(
     () => findSkillIndexNode(retrievalTreeNodes, selectedTreeNodeCid),
     [retrievalTreeNodes, selectedTreeNodeCid]
@@ -1753,6 +1792,8 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                       emptyText={t('skills.retrieval.noTree')}
                       branchLabel={t('skills.retrieval.nodeTypes.branch')}
                       skillLabel={t('skills.retrieval.nodeTypes.skill')}
+                      disabledSkillNames={disabledSkillNames}
+                      disabledSkillLabel={t('skills.retrieval.disabledSkill')}
                     />
                   ) : (
                     <MarkdownRenderer

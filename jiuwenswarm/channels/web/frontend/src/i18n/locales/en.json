@@ -1141,6 +1141,7 @@
       "nodeCategory": "Category",
       "nodeKeywords": "Keywords",
       "nodeExamples": "Examples",
+      "disabledSkill": "Disabled",
       "nodeTypes": {
         "branch": "Branch",
         "skill": "Skill"

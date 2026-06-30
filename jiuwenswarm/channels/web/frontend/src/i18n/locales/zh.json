@@ -1140,6 +1140,7 @@
       "nodeCategory": "分类",
       "nodeKeywords": "关键词",
       "nodeExamples": "示例",
+      "disabledSkill": "已禁用",
       "nodeTypes": {
         "branch": "分支",
         "skill": "技能"
