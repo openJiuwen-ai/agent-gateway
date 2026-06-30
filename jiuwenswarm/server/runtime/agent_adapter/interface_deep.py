@@ -122,6 +122,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     JiuSwarmStreamEventRail,
     ResponsePromptRail,
     RuntimePromptRail,
+    StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
@@ -165,7 +166,6 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     evolution_meta_from_params,
     evolution_slash_command_name,
     evolution_slash_result,
-    evolution_status_response,
     is_evolution_approval_event,
     is_evolution_outcome_event,
     push_evolution_event,
@@ -176,7 +176,6 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     resolve_evolution_event_timeout_sec,
     team_evolution_terminal_progress,
     terminal_stage,
-    validate_evolution_log_writable,
     validate_evolution_skill,
     visible_evolution_progress_from_events,
     visible_regular_evolution_start_progress,
@@ -615,6 +614,7 @@ class JiuWenSwarmDeepAdapter:
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
         self._skill_create_rail: SkillCreateRail | None = None
         self._subagent_rail: SubagentRail | None = None
+        self._ask_user_rail: StructuredAskUserRail | None = None
         self._permission_rail: Any = None
         self._avatar_rail: Any = None
         self._tool_cards = None
@@ -2860,6 +2860,14 @@ class JiuWenSwarmDeepAdapter:
             subagent_rail = None
         return subagent_rail
 
+    def _build_structured_ask_user_rail(self) -> StructuredAskUserRail | None:
+        """Build StructuredAskUserRail for agent.plan clarification."""
+        try:
+            return StructuredAskUserRail(language=self._resolve_runtime_language())
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] StructuredAskUserRail create failed: %s", exc)
+            return None
+
     @staticmethod
     def _build_security_rail() -> SecurityRail | None:
         """Build SecurityPromptRail."""
@@ -3045,6 +3053,8 @@ class JiuWenSwarmDeepAdapter:
             3 if self._filesystem_rail_enabled_for_profile() else 2,
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
         )
+        if isinstance(mode, str) and mode.startswith("agent"):
+            rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
 
         rails_list = []
         for info in rail_infos:
@@ -3865,6 +3875,11 @@ class JiuWenSwarmDeepAdapter:
             if self._task_planning_rail is not None:
                 await self._instance.register_rail(self._task_planning_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] TaskPlanningRail registered for plan mode")
+        if self._ask_user_rail is None:
+            self._ask_user_rail = self._build_structured_ask_user_rail()
+            if self._ask_user_rail is not None:
+                await self._instance.register_rail(self._ask_user_rail)
+                logger.info("[JiuWenSwarmDeepAdapter] StructuredAskUserRail registered for plan mode")
         # 卸载 multi-session 工具
         for existing in list(self._instance.ability_manager.list() or []):
             if getattr(existing, "name", "").startswith(
@@ -3959,6 +3974,15 @@ class JiuWenSwarmDeepAdapter:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] %s unregistered for %s mode",
                     label,
+                    mode or "agent",
+                )
+
+        if self._ask_user_rail is None:
+            self._ask_user_rail = self._build_structured_ask_user_rail()
+            if self._ask_user_rail is not None:
+                await self._instance.register_rail(self._ask_user_rail)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] StructuredAskUserRail registered for %s mode",
                     mode or "agent",
                 )
 
