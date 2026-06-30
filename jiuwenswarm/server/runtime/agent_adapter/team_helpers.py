@@ -85,7 +85,15 @@ _TEAM_CREATE_KINDS = {
 }
 _HIDE_DM_PREFIX = "/hide_dm"
 _STREAM_TRACE_ENV_KEY = "JIUWENSWARM_TEAM_STREAM_TRACE"
+# When set to "true", non-leader teammate frames are filtered out in team
+# streaming so the frontend only receives leader output.
+_HIDE_TEAMMATE_ENV_KEY = "JIUWENSWARM_TEAM_HIDE_TEAMMATE"
 _DEBUG_PREFIX = "/debug"
+
+
+def _team_hide_teammate_enabled() -> bool:
+    """Return whether non-leader teammate frames should be filtered out in team mode."""
+    return os.environ.get(_HIDE_TEAMMATE_ENV_KEY, "").strip().lower() == "true"
 
 _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "not_active": "Team is initializing, please try again later",
@@ -1414,6 +1422,12 @@ async def _consume_stream_with_query(
             is_leader = _is_leader_output(chunk)
             is_teammate = _is_teammate_output(chunk)
             if not is_leader and not is_teammate:
+                continue
+            # Optional: filter out all non-leader frames so the frontend only
+            # sees leader output. Leader-level control events
+            # (team.runtime_ready / team.completed) are kept because
+            # _is_leader_output returns True.
+            if _team_hide_teammate_enabled() and not is_leader:
                 continue
             parsed = parse_stream_chunk(chunk)
             if parsed is not None:
