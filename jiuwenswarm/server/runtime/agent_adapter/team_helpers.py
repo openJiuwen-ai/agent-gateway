@@ -24,7 +24,6 @@ from jiuwenswarm.common.cron_team_completion import (
     _drain_cron_delegation_grace_events,
     apply_cron_team_round_event,
     cron_team_round_should_end,
-    is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,
     new_cron_team_round_state,
 )
 from jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler import WorkflowMonitorHandler
@@ -692,6 +691,33 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
     if source_member:
         parsed["member_name"] = str(source_member)
     return parsed
+
+
+_TEAM_TOOL_RESULT_TEXT_LIMIT = 512
+
+
+def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Trim large team tool result fields before forwarding them to clients."""
+    if parsed.get("event_type") != "chat.tool_result":
+        return parsed
+
+    next_event = dict(parsed)
+    truncated = False
+    original_size = 0
+    for key in ("result", "raw_output"):
+        value = next_event.get(key)
+        if not isinstance(value, str):
+            continue
+        original_size += len(value)
+        if len(value) <= _TEAM_TOOL_RESULT_TEXT_LIMIT:
+            continue
+        next_event[key] = value[:_TEAM_TOOL_RESULT_TEXT_LIMIT]
+        truncated = True
+
+    if truncated:
+        next_event["truncated"] = True
+        next_event["original_size"] = original_size
+    return next_event
 
 
 def _is_duplicate_ask_user_question(
@@ -1391,6 +1417,8 @@ async def _consume_stream_with_query(
                 continue
             parsed = parse_stream_chunk(chunk)
             if parsed is not None:
+                if not is_leader and parsed.get("event_type") == "chat.reasoning":
+                    continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
                 # Skip non-leader __interaction__ (permission ASK) — approval
@@ -1401,6 +1429,7 @@ async def _consume_stream_with_query(
                 parsed["rid"] = round_id
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
+                parsed = _truncate_team_tool_result_event(parsed)
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
