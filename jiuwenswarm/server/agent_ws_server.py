@@ -152,6 +152,13 @@ _SIMPLIFY_PROMPT_TEMPLATE = """\
 
 Review all changed files for reuse, quality, and efficiency. Fix any issues found.
 
+## Scope
+
+This review covers **reuse, quality, and efficiency only** — the three dimensions below. It is NOT a security review.
+
+- Do NOT flag, fix, or report security vulnerabilities (injection, XSS, hard-coded secrets, auth flaws, etc.). Those are out of scope here and are handled by `/security-review`, which reports findings without modifying code.
+- If you happen to notice a likely security issue while reviewing, do not fix it — at most note it in one line at the end ("possible security concern in <file>:<line>, run /security-review") and continue with the reuse/quality/efficiency review.
+
 ## Phase 1: Identify Changes
 
 Run `git diff` (or `git diff HEAD` if there are staged changes) to see what changed. If there are no git changes, review the most recently modified files that the user mentioned or that you edited earlier in this conversation.
