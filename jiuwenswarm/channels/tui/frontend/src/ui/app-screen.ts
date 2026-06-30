@@ -1179,6 +1179,8 @@ export class AppScreen implements Component, Focusable {
   private pendingSubmittedBaseline = 0;
   private pendingSubmittedSessionId: string | null = null;
   private transcriptScrollOffset = 0;
+  private btwOverlayScrollOffset = 0;
+  private lastBtwOverlayKey: string | null = null;
   private lastTranscriptLineCount = 0;
   private lastTranscriptLineWidth = 0;
   /** Image attachments keyed by composer `@path` tokens (e.g. cached base64 for terminal preview). */
@@ -1915,6 +1917,15 @@ export class AppScreen implements Component, Focusable {
       this.configEditorState !== null ||
       this.diffViewerState !== null;
 
+    if (
+      !pendingQuestion &&
+      !hasOverlay &&
+      snapshot.btwOverlay &&
+      this.handleBtwOverlayScrollInput(data)
+    ) {
+      return;
+    }
+
     if (!pendingQuestion && !hasOverlay && this.handleTranscriptScrollInput(data)) {
       return;
     }
@@ -1927,6 +1938,7 @@ export class AppScreen implements Component, Focusable {
       // 关闭 BTW overlay（如果可见）
       if (snapshot.btwOverlay) {
         this.state.clearBtwOverlay();
+        this.btwOverlayScrollOffset = 0;
       }
       // 取消正在进行的 BTW WS 请求（加载中状态），不影响主会话
       this.state.requestLocalInterrupt();
@@ -1963,6 +1975,7 @@ export class AppScreen implements Component, Focusable {
     if (!pendingQuestion && !hasOverlay && !snapshot.cancellableWork && isCancelWorkKey) {
       if (snapshot.btwOverlay) {
         this.state.clearBtwOverlay();
+        this.btwOverlayScrollOffset = 0;
         this.tui.requestRender();
         return;
       }
@@ -2491,6 +2504,13 @@ export class AppScreen implements Component, Focusable {
     }
     this.lastTranscriptLineCount = transcriptLineCount;
     this.lastTranscriptLineWidth = width;
+    const btwOverlayKey = snapshot.btwOverlay
+      ? `${snapshot.btwOverlay.question}\0${snapshot.btwOverlay.answer}`
+      : null;
+    if (btwOverlayKey !== this.lastBtwOverlayKey) {
+      this.btwOverlayScrollOffset = 0;
+      this.lastBtwOverlayKey = btwOverlayKey;
+    }
     const screenLines = buildAppScreenLines(snapshot, {
       width,
       height: this.tui.terminal.rows,
@@ -2511,6 +2531,10 @@ export class AppScreen implements Component, Focusable {
       transcriptScrollOffset: this.transcriptScrollOffset,
       onTranscriptScrollOffsetChange: (offset) => {
         this.transcriptScrollOffset = offset;
+      },
+      btwOverlayScrollOffset: this.btwOverlayScrollOffset,
+      onBtwOverlayScrollOffsetChange: (offset) => {
+        this.btwOverlayScrollOffset = offset;
       },
       runningElapsedMs:
         !snapshot.isInterrupted &&
@@ -2969,6 +2993,49 @@ export class AppScreen implements Component, Focusable {
         return true;
       case "scroll:bottom":
         this.transcriptScrollOffset = 0;
+        this.tui.requestRender();
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private handleBtwOverlayScrollInput(data: string): boolean {
+    const wheelOffset = getSgrMouseWheelOffset(data, this.btwOverlayScrollOffset);
+    if (wheelOffset !== null) {
+      this.btwOverlayScrollOffset = wheelOffset;
+      this.tui.requestRender();
+      return true;
+    }
+
+    const pageSize = Math.max(1, Math.floor(this.tui.terminal.rows * 0.8));
+    if (matchesKey(data, "up")) {
+      this.btwOverlayScrollOffset = Math.max(0, this.btwOverlayScrollOffset - 1);
+      this.tui.requestRender();
+      return true;
+    }
+    if (matchesKey(data, "down")) {
+      this.btwOverlayScrollOffset += 1;
+      this.tui.requestRender();
+      return true;
+    }
+
+    const scrollAction = resolveAction("Scroll", data);
+    switch (scrollAction) {
+      case "scroll:pageUp":
+        this.btwOverlayScrollOffset = Math.max(0, this.btwOverlayScrollOffset - pageSize);
+        this.tui.requestRender();
+        return true;
+      case "scroll:pageDown":
+        this.btwOverlayScrollOffset += pageSize;
+        this.tui.requestRender();
+        return true;
+      case "scroll:top":
+        this.btwOverlayScrollOffset = 0;
+        this.tui.requestRender();
+        return true;
+      case "scroll:bottom":
+        this.btwOverlayScrollOffset = Number.MAX_SAFE_INTEGER;
         this.tui.requestRender();
         return true;
       default:
