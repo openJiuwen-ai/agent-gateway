@@ -251,7 +251,9 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common.mcp_config import (
     build_mcp_server_config,
     extract_enabled_mcp_server_entries,
+    preflight_mcp_server_reachable,
 )
+from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
@@ -564,6 +566,12 @@ class JiuWenSwarmDeepAdapter:
     """
 
     def __init__(self) -> None:
+        # Apply the MCP per-call timeout patch once per process: wraps
+        # StreamableHttpClient/SseClient.call_tool & list_tools in
+        # asyncio.wait_for and honors config ``timeout_s`` (--timeout_s), so a
+        # killed remote MCP server fails fast instead of hanging on the MCP
+        # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
+        apply_mcp_call_timeout_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
@@ -1476,6 +1484,19 @@ class JiuWenSwarmDeepAdapter:
 
     async def _register_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         if self._instance is None:
+            return False
+        # Pre-flight reachability check for HTTP-based MCP servers. If the host
+        # is down we skip registration here instead of entering the mcp
+        # streamable-http context — otherwise openjiuwen leaks orphaned anyio
+        # background tasks on the failed initialize() and logs noisy
+        # ``aclose()``/cancel-scope RuntimeErrors.
+        reachable, reason = await preflight_mcp_server_reachable(cfg)
+        if not reachable:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] MCP server unreachable, skipping registration: "
+                "name=%s transport=%s path=%s reason=%s",
+                cfg.server_name, cfg.client_type, cfg.server_path, reason,
+            )
             return False
         try:
             result = await Runner.resource_mgr.add_mcp_server(cfg, tag=tag)
