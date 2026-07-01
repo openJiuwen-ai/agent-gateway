@@ -99,6 +99,12 @@
       "sourcePrompt": "Source prompt: {{prompt}}",
       "noDetail": "No detailed task description was provided"
     },
+    "contextCompression": {
+      "running": "Compressing context",
+      "completed": "Context compression completed {{count}} time(s)",
+      "failed": "Context compression failed",
+      "close": "Close context compression notice"
+    },
     "elapsed": {
       "daysHours": "{{days}}d {{hours}}h",
       "hoursMinutes": "{{hours}}h {{minutes}}m",

@@ -99,6 +99,12 @@
       "sourcePrompt": "来源请求：{{prompt}}",
       "noDetail": "后端未提供更详细的任务描述"
     },
+    "contextCompression": {
+      "running": "正在压缩上下文",
+      "completed": "上下文压缩完成 {{count}} 次",
+      "failed": "上下文压缩失败",
+      "close": "关闭上下文压缩提示"
+    },
     "elapsed": {
       "daysHours": "{{days}}天{{hours}}小时",
       "hoursMinutes": "{{hours}}h{{minutes}}m",
