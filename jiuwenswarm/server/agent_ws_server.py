@@ -50,6 +50,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
+    effective_files_from_policy,
     find_auto_managed_match,
     find_nested_files_conflict,
     list_effective_sandbox_files,
@@ -4164,8 +4165,8 @@ class AgentWebSocketServer:
                 return project_dir.strip()
         try:
             agent = self._agent_manager.get_agent_nowait(channel_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[command.sandbox] get_agent_nowait failed: %s", exc)
+        except Exception as exc:
+            logger.info("[command.sandbox] get_agent_nowait failed: %s", exc)
             return None
         adapter = self._resolve_adapter(agent)
         if adapter is None:
@@ -4217,6 +4218,22 @@ class AgentWebSocketServer:
             return False
         return bool(getattr(adapter, "_is_code_agent", False))
 
+    @staticmethod
+    def _effective_files_from_adapter(adapter: Any) -> dict[str, list[dict[str, str]]] | None:
+        """Read effective sandbox file mounts from the adapter's active sysop card."""
+        card = getattr(adapter, "_sys_operation_card", None)
+        if card is None:
+            return None
+        gateway_config = getattr(card, "gateway_config", None)
+        launcher = getattr(gateway_config, "launcher_config", None) if gateway_config else None
+        extra_params = getattr(launcher, "extra_params", None) if launcher else None
+        if not isinstance(extra_params, dict):
+            return None
+        policy = extra_params.get("policy")
+        if not isinstance(policy, dict):
+            return None
+        return effective_files_from_policy(policy)
+
     def _attach_effective_sandbox_files(
         self,
         payload: dict[str, Any],
@@ -4225,25 +4242,41 @@ class AgentWebSocketServer:
     ) -> None:
         """Inject ``effective_files`` into the ``/sandbox`` response payload.
 
-        ``effective_files`` summarises what the sandbox will actually grant
-        write access to (and what it will always deny) -- the union of
-        intrinsic agent files / ``daily_memory`` / current project dir plus
-        the user-configured allow list, and jiuwenswarm's own ``config.yaml``
-        plus the user-configured deny list. The TUI ``/sandbox status`` and
-        ``/sandbox files list`` panels render this directly under
-        ``files.allow_write`` / ``files.deny_write`` so the user sees the
-        same set the policy builder would compute at sandbox-start time.
-
-        The project dir reported in ``allow_write`` is sourced from the live
-        adapter (see :meth:`_resolve_active_project_dir`) so the panel
-        matches the user's trusted directory rather than the agent-server's
-        cwd, which is usually ``~/.jiuwenswarm`` and not what the user means
-        by "project".
-
-        Best-effort: failures are logged and swallowed so the underlying
-        sub-command response still goes back to the client.
+        Prefer the filesystem policy cached on the active adapter's sysop card
+        (same payload jiuwenbox uses at exec time). Fall back to a fresh build
+        when no matching agent/sysop exists yet.
         """
         try:
+            project_dir = self._resolve_active_project_dir(channel_id, params)
+            adapter = None
+            try:
+                agent = self._agent_manager.get_agent_nowait(
+                    channel_id,
+                    project_dir=project_dir,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[command.sandbox] get_agent_nowait failed: %s", exc)
+                agent = None
+            if agent is not None:
+                adapter = self._resolve_adapter(agent)
+            if adapter is not None:
+                adapter_project_dir = getattr(adapter, "_project_dir", None)
+                if (
+                    project_dir
+                    and adapter_project_dir
+                    and str(adapter_project_dir) != str(project_dir)
+                ):
+                    logger.warning(
+                        "[command.sandbox] project_dir mismatch for effective_files: "
+                        "client=%r adapter=%r",
+                        project_dir,
+                        adapter_project_dir,
+                    )
+                cached = self._effective_files_from_adapter(adapter)
+                if cached is not None:
+                    payload["effective_files"] = cached
+                    return
+
             files_runtime: dict[str, Any] | None = None
             runtime = payload.get("runtime")
             if isinstance(runtime, dict):
@@ -4256,7 +4289,6 @@ class AgentWebSocketServer:
                     files_runtime = files_in_payload
             if files_runtime is None:
                 files_runtime = get_sandbox_runtime().get("files") or {}
-            project_dir = self._resolve_active_project_dir(channel_id, params)
             is_code_agent = self._resolve_active_is_code_agent(channel_id)
             payload["effective_files"] = list_effective_sandbox_files(
                 files_runtime,
