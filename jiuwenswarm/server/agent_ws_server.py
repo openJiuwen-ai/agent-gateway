@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any, ClassVar, Optional
 
+from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
+
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
@@ -887,8 +889,6 @@ class AgentWebSocketServer:
 
     async def _connection_handler(self, ws: Any) -> None:
         """处理单个 Gateway WebSocket 连接，同一连接可并发处理多个请求."""
-        import websockets
-
         remote = ws.remote_address
         logger.info("[AgentWebSocketServer] 新连接: %s", remote)
 
@@ -915,7 +915,7 @@ class AgentWebSocketServer:
                 task = asyncio.create_task(self._handle_message(ws, raw, send_lock))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
-        except websockets.exceptions.ConnectionClosed:
+        except WebSocketConnectionClosed:
             logger.info("[AgentWebSocketServer] 连接关闭: %s", remote)
         except Exception as e:
             logger.exception("[AgentWebSocketServer] 连接处理异常 (%s): %s", remote, e)
@@ -923,7 +923,10 @@ class AgentWebSocketServer:
             self._current_ws = None
             self._current_send_lock = None
             self._clear_ws_acp_client_capabilities(ws)
-            self._session_stream_tasks.clear()
+            connection_tasks = list(tasks)
+            for task in connection_tasks:
+                if not task.done():
+                    task.cancel()
             # Gateway 进程退出/端口关闭时，必须先取消各 session 内流式生产者（SessionManager）
             # 并中止 DeepAgent 内层循环；否则仅等待 _handle_message 任务结束会一直阻塞到任务自然完成。
             try:
@@ -945,11 +948,9 @@ class AgentWebSocketServer:
                 )
             except Exception:
                 logger.exception("[AgentWebSocketServer] team stream cancel failed")
-            if tasks:
-                for t in list(tasks):
-                    if not t.done():
-                        t.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
+            if connection_tasks:
+                await asyncio.gather(*connection_tasks, return_exceptions=True)
+            self._session_stream_tasks.clear()
 
     async def _handle_message(self, ws: Any, raw: str | bytes, send_lock: asyncio.Lock) -> None:
         """解析一条 JSON 请求并分发到 IAgentServer 处理."""
@@ -961,8 +962,14 @@ class AgentWebSocketServer:
                 channel_id="",
                 message=f"JSON 解析失败: {e}",
             )
-            async with send_lock:
-                await ws.send(json.dumps(wire, ensure_ascii=False))
+            try:
+                async with send_lock:
+                    await ws.send(json.dumps(wire, ensure_ascii=False))
+            except WebSocketConnectionClosed:
+                logger.info(
+                    "[AgentWebSocketServer] WebSocket 已关闭，JSON 解析错误未发送: %s",
+                    e,
+                )
             return
 
         try:
@@ -1249,6 +1256,12 @@ class AgentWebSocketServer:
                 request.request_id,
                 request.session_id,
             )
+        except WebSocketConnectionClosed as e:
+            logger.info(
+                "[AgentWebSocketServer] WebSocket 已关闭，放弃请求回包: request_id=%s: %s",
+                request.request_id,
+                e,
+            )
         except Exception as e:
             logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",
@@ -1264,8 +1277,15 @@ class AgentWebSocketServer:
             wire = encode_agent_response_for_wire(
                 error_resp, response_id=request.request_id
             )
-            async with send_lock:
-                await ws.send(json.dumps(wire, ensure_ascii=False))
+            try:
+                async with send_lock:
+                    await ws.send(json.dumps(wire, ensure_ascii=False))
+            except WebSocketConnectionClosed as send_exc:
+                logger.info(
+                    "[AgentWebSocketServer] WebSocket 已关闭，错误响应未发送: request_id=%s: %s",
+                    request.request_id,
+                    send_exc,
+                )
 
     @staticmethod
     def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
@@ -1673,6 +1693,11 @@ class AgentWebSocketServer:
                         )
             except asyncio.CancelledError:
                 pass
+            except WebSocketConnectionClosed:
+                logger.info(
+                    "[AgentWebSocketServer] keepalive 停止，WebSocket 已关闭: request_id=%s",
+                    request.request_id,
+                )
 
         # 启动心跳任务
         heartbeat_task = asyncio.create_task(_heartbeat_loop())
@@ -1687,8 +1712,15 @@ class AgentWebSocketServer:
                     response_id=request.request_id,
                     sequence=chunk_count - 1,
                 )
-                async with send_lock:
-                    await ws.send(json.dumps(wire, ensure_ascii=False))
+                try:
+                    async with send_lock:
+                        await ws.send(json.dumps(wire, ensure_ascii=False))
+                except WebSocketConnectionClosed:
+                    logger.info(
+                        "[AgentWebSocketServer] 流式响应停止，WebSocket 已关闭: request_id=%s",
+                        request.request_id,
+                    )
+                    return
                 # 清除 event，让心跳任务重新开始计时
                 heartbeat_event.clear()
         finally:
@@ -1698,6 +1730,8 @@ class AgentWebSocketServer:
                 try:
                     await heartbeat_task
                 except asyncio.CancelledError:
+                    pass
+                except WebSocketConnectionClosed:
                     pass
             # 清除 session 流式任务追踪（仅清除自身，避免误删后续新任务）
             if self._session_stream_tasks.get(session_id) is current_task:
