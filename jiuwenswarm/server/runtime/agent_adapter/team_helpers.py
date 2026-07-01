@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from openjiuwen.agent_teams.context import reset_session_id, set_session_id
 from openjiuwen.agent_teams.paths import get_agent_teams_home, team_home
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.schema.team import TeamRole
@@ -252,11 +253,21 @@ async def ensure_monitor_handlers_for_active_runtime(
     # --- TeamMonitorHandler ---
     existing_monitor = tm.get_monitor(session_id)
     if existing_monitor is None or not existing_monitor.is_running:
-        monitor = await Runner.get_agent_team_monitor(
-            team_name=team_name,
-            session_id=session_id,
-            hide_dm=hide_dm,
-        )
+        # create_monitor inside Runner.get_agent_team_monitor freezes the
+        # current contextvar session_id into the TeamMonitor (self._session_id).
+        # runtime_ready fires before the leader's bind_session, so the
+        # contextvar is empty here; bind the explicit session_id so the
+        # monitor does not hash an empty session id and target non-existent
+        # per-session tables (team_task_<hash> / team_message_<hash>).
+        token = set_session_id(session_id)
+        try:
+            monitor = await Runner.get_agent_team_monitor(
+                team_name=team_name,
+                session_id=session_id,
+                hide_dm=hide_dm,
+            )
+        finally:
+            reset_session_id(token)
         if monitor is None:
             logger.warning(
                 "[TeamHelpers] active team monitor unavailable: channel_id=%s session_id=%s team_name=%s",
@@ -309,10 +320,17 @@ async def ensure_monitor_handlers_for_active_runtime(
         # No in-memory handler — restore from disk only
         initial_runs = restore_workflow_runs(session_id)
 
-    wf_monitor = await Runner.get_agent_team_monitor(
-        team_name=team_name,
-        session_id=session_id,
-    )
+    # Bind the explicit session_id so create_monitor freezes the real id
+    # instead of an empty contextvar (same rationale as the TeamMonitor
+    # path above).
+    wf_token = set_session_id(session_id)
+    try:
+        wf_monitor = await Runner.get_agent_team_monitor(
+            team_name=team_name,
+            session_id=session_id,
+        )
+    finally:
+        reset_session_id(wf_token)
     if wf_monitor is None:
         logger.warning(
             "[TeamHelpers] workflow monitor unavailable: channel_id=%s session_id=%s team_name=%s",
