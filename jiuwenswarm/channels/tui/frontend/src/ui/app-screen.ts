@@ -1030,6 +1030,7 @@ function sessionToSelectItem(s: SessionMeta, showProject = false): SelectItem {
   const msgCount = s.message_count ?? 0;
   if (msgCount > 0) parts.push(`${msgCount} msgs`);
   if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
+  if (s.active_in_window) parts.push("in another window");
   return {
     value: s.session_id,
     label: getDisplayLabel(s),
@@ -3219,6 +3220,20 @@ export class AppScreen implements Component, Focusable {
     const sessions = this.resumeSessionList?.sessions ?? [];
     const matchedSession = sessions.find((s) => s.session_id === nextSessionId);
     const accentColor = matchedSession?.accent_color ?? "default";
+
+    // 检测目标 session 是否已在其他 TUI 窗口打开，避免多窗口 session 冲突
+    if (matchedSession?.active_in_window) {
+      const title = matchedSession.title?.trim() || nextSessionId;
+      this.state.addItem(
+        addInfo(
+          this.state.getSnapshot().sessionId,
+          `Session "${title}" is already open in another TUI window. Close that window first or choose a different session.`,
+          "r",
+        ),
+      );
+      this.tui.requestRender();
+      return;
+    }
 
     // 跨项目目录已由后端 session.list 完成过滤（_session_matches_project），
     // 此处不再重复校验，避免前后端路径规范化差异（resolve vs realpath）

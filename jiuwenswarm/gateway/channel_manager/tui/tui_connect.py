@@ -1260,6 +1260,19 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             # 会话首条消息时记录的分支；存量会话无该字段时回填空串（前端按"兜底显示"处理）
             s["git_branch"] = str(ch_meta.get("git_branch") or "").strip()
 
+        # 标记已在其他 TUI 窗口中打开的会话，供前端拦截冲突的 /resume
+        try:
+            active_session_ids = channel.get_active_session_ids("tui", exclude_ws=ws)
+        except Exception:
+            logger.warning(
+                "[tui] session.list: get_active_session_ids failed, active_in_window degraded",
+                exc_info=True,
+            )
+            active_session_ids = set()
+        for s in cli_sessions:
+            if s.get("session_id") in active_session_ids:
+                s["active_in_window"] = True
+
         # 当前项目的 git 分支，供前端 Ctrl+B 过滤对比（非 git/失败为哨兵 "HEAD"）
         from jiuwenswarm.common.utils import resolve_git_branch
 
