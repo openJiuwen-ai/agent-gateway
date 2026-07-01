@@ -847,6 +847,7 @@ async def _handle_team_slash_command(
     if not (
         stripped.startswith("/evolve_list")
         or stripped.startswith("/evolve_rebuild")
+        or stripped.startswith("/evolve_rollback")
         or stripped.startswith("/evolve_simplify")
         or stripped == "/evolve"
         or stripped.startswith("/evolve ")

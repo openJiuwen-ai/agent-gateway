@@ -1159,6 +1159,28 @@ async def test_handle_team_slash_command_returns_team_evolve_list_summary(tmp_pa
 
 
 @pytest.mark.anyio
+async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp_path):
+    skills_dir = _write_team_skill(tmp_path, "demo-skill")
+
+    async def _fake_handler(query: str, context: object) -> dict[str, object]:
+        assert query == "/evolve_rollback demo-skill latest"
+        assert getattr(context, "mode") == "team"
+        assert getattr(context, "skills_dir") == skills_dir
+        return {"output": "team rollback handled", "result_type": "answer"}
+
+    monkeypatch.setattr(team_helpers, "handle_evolution_slash_command", _fake_handler)
+
+    result = await _TeamHelpersTestApi.handle_team_slash_command(
+        "web",
+        "sess-team-rollback",
+        "/evolve_rollback demo-skill latest",
+        skills_dir=skills_dir,
+    )
+
+    assert result == {"output": "team rollback handled", "result_type": "answer"}
+
+
+@pytest.mark.anyio
 async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch, tmp_path):
     _write_team_skill(
         tmp_path,

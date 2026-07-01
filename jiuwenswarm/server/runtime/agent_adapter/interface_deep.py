@@ -146,7 +146,6 @@ from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_b
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
-from jiuwenswarm.server.runtime.skill import filter_visible_skill_names
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.server.runtime.prompt_attachment_loader import PromptAttachmentLoader
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
@@ -176,7 +175,6 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
     resolve_evolution_event_timeout_sec,
     team_evolution_terminal_progress,
     terminal_stage,
-    validate_evolution_skill,
     visible_evolution_progress_from_events,
     visible_regular_evolution_start_progress,
 )
@@ -5210,88 +5208,6 @@ class JiuWenSwarmDeepAdapter:
             invalid_output=f"已为 Skill '{skill_name}' 生成演进经验，但审批事件为空或格式无效。",
         )
 
-    async def _handle_evolve_rollback_command(self, query: str) -> dict[str, Any]:
-        """/evolve_rollback <skill_name> [version] — Rollback skill to archived version."""
-        rail = self._skill_evolution_rail
-        assert rail is not None
-        store = rail.store
-
-        parts = query.split(maxsplit=2)
-        skill_name = parts[1] if len(parts) > 1 else ""
-        version = parts[2].strip() if len(parts) > 2 else None
-
-        if not skill_name:
-            archives_hint = ""
-            for name in filter_visible_skill_names(store.list_skill_names()):
-                archives = store.list_archives(name)
-                if archives:
-                    body_versions = [a for a in archives if a.startswith("SKILL.v")]
-                    archives_hint += f"\n  - **{name}**: {len(body_versions)} 个版本"
-            return {
-                "output": (
-                    "请指定 Skill 名称：`/evolve_rollback <skill_name> [version]`"
-                    + (f"\n\n可回滚的 Skill：{archives_hint}" if archives_hint else "")
-                ),
-                "result_type": "error",
-            }
-
-        validation_error = validate_evolution_skill(store, skill_name, require_skill_md=False)
-        if validation_error is not None:
-            return {"output": validation_error, "result_type": "error"}
-
-        archives = store.list_archives(skill_name)
-        body_versions = [a for a in archives if a.startswith("SKILL.v")]
-        if not body_versions:
-            return {
-                "output": f"Skill '{skill_name}' 没有归档版本可回滚。",
-                "result_type": "error",
-            }
-
-        # No version specified → list available versions for user to pick
-        if not version:
-            lines = [f"**Skill '{skill_name}' 可用归档版本（最新在前）：**\n"]
-            for i, v in enumerate(body_versions):
-                ts = v.replace("SKILL.v", "").replace(".md", "")
-                if len(ts) >= 15:
-                    display_ts = f"{ts[:4]}-{ts[4:6]}-{ts[6:8]} {ts[9:11]}:{ts[11:13]}:{ts[13:15]} UTC"
-                else:
-                    display_ts = ts
-                marker = " ← 最近" if i == 0 else ""
-                lines.append(f"  {i+1}. `{v}` ({display_ts}){marker}")
-            lines.append(f"\n用法：`/evolve_rollback {skill_name} SKILL.v<时间戳>.md`")
-            lines.append(f"快捷回滚到最近版本：`/evolve_rollback {skill_name} latest`")
-            return {"output": "\n".join(lines), "result_type": "answer"}
-
-        # "latest" shorthand → pick newest
-        if version == "latest":
-            version = body_versions[0]
-
-        if version not in body_versions:
-            hint = "、".join(f"`{v}`" for v in body_versions[:5])
-            return {
-                "output": f"版本 `{version}` 不存在。可用版本：{hint}",
-                "result_type": "error",
-            }
-
-        try:
-            success = await rail.rollback_skill(skill_name, version)
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] evolve_rollback failed: %s", exc)
-            return {"output": f"回滚失败：{exc}", "result_type": "error"}
-
-        if success:
-            return {
-                "output": (
-                    f"Skill '{skill_name}' 已成功回滚到 `{version}`。\n\n"
-                    f"（当前状态已自动归档，可再次回滚恢复。）"
-                ),
-                "result_type": "answer",
-            }
-        return {
-            "output": f"Skill '{skill_name}' 回滚失败，请检查归档版本是否有效。",
-            "result_type": "error",
-        }
-
     async def _handle_governance_approval(
         self, request_id: str, answers: list, kind: str
     ) -> bool:
@@ -5394,18 +5310,6 @@ class JiuWenSwarmDeepAdapter:
                 evolution_slash_command_name(stripped),
                 slash_result,
                 warning_phrases=REGULAR_EVOLUTION_SLASH_WARNING_PHRASES,
-            )
-
-        if stripped.startswith("/evolve_rollback"):
-            err = await self._ensure_evolution_rail_for_slash(mode)
-            if err:
-                return evolution_slash_result(
-                    "evolve_rollback",
-                    {"output": err, "result_type": "error"},
-                )
-            return evolution_slash_result(
-                "evolve_rollback",
-                await self._handle_evolve_rollback_command(stripped),
             )
 
         return None
