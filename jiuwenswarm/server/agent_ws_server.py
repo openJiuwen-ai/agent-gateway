@@ -35,6 +35,11 @@ from jiuwenswarm.common.e2a.wire_codec import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.ws_diagnostics import (
+    describe_ws_exception,
+    describe_ws_peer,
+    format_ws_diagnostics,
+)
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
@@ -1226,8 +1231,21 @@ class AgentWebSocketServer:
                 task = asyncio.create_task(self._handle_message(ws, raw, send_lock))
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
-        except WebSocketConnectionClosed:
-            logger.info("[AgentWebSocketServer] 连接关闭: %s", remote)
+        except WebSocketConnectionClosed as e:
+            logger.info(
+                "[AgentWebSocketServer] 连接关闭: %s",
+                format_ws_diagnostics(
+                    {
+                        "remote": remote,
+                        "active_tasks": len(tasks),
+                        "session_stream_tasks": len(self._session_stream_tasks),
+                        "ping_interval": self._ping_interval,
+                        "ping_timeout": self._ping_timeout,
+                    },
+                    describe_ws_peer(ws),
+                    describe_ws_exception(e),
+                ),
+            )
         except Exception as e:
             logger.exception("[AgentWebSocketServer] 连接处理异常 (%s): %s", remote, e)
         finally:
@@ -1276,10 +1294,14 @@ class AgentWebSocketServer:
             try:
                 async with send_lock:
                     await ws.send(json.dumps(wire, ensure_ascii=False))
-            except WebSocketConnectionClosed:
+            except WebSocketConnectionClosed as send_exc:
                 logger.info(
                     "[AgentWebSocketServer] WebSocket 已关闭，JSON 解析错误未发送: %s",
-                    e,
+                    format_ws_diagnostics(
+                        {"json_error": str(e)},
+                        describe_ws_peer(ws),
+                        describe_ws_exception(send_exc),
+                    ),
                 )
             return
 
@@ -1569,9 +1591,17 @@ class AgentWebSocketServer:
             )
         except WebSocketConnectionClosed as e:
             logger.info(
-                "[AgentWebSocketServer] WebSocket 已关闭，放弃请求回包: request_id=%s: %s",
-                request.request_id,
-                e,
+                "[AgentWebSocketServer] WebSocket 已关闭，放弃请求回包: %s",
+                format_ws_diagnostics(
+                    {
+                        "request_id": request.request_id,
+                        "channel_id": request.channel_id,
+                        "session_id": request.session_id,
+                        "is_stream": request.is_stream,
+                    },
+                    describe_ws_peer(ws),
+                    describe_ws_exception(e),
+                ),
             )
         except Exception as e:
             logger.exception(
@@ -1593,9 +1623,17 @@ class AgentWebSocketServer:
                     await ws.send(json.dumps(wire, ensure_ascii=False))
             except WebSocketConnectionClosed as send_exc:
                 logger.info(
-                    "[AgentWebSocketServer] WebSocket 已关闭，错误响应未发送: request_id=%s: %s",
-                    request.request_id,
-                    send_exc,
+                    "[AgentWebSocketServer] WebSocket 已关闭，错误响应未发送: %s",
+                    format_ws_diagnostics(
+                        {
+                            "request_id": request.request_id,
+                            "channel_id": request.channel_id,
+                            "session_id": request.session_id,
+                            "is_stream": request.is_stream,
+                        },
+                        describe_ws_peer(ws),
+                        describe_ws_exception(send_exc),
+                    ),
                 )
 
     @staticmethod
