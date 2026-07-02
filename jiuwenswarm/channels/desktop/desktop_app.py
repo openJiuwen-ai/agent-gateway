@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import http.client
 import logging
 import os
@@ -28,6 +30,8 @@ APP_CHILD_FLAG = "--desktop-run-app"
 WEB_CHILD_FLAG = "--desktop-run-web"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 STARTUP_TIMEOUT_SECONDS = 45.0
+PNG_DATA_URL_PREFIX = "data:image/png;base64,"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _setup_logger() -> logging.Logger:
@@ -231,6 +235,10 @@ class _WindowApi:
         logger.info("[desktop] download_file called: url=%s, filename=%s", full_url, filename)
         return self._runtime.download_file(full_url, filename)
 
+    def save_data_url(self, data_url: str, filename: str) -> bool:
+        """保存前端生成的 data URL 文件，供分享图片导出使用。"""
+        return self._runtime.save_data_url(data_url, filename)
+
 
 class DesktopRuntime:
     def __init__(
@@ -311,25 +319,31 @@ class DesktopRuntime:
         threading.Thread(target=_delayed_destroy, daemon=True).start()
         return True
 
+    @staticmethod
+    def _resolve_download_path(filename: str) -> Path:
+        download_dir = Path.home() / "Downloads"
+        download_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = Path(filename).name
+        if not safe_name:
+            raise ValueError("empty_filename")
+
+        target_path = download_dir / safe_name
+        if target_path.exists():
+            base, ext = Path(safe_name).stem, Path(safe_name).suffix
+            counter = 1
+            while target_path.exists():
+                target_path = download_dir / f"{base} ({counter}){ext}"
+                counter += 1
+        return target_path
+
     def download_file(self, url: str, filename: str) -> bool:
         """下载文件到用户下载目录（异步执行，避免阻塞 UI）。"""
         def _download() -> None:
             try:
                 import urllib.request
 
-                # 获取下载目录
-                download_dir = Path.home() / "Downloads"
-                if not download_dir.exists():
-                    download_dir.mkdir(parents=True, exist_ok=True)
-
-                # 处理文件名冲突
-                target_path = download_dir / filename
-                if target_path.exists():
-                    base, ext = Path(filename).stem, Path(filename).suffix
-                    counter = 1
-                    while target_path.exists():
-                        target_path = download_dir / f"{base} ({counter}){ext}"
-                        counter += 1
+                target_path = self._resolve_download_path(filename)
 
                 # 下载文件
                 urllib.request.urlretrieve(url, target_path)
@@ -342,6 +356,36 @@ class DesktopRuntime:
 
         threading.Thread(target=_download, daemon=True).start()
         return True
+
+    def save_data_url(self, data_url: str, filename: str) -> bool:
+        """保存 PNG data URL 到用户下载目录。"""
+        if not isinstance(data_url, str) or not data_url.startswith(PNG_DATA_URL_PREFIX):
+            logger.error("[desktop] invalid data url for share export")
+            return False
+
+        try:
+            image_bytes = base64.b64decode(data_url[len(PNG_DATA_URL_PREFIX):], validate=True)
+        except binascii.Error as exc:
+            logger.error("[desktop] failed to decode share export data url: %s", exc)
+            return False
+
+        if not image_bytes.startswith(PNG_SIGNATURE):
+            logger.error("[desktop] share export data is not a PNG")
+            return False
+
+        try:
+            target_path = self._resolve_download_path(filename)
+            target_path.write_bytes(image_bytes)
+            logger.info("[desktop] share image saved to: %s", target_path)
+            threading.Thread(
+                target=self._show_download_complete,
+                args=(str(target_path),),
+                daemon=True,
+            ).start()
+            return True
+        except (OSError, ValueError) as exc:
+            logger.error("[desktop] failed to save share image: %s", exc)
+            return False
 
     @staticmethod
     def _show_download_complete(file_path: str) -> None:

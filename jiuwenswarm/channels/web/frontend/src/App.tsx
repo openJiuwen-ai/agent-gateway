@@ -81,6 +81,16 @@ type ConfigSaveAllPayload = {
   team?: AgentsTeamsSavePayload["team"];
 };
 
+type PyWebviewShareApi = {
+  save_data_url?: (dataUrl: string, filename: string) => Promise<boolean> | boolean;
+};
+
+type WindowWithPyWebview = Window & {
+  pywebview?: {
+    api?: PyWebviewShareApi;
+  };
+};
+
 function clearTeamRuntimeState(): void {
   const sessionStore = useSessionStore.getState();
   sessionStore.setTeamMembers([]);
@@ -185,6 +195,18 @@ function downloadDataUrl(dataUrl: string, filename: string): void {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+async function saveShareImage(dataUrl: string, filename: string): Promise<void> {
+  const pywebviewApi = (window as WindowWithPyWebview).pywebview?.api;
+  if (pywebviewApi?.save_data_url) {
+    const saved = await pywebviewApi.save_data_url(dataUrl, filename);
+    if (!saved) {
+      throw new Error('share_desktop_save_failed');
+    }
+    return;
+  }
+  downloadDataUrl(dataUrl, filename);
 }
 
 function AppContent() {
@@ -1411,7 +1433,7 @@ function AppContent() {
         if (shareExportTokenRef.current !== token) {
           return;
         }
-        downloadDataUrl(dataUrl, shareExportFilenameRef.current);
+        await saveShareImage(dataUrl, shareExportFilenameRef.current);
       } catch (error) {
         console.error('Failed to render share image:', error);
         const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
