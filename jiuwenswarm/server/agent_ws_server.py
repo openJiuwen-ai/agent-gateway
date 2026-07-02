@@ -118,6 +118,7 @@ _CODE_MODE_SYNC_METHODS = frozenset({
 _STREAM_HEARTBEAT_INTERVAL_SECONDS = 10.0
 _HISTORY_PAGE_SIZE = 20
 _HISTORY_WIRE_STRING_LIMIT = 16 * 1024
+_HISTORY_WIRE_METADATA_STRING_LIMIT = 256
 _HISTORY_WIRE_LIST_LIMIT = 100
 _HISTORY_WIRE_DEPTH_LIMIT = 8
 _HISTORY_WIRE_RECORD_MAX_BYTES = 64 * 1024
@@ -228,6 +229,40 @@ def _collapse_oversized_history_record(record: dict[str, Any]) -> dict[str, Any]
     return collapsed
 
 
+def _compact_wire_metadata_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _truncate_string_by_bytes(value, _HISTORY_WIRE_METADATA_STRING_LIMIT)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _truncate_string_by_bytes(str(value), _HISTORY_WIRE_METADATA_STRING_LIMIT)
+
+
+def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
+    keep_keys = {
+        "id",
+        "role",
+        "request_id",
+        "channel_id",
+        "session_id",
+        "timestamp",
+        "event_type",
+        "mode",
+        "member_name",
+        "member_id",
+        "source_member",
+        "name",
+        "status",
+    }
+    minimal = {
+        key: _compact_wire_metadata_value(value)
+        for key, value in record.items()
+        if key in keep_keys
+    }
+    minimal["content"] = "[truncated]"
+    minimal["truncated"] = True
+    return minimal
+
+
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     if not isinstance(record, dict):
         return {"content": _sanitize_history_wire_value(record), "truncated": True}
@@ -280,6 +315,12 @@ def _select_history_record_page(
         if not page and used + record_size > budget:
             record = _collapse_oversized_history_record(record)
             record_size = _json_wire_size(record) + 1
+            if used + record_size > budget:
+                record = _minimal_history_record_for_wire(record)
+                record_size = _json_wire_size(record) + 1
+                if used + record_size > budget:
+                    record = {"id": _compact_wire_metadata_value(record.get("id")), "truncated": True}
+                    record_size = _json_wire_size(record) + 1
         page.append(record)
         used += record_size
         next_cursor = idx + 1
@@ -313,6 +354,29 @@ def _collapse_oversized_workflow_snapshot_item(item: dict[str, Any]) -> dict[str
             collapsed[key] = _truncate_string_by_bytes(str(value), 512)
     collapsed["truncated"] = True
     return collapsed
+
+
+def _minimal_workflow_snapshot_item_for_wire(item: dict[str, Any]) -> dict[str, Any]:
+    keep_keys = {
+        "id",
+        "name",
+        "status",
+        "agent_count",
+        "completed_agent_count",
+        "started_at",
+        "completed_at",
+        "duration_ms",
+        "token_count",
+        "estimated_token_count",
+    }
+    minimal = {
+        key: _compact_wire_metadata_value(value)
+        for key, value in item.items()
+        if key in keep_keys
+    }
+    minimal["summary"] = "[truncated]"
+    minimal["truncated"] = True
+    return minimal
 
 
 def _sanitize_workflow_snapshot_item_for_wire(item: Any) -> dict[str, Any]:
@@ -357,6 +421,7 @@ def _build_workflow_snapshot_payload(workflows: Any, *, session_id: str) -> dict
         if item_size > budget:
             item = _collapse_oversized_workflow_snapshot_item(item)
             item_size = _json_wire_size(item) + 1
+            payload["truncated"] = True
         if page and used + item_size > budget:
             payload["truncated"] = True
             break
@@ -364,8 +429,12 @@ def _build_workflow_snapshot_payload(workflows: Any, *, session_id: str) -> dict
             item = _collapse_oversized_workflow_snapshot_item(item)
             item_size = _json_wire_size(item) + 1
             if used + item_size > budget:
+                item = _minimal_workflow_snapshot_item_for_wire(item)
+                item_size = _json_wire_size(item) + 1
+                if used + item_size > budget:
+                    item = {"id": _compact_wire_metadata_value(item.get("id")), "truncated": True}
+                    item_size = _json_wire_size(item) + 1
                 payload["truncated"] = True
-                break
         page.append(item)
         used += item_size
 
