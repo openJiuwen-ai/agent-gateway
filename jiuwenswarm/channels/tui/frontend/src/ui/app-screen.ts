@@ -2537,6 +2537,8 @@ export class AppScreen implements Component, Focusable {
       onBtwOverlayScrollOffsetChange: (offset) => {
         this.btwOverlayScrollOffset = offset;
       },
+      btwOverlayIndex: snapshot.btwOverlayIndex,
+      btwOverlayTotal: snapshot.btwOverlayTotal,
       runningElapsedMs:
         !snapshot.isInterrupted &&
         (snapshot.isProcessing ||
@@ -3005,6 +3007,24 @@ export class AppScreen implements Component, Focusable {
     const wheelOffset = getSgrMouseWheelOffset(data, this.btwOverlayScrollOffset);
     if (wheelOffset !== null) {
       this.btwOverlayScrollOffset = wheelOffset;
+      this.tui.requestRender();
+      return true;
+    }
+
+    // ←/→ 在 btw 历史间切换（必须在 scroll 之前消费，避免落入 composer）
+    if (matchesKey(data, "left")) {
+      this.state.navigateBtw(-1);
+      this.tui.requestRender();
+      return true;
+    }
+    if (matchesKey(data, "right")) {
+      this.state.navigateBtw(1);
+      this.tui.requestRender();
+      return true;
+    }
+    // x 删除当前 btw 条目（剩余非空则跳到相邻，为空则关闭 overlay）
+    if (data.toLowerCase() === "x") {
+      this.state.deleteCurrentBtwEntry();
       this.tui.requestRender();
       return true;
     }
