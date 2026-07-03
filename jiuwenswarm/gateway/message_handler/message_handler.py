@@ -1250,8 +1250,20 @@ class MessageHandler(ABC):
         reply_session_id: str | None,
         msg: "Message",
     ) -> None:
-        """受控通道整行 /skills list：请求 skills.list 并以 CHAT_FINAL 通知透传。"""
+        """受控通道整行 /skills list：请求 skills.list 并以 CHAT_FINAL 通知透传。
+
+        skills.list 响应载荷形如 ``{"skills": [...]}`` / ``{"error": "..."}``，
+        不含 ``content`` 字段。多数 IM 通道（微信/钉钉/企微/WhatsApp 等）的 ``send``
+        仅从 ``payload.content`` / ``params.content`` 取文本，缺 ``content`` 即被当作
+        空消息丢弃，导致 /skills list 无返回（/skills 本身不经此分支故不受影响）。
+        因此这里用 ``format_skills_list_for_notice`` 把载荷渲染成纯文本放入 ``content``，
+        同时保留原始字段：飞书仍可经 ``_build_skills_list_card_content`` 识别 ``skills``
+        键渲染为卡片，其它 IM 通道则回退到读取 ``content`` 文本。
+        """
         from jiuwenswarm.common.schema.message import Message, ReqMethod
+        from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
+            format_skills_list_for_notice,
+        )
 
         req_id = f"skills_slash_{int(time.time() * 1000):x}_{secrets.token_hex(3)}"
         skills_req = Message(
@@ -1285,6 +1297,10 @@ class MessageHandler(ABC):
                 notice_payload = {
                     "error": f"获取技能列表失败{(': ' + err) if err else ''}",
                 }
+            # 渲染纯文本 content，供只读 content 的 IM 通道（微信等）下发。
+            notice_payload["content"] = format_skills_list_for_notice(
+                notice_payload if isinstance(notice_payload, dict) else None
+            )
             await self._send_channel_notice(
                 user_infos, channel_id, reply_session_id, notice_payload
             )
@@ -1294,7 +1310,7 @@ class MessageHandler(ABC):
                 user_infos,
                 channel_id,
                 reply_session_id,
-                {"error": f"获取技能列表失败：{exc}"},
+                {"content": f"获取技能列表失败：{exc}", "error": f"获取技能列表失败：{exc}"},
             )
 
     async def _branch_slash_notice(
