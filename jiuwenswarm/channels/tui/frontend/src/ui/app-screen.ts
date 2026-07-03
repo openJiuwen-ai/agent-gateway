@@ -2025,9 +2025,12 @@ export class AppScreen implements Component, Focusable {
     // Global ctrl+l/t/g/o only apply on the main screen — defer while an overlay
     // or the team panel is active so context-specific bindings (e.g. ResumeList)
     // can use the same physical keys.
+    // Exception: app:toggleTranscript (ctrl+o) is allowed even when overlays are
+    // open, so users can fold/unfold the transcript behind the overlay.
     const skipGlobalMainScreenKeys = hasOverlay || this.showTeamPanel;
     let handled = false;
-    if (!skipGlobalMainScreenKeys) {
+    if (!skipGlobalMainScreenKeys || resolveAction("Global", data) === "app:toggleTranscript") {
+      const isToggleTranscript = resolveAction("Global", data) === "app:toggleTranscript";
       handled = handleAppScreenKeyInput(data, {
         interruptTask: () => this.interruptTask(),
         exitApp: () => this.exit(),
@@ -2086,9 +2089,13 @@ export class AppScreen implements Component, Focusable {
           this.tui.requestRender();
         },
       });
-    }
-    if (handled) {
-      return;
+      // For ctrl+o with overlays active, the delegate toggleTranscript is called
+      // but handleAppScreenKeyInput only returns true when skipGlobalMainScreenKeys
+      // is false (it matches Global context via keymap.ts). So we trust the
+      // delegate callback has run and mark it handled ourselves.
+      if (handled || isToggleTranscript) {
+        return;
+      }
     }
 
     if (permissionRequest && activeQuestion) {
