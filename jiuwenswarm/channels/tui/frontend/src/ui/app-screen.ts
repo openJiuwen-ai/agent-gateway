@@ -1277,6 +1277,9 @@ export class AppScreen implements Component, Focusable {
   private viewedTeamMemberId: string | null = null;
   private transientNotice: string | null = null;
   private transientNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+  // ESC 双击清空输入框的待触发状态:第一次 Esc 置 true 并显示提示,
+  // 3 秒内第二次 Esc 清空输入框;超时后由 transientNoticeTimer 一并复位。
+  private escClearPending = false;
   private animationTimer: ReturnType<typeof setInterval> | null = null;
   private animationPhase = 0;
   private runningStartedAtMs: number | null = null;
@@ -1326,6 +1329,13 @@ export class AppScreen implements Component, Focusable {
         this.schedulePastedTextStateClear();
       } else {
         this.cancelPastedTextStateClear();
+      }
+      // 输入框内容变化（用户继续打字、Ctrl+C/interruptTask 清空、提交清空等）
+      // 都让 ESC 双击待触发状态失效——用户已改变意图，下次 Esc 视为第一次。
+      // 同时清掉“Press Esc again to clear input”提示，避免残留。
+      if (this.escClearPending) {
+        this.clearEscClearPending();
+        this.transientNotice = null;
       }
       this.tui.requestRender();
     };
@@ -1478,6 +1488,7 @@ export class AppScreen implements Component, Focusable {
       clearTimeout(this.transientNoticeTimer);
       this.transientNoticeTimer = null;
     }
+    this.clearEscClearPending();
     this.clearCtrlCPendingForQuestion();
     if (this.animationTimer) {
       clearInterval(this.animationTimer);
@@ -1492,6 +1503,15 @@ export class AppScreen implements Component, Focusable {
     if (this.ctrlCPendingForQuestionTimer) {
       clearTimeout(this.ctrlCPendingForQuestionTimer);
       this.ctrlCPendingForQuestionTimer = null;
+    }
+  }
+
+  /** 清除 ESC 双击清空输入框的待触发状态及其提示定时器。 */
+  private clearEscClearPending(): void {
+    this.escClearPending = false;
+    if (this.transientNoticeTimer) {
+      clearTimeout(this.transientNoticeTimer);
+      this.transientNoticeTimer = null;
     }
   }
 
@@ -1992,6 +2012,11 @@ export class AppScreen implements Component, Focusable {
   interruptTask(): void {
     this.state.cancel();
     this.editor.setText("");
+    // 中断任务会清空输入框，同步复位 ESC 双击待触发状态，避免下次 Esc 被误判为“第二次”。
+    if (this.escClearPending) {
+      this.clearEscClearPending();
+      this.transientNotice = null;
+    }
     this.tui.requestRender();
   }
 
@@ -2106,6 +2131,46 @@ export class AppScreen implements Component, Focusable {
       }
     }
 
+    // ESC 双击清空输入框（仅空闲主屏 + 输入框非空）
+    // 第一次 Esc：输入框非空时显示“再按一次清空”提示；3 秒内第二次 Esc：清空输入框。
+    // 输入框为空时不响应。优先级低于 btw/cancellableWork/不可中断命令/help 等守卫。
+    if (!pendingQuestion && !hasOverlay && !snapshot.cancellableWork && isCancelWorkKey) {
+      const hasInput = this.editor.getText().length > 0;
+      // 兜底：若 pending 仍为 true 但输入框已空（被其他途径清空且未触发 onChange 复位），
+      // 先复位 pending，避免下次 Esc 被误判为“第二次”而清空用户新输入的文字。
+      if (this.escClearPending && !hasInput) {
+        this.clearEscClearPending();
+        this.transientNotice = null;
+      }
+      if (this.escClearPending) {
+        // 第二次 Esc（在窗口内）：清空输入框并清除提示
+        this.clearEscClearPending();
+        if (hasInput) {
+          this.editor.setText("");
+        }
+        this.transientNotice = null;
+        this.tui.requestRender();
+        return;
+      }
+      if (hasInput) {
+        // 第一次 Esc（输入框非空）：进入待清空状态并显示提示
+        this.escClearPending = true;
+        this.transientNotice = "Press Esc again to clear input";
+        if (this.transientNoticeTimer) {
+          clearTimeout(this.transientNoticeTimer);
+        }
+        this.transientNoticeTimer = setTimeout(() => {
+          this.escClearPending = false;
+          this.transientNoticeTimer = null;
+          this.transientNotice = null;
+          this.tui.requestRender();
+        }, 3000);
+        this.tui.requestRender();
+        return;
+      }
+      // 输入框为空：不响应，继续后续流程
+    }
+
     if (this.startupPromptList !== null && matchesKey(data, "ctrl+c")) {
       this.startupPromptList.handleInput(data);
       this.tui.requestRender();
@@ -2182,6 +2247,11 @@ export class AppScreen implements Component, Focusable {
         },
         clearInput: () => {
           this.editor.setText("");
+          // 清空输入框时同步复位 ESC 双击待触发状态，避免下次 Esc 被误判为“第二次”。
+          if (this.escClearPending) {
+            this.clearEscClearPending();
+            this.transientNotice = null;
+          }
           this.tui.requestRender();
         },
         isIdle: () => {
