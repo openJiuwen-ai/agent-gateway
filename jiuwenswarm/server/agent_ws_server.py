@@ -882,8 +882,9 @@ class AgentWebSocketServer:
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentManager 实例
         self._agent_manager = AgentManager()
-        # session_id → 正在运行的流式 asyncio.Task，用于 interrupt 时精确取消
-        self._session_stream_tasks: dict[str, asyncio.Task] = {}
+        # session_id → (正在运行的流式 asyncio.Task, 停止信号 Event)，用于 interrupt 时精确取消
+        # Event 用于通知 heartbeat_loop 提前退出，避免 stream task 卡住时 keepalive 持续发送
+        self._session_stream_tasks: dict[str, tuple[asyncio.Task, asyncio.Event]] = {}
         # Scheduler service instance (for scheduled auto_harness tasks)
         self._scheduler_service: Optional[AutoHarnessService] = None
         # Model cache for scheduled task execution (same approach as interface_deep)
@@ -1557,14 +1558,23 @@ class AgentWebSocketServer:
                 # 只有 cancel/supplement 才取消流式任务
                 # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
                 stream_task: asyncio.Task | None = None
+                stream_stop_event: asyncio.Event | None = None
                 if intent in ("cancel", "supplement"):
-                    stream_task = self._session_stream_tasks.get(sid)
+                    entry = self._session_stream_tasks.get(sid)
+                    if entry is not None:
+                        if isinstance(entry, tuple):
+                            stream_task, stream_stop_event = entry
+                        else:
+                            stream_task = entry
                     if stream_task is not None and not stream_task.done():
                         logger.info(
                             "[AgentWebSocketServer] cancel: 终止 session 流式任务: session_id=%s intent=%s",
                             sid,
                             intent,
                         )
+                        # 先通知 heartbeat_loop 退出，避免 stream task 卡住时 keepalive 持续发送
+                        if stream_stop_event is not None:
+                            stream_stop_event.set()
                         stream_task.cancel()
 
                 # 专门处理 cancel，复用已有 agent（不再 fallthrough 到 _handle_unary）
@@ -1710,6 +1720,54 @@ class AgentWebSocketServer:
             raise ValueError("Failed to get agent for cancel request")
 
         resp = await agent.process_message(request)
+
+        # Team 模式下 cancel/supplement 需要额外清理 team runtime，
+        # 否则旧 session 的 Runner pool 条目和 stream task 不会被移除，导致 session 泄露。
+        # _handle_cancel 绕过了 interface._process_team_interrupt，所以在此补充清理逻辑。
+        # 注意：Gateway 转发的 cancel 请求可能丢失 mode/team 参数，因此不能仅依赖 params 判断，
+        # 而是直接检查 team_manager 中是否有该 session 的 active/pending runtime。
+        params = request.params if isinstance(request.params, dict) else {}
+        intent = params.get("intent", "cancel")
+        has_team_runtime = False
+        if request.session_id and intent in ("cancel", "supplement"):
+            try:
+                from jiuwenswarm.agents.harness.team import get_team_manager
+                team_manager = get_team_manager(channel_id)
+                has_team_runtime = (
+                    team_manager.is_runtime_active(request.session_id)
+                    or team_manager.is_runtime_pending(request.session_id)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] check team runtime failed: session_id=%s error=%s",
+                    request.session_id, exc,
+                )
+        if has_team_runtime and request.session_id:
+            try:
+                from jiuwenswarm.agents.harness.team import get_team_manager
+                team_manager = get_team_manager(channel_id)
+                if intent == "cancel":
+                    cancelled = await team_manager.cancel_session_runtime(
+                        request.session_id, reason=f"_handle_cancel(intent={intent}): "
+                    )
+                    logger.info(
+                        "[AgentWebSocketServer] cancel: team 会话已取消: session_id=%s cancelled=%s",
+                        request.session_id, cancelled,
+                    )
+                else:
+                    terminated = await team_manager.terminate_session_runtime(
+                        request.session_id, reason=f"_handle_cancel(intent={intent}): "
+                    )
+                    logger.info(
+                        "[AgentWebSocketServer] supplement: team 会话已终止: session_id=%s terminated=%s",
+                        request.session_id, terminated,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] team 会话清理失败: session_id=%s error=%s",
+                    request.session_id, exc,
+                )
+
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
@@ -1993,8 +2051,10 @@ class AgentWebSocketServer:
         channel_id = request.channel_id or "default"
         session_id = request.session_id or "default"
         current_task = asyncio.current_task()
+        # 停止信号：cancel stream task 时 set，通知 heartbeat_loop 立即退出
+        stream_stop_event = asyncio.Event()
         if current_task is not None:
-            self._session_stream_tasks[session_id] = current_task
+            self._session_stream_tasks[session_id] = (current_task, stream_stop_event)
 
         mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
             request, channel_id
@@ -2010,36 +2070,46 @@ class AgentWebSocketServer:
         heartbeat_task: asyncio.Task | None = None
 
         async def _heartbeat_loop() -> None:
-            """后台心跳任务：在空闲期间定期发送 keepalive chunk."""
+            """后台心跳任务：在空闲期间定期发送 keepalive chunk.
+
+            通过 stream_stop_event 与 stream task 绑定：
+            - stream task 正常完成或被 cancel 时 set stream_stop_event
+            - heartbeat_loop 检测到 stop 信号后立即退出，避免僵尸 keepalive
+            """
             try:
                 while True:
-                    # 等待心跳间隔，如果期间有真实 chunk 发送则 heartbeat_event 被设置，重置等待
-                    try:
-                        await asyncio.wait_for(
-                            heartbeat_event.wait(),
-                            timeout=_STREAM_HEARTBEAT_INTERVAL_SECONDS,
-                        )
+                    # 同时等待心跳间隔和停止信号，任一先到即唤醒
+                    done, _ = await asyncio.wait(
+                        [
+                            asyncio.ensure_future(heartbeat_event.wait()),
+                            asyncio.ensure_future(stream_stop_event.wait()),
+                        ],
+                        timeout=_STREAM_HEARTBEAT_INTERVAL_SECONDS,
+                    )
+                    if stream_stop_event.is_set():
+                        break
+                    if heartbeat_event.is_set():
                         # 有真实 chunk 发送，重置 event 继续等待
                         heartbeat_event.clear()
-                    except asyncio.TimeoutError:
-                        # 超时：空闲超过心跳间隔，发送 keepalive chunk
-                        heartbeat_chunk = AgentResponseChunk(
-                            request_id=request.request_id,
-                            channel_id=channel_id,
-                            payload={"event_type": "keepalive"},
-                            is_complete=False,
-                        )
-                        wire = encode_agent_chunk_for_wire(
-                            heartbeat_chunk,
-                            response_id=request.request_id,
-                            sequence=-1,  # 心跳使用特殊序列号 -1
-                        )
-                        async with send_lock:
-                            await ws.send(json.dumps(wire, ensure_ascii=False))
-                        logger.info(
-                            "[AgentWebSocketServer] keepalive chunk 发送: request_id=%s",
-                            request.request_id,
-                        )
+                        continue
+                    # 超时：空闲超过心跳间隔，发送 keepalive chunk
+                    heartbeat_chunk = AgentResponseChunk(
+                        request_id=request.request_id,
+                        channel_id=channel_id,
+                        payload={"event_type": "keepalive"},
+                        is_complete=False,
+                    )
+                    wire = encode_agent_chunk_for_wire(
+                        heartbeat_chunk,
+                        response_id=request.request_id,
+                        sequence=-1,  # 心跳使用特殊序列号 -1
+                    )
+                    async with send_lock:
+                        await ws.send(json.dumps(wire, ensure_ascii=False))
+                    logger.info(
+                        "[AgentWebSocketServer] keepalive chunk 发送: request_id=%s",
+                        request.request_id,
+                    )
             except asyncio.CancelledError:
                 pass
             except WebSocketConnectionClosed:
@@ -2073,6 +2143,8 @@ class AgentWebSocketServer:
                 # 清除 event，让心跳任务重新开始计时
                 heartbeat_event.clear()
         finally:
+            # 通知 heartbeat_loop 立即退出（即使 stream task 卡在 process_message_stream 中）
+            stream_stop_event.set()
             # 停止心跳任务
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
@@ -2083,8 +2155,10 @@ class AgentWebSocketServer:
                 except WebSocketConnectionClosed:
                     pass
             # 清除 session 流式任务追踪（仅清除自身，避免误删后续新任务）
-            if self._session_stream_tasks.get(session_id) is current_task:
-                self._session_stream_tasks.pop(session_id, None)
+            if self._session_stream_tasks.get(session_id) is not None:
+                stored = self._session_stream_tasks[session_id]
+                if isinstance(stored, tuple) and stored[0] is current_task:
+                    self._session_stream_tasks.pop(session_id, None)
 
             # Push plan.mode_exited if exit_plan_mode restored mode during processing
             await self._check_post_process_plan_exit(request, agent)
