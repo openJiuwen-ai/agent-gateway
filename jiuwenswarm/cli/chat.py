@@ -164,10 +164,7 @@ def _prompt_and_cleanup_dirs() -> None:
 
 MODE_ALIASES: dict[str, str] = {
     "agent": "agent.plan",
-    "fast": "agent.fast",
     "code": "code.normal",
-    "normal": "code.normal",
-    "team.normal": "team",
 }
 
 VALID_MODES = frozenset({
@@ -218,7 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode", default="code.normal",
-        help="Execution mode (default: code.normal).",
+        help="Execution mode: agent|code|team|agent.plan|agent.fast|code.plan|code.normal|code.team"
+             " (default: code.normal).",
     )
     p.add_argument(
         "--session",

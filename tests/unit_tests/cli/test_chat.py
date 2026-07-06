@@ -51,16 +51,13 @@ class TestResolveMode:
     @staticmethod
     def test_alias_resolution():
         assert resolve_mode("agent") == "agent.plan"
-        assert resolve_mode("fast") == "agent.fast"
         assert resolve_mode("code") == "code.normal"
-        assert resolve_mode("normal") == "code.normal"
-        assert resolve_mode("team.normal") == "team"
 
     @staticmethod
     def test_case_insensitive():
         assert resolve_mode("AGENT") == "agent.plan"
         assert resolve_mode("Code.Normal") == "code.normal"
-        assert resolve_mode("  fast  ") == "agent.fast"
+        assert resolve_mode("  agent.fast  ") == "agent.fast"
 
     @staticmethod
     def test_invalid_mode_raises():
@@ -256,10 +253,10 @@ class TestValidateArgs:
 
     @staticmethod
     def test_mode_resolved():
-        args = argparse.Namespace(mode="fast", json=False, jsonl=False,
+        args = argparse.Namespace(mode="agent", json=False, jsonl=False,
                                   show_reasoning=False, show_tools=False, timeout=None)
         assert _validate_args(args) is None
-        assert args.mode == "agent.fast"
+        assert args.mode == "agent.plan"
 
 
 class TestParser:
