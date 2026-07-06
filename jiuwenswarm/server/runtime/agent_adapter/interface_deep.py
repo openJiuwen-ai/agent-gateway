@@ -383,6 +383,7 @@ def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> Conte
     cec = cec if isinstance(cec, dict) else {}
     return ReActAgentConfig().context_engine_config.model_copy(
         update={
+            "enable_reload": bool(cec.get("enable_reload", False)),
             "enable_kv_cache_release": bool(cec.get("enable_kv_cache_release", False)),
             "enable_openrouter_model_context_window_tokens": bool(
                 cec.get("enable_openrouter_model_context_window_tokens", False)
