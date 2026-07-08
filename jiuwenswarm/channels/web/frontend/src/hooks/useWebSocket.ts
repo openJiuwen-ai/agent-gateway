@@ -296,7 +296,8 @@ interface UseWebSocketReturn {
     params?: Record<string, unknown>,
     options?: WebRequestOptions
   ) => Promise<T>;
-  sendMessage: (content: string, sessionId: string) => Promise<void>;
+  persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
+  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<void>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -322,6 +323,42 @@ interface UseWebSocketReturn {
     feedback?: string
   ) => Promise<void>;
   getInflightCount: () => number;
+}
+
+interface PersistMediaResponse {
+  content?: string;
+  query?: string;
+  media_items?: Record<string, unknown>[];
+  files?: Record<string, unknown>;
+}
+
+function isPersistedMediaItem(item: MediaItem): boolean {
+  return typeof item.path === 'string' && item.path.trim().length > 0;
+}
+
+function getMediaMimeType(item: MediaItem): string {
+  return item.mime_type || item.mimeType;
+}
+
+function toPersistedMediaRecord(item: MediaItem): Record<string, unknown> {
+  return {
+    type: item.type,
+    filename: item.filename,
+    mime_type: getMediaMimeType(item),
+    path: item.path,
+    size_bytes: item.size_bytes ?? item.sizeBytes,
+  };
+}
+
+function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unknown> {
+  return {
+    uploaded_images: mediaItems.map((item) => ({
+      filename: item.filename,
+      path: item.path,
+      mime_type: getMediaMimeType(item),
+      size_bytes: item.size_bytes ?? item.sizeBytes,
+    })),
+  };
 }
 
 interface ContextCompressionStatePayload extends Record<string, unknown> {
@@ -857,10 +894,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     };
   }, [clearAllPendingTeamMemberContextCompressionStarts, clearPendingContextCompressionStart]);
 
+  const persistMedia = useCallback(
+    async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
+      return request<PersistMediaResponse>('media.persist', {
+        session_id: sessionId,
+        content,
+        media_items: mediaItems as unknown as Record<string, unknown>[],
+      });
+    },
+    [request],
+  );
+
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string) => {
-      if (!content.trim()) return;
+    async (content: string, sessionId: string, mediaItems: MediaItem[] = []) => {
+      const hasMedia = mediaItems.length > 0;
+      if (!content.trim() && !hasMedia) return;
 
       const currentMode = useSessionStore.getState().mode;
       const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode);
@@ -897,6 +946,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         id: `user-${Date.now()}`,
         role: 'user',
         content,
+        mediaItems,
         timestamp: new Date().toISOString(),
       });
 
@@ -918,9 +968,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         setPaused(false);
       }
       try {
+        let outgoingContent = content;
+        let outgoingMediaItems: Record<string, unknown>[] | undefined;
+        let outgoingFiles: Record<string, unknown> | undefined;
+        if (hasMedia) {
+          if (mediaItems.every(isPersistedMediaItem)) {
+            outgoingMediaItems = mediaItems.map(toPersistedMediaRecord);
+            outgoingFiles = buildPersistedMediaFiles(mediaItems);
+          } else {
+            const persisted = await persistMedia(content, sessionId, mediaItems);
+            outgoingContent = persisted.content ?? persisted.query ?? content;
+            outgoingMediaItems = persisted.media_items;
+            outgoingFiles = persisted.files;
+          }
+        }
         await request('chat.send', {
           session_id: sessionId,
-          content,
+          content: outgoingContent,
+          ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
+          ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: currentMode,
           ...(selectedModel ? { model_name: selectedModel } : {}),
         });
@@ -941,6 +1007,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [
       addMessage,
+      persistMedia,
       request,
       resetContextCompressionTurn,
       setContextCompressionStats,
@@ -2795,6 +2862,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     isConnected,
     connectionState,
     request,
+    persistMedia,
     sendMessage,
     sendStructuredChatContent,
     interrupt,

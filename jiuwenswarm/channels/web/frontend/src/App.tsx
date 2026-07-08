@@ -42,7 +42,7 @@ import {
 import { useWebSocket } from './hooks';
 import { webRequest } from './services/webClient';
 import { useTeamPanelState } from './features/teamPanelState';
-import { AgentMode, UserAnswer, ModelEntry } from './types';
+import { AgentMode, MediaItem, UserAnswer, ModelEntry } from './types';
 import { useSessionStore, useChatStore, useTodoStore, useHarnessStore } from './stores';
 import { useTranslation } from 'react-i18next';
 import {
@@ -397,6 +397,7 @@ function AppContent() {
   const {
     isConnected,
     request,
+    persistMedia,
     sendMessage,
     sendStructuredChatContent,
     pause,
@@ -1151,12 +1152,20 @@ function AppContent() {
     void switchMode(sessionId, mode);
   }, [sessionId, switchMode]);
 
-  const handleSendMessage = useCallback((content: string) => {
+  const handleSendMessage = useCallback((content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === 'new') return;
     disposeInFlightHistoryHandles();
-    void sendMessage(content, currentSessionId);
+    void sendMessage(content, currentSessionId, mediaItems);
   }, [disposeInFlightHistoryHandles, sendMessage]);
+
+  const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId || currentSessionId === 'new') {
+      return Promise.reject(new Error('会话未就绪，请稍后重试'));
+    }
+    return persistMedia(content, currentSessionId, mediaItems);
+  }, [persistMedia]);
 
   useEffect(() => {
     return setA2UIActionHandler((message) => {
@@ -1527,6 +1536,7 @@ function AppContent() {
                 <div className={`flex-1 min-h-0 ${isTeamAreaExpanded ? 'card rounded-l-lg rounded-r-none' : ''}`}>
                   <ChatPanel
                     onSendMessage={handleSendMessage}
+                    onPersistMedia={handlePersistMedia}
                     onInterrupt={handleInterrupt}
                     onCancel={handleCancel}
                     onSwitchMode={handleSwitchMode}
