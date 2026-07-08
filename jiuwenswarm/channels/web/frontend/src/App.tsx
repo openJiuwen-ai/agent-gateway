@@ -105,6 +105,7 @@ function clearTeamRuntimeState(): void {
   sessionStore.setTeamMemberExecutionEvents([]);
   sessionStore.clearAllTeamMemberContextCompressionStatus();
   sessionStore.setTeamHistoryMessages([]);
+  sessionStore.setTeamHumanShareCommands([]);
 }
 
 // 错误边界组件

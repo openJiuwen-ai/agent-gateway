@@ -1554,6 +1554,26 @@
     "website": "官网地址：{{url}}",
     "repository": "代码仓：{{url}}"
   },
+  "humanShare": {
+    "trigger": "邀请成员",
+    "title": "邀请成员",
+    "cardTitle": "邀请成员",
+    "cardSummary": "待加入 {{pending}} 人，已加入 {{joined}}/{{total}}",
+    "shareButton": "邀请成员",
+    "waiting": "已加入 {{joined}}/{{total}}，不阻塞团队继续运行",
+    "allJoined": "{{count}} 个人类成员已全部加入",
+    "instructionHint": "成员将会通过配置有JiuwenSwarm的平台，以被分配的身份参与团队任务。",
+    "copy": "复制",
+    "copied": "已复制",
+    "joinedNote": "该成员已加入，无需再次发送加入指令",
+    "commandPending": "正在等待成员信息同步，加入指令生成后会显示",
+    "exitTitle": "退出指令",
+    "status": {
+      "pending": "待加入",
+      "joined": "已加入",
+      "left": "已离开"
+    }
+  },
   "network": {
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",

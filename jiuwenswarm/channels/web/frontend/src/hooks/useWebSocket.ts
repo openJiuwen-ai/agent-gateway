@@ -456,6 +456,50 @@ function stableEventId(...parts: unknown[]): string {
     .slice(0, 180);
 }
 
+function getAgentRefId(payload: Record<string, unknown>): string | undefined {
+  const direct = payload.agent_ref;
+  if (isRecord(direct)) {
+    const id = pickString(direct.id);
+    if (id) {
+      return id;
+    }
+  }
+  const nestedPayload = payload.payload;
+  if (isRecord(nestedPayload)) {
+    const nested = nestedPayload.agent_ref;
+    if (isRecord(nested)) {
+      return pickString(nested.id);
+    }
+  }
+  return undefined;
+}
+
+function upsertHumanShareCommandFromEvent(
+  payload: Record<string, unknown>,
+  event: { member_id?: string; name?: string; mode?: string; timestamp?: number }
+): void {
+  if (event.mode !== 'human' || !event.member_id) {
+    return;
+  }
+  const sessionId = getPayloadSessionId(payload);
+  if (!sessionId) {
+    return;
+  }
+  const teamName = getAgentRefId(payload) || 'unknown';
+  const sessionRef = `team_${teamName}_session_${sessionId}`;
+  useSessionStore.getState().upsertTeamHumanShareCommand({
+    memberName: event.member_id,
+    displayName: event.name,
+    sessionId,
+    teamName,
+    sessionRef,
+    joinCommand: `/join ${sessionRef} as ${event.member_id}`,
+    exitCommand: `/exit ${sessionRef}`,
+    status: 'pending',
+    updatedAt: event.timestamp || Date.now(),
+  });
+}
+
 function stringifyCompact(value: unknown): string {
   if (typeof value === 'string') {
     return value;
@@ -1501,6 +1545,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const currentSessionStore = useSessionStore.getState();
         currentSessionStore.setTeamMembers([]);
         currentSessionStore.setTeamTaskEvents([]);
+        currentSessionStore.setTeamHumanShareCommands([]);
         currentSessionStore.setTeamTasks([]);
         currentSessionStore.setTeamMemberExecutionEvents([]);
         currentSessionStore.clearAllTeamMemberContextCompressionStatus();
@@ -1592,6 +1637,39 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('chat.final', ({ payload }) => {
         if (!shouldHandleSessionEvent(payload)) return;
+
+        const memberAction = pickString(payload.member_action);
+        const actionMemberName = pickString(payload.member_name);
+        if (
+          actionMemberName &&
+          (memberAction === 'joined' || memberAction === 'left')
+        ) {
+          const sessionId = pickString(payload.session_id) || activeSessionIdRef.current || '';
+          // 使用 upsert（若 spawned 事件尚未到达则创建占位，后续 spawned 事件会补全 teamName/sessionRef 等字段）
+          useSessionStore.getState().upsertTeamHumanShareCommand({
+            memberName: actionMemberName,
+            displayName: pickString(payload.display_name),
+            sessionId,
+            teamName: '',
+            sessionRef: '',
+            joinCommand: '',
+            exitCommand: '',
+            status: memberAction === 'joined' ? 'joined' : 'left',
+            sourceChannel: pickString(payload.source_channel),
+            userId: pickString(payload.user_id),
+            updatedAt: Date.now(),
+          });
+          const content = normalizeFinalContent(payload);
+          if (content) {
+            addMessage({
+              id: `team-human-${memberAction}-${Date.now()}`,
+              role: 'system',
+              content,
+              timestamp: normalizeEventTimestampIso(payload.timestamp),
+            });
+          }
+          return;
+        }
 
         const currentMode = useSessionStore.getState().mode;
         const content = normalizeFinalContent(payload);
@@ -2466,6 +2544,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             mode?: string;
           };
           const activeSessionId = getPayloadSessionId(payload) || activeSessionIdRef.current || undefined;
+          upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
             applyTeamMemberShutdown(e.member_id, activeSessionId);
           } else if (activeSessionId && clearedTeamPanelSessionRef.current === activeSessionId) {

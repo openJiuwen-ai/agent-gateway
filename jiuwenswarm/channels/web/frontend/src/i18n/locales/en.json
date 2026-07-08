@@ -1555,6 +1555,26 @@
     "website": "Website: {{url}}",
     "repository": "Repository: {{url}}"
   },
+  "humanShare": {
+    "trigger": "Invite members",
+    "title": "Invite members",
+    "cardTitle": "Invite members",
+    "cardSummary": "{{pending}} pending, {{joined}}/{{total}} joined",
+    "shareButton": "Invite members",
+    "waiting": "{{joined}}/{{total}} joined. Team execution is not blocked.",
+    "allJoined": "All {{count}} human members have joined",
+    "instructionHint": "Members will join team tasks through the JiuwenSwarm platform configured for them and participate as their assigned identity.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "joinedNote": "This member has joined. No need to send the join command again.",
+    "commandPending": "Waiting for member details. The join command will appear when ready.",
+    "exitTitle": "Exit command",
+    "status": {
+      "pending": "Pending",
+      "joined": "Joined",
+      "left": "Left"
+    }
+  },
   "network": {
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
