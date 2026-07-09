@@ -245,7 +245,6 @@
     "modelSelector": {
       "tooltip": "切换对话使用的模型"
     },
-    "newSessionDisabled": "处理中或录音中不可新建",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
     "teamPause": "暂停",

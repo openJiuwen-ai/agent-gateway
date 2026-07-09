@@ -245,7 +245,6 @@
     "modelSelector": {
       "tooltip": "Switch the model used for chat"
     },
-    "newSessionDisabled": "Cannot create session while processing or recording",
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "teamPause": "Pause",

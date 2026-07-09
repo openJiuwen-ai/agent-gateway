@@ -1236,8 +1236,6 @@
   width: 30px;
   height: 30px;
   flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 6px;
   color: var(--muted-strong);
   background: color-mix(in srgb, var(--card) 88%, transparent);
 }
