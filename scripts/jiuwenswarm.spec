@@ -11,7 +11,7 @@ import glob
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
 
 block_cipher = None
 
@@ -151,16 +151,11 @@ excludes = [
     "matplotlib",
     "scipy",
     "numpy.tests",
-    # 测试框架
-    "pytest",
-    "pytest-asyncio",
-    "_pytest",
-    "py",
+    # 测试框架辅助包（pytest 本体已 collect 进 PYZ）
     "tox",
     "hypothesis",
     "mock",
     "coverage",
-    "pytest-cov",
 ]
 
 # 入口脚本位于 scripts 目录
@@ -172,10 +167,67 @@ icon_path = os.path.join(
     "logo.ico" if sys.platform == "win32" else "logo.icns",
 )
 
+# Bundle the standalone ruff binary so that `python -m ruff` works inside
+# the frozen exe. The `ruff` PyPI package is a thin Python wrapper around
+# this native binary; the wrapper module is not collected into the PYZ, so
+# the exe entry (jiuwenswarm_exe_entry.py) forwards `-m ruff` directly to
+# the binary placed here.
+import sysconfig as _sysconfig
+_bundled_binaries = []
+_ruff_suffix = ".exe" if sys.platform == "win32" else ""
+_ruff_scripts_dir = _sysconfig.get_path("scripts")
+_ruff_candidates = []
+if _ruff_scripts_dir:
+    _ruff_candidates.append(os.path.join(_ruff_scripts_dir, "ruff" + _ruff_suffix))
+_exe_dir = os.path.dirname(sys.executable) if sys.executable else None
+if _exe_dir:
+    _scripts_subdir = "Scripts" if sys.platform == "win32" else "bin"
+    _ruff_candidates.append(os.path.join(_exe_dir, _scripts_subdir, "ruff" + _ruff_suffix))
+for _c in _ruff_candidates:
+    if _c and os.path.isfile(_c):
+        _bundled_binaries.append((_c, "."))
+        break
+if not _bundled_binaries:
+    print("WARNING: ruff binary not found in venv; auto-harness lint will be "
+          "unavailable in the frozen exe (install ruff in the build venv)")
+
+
+# Bundle pytest (pure-Python) so that `python -m pytest` works inside the
+# frozen exe. the frozen exe's -m branch uses runpy,
+# which resolves pytest from the PYZ once collected here.
+_pytest_datas, _pytest_binaries, _pytest_hidden = collect_all("pytest")
+_pa_datas, _pa_binaries, _pa_hidden = collect_all("pytest_asyncio")
+_py_datas, _py_binaries, _py_hidden = collect_all("py")
+datas += _pytest_datas + _pa_datas + _py_datas
+hiddenimports += _pytest_hidden + _pa_hidden + _py_hidden
+_bundled_binaries = _bundled_binaries + _pytest_binaries + _pa_binaries + _py_binaries
+
+# Bundle mypy so that `python -m mypy` works inside the frozen exe.
+# `sys.executable -m mypy`. mypy ships mypyc-compiled .pyd extensions plus
+# typeshed .pyi data; collect_all grabs all of them.
+# NOTE: mypyc extensions in a frozen env are not guaranteed — verify with
+# `jiuwenswarm.exe -m mypy --version` after a build; if it fails, drop this
+# block and rely on ci_gate_runner's optional-tool skip path instead.
+_mypy_datas, _mypy_binaries, _mypy_hidden = collect_all("mypy")
+datas += _mypy_datas
+hiddenimports += _mypy_hidden
+_bundled_binaries = _bundled_binaries + _mypy_binaries
+
+# mypyc shared extension (.pyd) lives at site-packages root, not inside the
+# mypy/ package, so collect_all("mypy") misses it; collect explicitly or
+# `python -m mypy` fails with ModuleNotFoundError on the hashed mypyc module.
+import glob as _glob
+_mypyc_binaries = []
+_sp_dir = _sysconfig.get_paths().get("purelib")
+if _sp_dir:
+    for _pyd in _glob.glob(os.path.join(_sp_dir, "*__mypyc*.pyd")):
+        _mypyc_binaries.append((_pyd, "."))
+_bundled_binaries = _bundled_binaries + _mypyc_binaries
+
 a = Analysis(
     [entry_script],
     pathex=[project_root, symphony_root],
-    binaries=[],
+    binaries=_bundled_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
