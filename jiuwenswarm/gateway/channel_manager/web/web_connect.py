@@ -25,7 +25,7 @@ from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
-from jiuwenswarm.gateway.routing.keys import AgentRef, DeliveryTarget, RoutingKey
+from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
@@ -479,7 +479,7 @@ class WebChannel(BaseWsChannel):
                               "chat.error", "heartbeat.relay",
                               "context.usage", "context.compression_state",
                               "chat.ask_user_question", "chat.subtask_update",
-                              "chat.symphony_status",
+                              "chat.symphony_status", "chat.notice",
                               "history.message",
                               "chat.session_result", "chat.usage_metadata",
                               "chat.usage_summary", "chat.file",
@@ -492,6 +492,8 @@ class WebChannel(BaseWsChannel):
                 # 确保包含 session_id
                 if "session_id" not in payload and msg.session_id:
                     payload["session_id"] = msg.session_id
+                if event_name.startswith("chat.") and "request_id" not in payload and msg.id:
+                    payload["request_id"] = msg.id
             else:
                 # 对于纯文本消息（chat.delta, chat.final, chat.error 等），提取 content
                 content = str(msg.payload.get("content", "") or "")

@@ -75,6 +75,86 @@ def _history_user_content(params: Any, query: Any) -> Any:
     return query
 
 
+def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _history_media_size(item: dict[str, Any]) -> int | float | None:
+    for key in ("size_bytes", "sizeBytes"):
+        value = item.get(key)
+        if isinstance(value, (int, float)) and value >= 0:
+            return value
+    return None
+
+
+def _history_media_record(value: Any, *, default_type: str = "image") -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    path = _history_media_string(value, "path")
+    url = _history_media_string(value, "url")
+    if not path and not url:
+        return None
+
+    media_type = _history_media_string(value, "type") or default_type
+    filename = _history_media_string(value, "filename", "name") or (
+        Path(path).name if path else "image"
+    )
+    mime_type = _history_media_string(value, "mime_type", "mimeType")
+    size = _history_media_size(value)
+
+    record: dict[str, Any] = {
+        "type": media_type,
+        "filename": filename,
+    }
+    if mime_type:
+        record["mime_type"] = mime_type
+    if path:
+        record["path"] = path
+    if url:
+        record["url"] = url
+    if size is not None:
+        record["size_bytes"] = size
+    return record
+
+
+def _history_user_extra(params: Any) -> dict[str, Any] | None:
+    if not isinstance(params, dict):
+        return None
+
+    extra: dict[str, Any] = {}
+    raw_media_items = params.get("media_items")
+    if isinstance(raw_media_items, list):
+        media_items: list[dict[str, Any]] = []
+        for raw_item in raw_media_items:
+            item = _history_media_record(raw_item)
+            if item is not None:
+                media_items.append(item)
+        if media_items:
+            extra["media_items"] = media_items
+
+    raw_files = params.get("files")
+    if isinstance(raw_files, dict):
+        files: dict[str, Any] = {}
+        uploaded_images = raw_files.get("uploaded_images")
+        if isinstance(uploaded_images, list):
+            image_items: list[dict[str, Any]] = []
+            for raw_item in uploaded_images:
+                item = _history_media_record(raw_item, default_type="image")
+                if item is not None:
+                    image_items.append(item)
+            if image_items:
+                files["uploaded_images"] = image_items
+        if files:
+            extra["files"] = files
+
+    return extra or None
+
+
 def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     stats: dict[str, Any] = {}
     for key in ("status", "phase", "processor", "model", "before", "after", "saved", "duration_ms"):
@@ -1543,6 +1623,7 @@ class JiuWenSwarm:
                 role="user",
                 content=_history_user_content(request.params, query),
                 timestamp=time.time(),
+                extra=_history_user_extra(request.params),
                 channel_metadata=request.metadata,
                 mode=request.params.get("mode", "unknown"),
             )
@@ -1713,6 +1794,7 @@ class JiuWenSwarm:
                 role="user",
                 content=_history_user_content(request.params, query),
                 timestamp=time.time(),
+                extra=_history_user_extra(request.params),
                 channel_metadata=request.metadata,
                 mode=request.params.get("mode", "unknown"),
             )

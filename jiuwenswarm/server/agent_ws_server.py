@@ -601,9 +601,20 @@ def _is_restorable_history_record(record: Any) -> bool:
     role = record.get("role")
     content = record.get("content")
     has_content = isinstance(content, str) and bool(content.strip())
+    has_media = (
+        isinstance(record.get("media_items"), list) and bool(record["media_items"])
+    ) or (
+        isinstance(record.get("mediaItems"), list) and bool(record["mediaItems"])
+    )
+    files = record.get("files")
+    if isinstance(files, dict):
+        has_media = has_media or (
+            isinstance(files.get("uploaded_images"), list)
+            and bool(files["uploaded_images"])
+        )
 
     if role == "user":
-        return has_content
+        return has_content or has_media
 
     event_type = record.get("event_type")
     if not event_type:

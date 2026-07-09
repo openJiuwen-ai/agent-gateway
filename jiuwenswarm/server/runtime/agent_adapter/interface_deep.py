@@ -2615,6 +2615,139 @@ class JiuWenSwarmDeepAdapter:
         )
         return updated
 
+    @staticmethod
+    def _prepare_react_image_tool_prompt(
+        request: AgentRequest,
+        inputs: dict[str, Any],
+        *,
+        enable_read_image_multimodal: bool,
+    ) -> dict[str, Any]:
+        """Add image file paths to the ReAct prompt when native image input is off."""
+        if enable_read_image_multimodal:
+            return inputs
+
+        query = inputs.get("query")
+        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
+            return inputs
+
+        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            extract_multimodal_image_files,
+        )
+
+        image_files = inputs.get("_multimodal_image_files")
+        if not isinstance(image_files, list) or not image_files:
+            image_files = extract_multimodal_image_files(request.params)
+        if not image_files:
+            return inputs
+
+        params = request.params if isinstance(request.params, dict) else {}
+        raw_question = params.get("query")
+        if not isinstance(raw_question, str) or not raw_question.strip():
+            raw_question = params.get("content")
+        question = raw_question.strip() if isinstance(raw_question, str) else ""
+        first_path = str(image_files[0].get("path") or "").strip()
+        if not first_path:
+            return inputs
+
+        media_items = []
+        for image_file in image_files:
+            path = str(image_file.get("path") or "").strip()
+            if not path:
+                continue
+            media_items.append(
+                {
+                    "type": "image",
+                    "filename": image_file.get("filename") or Path(path).name,
+                    "mediaPath": path,
+                    "mimeType": image_file.get("mime_type") or image_file.get("mimeType"),
+                }
+            )
+        if not media_items:
+            return inputs
+
+        tool_context = {
+            "marker": "jiuwenswarm_image_tool_context",
+            "mediaPath": first_path,
+            "mediaItems": media_items,
+            "question": question,
+            "toolHint": (
+                "当前主模型未启用原生图片输入。如果需要理解图片内容，请调用图片理解工具；"
+                "优先使用 image_reading(local_url=mediaPath, prompt=question)，"
+                "或使用 visual_question_answering(image_path_or_url=mediaPath, question=question)。"
+            ),
+        }
+
+        updated = dict(inputs)
+        updated.pop("_multimodal_image_files", None)
+        updated["query"] = (
+            query
+            + "\n\n图片附件上下文（供 ReAct 选择图片理解工具使用）：\n"
+            + json.dumps(tool_context, ensure_ascii=False)
+        )
+        return updated
+
+    @staticmethod
+    def _build_image_tool_fallback_notice(
+        request: AgentRequest,
+        *,
+        enable_read_image_multimodal: bool,
+        model: Any | None,
+    ) -> dict[str, Any] | None:
+        if enable_read_image_multimodal:
+            return None
+
+        from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            extract_multimodal_image_files,
+        )
+
+        image_files = extract_multimodal_image_files(request.params)
+        if not image_files:
+            return None
+
+        model_config = getattr(model, "model_config", None)
+        model_name = str(getattr(model_config, "model_name", "") or "").strip()
+        model_label = f"（{model_name}）" if model_name else ""
+        content = f"当前模型{model_label}不支持原生图片理解，已切换为图片理解工具处理。"
+        notice = {
+            "event_type": "chat.notice",
+            "notice_type": "image_tool_fallback",
+            "level": "info",
+            "content": content,
+            "request_id": request.request_id,
+            "session_id": request.session_id,
+            "image_count": len(image_files),
+        }
+        if model_name:
+            notice["model_name"] = model_name
+        return notice
+
+    @staticmethod
+    def _native_image_support_from_model_name(model_name: str) -> bool | None:
+        normalized = model_name.strip().lower()
+        if not normalized:
+            return None
+
+        if re.search(r"(?:^|[/_:-])glm-[0-9]+(?:\.[0-9]+)*(?:$|[/_:-])", normalized):
+            return False
+        if re.search(r"(?:^|[/_:-])glm-[^/]*v(?:$|[/_.:-])", normalized):
+            return True
+        if any(token in normalized for token in ("vision", "vl", "omni")):
+            return True
+        return None
+
+    def _native_image_input_enabled(self, config: dict[str, Any], model: Any | None) -> bool:
+        model_config = getattr(model, "model_config", None)
+        model_name = str(getattr(model_config, "model_name", "") or "").strip()
+        support = self._native_image_support_from_model_name(model_name)
+        if support is False:
+            return False
+        configured = config.get("enable_read_image_multimodal")
+        if isinstance(configured, bool):
+            return configured
+        if support is True:
+            return True
+        return self._vision_model_config is None
+
     def _resolve_enable_read_image_multimodal(self, config: dict[str, Any]) -> bool:
         configured = config.get("enable_read_image_multimodal")
         if isinstance(configured, bool):
@@ -5974,6 +6107,15 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
+            enable_read_image_multimodal = self._native_image_input_enabled(
+                self._config_cache,
+                resolved_model,
+            )
+            inputs = self._prepare_react_image_tool_prompt(
+                request,
+                inputs,
+                enable_read_image_multimodal=enable_read_image_multimodal,
+            )
             await self._sync_prompt_attachments_for_request(session_id)
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
@@ -6235,6 +6377,27 @@ class JiuWenSwarmDeepAdapter:
                 request,
                 inputs,
             )
+            enable_read_image_multimodal = self._native_image_input_enabled(
+                self._config_cache,
+                resolved_model,
+            )
+            image_tool_fallback_notice = self._build_image_tool_fallback_notice(
+                request,
+                enable_read_image_multimodal=enable_read_image_multimodal,
+                model=resolved_model,
+            )
+            inputs = self._prepare_react_image_tool_prompt(
+                request,
+                inputs,
+                enable_read_image_multimodal=enable_read_image_multimodal,
+            )
+            if image_tool_fallback_notice is not None:
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload=image_tool_fallback_notice,
+                    is_complete=False,
+                )
             await self._sync_prompt_attachments_for_request(session_id)
             from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
                 set_current_multimodal_image_files,
