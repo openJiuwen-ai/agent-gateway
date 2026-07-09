@@ -1103,11 +1103,12 @@ class CronSchedulerService:
 
         # 企业飞书：优先用作业里绑定的 SessionMap session_id（feishu::chat_id::bot_id::...），
         # 避免多群共用 bot 时误用 config 中的 last_*（最近一条消息的会话）。
-        # Web/TUI：不绑定 session_id，否则新会话或重启后 session_id 与旧不同，消息会被前端过滤。
+        # TUI：不绑定 session_id，否则 TUI 重启后新 session_id 与旧不同，消息会被前端过滤。
+        # Web：绑定 session_id，只投递到创建定时任务的会话，避免多窗口干扰。
         metadata: dict | None = None
         msg_session_id: str | None = None
         routing_sid = str(getattr(job, "session_id", None) or "").strip()
-        if routing_sid and channel_id not in ("web", "tui"):
+        if routing_sid and channel_id != "tui":
             msg_session_id = routing_sid
         if channel_id.startswith("feishu_enterprise:") and routing_sid and "::" in routing_sid:
             parts = routing_sid.split("::")
@@ -1134,9 +1135,10 @@ class CronSchedulerService:
                 ch_cfg = channels_cfg.get(channel_id) or {}
                 if channel_id == "feishu" or channel_id.startswith("feishu:"):
                     # V2 多应用：从 apps 列表取对应 app 的 last_*（而非平铺字段）
-                    target_app_id = ""
-                    if channel_id.startswith("feishu:") and not channel_id.startswith("feishu_enterprise:"):
-                        target_app_id = channel_id.split(":", 1)[1].strip()
+                    target_app_id = str(getattr(job, "app_id", None) or "").strip()
+                    if not target_app_id:
+                        if channel_id.startswith("feishu:") and not channel_id.startswith("feishu_enterprise:"):
+                            target_app_id = channel_id.split(":", 1)[1].strip()
                     apps = ch_cfg.get("apps") or []
                     if isinstance(apps, list):
                         for app in apps:
@@ -1295,6 +1297,7 @@ class CronSchedulerService:
                     job.chat_type, channel_id, job.id,
                 )
 
+        _msg_app_id = str(getattr(job, "app_id", None) or "").strip() or None
         msg = Message(
             id=f"cron-push-{state.run_id}-{channel_id}",
             type="event",
@@ -1307,5 +1310,6 @@ class CronSchedulerService:
             event_type=EventType.CHAT_FINAL,
             metadata=metadata,
             group_digital_avatar=_group_digital_avatar,
+            app_id=_msg_app_id,
         )
         await self._message_handler.publish_robot_messages(msg)

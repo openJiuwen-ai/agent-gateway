@@ -707,6 +707,13 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
             if key not in E2A_WIRE_INTERNAL_METADATA_KEYS
         } or None
 
+    # 将 app_id 注入 metadata，供 cron 路由等下游使用
+    app_id = data.get("app_id")
+    if app_id:
+        if metadata is None:
+            metadata = {}
+        metadata.setdefault("app_id", app_id)
+
     return AgentRequest(
         request_id=data["request_id"],
         channel_id=data.get("channel_id", "web"),
