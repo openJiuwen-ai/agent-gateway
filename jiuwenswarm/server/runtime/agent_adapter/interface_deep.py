@@ -132,6 +132,7 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
 )
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
@@ -1327,6 +1328,7 @@ class JiuWenSwarmDeepAdapter:
 
             state = {
                 "model": self._resolve_model_name(),
+                "available_models": get_model_names(),
                 "mode": mode_display,
                 "language": language,
                 "channel": channel,
