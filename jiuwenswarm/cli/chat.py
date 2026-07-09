@@ -35,6 +35,15 @@ from jiuwenswarm.common.utils import get_agent_workspace_dir
 _STATE_FILE = get_agent_workspace_dir() / "cli_trusted_dirs_state.json"
 
 
+def _normalize_dir(path: str) -> str:
+    """将目录路径归一化为绝对、去除末尾分隔符的形式。
+
+    统一 _build_request / _get_persisted_external_dirs / _prompt_and_cleanup_dirs
+    的路径比对基准，避免因末尾 '/'、相对路径或符号链接导致重复或误判。
+    """
+    return str(Path(path).expanduser().resolve())
+
+
 def _load_state() -> dict[str, bool]:
     """Load per-directory prompt state.  {dir_path: keep_bool}."""
     if _STATE_FILE.exists():
@@ -72,7 +81,7 @@ def _get_persisted_external_dirs() -> list[str]:
     result = []
     for k, v in ext.items():
         if str(k) != "*" and str(v) == "allow":
-            result.append(str(k))
+            result.append(_normalize_dir(str(k)))
     return result
 
 
@@ -96,10 +105,10 @@ def _remove_dir_from_config(dir_path: str) -> bool:
     if not isinstance(ext, dict):
         return False
 
-    target = dir_path.rstrip("/")
+    target = _normalize_dir(dir_path)
     key_to_remove = None
     for key in list(ext.keys()):
-        if str(key).rstrip("/") == target:
+        if _normalize_dir(str(key)) == target:
             key_to_remove = key
             break
     if key_to_remove is None:
@@ -116,7 +125,7 @@ async def _persist_trusted_dirs(client: GatewayClient, trusted_dirs: list[str]) 
     """Tell the agent-server to persist each trusted directory via ``command.add_dir``."""
     failed: list[str] = []
     for d in trusted_dirs:
-        resolved = str(Path(d).resolve())
+        resolved = _normalize_dir(d)
         try:
             await client.send_request({
                 "type": "req",
@@ -138,7 +147,7 @@ async def _persist_trusted_dirs(client: GatewayClient, trusted_dirs: list[str]) 
 
 
 def _prompt_and_cleanup_dirs() -> None:
-    """Check for newly persisted dirs and ask user whether to keep each one.
+    """Check whether persisted dirs are covered by state; if not, ask once for all.
 
     Only called from the REPL loop (interactive TTY).
     """
@@ -147,20 +156,27 @@ def _prompt_and_cleanup_dirs() -> None:
 
     persisted = _get_persisted_external_dirs()
     state = _load_state()
-    new_dirs = [d for d in persisted if d not in state]
+    new_dirs = sorted(d for d in persisted if d not in state)
 
-    for d in sorted(new_dirs):
-        write_stderr(f"\nNew trusted directory detected: {d}\n")
-        try:
-            answer = input("Keep this directory as trusted? [Y/n]: ").strip().lower()
-        except EOFError:
-            answer = "y"
+    # All persisted dirs already covered by state — nothing to confirm.
+    if not new_dirs:
+        return
 
-        keep = answer not in ("n", "no")
+    write_stderr("\nNew trusted directories detected:\n")
+    for d in new_dirs:
+        write_stderr(f"  {d}\n")
+    try:
+        answer = input("Keep these directories as trusted? [Y/n]: ").strip().lower()
+    except EOFError:
+        answer = "y"
+
+    keep = answer not in ("n", "no")
+    for d in new_dirs:
         state[d] = keep
-        _save_state(state)
+    _save_state(state)
 
-        if not keep:
+    if not keep:
+        for d in new_dirs:
             if _remove_dir_from_config(d):
                 write_stderr(f"Trusted directory removed: {d}\n")
             else:
@@ -298,7 +314,7 @@ def _build_request(args: argparse.Namespace, prompt: str) -> dict:
     if not trusted_dirs:
         trusted_dirs = [project_dir]
     else:
-        trusted_dirs = [str(Path(d).resolve()) for d in trusted_dirs]
+        trusted_dirs = [_normalize_dir(d) for d in trusted_dirs]
 
     # Merge persisted external_directory allow entries into trusted_dirs
     # so that RuntimePromptRail can inject them into the system prompt.
