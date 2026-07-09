@@ -40,7 +40,7 @@
   - [MCP Configuration](MCPConfiguration.md)
   - [Packaging desktop executables](PackExeGuide.md)
   - [ACP Plugin Usage](ACP_Client_Config.md)
-  - [Windows auto-update design](WindowsAutoUpdateDesign.md)
+  - [Desktop auto-update design](WindowsAutoUpdateDesign.md)
   - [Logging System](Logs.md)
 - [Development practices](development-practices/README.md)
   - [Daily report generator practice](development-practices/JiuwenSwarm-Daily-Report-Generator.md)

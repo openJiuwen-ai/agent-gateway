@@ -43,7 +43,7 @@
   - [MCP 配置](MCP配置.md)
   - [打包 exe 指南](打包exe指南.md)
   - [ACP 插件使用](ACP插件使用.md)
-  - [Windows 自动更新设计](windows自动更新设计.md)
+  - [桌面端自动更新设计](windows自动更新设计.md)
   - [日志系统](日志.md)
 - [开发实践](开发实践/README.md)
   - [日报生成器开发实践](开发实践/JiuwenSwarm日报生成器开发实践.md)
