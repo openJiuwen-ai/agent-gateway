@@ -417,10 +417,15 @@ class CronSchedulerService:
             except Exception as exc:  # noqa: BLE001
                 if self._is_croniter_no_next_date(exc):
                     # 已过期的 one-shot：标记 expired 并停用，避免 UI 仍显示 enabled。
+                    # proactive job 的 enabled 由 ConfigPanel 开关管，scheduler 不碰。
                     try:
-                        job.enabled = False
+                        is_proactive = getattr(job, "mode", "") == "proactive.tick"
+                        patch = {"expired": True}
+                        if not is_proactive:
+                            patch["enabled"] = False
+                            job.enabled = False
                         job.expired = True
-                        await self._store.update_job(job.id, {"enabled": False, "expired": True})
+                        await self._store.update_job(job.id, patch)
                     except Exception as update_exc:  # noqa: BLE001
                         logger.warning(
                             "[Cron] mark expired failed job=%s: %s",
@@ -589,9 +594,13 @@ class CronSchedulerService:
             except Exception as exc:  # 兜底：reschedule 失败不阻断本次 tick 结果（下个 reload 会重排）
                 if self._is_croniter_no_next_date(exc):
                     try:
-                        job.enabled = False
+                        is_proactive = getattr(job, "mode", "") == "proactive.tick"
+                        patch = {"expired": True}
+                        if not is_proactive:
+                            patch["enabled"] = False
+                            job.enabled = False
                         job.expired = True
-                        await self._store.update_job(job.id, {"enabled": False, "expired": True})
+                        await self._store.update_job(job.id, patch)
                     except Exception as update_exc:  # 兜底：标记过期失败仅告警，不影响主流程
                         logger.warning("[Cron] mark expired after proactive.tick failed job=%s: %s", job.id, update_exc)
                 else:
@@ -658,9 +667,13 @@ class CronSchedulerService:
                 # 不删除，改为标记过期（与自然过期的一次性任务行为一致）
                 logger.info("[Cron] delete_after_run job=%s, marking expired after push", job.id)
                 try:
-                    await self._store.update_job(job.id, {"enabled": False, "expired": True})
-                    job.enabled = False
+                    is_proactive = getattr(job, "mode", "") == "proactive.tick"
+                    patch = {"expired": True}
+                    if not is_proactive:
+                        patch["enabled"] = False
+                        job.enabled = False
                     job.expired = True
+                    await self._store.update_job(job.id, patch)
                 except Exception as update_exc:
                     logger.warning("[Cron] mark expired after push failed job=%s: %s", job.id, update_exc)
                 return

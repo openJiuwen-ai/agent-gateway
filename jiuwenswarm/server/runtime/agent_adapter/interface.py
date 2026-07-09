@@ -1827,7 +1827,12 @@ class JiuWenSwarm:
                 event_type="chat.final",
                 content=pending_text,
                 timestamp=time.time(),
-                extra=_attach_reasoning_content(),
+                # 透传 proactive 标记到 history——刷新页面时前端靠 payload.source===
+                # 'proactive_recommendation' 渲染推荐卡片，不带则退化白色气泡。
+                extra=_attach_reasoning_content({
+                    k: v for k, v in request.params.items()
+                    if k in ("source", "proactive_type", "proactive_target")
+                }),
                 mode=request.params.get("mode", "unknown"),
             )
             durable_final_content = pending_text
@@ -2016,6 +2021,10 @@ class JiuWenSwarm:
                                                 extra_fields[k] = v
                                 if et in {"chat.final", "chat.tool_call"}:
                                     extra_fields = _attach_reasoning_content(extra_fields)
+                                # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
+                                for pk in ("source", "proactive_type", "proactive_target"):
+                                    if pk not in extra_fields and pk in request.params:
+                                        extra_fields[pk] = request.params[pk]
                                 append_history_record(
                                     session_id=session_id,
                                     request_id=rid,
@@ -2110,6 +2119,10 @@ class JiuWenSwarm:
                                             extra_fields[k] = v
                             if et in {"chat.final", "chat.tool_call"}:
                                 extra_fields = _attach_reasoning_content(extra_fields)
+                            # 透传 proactive 标记——刷新页面时前端靠 source 识别卡片
+                            for pk in ("source", "proactive_type", "proactive_target"):
+                                if pk not in extra_fields and pk in request.params:
+                                    extra_fields[pk] = request.params[pk]
                             append_history_record(
                                 session_id=session_id,
                                 request_id=rid,
@@ -2161,7 +2174,10 @@ class JiuWenSwarm:
                 event_type="chat.final",
                 content=finalized_assistant_message,
                 timestamp=time.time(),
-                extra=_attach_reasoning_content(),
+                extra=_attach_reasoning_content({
+                    k: v for k, v in request.params.items()
+                    if k in ("source", "proactive_type", "proactive_target")
+                }),
                 mode=request.params.get("mode", "unknown"),
             )
             final_answer_content = finalized_assistant_message

@@ -726,7 +726,7 @@
       "proactiveEnabled": "启用主动推荐",
       "proactiveTickInterval": "检查间隔（分钟）",
       "proactiveMaxPerDay": "每日推荐上限",
-      "proactiveMaxSessions": "每次检查会话数"
+      "proactiveMaxRounds": "每次检查对话轮数"
     },
     "keyHelp": {
       "skillCreate": "建议先安装 `skill-creator` 和 `teamskill-creator`，再开启",
@@ -865,8 +865,8 @@
       "tickIntervalDesc": "引擎扫描主动推荐机会的频率",
       "maxPerDay": "每日上限",
       "maxPerDayDesc": "每日主动推荐次数上限",
-      "maxSessions": "每次检查会话数",
-      "maxSessionsDesc": "每轮检查最多分析的会话数",
+      "maxRounds": "每次检查对话轮数",
+      "maxRoundsDesc": "每次检查最多读取的对话轮数",
       "notConnected": "请先连接服务器。",
       "disabledHint": "请先启用主动推荐，再使用此功能。",
       "typeLabel": {

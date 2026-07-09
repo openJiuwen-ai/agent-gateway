@@ -727,7 +727,7 @@
       "proactiveEnabled": "Enable proactive recommendation",
       "proactiveTickInterval": "Check interval (minutes)",
       "proactiveMaxPerDay": "Daily recommendation limit",
-      "proactiveMaxSessions": "Max sessions per check"
+      "proactiveMaxRounds": "Max rounds per check"
     },
     "keyHelp": {
       "skillCreate": "Install `skill-creator` and `teamskill-creator` before enabling",
@@ -866,8 +866,8 @@
       "tickIntervalDesc": "How often the engine scans for proactive opportunities",
       "maxPerDay": "Daily Limit",
       "maxPerDayDesc": "Maximum proactive recommendations per day",
-      "maxSessions": "Sessions per Tick",
-      "maxSessionsDesc": "Maximum sessions analyzed per check cycle",
+      "maxRounds": "Rounds per Tick",
+      "maxRoundsDesc": "Maximum conversation rounds read per check",
       "notConnected": "Please connect to the server first.",
       "disabledHint": "Enable proactive recommendation first to use this feature.",
       "typeLabel": {

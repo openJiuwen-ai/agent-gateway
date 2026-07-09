@@ -454,7 +454,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "a2ui_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
-    "proactive_recommendation_max_sessions_per_tick",
+    "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
 })
 
@@ -1069,9 +1069,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             proactive_cfg = resolved.get("proactive_recommendation") or {}
             payload["proactive_recommendation_enabled"] = "true" if proactive_cfg.get("enabled", False) else "false"
             payload["proactive_recommendation_max_recommend_per_day"] = str(
-                proactive_cfg.get("max_recommend_per_day", 5))
-            payload["proactive_recommendation_max_sessions_per_tick"] = str(
-                proactive_cfg.get("max_sessions_per_tick", 10))
+                proactive_cfg.get("max_recommend_per_day", 10))
+            payload["proactive_recommendation_max_rounds_per_tick"] = str(
+                proactive_cfg.get("max_rounds_per_tick", 20))
         except Exception:  # noqa: BLE001
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
@@ -1097,8 +1097,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("free_search_ddg_enabled", "false")
             payload.setdefault("free_search_bing_enabled", "false")
             payload.setdefault("proactive_recommendation_enabled", "false")
-            payload.setdefault("proactive_recommendation_max_recommend_per_day", "5")
-            payload.setdefault("proactive_recommendation_max_sessions_per_tick", "10")
+            payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
+            payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     def _persist_env_updates(updates: dict[str, str]) -> None:
@@ -1205,8 +1205,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
                     update_proactive_recommendation_in_config({"max_recommend_per_day": int(str(val).strip())})
-                elif param_key == "proactive_recommendation_max_sessions_per_tick":
-                    update_proactive_recommendation_in_config({"max_sessions_per_tick": int(str(val).strip())})
+                elif param_key == "proactive_recommendation_max_rounds_per_tick":
+                    update_proactive_recommendation_in_config({"max_rounds_per_tick": int(str(val).strip())})
                 yaml_updated.append(param_key)
             except Exception as e:  # noqa: BLE001
                 logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)

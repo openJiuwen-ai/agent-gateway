@@ -332,7 +332,7 @@ const PROACTIVE_BOOLEAN_KEYS = new Set(["proactive_recommendation_enabled"]);
 const PROACTIVE_KEYS = new Set([
   ...PROACTIVE_BOOLEAN_KEYS,
   "proactive_recommendation_max_recommend_per_day",
-  "proactive_recommendation_max_sessions_per_tick",
+  "proactive_recommendation_max_rounds_per_tick",
 ]);
 // 调度频率已交给定时任务面板，ConfigPanel 不再暴露 tick_interval。
 // 即便后端残留下发，也在比较/提交时跳过，避免误提交空值。
@@ -648,7 +648,7 @@ const KEY_DISPLAY_I18N: Record<string, string> = {
   skill_retrieval_retrieve_max_exposure_depth: "config.keys.skillRetrievalMaxExposureDepth",
   proactive_recommendation_enabled: "config.keys.proactiveEnabled",
   proactive_recommendation_max_recommend_per_day: "config.keys.proactiveMaxPerDay",
-  proactive_recommendation_max_sessions_per_tick: "config.keys.proactiveMaxSessions",
+  proactive_recommendation_max_rounds_per_tick: "config.keys.proactiveMaxRounds",
 };
 const KEY_PLACEHOLDER_I18N: Record<string, string> = {
   memory_forbidden_description: "config.keys.memoryForbiddenDescriptionPlaceholder",
@@ -669,7 +669,7 @@ const KEY_SORT_PRIORITY: Record<string, number> = {
   skill_retrieval_enabled: 1,
   proactive_recommendation_enabled: 0,
   proactive_recommendation_max_recommend_per_day: 2,
-  proactive_recommendation_max_sessions_per_tick: 3,
+  proactive_recommendation_max_rounds_per_tick: 3,
   skill_retrieval_retrieve_max_exposure_depth: 10,
   skill_retrieval_build_max_depth: 20,
   skill_retrieval_build_max_workers: 21,
