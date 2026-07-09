@@ -1135,10 +1135,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           session_id: sessionId,
           intent,
         };
-        if (useSessionStore.getState().mode === 'team'
-            && ['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
-          params.mode = 'team';
-          params.team = true;
+        const currentMode = useSessionStore.getState().mode;
+        if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
+          params.mode = currentMode;
+          if (currentMode === 'team') {
+            params.team = true;
+          }
         }
         if (intent === 'supplement') {
           params.new_input = newInput ?? '';
