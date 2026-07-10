@@ -119,7 +119,12 @@ jiuwenbox = [
 ]
 
 [tool.setuptools.exclude-package-data]
-jiuwenswarm = ["channels/web/frontend/node_modules/**", "channels/web/frontend/node_modules/*"]
+jiuwenswarm = [
+    "channels/web/frontend/node_modules/**",
+    "channels/web/frontend/node_modules/*",
+    "resources/agent/workspace/skills/project-maintainer/**/*",
+    "resources/agent/workspace/skills/project-maintainer/*",
+]
 
 [tool.uv]
 default-groups = ['dev']
