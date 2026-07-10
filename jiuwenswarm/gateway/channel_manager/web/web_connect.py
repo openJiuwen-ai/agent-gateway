@@ -443,6 +443,69 @@ class WebChannel(BaseWsChannel):
             getattr(msg, "id", ""), getattr(msg, "event_type", None), _et,
             _has_fanout, routing_target is not None, len(self.clients),
         )
+        if msg.type == "res":
+            if isinstance(msg.payload, dict):
+                res_payload = {**msg.payload}
+            elif msg.payload is None:
+                res_payload = {}
+            else:
+                res_payload = {"content": str(msg.payload)}
+
+            frame: dict[str, Any] = {
+                "type": "res",
+                "id": msg.id,
+                "ok": bool(msg.ok),
+                "payload": res_payload,
+            }
+            if not msg.ok:
+                error_text = res_payload.get("error")
+                if isinstance(error_text, str) and error_text:
+                    frame["error"] = error_text
+                code_text = res_payload.get("code")
+                if isinstance(code_text, str) and code_text:
+                    frame["code"] = code_text
+
+            ws_set: set[Any] = set()
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            request_ws_id = str(metadata.get("ws_id") or "").strip()
+            if request_ws_id:
+                ws = self._ws_by_id.get(request_ws_id)
+                if ws is not None and not getattr(ws, "closed", False):
+                    ws_set.add(ws)
+
+            if not ws_set and routing_target is not None:
+                delivery = routing_target.delivery
+                if delivery is not None:
+                    ws_id = getattr(delivery, "ws_id", "")
+                    if ws_id:
+                        ws = self._ws_by_id.get(ws_id)
+                        if ws is not None and not getattr(ws, "closed", False):
+                            ws_set.add(ws)
+                if not ws_set:
+                    for rk in routing_target.routing_keys:
+                        ws_list = self._clients_by_key.get(rk) or []
+                        for w in ws_list:
+                            if not getattr(w, "closed", False):
+                                ws_set.add(w)
+
+            if not ws_set and msg.session_id:
+                for rk, ws_list in self._clients_by_key.items():
+                    if rk.session_id == msg.session_id:
+                        for w in ws_list:
+                            if not getattr(w, "closed", False):
+                                ws_set.add(w)
+
+            if not ws_set:
+                logger.debug(
+                    "[WebChannel] response route miss: ws_id=%s session_id=%s id=%s",
+                    request_ws_id,
+                    msg.session_id,
+                    getattr(msg, "id", ""),
+                )
+                return
+            await self._broadcast_to(frame, ws_set)
+            return
+
         # ── V2 精确路由 ──
         if routing_target is not None:
             routing_keys = routing_target.routing_keys
@@ -499,31 +562,6 @@ class WebChannel(BaseWsChannel):
             )
             return
         all_clients = ws_set
-
-        # 响应帧：优先按 res 语义透传，避免误封装为 chat.final
-        if msg.type == "res":
-            if isinstance(msg.payload, dict):
-                res_payload = {**msg.payload}
-            elif msg.payload is None:
-                res_payload = {}
-            else:
-                res_payload = {"content": str(msg.payload)}
-
-            frame: dict[str, Any] = {
-                "type": "res",
-                "id": msg.id,
-                "ok": bool(msg.ok),
-                "payload": res_payload,
-            }
-            if not msg.ok:
-                error_text = res_payload.get("error")
-                if isinstance(error_text, str) and error_text:
-                    frame["error"] = error_text
-                code_text = res_payload.get("code")
-                if isinstance(code_text, str) and code_text:
-                    frame["code"] = code_text
-            await self._broadcast_to(frame, all_clients)
-            return
 
         # 确定事件名称
         event_name = "chat.final"
