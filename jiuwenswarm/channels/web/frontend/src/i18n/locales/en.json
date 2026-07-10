@@ -1612,7 +1612,7 @@
   },
   "updatePanel": {
     "title": "App Updates",
-    "subtitle": "Check for new versions and download the silent Windows installer.",
+    "subtitle": "Check for new versions and download the installer.",
     "configTitle": "Update Source Config",
     "checkNow": "Check for updates",
     "checking": "Checking...",
@@ -1627,7 +1627,7 @@
     "publishedAt": "Published at",
     "releaseNotes": "Release notes",
     "downloadProgress": "Download progress",
-    "readyToInstall": "The installer is ready. Click “Install and restart” to close the app and perform a silent upgrade.",
+    "readyToInstall": "The installer is ready. Click “Install and restart” to close the app and begin the upgrade.",
     "restartPendingHint": "Upgrade complete. Click “Restart now” to restart the service.",
     "unsupported": "This update flow is not supported on the current platform.",
     "noReleaseNotes": "No release notes available.",
@@ -1653,7 +1653,7 @@
       "downloadFailed": "Failed to download the update",
       "upgradeFailed": "Failed to install the update",
       "saveConfigFailed": "Failed to save updater config",
-      "installUnavailable": "The installer cannot be started here. Please run inside the Windows desktop app.",
+      "installUnavailable": "The installer cannot be started here. Please run inside the desktop app.",
       "installFailed": "Failed to launch the update installer"
     },
     "fields": {

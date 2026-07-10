@@ -1611,7 +1611,7 @@
   },
   "updatePanel": {
     "title": "应用更新",
-    "subtitle": "检查新版本并在 Windows 上下载静默安装包。",
+    "subtitle": "检查新版本并下载安装包。",
     "configTitle": "更新源配置",
     "checkNow": "检查更新",
     "checking": "检查中...",
@@ -1626,7 +1626,7 @@
     "publishedAt": "发布时间",
     "releaseNotes": "更新说明",
     "downloadProgress": "下载进度",
-    "readyToInstall": "安装包已下载完成，点击「安装并重启」后将退出当前应用并静默升级。",
+    "readyToInstall": "安装包已下载完成，点击「安装并重启」后退出应用开始升级。",
     "restartPendingHint": "升级完成，请点击「立即重启」重启服务。",
     "unsupported": "当前平台暂不支持此更新流程。",
     "noReleaseNotes": "暂无更新说明。",
@@ -1652,7 +1652,7 @@
       "downloadFailed": "下载更新失败",
       "upgradeFailed": "安装更新失败",
       "saveConfigFailed": "保存更新配置失败",
-      "installUnavailable": "当前环境无法直接触发安装，请确认在 Windows 桌面应用内运行。",
+      "installUnavailable": "当前环境无法直接触发安装，请确认在桌面应用内运行。",
       "installFailed": "启动更新安装失败"
     },
     "fields": {
