@@ -879,7 +879,10 @@
     "errors": {
       "requiredModelFields": "These model fields are required: {{fields}}. Complete them before saving and restarting.",
       "saveFailed": "Save failed, please try again later",
-      "processingDisabled": "A task is running. Please wait for it to finish before saving config."
+      "processingDisabled": "A task is running. Please wait for it to finish before saving config.",
+      "proactiveIntEmpty": "{{field}} cannot be empty; must be a positive integer ({{lo}}-{{hi}})",
+      "proactiveIntNotInteger": "{{field}} must be a positive integer ({{lo}}-{{hi}}); invalid value: {{value}}",
+      "proactiveIntOutOfRange": "{{field}} must be a positive integer in {{lo}}-{{hi}}; current: {{value}}"
     }
   },
   "cron": {
@@ -898,7 +901,7 @@
     "empty": "No scheduled tasks",
     "deleteConfirm": "Are you sure you want to delete this task?",
     "autoManaged": "Auto-managed",
-    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Schedule, offset, timezone and target channel can be edited here; to remove it, turn off the toggle in Settings.",
+    "autoManagedHint": "This task is auto-created/deleted by the proactive recommendation toggle (Settings → Proactive Recommendation). Only the cron expression and timezone can be edited here; other fields (name/status/description/offset/channel) are read-only. To remove it, turn off the toggle in Settings.",
     "autoManagedToggleDisabled": "The toggle of an auto-managed task is controlled by Settings → Proactive Recommendation and cannot be switched here.",
     "status": {
       "enabled": "Enabled",

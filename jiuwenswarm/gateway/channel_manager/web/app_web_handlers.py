@@ -1206,6 +1206,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     class _ConfigInternalError(RuntimeError):
         pass
 
+    def _validate_proactive_int(
+        val: Any, *, name: str, lo: int = 1, hi: int = 50,
+    ) -> int:
+        """校验 proactive 数值配置项：必须是 [lo, hi] 的正整数字符串。
+
+        挡住负数、零、浮点数(3.5)、字符串(abc)、科学计数(1e5)、空值。
+        校验失败抛 _ConfigBadRequest（携带中文提示），由外层返回前端。
+        """
+        raw = str(val if val is not None else "").strip()
+        if not raw:
+            raise _ConfigBadRequest(f"{name} 不能为空，需为 {lo}-{hi} 的正整数")
+        # 正则一次挡住浮点、负数、科学计数、非数字
+        if not re.fullmatch(r"[0-9]+", raw):
+            raise _ConfigBadRequest(
+                f"{name} 必须是正整数（{lo}-{hi}），当前值无效：{raw!r}"
+            )
+        n = int(raw)
+        if n < lo or n > hi:
+            raise _ConfigBadRequest(f"{name} 需为 {lo}-{hi} 的正整数，当前：{n}")
+        return n
+
     def _encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
         encrypted = dict(params)
         for key, val in list(encrypted.items()):
@@ -1273,10 +1294,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
-                    update_proactive_recommendation_in_config({"max_recommend_per_day": int(str(val).strip())})
+                    n = _validate_proactive_int(val, name="每日推荐上限(max_recommend_per_day)")
+                    update_proactive_recommendation_in_config({"max_recommend_per_day": n})
                 elif param_key == "proactive_recommendation_max_rounds_per_tick":
-                    update_proactive_recommendation_in_config({"max_rounds_per_tick": int(str(val).strip())})
+                    n = _validate_proactive_int(val, name="每次检查对话轮数(max_rounds_per_tick)")
+                    update_proactive_recommendation_in_config({"max_rounds_per_tick": n})
                 yaml_updated.append(param_key)
+            except _ConfigBadRequest:
+                # proactive 数值校验等：直接返回前端，不被外层吞成 warning
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
                 if param_key == "swarmflow_enabled":
@@ -2861,6 +2887,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
+        # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
+        existing = await cc.get_job(job_id)
+        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="主动推荐定时任务由设置→主动推荐开关控制，不能在面板删除；请到设置关闭开关。",
+                code="BAD_REQUEST",
+            )
+            return
         deleted = await cc.delete_job(job_id)
         if not deleted:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -2882,6 +2917,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         if enabled is None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+            return
+        # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
+        existing = await cc.get_job(job_id)
+        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="主动推荐定时任务由设置→主动推荐开关控制，不能在面板启停。",
+                code="BAD_REQUEST",
+            )
             return
         try:
             job = await cc.toggle_job(job_id, bool(enabled))
