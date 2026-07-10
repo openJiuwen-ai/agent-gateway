@@ -17,6 +17,7 @@ class _FakeClient:
     def __init__(self):
         self.frames = []
         self.closed = False
+        self.remote_address = ("127.0.0.1", 12345)
 
     async def send(self, data):
         self.frames.append(json.loads(data))
@@ -83,4 +84,52 @@ async def test_web_channel_preserves_symphony_status_payload():
             }
         ]
     finally:
+        await channel.unregister_ws(client)
+
+
+@pytest.mark.asyncio
+async def test_web_channel_chat_send_ack_before_forward_callback_finishes():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = _FakeClient()
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def chat_send_ack(ws, req_id, params, session_id):
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload={"accepted": True, "session_id": session_id},
+        )
+
+    async def slow_forward_callback(msg):
+        callback_started.set()
+        await release_callback.wait()
+        return True
+
+    channel.register_method("chat.send", chat_send_ack)
+    channel.on_message(slow_forward_callback)
+
+    raw = json.dumps(
+        {
+            "type": "req",
+            "id": "req-chat",
+            "method": "chat.send",
+            "params": {"session_id": "sess-chat", "content": "hello"},
+        }
+    )
+    task = asyncio.create_task(channel._handle_raw_message(client, raw, {}))
+    try:
+        await asyncio.wait_for(callback_started.wait(), timeout=1)
+        assert client.frames == [
+            {
+                "type": "res",
+                "id": "req-chat",
+                "ok": True,
+                "payload": {"accepted": True, "session_id": "sess-chat"},
+            }
+        ]
+    finally:
+        release_callback.set()
+        await task
         await channel.unregister_ws(client)

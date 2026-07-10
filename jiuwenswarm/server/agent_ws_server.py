@@ -5827,20 +5827,30 @@ class AgentWebSocketServer:
             env_overrides = params.get("env")
             target_channel_id = str(params.get("target_channel_id") or "").strip() or None
             target_session_id = str(params.get("target_session_id") or "").strip() or None
+            raw_reload_scopes = params.get("reload_scopes")
+            reload_scopes = {
+                str(scope)
+                for scope in raw_reload_scopes
+                if isinstance(scope, str) and scope
+            } if isinstance(raw_reload_scopes, list) else set()
 
             reload_kwargs = {}
             if target_channel_id:
                 reload_kwargs["target_channel_id"] = target_channel_id
             if target_session_id:
                 reload_kwargs["target_session_id"] = target_session_id
-            await self._agent_manager.reload_agents_config(
-                config_payload,
-                env_overrides,
-                **reload_kwargs,
-            )
+            agent_reload_scopes = {"model", "team", "permissions", "agent_runtime"}
+            should_reload_agents = not reload_scopes or bool(reload_scopes & agent_reload_scopes)
+            if should_reload_agents:
+                await self._agent_manager.reload_agents_config(
+                    config_payload,
+                    env_overrides,
+                    **reload_kwargs,
+                )
 
             # Hot-reload ProactiveEngine config if available
-            if self._proactive_engine is not None:
+            should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
+            if self._proactive_engine is not None and should_reload_proactive:
                 cfg = get_config()
                 proactive_cfg = cfg.get("proactive_recommendation", {})
                 self._proactive_engine.reload_config(proactive_cfg)

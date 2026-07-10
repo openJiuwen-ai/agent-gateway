@@ -75,6 +75,75 @@ for _jiuwen_log in LogManager.get_all_loggers().values():
 
 logger = logging.getLogger(__name__)
 
+
+_WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
+_MODEL_RELOAD_ENV_KEYS = {
+    "MODEL_PROVIDER",
+    "MODEL_NAME",
+    "API_BASE",
+    "API_KEY",
+    "VIDEO_PROVIDER",
+    "VIDEO_MODEL_NAME",
+    "VIDEO_API_BASE",
+    "VIDEO_API_KEY",
+    "AUDIO_PROVIDER",
+    "AUDIO_MODEL_NAME",
+    "AUDIO_API_BASE",
+    "AUDIO_API_KEY",
+    "VISION_PROVIDER",
+    "VISION_MODEL_NAME",
+    "VISION_API_BASE",
+    "VISION_API_KEY",
+}
+
+
+@dataclass(frozen=True)
+class _ConfigChangeSet:
+    env_updates: dict[str, str]
+    yaml_updated: list[str]
+    force: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return self.force or bool(self.env_updates or self.yaml_updated)
+
+    @property
+    def updated_keys(self) -> set[str]:
+        return set(self.env_updates.keys()) | set(self.yaml_updated)
+
+    @property
+    def reload_scopes(self) -> set[str]:
+        scopes: set[str] = set()
+        if _MODEL_RELOAD_ENV_KEYS & set(self.env_updates):
+            scopes.add("model")
+        for key in self.yaml_updated:
+            key_text = str(key)
+            if key_text in {"models.defaults"} or key_text.startswith("models."):
+                scopes.add("model")
+            elif key_text in {"modes.team", "agents", "team"}:
+                scopes.add("team")
+            elif key_text.startswith("permissions"):
+                scopes.add("permissions")
+            elif key_text.startswith("proactive_recommendation"):
+                scopes.add("proactive")
+            elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
+                scopes.add("agent_runtime")
+            elif key_text.startswith("a2ui_"):
+                scopes.add("web_ui")
+            else:
+                scopes.add("agent_runtime")
+        if self.force and not scopes:
+            scopes.add("agent_runtime")
+        return scopes
+
+    @property
+    def reload_options(self) -> dict[str, Any]:
+        return {
+            "target_channel_id": _WEB_CONFIG_RELOAD_CHANNEL_ID,
+            "reload_scopes": sorted(self.reload_scopes),
+        }
+
+
 _PROJECT_ROOT = get_root_dir()
 _ENV_FILE = get_env_file()
 load_dotenv(dotenv_path=_ENV_FILE, override=True)
@@ -1242,26 +1311,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         return env_updates, yaml_updated
 
-    async def _notify_config_saved_once(
-            env_updates: dict[str, str],
-            yaml_updated: list[str],
-            *,
-            force: bool = False,
-    ) -> None:
-        """Trigger at most one hot reload after all file writes are complete."""
-        if not force and not (env_updates or yaml_updated):
-            return
+    async def _apply_config_change_set(change_set: _ConfigChangeSet) -> bool:
+        """Synchronously apply only the runtime scope affected by a saved config change."""
+        if not change_set.changed:
+            return True
         if on_config_saved:
             config_payload = get_config()
             callback_result = on_config_saved(
-                set(env_updates.keys()) | set(yaml_updated),
-                env_updates=dict(env_updates),
+                change_set.updated_keys,
+                env_updates=dict(change_set.env_updates),
                 config_payload=config_payload,
+                reload_options=change_set.reload_options,
             )
             if inspect.isawaitable(callback_result):
-                await callback_result
-        else:
-            await _clear_agent_config_cache(_resolve(agent_client))
+                return bool(await callback_result)
+            return bool(callback_result)
+        await _clear_agent_config_cache(_resolve(agent_client))
+        return True
 
     def _build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]:
         if not isinstance(raw_models, list) or not raw_models:
@@ -1364,19 +1430,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except _ConfigInternalError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
             return
-        applied_without_restart = True
+        change_set = _ConfigChangeSet(env_updates, yaml_updated)
+        try:
+            applied_without_restart = await _apply_config_change_set(change_set)
+        except Exception as exc:
+            logger.warning("[config.set] on_config_saved failed: %s", exc)
+            applied_without_restart = False
 
         updated_param_keys = [k for k, e in _CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated
         await channel.send_response(
             ws, req_id, ok=True,
             payload={"updated": updated_param_keys, "applied_without_restart": applied_without_restart},
         )
-
-        if env_updates or yaml_updated:
-            try:
-                await _notify_config_saved_once(env_updates, yaml_updated)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[config.set] on_config_saved failed: %s", e)
 
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
         """Send a minimal chat completion (user message \"Hi\") using draft default-model fields.
@@ -1579,10 +1644,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             new_models = _build_models_defaults_from_frontend(params.get("models"))
             update_default_models_in_config(new_models)
 
-            await _notify_config_saved_once({}, ["models.defaults"], force=True)
+            applied_without_restart = await _apply_config_change_set(
+                _ConfigChangeSet({}, ["models.defaults"], force=True)
+            )
 
             await channel.send_response(ws, req_id, ok=True, payload={
                 "count": len(new_models),
+                "applied_without_restart": applied_without_restart,
             })
         except _ConfigBadRequest as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
@@ -1633,22 +1701,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 yaml_updated.append("models.defaults")
                 models_count = len(new_models)
 
+            change_set = _ConfigChangeSet(env_updates, yaml_updated, force=bool(env_updates or yaml_updated))
+            applied_without_restart = await _apply_config_change_set(change_set)
+
             await channel.send_response(
                 ws,
                 req_id,
                 ok=True,
                 payload={
                     "updated": [k for k, e in _CONFIG_SET_ENV_MAP.items() if e in env_updates] + yaml_updated,
-                    "applied_without_restart": True,
+                    "applied_without_restart": applied_without_restart,
                     "models_count": models_count,
                 },
             )
-
-            if env_updates or yaml_updated:
-                try:
-                    await _notify_config_saved_once(env_updates, yaml_updated, force=True)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[config.save_all] on_config_saved failed: %s", e)
         except _ConfigBadRequest as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
         except _ConfigInternalError as exc:
@@ -2952,8 +3017,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             owner_scopes = params.get("owner_scopes", {})
             deny_guidance = params.get("deny_guidance_message")
             update_permissions_owner_scopes_in_config(owner_scopes, deny_guidance)
-            await _notify_config_saved_once({}, ["permissions"], force=True)
-            await channel.send_response(ws, req_id, ok=True, payload={"ok": True})
+            applied_without_restart = await _apply_config_change_set(
+                _ConfigChangeSet({}, ["permissions"], force=True)
+            )
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=True,
+                payload={"ok": True, "applied_without_restart": applied_without_restart},
+            )
         except Exception as e:
             logger.exception("[permissions.owner_scopes.set] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -2996,12 +3068,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 return
             out = resp.payload if isinstance(resp.payload, dict) else {}
-            if resp.ok and req_method not in (
+            should_schedule_reload = req_method not in (
                 ReqMethod.PERMISSIONS_TOOLS_GET,
                 ReqMethod.PERMISSIONS_RULES_GET,
                 ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
-            ):
-                await _notify_config_saved_once({}, ["permissions"], force=True)
+            )
+            if should_schedule_reload:
+                out = {
+                    **out,
+                    "applied_without_restart": await _apply_config_change_set(
+                        _ConfigChangeSet({}, ["permissions"], force=True)
+                    ),
+                }
             await channel.send_response(ws, req_id, ok=True, payload=out)
             return
 

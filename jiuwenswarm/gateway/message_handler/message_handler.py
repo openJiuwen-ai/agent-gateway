@@ -884,6 +884,14 @@ class MessageHandler(ABC):
                 "[MessageHandler] 已 fire-and-forget 发送 AgentServer 中断: session_id=%s",
                 sid_for_agent,
             )
+            if publish_interrupt_result:
+                await self._send_interrupt_result_notification(
+                    msg.id,
+                    msg.channel_id,
+                    sid_for_agent,
+                    "cancel",
+                    success=True,
+                )
             return
 
         try:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -246,6 +247,81 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
             },
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(monkeypatch):
+    server = agent_ws_server_module.AgentWebSocketServer()
+    reload_agents = AsyncMock()
+    monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        lambda resp, response_id: {
+            "response_id": response_id,
+            "ok": resp.ok,
+            "payload": resp.payload,
+        },
+    )
+
+    request = AgentRequest(
+        request_id="reload-ui",
+        channel_id="web",
+        req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+        params={
+            "config": {"a2ui": {"enabled": True}},
+            "env": {},
+            "reload_scopes": ["web_ui"],
+        },
+    )
+
+    ws = FakeWebSocket()
+    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+
+    reload_agents.assert_not_awaited()
+    assert json.loads(ws.sent[-1])["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_reload_config_handler_applies_proactive_scope_without_agent_reload(monkeypatch):
+    server = agent_ws_server_module.AgentWebSocketServer()
+    reload_agents = AsyncMock()
+    proactive_engine = MagicMock()
+    server._proactive_engine = proactive_engine
+
+    monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "get_config",
+        lambda: {"proactive_recommendation": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        lambda resp, response_id: {
+            "response_id": response_id,
+            "ok": resp.ok,
+            "payload": resp.payload,
+        },
+    )
+
+    request = AgentRequest(
+        request_id="reload-proactive",
+        channel_id="web",
+        req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+        params={
+            "config": {"proactive_recommendation": {"enabled": True}},
+            "env": {},
+            "reload_scopes": ["proactive"],
+        },
+    )
+
+    ws = FakeWebSocket()
+    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+
+    reload_agents.assert_not_awaited()
+    proactive_engine.reload_config.assert_called_once_with({"enabled": True})
+    assert json.loads(ws.sent[-1])["ok"] is True
 
 
 def test_deep_adapter_reload_session_scope_selects_only_target_session():

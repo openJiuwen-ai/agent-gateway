@@ -43,11 +43,23 @@ from jiuwenswarm.common.ws_diagnostics import (
 
 logger = logging.getLogger(__name__)
 
+_HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
+
 # ── 类型别名 ──────────────────────────────────────────────
 # 方法处理器签名: (ws, req_id, params, session_id) -> None
 MethodHandler = Callable[..., Awaitable[None]]
 # 连接钩子签名: (ws) -> None | Awaitable[None]
 ConnectHook = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class _MethodHandlerInvocation:
+    ws: Any
+    method: str
+    req_id: str
+    params: dict[str, Any]
+    session_id: str
+    handler: MethodHandler
 
 
 @dataclass
@@ -201,6 +213,59 @@ class WebChannel(BaseWsChannel):
                 )
                 return
             raise
+
+    async def _invoke_method_handler(
+            self,
+            invocation: _MethodHandlerInvocation,
+    ) -> bool:
+        try:
+            await invocation.handler(
+                invocation.ws,
+                invocation.req_id,
+                invocation.params,
+                invocation.session_id,
+            )
+            return True
+        except Exception as e:
+            ws_closed = bool(getattr(invocation.ws, "closed", False))
+            if ws_closed:
+                logger.warning(
+                    "WebChannel method handler aborted on closed websocket: %s",
+                    format_ws_diagnostics(
+                        {
+                            "method": invocation.method,
+                            "id": invocation.req_id,
+                            "session_id": invocation.session_id,
+                        },
+                        describe_ws_peer(invocation.ws),
+                        describe_ws_exception(e),
+                    ),
+                )
+                return False
+
+            logger.error(
+                "WebChannel method handler error: %s",
+                format_ws_diagnostics(
+                    {
+                        "method": invocation.method,
+                        "id": invocation.req_id,
+                        "session_id": invocation.session_id,
+                    },
+                    describe_ws_peer(invocation.ws),
+                    describe_ws_exception(e),
+                ),
+            )
+            try:
+                await self.send_response(
+                    invocation.ws, invocation.req_id, ok=False,
+                    error=f"handler error: {e}", code="INTERNAL_ERROR",
+                )
+            except Exception as send_err:
+                logger.warning(
+                    "WebChannel failed to send handler error response ({}): {}",
+                    invocation.method, send_err,
+                )
+            return False
 
     async def broadcast_event(
             self,
@@ -770,6 +835,17 @@ class WebChannel(BaseWsChannel):
         )
 
         # 发布到 route 或回调
+        handler = self._method_handlers.get(method)
+        handler_already_called = False
+        if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
+            handler_already_called = await self._invoke_method_handler(
+                _MethodHandlerInvocation(
+                    ws, method, req_id, params, session_id, handler,
+                ),
+            )
+            if not handler_already_called:
+                return
+
         handled_by_callback = False
         if self._on_message_cb is not None:
             result = self._on_message_cb(user_message)
@@ -781,44 +857,16 @@ class WebChannel(BaseWsChannel):
 
         if handled_by_callback:
             return
+        if handler_already_called:
+            return
 
         # 路由到已注册的方法处理器
-        handler = self._method_handlers.get(method)
         if handler is not None:
-            try:
-                await handler(ws, req_id, params, session_id)
-            except Exception as e:
-                # 客户端断开（如服务关闭时 code=1001）不再尝试回包，避免二次异常噪音。
-                ws_closed = bool(getattr(ws, "closed", False))
-                if ws_closed:
-                    logger.warning(
-                        "WebChannel method handler aborted on closed websocket: %s",
-                        format_ws_diagnostics(
-                            {"method": method, "id": req_id, "session_id": session_id},
-                            describe_ws_peer(ws),
-                            describe_ws_exception(e),
-                        ),
-                    )
-                    return
-
-                logger.error(
-                    "WebChannel method handler error: %s",
-                    format_ws_diagnostics(
-                        {"method": method, "id": req_id, "session_id": session_id},
-                        describe_ws_peer(ws),
-                        describe_ws_exception(e),
-                    ),
-                )
-                try:
-                    await self.send_response(
-                        ws, req_id, ok=False,
-                        error=f"handler error: {e}", code="INTERNAL_ERROR",
-                    )
-                except Exception as send_err:
-                    logger.warning(
-                        "WebChannel failed to send handler error response ({}): {}",
-                        method, send_err,
-                    )
+            await self._invoke_method_handler(
+                _MethodHandlerInvocation(
+                    ws, method, req_id, params, session_id, handler,
+                ),
+            )
         else:
             await self.send_response(
                 ws, req_id, ok=False,
