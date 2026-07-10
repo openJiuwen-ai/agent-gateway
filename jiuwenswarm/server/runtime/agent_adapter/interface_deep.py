@@ -128,6 +128,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     ResponsePromptRail,
     RuntimePromptRail,
     StructuredAskUserRail,
+    SymphonyOrchestrationPromptRail,
 )
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
@@ -602,6 +603,7 @@ class JiuWenSwarmDeepAdapter:
         self._model: Model | None = None
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
+        self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
         self._skill_rail: SkillUseRail | None = None
@@ -671,6 +673,7 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool: WebPaidSearchTool | None = None
         self._symphony_tools: list[Any] = []
         self._symphony_tools_registered: bool = False
+        self._symphony_orchestration_prompt_rail = None
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
         self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
@@ -3713,6 +3716,21 @@ class JiuWenSwarmDeepAdapter:
                 except (AttributeError, TypeError):
                     pass
 
+    def _build_symphony_orchestration_prompt_rail(
+        self,
+    ) -> SymphonyOrchestrationPromptRail | None:
+        """Build dynamic Symphony orchestration prompt guidance."""
+        try:
+            return SymphonyOrchestrationPromptRail(
+                config_base=lambda: self._config_base_cache,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SymphonyOrchestrationPromptRail create failed: %s",
+                exc,
+            )
+            return None
+
     def _build_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any], *, mode: str = "agent.plan"
     ) -> list[Any]:
@@ -3788,6 +3806,13 @@ class JiuWenSwarmDeepAdapter:
         rail_infos.insert(
             3 if self._filesystem_rail_enabled_for_profile() else 2,
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
+        )
+        rail_infos.insert(
+            4 if self._filesystem_rail_enabled_for_profile() else 3,
+            _RailBuildInfo(
+                "_symphony_orchestration_prompt_rail",
+                self._build_symphony_orchestration_prompt_rail,
+            ),
         )
         if isinstance(mode, str) and mode.startswith("agent"):
             rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
@@ -3895,7 +3920,6 @@ class JiuWenSwarmDeepAdapter:
             card=agent_card,
             system_prompt=build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
-                config_base=config_base,
             ),
             context_engine_config=_deep_agent_context_engine_config(config),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
@@ -4233,6 +4257,7 @@ class JiuWenSwarmDeepAdapter:
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         load_dotenv(dotenv_path=get_env_file(), override=True)
         config_base = get_config()
+        self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
         config = config_base.get("react", {}).copy()
         self._config_cache = config.copy()
@@ -4273,7 +4298,6 @@ class JiuWenSwarmDeepAdapter:
             card=agent_card,
             system_prompt=build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
-                config_base=config_base,
             ),
             tools=tool_cards if tool_cards else [],
             subagents=configured_subagents,
@@ -4426,6 +4450,7 @@ class JiuWenSwarmDeepAdapter:
         else:
             config_base = resolve_env_vars(config_base)
 
+        self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
         config = config_base.get("react", {}).copy()
         self._config_cache = config.copy()
