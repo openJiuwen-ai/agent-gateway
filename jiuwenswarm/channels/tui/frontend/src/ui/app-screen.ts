@@ -2937,13 +2937,10 @@ export class AppScreen implements Component, Focusable {
       // Check for mode switch when there's ongoing work
       if (/^\/(?:mode|switch)\s/.test(text) && snapshot.cancellableWork) {
         const currentMode = snapshot.mode;
-        const isTeamMode = currentMode === "code.team" || currentMode === "team";
         // Parse the target mode from the command
         const modeMatch = text.match(/^\/(?:mode|switch)\s+(\S+)/);
         const targetMode = modeMatch?.[1] ?? "";
-        const targetIsTeamMode = targetMode === "code.team" || targetMode === "team";
-        // Only warn when leaving team mode
-        if (isTeamMode && !targetIsTeamMode) {
+        if (currentMode !== targetMode) {
           const answers = await this.state.askQuestions(
             [
               {

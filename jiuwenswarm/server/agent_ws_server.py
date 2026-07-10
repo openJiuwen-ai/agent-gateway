@@ -1957,6 +1957,40 @@ class AgentWebSocketServer:
                 session_id,
             )
 
+    @staticmethod
+    def _is_stateless_method_request(request: AgentRequest) -> bool:
+        """skills / skilldev / plugins / symphony 为无状态 RPC，无需 mode 解析与 adapter.
+
+        恢复 5084467df 引入、8f54b26a7 合入 team 时误删的短路判定。
+        """
+        return (
+            request.req_method is not None
+            and request.req_method.value.startswith(
+                ("skills.", "skilldev.", "plugins.", "symphony.")
+            )
+        )
+
+    async def _get_stateless_agent(self, channel_id: str) -> Any:
+        """为无状态请求取 agent，**不触发任何 mode 的 adapter 重建**.
+
+        优先用 AgentManager 已缓存的 agent 模式 agent（get_agent_nowait 命中即返回，
+        不命中返回 None，绝不创建）；都没缓存时现场构造一个轻量 JiuWenSwarm()
+        （**不调 create_instance**，_adapter 保持 None）——其 process_message 内部对
+        skills/skilldev/plugins/symphony 的无状态短路会在 _ensure_adapter 之前 return，
+        碰不到 adapter。真正的 adapter 重建留给 chat.send。
+
+        相比 5084467df 原版用 get_agent(mode="agent") 作 fallback（会触发 agent 模式
+        adapter 重建，治标不治本），此处彻底解耦。JiuWenSwarm.__init__ 仅 4 个赋值 +
+        一个只读目录的 SkillManager，现场 new 开销可忽略，无需额外缓存态。
+        """
+        cached = self._agent_manager.get_agent_nowait(
+            channel_id=channel_id, mode="agent"
+        )
+        if cached is not None:
+            return cached
+        from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+        return JiuWenSwarm()  # 不调 create_instance，_adapter 保持 None
+
     async def _prepare_code_mode_chat_turn(
         self,
         request: AgentRequest,
@@ -2109,6 +2143,23 @@ class AgentWebSocketServer:
             await self._handle_acp_tool_response(ws, request, send_lock)
             return
 
+        # 无状态请求（skills / skilldev / plugins / symphony）不需要 mode 解析和
+        # code mode 状态管理，直接走 process_message 即可。用轻量 agent 获取，不触发
+        # adapter 重建（恢复 8f54b26a7 误删的短路，并修正 5084467df 触发重建的缺陷）。
+        if self._is_stateless_method_request(request):
+            agent = await self._get_stateless_agent(channel_id)
+            resp = await agent.process_message(request)
+            if getattr(resp, "agent_ref", None) is None:
+                resp.agent_ref = request.agent_ref
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await ws.send(json.dumps(wire, ensure_ascii=False))
+            logger.info(
+                "[AgentWebSocketServer] 非流式响应已发送: request_id=%s",
+                request.request_id,
+            )
+            return
+
         mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
             request, channel_id
         )
@@ -2145,13 +2196,19 @@ class AgentWebSocketServer:
         if current_task is not None:
             self._session_stream_tasks[session_id] = current_task
 
-        mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
-            request, channel_id
-        )
+        # 无状态流式请求（skills / skilldev / plugins / symphony）不需要 mode 解析和
+        # code mode 状态管理，直接走 process_message_stream 即可。用轻量 agent 获取，
+        # 不触发 adapter 重建（恢复 8f54b26a7 误删的短路，并修正 5084467df 触发重建的缺陷）。
+        if self._is_stateless_method_request(request):
+            agent = await self._get_stateless_agent(channel_id)
+        else:
+            mode, sub_mode, agent = await self._prepare_code_mode_chat_turn(
+                request, channel_id
+            )
 
-        restored_plan = await self._ensure_code_mode_state(request, mode, sub_mode, agent)
-        if restored_plan:
-            await self._push_plan_mode_exited(request)
+            restored_plan = await self._ensure_code_mode_state(request, mode, sub_mode, agent)
+            if restored_plan:
+                await self._push_plan_mode_exited(request)
 
         chunk_count = 0
         # 心跳控制：当有真实 chunk 发送时重置，空闲时发送心跳
