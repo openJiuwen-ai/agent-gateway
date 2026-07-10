@@ -3598,6 +3598,27 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
             return None
 
+    async def refresh_skill_rails(self) -> None:
+        """轻量刷新 skill 相关 rail，避免全量重建 agent 实例.
+
+        uninstall 后调用：SkillUseRail.reload_skills() 重新扫描 skills_dir，
+        增量移除已删除 skill 的缓存；同步更新 disabled_skills。
+        """
+        new_disabled = set(self._skill_manager.list_execution_disabled_skills())
+        if self._skill_rail is not None:
+            if self._skill_rail.disabled_skills != new_disabled:
+                self._skill_rail.disabled_skills = new_disabled
+            try:
+                await self._skill_rail.reload_skills()
+            except Exception as exc:
+                logger.warning("[JiuWenSwarmDeepAdapter] skill rail reload failed: %s", exc)
+        if self._skill_evolution_rail is not None:
+            if getattr(self._skill_evolution_rail, "disabled_skills", None) != new_disabled:
+                try:
+                    self._skill_evolution_rail.disabled_skills = new_disabled
+                except (AttributeError, TypeError):
+                    pass
+
     def _build_agent_rails(
         self, config: dict[str, Any], config_base: dict[str, Any], *, mode: str = "agent.plan"
     ) -> list[Any]:
@@ -3853,7 +3874,7 @@ class JiuWenSwarmDeepAdapter:
             if self._skill_rail.skill_mode != new_skill_mode:
                 self._skill_rail.skill_mode = new_skill_mode
             # Update disabled_skills.
-            new_disabled = self._skill_manager.list_execution_disabled_skills()
+            new_disabled = set(self._skill_manager.list_execution_disabled_skills())
             if self._skill_rail.disabled_skills != new_disabled:
                 self._skill_rail.disabled_skills = new_disabled
 

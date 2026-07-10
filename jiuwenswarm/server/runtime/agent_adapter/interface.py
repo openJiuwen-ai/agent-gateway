@@ -846,6 +846,18 @@ class JiuWenSwarm:
         except Exception as exc:
             logger.warning("[JiuWenSwarm] team shared skill link refresh failed: %s", exc)
 
+    async def _refresh_skill_rails_after_change(self) -> None:
+        """轻量刷新 skill rail，避免 uninstall 后全量重建 agent 实例.
+
+        SkillUseRail 通过 reload_skills() 重新扫描 skills_dir 并清除已删除的 skill 缓存，
+        无需重建整个 agent（省去 _get_tool_cards + _build_agent_rails + create_deep_agent 开销）。
+        """
+        adapter = self._adapter
+        if adapter is None:
+            return
+        if hasattr(adapter, "refresh_skill_rails"):
+            await adapter.refresh_skill_rails()
+
     async def reload_agent_config(
             self,
             config_base: dict[str, Any] | None = None,
@@ -1294,7 +1306,6 @@ class JiuWenSwarm:
             payload = await handler(request.params)
             _reload_after_skills = handler_name in [
                 "handle_skills_install",
-                "handle_skills_uninstall",
                 "handle_skills_import_local",
                 "handle_skills_toggle",
                 "handle_skills_skillnet_install",
@@ -1305,6 +1316,12 @@ class JiuWenSwarm:
                 _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()
+                self._refresh_team_shared_skill_links(request.session_id)
+            elif handler_name == "handle_skills_uninstall" and payload.get("success"):
+                # 卸载只需轻量刷新 skill rail，不需要全量重建 agent 实例。
+                # SkillUseRail 会通过文件系统签名检测到目录删除并自动刷新，
+                # 这里主动调用 reload_skills() 确保立即生效，避免延迟到下一次模型调用。
+                await self._refresh_skill_rails_after_change()
                 self._refresh_team_shared_skill_links(request.session_id)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
