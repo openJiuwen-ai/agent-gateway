@@ -2164,10 +2164,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 try:
                     raw = get_config_raw() or {}
                     ch_cfg = (raw.get("channels") or {}).get("feishu") or {}
-                    has_target = bool(
-                        str(ch_cfg.get("last_chat_id") or "").strip()
-                        or str(ch_cfg.get("chat_id") or "").strip()
-                    )
+                    # V2 多应用：心跳 relay 会 fan-out 到同 channel_id 的全部 app，每个 app 各走
+                    # 自己的 last_chat_id/chat_id 投递；故要求「每个 app 都有目标」才算可用，
+                    # 否则缺失目标的 app 每次 tick 都会静默投递失败。
+                    apps = ch_cfg.get("apps") or []
+                    if isinstance(apps, list) and apps:
+                        has_target = all(
+                            isinstance(app, dict)
+                            and (
+                                bool(str(app.get("last_chat_id") or "").strip())
+                                or bool(str(app.get("chat_id") or "").strip())
+                            )
+                            for app in apps
+                        )
+                    else:
+                        # 旧平铺格式（单应用）：兜底看顶层 last_chat_id/chat_id。
+                        has_target = bool(
+                            str(ch_cfg.get("last_chat_id") or "").strip()
+                            or str(ch_cfg.get("chat_id") or "").strip()
+                        )
                     if not has_target:
                         await channel.send_response(
                             ws, req_id, ok=False,
