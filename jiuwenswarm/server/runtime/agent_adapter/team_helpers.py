@@ -1528,8 +1528,18 @@ async def process_team_message_stream(
                         else:
                             reason = reason or "gate_closed"
                     if not success and not is_first_request:
+                        final_reason = reason or ""
+                        # gate_closed 是 shutdown race（leader stream 正在收尾），静默结束流
+                        if final_reason == "gate_closed":
+                            yield AgentResponseChunk(
+                                request_id=rid,
+                                channel_id=channel_id,
+                                payload=None,
+                                is_complete=True,
+                            )
+                            return
                         error_msg = _INTERACT_REASON_ERROR_MAP.get(
-                            reason or "",
+                            final_reason,
                             "Failed to send message, please try again later",
                         )
                         yield AgentResponseChunk(
