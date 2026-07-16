@@ -50,6 +50,7 @@ import {
   useTodoStore,
   useHarnessStore,
   useWorkspaceStore,
+  useCronStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
@@ -1461,6 +1462,9 @@ function AppContent() {
     );
     setHistoryLoadingMore(false);
     resetNewConversationRuntime({ mode: targetMode, selectedModelName, projectDir });
+    if (options.initialInputValue) {
+      useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, options.initialInputValue);
+    }
     if (options.preserveProject) {
       preserveSelectedProjectOnChatNewRef.current = true;
       newConversationProjectRef.current = selectedProject
@@ -1765,6 +1769,14 @@ function AppContent() {
       const deletingCurrent = sessionIdRef.current === deleteTarget.session_id;
       setDeleteTarget(null);
       await useWorkspaceStore.getState().refreshSessionWorkspace(deletedSession);
+      // 删除 session 后刷新所属定时任务的触发会话列表
+      const cronStore = useCronStore.getState();
+      for (const [jobId, sessions] of Object.entries(cronStore.cronSessions)) {
+        if (sessions.some((s) => s.session_id === deletedSession.session_id)) {
+          const job = cronStore.jobs.find((j) => j.id === jobId);
+          void cronStore.loadCronSessions(job?.project_id || 'default', jobId);
+        }
+      }
       if (deletingCurrent) {
         enterNewConversation();
       }
@@ -1909,6 +1921,8 @@ function AppContent() {
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onDelete={(session) => { setDialogError(null); setDeleteTarget(session); }}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={false}
               />
               <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
                 {showConversationNotFound && (
@@ -2005,8 +2019,27 @@ function AppContent() {
           </div>
         )}
         {activeNav === 'cron' && (
-          <div className="app-section">
-            <CronPanel sessionId={sessionId} />
+          <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
+            <ConversationSidebar
+              // 停留在定时任务时，项目/会话列表不应该还显示"选中"效果——定时任务和它们是同一级的
+              // 互斥选中关系，传 null 让列表里的选中态清空（沿用"新建会话时传 null"的既有语义）
+              activeSessionId={null}
+              onNew={(options) => requestSessionNavigation('new', options)}
+              onSelect={requestSessionNavigation}
+              onDelete={(session) => { setDialogError(null); setDeleteTarget(session); }}
+              onOpenCron={() => handleNavigate('cron')}
+              isCronActive
+            />
+            <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
+              <CronPanel
+                sessionId={sessionId}
+                onCreateViaChat={(initialInputValue) => requestSessionNavigation('new', { initialInputValue })}
+                onSelectSession={(session) => {
+                  if (typeof session === 'string') { void handleRestoreSession(session); return; }
+                  requestSessionNavigation(session);
+                }}
+              />
+            </div>
           </div>
         )}
         {activeNav === 'configpanel' && (
