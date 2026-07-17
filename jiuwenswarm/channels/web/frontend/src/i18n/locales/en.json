@@ -995,7 +995,7 @@
     "update": "Update",
     "delete": "Delete",
     "runNow": "Run Now",
-    "previewAction": "Preview",
+    "previewAction": "Upcoming schedule",
     "enable": "Enable",
     "disable": "Disable",
     "loading": "Loading scheduled tasks...",
@@ -1040,7 +1040,7 @@
       "edit": "Edit",
       "more": "More",
       "history": "Run history",
-      "triggeredSessions": "Triggered sessions",
+      "triggeredSessions": "Run history",
       "noTriggeredSessions": "No trigger records"
     },
     "empty": {
@@ -1077,7 +1077,8 @@
       "placeholderInput": "Enter",
       "placeholderSelect": "Select",
       "placeholderEffectiveDate": "Select effective date",
-      "missingFieldsHint": "Still needed: {{fields}}"
+      "missingFieldsHint": "Still needed: {{fields}}",
+      "scheduleAlreadyExpiredHint": "The selected run time is already in the past, please choose another"
     },
     "schedule": {
       "title": "Schedule",
@@ -1097,7 +1098,13 @@
       "selectDay": "Select day",
       "every": "Every",
       "everyHoursPlaceholder": "Hours",
+      "everyMinutesPlaceholder": "Minutes",
       "hoursUnit": "hours",
+      "minutesUnit": "minutes",
+      "intervalUnit": {
+        "hours": "Hours",
+        "minutes": "Minutes"
+      },
       "dayOption": "{{day}}",
       "monthOption": "{{month}}",
       "lastDayOfMonth": "Last day of month",
@@ -1119,6 +1126,8 @@
         "yearly": "Yearly on {{month}}/{{day}} at {{time}}",
         "interval": "Every {{n}}h",
         "intervalWithWeekdays": "Every {{n}}h ({{days}})",
+        "intervalMinutes": "Every {{n}}min",
+        "intervalMinutesWithWeekdays": "Every {{n}}min ({{days}})",
         "once": "{{date}} {{time}}",
         "lastDay": "the last day"
       },
@@ -1228,6 +1237,7 @@
       "previewFailed": "Failed to preview next runs",
       "runNowFailed": "Failed to trigger the task immediately",
       "expiredCannotRunNow": "Task has expired and cannot be run",
+      "disabledCannotRunNow": "Task is stopped and cannot be run",
       "expiredCannotEnable": "Task has expired and cannot be enabled",
       "loadDetailFailed": "Failed to load task details",
       "nameRequired": "Task name is required",
