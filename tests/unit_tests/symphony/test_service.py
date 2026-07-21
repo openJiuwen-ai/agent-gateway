@@ -118,10 +118,12 @@ async def test_plan_from_score_fast_uses_one_shot_planner(monkeypatch, tmp_path)
             mode="fast",
             min_edge_confidence=0.7,
         ),
+        language="en",
     )
 
     assert len(llm.calls) == 1
     assert result["planning_mode"] == "one_shot_fast"
+    assert result["language"] == "en"
     assert result["llm_call_count"] == 1
     assert result["recommended_plans"][0]["title"] == "Fast plan"
     assert result["recommended_plans"][0]["steps"][0]["inputs"] == [
@@ -134,6 +136,14 @@ async def test_plan_from_score_fast_uses_one_shot_planner(monkeypatch, tmp_path)
 
     prompt_payload = json.loads(llm.calls[0]["user_content"])
     assert set(prompt_payload) == {"query", "skills", "can_feed_edges"}
+    assert "language" not in prompt_payload
+    assert "planning_instructions" not in prompt_payload
+    assert "Write all user-visible natural-language fields in English" in (
+        llm.calls[0]["system_prompt"]
+    )
+    assert "Keep Skill IDs, original Skill names, status values" in (
+        llm.calls[0]["system_prompt"]
+    )
     assert prompt_payload["can_feed_edges"] == [
         {
             "source_id": "skill-a",
@@ -467,6 +477,76 @@ async def test_plan_from_score_fast_without_candidates_uses_default_subgraph(
     }
 
 
+async def test_plan_from_score_resolves_unique_skill_names(
+    monkeypatch,
+    tmp_path,
+):
+    artifacts = _artifacts(tmp_path)
+    llm = _FakeLLMClient(
+        {
+            "title": "Named candidate plan",
+            "status": "ready",
+            "steps": [{"skill_id": "skill-b", "reason": "Named seed."}],
+            "can_feed_edges": [],
+        }
+    )
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "use beta",
+        llm_client=llm,
+        orchestration_config=SymphonyOrchestrationConfig(mode="fast"),
+        candidate_skill_ids=["Beta Skill", "skill-a", "Beta Skill"],
+    )
+
+    assert result["skill_retrieval"]["candidate_skill_ids"] == [
+        "skill-b",
+        "skill-a",
+    ]
+
+
+async def test_plan_from_score_does_not_guess_ambiguous_skill_names(
+    monkeypatch,
+    tmp_path,
+):
+    artifacts = _artifacts(tmp_path)
+    artifacts.skills.append(
+        {
+            "id": "skill-beta-copy",
+            "name": "Beta Skill",
+            "description": "Another skill with the same display name.",
+            "inputs": [],
+            "outputs": [],
+        }
+    )
+    llm = _FakeLLMClient(
+        {
+            "title": "Fallback plan",
+            "status": "ready",
+            "steps": [{"skill_id": "skill-a", "reason": "Fallback."}],
+            "can_feed_edges": [],
+        }
+    )
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "use beta",
+        llm_client=llm,
+        orchestration_config=SymphonyOrchestrationConfig(mode="fast"),
+        candidate_skill_ids=["Beta Skill"],
+    )
+
+    assert result["skill_retrieval"] == {
+        "source": "input",
+        "used": False,
+        "candidate_skill_ids": [],
+        "candidate_count": 0,
+        "fallback_reason": "candidate_skill_ids did not match current score",
+    }
+
+
 @pytest.mark.parametrize(
     ("candidate_skill_ids", "fallback_reason"),
     [
@@ -518,16 +598,60 @@ async def test_plan_from_score_fast_falls_back_for_empty_or_unknown_candidates(
     }
 
 
-async def test_plan_from_score_rejects_non_fast_mode(monkeypatch, tmp_path):
+async def test_plan_from_score_beam_uses_bidirectional_planner(monkeypatch, tmp_path):
+    artifacts = _artifacts(tmp_path)
+    seen = {}
+
+    class FakeBeamPlanner:
+        def __init__(self, artifacts_arg, **kwargs):
+            seen["artifacts"] = artifacts_arg
+            seen["kwargs"] = kwargs
+
+        async def plan(self, query):
+            seen["query"] = query
+            return {
+                "planning_mode": "bidirectional_beam",
+                "recommended_plans": [],
+                "plans": [],
+                "status": "no_plan",
+            }
+
+    monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
+    monkeypatch.setattr(service, "BidirectionalBeamPlanner", FakeBeamPlanner)
+
+    result = await service.plan_from_score(
+        tmp_path,
+        "beam plan",
+        llm_client=object(),
+        orchestration_config=SymphonyOrchestrationConfig(
+            mode="beam",
+            top_k=2,
+            max_depth=3,
+            min_edge_confidence=0.7,
+        ),
+        candidate_skill_ids=["skill-a", "unknown"],
+    )
+
+    assert result["planning_mode"] == "bidirectional_beam"
+    assert result["execution_graph"]["nodes"] == []
+    assert result["skill_retrieval"]["candidate_skill_ids"] == ["skill-a"]
+    assert seen["artifacts"] is artifacts
+    assert seen["query"] == "beam plan"
+    assert seen["kwargs"]["top_k"] == 2
+    assert seen["kwargs"]["max_depth"] == 3
+    assert seen["kwargs"]["candidate_skill_ids"] == ("skill-a",)
+
+
+async def test_plan_from_score_rejects_unknown_mode(monkeypatch, tmp_path):
     artifacts = _artifacts(tmp_path)
     monkeypatch.setattr(service, "load_score_artifacts", lambda score_dir: artifacts)
 
     with pytest.raises(ValueError, match="Unsupported orchestration mode"):
         await service.plan_from_score(
             tmp_path,
-            "beam plan",
+            "graph plan",
             llm_client=object(),
-            orchestration_config=SymphonyOrchestrationConfig(mode="beam"),
+            orchestration_config=SymphonyOrchestrationConfig(mode="graph"),
         )
 
 
@@ -837,8 +961,6 @@ async def test_fast_plan_rejects_invalid_inferred_edges(
 
     assert result["success"] is False
     assert detail in result["detail"]
-
-
 async def test_fast_plan_drops_single_step_self_loop_edge(monkeypatch, tmp_path):
     artifacts = _artifacts(tmp_path)
     llm = _FakeLLMClient(
