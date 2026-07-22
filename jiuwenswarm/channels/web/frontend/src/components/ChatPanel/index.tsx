@@ -26,6 +26,7 @@ import restartIcon from '../../assets/restart.svg';
 import { SubtaskProgress } from './SubtaskProgress';
 import { InlineQuestionCard } from './InlineQuestionCard';
 import { InteractionSlot } from '../InteractionSlot';
+import { GoalBar } from '../GoalBar';
 import { HistoryPagerBar } from './HistoryPagerBar';
 import { HarnessProgressBar } from './HarnessProgressBar';
 import { AgentTeamActivityCard } from './TeamEventGroupDisplay';
@@ -78,6 +79,13 @@ interface ChatPanelProps {
   onOpenCodeReview?: () => void;
   permissionsEnabled: boolean;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
+  /** Goal（持续目标）控制，见 GoalBar 组件 */
+  onSetGoal?: (sessionId: string, objective: string) => void;
+  onPauseGoal?: (sessionId: string) => void;
+  onResumeGoal?: (sessionId: string) => void;
+  onClearGoal?: (sessionId: string) => void;
+  /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
+  onDrainTaskQueueIfIdle?: (sessionId: string) => void;
 }
 
 function ThinkingIndicator() {
@@ -670,6 +678,11 @@ export function ChatPanel({
   onOpenCodeReview,
   permissionsEnabled,
   onSavePermission,
+  onSetGoal,
+  onPauseGoal,
+  onResumeGoal,
+  onClearGoal,
+  onDrainTaskQueueIfIdle,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -1103,6 +1116,8 @@ export function ChatPanel({
                   onNavigateToSkills={onNavigateToSkills}
                   permissionsEnabled={permissionsEnabled}
                   onSavePermission={onSavePermission}
+                  onSetGoal={onSetGoal}
+                  onClearGoal={onClearGoal}
                 />
               </div>
               <div className="chat-suggestions">
@@ -1122,6 +1137,14 @@ export function ChatPanel({
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
           <InterruptResultBubble />
           <InteractionSlot onSubmit={onUserAnswer} />
+          {onSetGoal && onPauseGoal && onResumeGoal && onClearGoal && (
+            <GoalBar
+              onSetGoal={onSetGoal}
+              onPauseGoal={onPauseGoal}
+              onResumeGoal={onResumeGoal}
+              onClearGoal={onClearGoal}
+            />
+          )}
           <InputArea
             onSubmit={handleSendMessage}
             onPersistMedia={onPersistMedia}
@@ -1133,6 +1156,9 @@ export function ChatPanel({
             onNavigateToSkills={onNavigateToSkills}
             permissionsEnabled={permissionsEnabled}
             onSavePermission={onSavePermission}
+            onSetGoal={onSetGoal}
+            onClearGoal={onClearGoal}
+            onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
         </div>
       )}
