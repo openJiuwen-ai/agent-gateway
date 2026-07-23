@@ -427,13 +427,16 @@
     "formCancel": "Cancel",
     "editTitle": "Edit goal",
     "toolbarTag": "Goal",
+    "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "closeTag": "Cancel goal",
-    "badge": "Set as goal",
+    "badge": "Goal",
     "status": {
       "active": "Active",
       "paused": "Paused",
       "completed": "Completed",
-      "blocked": "Blocked"
+      "blocked": "Blocked",
+      "disconnected": "Disconnected",
+      "unknown": "Status unknown"
     },
     "action": {
       "editTooltip": "Edit goal",
