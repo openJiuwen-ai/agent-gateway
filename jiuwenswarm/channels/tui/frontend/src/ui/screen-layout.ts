@@ -4,7 +4,7 @@ import { renderTeamPanel } from "./components/team-panel.js";
 import { isTeamWorking } from "./components/team-shared.js";
 import { renderTodoList } from "./components/todo-list.js";
 import { APP_SCREEN_KEY_BINDINGS } from "./keymap.js";
-import { padToWidth, renderWrappedText } from "./rendering/text.js";
+import { padToWidth, renderStyledMarkdownLines, renderWrappedText } from "./rendering/text.js";
 import { palette } from "./theme.js";
 import { buildTranscriptLines } from "./transcript-renderer.js";
 import { loadTuiConfig } from "../core/tui-config-store.js";
@@ -255,9 +255,9 @@ function renderBtwOverlay(
     };
   }
 
-  const answerLines = overlay.answer
-    .split("\n")
-    .flatMap((line) => renderWrappedText(safeWidth, line, palette.text.secondary));
+  const answerLines = renderStyledMarkdownLines(safeWidth, overlay.answer, {
+    color: palette.text.secondary,
+  });
   const maxOffset = Math.max(0, answerLines.length - bodyHeight);
   const offset = Math.min(maxOffset, Math.max(0, Math.floor(scrollOffset)));
   const visibleAnswerLines = answerLines.slice(offset, offset + bodyHeight);
@@ -296,6 +296,19 @@ function buildShortcutLines(width: number): string[] {
     " ".repeat(width),
   ];
   return lines;
+}
+
+function renderBtwLoading(width: number, question: string, animationPhase: number): string[] {
+  const pulseTone = [
+    palette.text.dim,
+    palette.text.secondary,
+    palette.text.accent,
+    palette.text.secondary,
+  ][animationPhase % 4]!;
+  return renderWrappedText(
+    width,
+    `${pulseTone("●")} ${palette.text.dim(`Answering: ${question} (Esc to cancel)`)}`,
+  );
 }
 
 export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayoutOptions): string[] {
@@ -351,11 +364,15 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
           options.viewedTeamMemberId,
         )
       : [];
+  const btwLoadingLines = snapshot.btwPendingQuestion
+    ? renderBtwLoading(options.width, snapshot.btwPendingQuestion, options.animationPhase)
+    : [];
   const fixedLinesBeforeBtw = [
     ...todoLines,
     ...(todoLines.length > 0 && teamPanelLines.length > 0 ? [" ".repeat(options.width)] : []),
     ...teamPanelLines,
     ...options.questionLines,
+    ...btwLoadingLines,
   ];
   const fixedLinesAfterBtw = [
     ...options.editorLines,
