@@ -71,8 +71,8 @@
 
 | Platform | Download | Notes |
 | --- | --- | --- |
-| Windows | [Download Windows Version](https://openjiuwen.com/jiuwenswarm) | For Windows 10 / 11 |
-| macOS | [Download macOS Version](https://openjiuwen.com/jiuwenswarm) | For Intel / Apple Silicon |
+| Windows | [Download Windows Version](https://openjiuwen.com/en/jiuwenswarm) | For Windows 10 / 11 |
+| macOS | [Download macOS Version](https://openjiuwen.com/en/jiuwenswarm) | For Intel / Apple Silicon |
 
 Download and follow the installer prompts to get started.
 
