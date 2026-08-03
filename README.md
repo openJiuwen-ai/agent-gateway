@@ -17,7 +17,7 @@
   ·
   <a href="docs/README_EN.md">Docs (EN)</a>
   ·
-  <a href="https://openjiuwen.com">Website</a>
+  <a href="https://openjiuwen.com/en/">Website</a>
   ·
   <a href="https://gitcode.com/openJiuwen/jiuwenswarm">GitCode</a>
 </p>
