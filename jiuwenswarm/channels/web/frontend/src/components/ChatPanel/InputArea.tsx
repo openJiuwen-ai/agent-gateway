@@ -350,8 +350,15 @@ function buildSubmitContent(text: string, attachments: AttachmentDraft[]): strin
     return text;
   }
   // Agent-facing hint only (stripped from chat bubble). List every file; no 说明 line.
+  // For binary documents that have a .txt sidecar (e.g. PDF), also expose the
+  // original file path — otherwise the model cannot see the .pdf and cannot use
+  // page-level tools such as read_pdf.
   const lines = docs.map((doc) => {
     const path = pickString(doc.persistedMediaItem?.path) || '';
+    const originalPath = pickString(doc.persistedMediaItem?.original_path) || '';
+    if (path && originalPath && originalPath !== path) {
+      return `- ${doc.filename}: ${path} (original file: ${originalPath})`;
+    }
     return path ? `- ${doc.filename}: ${path}` : `- ${doc.filename}`;
   });
   return [text, '【上传文档】', ...lines].filter(Boolean).join('\n');
@@ -997,7 +1004,10 @@ export function InputArea({
     );
     const trimmed = buildSubmitContent(trimmedBase, readyDrafts);
     if ((!trimmed && readyMediaItems.length === 0) || hasUploadingAttachments || hasAttachmentErrors) return;
-    if (isInterruptible && !isTeamMode && readyMediaItems.length > 0) return;
+    // In agent mode attachments queue with the task (taskQueue carries mediaItems).
+    // Other non-team modes still go through the text-only onInterrupt channel where
+    // attachments would be lost, so keep blocking there.
+    if (isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0) return;
 
     if (isListening) {
       stopListening();
@@ -1005,6 +1015,12 @@ export function InputArea({
 
     const sid = useChatStore.getState().activeSessionId;
     if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
+      // command.goal carries a text objective only; silently dropping attachments
+      // would make users believe they were sent, so block explicitly with an alert.
+      if (readyMediaItems.length > 0) {
+        pushAttachmentAlert(t('chat.goalAttachmentsBlocked'));
+        return;
+      }
       // command.goal 是独立控制信令，不受聊天排队影响，跳过 team/queue/interrupt 判断；
       // 消息仍要本地落进 chatStore 才能在气泡上显示"设为目标"徽章（见 MessageItem.tsx）
       useChatStore.getState().addMessage(sid, {
@@ -1033,12 +1049,12 @@ export function InputArea({
         onSubmit(trimmed, readyMediaItems);
       } else {
         // 保持队列，新消息加入队列
-        useChatStore.getState().addToTaskQueue(sid, trimmed);
+        useChatStore.getState().addToTaskQueue(sid, trimmed, readyMediaItems);
       }
     } else if (isInterruptible) {
       if (isAgentMode) {
         if (sid) {
-          useChatStore.getState().addToTaskQueue(sid, trimmed);
+          useChatStore.getState().addToTaskQueue(sid, trimmed, readyMediaItems);
           // 目标 active 但当前没有任务在处理时，常规的自动排空触发点不会命中，主动兜底一次
           onDrainTaskQueueIfIdle?.(sid);
         }
@@ -1078,12 +1094,14 @@ export function InputArea({
     goalArmed,
     onSetGoal,
     onDrainTaskQueueIfIdle,
+    pushAttachmentAlert,
     t,
   ]);
 
   const trimmedDraft = (inputValue + pendingVoiceText).trim();
   const hasDraft = trimmedDraft.length > 0 || attachments.length > 0 || isListening;
-  const isImageInterruptBlocked = isInterruptible && !isTeamMode && readyMediaItems.length > 0;
+  const isImageInterruptBlocked =
+    isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
   const showStop = isProcessing && !isPaused && !hasDraft;
   const canSubmit = showStop || (
     hasDraft &&

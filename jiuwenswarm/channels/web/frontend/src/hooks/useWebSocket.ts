@@ -1210,27 +1210,38 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const persistMedia = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
-      return request<PersistMediaResponse>('media.persist', {
-        session_id: sessionId,
-        content,
-        media_items: mediaItems as unknown as Record<string, unknown>[],
-      });
+      return request<PersistMediaResponse>(
+        'media.persist',
+        {
+          session_id: sessionId,
+          content,
+          media_items: mediaItems as unknown as Record<string, unknown>[],
+        },
+        // Multiple base64 images can exceed the 15s default timeout
+        { timeoutMs: 60_000 },
+      );
     },
     [request],
   );
 
   const persistDocuments = useCallback(
     async (content: string, sessionId: string, mediaItems: MediaItem[]) => {
-      return request<PersistMediaResponse>('document.persist', {
-        session_id: sessionId,
-        content,
-        parse: true,
-        documents: mediaItems.map((item) => ({
-          filename: item.filename,
-          mime_type: getMediaMimeType(item),
-          base64_data: item.base64_data || item.base64Data,
-        })),
-      });
+      return request<PersistMediaResponse>(
+        'document.persist',
+        {
+          session_id: sessionId,
+          content,
+          parse: true,
+          documents: mediaItems.map((item) => ({
+            filename: item.filename,
+            mime_type: getMediaMimeType(item),
+            base64_data: item.base64_data || item.base64Data,
+          })),
+        },
+        // Large documents (100+ page PDFs) take 10s+ to parse server-side; with
+        // transfer overhead this exceeds the 15s default timeout
+        { timeoutMs: 120_000 },
+      );
     },
     [request],
   );
@@ -1586,7 +1597,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const nextTask = runtime?.taskQueue[0];
     if (nextTask && sendMessageRef.current) {
       useChatStore.getState().removeFromTaskQueue(sessionId, nextTask.id);
-      sendMessageRef.current(nextTask.content, sessionId);
+      sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
     }
   }, []);
 
@@ -3091,8 +3102,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             if (nextTask && sendMessageRef.current) {
               // 从队列中移除该任务
               useChatStore.getState().removeFromTaskQueue(sessionId, nextTask.id);
-              // 发送下一个任务
-              sendMessageRef.current(nextTask.content, sessionId);
+              // Send the next task (with any attachments stashed when it was queued)
+              sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
             }
           }
         }
@@ -3328,7 +3339,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 const nextTask = taskQueue[0];
                 if (nextTask && sendMessageRef.current) {
                   useChatStore.getState().removeFromTaskQueue(sessionId, nextTask.id);
-                  sendMessageRef.current(nextTask.content, sessionId);
+                  sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
                 }
               }
             }
