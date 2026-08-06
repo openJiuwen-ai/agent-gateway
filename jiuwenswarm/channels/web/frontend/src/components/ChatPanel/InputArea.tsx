@@ -2224,7 +2224,11 @@ export function InputArea({
             >
               <WorkIcon name="close" />
             </button>
-            <div className="chat-work-dialog__title">{t('multiSession.project.newProject')}</div>
+            <div className="chat-work-dialog__title">
+              {projectCreateMode === 'existing'
+                ? t('multiSession.project.selectExisting')
+                : t('multiSession.project.createBlank')}
+            </div>
             <input
               className="chat-work-dialog__input"
               value={projectNameDraft}
@@ -2237,7 +2241,7 @@ export function InputArea({
                 className="chat-work-dialog__input"
                 value={projectDirDraft}
                 onChange={(event) => setProjectDirDraft(event.target.value)}
-                placeholder="/Users/name/work/project"
+                placeholder={t('multiSession.project.pathPlaceholder')}
               />
             ) : null}
             <div className="chat-work-dialog__actions">
