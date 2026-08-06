@@ -2324,7 +2324,7 @@
       "directoryPickerUnsupported": "This environment cannot open the system directory picker. Enter the project name and path manually.",
       "directoryPickerFailed": "Failed to choose directory. Enter the project name and path manually.",
       "lockedProjectTitle": "Project assignment cannot be changed from the input box for an existing conversation",
-      "clearProject": "Do not use a project",
+      "clearProject": "Work outside a project",
       "searchProject": "Search projects",
       "noProjectMatches": "No matching projects",
       "noProjects": "No projects",
