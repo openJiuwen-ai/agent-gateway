@@ -102,18 +102,15 @@ def test_configure_code_team_member_uses_agent_workspace_coding_memory_path(monk
         role="counter",
     )
 
-    coding_memory_path = Path(workspace.directories[0]["path"])
-    assert coding_memory_path.is_absolute() is True
-    assert coding_memory_path == Path(resolve_project_coding_memory_dir(
-        agent_workspace_dir=str(global_workspace),
-        project_dir=str(parent_project),
-    ))
-
     coding_memory_storage_path = Path(
         resolve_project_coding_memory_dir(
             agent_workspace_dir=str(global_workspace),
             project_dir=str(parent_project),
         )
     )
-    assert coding_memory_storage_path == global_workspace / "coding_memory" / "project"
+    coding_memory_path = Path(workspace.directories[0]["path"])
+    assert coding_memory_path.is_absolute() is True
+    assert coding_memory_path == coding_memory_storage_path
+    assert coding_memory_storage_path.parent == global_workspace / "coding_memory"
+    assert coding_memory_storage_path.name.startswith("project-")
     assert coding_memory_storage_path != member_workspace / "coding_memory"

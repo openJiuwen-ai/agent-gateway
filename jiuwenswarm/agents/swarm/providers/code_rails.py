@@ -316,16 +316,18 @@ def build_code_coding_memory(params: dict[str, Any], ctx: SwarmBuildContext) -> 
         )
 
         inp = CodeCodingMemoryInput.resolve(params, ctx)
-        # The build workspace is the project cwd. Persistent Coding Memory
+        workspace_root = str(inp.workspace_root or "./")
+        effective_project_dir = inp.project_dir or workspace_root
+        # The build workspace identifies the project. Persistent Coding Memory
         # belongs to the agent-owned system workspace instead.
         agent_workspace_dir = str(get_agent_workspace_dir())
         _set_workspace_coding_memory_directory(
             ctx.workspace,
-            project_dir=inp.project_dir,
+            project_dir=effective_project_dir,
             agent_workspace_dir=agent_workspace_dir,
         )
         rail = create_coding_memory_rail(
-            project_dir=inp.project_dir,
+            project_dir=effective_project_dir,
             agent_workspace_dir=agent_workspace_dir,
             config={"embed": inp.embed_config},
         )
