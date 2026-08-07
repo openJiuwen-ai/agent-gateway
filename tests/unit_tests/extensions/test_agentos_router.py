@@ -24,6 +24,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.models import (
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
     AgentOSRouterClient,
     resolve_agent_workspace,
+    _is_ws_connect_retryable,
 )
 from jiuwenswarm.extensions.yuanrong_frontend_client import SandboxInfo
 
@@ -41,12 +42,14 @@ class FakeYuanRongClient:
         self.server_ready = True
         self.function_version_urn = "urn:test:function:1"
         self.agent_namespace = "default"
+        self.frontend_endpoint = "http://yuanrong.test:8888"
         self.send_calls = 0
         self.create_calls = 0
         self.create_payloads: list[dict[str, Any]] = []
         self.delete_calls: list[str] = []
         self.config: dict[str, Any] = {}
         self.push_handler = None
+        self.ws_connect_uris: list[str] = []
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -114,6 +117,75 @@ class FakeYuanRongClient:
 
     def set_server_push_handler(self, handler) -> None:
         self.push_handler = handler
+
+
+class FakeAgentWsClient:
+    """create 后 WS 直连 instance 的假客户端：send 委托给 FakeYuanRongClient 计数。"""
+
+    def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+        self._yuanrong = yuanrong
+        self.connected_uris: list[str] = []
+        self.disconnected = False
+        self.push_handler = None
+
+    def set_server_push_handler(self, handler) -> None:
+        self.push_handler = handler
+
+    def set_or_update_server_config(self, *, config, env=None) -> None:
+        del config, env
+
+    async def connect(self, uri: str) -> None:
+        self.connected_uris.append(uri)
+        self._yuanrong.ws_connect_uris.append(uri)
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+    async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
+        return await self._yuanrong.send_request(envelope)
+
+    def send_request_stream(
+        self, envelope: E2AEnvelope
+    ) -> AsyncIterator[AgentResponseChunk]:
+        return self._yuanrong.send_request_stream(envelope)
+
+
+class _Http502(Exception):
+    status_code = 502
+
+
+class FlakyAgentWsClient(FakeAgentWsClient):
+    """前 N 次 connect 回 502，模拟 agentserver 冷启动未就绪."""
+
+    fail_times = 2
+    instances: list["FlakyAgentWsClient"] = []
+
+    def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+        super().__init__(yuanrong)
+        self.connect_attempts = 0
+        type(self).instances.append(self)
+
+    async def connect(self, uri: str) -> None:
+        self.connect_attempts += 1
+        total = sum(c.connect_attempts for c in type(self).instances)
+        if total <= self.fail_times:
+            raise _Http502("server rejected WebSocket connection: HTTP 502")
+        await super().connect(uri)
+
+
+def _router_client(
+    yuanrong: FakeYuanRongClient,
+    registry: FakeRegistryClient | None = None,
+    agent_manager: AgentManager | None = None,
+    **kwargs: Any,
+) -> AgentOSRouterClient:
+    kwargs.setdefault("ws_client_factory", lambda: FakeAgentWsClient(yuanrong))
+    return AgentOSRouterClient(
+        yuanrong,
+        registry if registry is not None else FakeRegistryClient(),
+        agent_manager if agent_manager is not None else AgentManager(),
+        **kwargs,
+    )
 
 
 class FakeRegistryClient:
@@ -208,7 +280,7 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, registry, agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
     envelope = _envelope()
 
     response = await client.send_request(envelope)
@@ -233,7 +305,7 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     assert dyn_port.isdigit()
     # cmds 含动态端口，与 rootfs.ports 一致
     assert spec["cmds"] == [
-        ["sh", "-c", f"jiuwenswarm-init && exec jiuwenswarm-agentserver --port {dyn_port}"]
+        ["sh", "-c", f"exec jiuwenswarm-agentserver --port {dyn_port}"]
     ]
     assert spec["cpu"] == 2000
     assert spec["memory"] == 4096
@@ -242,6 +314,11 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     env = yuanrong.create_payloads[0]["env_vars"]
     assert env["AGENT_SERVER_HOST"] == "127.0.0.1"
     assert env["AGENT_SERVER_PORT"] == dyn_port
+    # create 后通过 frontend WS 代理直连 instance（不走 invoke 链路）。
+    assert yuanrong.ws_connect_uris == [
+        "ws://yuanrong.test:8888/serverless/v1/ws"
+        f"?instance=sbx-1&tenant_id=default&port={dyn_port}"
+    ]
     # Agent is registered with the registry (fire-and-forget background task).
     assert len(registry.registered) == 1
     assert registry.registered[0].agent_type == "jiuwenswarm"
@@ -258,13 +335,73 @@ async def test_swarm_request_creates_builtin_supervisor_runtime() -> None:
     await client.shutdown()
 
 
+def test_is_ws_connect_retryable_for_cold_start_proxy_errors() -> None:
+    assert _is_ws_connect_retryable(_Http502("HTTP 502"))
+    assert _is_ws_connect_retryable(ConnectionRefusedError())
+    assert not _is_ws_connect_retryable(ValueError("bad port"))
+
+
+@pytest.mark.asyncio
+async def test_get_ws_client_retries_http_502_until_ready(monkeypatch) -> None:
+    """create 后首连 502 时，_get_ws_client 应退避重试直到 agentserver 就绪."""
+    import jiuwenswarm.extensions.agentos.agentos_router.router_client as router_mod
+
+    monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
+
+    yuanrong = FakeYuanRongClient()
+    FlakyAgentWsClient.instances = []
+    FlakyAgentWsClient.fail_times = 2
+    client = _router_client(
+        yuanrong,
+        ws_client_factory=lambda: FlakyAgentWsClient(yuanrong),
+    )
+
+    response = await client.send_request(_envelope())
+    await client.shutdown()
+
+    assert response.ok
+    assert yuanrong.send_calls == 1
+    assert len(yuanrong.ws_connect_uris) == 1
+    assert sum(c.connect_attempts for c in FlakyAgentWsClient.instances) == 3
+
+
+@pytest.mark.asyncio
+async def test_get_ws_client_coalesces_concurrent_first_connect(monkeypatch) -> None:
+    """同一 instance 并发首连只跑一轮就绪等待，其它请求等 Future."""
+    import jiuwenswarm.extensions.agentos.agentos_router.router_client as router_mod
+
+    monkeypatch.setattr(router_mod, "_WS_CONNECT_RETRY_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(router_mod, "_WS_CONNECT_READY_TIMEOUT_SECONDS", 2.0)
+
+    yuanrong = FakeYuanRongClient()
+    FlakyAgentWsClient.instances = []
+    FlakyAgentWsClient.fail_times = 1
+    client = _router_client(
+        yuanrong,
+        ws_client_factory=lambda: FlakyAgentWsClient(yuanrong),
+    )
+
+    results = await asyncio.gather(
+        client.send_request(_envelope()),
+        client.send_request(_envelope()),
+    )
+    await client.shutdown()
+
+    assert all(r.ok for r in results)
+    assert yuanrong.create_calls == 1
+    assert yuanrong.send_calls == 2
+    # leader 重试 2 次 connect；followers 共用结果，不再另起一轮 connect 风暴
+    assert sum(c.connect_attempts for c in FlakyAgentWsClient.instances) == 2
+
+
 @pytest.mark.asyncio
 async def test_swarm_request_repeated_reuses_single_runtime() -> None:
     """Repeated jiuwenswarm requests reuse a single runtime (single-flight create)."""
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, registry, agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
 
     await client.send_request(_envelope())
     await client.send_request(_envelope())
@@ -292,7 +429,7 @@ def test_resolve_agent_workspace_defaults_under_agentos_users() -> None:
 async def test_third_party_type_creates_via_yuanrong() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, FakeRegistryClient(), agent_manager)
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
     response = await client.send_request(_envelope(agent_type="opencode"))
 
@@ -300,6 +437,11 @@ async def test_third_party_type_creates_via_yuanrong() -> None:
     assert yuanrong.create_calls == 1
     assert yuanrong.create_payloads[0]["workspace"] == f"{DEFAULT_AGENT_WORKSPACE_ROOT}/u1"
     assert yuanrong.send_calls == 1
+    # 第三方 agent 端口取自 runtime_spec rootfs.ports（tcp:22）。
+    assert yuanrong.ws_connect_uris == [
+        "ws://yuanrong.test:8888/serverless/v1/ws"
+        "?instance=sbx-1&tenant_id=default&port=22"
+    ]
     agents = await agent_manager.list_user_agents("u1")
     assert agents[0].info.agent_type == "opencode"
     assert agents[0].info.status is AgentStatus.READY
@@ -311,7 +453,7 @@ async def test_third_party_type_creates_via_yuanrong() -> None:
 async def test_agent_switch_creates_without_forwarding_chat() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
     )
 
@@ -338,7 +480,7 @@ async def test_agent_switch_creates_without_forwarding_chat() -> None:
 async def test_agent_switch_fails_without_ssh_endpoint() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, FakeRegistryClient(), agent_manager)
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
 
     response = await client.thirdagent_switch(
         user_id="u1",
@@ -358,7 +500,7 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, registry, agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
 
     response = await client.thirdagent_list(
         user_id="u1",
@@ -382,7 +524,7 @@ async def test_agent_list_returns_registry_images_without_creating() -> None:
 async def test_agent_switch_reuses_existing_agent() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
     )
 
@@ -410,7 +552,7 @@ async def test_agent_switch_reuses_existing_agent() -> None:
 async def test_chat_after_switch_reuses_agent() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
     )
 
@@ -434,7 +576,7 @@ async def test_chat_after_switch_reuses_agent() -> None:
 async def test_switch_to_jiuwenswarm_is_direct_without_create() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
     )
 
@@ -461,7 +603,7 @@ async def test_delete_agent_releases_yuanrong_sandbox() -> None:
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(yuanrong, registry, agent_manager)
+    client = _router_client(yuanrong, registry, agent_manager)
 
     await client.send_request(_envelope(agent_type="opencode"))
     agents = await agent_manager.list_user_agents("u1")
@@ -479,7 +621,7 @@ async def test_delete_agent_releases_yuanrong_sandbox() -> None:
 
 @pytest.mark.asyncio
 async def test_delete_agent_missing_is_noop() -> None:
-    client = AgentOSRouterClient(
+    client = _router_client(
         FakeYuanRongClient(), FakeRegistryClient(), AgentManager()
     )
     assert await client.delete_agent("u1", "opencode") is False
@@ -526,7 +668,7 @@ async def test_reap_idle_once_deletes_idle_sandbox() -> None:
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         registry,
         agent_manager,
@@ -553,7 +695,7 @@ async def test_reap_idle_once_deletes_idle_sandbox() -> None:
 async def test_reap_idle_once_skips_recently_active_and_held_agents() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         FakeRegistryClient(),
         agent_manager,
@@ -586,7 +728,7 @@ async def test_ssh_relay_holds_sandbox_until_disconnect() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
     ssh_relay = StubSshRelay()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         FakeRegistryClient(),
         agent_manager,
@@ -621,7 +763,7 @@ async def test_ssh_relay_holds_sandbox_until_disconnect() -> None:
 async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         FakeRegistryClient(),
         agent_manager,
@@ -643,7 +785,7 @@ async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
 @pytest.mark.asyncio
 async def test_idle_reaper_task_lifecycle_on_connect_disconnect() -> None:
     yuanrong = FakeYuanRongClient()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         FakeRegistryClient(),
         AgentManager(),
@@ -684,7 +826,7 @@ async def test_agentos_third_agent_list_and_switch() -> None:
     yuanrong = FakeYuanRongClient()
     registry = FakeRegistryClient()
     agent_manager = AgentManager()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong, registry, agent_manager, ssh_channel_endpoint=_ssh_channel(port=2223)
     )
     third = AgentOSThirdAgent(client)
@@ -824,7 +966,7 @@ def test_load_router_config_sandbox_idle_knobs(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_create_uses_configured_workspace_root() -> None:
     yuanrong = FakeYuanRongClient()
-    client = AgentOSRouterClient(
+    client = _router_client(
         yuanrong,
         FakeRegistryClient(),
         AgentManager(),
