@@ -212,7 +212,11 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_proactive_memory,
 )
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
-from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
+from jiuwenswarm.common.model_config_validation import (
+    is_placeholder_api_base,
+    is_placeholder_model_entry,
+    model_client_config_view,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     TOOL_PERMISSION_CHANNEL_ID,
     TOOL_PERMISSION_SESSION_ID,
@@ -1217,6 +1221,7 @@ class JiuWenSwarmDeepAdapter:
         self._model: Model | None = None
         self._model_client_config: ModelClientConfig | None = None
         self._model_request_config: ModelRequestConfig | None = None
+        self._last_resolved_model: Model | None = None
         self._config_base_cache: dict[str, Any] | None = None
         self._config_cache: dict[str, Any] = {}
         self._filesystem_rail: SysOperationRail | None = None
@@ -2350,6 +2355,29 @@ class JiuWenSwarmDeepAdapter:
         return ""
 
     @staticmethod
+    def _resolve_managed_browser_type_from_config(
+        config_base: dict[str, Any] | None = None,
+    ) -> str:
+        """Resolve browser type: auto | chrome | msedge."""
+        if config_base is None:
+            config_base = get_config()
+        if not isinstance(config_base, dict):
+            return "auto"
+        config = resolve_env_vars(config_base)
+        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
+        if not isinstance(browser_cfg, dict):
+            return "auto"
+        raw = browser_cfg.get("browser_type", "auto")
+        if not isinstance(raw, str):
+            return "auto"
+        normalized = raw.strip().lower()
+        if normalized in {"chrome", "google-chrome", "google_chrome"}:
+            return "chrome"
+        if normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
+            return "msedge"
+        return "auto"
+
+    @staticmethod
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
@@ -2394,10 +2422,35 @@ class JiuWenSwarmDeepAdapter:
         else:
             os.environ.pop("BROWSER_MANAGED_BINARY", None)
 
+        browser_type = self._resolve_managed_browser_type_from_config(config_base)
+        if browser_type and browser_type != "auto":
+            os.environ["BROWSER_MANAGED_TYPE"] = browser_type
+        else:
+            os.environ.pop("BROWSER_MANAGED_TYPE", None)
+
+        # Hint MCP/CDP which Chromium flavor to expect (auto → leave unset / chrome default).
+        path_l = chrome_path.replace("\\", "/").lower() if chrome_path else ""
+        path_looks_edge = bool(
+            path_l
+            and (
+                "msedge" in path_l
+                or "/microsoft/edge/" in path_l
+                or "microsoft edge" in path_l
+            )
+        )
+        if browser_type == "msedge" or path_looks_edge:
+            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "msedge"
+        elif browser_type == "chrome" or chrome_path:
+            os.environ["PLAYWRIGHT_MCP_BROWSER"] = "chrome"
+        else:
+            # auto without explicit path: ManagedBrowserDriver chooses Chrome then Edge.
+            os.environ.pop("PLAYWRIGHT_MCP_BROWSER", None)
+
         logger.info(
-            "[%s] browser runtime config: headless=%s, chrome_path=%s",
+            "[%s] browser runtime config: headless=%s, browser_type=%s, chrome_path=%s",
             type(self).__name__,
             headless,
+            browser_type or "auto",
             chrome_path or "<auto>",
         )
 
@@ -3410,6 +3463,22 @@ class JiuWenSwarmDeepAdapter:
         if default_name is None:
             default_name = next(iter(self._model_cache))
 
+        # 首次启动兜底：config 默认条目仍为 .env 占位符时，改选 Zen 免费模型
+        # （如 DeepSeek V4 Flash）作为默认，避免把占位模型发往厂商。
+        # 仅内存态生效，不回写 config.yaml；Zen 不可达时保持原占位行为。
+        if is_placeholder_model_entry(
+            model_client_config_view(self._model_cache[default_name].model_client_config)
+        ):
+            from jiuwenswarm.server.runtime.opencode_zen import get_zen_default_free_model_entry
+            zen_default = get_zen_default_free_model_entry()
+            if zen_default is not None:
+                zmcc = zen_default["model_client_config"]
+                zname = zmcc["model_name"]
+                self._model_cache[zname] = build_model_from_entry(
+                    zmcc, zen_default.get("model_config_obj") or {}
+                )
+                default_name = zname
+
         self._default_model_name = default_name
         self._model = self._model_cache[default_name]
         self._model_client_config = self._model.model_client_config
@@ -3439,7 +3508,9 @@ class JiuWenSwarmDeepAdapter:
         """Resolve the exact model object that will be used."""
         requested = (requested_model_name or "").strip()
         if not requested:
-            return self._model
+            # ask_user_interrupt 等中断恢复请求不带 model_name，
+            # 回退到 session 上次应用的模型，而非 config.yaml 默认占位模型。
+            return getattr(self, "_last_resolved_model", None) or self._model
         # 精确匹配（#index 格式，或已注册纯 model_name key 的默认模型）
         if requested in self._model_cache:
             return self._model_cache[requested]
@@ -3452,6 +3523,26 @@ class JiuWenSwarmDeepAdapter:
             resolved = self._model_cache.get(keys[0])
             if resolved is not None:
                 return resolved
+        # Opencode Zen 免费模型（纯内存态，不入 config.yaml）：从进程内存缓存
+        # 取完整 model_client_config / model_config_obj 构建并缓存，供本次及后续请求复用。
+        # 不写回 config，开关关闭（get_zen_free_model_entries 返回空）则自然查不到。
+        try:
+            from jiuwenswarm.server.runtime.opencode_zen import (
+                get_zen_free_model_entries,
+            )
+            for zent in get_zen_free_model_entries():
+                zmcc = zent.get("model_client_config") or {}
+                if (zmcc.get("model_name") or "") == requested:
+                    built = build_model_from_entry(
+                        zmcc, zent.get("model_config_obj") or {}
+                    )
+                    self._model_cache[requested] = built
+                    return built
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] resolve zen free model %s failed",
+                requested, exc_info=True,
+            )
         return self._model
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
@@ -3650,6 +3741,9 @@ class JiuWenSwarmDeepAdapter:
             config.model_client_config = model.model_client_config
             config.model_config_obj = model.model_config
         self._model_request_config = model.model_config
+        # 记录最近一次解析并应用的模型，供 ask_user_interrupt 等不带 model_name
+        # 的中断恢复请求回退使用，避免回退到 config.yaml 默认占位模型。
+        self._last_resolved_model = model
 
     @staticmethod
     def _resolve_skill_mode(config: dict[str, Any]) -> str:
