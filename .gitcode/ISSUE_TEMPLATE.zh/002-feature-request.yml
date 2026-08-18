@@ -5,7 +5,7 @@ title: "[Feature]: "
 labels: ["feature"]
 type: "Feature"
 body:
-- type: dropdown
+  - type: dropdown
     id: module_select
     attributes:
       label: 模块选择
