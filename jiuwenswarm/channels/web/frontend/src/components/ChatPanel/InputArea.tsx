@@ -2927,7 +2927,7 @@ function ModelSelector({
             const renderGroup = (label: string, models: ModelEntry[]) =>
               models.length === 0 ? null : (
                 <>
-                  <div className="model-select__section-header" data-testid="chat-panel-model-selector-section-header">{label}</div>
+                  <div className="model-select__section-header" data-testid="chat-panel-model-selector-section-header" data-variant={label === t('chat.modelSelector.free') ? 'free' : 'configured'}>{label}</div>
                   {models.map((m, idx) => {
                     const key = m.alias || m.model_name;
                     const isActive = key === (selectedModel.alias || selectedModel.model_name);
