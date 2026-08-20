@@ -82,6 +82,7 @@ from openjiuwen.harness.rails import (
     configure_skill_evolution_runtime,
     unconfigure_skill_evolution,
 )
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
@@ -1243,6 +1244,8 @@ class JiuWenSwarmDeepAdapter:
         self._eternal_conversation_enabled: bool = False
         self._runtime_prompt_rail: RuntimePromptRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
+        self._personal_context_rail: PersonalContextRail | None = None
+        self._personal_context_rail_lock = asyncio.Lock()
         self._security_rail: SecurityRail | None = None
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
@@ -1252,6 +1255,10 @@ class JiuWenSwarmDeepAdapter:
         self._memory_embedding_fingerprint: str = ""
         # 最近一次请求使用的 mode：reload 时无 runtime_config 上下文，靠它主动刷新 memory rail。
         self._last_mode: str | None = None
+        # PersonalContext is controlled by the Host runtime switch.  Keep the
+        # last control-plane snapshot here so the disabled path never mounts a
+        # rail merely because an Agent mode request arrived.
+        self._personal_context_runtime_enabled: bool = False
         # 延时重索引任务（debounce）：连续改多次 embedding 只在最后一次后跑一次。
         self._memory_reindex_task: asyncio.Task | None = None
         # 后台预热：web 重启后对 connected MCP 建进程级连接缓存，首轮对话不重 spawn。
@@ -1424,6 +1431,9 @@ class JiuWenSwarmDeepAdapter:
         # Inherit the channel id so the child's MCP load strategy matches the
         # parent's (TUI loads the global set, web loads nothing on init).
         adapter._channel_id = getattr(self, "_channel_id", "")
+        adapter.set_personal_context_runtime_enabled(
+            self._personal_context_runtime_enabled
+        )
         if self._skill_manager is not None:
             adapter.set_skill_manager(self._skill_manager)
         return adapter
@@ -7169,6 +7179,97 @@ class JiuWenSwarmDeepAdapter:
         """
         self._last_mode = mode
         await self._update_agent_rails()
+        await self._sync_personal_context_rail(mode)
+
+    def _personal_context_rail_enabled(self, mode: str) -> bool:
+        """Return whether this request mode uses the embedded Core Rail."""
+
+        return (
+            not self._is_code_agent
+            and mode in {"agent", "agent.fast", "agent.plan"}
+            and self._personal_context_runtime_enabled
+        )
+
+    def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
+        """Store the Host switch snapshot for this adapter and future sessions."""
+
+        self._personal_context_runtime_enabled = bool(enabled)
+        if not self._is_session_scoped_adapter:
+            for adapter in list(getattr(self, "_session_adapters", {}).values()):
+                adapter.set_personal_context_runtime_enabled(enabled)
+
+    async def refresh_personal_context_rail(self) -> None:
+        """Apply the current Host switch to this adapter and live session adapters."""
+
+        mode = self._last_mode
+        if mode is not None:
+            await self._sync_personal_context_rail(mode)
+        if not self._is_session_scoped_adapter:
+            for adapter in list(self._session_adapters.values()):
+                cancelled: asyncio.CancelledError | None = None
+                try:
+                    await adapter.refresh_personal_context_rail()
+                except asyncio.CancelledError as exc:
+                    cancelled = exc
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] optional PersonalContext session "
+                        "Rail refresh failed: %s",
+                        type(exc).__name__,
+                    )
+                if cancelled is not None:
+                    raise cancelled
+
+    async def _sync_personal_context_rail(self, mode: str) -> None:
+        """Register or detach the fixed-path Core Rail for normal agent modes."""
+
+        async with self._personal_context_rail_lock:
+            enabled = self._personal_context_rail_enabled(mode)
+            rail = self._personal_context_rail
+
+            if rail is not None and not enabled:
+                try:
+                    await self._instance.unregister_rail(rail)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] optional PersonalContext Rail "
+                        "unregister failed: %s",
+                        type(exc).__name__,
+                    )
+                    return
+                self._personal_context_rail = None
+                rail = None
+
+            if not enabled:
+                return
+
+            if rail is None:
+                try:
+                    rail = PersonalContextRail(
+                        Path.home() / ".jiuwenswarm" / ".personal_context"
+                    )
+                    await self._instance.register_rail(rail)
+                except Exception as exc:  # noqa: BLE001
+                    if rail is not None:
+                        try:
+                            await self._instance.unregister_rail(rail)
+                        except Exception as cleanup_exc:  # noqa: BLE001
+                            logger.warning(
+                                "[JiuWenSwarmDeepAdapter] optional PersonalContext Rail "
+                                "registration cleanup failed: %s",
+                                type(cleanup_exc).__name__,
+                            )
+                    self._personal_context_rail = None
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] optional PersonalContext Rail "
+                        "registration failed: %s",
+                        type(exc).__name__,
+                    )
+                    return
+                self._personal_context_rail = rail
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] PersonalContextRail registered for %s", mode
+                )
 
     @staticmethod
     def _user_interaction_rail_attribute() -> str:
@@ -7957,6 +8058,13 @@ class JiuWenSwarmDeepAdapter:
                     self._parent_session_id,
                     exc,
                 )
+        try:
+            await self._sync_personal_context_rail("cleanup")
+        except BaseException as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] PersonalContextRail cleanup failed: %s",
+                exc,
+            )
         self._teardown_agent_owned_tools()
         self._release_sys_operations()
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
