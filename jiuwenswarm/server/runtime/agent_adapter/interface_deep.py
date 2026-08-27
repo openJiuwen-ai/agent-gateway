@@ -11374,7 +11374,11 @@ class JiuWenSwarmDeepAdapter:
 
         # Team 模式处理
         if is_team_mode(mode):
-            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import process_team_message_stream
+            from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                bind_team_heartbeat_service,
+                process_team_message_stream,
+                reset_team_heartbeat_service,
+            )
 
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
@@ -11448,8 +11452,15 @@ class JiuWenSwarmDeepAdapter:
                 or self._workspace_dir,
             )
 
+            token_heartbeat_service = bind_team_heartbeat_service(
+                getattr(self, "_heartbeat_service", None)
+            )
             try:
-                async for chunk in process_team_message_stream(request, inputs, self._instance):
+                async for chunk in process_team_message_stream(
+                    request,
+                    inputs,
+                    self._instance,
+                ):
                     yield chunk
             finally:
                 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
@@ -11457,6 +11468,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
+                reset_team_heartbeat_service(token_heartbeat_service)
                 TOOL_PERMISSION_CHANNEL_ID.reset(token_cid)
                 cleanup_permission_context(token_perm)
             return
