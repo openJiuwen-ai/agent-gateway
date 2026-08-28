@@ -12,6 +12,7 @@
   useImperativeHandle,
   FormEvent,
   Fragment,
+  type RefObject,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -43,7 +44,13 @@ import { ModelProviderIcon } from '../ModelProviderIcon';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
-import { parseSlashLine, findSlashCommand } from './slashCommands/registry';
+import {
+  parseSlashLine,
+  findSlashCommand,
+  type SlashCommand,
+  type SlashCommandContext,
+} from './slashCommands/registry';
+import { shouldExecuteRegisteredSlashCommand } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
 import { SkillPickerPanel } from './SkillPickerPanel';
@@ -607,6 +614,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [composerSuggestion, setComposerSuggestion] = useState<ComposerSuggestionState | null>(null);
   const [composerSuggestionIndex, setComposerSuggestionIndex] = useState(0);
   const [composerSuggestionNavigationMode, setComposerSuggestionNavigationMode] = useState<'keyboard' | 'pointer'>('pointer');
+  const [compactingSessionIds, setCompactingSessionIds] = useState<ReadonlySet<string>>(() => new Set());
   const [slashCommands, setSlashCommands] = useState<SlashCommandMeta[]>([]);
   const [slashSkills, setSlashSkills] = useState<InputAreaSkillItem[]>([]);
   const [slashCatalogLoading, setSlashCatalogLoading] = useState(false);
@@ -634,6 +642,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachMenuPortalRef = useRef<HTMLDivElement>(null);
   const extensionMenuItemRef = useRef<HTMLButtonElement>(null);
   const extensionPanelRef = useRef<HTMLDivElement>(null);
+  const composerFrameRef = useRef<HTMLDivElement>(null);
+  const composerSuggestionMenuRef = useRef<HTMLDivElement>(null);
+  const compactingSessionIdsRef = useRef<Set<string>>(new Set());
   const skillMenuItemRef = useRef<HTMLButtonElement>(null);
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const autoSendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -644,6 +655,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isVoicePressingRef = useRef(false);
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const isCompactRunning = Boolean(
+    activeSessionId && compactingSessionIds.has(activeSessionId),
+  );
   const selectedAgentId = useSessionStore((s) => {
     const runtime = s.runtimes[activeSessionId ?? ''];
     if (runtime?.mode !== 'agent') return null;
@@ -917,11 +931,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     },
   });
 
-  const imageInputDisabled = isListening || (isInterruptible && !isTeamMode);
+  const imageInputDisabled = isListening || isCompactRunning || (isInterruptible && !isTeamMode);
   const isDesktopBridgeReady = useDesktopLocalFilePickerReady();
   // "+" 触发按钮本身不跟图片/目标的可用性挂钩：菜单以后可能挂其他跟图片/目标无关的功能，
   // 触发按钮只要不在录音就该能点开；具体某一项能不能选，交给菜单里每一项各自的禁用态处理。
-  const attachTriggerDisabled = isListening;
+  const attachTriggerDisabled = isListening || isCompactRunning;
   const readyAttachments = useMemo(
     () =>
       attachments.filter(
@@ -1448,6 +1462,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [attachmentMenuId]);
 
   useEffect(() => {
+    if (!composerSuggestion) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        composerFrameRef.current?.contains(target) ||
+        composerSuggestionMenuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setComposerSuggestion(null);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [composerSuggestion]);
+
+  useEffect(() => {
     if (!workMenuOpen) return;
 
     const handlePointerDown = (event: PointerEvent) => {
@@ -1556,7 +1588,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const executeSlashCommand = useCallback(
+    async (command: SlashCommand, context: SlashCommandContext, args: string) => {
+      if (command.name !== 'compact') {
+        await command.execute(context, args);
+        return;
+      }
+
+      const sessionId = context.sessionId;
+      if (compactingSessionIdsRef.current.has(sessionId)) return;
+
+      compactingSessionIdsRef.current.add(sessionId);
+      setCompactingSessionIds(new Set(compactingSessionIdsRef.current));
+      try {
+        await command.execute(context, args);
+      } finally {
+        compactingSessionIdsRef.current.delete(sessionId);
+        setCompactingSessionIds(new Set(compactingSessionIdsRef.current));
+      }
+    },
+    [],
+  );
+
   const handleSubmit = useCallback(() => {
+    if (isCompactRunning) return;
+
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
     const trimmedBase = (richContent + pendingVoiceText).trim();
@@ -1566,7 +1622,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
-      if (cmd) {
+      if (cmd && shouldExecuteRegisteredSlashCommand(name, args)) {
         const slashSid = useChatStore.getState().activeSessionId;
         if (isListening) stopListening();
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
@@ -1578,7 +1634,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         // requiresSession=false 的命令（如 /plan 纯本地开关）无需真实会话，欢迎页也能用
         if (cmd.requiresSession === false || (slashSid && slashSid !== NEW_CONVERSATION_ID)) {
           const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? 'agent';
-          void cmd.execute(
+          void executeSlashCommand(
+            cmd,
             {
               sessionId: slashSid ?? NEW_CONVERSATION_ID,
               mode: slashMode,
@@ -1675,11 +1732,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setComposerSuggestion(null);
   }, [
     attachments,
+    executeSlashCommand,
     extractRichContent,
     pendingVoiceText,
     readyMediaItems,
     hasUploadingAttachments,
     hasAttachmentErrors,
+    isCompactRunning,
     isInterruptible,
     isListening,
     onSubmit,
@@ -1705,6 +1764,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const showStop = isProcessing && !isPaused && !hasDraft;
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit = showStop || (
+    !isCompactRunning &&
     (hasTextDraft || hasReadyMedia) &&
     !isLoadingHistory &&
     !isImageInterruptBlocked &&
@@ -1811,8 +1871,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         return;
       }
       const slashCmd = findSlashCommand(value);
-      // 无参命令（/plan、/compact）：选中即执行，不插入文本、不再等回车
-      // —— 与「输入 /plan + 回车」走同一执行路径（含 NEW_CONVERSATION_ID 提示）。
+      // 无参命令（/plan、/compact）：选中即执行，不插入文本、不再等回车。
+      // `/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
       if (slashCmd && slashTakesArgs === false) {
         const trigger = getCurrentComposerTrigger();
         if (trigger) {
@@ -1831,7 +1891,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         // requiresSession=false 的命令（如 /plan 纯本地开关）无需真实会话，欢迎页也能用
         if (slashCmd.requiresSession === false || (slashSid && slashSid !== NEW_CONVERSATION_ID)) {
           const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? 'agent';
-          void slashCmd.execute(
+          void executeSlashCommand(
+            slashCmd,
             {
               sessionId: slashSid ?? NEW_CONVERSATION_ID,
               mode: slashMode,
@@ -1972,7 +2033,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
     setComposerSuggestion(null);
     el.focus();
-  }, [extractPlainText, getCurrentComposerTrigger, onSubmit, setRangeStartByTextOffset]);
+  }, [executeSlashCommand, extractPlainText, getCurrentComposerTrigger, onSubmit, setRangeStartByTextOffset]);
 
   const notifyKVCInputIntent = useCallback(() => {
     if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
@@ -2530,7 +2591,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         </div>,
         attachmentAlertPortalTarget,
       )}
-      <div className="chat-input-frame" data-testid="chat-panel-input-frame">
+      <div ref={composerFrameRef} className="chat-input-frame" data-testid="chat-panel-input-frame">
+        {isCompactRunning && (
+          <div
+            className="chat-input-compact-progress"
+            role="status"
+            aria-live="polite"
+            data-testid="chat-panel-input-compact-progress"
+          >
+            <Loader2
+              className="chat-input-compact-progress__spinner"
+              size={16}
+              strokeWidth={1.8}
+              aria-hidden="true"
+            />
+            <span>{t('chat.contextCompressionCommandRunning')}</span>
+          </div>
+        )}
         <div
           className={cx(
             'chat-input-container',
@@ -2538,6 +2615,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
             composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
             isListening && 'chat-input-container--recording',
+            isCompactRunning && 'chat-input-container--command-pending',
           )}
           data-testid="chat-panel-input-container"
           onDragOver={handleFileDragOver}
@@ -2690,6 +2768,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           items={composerSuggestionItems}
           highlightedIndex={composerSuggestionIndex}
           navigationMode={composerSuggestionNavigationMode}
+          containerRef={composerSuggestionMenuRef}
           onPointerHighlight={(index) => {
             setComposerSuggestionNavigationMode('pointer');
             setComposerSuggestionIndex(index);
@@ -2700,7 +2779,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       )}
       <div
         ref={inputRef}
-        contentEditable
+        contentEditable={!isCompactRunning}
+        aria-disabled={isCompactRunning}
         suppressContentEditableWarning
         onBeforeInput={handleEditorBeforeInput}
         onInput={handleEditorInput}
@@ -2710,8 +2790,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         onBlur={saveSelection}
         onPaste={handlePaste}
         data-placeholder={
-          isListening
-            ? t('chat.placeholderVoice')
+          isCompactRunning
+            ? t('chat.placeholderCompacting')
+            : isListening
+              ? t('chat.placeholderVoice')
             : isTeamMode
               ? isInterruptible && !isPaused
               ? t('chat.placeholderTeamModeProcessing')
@@ -2724,7 +2806,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     ? t('chat.placeholderProcessing')
                     : t('chat.placeholder')
         }
-        className="chat-input-editor"
+        className={cx('chat-input-editor', isCompactRunning && 'chat-input-editor--disabled')}
         data-testid="chat-panel-input"
       />
 
@@ -3354,7 +3436,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           )} */}
 
           <ModelSelector
-            disabled={isProcessing || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)}
+            disabled={isProcessing || isCompactRunning || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)}
           />
 
           <button
@@ -3391,6 +3473,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           items={composerSuggestionItems}
           highlightedIndex={composerSuggestionIndex}
           navigationMode={composerSuggestionNavigationMode}
+          containerRef={composerSuggestionMenuRef}
           onPointerHighlight={(index) => {
             setComposerSuggestionNavigationMode('pointer');
             setComposerSuggestionIndex(index);
@@ -3624,6 +3707,7 @@ function ComposerSuggestionMenu({
   items,
   highlightedIndex,
   navigationMode,
+  containerRef,
   onPointerHighlight,
   onPick,
   loading,
@@ -3633,6 +3717,7 @@ function ComposerSuggestionMenu({
   items: ComposerSuggestionItem[];
   highlightedIndex: number;
   navigationMode: 'keyboard' | 'pointer';
+  containerRef?: RefObject<HTMLDivElement>;
   onPointerHighlight: (index: number) => void;
   onPick: (
     kind: ComposerSuggestionKind,
@@ -3697,6 +3782,7 @@ function ComposerSuggestionMenu({
 
   return (
     <div
+      ref={containerRef}
       className={clsx(
         'chat-composer-suggestion',
         isSlash && 'chat-composer-suggestion--slash',
