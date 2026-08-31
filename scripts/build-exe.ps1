@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # Windows 打包 exe 脚本
 # 用法: .\scripts\build-exe.ps1  或  pwsh -File scripts\build-exe.ps1
 

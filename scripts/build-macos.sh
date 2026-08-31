@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 # macOS .app + .dmg build script
 #
 # 签名/公证是可选的，按机器是否配置了 Developer ID 身份自动决定：
