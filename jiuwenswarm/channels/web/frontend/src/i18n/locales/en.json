@@ -2157,6 +2157,8 @@
       "connecting": "Connecting…",
       "uninstall": "Uninstall",
       "uninstalling": "Uninstalling…",
+      "delete": "Delete",
+      "deleting": "Deleting…",
       "create": "Create",
       "createFirst": "Create manually",
       "createByChat": "Create via chat",

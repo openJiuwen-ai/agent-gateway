@@ -92,6 +92,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "agent_template_name",
 }
 
 _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
