@@ -1516,6 +1516,13 @@ function AppContent({
     }
   }, [request, setAvailableModels]);
 
+  const handleSettingsConfigSaved = useCallback(
+    async (updatedKeys: readonly string[]) => {
+      if (updatedKeys.includes('enable_free_models')) await handleModelsRefresh();
+    },
+    [handleModelsRefresh],
+  );
+
   const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
@@ -3148,6 +3155,7 @@ function AppContent({
               connectionState={connectionState}
               request={settingsRequest}
               onHasChangesChange={handleSettingsHasChangesChange}
+              onConfigSaved={handleSettingsConfigSaved}
               onDetectExternalCli={detectExternalCli}
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
