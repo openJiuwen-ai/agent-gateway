@@ -626,10 +626,10 @@ export function AgentManagementPanel({ onUseAgent, onUsePrompt, onCreateViaChat 
         <div className="agent-management-primary-actions">
           <label className="agent-management-search">
             <SearchIcon aria-hidden="true" />
-            <span className="sr-only">{t('agentManagement.searchLabel')}</span>
             <input
               type="search"
               name="agent-management-search"
+              aria-label={t('agentManagement.searchLabel')}
               autoComplete="off"
               disabled={connectorFlowId !== null}
               value={isMine ? mineQuery : query}
