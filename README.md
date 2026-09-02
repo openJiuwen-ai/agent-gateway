@@ -6,6 +6,8 @@ This README will be restored once this branch is ready as a PR.
 
 This branch is always (re-)based on `img-vid-gen-inline` and/or other branches that supports image and video generation provider configuration.
 
+-----------
+
 最终架构实现方向（**不一定现在就采用。做plugin抽离又是额外的架构考量。目前快速prototype直接写进主代码仓好了**）：
 
 - 目前主仓并没有提供含UI能力的拓展机制。只有：
@@ -25,9 +27,7 @@ This branch is always (re-)based on `img-vid-gen-inline` and/or other branches t
 
 ----------
 
-----------
-
-**目前可快速上手的大致架构和合作建议**
+**以下是目前可快速上手的大致架构和合作建议（AI于9月2日早生成，部分内容可能随开发变动而过时）**
 
 把「执行图」拆成三层，Python 侧放在 `jiuwenswarm/common/schema/`，前后端通过 WS RPC + 契约测试对齐；UI 和 executor 只依赖同一套 domain model，不互相 import。
 
@@ -66,56 +66,9 @@ Symphony 里已有 `execution_graph { nodes, edges }` 和 `workflow_state.py` �
 
 ---
 
-## 2. Domain Graph 建议长什么样
+## 2. Domain Graph
 
-第一版地基尽量小，但字段要够你们后面扩展：
-
-```python
-# jiuwenswarm/common/schema/designer_graph.py
-
-SCHEMA_VERSION = "designer-execution-graph.v1"
-
-# 节点类型常量（契约测试会 pin 这些字面量）
-NODE_TYPE_OVERVIEW = "overview"
-NODE_TYPE_CHARACTER_DESIGN = "character_design"
-NODE_TYPE_STORYBOARD = "storyboard"
-NODE_TYPE_FRAME_GEN = "frame_gen"
-NODE_TYPE_CLIP_GEN = "clip_gen"
-# ...
-
-EDGE_KIND_DATA = "data"        # 产出物传递
-EDGE_KIND_SYNC = "sync"        # 对齐/barrier（两 subagent 互相对齐）
-EDGE_KIND_CONTROL = "control"  # 纯依赖，无数据
-```
-
-```json
-{
-  "schema_version": "designer-execution-graph.v1",
-  "graph_id": "graph_abc123",
-  "project_id": "proj_xxxx",
-  "title": "短视频：赛博朋克街景",
-  "source": "prompt",
-  "nodes": [
-    {
-      "id": "n_overview",
-      "type": "overview",
-      "label": "项目概览",
-      "config": { "prompt": "..." },
-      "layout": { "x": 0, "y": 0, "width": 320, "height": 180 }
-    },
-    {
-      "id": "n_char",
-      "type": "character_design",
-      "label": "角色设计",
-      "config": { "agent_template": "character-designer", "inputs": ["n_overview"] }
-    }
-  ],
-  "edges": [
-    { "id": "e1", "source": "n_overview", "target": "n_char", "kind": "data" },
-    { "id": "e_sync", "source": "n_char", "target": "n_story", "kind": "sync" }
-  ]
-}
-```
+第一版地基尽量小，但字段要够你们后面扩展。写在 `jiuwenswarm/common/schema/designer_graph.py`
 
 **和 React Flow 的分工：**
 
@@ -123,19 +76,7 @@ EDGE_KIND_CONTROL = "control"  # 纯依赖，无数据
 - React Flow：从 domain 映射出 `position`/`type`/`data`；选中态、拖拽中的临时坐标可以不立刻写回
 - **素材本体不进 node 大 payload**：node 只存 `asset_ref` / `output_ref`，大文件走 project 存储或 artifact API
 
-Run State 单独一份（类似 `workflow_runs`）：
-
-```json
-{
-  "run_id": "run_xxx",
-  "graph_id": "graph_abc123",
-  "status": "running",
-  "node_states": {
-    "n_char": { "status": "running", "started_at": 123, "output_ref": null },
-    "n_story": { "status": "waiting_sync", "blocked_by": ["n_char"] }
-  }
-}
-```
+Graph 的 Run State 单独一份（类似 `workflow_runs`），储存 graph 全局的state和内部每个node的state
 
 ---
 
@@ -268,11 +209,3 @@ jiuwenswarm/channels/web/frontend/src/features/designer/
 
 tests/unit_tests/test_designer_execution_graph_contract.py
 ```
-
----
-
-**一句话：地基 =「版本化 domain schema + graph/run 分离 + RPC 壳 + React Flow adapter + 一份真实 fixture + mock executor」。**  
-有了这个，你可以先做画布和状态染色，合作者可以并行做 node handler 和调度，只在 fixture 和 RPC 上对齐。
-
-如果你愿意，下一步我可以直接按这个清单帮你起草 `designer_graph.py` 和 fixture JSON 的 v1 字段定义。
-
