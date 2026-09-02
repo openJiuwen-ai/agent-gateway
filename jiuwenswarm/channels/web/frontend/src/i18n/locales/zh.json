@@ -42,6 +42,7 @@
     "chat": "对话",
     "work": "任务",
     "agent": "专家",
+    "design": "设计",
     "experiments": "实验",
     "sessions": "会话",
     "cron": "定时任务",
@@ -62,6 +63,20 @@
     "disabled": "已禁用",
     "empty": "尚未发现应用插件",
     "noSettings": "此插件未提供设置页面。"
+  },
+  "designer": {
+    "loading": "正在加载设计工作流…",
+    "emptyTitle": "还没有设计工作流",
+    "emptyDescription": "在任务页输入描述并选择「设计」，或稍后再来查看此项目下的工作流。",
+    "loadErrorTitle": "加载失败",
+    "loadErrorFallback": "无法读取设计工作流，请稍后重试。",
+    "chat": {
+      "title": "设计助手",
+      "emptyHint": "在这里描述你的创作意图，或通过任务页带「设计」选项跳转后在此继续对话。",
+      "inputPlaceholder": "描述你想创作的内容…",
+      "collapse": "收起聊天",
+      "expand": "展开聊天"
+    }
   },
   "videoLive": {
     "modelFallback": "视频模型",

@@ -42,6 +42,7 @@
     "chat": "Chat",
     "work": "Tasks",
     "agent": "Experts",
+    "design": "Design",
     "experiments": "Experiments",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -62,6 +63,20 @@
     "disabled": "Disabled",
     "empty": "No application plugins were found",
     "noSettings": "This plugin does not provide a settings page."
+  },
+  "designer": {
+    "loading": "Loading design workflow…",
+    "emptyTitle": "No design workflow yet",
+    "emptyDescription": "Send a prompt with the Design option from Tasks, or come back once a workflow exists for this project.",
+    "loadErrorTitle": "Failed to load",
+    "loadErrorFallback": "Could not load the design workflow. Please try again later.",
+    "chat": {
+      "title": "Design assistant",
+      "emptyHint": "Describe your creative intent here, or continue after jumping from Tasks with Design enabled.",
+      "inputPlaceholder": "Describe what you want to create…",
+      "collapse": "Collapse chat",
+      "expand": "Expand chat"
+    }
   },
   "videoLive": {
     "modelFallback": "Video model",

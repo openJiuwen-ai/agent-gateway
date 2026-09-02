@@ -38,6 +38,7 @@ import {
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
+import { DesignerPage } from './features/designer/components/DesignerPage';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -3440,6 +3441,10 @@ function AppContent({
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
       if (nav === 'personalContext') setHasVisitedPersonalContext(true);
+      if (nav === 'design') {
+        setTeamAreaExpanded(false);
+        setToolPanelHidden(true);
+      }
     },
     [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
   );
@@ -3854,6 +3859,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               navigationRequest={agentManagementNavigationRequest}
             />
           </div>
+        )}
+        {activeNav === 'design' && (
+          <DesignerPage projectId={sessionProject?.project_id} />
         )}
         {activeNav === 'sessions' && (
           <div className="app-section">
