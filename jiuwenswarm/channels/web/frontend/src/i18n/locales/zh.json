@@ -86,6 +86,16 @@
       "notImplemented": "未实现",
       "send": "发送"
     },
+    "run": {
+      "controlLabel": "执行控制",
+      "execute": "执行",
+      "continue": "继续",
+      "retryFailed": "重试失败节点",
+      "running": "执行中…",
+      "moreActions": "更多执行动作",
+      "rerunCurrent": "重跑当前节点",
+      "restart": "重跑工作流"
+    },
     "toolbar": {
       "modeLabel": "节点模式",
       "upload": "上传",

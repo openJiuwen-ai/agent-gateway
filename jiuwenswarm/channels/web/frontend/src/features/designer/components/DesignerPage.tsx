@@ -2,8 +2,10 @@ import { Loader2 } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDesignerStore } from '../designerStore';
+import { useDesignerRunStore } from '../designerRunStore';
 import { DesignerCanvas } from './DesignerCanvas';
 import { DesignerChatPanel, DesignerEmptyState } from './DesignerChatPanel';
+import { DesignerRunControl } from './DesignerRunControl';
 import './DesignerPage.css';
 
 type DesignerPageProps = {
@@ -17,6 +19,8 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
   const domainGraph = useDesignerStore((state) => state.domainGraph);
   const bootstrapInProgress = useDesignerStore((state) => state.bootstrapInProgress);
   const loadForProject = useDesignerStore((state) => state.loadForProject);
+  const resetForGraph = useDesignerRunStore((state) => state.resetForGraph);
+  const boundGraphId = useDesignerRunStore((state) => state.boundGraphId);
   // Tasks→Design bootstrap 结束后 bootstrapInProgress 会变 false，若立刻 list/get
   //（尤其 projectId 为空或与新建 project 不一致），会把刚 apply 的图刷成 empty。
   const skipLoadAfterBootstrapRef = useRef(false);
@@ -33,6 +37,12 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     void loadForProject(projectId);
   }, [bootstrapInProgress, loadForProject, projectId]);
 
+  useEffect(() => {
+    const nextId = domainGraph?.graph_id ?? null;
+    if (nextId === boundGraphId) return;
+    resetForGraph(domainGraph);
+  }, [boundGraphId, domainGraph, resetForGraph]);
+
   const showCanvas = loadStatus === 'ready' && domainGraph;
   const showEmpty = loadStatus === 'empty';
   const showError = loadStatus === 'error';
@@ -43,6 +53,10 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     <div className="designer-page app-section" data-testid="designer-page">
       <div className="designer-page__workspace">
         <DesignerChatPanel />
+        <DesignerRunControl
+          graph={showCanvas ? domainGraph : null}
+          disabled={!showCanvas}
+        />
 
         {showCanvas ? (
           <>

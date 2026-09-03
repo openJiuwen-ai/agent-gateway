@@ -86,6 +86,16 @@
       "notImplemented": "Not implemented",
       "send": "Send"
     },
+    "run": {
+      "controlLabel": "Run controls",
+      "execute": "Run",
+      "continue": "Continue",
+      "retryFailed": "Retry failed nodes",
+      "running": "Running…",
+      "moreActions": "More run actions",
+      "rerunCurrent": "Rerun current nodes",
+      "restart": "Restart workflow"
+    },
     "toolbar": {
       "modeLabel": "Node mode",
       "upload": "Upload",
