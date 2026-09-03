@@ -43,6 +43,16 @@
     "logs": "Logs",
     "update": "Updates"
   },
+  "applicationPlugins": {
+    "title": "Application plugins",
+    "description": "Manage application plugins with dedicated pages and runtime capabilities.",
+    "backToExtensions": "Back to extensions",
+    "refresh": "Refresh",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "empty": "No application plugins were found",
+    "noSettings": "This plugin does not provide a settings page."
+  },
   "settingsPanel": {
     "title": "Settings",
     "categories": {
@@ -2870,6 +2880,7 @@
     "subtitle": "Create and manage plugins and connectors",
     "tabs": {
       "plugin": "Plugins",
+      "applicationPlugins": "App plugins"
       "mcp": "Connector",
       "pluginMarket": "Plugin Marketplace",
       "mcpMarket": "Connector Marketplace",

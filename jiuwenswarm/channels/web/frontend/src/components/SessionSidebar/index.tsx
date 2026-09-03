@@ -14,9 +14,14 @@ import UpdateIcon from '../../assets/sidebar/advanced-config.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
+import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
+import type {
+  ApplicationPluginContribution,
+  ApplicationPluginNavKey,
+} from '../../applicationPlugins/types';
 
-type MainNavKey = SidebarNavKey | 'connectorMarket';
+type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
 
 interface SessionSidebarProps {
   activeNav: MainNavKey;
@@ -24,11 +29,13 @@ interface SessionSidebarProps {
   onNewSession?: () => void;
   showNewSession?: boolean;
   hiddenNavItems?: MainNavKey[];
+  applicationPlugins?: ApplicationPluginContribution[];
 }
 
 interface NavItem {
   key: MainNavKey;
-  labelKey: string;
+  labelKey?: string;
+  label?: string;
   icon: React.ReactNode;
 }
 
@@ -58,6 +65,7 @@ export function SessionSidebar({
   onNewSession,
   showNewSession = true,
   hiddenNavItems = [],
+  applicationPlugins = [],
 }: SessionSidebarProps) {
   const { t } = useTranslation();
 
@@ -72,8 +80,19 @@ export function SessionSidebar({
     onNavigate(nav);
   };
 
-  const getNavItemLabel = (item: NavItem) => t(item.labelKey);
-  const visibleMainNavItems = mainNavItems.filter((item) => !hiddenNavItems.includes(item.key));
+  const getNavItemLabel = (item: NavItem) => (
+    item.labelKey ? t(item.labelKey) : item.label || item.key
+  );
+  const applicationPluginItems: NavItem[] = applicationPlugins
+    .filter((plugin) => plugin.enabled !== false)
+    .map((plugin) => ({
+      key: plugin.nav_key as MainNavKey,
+      labelKey: plugin.title_i18n_key,
+      label: plugin.title,
+      icon: <PluginIcon aria-hidden />,
+    }));
+  const visibleMainNavItems = [...mainNavItems, ...applicationPluginItems]
+    .filter((item) => !hiddenNavItems.includes(item.key));
   // 定时任务（cron）是"任务"区内与会话同级的视图，没有独立的导航图标，
   // 因此进入定时任务时"任务"导航项也应保持选中态
   const isNavItemActive = (item: NavItem) =>

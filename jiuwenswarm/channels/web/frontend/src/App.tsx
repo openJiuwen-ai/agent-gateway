@@ -122,6 +122,10 @@ import {
 } from './features/a2ui/actionBridge';
 import { saveBlob } from './utils/desktopSave';
 import { generateUuidV4 } from './utils/uuid';
+import { ApplicationPluginOutlet } from './applicationPlugins/ApplicationPluginOutlet';
+import { enabledApplicationPlugins } from './applicationPlugins/manifest';
+import { useApplicationPlugins } from './applicationPlugins/useApplicationPlugins';
+import type { ApplicationPluginNavKey } from './applicationPlugins/types';
 import {
   ModelSetupGuide,
   type ModelSetupGuideStep,
@@ -172,7 +176,7 @@ function normalizeConfigBoolean(value: unknown): boolean {
   );
 }
 
-type MainNavKey = SidebarNavKey | 'connectorMarket';
+type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
 
 type LoadedHistoryPage = {
   pageIdx: number;
@@ -906,6 +910,9 @@ function AppContent({
       }
     },
   });
+  const applicationPluginState = useApplicationPlugins(isConnected);
+  const applicationPlugins = applicationPluginState.plugins;
+  const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
   const settingsRequest = useMemo(() => resolveSettingsRequest(request), [request, resolveSettingsRequest]);
 
   const applySubagentHistoryReplay = useCallback((sid: string, items: HistorySubagentReplayItem[]) => {
@@ -2977,6 +2984,9 @@ function AppContent({
 const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFound && !shouldFullscreen;
   const isNewSessionPromotion = Boolean(sessionId && sessionIdsCreatedInThisPageRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
+  const activeApplicationPlugin = visibleApplicationPlugins.find(
+    (plugin) => plugin.nav_key === activeNav,
+  );
 
   useEffect(() => {
     if (!showWorkspaceDivider) clearChatPanelResize();
@@ -2998,6 +3008,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onNewSession={handleNewSession}
         showNewSession={false}
         hiddenNavItems={hiddenNavItems}
+        applicationPlugins={visibleApplicationPlugins}
       />
 
       {modelSetupGuideStep !== null ? (
@@ -3265,6 +3276,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
+        {activeApplicationPlugin && (
+          <div className="app-section">
+            <ApplicationPluginOutlet contribution={activeApplicationPlugin} />
+          </div>
+        )}
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
@@ -3284,6 +3300,34 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
         {activeNav === 'connectorMarket' && (
+          <div className="app-section">
+            <ConnectorMarketPanel
+              applicationPlugins={applicationPlugins}
+              applicationPluginsLoading={applicationPluginState.loading}
+              applicationPluginsError={applicationPluginState.error}
+              onRefreshApplicationPlugins={applicationPluginState.refresh}
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledMcps: [mcpName], forceMode: 'agent' })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
           <div className="app-page-body">
             <div className="page-content">
               <ConnectorMarketPanel
