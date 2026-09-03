@@ -1,5 +1,7 @@
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDesignerChatStore } from '../designerChatStore';
 import { useDesignerStore } from '../designerStore';
 
 export function DesignerEmptyState({
@@ -31,6 +33,14 @@ export function DesignerChatPanel() {
   const { t } = useTranslation();
   const chatCollapsed = useDesignerStore((state) => state.chatCollapsed);
   const setChatCollapsed = useDesignerStore((state) => state.setChatCollapsed);
+  const messages = useDesignerChatStore((state) => state.messages);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   return (
     <aside
@@ -53,8 +63,31 @@ export function DesignerChatPanel() {
       </div>
       {!chatCollapsed ? (
         <>
-          <div className="designer-chat-panel__body" data-testid="designer-chat-panel-body">
-            <p className="designer-chat-panel__empty">{t('designer.chat.emptyHint')}</p>
+          <div className="designer-chat-panel__body" ref={bodyRef} data-testid="designer-chat-panel-body">
+            {messages.length === 0 ? (
+              <p className="designer-chat-panel__empty">{t('designer.chat.emptyHint')}</p>
+            ) : (
+              <div className="designer-chat-panel__messages" data-testid="designer-chat-panel-messages">
+                {messages.map((message) => (
+                  <div
+                    key={message.id}
+                    className={`designer-chat-panel__message designer-chat-panel__message--${message.role}`}
+                    data-testid="designer-chat-panel-message"
+                    data-role={message.role}
+                    data-kind={message.kind}
+                  >
+                    {message.kind === 'thinking' ? (
+                      <span className="designer-chat-panel__thinking">
+                        <Loader2 className="designer-chat-panel__thinking-icon" size={14} aria-hidden />
+                        {message.content}
+                      </span>
+                    ) : (
+                      message.content
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
           <div className="designer-chat-panel__composer">
             <textarea

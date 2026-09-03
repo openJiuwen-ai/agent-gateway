@@ -40,6 +40,25 @@ def test_bootstrap_graph_uses_modality_node_types() -> None:
         title="Test Video",
     )
     assert graph["schema_version"] == "designer-execution-graph.v1"
+    labels = {node["id"]: node["label"] for node in graph["nodes"]}
+    assert labels["n_frame_1"] == "视频片段1首帧"
+    assert labels["n_frame_2"] == "视频片段2首帧"
+    assert labels["n_frame_3"] == "视频片段3首帧"
+    assert labels["n_clip_1"] == "视频片段1"
+    assert labels["n_clip_2"] == "视频片段2"
+    assert labels["n_clip_3"] == "视频片段3"
+    assert labels["n_final"] == "最终视频"
+    edge_pairs = {(edge["source"], edge["target"]) for edge in graph["edges"]}
+    assert ("n_character", "n_storyboard") not in edge_pairs
+    assert ("n_storyboard", "n_clip_1") not in edge_pairs
+    assert ("n_storyboard", "n_clip_2") not in edge_pairs
+    assert ("n_storyboard", "n_clip_3") not in edge_pairs
+    assert ("n_frame_1", "n_clip_1") in edge_pairs
+    assert ("n_frame_2", "n_clip_2") in edge_pairs
+    assert ("n_frame_3", "n_clip_3") in edge_pairs
+    assert ("n_clip_1", "n_final") in edge_pairs
+    assert ("n_clip_2", "n_final") in edge_pairs
+    assert ("n_clip_3", "n_final") in edge_pairs
     node_types = {node["type"] for node in graph["nodes"]}
     assert node_types <= {NODE_TYPE_TEXT, NODE_TYPE_TABLE, NODE_TYPE_IMAGE, NODE_TYPE_VIDEO}
     assert NODE_TYPE_TEXT in node_types

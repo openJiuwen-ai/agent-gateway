@@ -94,6 +94,14 @@ def test_designer_fixture_normalizes() -> None:
     payload = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     graph = normalize_execution_graph(payload)
     assert graph["schema_version"] == SCHEMA_VERSION
-    assert len(graph["nodes"]) == 5
-    assert len(graph["edges"]) == 7
+    assert len(graph["nodes"]) == 10
+    assert len(graph["edges"]) == 14
     assert {node["type"] for node in graph["nodes"]} == {"text", "table", "image", "video"}
+    labels = {node["label"] for node in graph["nodes"]}
+    assert "最终视频" in labels
+    assert "视频片段1首帧" in labels
+    assert "视频片段3" in labels
+    edge_pairs = {(edge["source"], edge["target"]) for edge in graph["edges"]}
+    assert ("n_character", "n_storyboard") not in edge_pairs
+    assert ("n_storyboard", "n_clip_1") not in edge_pairs
+    assert ("n_clip_1", "n_final") in edge_pairs

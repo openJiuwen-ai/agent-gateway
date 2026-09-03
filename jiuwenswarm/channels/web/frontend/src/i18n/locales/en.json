@@ -70,12 +70,19 @@
     "emptyDescription": "Send a prompt with the Design option from Tasks, or come back once a workflow exists for this project.",
     "loadErrorTitle": "Failed to load",
     "loadErrorFallback": "Could not load the design workflow. Please try again later.",
+    "toggleLabel": "Design",
+    "toolbarTag": "Design",
+    "closeTag": "Cancel design",
+    "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
     "chat": {
       "title": "Design assistant",
       "emptyHint": "Describe your creative intent here, or continue after jumping from Tasks with Design enabled.",
       "inputPlaceholder": "Describe what you want to create…",
       "collapse": "Collapse chat",
-      "expand": "Expand chat"
+      "expand": "Expand chat",
+      "thinking": "Thinking about how to build your design workflow…",
+      "bootstrapDone": "Your initial design workflow is ready.",
+      "bootstrapError": "Failed to build the workflow. Please try again later."
     }
   },
   "videoLive": {

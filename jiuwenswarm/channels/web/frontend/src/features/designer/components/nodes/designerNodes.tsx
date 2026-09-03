@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { Node, NodeProps } from '@xyflow/react';
+import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import {
   DESIGNER_NODE_TYPE_AUDIO,
   DESIGNER_NODE_TYPE_IMAGE,
@@ -25,11 +25,13 @@ function DesignerNodeShell({
 }) {
   return (
     <div className={`designer-node${media ? ' designer-node--media' : ''}`} data-testid="designer-node">
+      <Handle type="target" position={Position.Left} />
       <div className="designer-node__header">
         <span className="designer-node__label">{label}</span>
         <span className="designer-node__type">{nodeType}</span>
       </div>
       <div className="designer-node__body">{body}</div>
+      <Handle type="source" position={Position.Right} />
     </div>
   );
 }

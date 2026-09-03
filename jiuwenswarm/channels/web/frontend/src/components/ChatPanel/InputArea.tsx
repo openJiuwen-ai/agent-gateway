@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Lock, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, LayoutTemplate, Loader2, Lock, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -109,6 +109,7 @@ import PlanIcon from '../../assets/agent-management/planned-events.svg?react';
 import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import closeSvg from '../../assets/work-mode/close.svg?raw';
 import { insertPlainText } from '../../utils/textEditCommands';
+import { useDesignArmedStore } from '../../features/designer/designArmedStore';
 
 // 个人上下文图标——文档/知识库隐喻，与 SessionSidebar 的 personalContextNavIcon 同源内联 SVG。
 function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
@@ -339,6 +340,8 @@ interface InputAreaProps {
    * 真的空闲，空闲才会真正发送，不会重复触发。
    */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 任务页选「设计」后发送：跳转设计栏并 bootstrap，不走主 agent */
+  onLaunchDesign?: (prompt: string) => void;
 }
 
 export type InputAreaHandle = {
@@ -713,6 +716,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onRefreshGoal,
     onClearGoal,
     onDrainTaskQueueIfIdle,
+    onLaunchDesign,
   },
   ref,
 ) {
@@ -978,6 +982,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const hasHistory = (currentSession?.message_count ?? 0) > 0 || loadedMsgLen > 0;
   const goalArmed = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.armed ?? false);
   const currentGoal = useGoalStore((s) => s.runtimes[activeSessionId ?? '']?.goal ?? null);
+  const designArmed = useDesignArmedStore((s) => s.runtimes[activeSessionId ?? '']?.armed ?? false);
   // 目标 active 时普通发送改走排队，而不是文档 §5.1 原定的 input_mode:'steer' 实时插话——
   // 用户明确要求改成这个语义（steer 目前收不到任何反馈，体验上等同于消息发出去石沉大海，
   // 见 backend-requests.md #1）。走排队后消息复用现有的通用队列机制，行为和普通排队一致。
@@ -1016,6 +1021,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 会在下面按 evaluateGoalArm 的"关闭方向"结果做忙态保护，不会出现"tag 一直在、点了却把执行
   // 中的目标误关掉"的问题。
   const goalTagVisible = canUseGoalMenu && (goalArmed || hasUnfinishedGoal);
+  const canUseDesignMenu = Boolean(onLaunchDesign);
+  const designTagVisible = canUseDesignMenu && designArmed;
   // Plan 是持续开关（不是 Goal 那种"下一条消息生效"的过渡态）：打开后一直用
   // agent.plan 发送，直到用户点叉或后端推 plan.mode_exited。
   // 和 Goal 一样只对单 agent 开放，集群模式不提供 Plan 入口。
@@ -2191,6 +2198,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
 
     const sid = useChatStore.getState().activeSessionId;
+    if (designArmed && trimmedBase && onLaunchDesign) {
+      if (readyMediaItems.length > 0) {
+        pushAttachmentAlert(t('designer.attachmentsBlocked'));
+        return;
+      }
+      if (sid) {
+        useDesignArmedStore.getState().setArmed(sid, false);
+      }
+      if (sid) {
+        useChatStore.getState().setInputValue(sid, '');
+      }
+      setPendingVoiceText('');
+      setAttachments([]);
+      setAttachmentAlerts([]);
+      if (inputRef.current) {
+        inputRef.current.innerHTML = '';
+      }
+      setComposerSuggestion(null);
+      onLaunchDesign(trimmedBase);
+      return;
+    }
     if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
       // command.goal carries a text objective only; silently dropping attachments
       // would make users believe they were sent, so block explicitly with an alert.
@@ -2263,7 +2291,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     isTeamMode,
     queuePaused,
     goalArmed,
+    designArmed,
     onSetGoal,
+    onLaunchDesign,
     onDrainTaskQueueIfIdle,
     pushAttachmentAlert,
     releaseUnsentUploads,
@@ -3933,6 +3963,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 // goalArmed 为 true 时只可能是"刚选了目标、还没发消息"的
                                 // 未提交态，顶掉换成 Plan。
                                 useGoalStore.getState().setArmed(activeSessionId, false);
+                                useDesignArmedStore.getState().setArmed(activeSessionId, false);
                               }
                               applyPlanToggle(activeSessionId, next, { entrySource: 'plan_toggle' });
                               // 不关闭菜单：用户拨动开关后保持菜单打开，便于看到开关状态变化并继续操作。
@@ -4050,6 +4081,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             const toggleGoal = (next: boolean) => {
                               if (!activeSessionId) return;
                               if (next) {
+                                useDesignArmedStore.getState().setArmed(activeSessionId, false);
                                 applyGoalArm(activeSessionId, true);
                                 return;
                               }
@@ -4084,6 +4116,37 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   <span className="chat-mode-select__label">{t('goal.toggleLabel')}</span>
                                 </span>
                                 <Switch checked={goalChecked} disabled={goalDisabled} onChange={toggleGoal} />
+                              </div>
+                            );
+                          })()}
+                        {canUseDesignMenu &&
+                          (() => {
+                            const toggleDesign = (next: boolean) => {
+                              if (!activeSessionId) return;
+                              if (next) {
+                                useGoalStore.getState().setArmed(activeSessionId, false);
+                                if (planActive) {
+                                  usePlanStore.getState().setActive(activeSessionId, false);
+                                }
+                                useDesignArmedStore.getState().setArmed(activeSessionId, true);
+                              } else {
+                                useDesignArmedStore.getState().setArmed(activeSessionId, false);
+                              }
+                            };
+                            return (
+                              <div
+                                className="chat-mode-select__option"
+                                role="menuitem"
+                                data-testid="chat-panel-input-attach-menu-design"
+                                onClick={() => toggleDesign(!designArmed)}
+                              >
+                                <span className="chat-mode-select__option-main">
+                                  <span className="chat-mode-select__icon" aria-hidden="true">
+                                    <LayoutTemplate size={16} />
+                                  </span>
+                                  <span className="chat-mode-select__label">{t('designer.toggleLabel')}</span>
+                                </span>
+                                <Switch checked={designArmed} onChange={toggleDesign} />
                               </div>
                             );
                           })()}
@@ -4420,7 +4483,30 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </button>
                   </div>
                 )}
-
+                {designTagVisible && (
+                  <div className="chat-goal-tag" data-testid="chat-panel-design-tag">
+                    <button type="button" className="chat-mode-select__trigger" data-testid="chat-panel-design-tag-label">
+                      <span className="chat-mode-select__value">
+                        <span className="chat-mode-select__icon" aria-hidden="true">
+                          <LayoutTemplate size={14} />
+                        </span>
+                        <span className="chat-mode-select__label">{t('designer.toolbarTag')}</span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="chat-goal-tag__close"
+                      data-testid="chat-panel-design-tag-close"
+                      title={t('designer.closeTag')}
+                      onClick={() => {
+                        if (!activeSessionId) return;
+                        useDesignArmedStore.getState().setArmed(activeSessionId, false);
+                      }}
+                    >
+                      <X size={11} strokeWidth={2.5} />
+                    </button>
+                  </div>
+                )}
                 {evolutionLabel && (
                   <div
                     className="chat-input-evolution-pill"

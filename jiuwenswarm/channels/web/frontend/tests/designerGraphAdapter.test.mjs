@@ -19,7 +19,7 @@ test('toReactFlowGraph maps domain nodes and edges', () => {
   assert.equal(view.edges.length, fixture.edges.length);
   const brief = view.nodes.find((node) => node.id === 'n_brief');
   assert.ok(brief);
-  assert.deepEqual(brief.position, { x: 40, y: 120 });
+  assert.deepEqual(brief.position, { x: 40, y: 200 });
   assert.equal(brief.type, 'text');
   assert.equal(brief.data.label, '项目 brief');
 });
@@ -41,7 +41,15 @@ test('fromReactFlowGraph preserves domain semantics while updating layout', () =
   assert.equal(brief.layout?.y, 200);
   assert.equal(brief.type, 'text');
   assert.equal(
-    merged.edges.find((edge) => edge.id === 'e_character_storyboard')?.source,
-    'n_character',
+    merged.edges.find((edge) => edge.id === 'e_frame_1_clip_1')?.source,
+    'n_frame_1',
+  );
+  assert.equal(
+    merged.edges.find((edge) => edge.id === 'e_clip_1_final')?.target,
+    'n_final',
+  );
+  assert.equal(
+    merged.edges.find((edge) => edge.id === 'e_character_storyboard'),
+    undefined,
   );
 });

@@ -70,12 +70,19 @@
     "emptyDescription": "在任务页输入描述并选择「设计」，或稍后再来查看此项目下的工作流。",
     "loadErrorTitle": "加载失败",
     "loadErrorFallback": "无法读取设计工作流，请稍后重试。",
+    "toggleLabel": "设计",
+    "toolbarTag": "设计",
+    "closeTag": "取消设计",
+    "attachmentsBlocked": "设计模式暂不支持附件，请先移除附件后再发送。",
     "chat": {
       "title": "设计助手",
       "emptyHint": "在这里描述你的创作意图，或通过任务页带「设计」选项跳转后在此继续对话。",
       "inputPlaceholder": "描述你想创作的内容…",
       "collapse": "收起聊天",
-      "expand": "展开聊天"
+      "expand": "展开聊天",
+      "thinking": "正在思考如何搭建设计工作流…",
+      "bootstrapDone": "已为你搭建初始设计工作流。",
+      "bootstrapError": "搭建工作流失败，请稍后重试。"
     }
   },
   "videoLive": {

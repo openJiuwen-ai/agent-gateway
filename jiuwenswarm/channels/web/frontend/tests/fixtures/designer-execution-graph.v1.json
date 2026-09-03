@@ -3,7 +3,7 @@
   "graph_id": "graph_fixture001",
   "project_id": "proj_fixture01",
   "title": "赛博朋克街景短视频",
-  "description": "从初始 prompt 生成 brief，再产出角色图、分镜表与后续帧/片段。",
+  "description": "从初始 prompt 生成 brief，再产出角色图、分镜表、三段首帧/片段并合成最终视频。",
   "source": "prompt",
   "nodes": [
     {
@@ -13,7 +13,7 @@
       "config": {
         "prompt": "制作一段 30 秒赛博朋克街景短视频，强调霓虹灯与雨夜反射。"
       },
-      "layout": { "x": 40, "y": 120, "width": 280, "height": 160 }
+      "layout": { "x": 40, "y": 200, "width": 280, "height": 160 }
     },
     {
       "id": "n_character",
@@ -22,72 +22,96 @@
       "config": {
         "inputs": ["n_brief"]
       },
-      "layout": { "x": 380, "y": 40, "width": 280, "height": 160 }
+      "layout": { "x": 360, "y": 80, "width": 280, "height": 160 }
     },
     {
       "id": "n_storyboard",
       "type": "table",
       "label": "分镜表",
       "config": {
-        "inputs": ["n_brief", "n_character"]
+        "inputs": ["n_brief"]
       },
-      "layout": { "x": 380, "y": 260, "width": 280, "height": 160 }
+      "layout": { "x": 360, "y": 320, "width": 280, "height": 160 }
     },
     {
-      "id": "n_frame",
+      "id": "n_frame_1",
       "type": "image",
-      "label": "视频帧",
+      "label": "视频片段1首帧",
       "config": {
         "inputs": ["n_character", "n_storyboard"]
       },
-      "layout": { "x": 720, "y": 80, "width": 260, "height": 150 }
+      "layout": { "x": 680, "y": 40, "width": 260, "height": 150 }
     },
     {
-      "id": "n_clip",
-      "type": "video",
-      "label": "视频片段",
+      "id": "n_frame_2",
+      "type": "image",
+      "label": "视频片段2首帧",
       "config": {
         "inputs": ["n_character", "n_storyboard"]
       },
-      "layout": { "x": 720, "y": 260, "width": 260, "height": 150 }
+      "layout": { "x": 680, "y": 200, "width": 260, "height": 150 }
+    },
+    {
+      "id": "n_frame_3",
+      "type": "image",
+      "label": "视频片段3首帧",
+      "config": {
+        "inputs": ["n_character", "n_storyboard"]
+      },
+      "layout": { "x": 680, "y": 360, "width": 260, "height": 150 }
+    },
+    {
+      "id": "n_clip_1",
+      "type": "video",
+      "label": "视频片段1",
+      "config": {
+        "inputs": ["n_frame_1"]
+      },
+      "layout": { "x": 980, "y": 40, "width": 260, "height": 150 }
+    },
+    {
+      "id": "n_clip_2",
+      "type": "video",
+      "label": "视频片段2",
+      "config": {
+        "inputs": ["n_frame_2"]
+      },
+      "layout": { "x": 980, "y": 200, "width": 260, "height": 150 }
+    },
+    {
+      "id": "n_clip_3",
+      "type": "video",
+      "label": "视频片段3",
+      "config": {
+        "inputs": ["n_frame_3"]
+      },
+      "layout": { "x": 980, "y": 360, "width": 260, "height": 150 }
+    },
+    {
+      "id": "n_final",
+      "type": "video",
+      "label": "最终视频",
+      "config": {
+        "inputs": ["n_clip_1", "n_clip_2", "n_clip_3"]
+      },
+      "layout": { "x": 1280, "y": 200, "width": 280, "height": 160 }
     }
   ],
   "edges": [
-    {
-      "id": "e_brief_character",
-      "source": "n_brief",
-      "target": "n_character"
-    },
-    {
-      "id": "e_brief_storyboard",
-      "source": "n_brief",
-      "target": "n_storyboard"
-    },
-    {
-      "id": "e_character_storyboard",
-      "source": "n_character",
-      "target": "n_storyboard"
-    },
-    {
-      "id": "e_character_frame",
-      "source": "n_character",
-      "target": "n_frame"
-    },
-    {
-      "id": "e_storyboard_frame",
-      "source": "n_storyboard",
-      "target": "n_frame"
-    },
-    {
-      "id": "e_character_clip",
-      "source": "n_character",
-      "target": "n_clip"
-    },
-    {
-      "id": "e_storyboard_clip",
-      "source": "n_storyboard",
-      "target": "n_clip"
-    }
+    { "id": "e_brief_character", "source": "n_brief", "target": "n_character" },
+    { "id": "e_brief_storyboard", "source": "n_brief", "target": "n_storyboard" },
+    { "id": "e_character_frame_1", "source": "n_character", "target": "n_frame_1" },
+    { "id": "e_character_frame_2", "source": "n_character", "target": "n_frame_2" },
+    { "id": "e_character_frame_3", "source": "n_character", "target": "n_frame_3" },
+    { "id": "e_storyboard_frame_1", "source": "n_storyboard", "target": "n_frame_1" },
+    { "id": "e_storyboard_frame_2", "source": "n_storyboard", "target": "n_frame_2" },
+    { "id": "e_storyboard_frame_3", "source": "n_storyboard", "target": "n_frame_3" },
+    { "id": "e_frame_1_clip_1", "source": "n_frame_1", "target": "n_clip_1" },
+    { "id": "e_frame_2_clip_2", "source": "n_frame_2", "target": "n_clip_2" },
+    { "id": "e_frame_3_clip_3", "source": "n_frame_3", "target": "n_clip_3" },
+    { "id": "e_clip_1_final", "source": "n_clip_1", "target": "n_final" },
+    { "id": "e_clip_2_final", "source": "n_clip_2", "target": "n_final" },
+    { "id": "e_clip_3_final", "source": "n_clip_3", "target": "n_final" }
   ],
   "metadata": {
     "bootstrap": "designer.graph.bootstrap.v1"

@@ -12,6 +12,7 @@
   flex: 1 1 0%;
   min-width: 0;
   min-height: 0;
+  height: 100%;
 }
 
 .designer-page__header {
@@ -38,6 +39,7 @@
 .designer-page__canvas {
   width: 100%;
   height: 100%;
+  min-height: 0;
 }
 
 .designer-page__canvas .react-flow__background {
@@ -157,6 +159,56 @@
   font-size: 13px;
   line-height: 1.6;
   color: var(--color-text-muted);
+}
+
+.designer-chat-panel__messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.designer-chat-panel__message {
+  max-width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.designer-chat-panel__message--user {
+  align-self: flex-end;
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+}
+
+.designer-chat-panel__message--assistant,
+.designer-chat-panel__message--system {
+  align-self: flex-start;
+  background: var(--color-surface-shell);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-default);
+}
+
+.designer-chat-panel__thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.designer-chat-panel__thinking-icon {
+  flex-shrink: 0;
+  animation: designer-chat-spin 1s linear infinite;
+}
+
+@keyframes designer-chat-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .designer-chat-panel__composer {
