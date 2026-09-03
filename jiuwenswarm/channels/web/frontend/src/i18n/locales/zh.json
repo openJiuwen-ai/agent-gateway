@@ -99,9 +99,11 @@
     "toolbar": {
       "modeLabel": "节点模式",
       "upload": "上传",
+      "edit": "编辑",
       "generate": "生成",
       "material": "素材",
       "promptPlaceholder": "prompt",
+      "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
       "duration": "时长",
@@ -111,6 +113,7 @@
       "dropHint": "或者拖拽到区域内",
       "generateAction": "生成",
       "uploadAction": "确认上传",
+      "editAction": "保存",
       "actionNotImplemented": "该功能尚未实现"
     }
   },

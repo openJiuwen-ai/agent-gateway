@@ -1,6 +1,6 @@
-/** Media node config helpers for Designer toolbar (generate / upload). */
+/** Node config helpers for Designer toolbar (generate / upload / edit). */
 
-export type MediaInteractionMode = 'generate' | 'upload';
+export type MediaInteractionMode = 'generate' | 'upload' | 'edit';
 
 export type MediaGenerateConfig = {
   prompt?: string;
@@ -15,6 +15,10 @@ export type MediaUploadConfig = {
   filename?: string;
 };
 
+export type MediaEditConfig = {
+  content?: string;
+};
+
 export type MediaMaterialSlot = {
   id: string;
   label?: string;
@@ -25,6 +29,7 @@ export type MediaNodeConfig = {
   interaction_mode?: MediaInteractionMode;
   generate?: MediaGenerateConfig;
   upload?: MediaUploadConfig;
+  edit?: MediaEditConfig;
   materials?: MediaMaterialSlot[];
 };
 
@@ -32,9 +37,30 @@ export function isMediaNodeType(nodeType: string): boolean {
   return nodeType === 'image' || nodeType === 'video' || nodeType === 'audio';
 }
 
-export function readMediaConfig(config: Record<string, unknown> | undefined): MediaNodeConfig {
+export function supportsNodeToolbar(nodeType: string): boolean {
+  return isMediaNodeType(nodeType) || nodeType === 'text';
+}
+
+function normalizeInteractionMode(
+  raw: string | undefined,
+  nodeType?: string,
+): MediaInteractionMode {
+  if (raw === 'generate') return 'generate';
+  if (nodeType === 'text') {
+    return raw === 'edit' || raw === 'upload' ? 'edit' : 'generate';
+  }
+  return raw === 'upload' ? 'upload' : 'generate';
+}
+
+export function readMediaConfig(
+  config: Record<string, unknown> | undefined,
+  nodeType?: string,
+): MediaNodeConfig {
   const raw = (config ?? {}) as MediaNodeConfig;
-  const mode = raw.interaction_mode === 'upload' ? 'upload' : 'generate';
+  const mode = normalizeInteractionMode(
+    typeof raw.interaction_mode === 'string' ? raw.interaction_mode : undefined,
+    nodeType,
+  );
   return {
     ...raw,
     interaction_mode: mode,
@@ -48,6 +74,9 @@ export function readMediaConfig(config: Record<string, unknown> | undefined): Me
     },
     upload: {
       filename: raw.upload?.filename ?? '',
+    },
+    edit: {
+      content: raw.edit?.content ?? '',
     },
     materials: Array.isArray(raw.materials) && raw.materials.length > 0
       ? raw.materials
@@ -76,7 +105,10 @@ export function writeMediaGeneratePatch(
   const current = readMediaConfig(config);
   return {
     ...(config ?? {}),
-    interaction_mode: current.interaction_mode ?? 'generate',
+    interaction_mode:
+      current.interaction_mode === 'upload' || current.interaction_mode === 'edit'
+        ? current.interaction_mode
+        : 'generate',
     generate: {
       ...current.generate,
       ...patch,
@@ -91,9 +123,24 @@ export function writeMediaUploadPatch(
   const current = readMediaConfig(config);
   return {
     ...(config ?? {}),
-    interaction_mode: current.interaction_mode ?? 'upload',
+    interaction_mode: 'upload',
     upload: {
       ...current.upload,
+      ...patch,
+    },
+  };
+}
+
+export function writeMediaEditPatch(
+  config: Record<string, unknown> | undefined,
+  patch: Partial<MediaEditConfig>,
+): Record<string, unknown> {
+  const current = readMediaConfig(config, 'text');
+  return {
+    ...(config ?? {}),
+    interaction_mode: 'edit',
+    edit: {
+      ...current.edit,
       ...patch,
     },
   };

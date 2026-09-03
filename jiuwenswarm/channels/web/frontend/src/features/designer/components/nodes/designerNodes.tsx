@@ -27,7 +27,7 @@ import {
 } from '../../executionGraphTypes';
 import type { DesignerReactFlowNode } from '../../designerGraphAdapter';
 import { useDesignerRunStore } from '../../designerRunStore';
-import { isMediaNodeType } from '../../mediaNodeConfig';
+import { isMediaNodeType, supportsNodeToolbar } from '../../mediaNodeConfig';
 import { DesignerNodeToolbar } from '../controls/DesignerNodeToolbar';
 
 type DesignerNodeData = DesignerReactFlowNode['data'];
@@ -155,6 +155,18 @@ export function DesignerTextNode({ id, data, selected }: NodeProps<DesignerFlowN
       <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_TEXT} />
     );
 
+  const toolbar = (
+    <NodeToolbar
+      isVisible={selected}
+      position={Position.Bottom}
+      offset={16}
+      align="center"
+      className="designer-node-toolbar-portal"
+    >
+      <DesignerNodeToolbar nodeId={id} nodeType={DESIGNER_NODE_TYPE_TEXT} />
+    </NodeToolbar>
+  );
+
   return (
     <DesignerNodeShell
       nodeId={id}
@@ -162,6 +174,7 @@ export function DesignerTextNode({ id, data, selected }: NodeProps<DesignerFlowN
       nodeType={DESIGNER_NODE_TYPE_TEXT}
       selected={selected}
       body={body}
+      toolbar={toolbar}
     />
   );
 }
@@ -232,7 +245,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
     body = <PlaceholderBody nodeType={nodeType} />;
   }
 
-  const toolbar = isMediaNodeType(nodeType) ? (
+  const toolbar = supportsNodeToolbar(nodeType) ? (
     <NodeToolbar
       isVisible={selected}
       position={Position.Bottom}

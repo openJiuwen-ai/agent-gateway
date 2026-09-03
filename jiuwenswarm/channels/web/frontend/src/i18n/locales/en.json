@@ -99,9 +99,11 @@
     "toolbar": {
       "modeLabel": "Node mode",
       "upload": "Upload",
+      "edit": "Edit",
       "generate": "Generate",
       "material": "Asset",
       "promptPlaceholder": "prompt",
+      "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
       "duration": "Duration",
@@ -111,6 +113,7 @@
       "dropHint": "Or drag into this area",
       "generateAction": "Generate",
       "uploadAction": "Confirm upload",
+      "editAction": "Save",
       "actionNotImplemented": "This feature is not implemented yet"
     }
   },
