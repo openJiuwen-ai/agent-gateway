@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { designerGraphClient } from './designerGraphClient';
+import type { DesignerReactFlowGraph } from './designerGraphAdapter';
 import type { DesignerExecutionGraph } from './executionGraphTypes';
 
 export type DesignerLoadStatus =
@@ -10,6 +11,11 @@ export type DesignerLoadStatus =
   | 'empty'
   | 'error';
 
+const SAVE_DEBOUNCE_MS = 500;
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveSeq = 0;
+
 type DesignerStore = {
   graphId: string | null;
   domainGraph: DesignerExecutionGraph | null;
@@ -18,29 +24,51 @@ type DesignerStore = {
   chatCollapsed: boolean;
   /** True while Tasks→Design bootstrap owns the page load (blocks list/get race). */
   bootstrapInProgress: boolean;
+  selectedNodeId: string | null;
+  saveStatus: 'idle' | 'saving' | 'saved' | 'error';
   setChatCollapsed: (collapsed: boolean) => void;
+  setSelectedNodeId: (nodeId: string | null) => void;
   loadForProject: (projectId: string | undefined) => Promise<void>;
   beginBootstrapEntry: () => void;
   failBootstrapEntry: (message: string) => void;
   applyGraph: (graph: DesignerExecutionGraph) => void;
+  updateNodeConfig: (
+    nodeId: string,
+    updater: (config: Record<string, unknown>) => Record<string, unknown>,
+  ) => void;
+  persistReactFlowLayout: (reactFlow: DesignerReactFlowGraph) => void;
+  scheduleSave: () => void;
+  flushSave: () => Promise<void>;
   reset: () => void;
 };
 
 const initialState = {
-  graphId: null,
-  domainGraph: null,
+  graphId: null as string | null,
+  domainGraph: null as DesignerExecutionGraph | null,
   loadStatus: 'idle' as DesignerLoadStatus,
-  loadError: null,
+  loadError: null as string | null,
   chatCollapsed: false,
   bootstrapInProgress: false,
+  selectedNodeId: null as string | null,
+  saveStatus: 'idle' as DesignerStore['saveStatus'],
 };
+
+function clearSaveTimer() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
 
 export const useDesignerStore = create<DesignerStore>((set, get) => ({
   ...initialState,
 
   setChatCollapsed: (collapsed) => set({ chatCollapsed: collapsed }),
 
-  beginBootstrapEntry: () =>
+  setSelectedNodeId: (nodeId) => set({ selectedNodeId: nodeId }),
+
+  beginBootstrapEntry: () => {
+    clearSaveTimer();
     set({
       graphId: null,
       domainGraph: null,
@@ -48,7 +76,10 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       loadError: null,
       bootstrapInProgress: true,
       chatCollapsed: false,
-    }),
+      selectedNodeId: null,
+      saveStatus: 'idle',
+    });
+  },
 
   failBootstrapEntry: (message) =>
     set({
@@ -57,6 +88,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       loadStatus: 'error',
       loadError: message,
       bootstrapInProgress: false,
+      selectedNodeId: null,
     }),
 
   applyGraph: (graph) =>
@@ -68,7 +100,90 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       bootstrapInProgress: false,
     }),
 
-  reset: () => set({ ...initialState }),
+  updateNodeConfig: (nodeId, updater) => {
+    const graph = get().domainGraph;
+    if (!graph) return;
+    const nodes = graph.nodes.map((node) => {
+      if (node.id !== nodeId) return node;
+      const nextConfig = updater({ ...(node.config ?? {}) });
+      return { ...node, config: nextConfig };
+    });
+    set({
+      domainGraph: {
+        ...graph,
+        nodes,
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  persistReactFlowLayout: (reactFlow) => {
+    const graph = get().domainGraph;
+    if (!graph) return;
+    const rfById = new Map(reactFlow.nodes.map((node) => [node.id, node]));
+    const nodes = graph.nodes.map((node) => {
+      const rfNode = rfById.get(node.id);
+      if (!rfNode) return node;
+      const width =
+        typeof rfNode.style?.width === 'number'
+          ? rfNode.style.width
+          : node.layout?.width;
+      const height =
+        typeof rfNode.style?.height === 'number'
+          ? rfNode.style.height
+          : node.layout?.height;
+      return {
+        ...node,
+        layout: {
+          x: rfNode.position.x,
+          y: rfNode.position.y,
+          ...(typeof width === 'number' ? { width } : {}),
+          ...(typeof height === 'number' ? { height } : {}),
+        },
+      };
+    });
+    set({
+      domainGraph: {
+        ...graph,
+        nodes,
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  scheduleSave: () => {
+    clearSaveTimer();
+    saveTimer = setTimeout(() => {
+      void get().flushSave();
+    }, SAVE_DEBOUNCE_MS);
+  },
+
+  flushSave: async () => {
+    clearSaveTimer();
+    const graph = get().domainGraph;
+    if (!graph || get().bootstrapInProgress) return;
+    const seq = ++saveSeq;
+    set({ saveStatus: 'saving' });
+    try {
+      const { graph: saved } = await designerGraphClient.save(graph);
+      if (seq !== saveSeq) return;
+      set({
+        domainGraph: saved,
+        graphId: saved.graph_id,
+        saveStatus: 'saved',
+      });
+    } catch {
+      if (seq !== saveSeq) return;
+      set({ saveStatus: 'error' });
+    }
+  },
+
+  reset: () => {
+    clearSaveTimer();
+    set({ ...initialState });
+  },
 
   loadForProject: async (projectId) => {
     if (get().bootstrapInProgress) {
@@ -90,6 +205,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         loadStatus: 'empty',
         loadError: null,
         bootstrapInProgress: false,
+        selectedNodeId: null,
       });
       return;
     }
@@ -124,6 +240,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
           domainGraph: null,
           loadStatus: 'empty',
           loadError: null,
+          selectedNodeId: null,
         });
         return;
       }
@@ -156,6 +273,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         domainGraph: null,
         loadStatus: 'error',
         loadError: error instanceof Error ? error.message : String(error),
+        selectedNodeId: null,
       });
     }
   },

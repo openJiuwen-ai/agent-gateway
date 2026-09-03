@@ -82,7 +82,26 @@
       "expand": "Expand chat",
       "thinking": "Thinking about how to build your design workflow…",
       "bootstrapDone": "Your initial design workflow is ready.",
-      "bootstrapError": "Failed to build the workflow. Please try again later."
+      "bootstrapError": "Failed to build the workflow. Please try again later.",
+      "notImplemented": "Not implemented",
+      "send": "Send"
+    },
+    "toolbar": {
+      "modeLabel": "Node mode",
+      "upload": "Upload",
+      "generate": "Generate",
+      "material": "Asset",
+      "promptPlaceholder": "prompt",
+      "aspectRatio": "Aspect ratio",
+      "resolution": "Resolution",
+      "duration": "Duration",
+      "hasAudio": "Audio",
+      "count": "Count",
+      "browseFiles": "Browse files",
+      "dropHint": "Or drag into this area",
+      "generateAction": "Generate",
+      "uploadAction": "Confirm upload",
+      "actionNotImplemented": "This feature is not implemented yet"
     }
   },
   "videoLive": {

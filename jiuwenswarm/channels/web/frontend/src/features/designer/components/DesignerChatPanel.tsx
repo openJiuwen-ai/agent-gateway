@@ -1,5 +1,11 @@
-import { ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { ChevronLeft, ChevronRight, Loader2, SendHorizontal } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDesignerChatStore } from '../designerChatStore';
 import { useDesignerStore } from '../designerStore';
@@ -34,13 +40,44 @@ export function DesignerChatPanel() {
   const chatCollapsed = useDesignerStore((state) => state.chatCollapsed);
   const setChatCollapsed = useDesignerStore((state) => state.setChatCollapsed);
   const messages = useDesignerChatStore((state) => state.messages);
+  const bootstrapPhase = useDesignerChatStore((state) => state.bootstrapPhase);
+  const appendMessage = useDesignerChatStore((state) => state.appendMessage);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const [draft, setDraft] = useState('');
+
+  const chatBusy = bootstrapPhase === 'thinking' || bootstrapPhase === 'bootstrapping';
 
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  const handleSend = useCallback(() => {
+    const content = draft.trim();
+    if (!content || chatBusy) return;
+    setDraft('');
+    appendMessage({
+      role: 'user',
+      content,
+      kind: 'user',
+    });
+    appendMessage({
+      role: 'assistant',
+      content: t('designer.chat.notImplemented'),
+      kind: 'not_implemented',
+    });
+  }, [appendMessage, chatBusy, draft, t]);
+
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        handleSend();
+      }
+    },
+    [handleSend],
+  );
 
   return (
     <aside
@@ -93,10 +130,22 @@ export function DesignerChatPanel() {
             <textarea
               className="designer-chat-panel__input"
               placeholder={t('designer.chat.inputPlaceholder')}
-              readOnly
-              aria-readonly="true"
+              value={draft}
+              disabled={chatBusy}
               data-testid="designer-chat-panel-input"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={onKeyDown}
             />
+            <button
+              type="button"
+              className="designer-chat-panel__send"
+              disabled={chatBusy || !draft.trim()}
+              onClick={handleSend}
+              aria-label={t('designer.chat.send')}
+              data-testid="designer-chat-panel-send"
+            >
+              <SendHorizontal size={16} aria-hidden />
+            </button>
           </div>
         </>
       ) : null}

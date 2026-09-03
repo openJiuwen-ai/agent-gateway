@@ -82,7 +82,26 @@
       "expand": "展开聊天",
       "thinking": "正在思考如何搭建设计工作流…",
       "bootstrapDone": "已为你搭建初始设计工作流。",
-      "bootstrapError": "搭建工作流失败，请稍后重试。"
+      "bootstrapError": "搭建工作流失败，请稍后重试。",
+      "notImplemented": "未实现",
+      "send": "发送"
+    },
+    "toolbar": {
+      "modeLabel": "节点模式",
+      "upload": "上传",
+      "generate": "生成",
+      "material": "素材",
+      "promptPlaceholder": "prompt",
+      "aspectRatio": "长宽比",
+      "resolution": "分辨率",
+      "duration": "时长",
+      "hasAudio": "有声音",
+      "count": "生成数量",
+      "browseFiles": "浏览文件",
+      "dropHint": "或者拖拽到区域内",
+      "generateAction": "生成",
+      "uploadAction": "确认上传",
+      "actionNotImplemented": "该功能尚未实现"
     }
   },
   "videoLive": {

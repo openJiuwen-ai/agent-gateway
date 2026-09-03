@@ -6,31 +6,100 @@ import {
   ReactFlowProvider,
   useEdgesState,
   useNodesState,
+  useOnSelectionChange,
   useReactFlow,
+  type Node,
+  type OnNodeDrag,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { DesignerExecutionGraph } from '../executionGraphTypes';
-import { toReactFlowGraph } from '../designerGraphAdapter';
+import {
+  toReactFlowGraph,
+  type DesignerReactFlowEdge,
+  type DesignerReactFlowNode,
+} from '../designerGraphAdapter';
+import { useDesignerStore } from '../designerStore';
 import { designerNodeTypes } from './nodes/designerNodes';
 
 type DesignerCanvasProps = {
   graph: DesignerExecutionGraph;
 };
 
+function toPersistableGraph(
+  nodes: Node[],
+  edges: DesignerReactFlowEdge[],
+): { nodes: DesignerReactFlowNode[]; edges: DesignerReactFlowEdge[] } {
+  return {
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      type: String(node.type ?? 'text'),
+      position: node.position,
+      style: node.style as DesignerReactFlowNode['style'],
+      data: node.data as DesignerReactFlowNode['data'],
+    })),
+    edges,
+  };
+}
+
+/** Sync RF view when graph identity / topology / layout changes — not on config-only edits. */
+function buildLayoutSyncKey(graph: DesignerExecutionGraph): string {
+  const nodesKey = graph.nodes
+    .map((node) => {
+      const layout = node.layout ?? {};
+      return `${node.id}:${node.type}:${layout.x ?? 0}:${layout.y ?? 0}:${layout.width ?? 0}:${layout.height ?? 0}`;
+    })
+    .join(';');
+  const edgesKey = graph.edges.map((edge) => `${edge.id}:${edge.source}->${edge.target}`).join(';');
+  return `${graph.graph_id}|${nodesKey}|${edgesKey}`;
+}
+
 function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
-  const reactFlowGraph = useMemo(() => toReactFlowGraph(graph), [graph]);
-  const [nodes, setNodes, onNodesChange] = useNodesState(reactFlowGraph.nodes);
+  const layoutSyncKey = useMemo(() => buildLayoutSyncKey(graph), [graph]);
+  const graphRef = useRef(graph);
+  graphRef.current = graph;
+  const reactFlowGraph = useMemo(
+    () => toReactFlowGraph(graphRef.current),
+    [layoutSyncKey],
+  );
+  const [nodes, setNodes, onNodesChange] = useNodesState(reactFlowGraph.nodes as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState(reactFlowGraph.edges);
   const { fitView } = useReactFlow();
+  const persistReactFlowLayout = useDesignerStore((state) => state.persistReactFlowLayout);
+  const setSelectedNodeId = useDesignerStore((state) => state.setSelectedNodeId);
+  const fittedGraphIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    setNodes(reactFlowGraph.nodes);
-    setEdges(reactFlowGraph.edges);
-    requestAnimationFrame(() => {
-      void fitView({ padding: 0.2, duration: 200 });
+    setNodes((previous) => {
+      const selectedIds = new Set(previous.filter((node) => node.selected).map((node) => node.id));
+      return reactFlowGraph.nodes.map((node) => ({
+        ...(node as Node),
+        selected: selectedIds.has(node.id),
+      }));
     });
-  }, [reactFlowGraph, setNodes, setEdges, fitView]);
+    setEdges(reactFlowGraph.edges);
+
+    if (fittedGraphIdRef.current !== graph.graph_id) {
+      fittedGraphIdRef.current = graph.graph_id;
+      requestAnimationFrame(() => {
+        void fitView({ padding: 0.2, duration: 200 });
+      });
+    }
+  }, [graph.graph_id, reactFlowGraph, setNodes, setEdges, fitView]);
+
+  useOnSelectionChange({
+    onChange: ({ nodes: selectedNodes }) => {
+      const only = selectedNodes.length === 1 ? selectedNodes[0] : null;
+      setSelectedNodeId(only?.id ?? null);
+    },
+  });
+
+  const onNodeDragStop: OnNodeDrag = useCallback(
+    (_event, _node, currentNodes) => {
+      persistReactFlowLayout(toPersistableGraph(currentNodes, edges));
+    },
+    [edges, persistReactFlowLayout],
+  );
 
   return (
     <ReactFlow
@@ -40,6 +109,7 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
       nodeTypes={designerNodeTypes}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onNodeDragStop={onNodeDragStop}
       fitView
       minZoom={0.2}
       maxZoom={1.5}
