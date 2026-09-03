@@ -72,7 +72,7 @@ export function toReactFlowGraph(graph: DesignerExecutionGraph): DesignerReactFl
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    type: 'default',
+    type: 'designer',
     label: edge.label,
   }));
 

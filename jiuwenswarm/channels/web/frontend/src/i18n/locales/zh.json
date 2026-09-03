@@ -115,6 +115,9 @@
       "uploadAction": "确认上传",
       "editAction": "保存",
       "actionNotImplemented": "该功能尚未实现"
+    },
+    "edge": {
+      "delete": "删除连线"
     }
   },
   "videoLive": {

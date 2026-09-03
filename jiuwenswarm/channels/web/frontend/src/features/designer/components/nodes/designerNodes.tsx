@@ -91,12 +91,12 @@ function DesignerNodeShell({
 
   return (
     <div
-      className={`designer-node${media ? ' designer-node--media' : ''}${showMediaFill ? ' designer-node--media-filled' : ''}${selected ? ' is-selected' : ''}${statusClass}`}
+      className={`designer-node${media ? ' designer-node--media' : ''}${showMediaFill ? ' designer-node--media-filled' : ''}${selected ? ' is-selected' : ''}${statusClass} group`}
       data-testid="designer-node"
       data-selected={selected ? 'true' : 'false'}
       data-status={status}
     >
-      <Handle type="target" position={Position.Left} />
+      <Handle type="target" position={Position.Left} className='size-2 bg-gray-500 transition-all ease-out group-hover:size-3' />
       <div className="designer-node__header">
         <span className="designer-node__type-icon" aria-hidden data-testid="designer-node-type-icon" data-node-type={nodeType}>
           <TypeIcon size={14} strokeWidth={1.75} />
@@ -104,7 +104,7 @@ function DesignerNodeShell({
         <span className="designer-node__label">{label}</span>
       </div>
       <div className="designer-node__body">{body}</div>
-      <Handle type="source" position={Position.Right} />
+      <Handle type="source" position={Position.Right} className='size-2 bg-gray-500 transition-all ease-out group-hover:size-3' />
       {toolbar}
     </div>
   );

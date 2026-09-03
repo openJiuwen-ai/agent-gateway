@@ -4,11 +4,17 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  addEdge as appendReactFlowEdge,
   useEdgesState,
   useNodesState,
   useOnSelectionChange,
   useReactFlow,
+  type Connection,
+  type Edge,
+  type EdgeChange,
   type Node,
+  type OnConnect,
+  type OnEdgesChange,
   type OnNodeDrag,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -20,6 +26,7 @@ import {
   type DesignerReactFlowNode,
 } from '../designerGraphAdapter';
 import { useDesignerStore } from '../designerStore';
+import { designerEdgeTypes } from './edges/DesignerEdge';
 import { designerNodeTypes } from './nodes/designerNodes';
 
 type DesignerCanvasProps = {
@@ -54,6 +61,16 @@ function buildLayoutSyncKey(graph: DesignerExecutionGraph): string {
   return `${graph.graph_id}|${nodesKey}|${edgesKey}`;
 }
 
+function toDesignerEdges(edges: Edge[]): DesignerReactFlowEdge[] {
+  return edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    type: edge.type ?? 'designer',
+    label: typeof edge.label === 'string' ? edge.label : undefined,
+  }));
+}
+
 function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
   const layoutSyncKey = useMemo(() => buildLayoutSyncKey(graph), [graph]);
   const graphRef = useRef(graph);
@@ -63,9 +80,11 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
     [layoutSyncKey],
   );
   const [nodes, setNodes, onNodesChange] = useNodesState(reactFlowGraph.nodes as Node[]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(reactFlowGraph.edges);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState(reactFlowGraph.edges as Edge[]);
   const { fitView } = useReactFlow();
   const persistReactFlowLayout = useDesignerStore((state) => state.persistReactFlowLayout);
+  const addDomainEdge = useDesignerStore((state) => state.addEdge);
+  const removeEdges = useDesignerStore((state) => state.removeEdges);
   const setSelectedNodeId = useDesignerStore((state) => state.setSelectedNodeId);
   const fittedGraphIdRef = useRef<string | null>(null);
 
@@ -77,7 +96,13 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
         selected: selectedIds.has(node.id),
       }));
     });
-    setEdges(reactFlowGraph.edges);
+    setEdges((previous) => {
+      const selectedIds = new Set(previous.filter((edge) => edge.selected).map((edge) => edge.id));
+      return reactFlowGraph.edges.map((edge) => ({
+        ...(edge as Edge),
+        selected: selectedIds.has(edge.id),
+      }));
+    });
 
     if (fittedGraphIdRef.current !== graph.graph_id) {
       fittedGraphIdRef.current = graph.graph_id;
@@ -96,9 +121,46 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
 
   const onNodeDragStop: OnNodeDrag = useCallback(
     (_event, _node, currentNodes) => {
-      persistReactFlowLayout(toPersistableGraph(currentNodes, edges));
+      persistReactFlowLayout(toPersistableGraph(currentNodes, toDesignerEdges(edges)));
     },
     [edges, persistReactFlowLayout],
+  );
+
+  const onConnect: OnConnect = useCallback(
+    (connection: Connection) => {
+      if (!connection.source || !connection.target) return;
+      const source = connection.source;
+      const target = connection.target;
+      if (edges.some((edge) => edge.source === source && edge.target === target)) {
+        return;
+      }
+      const id = `e_${source}_${target}_${Date.now().toString(36)}`;
+      setEdges((current) =>
+        appendReactFlowEdge(
+          {
+            ...connection,
+            id,
+            type: 'designer',
+          },
+          current,
+        ),
+      );
+      addDomainEdge({ id, source, target });
+    },
+    [addDomainEdge, edges, setEdges],
+  );
+
+  const onEdgesChange: OnEdgesChange = useCallback(
+    (changes: EdgeChange[]) => {
+      onEdgesChangeBase(changes);
+      const removedIds = changes
+        .filter((change): change is Extract<EdgeChange, { type: 'remove' }> => change.type === 'remove')
+        .map((change) => change.id);
+      if (removedIds.length > 0) {
+        removeEdges(removedIds);
+      }
+    },
+    [onEdgesChangeBase, removeEdges],
   );
 
   return (
@@ -107,8 +169,10 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
       nodes={nodes}
       edges={edges}
       nodeTypes={designerNodeTypes}
+      edgeTypes={designerEdgeTypes}
       onNodesChange={onNodesChange}
       onEdgesChange={onEdgesChange}
+      onConnect={onConnect}
       onNodeDragStop={onNodeDragStop}
       fitView
       minZoom={0.2}

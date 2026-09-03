@@ -36,6 +36,8 @@ type DesignerStore = {
     nodeId: string,
     updater: (config: Record<string, unknown>) => Record<string, unknown>,
   ) => void;
+  addEdge: (connection: { source: string; target: string; id?: string; label?: string }) => void;
+  removeEdges: (edgeIds: string[]) => void;
   persistReactFlowLayout: (reactFlow: DesignerReactFlowGraph) => void;
   scheduleSave: () => void;
   flushSave: () => Promise<void>;
@@ -112,6 +114,53 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       domainGraph: {
         ...graph,
         nodes,
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  addEdge: (connection) => {
+    const graph = get().domainGraph;
+    if (!graph) return;
+    const source = String(connection.source ?? '').trim();
+    const target = String(connection.target ?? '').trim();
+    if (!source || !target) return;
+    const nodeIds = new Set(graph.nodes.map((node) => node.id));
+    if (!nodeIds.has(source) || !nodeIds.has(target)) return;
+    const duplicate = graph.edges.some(
+      (edge) => edge.source === source && edge.target === target,
+    );
+    if (duplicate) return;
+    const id =
+      String(connection.id ?? '').trim() ||
+      `e_${source}_${target}_${Date.now().toString(36)}`;
+    const nextEdge = {
+      id,
+      source,
+      target,
+      ...(connection.label ? { label: connection.label } : {}),
+    };
+    set({
+      domainGraph: {
+        ...graph,
+        edges: [...graph.edges, nextEdge],
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  removeEdges: (edgeIds) => {
+    const graph = get().domainGraph;
+    if (!graph || edgeIds.length === 0) return;
+    const removeSet = new Set(edgeIds);
+    const edges = graph.edges.filter((edge) => !removeSet.has(edge.id));
+    if (edges.length === graph.edges.length) return;
+    set({
+      domainGraph: {
+        ...graph,
+        edges,
         updated_at: Date.now(),
       },
     });
