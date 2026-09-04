@@ -51,6 +51,8 @@ type DesignerRunStore = {
   rerunCurrentLayer: (graph: DesignerExecutionGraph) => Promise<void>;
   /** 重新开始：清空后跑第一层 */
   restart: (graph: DesignerExecutionGraph) => Promise<void>;
+  /** 对指定节点执行生成（与 Run 同一条 mock 执行链路） */
+  runNodes: (graph: DesignerExecutionGraph, nodeIds: string[]) => Promise<void>;
   /** 暂停当前层执行（mock） */
   pause: () => void;
   /** 取消运行并回到草稿（mock） */
@@ -197,6 +199,15 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       runGeneration: state.runGeneration + 1,
     });
     const layerIds = computeRootLayer(graph);
+    if (layerIds.length === 0) return;
+    await runFakeLayer(graph, layerIds, set, get);
+  },
+
+  runNodes: async (graph, nodeIds) => {
+    const state = get();
+    if (state.isRunning || graph.nodes.length === 0) return;
+    const known = new Set(graph.nodes.map((node) => node.id));
+    const layerIds = [...new Set(nodeIds.map((id) => String(id).trim()).filter((id) => known.has(id)))];
     if (layerIds.length === 0) return;
     await runFakeLayer(graph, layerIds, set, get);
   },

@@ -133,7 +133,8 @@
       "delete": "Delete asset"
     },
     "edge": {
-      "delete": "Delete connection"
+      "delete": "Delete connection",
+      "generate": "Generate target node"
     }
   },
   "videoLive": {

@@ -31,6 +31,9 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const setNodeOutputRef = useDesignerStore((state) => state.setNodeOutputRef);
   const applyUploadedOutput = useDesignerRunStore((state) => state.applyUploadedOutput);
+  const runNodes = useDesignerRunStore((state) => state.runNodes);
+  const isRunning = useDesignerRunStore((state) => state.isRunning);
+  const domainGraph = useDesignerStore((state) => state.domainGraph);
   const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
   const getAsset = useDesignerAssetLibraryStore((state) => state.getById);
   const config = useDesignerStore(
@@ -120,6 +123,11 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   );
 
   const canConfirmUpload = Boolean(media.upload?.asset_id?.trim());
+
+  const onGenerateNode = useCallback(() => {
+    if (!domainGraph || isRunning) return;
+    void runNodes(domainGraph, [nodeId]);
+  }, [domainGraph, isRunning, nodeId, runNodes]);
 
   return (
     <div
@@ -229,7 +237,8 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             type="button"
             className="designer-node-toolbar__action"
             data-testid="designer-node-toolbar-generate-action"
-            onClick={() => notifyNotImplemented(t('designer.toolbar.actionNotImplemented'))}
+            disabled={isRunning || !domainGraph}
+            onClick={onGenerateNode}
           >
             {t('designer.toolbar.generateAction')}
           </button>

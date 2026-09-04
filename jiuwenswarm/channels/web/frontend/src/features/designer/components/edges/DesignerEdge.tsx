@@ -5,9 +5,10 @@ import {
   type Edge,
   type EdgeProps,
 } from '@xyflow/react';
-import { Trash2 } from 'lucide-react';
+import { Sparkles, Trash2 } from 'lucide-react';
 import { useCallback, type MouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
 
 export type DesignerEdgeType = Edge<{ label?: string }>;
@@ -23,9 +24,13 @@ export function DesignerEdge({
   style,
   markerEnd,
   selected,
+  target,
 }: EdgeProps<DesignerEdgeType>) {
   const { t } = useTranslation();
   const removeEdges = useDesignerStore((state) => state.removeEdges);
+  const domainGraph = useDesignerStore((state) => state.domainGraph);
+  const isRunning = useDesignerRunStore((state) => state.isRunning);
+  const runNodes = useDesignerRunStore((state) => state.runNodes);
   const [edgePath, centerX, centerY] = getBezierPath({
     sourceX,
     sourceY,
@@ -42,6 +47,16 @@ export function DesignerEdge({
       removeEdges([id]);
     },
     [id, removeEdges],
+  );
+
+  const onGenerate = useCallback(
+    (event: MouseEvent) => {
+      event.stopPropagation();
+      event.preventDefault();
+      if (!domainGraph || !target || isRunning) return;
+      void runNodes(domainGraph, [target]);
+    },
+    [domainGraph, isRunning, runNodes, target],
   );
 
   return (
@@ -61,17 +76,31 @@ export function DesignerEdge({
         className="designer-edge-toolbar-portal"
         data-testid="designer-edge-toolbar"
       >
-        <button
-          type="button"
-          className="designer-edge-delete"
-          aria-label={t('designer.edge.delete')}
-          title={t('designer.edge.delete')}
-          data-testid="designer-edge-delete"
-          onClick={onDelete}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          <Trash2 size={14} strokeWidth={2.25} aria-hidden />
-        </button>
+        <div className="designer-edge-toolbar" role="group">
+          <button
+            type="button"
+            className="designer-edge-generate"
+            aria-label={t('designer.edge.generate')}
+            title={t('designer.edge.generate')}
+            data-testid="designer-edge-generate"
+            disabled={isRunning || !target}
+            onClick={onGenerate}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <Sparkles size={14} strokeWidth={2.25} aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="designer-edge-delete"
+            aria-label={t('designer.edge.delete')}
+            title={t('designer.edge.delete')}
+            data-testid="designer-edge-delete"
+            onClick={onDelete}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <Trash2 size={14} strokeWidth={2.25} aria-hidden />
+          </button>
+        </div>
       </EdgeToolbar>
     </>
   );

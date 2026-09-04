@@ -133,7 +133,8 @@
       "delete": "删除素材"
     },
     "edge": {
-      "delete": "删除连线"
+      "delete": "删除连线",
+      "generate": "生成目标节点"
     }
   },
   "videoLive": {
