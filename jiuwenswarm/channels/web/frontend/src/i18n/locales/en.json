@@ -94,8 +94,11 @@
       "running": "Running…",
       "moreActions": "More run actions",
       "rerunCurrent": "Rerun current nodes",
-      "restart": "Restart workflow"
+      "restart": "Restart workflow",
+      "pause": "Pause",
+      "cancel": "Cancel"
     },
+    "subtitle": "Creation execution canvas",
     "toolbar": {
       "modeLabel": "Node mode",
       "upload": "Upload",

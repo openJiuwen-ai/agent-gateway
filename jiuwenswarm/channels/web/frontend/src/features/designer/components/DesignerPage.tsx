@@ -49,23 +49,33 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
   const showLoading =
     loadStatus === 'loading' || loadStatus === 'idle' || loadStatus === 'bootstrapping';
 
+  const projectTitle =
+    domainGraph?.title?.trim() ||
+    (showLoading || showEmpty || showError ? '' : t('designer.subtitle'));
+
   return (
     <div className="designer-page app-section" data-testid="designer-page">
+      <header className="designer-page__toolbar" data-testid="designer-page-toolbar">
+        <div className="designer-page__heading">
+          <h1 className="designer-page__title" data-testid="designer-page-rail-title">
+            {t('nav.design')}
+          </h1>
+          <p className="designer-page__subtitle" data-testid="designer-page-title">
+            {projectTitle || t('designer.subtitle')}
+          </p>
+        </div>
+        <div className="designer-page__toolbar-actions">
+          <DesignerRunControl
+            graph={showCanvas ? domainGraph : null}
+            disabled={!showCanvas}
+          />
+        </div>
+      </header>
+
       <div className="designer-page__workspace">
         <DesignerChatPanel />
-        <DesignerRunControl
-          graph={showCanvas ? domainGraph : null}
-          disabled={!showCanvas}
-        />
 
-        {showCanvas ? (
-          <>
-            <div className="designer-page__header" data-testid="designer-page-title">
-              {domainGraph.title}
-            </div>
-            <DesignerCanvas graph={domainGraph} />
-          </>
-        ) : null}
+        {showCanvas ? <DesignerCanvas graph={domainGraph} /> : null}
 
         {showLoading ? (
           <div className="designer-page__state" data-testid="designer-loading-state">

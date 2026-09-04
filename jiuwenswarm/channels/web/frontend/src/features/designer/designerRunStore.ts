@@ -22,6 +22,8 @@ import {
   DESIGNER_NODE_TYPE_TEXT,
   DESIGNER_NODE_TYPE_VIDEO,
   DESIGNER_RUN_SCHEMA_VERSION,
+  DESIGNER_NODE_STATUS_PENDING,
+  DESIGNER_RUN_STATUS_CANCELLED,
   DESIGNER_RUN_STATUS_COMPLETED,
   DESIGNER_RUN_STATUS_DRAFT,
   DESIGNER_RUN_STATUS_PAUSED,
@@ -39,6 +41,8 @@ type DesignerRunStore = {
   isRunning: boolean;
   primaryAction: DesignerRunPrimaryAction;
   boundGraphId: string | null;
+  /** Monotonic token so pause/cancel can abort an in-flight fake layer. */
+  runGeneration: number;
   resetForGraph: (graph: DesignerExecutionGraph | null) => void;
   getPrimaryAction: (graph: DesignerExecutionGraph | null) => DesignerRunPrimaryAction;
   /** 执行 / 继续 / 重试失败节点 */
@@ -47,6 +51,10 @@ type DesignerRunStore = {
   rerunCurrentLayer: (graph: DesignerExecutionGraph) => Promise<void>;
   /** 重新开始：清空后跑第一层 */
   restart: (graph: DesignerExecutionGraph) => Promise<void>;
+  /** 暂停当前层执行（mock） */
+  pause: () => void;
+  /** 取消运行并回到草稿（mock） */
+  cancel: (graph: DesignerExecutionGraph | null) => void;
 };
 
 function emptyRun(graph: DesignerExecutionGraph): DesignerExecutionRun {
@@ -91,6 +99,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   isRunning: false,
   primaryAction: 'execute',
   boundGraphId: null,
+  runGeneration: 0,
 
   resetForGraph: (graph) => {
     if (!graph || graph.nodes.length === 0) {
@@ -101,6 +110,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
         isRunning: false,
         primaryAction: 'execute',
         boundGraphId: graph?.graph_id ?? null,
+        runGeneration: get().runGeneration + 1,
       });
       return;
     }
@@ -112,6 +122,7 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       isRunning: false,
       primaryAction: 'execute',
       boundGraphId: graph.graph_id,
+      runGeneration: get().runGeneration + 1,
     });
   },
 
@@ -135,7 +146,13 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     if (primary === 'retry_failed') {
       layerIds = [...state.currentLayerNodeIds];
     } else if (primary === 'continue') {
-      layerIds = computeNextLayer(graph, state.currentLayerNodeIds, state.nodeStates);
+      const incompleteCurrent = state.currentLayerNodeIds.filter(
+        (nodeId) => state.nodeStates[nodeId]?.status !== DESIGNER_NODE_STATUS_COMPLETED,
+      );
+      layerIds =
+        incompleteCurrent.length > 0
+          ? incompleteCurrent
+          : computeNextLayer(graph, state.currentLayerNodeIds, state.nodeStates);
     } else if (primary === 'done') {
       // 全部完成后点主按钮：等同重新开始
       await get().restart(graph);
@@ -173,10 +190,68 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       isRunning: false,
       primaryAction: 'execute',
       boundGraphId: graph.graph_id,
+      runGeneration: state.runGeneration + 1,
     });
     const layerIds = computeRootLayer(graph);
     if (layerIds.length === 0) return;
     await runFakeLayer(graph, layerIds, set, get);
+  },
+
+  pause: () => {
+    const state = get();
+    if (!state.isRunning) return;
+    const layerIds = state.currentLayerNodeIds;
+    const nodeStates = markNodesStatus(
+      state.nodeStates,
+      layerIds,
+      DESIGNER_NODE_STATUS_PENDING,
+    );
+    const run = state.run;
+    set({
+      run: run
+        ? {
+            ...run,
+            status: DESIGNER_RUN_STATUS_PAUSED,
+            node_states: nodeStates,
+            current_node_ids: layerIds,
+            updated_at: Date.now(),
+          }
+        : null,
+      nodeStates,
+      isRunning: false,
+      primaryAction: 'continue',
+      runGeneration: state.runGeneration + 1,
+    });
+  },
+
+  cancel: (graph) => {
+    const state = get();
+    const generation = state.runGeneration + 1;
+    if (!graph || graph.nodes.length === 0) {
+      set({
+        run: null,
+        nodeStates: {},
+        currentLayerNodeIds: [],
+        isRunning: false,
+        primaryAction: 'execute',
+        boundGraphId: graph?.graph_id ?? null,
+        runGeneration: generation,
+      });
+      return;
+    }
+    const run = emptyRun(graph);
+    set({
+      run: {
+        ...run,
+        status: DESIGNER_RUN_STATUS_CANCELLED,
+      },
+      nodeStates: run.node_states,
+      currentLayerNodeIds: [],
+      isRunning: false,
+      primaryAction: 'execute',
+      boundGraphId: graph.graph_id,
+      runGeneration: generation,
+    });
   },
 }));
 
@@ -190,6 +265,7 @@ async function runFakeLayer(
   ) => void,
   get: () => DesignerRunStore,
 ): Promise<void> {
+  const generation = get().runGeneration;
   const existing = get().run ?? emptyRun(graph);
   let nodeStates = {
     ...initialNodeStates(graph),
@@ -218,6 +294,11 @@ async function runFakeLayer(
 
   await Promise.all([sleep(2000), ensureDesignerFakeAssets()]);
 
+  // Aborted by pause/cancel/reset while waiting.
+  if (get().runGeneration !== generation || !get().isRunning) {
+    return;
+  }
+
   // Fake backend: always succeed + attach procedural preview assets.
   const assets = await ensureDesignerFakeAssets();
   nodeStates = markNodesStatus(get().nodeStates, layerIds, DESIGNER_NODE_STATUS_COMPLETED);
@@ -242,6 +323,10 @@ async function runFakeLayer(
     current_node_ids: layerIds,
     updated_at: Date.now(),
   };
+
+  if (get().runGeneration !== generation) {
+    return;
+  }
 
   set({
     run: pausedRun,

@@ -94,8 +94,11 @@
       "running": "执行中…",
       "moreActions": "更多执行动作",
       "rerunCurrent": "重跑当前节点",
-      "restart": "重跑工作流"
+      "restart": "重跑工作流",
+      "pause": "暂停",
+      "cancel": "取消"
     },
+    "subtitle": "创作执行图画布",
     "toolbar": {
       "modeLabel": "节点模式",
       "upload": "上传",

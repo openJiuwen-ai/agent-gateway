@@ -181,8 +181,8 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
       data-testid="designer-canvas"
     >
       <Background gap={20} size={1} />
-      <Controls showInteractive={false} />
-      <MiniMap pannable zoomable />
+      <Controls position="bottom-right" className="designer-canvas__controls" />
+      <MiniMap position="bottom-right" pannable zoomable />
     </ReactFlow>
   );
 }
