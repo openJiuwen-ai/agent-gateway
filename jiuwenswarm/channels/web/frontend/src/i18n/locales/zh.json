@@ -105,6 +105,8 @@
       "edit": "编辑",
       "generate": "生成",
       "material": "素材",
+      "addMaterial": "添加素材",
+      "removeMaterial": "移除素材",
       "promptPlaceholder": "prompt",
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",

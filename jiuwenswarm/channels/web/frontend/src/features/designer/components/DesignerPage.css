@@ -626,18 +626,97 @@
 
 .designer-node-toolbar__materials {
   display: flex;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 10px;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
 }
 
-.designer-node-toolbar__material {
+.designer-node-toolbar__material-item {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 64px;
+}
+
+.designer-node-toolbar__material-label {
+  display: block;
+  width: 100%;
+  max-width: 64px;
+  min-height: 14px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.designer-node-toolbar__material-tile,
+.designer-node-toolbar__material-add {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 56px;
   height: 56px;
-  border: 1px solid var(--color-border-default);
   border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.designer-node-toolbar__material-tile {
+  border: 1px solid var(--color-border-default);
   background: var(--color-surface-card);
   color: var(--color-text-secondary);
-  font-size: 12px;
+}
+
+.designer-node-toolbar__material-add {
+  border: 1.5px dashed color-mix(in srgb, var(--color-text-secondary) 55%, transparent);
+  background: color-mix(in srgb, var(--color-surface-card) 70%, transparent);
+  color: var(--color-text-secondary);
   cursor: pointer;
+}
+
+.designer-node-toolbar__material-add:hover {
+  border-color: var(--color-text-primary);
+  color: var(--color-text-primary);
+  background: var(--color-surface-card);
+}
+
+.designer-node-toolbar__material-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--color-border-default);
+  border-radius: 999px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+
+.designer-node-toolbar__material-item:hover .designer-node-toolbar__material-remove,
+.designer-node-toolbar__material-item:focus-within .designer-node-toolbar__material-remove {
+  display: inline-flex;
+}
+
+.designer-node-toolbar__material-remove:hover {
+  background: #ef5350;
+  border-color: #ef5350;
+  color: #fff;
 }
 
 .designer-node-toolbar__prompt {

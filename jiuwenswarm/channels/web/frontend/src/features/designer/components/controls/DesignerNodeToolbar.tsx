@@ -12,6 +12,7 @@ import {
   writeMediaUploadPatch,
   type MediaInteractionMode,
 } from '../../mediaNodeConfig';
+import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 
 type DesignerNodeToolbarProps = {
   nodeId: string;
@@ -122,19 +123,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           role="tabpanel"
           data-testid="designer-node-toolbar-panel-generate"
         >
-          <div className="designer-node-toolbar__materials">
-            {(media.materials ?? []).map((slot) => (
-              <button
-                key={slot.id}
-                type="button"
-                className="designer-node-toolbar__material"
-                data-testid="designer-node-toolbar-material"
-                onClick={() => notifyNotImplemented(t('designer.toolbar.actionNotImplemented'))}
-              >
-                {slot.label || t('designer.toolbar.material')}
-              </button>
-            ))}
-          </div>
+          <DesignerMaterialStrip nodeId={nodeId} nodeType={nodeType} />
           <textarea
             className="designer-node-toolbar__prompt"
             value={media.generate?.prompt ?? ''}

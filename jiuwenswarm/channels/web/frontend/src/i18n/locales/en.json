@@ -105,6 +105,8 @@
       "edit": "Edit",
       "generate": "Generate",
       "material": "Asset",
+      "addMaterial": "Add asset",
+      "removeMaterial": "Remove asset",
       "promptPlaceholder": "prompt",
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",

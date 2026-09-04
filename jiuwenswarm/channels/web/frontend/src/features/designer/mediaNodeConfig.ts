@@ -19,9 +19,11 @@ export type MediaEditConfig = {
   content?: string;
 };
 
+/** Manually attached materials (uploads). Linked media nodes are derived from edges. */
 export type MediaMaterialSlot = {
   id: string;
-  label?: string;
+  filename: string;
+  mime_type?: string;
 };
 
 export type MediaNodeConfig = {
@@ -52,6 +54,31 @@ function normalizeInteractionMode(
   return raw === 'upload' ? 'upload' : 'generate';
 }
 
+function normalizeMaterials(raw: unknown): MediaMaterialSlot[] {
+  if (!Array.isArray(raw)) return [];
+  const out: MediaMaterialSlot[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const filename =
+      typeof record.filename === 'string'
+        ? record.filename.trim()
+        : typeof record.label === 'string'
+          ? record.label.trim()
+          : '';
+    if (!id || !filename) continue;
+    out.push({
+      id,
+      filename,
+      ...(typeof record.mime_type === 'string' && record.mime_type
+        ? { mime_type: record.mime_type }
+        : {}),
+    });
+  }
+  return out;
+}
+
 export function readMediaConfig(
   config: Record<string, unknown> | undefined,
   nodeType?: string,
@@ -78,13 +105,7 @@ export function readMediaConfig(
     edit: {
       content: raw.edit?.content ?? '',
     },
-    materials: Array.isArray(raw.materials) && raw.materials.length > 0
-      ? raw.materials
-      : [
-          { id: 'mat_1', label: '素材' },
-          { id: 'mat_2', label: '素材' },
-          { id: 'mat_3', label: '素材' },
-        ],
+    materials: normalizeMaterials(raw.materials),
   };
 }
 
@@ -143,5 +164,15 @@ export function writeMediaEditPatch(
       ...current.edit,
       ...patch,
     },
+  };
+}
+
+export function writeMediaMaterials(
+  config: Record<string, unknown> | undefined,
+  materials: MediaMaterialSlot[],
+): Record<string, unknown> {
+  return {
+    ...(config ?? {}),
+    materials,
   };
 }
