@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { designerGraphClient } from './designerGraphClient';
 import type { DesignerReactFlowGraph } from './designerGraphAdapter';
-import type { DesignerExecutionGraph } from './executionGraphTypes';
+import type { AssetRef, DesignerExecutionGraph } from './executionGraphTypes';
 
 export type DesignerLoadStatus =
   | 'idle'
@@ -21,12 +21,10 @@ type DesignerStore = {
   domainGraph: DesignerExecutionGraph | null;
   loadStatus: DesignerLoadStatus;
   loadError: string | null;
-  chatCollapsed: boolean;
   /** True while Tasks→Design bootstrap owns the page load (blocks list/get race). */
   bootstrapInProgress: boolean;
   selectedNodeId: string | null;
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
-  setChatCollapsed: (collapsed: boolean) => void;
   setSelectedNodeId: (nodeId: string | null) => void;
   loadForProject: (projectId: string | undefined) => Promise<void>;
   beginBootstrapEntry: () => void;
@@ -36,6 +34,8 @@ type DesignerStore = {
     nodeId: string,
     updater: (config: Record<string, unknown>) => Record<string, unknown>,
   ) => void;
+  setNodeOutputRef: (nodeId: string, outputRef: AssetRef | null) => void;
+  clearAssetReferences: (assetId: string) => void;
   addEdge: (connection: { source: string; target: string; id?: string; label?: string }) => void;
   removeEdges: (edgeIds: string[]) => void;
   persistReactFlowLayout: (reactFlow: DesignerReactFlowGraph) => void;
@@ -49,7 +49,6 @@ const initialState = {
   domainGraph: null as DesignerExecutionGraph | null,
   loadStatus: 'idle' as DesignerLoadStatus,
   loadError: null as string | null,
-  chatCollapsed: false,
   bootstrapInProgress: false,
   selectedNodeId: null as string | null,
   saveStatus: 'idle' as DesignerStore['saveStatus'],
@@ -65,8 +64,6 @@ function clearSaveTimer() {
 export const useDesignerStore = create<DesignerStore>((set, get) => ({
   ...initialState,
 
-  setChatCollapsed: (collapsed) => set({ chatCollapsed: collapsed }),
-
   setSelectedNodeId: (nodeId) => set({ selectedNodeId: nodeId }),
 
   beginBootstrapEntry: () => {
@@ -77,7 +74,6 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       loadStatus: 'bootstrapping',
       loadError: null,
       bootstrapInProgress: true,
-      chatCollapsed: false,
       selectedNodeId: null,
       saveStatus: 'idle',
     });
@@ -110,6 +106,78 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       const nextConfig = updater({ ...(node.config ?? {}) });
       return { ...node, config: nextConfig };
     });
+    set({
+      domainGraph: {
+        ...graph,
+        nodes,
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  setNodeOutputRef: (nodeId, outputRef) => {
+    const graph = get().domainGraph;
+    if (!graph) return;
+    let changed = false;
+    const nodes = graph.nodes.map((node) => {
+      if (node.id !== nodeId) return node;
+      changed = true;
+      return { ...node, output_ref: outputRef };
+    });
+    if (!changed) return;
+    set({
+      domainGraph: {
+        ...graph,
+        nodes,
+        updated_at: Date.now(),
+      },
+    });
+    get().scheduleSave();
+  },
+
+  clearAssetReferences: (assetId) => {
+    const graph = get().domainGraph;
+    if (!graph || !assetId) return;
+    let changed = false;
+    const nodes = graph.nodes.map((node) => {
+      const config = { ...(node.config ?? {}) };
+      const upload = (config.upload ?? null) as
+        | { asset_id?: string; filename?: string; mime_type?: string }
+        | null;
+      const uploadMatched = upload?.asset_id === assetId;
+      let touched = false;
+
+      if (uploadMatched && upload) {
+        config.upload = {
+          ...upload,
+          asset_id: '',
+          filename: '',
+          mime_type: '',
+        };
+        touched = true;
+      }
+
+      if (Array.isArray(config.materials)) {
+        const filtered = config.materials.filter((item) => {
+          if (!item || typeof item !== 'object') return true;
+          return (item as { asset_id?: string }).asset_id !== assetId;
+        });
+        if (filtered.length !== config.materials.length) {
+          config.materials = filtered;
+          touched = true;
+        }
+      }
+
+      if (!touched) return node;
+      changed = true;
+      return {
+        ...node,
+        config,
+        ...(uploadMatched ? { output_ref: null } : {}),
+      };
+    });
+    if (!changed) return;
     set({
       domainGraph: {
         ...graph,

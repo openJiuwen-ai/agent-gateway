@@ -1,5 +1,7 @@
 import { useCallback, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
+import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
 import {
   DESIGNER_NODE_TYPE_TEXT,
@@ -27,6 +29,10 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const { t } = useTranslation();
   const isTextNode = nodeType === DESIGNER_NODE_TYPE_TEXT;
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
+  const setNodeOutputRef = useDesignerStore((state) => state.setNodeOutputRef);
+  const applyUploadedOutput = useDesignerRunStore((state) => state.applyUploadedOutput);
+  const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
+  const getAsset = useDesignerAssetLibraryStore((state) => state.getById);
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
@@ -60,12 +66,40 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const applyUploadFile = useCallback(
     (file: File | undefined) => {
       if (!file) return;
+      const asset = addFromFile(file);
+      if (!asset) return;
       updateNodeConfig(nodeId, (current) =>
-        writeMediaUploadPatch(current, { filename: file.name }),
+        writeMediaUploadPatch(current, {
+          filename: asset.filename,
+          asset_id: asset.id,
+          mime_type: asset.mime_type,
+        }),
       );
     },
-    [nodeId, updateNodeConfig],
+    [addFromFile, nodeId, updateNodeConfig],
   );
+
+  const confirmUpload = useCallback(() => {
+    const assetId = media.upload?.asset_id?.trim();
+    if (!assetId) return;
+    const asset = getAsset(assetId);
+    if (!asset) return;
+    const outputRef = {
+      kind: nodeType,
+      uri: asset.objectUrl,
+      mime_type: asset.mime_type,
+      label: asset.filename,
+    };
+    setNodeOutputRef(nodeId, outputRef);
+    applyUploadedOutput(nodeId, outputRef);
+  }, [
+    applyUploadedOutput,
+    getAsset,
+    media.upload?.asset_id,
+    nodeId,
+    nodeType,
+    setNodeOutputRef,
+  ]);
 
   const onFileChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
@@ -84,6 +118,8 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     },
     [applyUploadFile],
   );
+
+  const canConfirmUpload = Boolean(media.upload?.asset_id?.trim());
 
   return (
     <div
@@ -269,7 +305,8 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             type="button"
             className="designer-node-toolbar__action"
             data-testid="designer-node-toolbar-upload-action"
-            onClick={() => notifyNotImplemented(t('designer.toolbar.actionNotImplemented'))}
+            disabled={!canConfirmUpload}
+            onClick={confirmUpload}
           >
             {t('designer.toolbar.uploadAction')}
           </button>

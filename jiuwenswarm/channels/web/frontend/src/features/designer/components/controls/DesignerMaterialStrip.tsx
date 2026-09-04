@@ -1,6 +1,7 @@
 import { Headphones, Image as ImageIcon, Plus, Video, X } from 'lucide-react';
 import { useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import { useDesignerStore } from '../../designerStore';
 import {
   DESIGNER_NODE_TYPE_AUDIO,
@@ -31,8 +32,10 @@ type UploadMaterial = {
   kind: 'upload';
   key: string;
   materialId: string;
+  assetId?: string;
   label: string;
   mimeType?: string;
+  previewUrl?: string;
 };
 
 type DisplayMaterial = LinkedMaterial | UploadMaterial;
@@ -58,6 +61,8 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
   const domainGraph = useDesignerStore((state) => state.domainGraph);
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const removeEdges = useDesignerStore((state) => state.removeEdges);
+  const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
+  const libraryAssets = useDesignerAssetLibraryStore((state) => state.assets);
 
   const config = useMemo(() => {
     const node = domainGraph?.nodes.find((item) => item.id === nodeId);
@@ -87,34 +92,40 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
   }, [domainGraph, nodeId]);
 
   const materials = useMemo((): DisplayMaterial[] => {
-    const uploaded: UploadMaterial[] = uploads.map((slot) => ({
-      kind: 'upload',
-      key: `upload:${slot.id}`,
-      materialId: slot.id,
-      label: slot.filename,
-      mimeType: slot.mime_type,
-    }));
+    const assetById = new Map(libraryAssets.map((asset) => [asset.id, asset]));
+    const uploaded: UploadMaterial[] = uploads.map((slot) => {
+      const asset = slot.asset_id ? assetById.get(slot.asset_id) : undefined;
+      return {
+        kind: 'upload',
+        key: `upload:${slot.id}`,
+        materialId: slot.id,
+        assetId: slot.asset_id,
+        label: slot.filename,
+        mimeType: slot.mime_type ?? asset?.mime_type,
+        previewUrl: asset?.objectUrl,
+      };
+    });
     return [...linked, ...uploaded];
-  }, [linked, uploads]);
+  }, [libraryAssets, linked, uploads]);
 
   const addFiles = useCallback(
     (files: FileList | null) => {
       if (!files || files.length === 0) return;
       const next: MediaMaterialSlot[] = [...uploads];
       for (const file of Array.from(files)) {
-        if (!file.type.startsWith('image/') && !file.type.startsWith('video/') && !file.type.startsWith('audio/')) {
-          continue;
-        }
+        const asset = addFromFile(file);
+        if (!asset) continue;
         next.push({
           id: newMaterialId(),
-          filename: file.name,
-          mime_type: file.type || undefined,
+          filename: asset.filename,
+          mime_type: asset.mime_type,
+          asset_id: asset.id,
         });
       }
       if (next.length === uploads.length) return;
       updateNodeConfig(nodeId, (current) => writeMediaMaterials(current, next));
     },
-    [nodeId, updateNodeConfig, uploads],
+    [addFromFile, nodeId, updateNodeConfig, uploads],
   );
 
   const onFileChange = useCallback(
@@ -160,7 +171,15 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
             {item.label}
           </span>
           <div className="designer-node-toolbar__material-tile">
-            {mediaIcon(item.kind === 'linked' ? item.mediaType : item.mimeType)}
+            {item.kind === 'upload' && item.previewUrl && item.mimeType?.startsWith('image/') ? (
+              <img
+                className="designer-node-toolbar__material-thumb"
+                src={item.previewUrl}
+                alt=""
+              />
+            ) : (
+              mediaIcon(item.kind === 'linked' ? item.mediaType : item.mimeType)
+            )}
             <button
               type="button"
               className="designer-node-toolbar__material-remove"

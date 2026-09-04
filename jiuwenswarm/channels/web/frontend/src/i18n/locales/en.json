@@ -121,6 +121,17 @@
       "editAction": "Save",
       "actionNotImplemented": "This feature is not implemented yet"
     },
+    "sidebar": {
+      "tabsLabel": "Sidebar",
+      "assistant": "Assistant",
+      "assets": "Assets"
+    },
+    "assets": {
+      "empty": "No uploaded assets yet. Files added via node upload or material slots will appear here.",
+      "onCanvas": "On canvas",
+      "libraryOnly": "Library only",
+      "delete": "Delete asset"
+    },
     "edge": {
       "delete": "Delete connection"
     }

@@ -27,6 +27,7 @@ import {
 } from '../../executionGraphTypes';
 import type { DesignerReactFlowNode } from '../../designerGraphAdapter';
 import { useDesignerRunStore } from '../../designerRunStore';
+import { useDesignerStore } from '../../designerStore';
 import { isMediaNodeType, supportsNodeToolbar } from '../../mediaNodeConfig';
 import { DesignerNodeToolbar } from '../controls/DesignerNodeToolbar';
 
@@ -64,6 +65,7 @@ function DesignerNodeShell({
   nodeType,
   body,
   media = false,
+  mediaFilled = false,
   selected = false,
   toolbar = null,
 }: {
@@ -72,6 +74,7 @@ function DesignerNodeShell({
   nodeType: string;
   body: ReactNode;
   media?: boolean;
+  mediaFilled?: boolean;
   selected?: boolean;
   toolbar?: ReactNode;
 }) {
@@ -87,7 +90,7 @@ function DesignerNodeShell({
           ? ' is-failed'
           : '';
   const TypeIcon = modalityIcon(nodeType);
-  const showMediaFill = media && status === DESIGNER_NODE_STATUS_COMPLETED;
+  const showMediaFill = media && (mediaFilled || status === DESIGNER_NODE_STATUS_COMPLETED);
 
   return (
     <div
@@ -209,12 +212,19 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
   const outputUri = useDesignerRunStore(
     (state) => state.nodeStates[id]?.output_ref?.uri ?? null,
   );
+  const domainOutputUri = useDesignerStore(
+    (state) => state.domainGraph?.nodes.find((node) => node.id === id)?.output_ref?.uri ?? null,
+  );
+  const previewUri = outputUri || domainOutputUri;
+  const hasPreview = Boolean(previewUri);
+  const showCompletedMedia =
+    status === DESIGNER_NODE_STATUS_COMPLETED || hasPreview;
 
   let body: ReactNode;
   if (status === DESIGNER_NODE_STATUS_RUNNING) {
     body = <RunningBody />;
-  } else if (status === DESIGNER_NODE_STATUS_COMPLETED && nodeType === DESIGNER_NODE_TYPE_IMAGE) {
-    const src = outputUri || getCachedFakeImageUrl();
+  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_IMAGE) {
+    const src = previewUri || getCachedFakeImageUrl();
     body = src ? (
       <img
         className="designer-node__media-preview"
@@ -225,8 +235,8 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
     ) : (
       <PlaceholderBody nodeType={nodeType} />
     );
-  } else if (status === DESIGNER_NODE_STATUS_COMPLETED && nodeType === DESIGNER_NODE_TYPE_VIDEO) {
-    const src = outputUri || getCachedFakeVideoUrl();
+  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_VIDEO) {
+    const src = previewUri || getCachedFakeVideoUrl();
     body = src ? (
       <video
         className="designer-node__media-preview"
@@ -239,8 +249,17 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
     ) : (
       <PlaceholderBody nodeType={nodeType} />
     );
-  } else if (status === DESIGNER_NODE_STATUS_COMPLETED && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    body = <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_AUDIO} />;
+  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
+    body = previewUri ? (
+      <audio
+        className="designer-node__audio-preview"
+        src={previewUri}
+        controls
+        data-testid="designer-node-uploaded-audio"
+      />
+    ) : (
+      <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_AUDIO} />
+    );
   } else {
     body = <PlaceholderBody nodeType={nodeType} />;
   }
@@ -263,6 +282,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       label={nodeData.label}
       nodeType={nodeType}
       media={isMediaNodeType(nodeType)}
+      mediaFilled={hasPreview || status === DESIGNER_NODE_STATUS_COMPLETED}
       selected={selected}
       body={body}
       toolbar={toolbar}

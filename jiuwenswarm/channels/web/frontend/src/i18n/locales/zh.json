@@ -121,6 +121,17 @@
       "editAction": "保存",
       "actionNotImplemented": "该功能尚未实现"
     },
+    "sidebar": {
+      "tabsLabel": "侧栏",
+      "assistant": "Assistant",
+      "assets": "Assets"
+    },
+    "assets": {
+      "empty": "还没有上传过的素材。在节点上传或生成素材栏中添加文件后会显示在这里。",
+      "onCanvas": "画布中",
+      "libraryOnly": "仅素材库",
+      "delete": "删除素材"
+    },
     "edge": {
       "delete": "删除连线"
     }

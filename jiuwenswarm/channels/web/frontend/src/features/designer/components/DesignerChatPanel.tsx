@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Loader2, SendHorizontal } from 'lucide-react';
+import { Loader2, SendHorizontal } from 'lucide-react';
 import {
   useCallback,
   useEffect,
@@ -8,7 +8,9 @@ import {
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDesignerChatStore } from '../designerChatStore';
-import { useDesignerStore } from '../designerStore';
+import { DesignerAssetsPanel } from './DesignerAssetsPanel';
+
+type SidebarTab = 'assistant' | 'assets';
 
 export function DesignerEmptyState({
   variant,
@@ -37,21 +39,20 @@ export function DesignerEmptyState({
 
 export function DesignerChatPanel() {
   const { t } = useTranslation();
-  const chatCollapsed = useDesignerStore((state) => state.chatCollapsed);
-  const setChatCollapsed = useDesignerStore((state) => state.setChatCollapsed);
   const messages = useDesignerChatStore((state) => state.messages);
   const bootstrapPhase = useDesignerChatStore((state) => state.bootstrapPhase);
   const appendMessage = useDesignerChatStore((state) => state.appendMessage);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState('');
+  const [tab, setTab] = useState<SidebarTab>('assistant');
 
   const chatBusy = bootstrapPhase === 'thinking' || bootstrapPhase === 'bootstrapping';
 
   useEffect(() => {
     const el = bodyRef.current;
-    if (!el) return;
+    if (!el || tab !== 'assistant') return;
     el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, tab]);
 
   const handleSend = useCallback(() => {
     const content = draft.trim();
@@ -81,24 +82,35 @@ export function DesignerChatPanel() {
 
   return (
     <aside
-      className={`designer-chat-panel${chatCollapsed ? ' designer-chat-panel--collapsed' : ' designer-chat-panel--expanded'}`}
+      className="designer-chat-panel designer-chat-panel--expanded"
       aria-label={t('designer.chat.title')}
       data-testid="designer-chat-panel"
-      data-collapsed={chatCollapsed ? 'true' : 'false'}
+      data-tab={tab}
     >
-      <div className="designer-chat-panel__header">
-        {!chatCollapsed ? <span className="designer-chat-panel__title">{t('designer.chat.title')}</span> : null}
+      <div className="designer-chat-panel__header" role="tablist" aria-label={t('designer.sidebar.tabsLabel')}>
         <button
           type="button"
-          className="designer-chat-panel__toggle"
-          onClick={() => setChatCollapsed(!chatCollapsed)}
-          aria-label={chatCollapsed ? t('designer.chat.expand') : t('designer.chat.collapse')}
-          data-testid="designer-chat-panel-toggle"
+          role="tab"
+          aria-selected={tab === 'assistant'}
+          className={`designer-chat-panel__tab${tab === 'assistant' ? ' is-active' : ''}`}
+          data-testid="designer-sidebar-tab-assistant"
+          onClick={() => setTab('assistant')}
         >
-          {chatCollapsed ? <ChevronRight size={16} aria-hidden /> : <ChevronLeft size={16} aria-hidden />}
+          {t('designer.sidebar.assistant')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'assets'}
+          className={`designer-chat-panel__tab${tab === 'assets' ? ' is-active' : ''}`}
+          data-testid="designer-sidebar-tab-assets"
+          onClick={() => setTab('assets')}
+        >
+          {t('designer.sidebar.assets')}
         </button>
       </div>
-      {!chatCollapsed ? (
+
+      {tab === 'assistant' ? (
         <>
           <div className="designer-chat-panel__body" ref={bodyRef} data-testid="designer-chat-panel-body">
             {messages.length === 0 ? (
@@ -148,7 +160,9 @@ export function DesignerChatPanel() {
             </button>
           </div>
         </>
-      ) : null}
+      ) : (
+        <DesignerAssetsPanel />
+      )}
     </aside>
   );
 }

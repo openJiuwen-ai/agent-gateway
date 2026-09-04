@@ -55,6 +55,10 @@ type DesignerRunStore = {
   pause: () => void;
   /** 取消运行并回到草稿（mock） */
   cancel: (graph: DesignerExecutionGraph | null) => void;
+  /** 将上传素材应用到节点预览（标记 completed） */
+  applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
+  /** 清除某节点因上传产生的预览态 */
+  clearUploadedOutput: (nodeId: string) => void;
 };
 
 function emptyRun(graph: DesignerExecutionGraph): DesignerExecutionRun {
@@ -251,6 +255,58 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       primaryAction: 'execute',
       boundGraphId: graph.graph_id,
       runGeneration: generation,
+    });
+  },
+
+  applyUploadedOutput: (nodeId, outputRef) => {
+    const state = get();
+    const current = state.nodeStates[nodeId] ?? { status: DESIGNER_NODE_STATUS_PENDING };
+    const nodeStates = {
+      ...state.nodeStates,
+      [nodeId]: {
+        ...current,
+        status: DESIGNER_NODE_STATUS_COMPLETED,
+        output_ref: outputRef,
+        error: null,
+        completed_at: Date.now(),
+      },
+    };
+    const run = state.run
+      ? {
+          ...state.run,
+          node_states: nodeStates,
+          updated_at: Date.now(),
+        }
+      : null;
+    set({
+      run,
+      nodeStates,
+    });
+  },
+
+  clearUploadedOutput: (nodeId) => {
+    const state = get();
+    if (!state.nodeStates[nodeId]) return;
+    const nodeStates = {
+      ...state.nodeStates,
+      [nodeId]: {
+        ...state.nodeStates[nodeId],
+        status: DESIGNER_NODE_STATUS_PENDING,
+        output_ref: null,
+        error: null,
+        completed_at: null,
+      },
+    };
+    const run = state.run
+      ? {
+          ...state.run,
+          node_states: nodeStates,
+          updated_at: Date.now(),
+        }
+      : null;
+    set({
+      run,
+      nodeStates,
     });
   },
 }));

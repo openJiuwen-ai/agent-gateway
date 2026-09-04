@@ -13,6 +13,8 @@ export type MediaGenerateConfig = {
 
 export type MediaUploadConfig = {
   filename?: string;
+  asset_id?: string;
+  mime_type?: string;
 };
 
 export type MediaEditConfig = {
@@ -24,6 +26,7 @@ export type MediaMaterialSlot = {
   id: string;
   filename: string;
   mime_type?: string;
+  asset_id?: string;
 };
 
 export type MediaNodeConfig = {
@@ -74,6 +77,9 @@ function normalizeMaterials(raw: unknown): MediaMaterialSlot[] {
       ...(typeof record.mime_type === 'string' && record.mime_type
         ? { mime_type: record.mime_type }
         : {}),
+      ...(typeof record.asset_id === 'string' && record.asset_id
+        ? { asset_id: record.asset_id }
+        : {}),
     });
   }
   return out;
@@ -101,6 +107,8 @@ export function readMediaConfig(
     },
     upload: {
       filename: raw.upload?.filename ?? '',
+      asset_id: raw.upload?.asset_id ?? '',
+      mime_type: raw.upload?.mime_type ?? '',
     },
     edit: {
       content: raw.edit?.content ?? '',
