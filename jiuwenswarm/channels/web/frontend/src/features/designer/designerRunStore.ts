@@ -1,32 +1,16 @@
 import { create } from 'zustand';
-import { generateUuidV4 } from '../../utils/uuid';
+import { webClient } from '../../services/webClient';
+import { designerGraphClient } from './designerGraphClient';
+import { useDesignerStore } from './designerStore';
 import {
-  DESIGNER_FAKE_TEXT,
-  ensureDesignerFakeAssets,
-} from './designerFakeAssets';
-import {
-  allNodesCompleted,
-  computeNextLayer,
-  computeRootLayer,
   derivePrimaryAction,
-  initialNodeStates,
-  markNodesStatus,
   type DesignerRunPrimaryAction,
 } from './designerLayerRun';
+import { isActiveDesignerRun } from './designerRunView';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
-  DESIGNER_NODE_STATUS_RUNNING,
-  DESIGNER_NODE_TYPE_AUDIO,
-  DESIGNER_NODE_TYPE_IMAGE,
-  DESIGNER_NODE_TYPE_TABLE,
-  DESIGNER_NODE_TYPE_TEXT,
-  DESIGNER_NODE_TYPE_VIDEO,
-  DESIGNER_RUN_SCHEMA_VERSION,
+  DESIGNER_NODE_STATUS_FAILED,
   DESIGNER_NODE_STATUS_PENDING,
-  DESIGNER_RUN_STATUS_CANCELLED,
-  DESIGNER_RUN_STATUS_COMPLETED,
-  DESIGNER_RUN_STATUS_DRAFT,
-  DESIGNER_RUN_STATUS_PAUSED,
   DESIGNER_RUN_STATUS_RUNNING,
   type AssetRef,
   type DesignerExecutionGraph,
@@ -41,50 +25,36 @@ type DesignerRunStore = {
   isRunning: boolean;
   primaryAction: DesignerRunPrimaryAction;
   boundGraphId: string | null;
-  /** Monotonic token so pause/cancel can abort an in-flight fake layer. */
-  runGeneration: number;
+  runError: string | null;
+  applyRun: (run: DesignerExecutionRun | null) => void;
   resetForGraph: (graph: DesignerExecutionGraph | null) => void;
   getPrimaryAction: (graph: DesignerExecutionGraph | null) => DesignerRunPrimaryAction;
-  /** 执行 / 继续 / 重试失败节点 */
   advance: (graph: DesignerExecutionGraph) => Promise<void>;
-  /** 重跑当前层 */
   rerunCurrentLayer: (graph: DesignerExecutionGraph) => Promise<void>;
-  /** 重新开始：清空后跑第一层 */
+  rerunNode: (graph: DesignerExecutionGraph, nodeId: string) => Promise<void>;
   restart: (graph: DesignerExecutionGraph) => Promise<void>;
-  /** 对指定节点执行生成（与 Run 同一条 mock 执行链路） */
-  runNodes: (graph: DesignerExecutionGraph, nodeIds: string[]) => Promise<void>;
-  /** 暂停当前层执行（mock） */
-  pause: () => void;
-  /** 取消运行并回到草稿（mock） */
-  cancel: (graph: DesignerExecutionGraph | null) => void;
-  /** 将上传素材应用到节点预览（标记 completed） */
+  pause: () => Promise<void>;
+  cancel: (graph: DesignerExecutionGraph | null) => Promise<void>;
+  patchNodeOutput: (nodeId: string, outputRef: AssetRef) => void;
+  chooseOutput: (nodeId: string, choice: 'original' | 'new') => Promise<void>;
+  /** Local upload preview: mark node completed with the uploaded asset. */
   applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
-  /** 清除某节点因上传产生的预览态 */
+  /** Clear upload-produced preview on a node. */
   clearUploadedOutput: (nodeId: string) => void;
 };
 
-function emptyRun(graph: DesignerExecutionGraph): DesignerExecutionRun {
-  const now = Date.now();
-  return {
-    schema_version: DESIGNER_RUN_SCHEMA_VERSION,
-    run_id: `run_${generateUuidV4().replace(/-/g, '').slice(0, 12)}`,
-    graph_id: graph.graph_id,
-    project_id: graph.project_id,
-    status: DESIGNER_RUN_STATUS_DRAFT,
-    node_states: initialNodeStates(graph),
-    current_node_ids: [],
-    created_at: now,
-    updated_at: now,
-  };
+let pollTimer: ReturnType<typeof setInterval> | null = null;
+let runtimeBound = false;
+let unbindRuntime: (() => void) | null = null;
+
+function clearPoll() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-function refreshPrimary(
+function primaryFrom(
   graph: DesignerExecutionGraph | null,
   nodeStates: Record<string, DesignerNodeState>,
   currentLayerNodeIds: string[],
@@ -98,6 +68,34 @@ function refreshPrimary(
   });
 }
 
+function applySnapshot(
+  run: DesignerExecutionRun | null,
+  graph: DesignerExecutionGraph | null,
+): Pick<
+  DesignerRunStore,
+  'run' | 'nodeStates' | 'currentLayerNodeIds' | 'isRunning' | 'primaryAction' | 'boundGraphId'
+> {
+  const nodeStates = run?.node_states ?? {};
+  const currentLayerNodeIds = run?.current_node_ids ?? [];
+  const isRunning = run?.status === DESIGNER_RUN_STATUS_RUNNING;
+  return {
+    run,
+    nodeStates,
+    currentLayerNodeIds,
+    isRunning,
+    primaryAction: primaryFrom(graph, nodeStates, currentLayerNodeIds, isRunning),
+    boundGraphId: run?.graph_id ?? graph?.graph_id ?? null,
+  };
+}
+
+async function persistBeforeRun() {
+  try {
+    await useDesignerStore.getState().flushSave();
+  } catch {
+    // Keep going; the backend still has the last saved graph.
+  }
+}
+
 export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   run: null,
   nodeStates: {},
@@ -105,168 +103,159 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
   isRunning: false,
   primaryAction: 'execute',
   boundGraphId: null,
-  runGeneration: 0,
+  runError: null,
+
+  applyRun: (run) => {
+    const graph = useDesignerStore.getState().domainGraph;
+    if (run && graph && run.graph_id !== graph.graph_id) {
+      return;
+    }
+    set({
+      ...applySnapshot(run, graph),
+      runError: null,
+    });
+    clearPoll();
+    if (run && isActiveDesignerRun(run.status)) {
+      const runId = run.run_id;
+      pollTimer = setInterval(() => {
+        void designerGraphClient
+          .getRun({ runId })
+          .then((result) => get().applyRun(result.run))
+          .catch(() => undefined);
+      }, 400);
+    }
+  },
 
   resetForGraph: (graph) => {
+    clearPoll();
     if (!graph || graph.nodes.length === 0) {
       set({
-        run: null,
-        nodeStates: {},
-        currentLayerNodeIds: [],
-        isRunning: false,
-        primaryAction: 'execute',
-        boundGraphId: graph?.graph_id ?? null,
-        runGeneration: get().runGeneration + 1,
+        ...applySnapshot(null, graph),
+        runError: null,
       });
       return;
     }
-    const run = emptyRun(graph);
+    if (get().boundGraphId === graph.graph_id && get().run) {
+      set(applySnapshot(get().run, graph));
+      return;
+    }
     set({
-      run,
-      nodeStates: run.node_states,
-      currentLayerNodeIds: [],
-      isRunning: false,
-      primaryAction: 'execute',
+      ...applySnapshot(null, graph),
       boundGraphId: graph.graph_id,
-      runGeneration: get().runGeneration + 1,
+      runError: null,
     });
+    void designerGraphClient
+      .getRun({ graphId: graph.graph_id })
+      .then((result) => {
+        if (useDesignerStore.getState().domainGraph?.graph_id !== graph.graph_id) {
+          return;
+        }
+        get().applyRun(result.run);
+      })
+      .catch(() => undefined);
   },
 
   getPrimaryAction: (graph) => {
     const state = get();
-    return refreshPrimary(graph, state.nodeStates, state.currentLayerNodeIds, state.isRunning);
+    return primaryFrom(graph, state.nodeStates, state.currentLayerNodeIds, state.isRunning);
   },
 
   advance: async (graph) => {
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
-
-    let layerIds: string[];
-    const primary = refreshPrimary(
-      graph,
-      state.nodeStates,
-      state.currentLayerNodeIds,
-      false,
-    );
-
-    if (primary === 'retry_failed') {
-      layerIds = [...state.currentLayerNodeIds];
-    } else if (primary === 'continue') {
-      const incompleteCurrent = state.currentLayerNodeIds.filter(
-        (nodeId) => state.nodeStates[nodeId]?.status !== DESIGNER_NODE_STATUS_COMPLETED,
-      );
-      layerIds =
-        incompleteCurrent.length > 0
-          ? incompleteCurrent
-          : computeNextLayer(graph, state.currentLayerNodeIds, state.nodeStates);
-    } else if (primary === 'done') {
-      // 全部完成后点主按钮：等同重新开始
-      await get().restart(graph);
-      return;
-    } else {
-      layerIds = computeRootLayer(graph);
+    await persistBeforeRun();
+    const primary = primaryFrom(graph, state.nodeStates, state.currentLayerNodeIds, false);
+    set({ runError: null });
+    try {
+      let result;
+      if (primary === 'continue' && state.run?.run_id) {
+        result = await designerGraphClient.startRun({ runId: state.run.run_id });
+      } else if (primary === 'retry_failed') {
+        const failedId =
+          state.currentLayerNodeIds.find(
+            (nodeId) => state.nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
+          ) ??
+          Object.keys(state.nodeStates).find(
+            (nodeId) => state.nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
+          );
+        result = failedId
+          ? await designerGraphClient.startRun({
+              graphId: graph.graph_id,
+              runId: state.run?.run_id,
+              nodeId: failedId,
+            })
+          : await designerGraphClient.startRun({ graphId: graph.graph_id });
+      } else {
+        result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+      }
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
     }
-
-    if (layerIds.length === 0) {
-      set({
-        primaryAction: allNodesCompleted(graph, state.nodeStates) ? 'done' : 'execute',
-      });
-      return;
-    }
-
-    await runFakeLayer(graph, layerIds, set, get);
   },
 
   rerunCurrentLayer: async (graph) => {
     const state = get();
-    if (state.isRunning || graph.nodes.length === 0) return;
-    const layerIds = state.currentLayerNodeIds;
-    if (layerIds.length === 0) return;
-    await runFakeLayer(graph, layerIds, set, get);
+    const nodeId = state.currentLayerNodeIds[0];
+    if (!nodeId) return;
+    await get().rerunNode(graph, nodeId);
+  },
+
+  rerunNode: async (graph, nodeId) => {
+    if (get().isRunning || !nodeId) return;
+    await persistBeforeRun();
+    set({ runError: null });
+    try {
+      const result = await designerGraphClient.startRun({
+        graphId: graph.graph_id,
+        runId: get().run?.run_id,
+        nodeId,
+      });
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
+    }
   },
 
   restart: async (graph) => {
-    const state = get();
-    if (state.isRunning || graph.nodes.length === 0) return;
-    const run = emptyRun(graph);
-    set({
-      run,
-      nodeStates: run.node_states,
-      currentLayerNodeIds: [],
-      isRunning: false,
-      primaryAction: 'execute',
-      boundGraphId: graph.graph_id,
-      runGeneration: state.runGeneration + 1,
-    });
-    const layerIds = computeRootLayer(graph);
-    if (layerIds.length === 0) return;
-    await runFakeLayer(graph, layerIds, set, get);
+    if (get().isRunning || graph.nodes.length === 0) return;
+    await persistBeforeRun();
+    set({ runError: null });
+    try {
+      const result = await designerGraphClient.startRun({ graphId: graph.graph_id });
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
+    }
   },
 
-  runNodes: async (graph, nodeIds) => {
-    const state = get();
-    if (state.isRunning || graph.nodes.length === 0) return;
-    const known = new Set(graph.nodes.map((node) => node.id));
-    const layerIds = [...new Set(nodeIds.map((id) => String(id).trim()).filter((id) => known.has(id)))];
-    if (layerIds.length === 0) return;
-    await runFakeLayer(graph, layerIds, set, get);
+  pause: async () => {
+    const runId = get().run?.run_id;
+    if (!runId || !get().isRunning) return;
+    try {
+      const result = await designerGraphClient.pauseRun(runId);
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
+    }
   },
 
-  pause: () => {
-    const state = get();
-    if (!state.isRunning) return;
-    const layerIds = state.currentLayerNodeIds;
-    const nodeStates = markNodesStatus(
-      state.nodeStates,
-      layerIds,
-      DESIGNER_NODE_STATUS_PENDING,
-    );
-    const run = state.run;
-    set({
-      run: run
-        ? {
-            ...run,
-            status: DESIGNER_RUN_STATUS_PAUSED,
-            node_states: nodeStates,
-            current_node_ids: layerIds,
-            updated_at: Date.now(),
-          }
-        : null,
-      nodeStates,
-      isRunning: false,
-      primaryAction: 'continue',
-      runGeneration: state.runGeneration + 1,
-    });
-  },
-
-  cancel: (graph) => {
-    const state = get();
-    const generation = state.runGeneration + 1;
-    if (!graph || graph.nodes.length === 0) {
-      set({
-        run: null,
-        nodeStates: {},
-        currentLayerNodeIds: [],
-        isRunning: false,
-        primaryAction: 'execute',
-        boundGraphId: graph?.graph_id ?? null,
-        runGeneration: generation,
-      });
+  cancel: async (graph) => {
+    const runId = get().run?.run_id;
+    if (!runId) {
+      get().resetForGraph(graph);
       return;
     }
-    const run = emptyRun(graph);
-    set({
-      run: {
-        ...run,
-        status: DESIGNER_RUN_STATUS_CANCELLED,
-      },
-      nodeStates: run.node_states,
-      currentLayerNodeIds: [],
-      isRunning: false,
-      primaryAction: 'execute',
-      boundGraphId: graph.graph_id,
-      runGeneration: generation,
-    });
+    try {
+      const result = await designerGraphClient.cancelRun(runId);
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
+    }
+  },
+
+  patchNodeOutput: (nodeId, outputRef) => {
+    get().applyUploadedOutput(nodeId, outputRef);
   },
 
   applyUploadedOutput: (nodeId, outputRef) => {
@@ -320,113 +309,54 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       nodeStates,
     });
   },
+
+  chooseOutput: async (nodeId, choice) => {
+    const runId = get().run?.run_id;
+    if (!runId) return;
+    try {
+      const result = await designerGraphClient.chooseOutput({ runId, nodeId, choice });
+      get().applyRun(result.run);
+    } catch (error) {
+      set({ runError: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  },
 }));
 
-async function runFakeLayer(
-  graph: DesignerExecutionGraph,
-  layerIds: string[],
-  set: (
-    partial:
-      | Partial<DesignerRunStore>
-      | ((state: DesignerRunStore) => Partial<DesignerRunStore>),
-  ) => void,
-  get: () => DesignerRunStore,
-): Promise<void> {
-  const generation = get().runGeneration;
-  const existing = get().run ?? emptyRun(graph);
-  let nodeStates = {
-    ...initialNodeStates(graph),
-    ...get().nodeStates,
+export function bindDesignerRuntime(): () => void {
+  if (runtimeBound && unbindRuntime) {
+    return unbindRuntime;
+  }
+  runtimeBound = true;
+  const matches = (run?: DesignerExecutionRun) => {
+    const current = useDesignerRunStore.getState().run;
+    const graphId = useDesignerStore.getState().domainGraph?.graph_id;
+    return Boolean(
+      run?.run_id && (run.run_id === current?.run_id || (graphId && run.graph_id === graphId)),
+    );
   };
-  nodeStates = markNodesStatus(nodeStates, layerIds, DESIGNER_NODE_STATUS_RUNNING);
-
-  const runningRun: DesignerExecutionRun = {
-    ...existing,
-    graph_id: graph.graph_id,
-    project_id: graph.project_id,
-    status: DESIGNER_RUN_STATUS_RUNNING,
-    node_states: nodeStates,
-    current_node_ids: layerIds,
-    updated_at: Date.now(),
-  };
-
-  set({
-    run: runningRun,
-    nodeStates,
-    currentLayerNodeIds: layerIds,
-    isRunning: true,
-    primaryAction: 'running',
-    boundGraphId: graph.graph_id,
+  const offRun = webClient.on('designer.run.updated', ({ payload }) => {
+    const run =
+      (payload as { run?: DesignerExecutionRun }).run ?? (payload as DesignerExecutionRun);
+    if (matches(run)) useDesignerRunStore.getState().applyRun(run);
   });
-
-  await Promise.all([sleep(2000), ensureDesignerFakeAssets()]);
-
-  // Aborted by pause/cancel/reset while waiting.
-  if (get().runGeneration !== generation || !get().isRunning) {
-    return;
-  }
-
-  // Fake backend: always succeed + attach procedural preview assets.
-  const assets = await ensureDesignerFakeAssets();
-  nodeStates = markNodesStatus(get().nodeStates, layerIds, DESIGNER_NODE_STATUS_COMPLETED);
-  const nodeTypeById = new Map(graph.nodes.map((node) => [node.id, String(node.type || '')]));
-  for (const nodeId of layerIds) {
-    const nodeType = nodeTypeById.get(nodeId) || 'text';
-    const outputRef = fakeOutputRefForType(nodeType, assets);
-    const current = nodeStates[nodeId] ?? { status: DESIGNER_NODE_STATUS_COMPLETED };
-    nodeStates[nodeId] = {
-      ...current,
-      status: DESIGNER_NODE_STATUS_COMPLETED,
-      output_ref: outputRef,
-      error: null,
-      completed_at: current.completed_at ?? Date.now(),
-    };
-  }
-  const done = allNodesCompleted(graph, nodeStates);
-  const pausedRun: DesignerExecutionRun = {
-    ...runningRun,
-    status: done ? DESIGNER_RUN_STATUS_COMPLETED : DESIGNER_RUN_STATUS_PAUSED,
-    node_states: nodeStates,
-    current_node_ids: layerIds,
-    updated_at: Date.now(),
-  };
-
-  if (get().runGeneration !== generation) {
-    return;
-  }
-
-  set({
-    run: pausedRun,
-    nodeStates,
-    currentLayerNodeIds: layerIds,
-    isRunning: false,
-    primaryAction: refreshPrimary(graph, nodeStates, layerIds, false),
+  const offNode = webClient.on('designer.node.updated', ({ payload }) => {
+    const run = (payload as { run?: DesignerExecutionRun }).run;
+    if (matches(run)) useDesignerRunStore.getState().applyRun(run as DesignerExecutionRun);
   });
-}
-
-function fakeOutputRefForType(
-  nodeType: string,
-  assets: { imageUrl: string; videoUrl: string },
-): AssetRef {
-  if (nodeType === DESIGNER_NODE_TYPE_IMAGE) {
-    return { kind: 'image', uri: assets.imageUrl, mime_type: 'image/jpeg', label: 'fake-image' };
-  }
-  if (nodeType === DESIGNER_NODE_TYPE_VIDEO) {
-    return {
-      kind: 'video',
-      uri: assets.videoUrl,
-      mime_type: 'video/webm',
-      label: 'fake-video',
-    };
-  }
-  if (nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    return { kind: 'audio', uri: 'designer://fake/audio', label: 'fake-audio' };
-  }
-  if (nodeType === DESIGNER_NODE_TYPE_TABLE) {
-    return { kind: 'table', uri: 'designer://fake/table', label: 'fake-table' };
-  }
-  if (nodeType === DESIGNER_NODE_TYPE_TEXT) {
-    return { kind: 'text', uri: 'designer://fake/text', label: DESIGNER_FAKE_TEXT };
-  }
-  return { kind: nodeType, uri: 'designer://fake/unknown', label: DESIGNER_FAKE_TEXT };
+  const offGraph = webClient.on('designer.graph.updated', ({ payload }) => {
+    const graph = (payload as { graph?: DesignerExecutionGraph }).graph;
+    const current = useDesignerStore.getState().domainGraph;
+    if (!graph?.graph_id || !current || graph.graph_id !== current.graph_id) return;
+    useDesignerStore.getState().applyGraph(graph);
+  });
+  unbindRuntime = () => {
+    offRun();
+    offNode();
+    offGraph();
+    clearPoll();
+    runtimeBound = false;
+    unbindRuntime = null;
+  };
+  return unbindRuntime;
 }

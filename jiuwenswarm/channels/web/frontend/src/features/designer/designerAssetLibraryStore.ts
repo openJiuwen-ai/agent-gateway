@@ -3,15 +3,20 @@ import { generateUuidV4 } from '../../utils/uuid';
 
 export type DesignerAssetKind = 'image' | 'video' | 'audio' | 'other';
 
+export type DesignerAssetSource = 'uploaded' | 'generated';
+
 export type DesignerLibraryAsset = {
   id: string;
   filename: string;
   mime_type: string;
   kind: DesignerAssetKind;
-  /** Session-local blob URL for preview / node output. */
+  source: DesignerAssetSource;
+  /** Session-local blob URL for preview / node output (uploads). */
   objectUrl: string;
   size: number;
   created_at: number;
+  /** Set when the asset is tied to a graph node output. */
+  nodeId?: string;
 };
 
 type DesignerAssetLibraryStore = {
@@ -52,6 +57,7 @@ export const useDesignerAssetLibraryStore = create<DesignerAssetLibraryStore>((s
       filename: file.name,
       mime_type: mime,
       kind: kindFromMime(mime),
+      source: 'uploaded',
       objectUrl: URL.createObjectURL(file),
       size: file.size,
       created_at: Date.now(),
@@ -63,7 +69,9 @@ export const useDesignerAssetLibraryStore = create<DesignerAssetLibraryStore>((s
   removeAsset: (assetId) => {
     const existing = get().assets.find((asset) => asset.id === assetId);
     if (!existing) return;
-    URL.revokeObjectURL(existing.objectUrl);
+    if (existing.objectUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(existing.objectUrl);
+    }
     set({ assets: get().assets.filter((asset) => asset.id !== assetId) });
   },
 
@@ -71,7 +79,9 @@ export const useDesignerAssetLibraryStore = create<DesignerAssetLibraryStore>((s
 
   clear: () => {
     for (const asset of get().assets) {
-      URL.revokeObjectURL(asset.objectUrl);
+      if (asset.objectUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(asset.objectUrl);
+      }
     }
     set({ assets: [] });
   },

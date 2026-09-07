@@ -30,7 +30,7 @@ export function DesignerEdge({
   const removeEdges = useDesignerStore((state) => state.removeEdges);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
-  const runNodes = useDesignerRunStore((state) => state.runNodes);
+  const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const [edgePath, centerX, centerY] = getBezierPath({
     sourceX,
     sourceY,
@@ -54,9 +54,9 @@ export function DesignerEdge({
       event.stopPropagation();
       event.preventDefault();
       if (!domainGraph || !target || isRunning) return;
-      void runNodes(domainGraph, [target]);
+      void rerunNode(domainGraph, target);
     },
-    [domainGraph, isRunning, runNodes, target],
+    [domainGraph, isRunning, rerunNode, target],
   );
 
   return (

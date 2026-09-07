@@ -1,18 +1,19 @@
-import { useCallback, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
+import {
+  collectDesignerMaterials,
+  hasPendingDesignerRevision,
+} from '../../designerMaterials';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
-import {
-  DESIGNER_NODE_TYPE_TEXT,
-} from '../../executionGraphTypes';
+import { useDesignerUiStore } from '../../designerUiStore';
+import { DESIGNER_NODE_TYPE_TEXT } from '../../executionGraphTypes';
 import {
   readMediaConfig,
   writeMediaEditPatch,
   writeMediaGeneratePatch,
-  writeMediaInteractionMode,
   writeMediaUploadPatch,
-  type MediaInteractionMode,
 } from '../../mediaNodeConfig';
 import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 
@@ -20,6 +21,8 @@ type DesignerNodeToolbarProps = {
   nodeId: string;
   nodeType: string;
 };
+
+type ExpandedPanel = 'generate' | 'upload' | 'edit' | null;
 
 function notifyNotImplemented(message: string) {
   window.alert(message);
@@ -31,26 +34,36 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const setNodeOutputRef = useDesignerStore((state) => state.setNodeOutputRef);
   const applyUploadedOutput = useDesignerRunStore((state) => state.applyUploadedOutput);
-  const runNodes = useDesignerRunStore((state) => state.runNodes);
+  const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
+  const run = useDesignerRunStore((state) => state.run);
+  const nodeState = useDesignerRunStore((state) => state.nodeStates[nodeId]);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
   const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
   const getAsset = useDesignerAssetLibraryStore((state) => state.getById);
+  const inspectNode = useDesignerUiStore((state) => state.inspectNode);
+  const openRevision = useDesignerUiStore((state) => state.openRevision);
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
   const media = readMediaConfig(config, nodeType);
-  const mode: MediaInteractionMode = media.interaction_mode ?? 'generate';
-  const secondaryMode: MediaInteractionMode = isTextNode ? 'edit' : 'upload';
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
+  // First stage only until the user opens regenerate / upload / edit.
+  const [expanded, setExpanded] = useState<ExpandedPanel>(null);
 
-  const setMode = useCallback(
-    (next: MediaInteractionMode) => {
-      updateNodeConfig(nodeId, (current) => writeMediaInteractionMode(current, next));
-    },
-    [nodeId, updateNodeConfig],
+  useEffect(() => {
+    setExpanded(null);
+  }, [nodeId]);
+
+  const materials = collectDesignerMaterials(domainGraph, run);
+  const material =
+    materials.find((item) => item.id.startsWith(`${nodeId}:`)) ??
+    materials.find((item) => item.nodeId === nodeId);
+  const hasOutput = Boolean(
+    material && !material.placeholder && (material.previewUrl || material.textUrl),
   );
+  const pendingRevision = hasPendingDesignerRevision(nodeState);
 
   const patchGenerate = useCallback(
     (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
@@ -126,15 +139,17 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
 
   const onGenerateNode = useCallback(() => {
     if (!domainGraph || isRunning) return;
-    void runNodes(domainGraph, [nodeId]);
-  }, [domainGraph, isRunning, nodeId, runNodes]);
+    void rerunNode(domainGraph, nodeId);
+  }, [domainGraph, isRunning, nodeId, rerunNode]);
+
+  const secondaryPanel: ExpandedPanel = isTextNode ? 'edit' : 'upload';
 
   return (
     <div
       className="designer-node-toolbar"
       data-testid="designer-node-toolbar"
       data-node-type={nodeType}
-      data-mode={mode}
+      data-expanded={expanded ?? 'idle'}
       onClick={(event) => event.stopPropagation()}
       onMouseDown={(event) => event.stopPropagation()}
     >
@@ -142,26 +157,51 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
         <button
           type="button"
           role="tab"
-          aria-selected={mode === secondaryMode}
-          className={`designer-node-toolbar__tab${mode === secondaryMode ? ' is-active' : ''}`}
-          data-testid={isTextNode ? 'designer-node-toolbar-tab-edit' : 'designer-node-toolbar-tab-upload'}
-          onClick={() => setMode(secondaryMode)}
+          aria-selected={false}
+          className="designer-node-toolbar__tab"
+          data-testid="designer-node-toolbar-tab-inspect"
+          disabled={!hasOutput}
+          onClick={() => inspectNode(nodeId)}
         >
-          {isTextNode ? t('designer.toolbar.edit') : t('designer.toolbar.upload')}
+          {t('designer.toolbar.inspect')}
         </button>
         <button
           type="button"
           role="tab"
-          aria-selected={mode === 'generate'}
-          className={`designer-node-toolbar__tab${mode === 'generate' ? ' is-active' : ''}`}
+          aria-selected={expanded === 'generate'}
+          className={`designer-node-toolbar__tab${expanded === 'generate' ? ' is-active' : ''}`}
           data-testid="designer-node-toolbar-tab-generate"
-          onClick={() => setMode('generate')}
+          onClick={() => setExpanded((prev) => (prev === 'generate' ? null : 'generate'))}
         >
-          {t('designer.toolbar.generate')}
+          {t('designer.toolbar.regenerate')}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={expanded === secondaryPanel}
+          className={`designer-node-toolbar__tab${expanded === secondaryPanel ? ' is-active' : ''}`}
+          data-testid={
+            isTextNode ? 'designer-node-toolbar-tab-edit' : 'designer-node-toolbar-tab-upload'
+          }
+          onClick={() =>
+            setExpanded((prev) => (prev === secondaryPanel ? null : secondaryPanel))
+          }
+        >
+          {isTextNode ? t('designer.toolbar.edit') : t('designer.toolbar.upload')}
+        </button>
+        {pendingRevision ? (
+          <button
+            type="button"
+            className="designer-node-toolbar__tab"
+            data-testid="designer-node-toolbar-tab-compare"
+            onClick={() => openRevision(nodeId)}
+          >
+            {t('designer.revision.compare')}
+          </button>
+        ) : null}
       </div>
 
-      {mode === 'generate' ? (
+      {expanded === 'generate' ? (
         <div
           className="designer-node-toolbar__panel"
           role="tabpanel"
@@ -238,12 +278,15 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             className="designer-node-toolbar__action"
             data-testid="designer-node-toolbar-generate-action"
             disabled={isRunning || !domainGraph}
+            title={t('designer.toolbar.rerunHint')}
             onClick={onGenerateNode}
           >
             {t('designer.toolbar.generateAction')}
           </button>
         </div>
-      ) : isTextNode ? (
+      ) : null}
+
+      {expanded === 'edit' ? (
         <div
           className="designer-node-toolbar__panel"
           role="tabpanel"
@@ -266,7 +309,9 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             {t('designer.toolbar.editAction')}
           </button>
         </div>
-      ) : (
+      ) : null}
+
+      {expanded === 'upload' ? (
         <div
           className={`designer-node-toolbar__panel designer-node-toolbar__panel--upload${dragging ? ' is-dragging' : ''}`}
           role="tabpanel"
@@ -320,7 +365,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             {t('designer.toolbar.uploadAction')}
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

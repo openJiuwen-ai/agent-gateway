@@ -68,12 +68,12 @@ export function DesignerRunControl({ graph, disabled = false }: DesignerRunContr
 
   const onPause = useCallback(() => {
     if (!canPause) return;
-    pause();
+    void pause();
   }, [canPause, pause]);
 
   const onCancel = useCallback(() => {
     if (!canCancel) return;
-    cancel(graph);
+    void cancel(graph);
   }, [canCancel, cancel, graph]);
 
   const primaryLabel =

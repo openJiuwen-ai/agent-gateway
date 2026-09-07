@@ -46,6 +46,10 @@ export function supportsNodeToolbar(nodeType: string): boolean {
   return isMediaNodeType(nodeType) || nodeType === 'text';
 }
 
+export function isTextLikeNodeType(nodeType: string): boolean {
+  return nodeType === 'text' || nodeType === 'table';
+}
+
 function normalizeInteractionMode(
   raw: string | undefined,
   nodeType?: string,

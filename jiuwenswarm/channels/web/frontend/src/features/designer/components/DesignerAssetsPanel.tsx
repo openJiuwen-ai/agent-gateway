@@ -3,10 +3,27 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   useDesignerAssetLibraryStore,
-  type DesignerLibraryAsset,
+  type DesignerAssetKind,
+  type DesignerAssetSource,
 } from '../designerAssetLibraryStore';
+import { collectDesignerMaterials, type DesignerMaterial } from '../designerMaterials';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
+import { useDesignerUiStore } from '../designerUiStore';
+
+type UnifiedAsset = {
+  id: string;
+  filename: string;
+  kind: DesignerAssetKind;
+  source: DesignerAssetSource;
+  previewUrl: string | null;
+  sizeLabel: string;
+  onCanvas: boolean;
+  /** Library-only assets can be deleted from the session library. */
+  deletable: boolean;
+  materialId?: string;
+  nodeId?: string;
+};
 
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -14,19 +31,32 @@ function formatBytes(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function AssetKindIcon({ asset }: { asset: DesignerLibraryAsset }) {
-  if (asset.kind === 'video') return <Video size={18} aria-hidden />;
-  if (asset.kind === 'audio') return <Headphones size={18} aria-hidden />;
+function kindFromMaterial(material: DesignerMaterial): DesignerAssetKind {
+  if (material.kind === 'video' || (material.mimeType || '').startsWith('video/')) return 'video';
+  if (material.kind === 'audio' || (material.mimeType || '').startsWith('audio/')) return 'audio';
+  if (material.kind === 'image' || (material.mimeType || '').startsWith('image/')) return 'image';
+  return 'other';
+}
+
+function AssetKindIcon({ kind }: { kind: DesignerAssetKind }) {
+  if (kind === 'video') return <Video size={18} aria-hidden />;
+  if (kind === 'audio') return <Headphones size={18} aria-hidden />;
   return <ImageIcon size={18} aria-hidden />;
+}
+
+function isUploadedMaterial(material: DesignerMaterial): boolean {
+  return material.uri.startsWith('blob:');
 }
 
 export function DesignerAssetsPanel() {
   const { t } = useTranslation();
-  const assets = useDesignerAssetLibraryStore((state) => state.assets);
+  const libraryAssets = useDesignerAssetLibraryStore((state) => state.assets);
   const removeAsset = useDesignerAssetLibraryStore((state) => state.removeAsset);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
   const clearAssetReferences = useDesignerStore((state) => state.clearAssetReferences);
   const clearUploadedOutput = useDesignerRunStore((state) => state.clearUploadedOutput);
+  const run = useDesignerRunStore((state) => state.run);
+  const openViewer = useDesignerUiStore((state) => state.openViewer);
 
   const canvasAssetIds = useMemo(() => {
     const ids = new Set<string>();
@@ -45,6 +75,53 @@ export function DesignerAssetsPanel() {
     }
     return ids;
   }, [domainGraph]);
+
+  const materials = useMemo(
+    () => collectDesignerMaterials(domainGraph, run).filter((item) => !item.placeholder),
+    [domainGraph, run],
+  );
+
+  const unified: UnifiedAsset[] = useMemo(() => {
+    const items: UnifiedAsset[] = [];
+    const seenUris = new Set<string>();
+
+    for (const asset of libraryAssets) {
+      seenUris.add(asset.objectUrl);
+      items.push({
+        id: asset.id,
+        filename: asset.filename,
+        kind: asset.kind,
+        source: asset.source,
+        previewUrl: asset.kind === 'image' ? asset.objectUrl : null,
+        sizeLabel: formatBytes(asset.size),
+        onCanvas: canvasAssetIds.has(asset.id),
+        deletable: true,
+        nodeId: asset.nodeId,
+      });
+    }
+
+    for (const material of materials) {
+      if (isUploadedMaterial(material) && seenUris.has(material.uri)) {
+        continue;
+      }
+      if (seenUris.has(material.uri)) continue;
+      seenUris.add(material.uri);
+      items.push({
+        id: `gen:${material.id}`,
+        filename: material.label,
+        kind: kindFromMaterial(material),
+        source: isUploadedMaterial(material) ? 'uploaded' : 'generated',
+        previewUrl: material.previewUrl,
+        sizeLabel: material.kind,
+        onCanvas: true,
+        deletable: false,
+        materialId: material.id,
+        nodeId: material.nodeId,
+      });
+    }
+
+    return items;
+  }, [canvasAssetIds, libraryAssets, materials]);
 
   const onDelete = useCallback(
     (assetId: string) => {
@@ -66,7 +143,25 @@ export function DesignerAssetsPanel() {
     [clearAssetReferences, clearUploadedOutput, domainGraph, removeAsset],
   );
 
-  if (assets.length === 0) {
+  const onOpen = useCallback(
+    (item: UnifiedAsset) => {
+      if (item.materialId) {
+        openViewer(item.materialId);
+        return;
+      }
+      if (item.nodeId) {
+        openViewer(item.nodeId);
+        return;
+      }
+      const library = libraryAssets.find((asset) => asset.id === item.id);
+      if (!library) return;
+      const match = materials.find((material) => material.uri === library.objectUrl);
+      if (match) openViewer(match.id);
+    },
+    [libraryAssets, materials, openViewer],
+  );
+
+  if (unified.length === 0) {
     return (
       <div className="designer-assets-panel" data-testid="designer-assets-panel">
         <p className="designer-assets-panel__empty">{t('designer.assets.empty')}</p>
@@ -77,20 +172,25 @@ export function DesignerAssetsPanel() {
   return (
     <div className="designer-assets-panel" data-testid="designer-assets-panel">
       <ul className="designer-assets-panel__list">
-        {assets.map((asset) => {
-          const onCanvas = canvasAssetIds.has(asset.id);
-          return (
-            <li
-              key={asset.id}
-              className="designer-assets-panel__item"
-              data-testid="designer-assets-panel-item"
-              data-asset-id={asset.id}
+        {unified.map((asset) => (
+          <li
+            key={asset.id}
+            className="designer-assets-panel__item"
+            data-testid="designer-assets-panel-item"
+            data-asset-id={asset.id}
+            data-source={asset.source}
+          >
+            <button
+              type="button"
+              className="designer-assets-panel__open"
+              onClick={() => onOpen(asset)}
+              data-testid="designer-assets-panel-open"
             >
               <div className="designer-assets-panel__thumb">
-                {asset.kind === 'image' ? (
-                  <img src={asset.objectUrl} alt="" />
+                {asset.kind === 'image' && asset.previewUrl ? (
+                  <img src={asset.previewUrl} alt="" />
                 ) : (
-                  <AssetKindIcon asset={asset} />
+                  <AssetKindIcon kind={asset.kind} />
                 )}
               </div>
               <div className="designer-assets-panel__meta">
@@ -98,11 +198,17 @@ export function DesignerAssetsPanel() {
                   {asset.filename}
                 </span>
                 <span className="designer-assets-panel__sub">
-                  {formatBytes(asset.size)}
+                  {asset.source === 'uploaded'
+                    ? t('designer.assets.sourceUploaded')
+                    : t('designer.assets.sourceGenerated')}
                   {' · '}
-                  {onCanvas ? t('designer.assets.onCanvas') : t('designer.assets.libraryOnly')}
+                  {asset.sizeLabel}
+                  {' · '}
+                  {asset.onCanvas ? t('designer.assets.onCanvas') : t('designer.assets.libraryOnly')}
                 </span>
               </div>
+            </button>
+            {asset.deletable ? (
               <button
                 type="button"
                 className="designer-assets-panel__delete"
@@ -113,9 +219,9 @@ export function DesignerAssetsPanel() {
               >
                 <Trash2 size={14} aria-hidden />
               </button>
-            </li>
-          );
-        })}
+            ) : null}
+          </li>
+        ))}
       </ul>
     </div>
   );

@@ -51,6 +51,7 @@ export type DesignerGraphNode = {
   id: string;
   type: DesignerNodeType | string;
   label: string;
+  /** Flexible node config (generate / upload / materials / role, …). */
   config?: Record<string, unknown>;
   layout?: NodeLayout;
   output_ref?: AssetRef | null;
@@ -60,7 +61,17 @@ export type DesignerGraphEdge = {
   id: string;
   source: string;
   target: string;
+  kind?: string;
   label?: string;
+};
+
+export type DesignerGraphPatch = {
+  title?: string;
+  description?: string;
+  upsert_nodes?: DesignerGraphNode[];
+  upsert_edges?: DesignerGraphEdge[];
+  remove_node_ids?: string[];
+  remove_edge_ids?: string[];
 };
 
 export type DesignerExecutionGraph = {
@@ -82,6 +93,9 @@ export type DesignerNodeState = {
   started_at?: number | null;
   completed_at?: number | null;
   output_ref?: AssetRef | null;
+  output_refs?: AssetRef[] | null;
+  candidate_output_ref?: AssetRef | null;
+  candidate_output_refs?: AssetRef[] | null;
   error?: string | null;
   blocked_by?: string[];
 };
@@ -96,6 +110,17 @@ export type DesignerExecutionRun = {
   current_node_ids: string[];
   created_at?: number;
   updated_at?: number;
+};
+
+export type DesignerGraphSummary = {
+  graph_id: string;
+  project_id: string;
+  title: string;
+  updated_at?: number;
+  run_id?: string | null;
+  run_status?: string | null;
+  has_video: boolean;
+  clip_label?: string | null;
 };
 
 export type DesignerGraphBootstrapResult = {

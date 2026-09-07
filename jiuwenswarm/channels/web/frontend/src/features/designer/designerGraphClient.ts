@@ -3,19 +3,28 @@ import type {
   DesignerExecutionGraph,
   DesignerExecutionRun,
   DesignerGraphBootstrapResult,
+  DesignerGraphPatch,
+  DesignerGraphSummary,
 } from './executionGraphTypes';
 
 export const designerGraphClient = {
   get: (graphId: string) =>
     webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.get', { graph_id: graphId }),
 
-  list: (projectId: string) =>
-    webRequest<{ graphs: DesignerExecutionGraph[] }>('designer.graph.list', {
-      project_id: projectId,
-    }),
+  list: (projectId?: string) =>
+    webRequest<{ graphs: DesignerExecutionGraph[]; summaries?: DesignerGraphSummary[] }>(
+      'designer.graph.list',
+      projectId ? { project_id: projectId } : {},
+    ),
 
   save: (graph: DesignerExecutionGraph) =>
     webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.save', { graph }),
+
+  patch: (graphId: string, patch: DesignerGraphPatch) =>
+    webRequest<{ graph: DesignerExecutionGraph }>('designer.graph.patch', {
+      graph_id: graphId,
+      patch,
+    }),
 
   bootstrap: (params: {
     prompt: string;
@@ -34,10 +43,11 @@ export const designerGraphClient = {
       ...(params.workMode ? { work_mode: params.workMode } : {}),
     }),
 
-  startRun: (params: { graphId?: string; runId?: string }) =>
+  startRun: (params: { graphId?: string; runId?: string; nodeId?: string }) =>
     webRequest<{ run: DesignerExecutionRun }>('designer.run.start', {
       ...(params.graphId ? { graph_id: params.graphId } : {}),
       ...(params.runId ? { run_id: params.runId } : {}),
+      ...(params.nodeId ? { node_id: params.nodeId } : {}),
     }),
 
   getRun: (params: { runId?: string; graphId?: string }) =>
@@ -51,4 +61,11 @@ export const designerGraphClient = {
 
   cancelRun: (runId: string) =>
     webRequest<{ run: DesignerExecutionRun }>('designer.run.cancel', { run_id: runId }),
+
+  chooseOutput: (params: { runId: string; nodeId: string; choice: 'original' | 'new' }) =>
+    webRequest<{ run: DesignerExecutionRun }>('designer.run.choose_output', {
+      run_id: params.runId,
+      node_id: params.nodeId,
+      choice: params.choice,
+    }),
 };

@@ -27,6 +27,7 @@ type DesignerStore = {
   saveStatus: 'idle' | 'saving' | 'saved' | 'error';
   setSelectedNodeId: (nodeId: string | null) => void;
   loadForProject: (projectId: string | undefined) => Promise<void>;
+  loadGraph: (graphId: string) => Promise<void>;
   beginBootstrapEntry: () => void;
   failBootstrapEntry: (message: string) => void;
   applyGraph: (graph: DesignerExecutionGraph) => void;
@@ -97,6 +98,27 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       loadError: null,
       bootstrapInProgress: false,
     }),
+
+  loadGraph: async (graphId) => {
+    const id = String(graphId ?? '').trim();
+    if (!id) return;
+    set({ loadStatus: 'loading', loadError: null });
+    try {
+      const { graph } = await designerGraphClient.get(id);
+      set({
+        graphId: graph.graph_id,
+        domainGraph: graph,
+        loadStatus: 'ready',
+        loadError: null,
+        bootstrapInProgress: false,
+      });
+    } catch (error) {
+      set({
+        loadStatus: 'error',
+        loadError: error instanceof Error ? error.message : String(error),
+      });
+    }
+  },
 
   updateNodeConfig: (nodeId, updater) => {
     const graph = get().domainGraph;
@@ -337,11 +359,17 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     });
 
     try {
-      const { graphs } = await designerGraphClient.list(effectiveProjectId);
+      const listed = await designerGraphClient.list(effectiveProjectId);
       if (get().bootstrapInProgress) {
         return;
       }
-      const latest = graphs[0];
+      const graphs = listed.graphs || [];
+      const summaries = listed.summaries || [];
+      const preferred =
+        summaries.find((item) => item.has_video) ?? summaries[0] ?? graphs[0];
+      const latest = preferred
+        ? graphs.find((item) => item.graph_id === preferred.graph_id) ?? graphs[0]
+        : undefined;
       if (!latest?.graph_id) {
         if (previousStatus === 'ready' && previousGraph) {
           set({

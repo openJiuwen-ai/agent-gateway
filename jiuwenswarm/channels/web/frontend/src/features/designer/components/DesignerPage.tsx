@@ -1,8 +1,16 @@
 import { Loader2 } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useWorkspaceStore } from '../../../stores';
+import {
+  collectDesignerMaterials,
+  collectPendingRevisions,
+} from '../designerMaterials';
+import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
-import { useDesignerRunStore } from '../designerRunStore';
+import { useDesignerUiStore } from '../designerUiStore';
+import { DesignerMaterialViewer } from '../DesignerMaterialViewer';
+import { DesignerRevisionChooser } from '../DesignerRevisionChooser';
 import { DesignerCanvas } from './DesignerCanvas';
 import { DesignerChatPanel, DesignerEmptyState } from './DesignerChatPanel';
 import { DesignerRunControl } from './DesignerRunControl';
@@ -14,18 +22,43 @@ type DesignerPageProps = {
 
 export function DesignerPage({ projectId }: DesignerPageProps) {
   const { t } = useTranslation();
+  const selectedProject = useWorkspaceStore((state) => state.selectedProject);
+  const pendingDesignerGraphId = useWorkspaceStore((state) => state.pendingDesignerGraphId);
+  const setPendingDesignerGraphId = useWorkspaceStore((state) => state.setPendingDesignerGraphId);
+  const designerGraphs = useWorkspaceStore((state) => state.designerGraphs);
+  const effectiveProjectId = projectId || selectedProject?.project_id;
+
   const loadStatus = useDesignerStore((state) => state.loadStatus);
   const loadError = useDesignerStore((state) => state.loadError);
   const domainGraph = useDesignerStore((state) => state.domainGraph);
+  const graphId = useDesignerStore((state) => state.graphId);
   const bootstrapInProgress = useDesignerStore((state) => state.bootstrapInProgress);
   const loadForProject = useDesignerStore((state) => state.loadForProject);
+  const loadGraph = useDesignerStore((state) => state.loadGraph);
   const resetForGraph = useDesignerRunStore((state) => state.resetForGraph);
   const boundGraphId = useDesignerRunStore((state) => state.boundGraphId);
+  const run = useDesignerRunStore((state) => state.run);
+  const runError = useDesignerRunStore((state) => state.runError);
+  const chooseOutput = useDesignerRunStore((state) => state.chooseOutput);
+  const selectedMaterialId = useDesignerUiStore((state) => state.selectedMaterialId);
+  const viewerOpen = useDesignerUiStore((state) => state.viewerOpen);
+  const chooserNodeId = useDesignerUiStore((state) => state.chooserNodeId);
+  const editRequestKey = useDesignerUiStore((state) => state.editRequestKey);
+  const setSelectedMaterialId = useDesignerUiStore((state) => state.setSelectedMaterialId);
+  const closeViewer = useDesignerUiStore((state) => state.closeViewer);
+  const closeRevision = useDesignerUiStore((state) => state.closeRevision);
+  const resetUi = useDesignerUiStore((state) => state.reset);
   // Tasks→Design bootstrap 结束后 bootstrapInProgress 会变 false，若立刻 list/get
   //（尤其 projectId 为空或与新建 project 不一致），会把刚 apply 的图刷成 empty。
   const skipLoadAfterBootstrapRef = useRef(false);
 
+  useEffect(() => bindDesignerRuntime(), []);
+
   useEffect(() => {
+    if (pendingDesignerGraphId) {
+      void loadGraph(pendingDesignerGraphId).then(() => setPendingDesignerGraphId(null));
+      return;
+    }
     if (bootstrapInProgress) {
       skipLoadAfterBootstrapRef.current = true;
       return;
@@ -34,14 +67,33 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
       skipLoadAfterBootstrapRef.current = false;
       return;
     }
-    void loadForProject(projectId);
-  }, [bootstrapInProgress, loadForProject, projectId]);
+    void loadForProject(effectiveProjectId);
+  }, [
+    bootstrapInProgress,
+    effectiveProjectId,
+    loadForProject,
+    loadGraph,
+    pendingDesignerGraphId,
+    setPendingDesignerGraphId,
+  ]);
 
   useEffect(() => {
     const nextId = domainGraph?.graph_id ?? null;
     if (nextId === boundGraphId) return;
+    resetUi();
     resetForGraph(domainGraph);
-  }, [boundGraphId, domainGraph, resetForGraph]);
+  }, [boundGraphId, domainGraph, resetForGraph, resetUi]);
+
+  const materials = useMemo(
+    () => collectDesignerMaterials(domainGraph, run),
+    [domainGraph, run],
+  );
+  const pendingRevisions = useMemo(
+    () => collectPendingRevisions(domainGraph, run),
+    [domainGraph, run],
+  );
+  const activeRevision =
+    pendingRevisions.find((item) => item.nodeId === chooserNodeId) ?? pendingRevisions[0];
 
   const showCanvas = loadStatus === 'ready' && domainGraph;
   const showEmpty = loadStatus === 'empty';
@@ -64,6 +116,27 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
             {projectTitle || t('designer.subtitle')}
           </p>
         </div>
+        {designerGraphs.length > 0 ? (
+          <label className="designer-page__recent">
+            <span>{t('designer.recentGraphs')}</span>
+            <select
+              value={graphId || ''}
+              onChange={(event) => {
+                const nextId = event.target.value;
+                if (nextId) setPendingDesignerGraphId(nextId);
+              }}
+              data-testid="designer-recent-graphs"
+            >
+              {designerGraphs.map((item) => (
+                <option key={item.graph_id} value={item.graph_id}>
+                  {item.has_video
+                    ? `${item.title} · ${t('designer.hasVideo')}`
+                    : item.title}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <div className="designer-page__toolbar-actions">
           <DesignerRunControl
             graph={showCanvas ? domainGraph : null}
@@ -71,6 +144,11 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
           />
         </div>
       </header>
+      {runError ? (
+        <p className="designer-page__error" data-testid="designer-error">
+          {runError}
+        </p>
+      ) : null}
 
       <div className="designer-page__workspace">
         <DesignerChatPanel />
@@ -91,6 +169,26 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
         {showEmpty ? <DesignerEmptyState variant="empty" /> : null}
         {showError ? <DesignerEmptyState variant="error" errorMessage={loadError} /> : null}
       </div>
+
+      {viewerOpen ? (
+        <DesignerMaterialViewer
+          materials={materials}
+          selectedId={selectedMaterialId}
+          startEditKey={editRequestKey}
+          onSelect={setSelectedMaterialId}
+          onClose={closeViewer}
+        />
+      ) : null}
+      {activeRevision && chooserNodeId ? (
+        <DesignerRevisionChooser
+          revision={activeRevision}
+          busy={Boolean(run?.status === 'running')}
+          onChoose={(choice) => {
+            void chooseOutput(activeRevision.nodeId, choice).then(() => closeRevision());
+          }}
+          onClose={closeRevision}
+        />
+      ) : null}
     </div>
   );
 }

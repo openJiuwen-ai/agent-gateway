@@ -119,7 +119,11 @@
       "generateAction": "Generate",
       "uploadAction": "Confirm upload",
       "editAction": "Save",
-      "actionNotImplemented": "This feature is not implemented yet"
+      "actionNotImplemented": "This feature is not implemented yet",
+      "inspect": "Inspect",
+      "regenerate": "Regenerate",
+      "rerun": "Regenerate",
+      "rerunHint": "Rerun only this node with current upstream outputs"
     },
     "sidebar": {
       "tabsLabel": "Sidebar",
@@ -127,14 +131,57 @@
       "assets": "Assets"
     },
     "assets": {
-      "empty": "No uploaded assets yet. Files added via node upload or material slots will appear here.",
+      "empty": "No assets yet. Uploads and generated outputs will show up here.",
       "onCanvas": "On canvas",
       "libraryOnly": "Library only",
-      "delete": "Delete asset"
+      "delete": "Delete asset",
+      "sourceUploaded": "Uploaded",
+      "sourceGenerated": "Generated"
     },
     "edge": {
       "delete": "Delete connection",
       "generate": "Generate target node"
+    },
+    "recentGraphs": "Recent graphs",
+    "hasVideo": "Has clip",
+    "revision": {
+      "title": "Choose which version to keep",
+      "hint": "{{label}} was regenerated. The original is still here — pick which one to keep.",
+      "original": "Original",
+      "incoming": "New version",
+      "keepOriginal": "Keep original",
+      "keepIncoming": "Use new version",
+      "pending": "Needs choice",
+      "compare": "Compare versions"
+    },
+    "materials": {
+      "title": "Outputs",
+      "hint": "Brief and storyboard can be edited by hand. Rerun downstream nodes to pick up the new text.",
+      "ready": "Ready",
+      "editable": "Editable",
+      "edit": "Edit",
+      "save": "Save",
+      "saving": "Saving…",
+      "cancelEdit": "Cancel",
+      "saveFailed": "Save failed",
+      "placeholder": "Placeholder",
+      "empty": "No outputs to preview yet",
+      "placeholderHint": "This node still has a placeholder output.",
+      "openFile": "Open file",
+      "textError": "Could not read text",
+      "frameCount": "{{count}} frames",
+      "collapse": "Collapse outputs",
+      "expand": "Expand outputs",
+      "viewLarge": "View large",
+      "closeViewer": "Close",
+      "previous": "Previous",
+      "next": "Next",
+      "viewerIndex": "{{current}} / {{total}}"
+    },
+    "errors": {
+      "runFailed": "Failed to start the run",
+      "rerunFailed": "Failed to regenerate this node",
+      "chooseFailed": "Failed to choose a version"
     }
   },
   "videoLive": {

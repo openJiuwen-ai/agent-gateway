@@ -15,6 +15,7 @@ import {
   getCachedFakeImageUrl,
   getCachedFakeVideoUrl,
 } from '../../designerFakeAssets';
+import { designerAssetPreviewUrl } from '../../designerAssetUrl';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
   DESIGNER_NODE_STATUS_FAILED,
@@ -216,7 +217,8 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
     (state) => state.domainGraph?.nodes.find((node) => node.id === id)?.output_ref?.uri ?? null,
   );
   const previewUri = outputUri || domainOutputUri;
-  const hasPreview = Boolean(previewUri);
+  const previewSrc = designerAssetPreviewUrl(previewUri) || previewUri;
+  const hasPreview = Boolean(previewSrc);
   const showCompletedMedia =
     status === DESIGNER_NODE_STATUS_COMPLETED || hasPreview;
 
@@ -224,7 +226,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
   if (status === DESIGNER_NODE_STATUS_RUNNING) {
     body = <RunningBody />;
   } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_IMAGE) {
-    const src = previewUri || getCachedFakeImageUrl();
+    const src = previewSrc || getCachedFakeImageUrl();
     body = src ? (
       <img
         className="designer-node__media-preview"
@@ -236,7 +238,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       <PlaceholderBody nodeType={nodeType} />
     );
   } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_VIDEO) {
-    const src = previewUri || getCachedFakeVideoUrl();
+    const src = previewSrc || getCachedFakeVideoUrl();
     body = src ? (
       <video
         className="designer-node__media-preview"
@@ -250,10 +252,10 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       <PlaceholderBody nodeType={nodeType} />
     );
   } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    body = previewUri ? (
+    body = previewSrc ? (
       <audio
         className="designer-node__audio-preview"
-        src={previewUri}
+        src={previewSrc}
         controls
         data-testid="designer-node-uploaded-audio"
       />
