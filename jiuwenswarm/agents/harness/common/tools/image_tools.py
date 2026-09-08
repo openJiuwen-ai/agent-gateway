@@ -322,7 +322,7 @@ async def visual_question_answering(image_path_or_url: str, question: str) -> st
 
 async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", quality: str = "standard") -> dict:
     """
-    Generate image using internal Model class (DashScope, etc.).
+    Generate image via DashScope / MiniMax / 火山方舟 Seedream.
 
     Args:
         prompt: The text description for image generation
@@ -338,6 +338,7 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
     # 的 models.image_gen.model_client_config，避免与主链路配置脱节。
     from jiuwenswarm.common.config import get_config
 
+    _ = quality  # reserved for OpenAI-style backends; Seedream/MiniMax map size instead
     mc = _get_model_config(get_config() or {}, "image_gen")
     api_key = str(mc.get("api_key") or os.getenv("IMAGE_GEN_API_KEY") or os.getenv("API_KEY") or "").strip()
     api_base = str(
@@ -352,15 +353,58 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
     model = str(mc.get("model_name") or mc.get("model") or os.getenv("IMAGE_GEN_MODEL_NAME") or "wanx-v1").strip()
     provider = str(mc.get("client_provider") or mc.get("model_provider")
                    or os.getenv("IMAGE_GEN_PROVIDER") or "DashScope").strip()
-    # 新声明下 DashScope 不再是独立 client_provider，而是 OpenAI + endpoint_profile=dashscope。
-    # 兼容旧 IMAGE_GEN_PROVIDER=DashScope：归一为 OpenAI 并补 dashscope profile。
-    # 缺少 endpoint_profile=dashscope 时 OpenAIModelClient 会拒绝生图(方案 8.6)。
-    endpoint_profile = str(mc.get("endpoint_profile") or "").strip().lower()
-    if provider in ("DashScope", "dashscope"):
-        provider = "OpenAI"
-        endpoint_profile = endpoint_profile or "dashscope"
+    endpoint_profile = str(
+        mc.get("endpoint_profile") or os.getenv("IMAGE_GEN_ENDPOINT_PROFILE") or ""
+    ).strip().lower()
+    vendor_key = str(
+        mc.get("vendor_key") or os.getenv("IMAGE_GEN_VENDOR_KEY") or ""
+    ).strip()
+
+    backend = _resolve_image_gen_backend(
+        provider=provider,
+        endpoint_profile=endpoint_profile,
+        vendor_key=vendor_key,
+        api_base=api_base,
+        model=model,
+    )
+    logger.info(
+        "[generate_image] backend=%s model=%s provider=%s profile=%s vendor=%s",
+        backend,
+        model,
+        provider,
+        endpoint_profile,
+        vendor_key,
+    )
 
     try:
+        if backend == "volcengine":
+            return await asyncio.to_thread(
+                _invoke_volcengine_image_generation_sync,
+                prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+                size=size,
+            )
+        if backend == "minimax":
+            return await asyncio.to_thread(
+                _invoke_minimax_image_generation_sync,
+                prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+                size=size,
+            )
+
+        # 新声明下 DashScope 不再是独立 client_provider，而是 OpenAI + endpoint_profile=dashscope。
+        # 兼容旧 IMAGE_GEN_PROVIDER=DashScope：归一为 OpenAI 并补 dashscope profile。
+        # 缺少 endpoint_profile=dashscope 时 OpenAIModelClient 会拒绝生图(方案 8.6)。
+        if provider in ("DashScope", "dashscope"):
+            provider = "OpenAI"
+            endpoint_profile = endpoint_profile or "dashscope"
+        if not endpoint_profile:
+            endpoint_profile = "dashscope"
+
         _mcc_kwargs: dict[str, Any] = dict(
             client_id="image_gen_client",
             client_provider=provider,
@@ -369,9 +413,8 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
             verify_ssl=mc.get("verify_ssl", True),
             ssl_cert=mc.get("ssl_cert"),
             timeout=mc.get("timeout", 1800),
+            endpoint_profile=endpoint_profile,
         )
-        if endpoint_profile:
-            _mcc_kwargs["endpoint_profile"] = endpoint_profile
         model_client_config = ModelClientConfig(**_mcc_kwargs)
 
         model_config = ModelRequestConfig(
@@ -422,7 +465,12 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response = requests.get(image_url, headers={"User-Agent": ua})
+            response = requests.get(
+                image_url,
+                headers={"User-Agent": ua},
+                verify=get_requests_verify(),
+                timeout=120,
+            )
             response.raise_for_status()
 
             with open(output_path, "wb") as f:
@@ -438,6 +486,289 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
 
     except Exception as ex:
         return {"error": f"[ERROR]: Image generation failed: {ex}"}
+
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+_MINIMAX_IMAGE_RATIOS: tuple[tuple[int, int, str], ...] = (
+    (1, 1, "1:1"),
+    (16, 9, "16:9"),
+    (4, 3, "4:3"),
+    (3, 2, "3:2"),
+    (2, 3, "2:3"),
+    (3, 4, "3:4"),
+    (9, 16, "9:16"),
+    (21, 9, "21:9"),
+)
+
+
+def _resolve_image_gen_backend(
+    *,
+    provider: str,
+    endpoint_profile: str,
+    vendor_key: str,
+    api_base: str,
+    model: str,
+) -> str:
+    """Pick dashscope / minimax / volcengine for text-to-image."""
+    vendor = (vendor_key or "").strip().lower()
+    profile = (endpoint_profile or "").strip().lower().replace("_", "-")
+    prov = (provider or "").strip().lower().replace("_", "")
+    base = (api_base or "").strip().lower()
+    model_l = (model or "").strip().lower()
+
+    if (
+        vendor == "minimax"
+        or profile == "minimax"
+        or prov == "minimax"
+        or "minimax" in base
+        or model_l in {"image-01", "image-01-live"}
+        or model_l.startswith("image-01")
+    ):
+        return "minimax"
+
+    if (
+        vendor in {"volcengine", "volc", "ark"}
+        or profile in {"volcengine", "ark"}
+        or prov == "volcengine"
+        or "volces.com" in base
+        or "volcengine" in base
+        or "seedream" in model_l
+        or model_l.startswith("doubao-seedream")
+    ):
+        return "volcengine"
+
+    if (
+        vendor in {"alibaba", "dashscope"}
+        or profile == "dashscope"
+        or prov == "dashscope"
+        or "dashscope" in base
+    ):
+        return "dashscope"
+
+    return "dashscope"
+
+
+def _normalize_seedream_size(size: str | None) -> str:
+    value = (size or "").strip().replace("*", "x").replace("X", "x")
+    if not value:
+        return "2048x2048"
+    upper = value.upper()
+    if upper in {"1K", "2K", "3K", "4K"}:
+        return upper
+    return value
+
+
+def _size_to_minimax_aspect_ratio(size: str | None, *, default: str = "1:1") -> str:
+    value = (size or "").strip().replace("*", "x").replace("X", "x")
+    if not value or "x" not in value.lower():
+        return default
+    try:
+        width_s, height_s = value.lower().split("x", 1)
+        width, height = int(width_s), int(height_s)
+    except ValueError:
+        return default
+    if width <= 0 or height <= 0:
+        return default
+    target = width / height
+    best = default
+    best_err = float("inf")
+    for rw, rh, label in _MINIMAX_IMAGE_RATIOS:
+        err = abs(target - (rw / rh))
+        if err < best_err:
+            best_err = err
+            best = label
+    return best
+
+
+def _ark_image_api_root(api_base: str) -> str:
+    root = (api_base or "").strip().rstrip("/")
+    if not root:
+        return "https://ark.cn-beijing.volces.com/api/v3"
+    if root.endswith("/api/coding/v3"):
+        return root[: -len("/api/coding/v3")] + "/api/v3"
+    return root
+
+
+def _minimax_image_api_url(api_base: str) -> str:
+    root = (api_base or "").strip().rstrip("/") or "https://api.minimaxi.com"
+    if root.endswith("/v1"):
+        return f"{root}/image_generation"
+    return f"{root}/v1/image_generation"
+
+
+def _image_api_error_message(response: requests.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return response.text[:300]
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("msg")
+            if msg:
+                return str(msg)
+        base_resp = data.get("base_resp")
+        if isinstance(base_resp, dict):
+            status_msg = base_resp.get("status_msg")
+            if status_msg:
+                return str(status_msg)
+        for key in ("message", "msg", "detail"):
+            if data.get(key):
+                return str(data[key])
+    return response.text[:300]
+
+
+def _http_post_json(url: str, *, headers: dict[str, str], payload: dict[str, Any], timeout: int) -> requests.Response:
+    try:
+        return requests.post(
+            url, headers=headers, json=payload, verify=get_requests_verify(), timeout=timeout
+        )
+    except requests.exceptions.ProxyError:
+        with requests.Session() as session:
+            session.trust_env = False
+            return session.post(
+                url, headers=headers, json=payload, verify=get_requests_verify(), timeout=timeout
+            )
+
+
+def _http_get_bytes(url: str, *, timeout: int = 120) -> bytes:
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            verify=get_requests_verify(),
+            timeout=timeout,
+        )
+    except requests.exceptions.ProxyError:
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                url,
+                headers={"User-Agent": _USER_AGENT},
+                verify=get_requests_verify(),
+                timeout=timeout,
+            )
+    response.raise_for_status()
+    return response.content
+
+
+def _save_generated_image(
+    *,
+    prompt: str,
+    image_url: str | None = None,
+    image_b64: str | None = None,
+) -> dict[str, Any]:
+    output_dir = get_agent_workspace_dir()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    random_suffix = random.randint(1000, 9999)
+    output_path = output_dir / f"generated_{timestamp}_{random_suffix}.png"
+
+    if image_b64:
+        with open(output_path, "wb") as f:
+            f.write(base64.b64decode(image_b64))
+        return {"image_path": str(output_path.absolute()), "revised_prompt": prompt}
+
+    if not image_url:
+        raise ValueError("image generation succeeded but no image URL/base64 was returned")
+
+    with open(output_path, "wb") as f:
+        f.write(_http_get_bytes(image_url))
+    return {
+        "image_path": str(output_path.absolute()),
+        "revised_prompt": prompt,
+        "original_url": image_url,
+    }
+
+
+def _invoke_minimax_image_generation_sync(
+    prompt: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    size: str | None,
+) -> dict[str, Any]:
+    """MiniMax text-to-image (POST /v1/image_generation)."""
+    url = _minimax_image_api_url(api_base)
+    model_name = (model or "image-01").strip() or "image-01"
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "prompt": prompt,
+        "aspect_ratio": _size_to_minimax_aspect_ratio(size),
+        "response_format": "url",
+        "n": 1,
+        "prompt_optimizer": False,
+        "aigc_watermark": False,
+    }
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    response = _http_post_json(url, headers=headers, payload=payload, timeout=180)
+    if not response.ok:
+        raise ValueError(
+            f"MiniMax image create failed {response.status_code}: "
+            f"{_image_api_error_message(response)}"
+        )
+    body = response.json()
+    base_resp = body.get("base_resp") if isinstance(body.get("base_resp"), dict) else {}
+    status_code = base_resp.get("status_code")
+    if status_code not in (None, 0, "0"):
+        raise ValueError(
+            f"MiniMax image create failed: {base_resp.get('status_msg') or body}"
+        )
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    urls = data.get("image_urls") if isinstance(data.get("image_urls"), list) else []
+    b64s = data.get("image_base64") if isinstance(data.get("image_base64"), list) else []
+    image_url = str(urls[0]).strip() if urls else None
+    image_b64 = str(b64s[0]).strip() if b64s else None
+    return _save_generated_image(prompt=prompt, image_url=image_url, image_b64=image_b64)
+
+
+def _invoke_volcengine_image_generation_sync(
+    prompt: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    size: str | None,
+) -> dict[str, Any]:
+    """火山方舟 Seedream sync image generation (POST /images/generations)."""
+    root = _ark_image_api_root(api_base)
+    url = f"{root}/images/generations"
+    model_name = (model or "doubao-seedream-5-0-260128").strip() or "doubao-seedream-5-0-260128"
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "prompt": prompt,
+        "size": _normalize_seedream_size(size),
+        "response_format": "url",
+        "watermark": False,
+    }
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    response = _http_post_json(url, headers=headers, payload=payload, timeout=180)
+    if not response.ok:
+        raise ValueError(
+            f"Volcengine image create failed {response.status_code}: "
+            f"{_image_api_error_message(response)}"
+        )
+    body = response.json()
+    data = body.get("data")
+    if not isinstance(data, list) or not data:
+        raise ValueError(f"Volcengine image response missing data: {body}")
+    first = data[0] if isinstance(data[0], dict) else {}
+    image_url = str(first.get("url") or "").strip() or None
+    image_b64 = str(first.get("b64_json") or "").strip() or None
+    return _save_generated_image(prompt=prompt, image_url=image_url, image_b64=image_b64)
 
 
 @tool(

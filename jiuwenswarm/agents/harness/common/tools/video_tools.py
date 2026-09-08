@@ -9,6 +9,7 @@ import base64
 import mimetypes
 import os
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,14 +74,22 @@ class VideoUnderstandingRequest:
     thinking_enabled: bool = False
 
 
-def _http_post(url: str, **kwargs) -> requests.Response:
+def _http_request(method: str, url: str, **kwargs) -> requests.Response:
     kwargs.setdefault("verify", get_requests_verify())
     try:
-        return requests.post(url, **kwargs)
+        return requests.request(method, url, **kwargs)
     except requests.exceptions.ProxyError:
         with requests.Session() as session:
             session.trust_env = False
-            return session.post(url, **kwargs)
+            return session.request(method, url, **kwargs)
+
+
+def _http_post(url: str, **kwargs) -> requests.Response:
+    return _http_request("POST", url, **kwargs)
+
+
+def _http_get(url: str, **kwargs) -> requests.Response:
+    return _http_request("GET", url, **kwargs)
 
 
 def _guess_video_mime(path: str) -> str:
@@ -241,12 +250,420 @@ async def video_understanding(inputs: dict[str, Any], **kwargs) -> str:
         return f"[ERROR]: glm video understanding failed: {exc}"
 
 
+_KNOWN_VIDEO_RATIOS: tuple[tuple[int, int], ...] = (
+    (21, 9),
+    (16, 9),
+    (4, 3),
+    (1, 1),
+    (3, 4),
+    (9, 16),
+)
+_VIDEO_POLL_INTERVAL_SECONDS = 5.0
+_VIDEO_POLL_TIMEOUT_SECONDS = 1800.0
+
+
 def _normalize_video_size(size: str | None) -> str | None:
     """Normalize size to DashScope ``W*H`` form (also accepts ``WxH``)."""
     if not size:
         return None
     value = str(size).strip().replace("x", "*").replace("X", "*")
     return value or None
+
+
+def _parse_video_size(size: str | None) -> tuple[int, int] | None:
+    normalized = _normalize_video_size(size)
+    if not normalized or "*" not in normalized:
+        return None
+    try:
+        width_s, height_s = normalized.split("*", 1)
+        width, height = int(width_s), int(height_s)
+    except ValueError:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return width, height
+
+
+def _size_to_ratio(size: str | None, *, default: str = "16:9") -> str:
+    parsed = _parse_video_size(size)
+    if parsed is None:
+        return default
+    width, height = parsed
+    target = width / height
+    best = default
+    best_err = float("inf")
+    for rw, rh in _KNOWN_VIDEO_RATIOS:
+        err = abs(target - (rw / rh))
+        if err < best_err:
+            best_err = err
+            best = f"{rw}:{rh}"
+    return best
+
+
+def _size_height(size: str | None) -> int | None:
+    parsed = _parse_video_size(size)
+    return parsed[1] if parsed else None
+
+
+def _normalize_minimax_resolution(resolution: str | None, size: str | None) -> str:
+    value = (resolution or "").strip().upper().replace(" ", "")
+    if value in {"2K", "2k"}:
+        return "2K"
+    if value in {"768P", "768", "720P", "720"}:
+        return "768P"
+    if value in {"480P", "480"}:
+        # H3 Max supports 480P; H3 callers should prefer 768P.
+        return "480P"
+    height = _size_height(size)
+    if height is not None and height >= 1440:
+        return "2K"
+    return "768P"
+
+
+def _normalize_ark_resolution(resolution: str | None, size: str | None) -> str:
+    value = (resolution or "").strip().lower().replace(" ", "")
+    if value in {"1080p", "1080"}:
+        return "1080p"
+    if value in {"720p", "720", "768p", "768"}:
+        return "720p"
+    if value in {"480p", "480"}:
+        return "480p"
+    if value in {"2k"}:
+        return "1080p"
+    height = _size_height(size)
+    if height is not None:
+        if height >= 1080:
+            return "1080p"
+        if height >= 720:
+            return "720p"
+        return "480p"
+    return "720p"
+
+
+def _clamp_duration(duration: int, *, minimum: int, maximum: int) -> int:
+    return max(minimum, min(int(duration), maximum))
+
+
+def _resolve_video_gen_backend(
+    *,
+    provider: str,
+    endpoint_profile: str,
+    vendor_key: str,
+    api_base: str,
+    model: str,
+) -> str:
+    """Pick dashscope / minimax / volcengine for text-to-video."""
+    vendor = (vendor_key or "").strip().lower()
+    profile = (endpoint_profile or "").strip().lower().replace("_", "-")
+    prov = (provider or "").strip().lower().replace("_", "")
+    base = (api_base or "").strip().lower()
+    model_l = (model or "").strip().lower()
+
+    if (
+        vendor == "minimax"
+        or profile == "minimax"
+        or prov == "minimax"
+        or "minimax" in base
+        or model_l.startswith("minimax-h")
+    ):
+        return "minimax"
+
+    if (
+        vendor in {"volcengine", "volc", "ark"}
+        or profile in {"volcengine", "ark"}
+        or prov == "volcengine"
+        or "volces.com" in base
+        or "volcengine" in base
+        or "seedance" in model_l
+        or model_l.startswith("doubao-seedance")
+    ):
+        return "volcengine"
+
+    if (
+        vendor in {"alibaba", "dashscope"}
+        or profile == "dashscope"
+        or prov == "dashscope"
+        or "dashscope" in base
+    ):
+        return "dashscope"
+
+    return "dashscope"
+
+
+def _video_api_error_message(response: requests.Response) -> str:
+    try:
+        data = response.json()
+    except Exception:
+        return response.text[:300]
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message") or err.get("msg")
+            if msg:
+                return str(msg)
+        for key in ("message", "msg", "detail"):
+            if data.get(key):
+                return str(data[key])
+    return response.text[:300]
+
+
+def _download_generated_video(video_url: str, prompt: str) -> dict[str, Any]:
+    output_dir = get_agent_workspace_dir()
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    random_suffix = random.randint(1000, 9999)
+    output_path = output_dir / f"generated_{timestamp}_{random_suffix}.mp4"
+    response = _http_get(
+        video_url,
+        headers={"User-Agent": _USER_AGENT},
+        timeout=300,
+    )
+    response.raise_for_status()
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+    return {
+        "video_path": str(output_path.absolute()),
+        "revised_prompt": prompt,
+        "original_url": video_url,
+    }
+
+
+def _poll_until_video_url(
+    *,
+    query_url: str,
+    headers: dict[str, str],
+    extract_status_and_url,
+    timeout_seconds: float = _VIDEO_POLL_TIMEOUT_SECONDS,
+    interval_seconds: float = _VIDEO_POLL_INTERVAL_SECONDS,
+) -> str:
+    deadline_ts = time.monotonic() + timeout_seconds
+    last_status = "unknown"
+    while time.monotonic() < deadline_ts:
+        response = _http_get(query_url, headers=headers, timeout=60)
+        if not response.ok:
+            raise ValueError(
+                f"poll failed {response.status_code}: {_video_api_error_message(response)}"
+            )
+        payload = response.json()
+        status, video_url, err_msg = extract_status_and_url(payload)
+        last_status = status or last_status
+        if status in {"succeeded", "success", "completed"}:
+            if not video_url:
+                raise ValueError("video generation succeeded but no video URL was returned")
+            return video_url
+        if status in {"failed", "cancelled", "canceled", "expired"}:
+            raise ValueError(err_msg or f"video generation {status}")
+        time.sleep(interval_seconds)
+    raise TimeoutError(f"video generation timed out (last status={last_status})")
+
+
+def _minimax_api_root(api_base: str) -> str:
+    root = (api_base or "").strip().rstrip("/")
+    if root.endswith("/v1") or root.endswith("/v2"):
+        root = root.rsplit("/", 1)[0]
+    return root or "https://api.minimaxi.com"
+
+
+def _ark_api_root(api_base: str) -> str:
+    root = (api_base or "").strip().rstrip("/")
+    if not root:
+        return "https://ark.cn-beijing.volces.com/api/v3"
+    # Accept both /api/v3 and /api/coding/v3 chat bases; video tasks use /api/v3.
+    if root.endswith("/api/coding/v3"):
+        return root[: -len("/api/coding/v3")] + "/api/v3"
+    return root
+
+
+def _invoke_minimax_video_generation_sync(
+    prompt: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    size: str | None,
+    duration: int,
+    resolution: str | None,
+) -> dict[str, Any]:
+    """MiniMax V2 async video generation (MiniMax-H3 / MiniMax-H3-Max)."""
+    root = _minimax_api_root(api_base)
+    create_url = f"{root}/v2/video_generation"
+    model_name = (model or "MiniMax-H3").strip() or "MiniMax-H3"
+    is_max = model_name.lower().endswith("-max")
+    duration_int = _clamp_duration(duration, minimum=5 if is_max else 4, maximum=15)
+    ratio = _size_to_ratio(size, default="16:9")
+    resol = _normalize_minimax_resolution(resolution, size)
+    if is_max and resol == "2K":
+        resol = "768P"
+
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "content": [{"type": "text", "text": prompt}],
+        "resolution": resol,
+        "duration": duration_int,
+        "ratio": ratio,
+    }
+    headers = {**_REQUEST_HEADERS, "Authorization": f"Bearer {api_key}"}
+    response = _http_post(create_url, headers=headers, json=payload, timeout=60)
+    if not response.ok:
+        raise ValueError(
+            f"MiniMax create failed {response.status_code}: {_video_api_error_message(response)}"
+        )
+    body = response.json()
+    task_id = str(body.get("task_id") or "").strip()
+    if not task_id:
+        raise ValueError(f"MiniMax create response missing task_id: {body}")
+
+    query_url = f"{root}/v2/query/video_generation/{task_id}"
+
+    def _extract(data: dict[str, Any]) -> tuple[str, str | None, str | None]:
+        task = data.get("task") if isinstance(data.get("task"), dict) else data
+        if not isinstance(task, dict):
+            return "unknown", None, "invalid MiniMax poll payload"
+        status = str(task.get("status") or "").strip().lower()
+        content = task.get("content") if isinstance(task.get("content"), dict) else {}
+        video_url = str(content.get("url") or "").strip() or None
+        err = task.get("error") if isinstance(task.get("error"), dict) else {}
+        err_msg = str(err.get("message") or "").strip() or None
+        return status, video_url, err_msg
+
+    video_url = _poll_until_video_url(
+        query_url=query_url,
+        headers=headers,
+        extract_status_and_url=_extract,
+    )
+    return _download_generated_video(video_url, prompt)
+
+
+def _invoke_volcengine_video_generation_sync(
+    prompt: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    size: str | None,
+    duration: int,
+    resolution: str | None,
+) -> dict[str, Any]:
+    """火山方舟 Seedance async video generation."""
+    root = _ark_api_root(api_base)
+    create_url = f"{root}/contents/generations/tasks"
+    model_name = (model or "doubao-seedance-2-5-260628").strip()
+    duration_int = _clamp_duration(duration, minimum=2, maximum=12)
+    ratio = _size_to_ratio(size, default="16:9")
+    resol = _normalize_ark_resolution(resolution, size)
+
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "content": [{"type": "text", "text": prompt}],
+        "ratio": ratio,
+        "duration": duration_int,
+        "resolution": resol,
+        "watermark": False,
+    }
+    headers = {**_REQUEST_HEADERS, "Authorization": f"Bearer {api_key}"}
+    response = _http_post(create_url, headers=headers, json=payload, timeout=60)
+    if not response.ok:
+        raise ValueError(
+            f"Volcengine create failed {response.status_code}: {_video_api_error_message(response)}"
+        )
+    body = response.json()
+    task_id = str(body.get("id") or body.get("task_id") or "").strip()
+    if not task_id:
+        raise ValueError(f"Volcengine create response missing id: {body}")
+
+    query_url = f"{root}/contents/generations/tasks/{task_id}"
+
+    def _extract(data: dict[str, Any]) -> tuple[str, str | None, str | None]:
+        status = str(data.get("status") or "").strip().lower()
+        content = data.get("content") if isinstance(data.get("content"), dict) else {}
+        video_url = str(content.get("video_url") or content.get("url") or "").strip() or None
+        err = data.get("error") if isinstance(data.get("error"), dict) else {}
+        err_msg = str(err.get("message") or data.get("message") or "").strip() or None
+        return status, video_url, err_msg
+
+    video_url = _poll_until_video_url(
+        query_url=query_url,
+        headers=headers,
+        extract_status_and_url=_extract,
+    )
+    return _download_generated_video(video_url, prompt)
+
+
+async def _invoke_dashscope_video_generation(
+    prompt: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+    provider: str,
+    endpoint_profile: str,
+    mc: dict[str, Any],
+    size: str | None,
+    duration: int,
+    resolution: str | None,
+) -> dict[str, Any]:
+    """Generate a video via DashScope (openjiuwen Model client)."""
+    from openjiuwen.core.foundation.llm import (
+        Model,
+        ModelClientConfig,
+        ModelRequestConfig,
+        UserMessage,
+    )
+
+    client_provider = provider
+    profile = endpoint_profile
+    # DashScope text-to-video uses OpenAI client_provider + endpoint_profile=dashscope.
+    if client_provider in ("DashScope", "dashscope"):
+        client_provider = "OpenAI"
+        profile = profile or "dashscope"
+    if not profile:
+        profile = "dashscope"
+
+    _mcc_kwargs: dict[str, Any] = dict(
+        client_id="video_gen_client",
+        client_provider=client_provider,
+        api_key=api_key,
+        api_base=api_base,
+        verify_ssl=mc.get("verify_ssl", True),
+        ssl_cert=mc.get("ssl_cert"),
+        timeout=mc.get("timeout", 1800),
+        endpoint_profile=profile,
+    )
+    model_client_config = ModelClientConfig(**_mcc_kwargs)
+    model_config = ModelRequestConfig(model=model)
+    model_instance = Model(
+        model_config=model_config,
+        model_client_config=model_client_config,
+    )
+    messages = [UserMessage(content=prompt)]
+    normalized_size = _normalize_video_size(size)
+
+    result = await model_instance.generate_video(
+        messages=messages,
+        model=model,
+        size=normalized_size,
+        resolution=resolution,
+        duration=duration,
+    )
+
+    video_url = getattr(result, "video_url", None)
+    video_data = getattr(result, "video_data", None)
+
+    if video_data:
+        output_dir = get_agent_workspace_dir()
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        random_suffix = random.randint(1000, 9999)
+        output_path = output_dir / f"generated_{timestamp}_{random_suffix}.mp4"
+        with open(output_path, "wb") as f:
+            f.write(video_data)
+        return {
+            "video_path": str(output_path.absolute()),
+            "revised_prompt": prompt,
+        }
+
+    if video_url:
+        return await asyncio.to_thread(_download_generated_video, video_url, prompt)
+
+    return {"error": "[ERROR]: No valid video data in response"}
 
 
 async def _invoke_model_video_generation(
@@ -256,14 +673,7 @@ async def _invoke_model_video_generation(
     duration: int = 5,
     resolution: str | None = None,
 ) -> dict[str, Any]:
-    """Generate a video via the same Model client stack as image generation."""
-    from openjiuwen.core.foundation.llm import (
-        Model,
-        ModelClientConfig,
-        ModelRequestConfig,
-        UserMessage,
-    )
-
+    """Generate a video via DashScope / MiniMax / 火山方舟 backends."""
     cfg = get_config() or {}
     mc = _get_model_config(cfg, "video_gen")
 
@@ -288,80 +698,64 @@ async def _invoke_model_video_generation(
         or os.getenv("VIDEO_GEN_PROVIDER")
         or "DashScope"
     ).strip()
-    # DashScope text-to-video uses OpenAI client_provider + endpoint_profile=dashscope.
     endpoint_profile = str(
         mc.get("endpoint_profile") or os.getenv("VIDEO_GEN_ENDPOINT_PROFILE") or ""
     ).strip().lower()
-    if provider in ("DashScope", "dashscope"):
-        provider = "OpenAI"
-        endpoint_profile = endpoint_profile or "dashscope"
+    vendor_key = str(
+        mc.get("vendor_key") or os.getenv("VIDEO_GEN_VENDOR_KEY") or ""
+    ).strip()
+
+    backend = _resolve_video_gen_backend(
+        provider=provider,
+        endpoint_profile=endpoint_profile,
+        vendor_key=vendor_key,
+        api_base=api_base,
+        model=model,
+    )
+    logger.info(
+        "[generate_video] backend=%s model=%s provider=%s profile=%s vendor=%s",
+        backend,
+        model,
+        provider,
+        endpoint_profile,
+        vendor_key,
+    )
 
     try:
-        _mcc_kwargs: dict[str, Any] = dict(
-            client_id="video_gen_client",
-            client_provider=provider,
+        if backend == "minimax":
+            return await asyncio.to_thread(
+                _invoke_minimax_video_generation_sync,
+                prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+                size=size,
+                duration=duration,
+                resolution=resolution,
+            )
+        if backend == "volcengine":
+            return await asyncio.to_thread(
+                _invoke_volcengine_video_generation_sync,
+                prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+                size=size,
+                duration=duration,
+                resolution=resolution,
+            )
+        return await _invoke_dashscope_video_generation(
+            prompt,
             api_key=api_key,
             api_base=api_base,
-            verify_ssl=mc.get("verify_ssl", True),
-            ssl_cert=mc.get("ssl_cert"),
-            timeout=mc.get("timeout", 1800),
-        )
-        if endpoint_profile:
-            _mcc_kwargs["endpoint_profile"] = endpoint_profile
-        model_client_config = ModelClientConfig(**_mcc_kwargs)
-        model_config = ModelRequestConfig(model=model)
-        model_instance = Model(
-            model_config=model_config,
-            model_client_config=model_client_config,
-        )
-        messages = [UserMessage(content=prompt)]
-        normalized_size = _normalize_video_size(size)
-
-        result = await model_instance.generate_video(
-            messages=messages,
             model=model,
-            size=normalized_size,
-            resolution=resolution,
+            provider=provider,
+            endpoint_profile=endpoint_profile,
+            mc=mc,
+            size=size,
             duration=duration,
+            resolution=resolution,
         )
-
-        output_dir = get_agent_workspace_dir()
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        random_suffix = random.randint(1000, 9999)
-        output_path = output_dir / f"generated_{timestamp}_{random_suffix}.mp4"
-
-        video_url = getattr(result, "video_url", None)
-        video_data = getattr(result, "video_data", None)
-
-        if video_data:
-            with open(output_path, "wb") as f:
-                f.write(video_data)
-            return {
-                "video_path": str(output_path.absolute()),
-                "revised_prompt": prompt,
-            }
-
-        if video_url:
-            ua = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            )
-            response = requests.get(
-                video_url,
-                headers={"User-Agent": ua},
-                verify=get_requests_verify(),
-                timeout=300,
-            )
-            response.raise_for_status()
-            with open(output_path, "wb") as f:
-                f.write(response.content)
-            return {
-                "video_path": str(output_path.absolute()),
-                "revised_prompt": prompt,
-                "original_url": video_url,
-            }
-
-        return {"error": "[ERROR]: No valid video data in response"}
     except Exception as ex:
         return {"error": f"[ERROR]: Video generation failed: {ex}"}
 
