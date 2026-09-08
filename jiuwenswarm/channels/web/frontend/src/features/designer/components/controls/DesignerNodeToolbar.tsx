@@ -12,17 +12,17 @@ import { DESIGNER_NODE_TYPE_TEXT } from '../../executionGraphTypes';
 import {
   readMediaConfig,
   writeMediaEditPatch,
-  writeMediaGeneratePatch,
+  // writeMediaGeneratePatch,
   writeMediaUploadPatch,
 } from '../../mediaNodeConfig';
-import { DesignerMaterialStrip } from './DesignerMaterialStrip';
+// import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 
 type DesignerNodeToolbarProps = {
   nodeId: string;
   nodeType: string;
 };
 
-type ExpandedPanel = 'generate' | 'upload' | 'edit' | null;
+type ExpandedPanel = /* 'generate' | */ 'upload' | 'edit' | null;
 
 function notifyNotImplemented(message: string) {
   window.alert(message);
@@ -49,7 +49,8 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const media = readMediaConfig(config, nodeType);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  // First stage only until the user opens regenerate / upload / edit.
+  // First stage only until the user opens upload / edit.
+  // Regenerate currently fires immediately (workflow-style), without expanding a panel.
   const [expanded, setExpanded] = useState<ExpandedPanel>(null);
 
   useEffect(() => {
@@ -65,12 +66,13 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   );
   const pendingRevision = hasPendingDesignerRevision(nodeState);
 
-  const patchGenerate = useCallback(
-    (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
-      updateNodeConfig(nodeId, (current) => writeMediaGeneratePatch(current, patch));
-    },
-    [nodeId, updateNodeConfig],
-  );
+  // Temporarily unused while regenerate skips the secondary generate panel.
+  // const patchGenerate = useCallback(
+  //   (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
+  //     updateNodeConfig(nodeId, (current) => writeMediaGeneratePatch(current, patch));
+  //   },
+  //   [nodeId, updateNodeConfig],
+  // );
 
   const patchEdit = useCallback(
     (content: string) => {
@@ -168,10 +170,16 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
         <button
           type="button"
           role="tab"
-          aria-selected={expanded === 'generate'}
-          className={`designer-node-toolbar__tab${expanded === 'generate' ? ' is-active' : ''}`}
           data-testid="designer-node-toolbar-tab-generate"
-          onClick={() => setExpanded((prev) => (prev === 'generate' ? null : 'generate'))}
+          disabled={isRunning || !domainGraph}
+          title={t('designer.toolbar.rerunHint')}
+          // Regenerate skips the secondary generate panel.
+          // aria-selected={expanded === 'generate'}
+          // className={`designer-node-toolbar__tab${expanded === 'generate' ? ' is-active' : ''}`}
+          // onClick={() => setExpanded((prev) => (prev === 'generate' ? null : 'generate'))}
+          aria-selected={false}
+          className="designer-node-toolbar__tab"
+          onClick={onGenerateNode}
         >
           {t('designer.toolbar.regenerate')}
         </button>
@@ -201,6 +209,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
         ) : null}
       </div>
 
+      {/* Temporarily disabled: regenerate opens this second-stage generate panel.
       {expanded === 'generate' ? (
         <div
           className="designer-node-toolbar__panel"
@@ -285,6 +294,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           </button>
         </div>
       ) : null}
+      */}
 
       {expanded === 'edit' ? (
         <div
