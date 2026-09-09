@@ -176,7 +176,7 @@ async def test_agent_node_run_starts_companion(
     assert finished["status"] == RUN_STATUS_COMPLETED
     assert started == ["n_brief", "n_character"]
     assert finished["node_states"]["n_character"]["status"] == NODE_STATUS_COMPLETED
-    assert finished["node_states"]["n_scene"]["status"] == NODE_STATUS_PENDING
+    assert finished["node_states"]["n_storyboard"]["status"] == NODE_STATUS_PENDING
 
 
 @pytest.mark.asyncio

@@ -629,26 +629,16 @@ def _append_node_input(graph: DesignerExecutionGraph, node_id: str, input_id: st
 
 
 def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
-    """Keep old bootstrap graphs on the current clip / scene / keyframe pipeline."""
+    """Keep old bootstrap graphs on the current clip / keyframe pipeline.
+
+    Scene is optional: existing Scene nodes stay wired, but new graphs do not
+    grow a Brief → Scene edge.
+    """
     metadata = graph.get("metadata") or {}
     if metadata.get("bootstrap") != "designer.graph.bootstrap.v1":
         return graph
     node_ids = {node["id"] for node in graph.get("nodes") or []}
     edges = graph.setdefault("edges", [])
-    has_frame = "n_frame" in node_ids or any(
-        str(item).startswith("n_frame_") for item in node_ids
-    )
-    if "n_brief" in node_ids and has_frame and "n_scene" not in node_ids:
-        graph.setdefault("nodes", []).append(
-            {
-                "id": "n_scene",
-                "type": NODE_TYPE_IMAGE,
-                "label": "Scene",
-                "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
-                "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
-            }
-        )
-        node_ids.add("n_scene")
     frame_ids = [
         str(node.get("id") or "")
         for node in graph.get("nodes") or []
@@ -945,6 +935,41 @@ def preserve_expanded_shot_nodes(
     return expand_shot_nodes(grafted, existing_count)
 
 
+def _asset_ref_uri(ref: object) -> str:
+    if not isinstance(ref, dict):
+        return ""
+    return str(ref.get("uri") or "").strip()
+
+
+def preserve_node_output_refs(
+    incoming: DesignerExecutionGraph,
+    existing: DesignerExecutionGraph | None,
+) -> DesignerExecutionGraph:
+    """Keep completed artifact URIs when a layout save omits output_ref."""
+    if existing is None:
+        return incoming
+    existing_by_id = {
+        str(node.get("id") or ""): node
+        for node in existing.get("nodes") or []
+        if str(node.get("id") or "")
+    }
+    nodes: list[DesignerGraphNode] = []
+    changed = False
+    for node in incoming.get("nodes") or []:
+        prev = existing_by_id.get(str(node.get("id") or "")) or {}
+        prev_ref = prev.get("output_ref") if isinstance(prev, dict) else None
+        if _asset_ref_uri(prev_ref) and not _asset_ref_uri(node.get("output_ref")):
+            nodes.append({**node, "output_ref": dict(prev_ref)})
+            changed = True
+            continue
+        nodes.append(node)
+    if not changed:
+        return incoming
+    next_graph = dict(incoming)
+    next_graph["nodes"] = nodes
+    return next_graph
+
+
 def expand_shot_nodes(
     graph: DesignerExecutionGraph,
     shot_count: int,
@@ -991,7 +1016,8 @@ def expand_shot_nodes(
     for index in range(1, count + 1):
         frame_id = frame_node_id(index)
         clip_id = clip_node_id(index)
-        frame_inputs = [item for item in (character_id, scene_id, storyboard_id) if item]
+        prev_frame_id = frame_node_id(index - 1) if index > 1 else None
+        frame_inputs = [item for item in (character_id, scene_id, storyboard_id, prev_frame_id) if item]
         clip_inputs = [item for item in (character_id, scene_id, storyboard_id, frame_id) if item]
         frame_config: dict[str, Any] = {
             "role": NODE_ROLE_FRAME,
@@ -1057,6 +1083,16 @@ def expand_shot_nodes(
                 {
                     "id": f"e_{prefix}_{frame_id}",
                     "source": source_id,
+                    "target": frame_id,
+                    "kind": EDGE_KIND_DATA,
+                }
+            )
+        if index > 1:
+            prev_frame_id = frame_node_id(index - 1)
+            kept_edges.append(
+                {
+                    "id": f"e_{prev_frame_id}_{frame_id}",
+                    "source": prev_frame_id,
                     "target": frame_id,
                     "kind": EDGE_KIND_DATA,
                 }
@@ -1436,21 +1472,14 @@ def build_bootstrap_graph(
             "type": NODE_TYPE_IMAGE,
             "label": "Character",
             "config": {"role": NODE_ROLE_CHARACTER_DESIGN, "inputs": ["n_brief"]},
-            "layout": {"x": 400, "y": 40, "width": 280, "height": 160},
-        },
-        {
-            "id": "n_scene",
-            "type": NODE_TYPE_IMAGE,
-            "label": "Scene",
-            "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
-            "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
+            "layout": {"x": 400, "y": 140, "width": 280, "height": 160},
         },
         {
             "id": "n_storyboard",
             "type": NODE_TYPE_TABLE,
             "label": "Storyboard",
             "config": {"role": NODE_ROLE_STORYBOARD, "inputs": ["n_brief"]},
-            "layout": {"x": 400, "y": 440, "width": 280, "height": 160},
+            "layout": {"x": 400, "y": 340, "width": 280, "height": 240},
         },
         {
             "id": "n_frame_1",
@@ -1459,7 +1488,7 @@ def build_bootstrap_graph(
             "config": {
                 "role": NODE_ROLE_FRAME,
                 "shot_index": 1,
-                "inputs": ["n_character", "n_scene", "n_storyboard"],
+                "inputs": ["n_character", "n_storyboard"],
             },
             "layout": {"x": 760, "y": 240, "width": 280, "height": 160},
         },
@@ -1470,7 +1499,7 @@ def build_bootstrap_graph(
             "config": {
                 "role": NODE_ROLE_CLIP,
                 "shot_index": 1,
-                "inputs": ["n_character", "n_scene", "n_storyboard", "n_frame_1"],
+                "inputs": ["n_character", "n_storyboard", "n_frame_1"],
             },
             "layout": {"x": 1120, "y": 240, "width": 280, "height": 160},
         },
@@ -1484,7 +1513,6 @@ def build_bootstrap_graph(
     ]
     edges: list[DesignerGraphEdge] = [
         {"id": "e_brief_character", "source": "n_brief", "target": "n_character", "kind": EDGE_KIND_DATA},
-        {"id": "e_brief_scene", "source": "n_brief", "target": "n_scene", "kind": EDGE_KIND_DATA},
         {"id": "e_brief_storyboard", "source": "n_brief", "target": "n_storyboard", "kind": EDGE_KIND_DATA},
         {
             "id": "e_character_storyboard",
@@ -1493,18 +1521,9 @@ def build_bootstrap_graph(
             "kind": EDGE_KIND_SYNC,
             "label": "Align",
         },
-        {
-            "id": "e_scene_storyboard",
-            "source": "n_scene",
-            "target": "n_storyboard",
-            "kind": EDGE_KIND_SYNC,
-            "label": "Align",
-        },
         {"id": "e_character_n_frame_1", "source": "n_character", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
-        {"id": "e_scene_n_frame_1", "source": "n_scene", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
         {"id": "e_storyboard_n_frame_1", "source": "n_storyboard", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
         {"id": "e_character_n_clip_1", "source": "n_character", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
-        {"id": "e_scene_n_clip_1", "source": "n_scene", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_storyboard_n_clip_1", "source": "n_storyboard", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_n_frame_1_n_clip_1", "source": "n_frame_1", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_n_clip_1_compose", "source": "n_clip_1", "target": "n_compose", "kind": EDGE_KIND_DATA},

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     NODE_TYPE_TEXT,
     NODE_TYPE_VIDEO,
     NODE_STATUS_COMPLETED,
+    NODE_STATUS_RUNNING,
     RUN_STATUS_COMPLETED,
     RUN_STATUS_RUNNING,
     DesignerExecutionGraph,
@@ -73,9 +75,9 @@ def stub_clip_video(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
                 "## 分镜表\n\n"
                 "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
                 "| --- | --- | --- | --- | --- | --- |\n"
-                "| 1 | 0.0-2.0s | 全景/略俯 | 缓摇 | 未入画 | 雨夜巷 |\n"
-                "| 2 | 2.0-3.5s | 中景/平视 | 跟移 | 主体入画 | 霓虹闪 |\n"
-                "| 3 | 3.5-5.0s | 近景/平视 | 固定 | 转身 | 积水碎开 |\n"
+                "| 1 | 0.0-2.0s | 全景/平视 | 缓摇 | 未入画 | 站台 |\n"
+                "| 2 | 2.0-3.5s | 中景/平视 | 跟移 | 主体入画 | 出站 |\n"
+                "| 3 | 3.5-5.0s | 近景/平视 | 固定 | 转身 | 月台 |\n"
             )
         return f"# stub\n{prompt[:80]}"
 
@@ -155,17 +157,18 @@ def test_bootstrap_graph_uses_modality_node_types() -> None:
     assert NODE_TYPE_TEXT in node_types
     assert NODE_TYPE_IMAGE in node_types
     roles = {node_role(node) for node in graph["nodes"]}
-    assert {NODE_ROLE_CHARACTER_DESIGN, NODE_ROLE_SCENE, NODE_ROLE_STORYBOARD} <= roles
+    assert {NODE_ROLE_CHARACTER_DESIGN, NODE_ROLE_STORYBOARD} <= roles
+    assert NODE_ROLE_SCENE not in roles
+    assert not any(edge["source"] == "n_brief" and edge["target"] == "n_scene" for edge in graph["edges"])
     sync_edges = [edge for edge in graph["edges"] if edge.get("kind") == EDGE_KIND_SYNC]
-    assert len(sync_edges) == 2
+    assert len(sync_edges) == 1
     sync_pairs = {frozenset((edge["source"], edge["target"])) for edge in sync_edges}
     assert sync_pairs == {
         frozenset({"n_character", "n_storyboard"}),
-        frozenset({"n_scene", "n_storyboard"}),
     }
     assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
     assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
-    assert any(edge["source"] == "n_scene" and edge["target"] == "n_frame_1" for edge in graph["edges"])
+    assert not any(edge["source"] == "n_scene" for edge in graph["edges"])
     clip = next(node for node in graph["nodes"] if node["id"] == "n_clip_1")
     assert "n_frame_1" in ((clip.get("config") or {}).get("inputs") or [])
     compose = next(node for node in graph["nodes"] if node["id"] == "n_compose")
@@ -199,7 +202,7 @@ def test_fixture_file_normalizes() -> None:
     )
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     graph = normalize_execution_graph(payload)
-    assert graph["title"] == "赛博朋克街景短视频"
+    assert graph["title"] == "示例短视频"
     assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
     assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
 
@@ -233,6 +236,9 @@ def test_expand_clip_nodes_for_shots_creates_one_clip_per_shot() -> None:
     assert (compose.get("config") or {}).get("inputs") == ["n_clip_1", "n_clip_2", "n_clip_3"]
     assert any(edge["source"] == "n_clip_2" and edge["target"] == "n_compose" for edge in expanded["edges"])
     assert any(edge["source"] == "n_frame_3" and edge["target"] == "n_clip_3" for edge in expanded["edges"])
+    assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_frame_2" for edge in expanded["edges"])
+    frame2 = next(node for node in expanded["nodes"] if node["id"] == "n_frame_2")
+    assert "n_frame_1" in ((frame2.get("config") or {}).get("inputs") or [])
     clips = [node for node in expanded["nodes"] if node_role(node) == NODE_ROLE_CLIP]
     compose_layout = compose.get("layout") or {}
     clip_right = max(
@@ -251,14 +257,14 @@ def test_apply_shot_generate_prompts_fills_frame_and_keeps_user_edits() -> None:
     )
     filled = apply_shot_generate_prompts(
         graph,
-        ["积水倒影里的霓虹巷", "白领从地铁门走出"],
+        ["火车进站的全景", "年轻人从车门走出"],
     )
     frame1 = next(node for node in filled["nodes"] if node["id"] == "n_frame_1")
     frame2 = next(node for node in filled["nodes"] if node["id"] == "n_frame_2")
     clip1 = next(node for node in filled["nodes"] if node["id"] == "n_clip_1")
-    assert frame1["config"]["generate"]["prompt"] == "积水倒影里的霓虹巷"
-    assert frame2["config"]["generate"]["prompt"] == "白领从地铁门走出"
-    assert clip1["config"]["generate"]["prompt"] == "积水倒影里的霓虹巷"
+    assert frame1["config"]["generate"]["prompt"] == "火车进站的全景"
+    assert frame2["config"]["generate"]["prompt"] == "年轻人从车门走出"
+    assert clip1["config"]["generate"]["prompt"] == "火车进站的全景"
 
     frame1["config"]["generate"]["prompt"] = "用户改过的画面"
     frame1["config"]["generate"]["prompt_origin"] = "user"
@@ -268,6 +274,35 @@ def test_apply_shot_generate_prompts_fills_frame_and_keeps_user_edits() -> None:
     )
     kept_frame1 = next(node for node in kept["nodes"] if node["id"] == "n_frame_1")
     assert kept_frame1["config"]["generate"]["prompt"] == "用户改过的画面"
+
+
+def test_preserve_node_output_refs_keeps_storyboard_uri() -> None:
+    from jiuwenswarm.common.schema.designer_graph import preserve_node_output_refs
+
+    existing = build_bootstrap_graph(project_id="proj_keep_ref", prompt="keep ref")
+    story = next(node for node in existing["nodes"] if node["id"] == "n_storyboard")
+    story["output_ref"] = {
+        "kind": "table",
+        "uri": "file:///tmp/storyboard.md",
+        "mime_type": "text/markdown",
+        "label": "storyboard.md",
+    }
+    incoming = build_bootstrap_graph(project_id="proj_keep_ref", prompt="keep ref")
+    incoming["graph_id"] = existing["graph_id"]
+    merged = preserve_node_output_refs(incoming, existing)
+    kept = next(node for node in merged["nodes"] if node["id"] == "n_storyboard")
+    assert kept["output_ref"]["uri"] == "file:///tmp/storyboard.md"
+
+
+def test_should_auto_promote_replaces_storyboard_markdown() -> None:
+    from jiuwenswarm.server.runtime.designer.executor import _should_auto_promote
+
+    kept = {"kind": "table", "uri": "file:///old.md"}
+    primary = {"kind": "table", "uri": "file:///new.md"}
+    assert _should_auto_promote(kept, primary)
+    clip_kept = {"kind": "video", "uri": "file:///old.mp4"}
+    clip_new = {"kind": "video", "uri": "file:///new.mp4"}
+    assert not _should_auto_promote(clip_kept, clip_new)
 
 
 def test_expand_preserves_existing_generate_prompt() -> None:
@@ -382,13 +417,17 @@ def test_expand_splits_bundled_keyframe_images(designer_store: DesignerGraphStor
     assert "n_frame_2" not in remaining
 
 
-def test_normalize_adds_scene_storyboard_sync_on_old_bootstrap() -> None:
+def test_normalize_wires_existing_scene_on_old_bootstrap() -> None:
     graph = build_bootstrap_graph(project_id="proj_old02", prompt="legacy-align")
-    graph["edges"] = [
-        edge
-        for edge in graph["edges"]
-        if not (edge.get("source") == "n_scene" and edge.get("target") == "n_storyboard")
-    ]
+    graph["nodes"].append(
+        {
+            "id": "n_scene",
+            "type": NODE_TYPE_IMAGE,
+            "label": "Scene",
+            "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
+            "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
+        }
+    )
     restored = normalize_execution_graph(graph)
     assert any(
         edge.get("source") == "n_scene"
@@ -396,6 +435,7 @@ def test_normalize_adds_scene_storyboard_sync_on_old_bootstrap() -> None:
         and edge.get("kind") == EDGE_KIND_SYNC
         for edge in restored["edges"]
     )
+    assert any(edge.get("source") == "n_brief" and edge.get("target") == "n_scene" for edge in restored["edges"])
 
 
 def test_graph_store_list_by_project(designer_store: DesignerGraphStore) -> None:
@@ -469,6 +509,44 @@ async def test_mock_executor_completes_run(
         "n_frame_2",
         "n_frame_3",
     ]
+
+
+@pytest.mark.asyncio
+async def test_running_status_is_saved_before_handler_returns(
+    designer_store: DesignerGraphStore,
+    stub_clip_video: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.text_nodes import BriefNodeHandler
+
+    gate = asyncio.Event()
+    seen: dict[str, str] = {}
+    original = BriefNodeHandler.execute
+
+    async def paused(self, node, ctx):
+        run = designer_store.get_run(ctx.run_id)
+        seen["status"] = str((run.get("node_states") or {}).get(node["id"], {}).get("status") or "")
+        await gate.wait()
+        return await original(self, node, ctx)
+
+    monkeypatch.setattr(BriefNodeHandler, "execute", paused)
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_run_persist", prompt="persist running")),
+    )
+    executor = GraphExecutor(designer_store)
+    run = executor.create_run(graph)
+    await executor.start_run(run["run_id"])
+    task = executor._tasks.get(run["run_id"])
+    try:
+        for _ in range(50):
+            if "status" in seen:
+                break
+            await asyncio.sleep(0.02)
+        assert seen.get("status") == NODE_STATUS_RUNNING
+    finally:
+        gate.set()
+        if task is not None:
+            await task
 
 
 @pytest.mark.asyncio
@@ -572,31 +650,31 @@ async def test_rerun_promotes_generated_image_over_fallback_notes(
         await task
     finished = designer_store.get_run(first["run_id"])
     assert finished is not None
-    notes = tmp_path / "designer_scene_fallback.md"
-    notes.write_text("fallback scene notes\n", encoding="utf-8")
+    notes = tmp_path / "designer_character_fallback.md"
+    notes.write_text("fallback character notes\n", encoding="utf-8")
     notes_ref = {
         "kind": "text",
         "uri": notes.resolve().as_uri(),
         "mime_type": "text/markdown",
         "label": notes.name,
     }
-    finished["node_states"]["n_scene"]["output_ref"] = notes_ref
-    finished["node_states"]["n_scene"]["output_refs"] = [notes_ref]
+    finished["node_states"]["n_character"]["output_ref"] = notes_ref
+    finished["node_states"]["n_character"]["output_refs"] = [notes_ref]
     designer_store.save_run(finished)
 
-    rerun = executor.create_rerun(graph, source_run=finished, node_id="n_scene")
-    assert not (rerun["node_states"]["n_scene"].get("output_ref") or {}).get("uri")
+    rerun = executor.create_rerun(graph, source_run=finished, node_id="n_character")
+    assert not (rerun["node_states"]["n_character"].get("output_ref") or {}).get("uri")
     await executor.start_run(rerun["run_id"])
     worker = executor._tasks.get(rerun["run_id"])
     if worker is not None:
         await worker
     again = designer_store.get_run(rerun["run_id"])
     assert again is not None
-    scene = again["node_states"]["n_scene"]
-    assert scene["status"] == NODE_STATUS_COMPLETED
-    assert (scene.get("output_ref") or {}).get("kind") == NODE_TYPE_IMAGE
-    assert str((scene.get("output_ref") or {}).get("uri") or "").endswith(".png")
-    assert not (scene.get("candidate_output_ref") or {}).get("uri")
+    character = again["node_states"]["n_character"]
+    assert character["status"] == NODE_STATUS_COMPLETED
+    assert (character.get("output_ref") or {}).get("kind") == NODE_TYPE_IMAGE
+    assert str((character.get("output_ref") or {}).get("uri") or "").endswith(".png")
+    assert not (character.get("candidate_output_ref") or {}).get("uri")
 
 
 def test_bootstrap_treats_default_project_as_create(designer_store: DesignerGraphStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -628,14 +706,14 @@ def test_bootstrap_treats_default_project_as_create(designer_store: DesignerGrap
     monkeypatch.setattr(adapter.project_store, "create_or_restore_project", fake_create)
 
     payload, error, code = adapter._bootstrap_graph(
-        {"prompt": "雨夜短片", "project_id": "default"},
+        {"prompt": "火车站短片", "project_id": "default"},
         "web",
     )
     assert error is None
     assert code is None
     assert payload is not None
     assert payload["project_id"] == "proj_created01"
-    assert payload["graph"]["title"] == "雨夜短片"
+    assert payload["graph"]["title"] == "火车站短片"
     assert created
 
 
@@ -699,6 +777,45 @@ def test_list_graphs_includes_video_summary(
     summary = next(item for item in payload["summaries"] if item["graph_id"] == graph["graph_id"])
     assert summary["has_video"] is True
     assert summary["clip_label"] == "generated_clip.mp4"
+
+
+def test_get_graph_hydrates_node_outputs_from_latest_run(
+    designer_store: DesignerGraphStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.server.runtime.gateway_adapter import designer_adapter as adapter
+
+    monkeypatch.setattr(adapter, "_store", designer_store)
+    monkeypatch.setattr(adapter._executor, "_store", designer_store)
+    graph = designer_store.save_graph(
+        build_bootstrap_graph(project_id="proj_hydrate01", prompt="train arrives"),
+    )
+    brief_uri = (tmp_path / "brief.md").resolve().as_uri()
+    designer_store.save_run(
+        {
+            "schema_version": "designer-execution-run.v1",
+            "run_id": "run_hydrate01",
+            "graph_id": graph["graph_id"],
+            "project_id": "proj_hydrate01",
+            "status": RUN_STATUS_COMPLETED,
+            "node_states": {
+                "n_brief": {
+                    "status": NODE_STATUS_COMPLETED,
+                    "output_ref": {
+                        "kind": NODE_TYPE_TEXT,
+                        "uri": brief_uri,
+                        "label": "brief.md",
+                    },
+                }
+            },
+            "current_node_ids": [],
+        }
+    )
+    payload, error, code = adapter._get_graph({"graph_id": graph["graph_id"]})
+    assert error is None
+    assert code is None
+    assert payload is not None
+    brief = next(node for node in payload["graph"]["nodes"] if node["id"] == "n_brief")
+    assert brief["output_ref"]["uri"] == brief_uri
 
 
 @pytest.mark.asyncio
@@ -839,19 +956,19 @@ def test_normalize_node_accepts_typed_config() -> None:
             "label": "brief",
             "config": {
                 "role": "brief",
-                "prompt": "雨夜",
+                "prompt": "晨间",
                 "inputs": ["n_src"],
                 "delegate": "handler",
-                "generate": {"prompt": "雨夜巷", "aspect_ratio": "16:9"},
+                "generate": {"prompt": "站台", "aspect_ratio": "16:9"},
                 "interaction_mode": "generate",
             },
         }
     )
     assert node["config"]["role"] == "brief"
-    assert node["config"]["prompt"] == "雨夜"
+    assert node["config"]["prompt"] == "晨间"
     assert node["config"]["inputs"] == ["n_src"]
     assert node["config"]["delegate"] == "handler"
-    assert node["config"]["generate"]["prompt"] == "雨夜巷"
+    assert node["config"]["generate"]["prompt"] == "站台"
     assert node["config"]["interaction_mode"] == "generate"
 
 
@@ -863,7 +980,7 @@ def test_graph_prompt_reads_generate_prompt() -> None:
             "label": "场景",
             "config": {
                 "role": "scene",
-                "generate": {"prompt": "霓虹雨巷"},
+                "generate": {"prompt": "火车站晨间"},
             },
         }
     )
@@ -875,7 +992,7 @@ def test_graph_prompt_reads_generate_prompt() -> None:
         "nodes": [node],
         "edges": [],
     }
-    assert graph_prompt(graph, node) == "霓虹雨巷"
+    assert graph_prompt(graph, node) == "火车站晨间"
 
 
 def test_apply_graph_patch_upserts_and_removes() -> None:
@@ -968,7 +1085,7 @@ async def test_subagent_delegate_uses_registered_runner(
                         "label": "brief",
                         "config": {
                             "role": "brief",
-                            "prompt": "雨夜",
+                            "prompt": "火车站",
                             "delegate": "subagent",
                         },
                     }

@@ -22,7 +22,7 @@ from jiuwenswarm.server.runtime.designer.handlers.clip import (
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
 
-def _graph(*, brief: str = "雨夜赛博朋克短片", clip_prompt: str | None = None):
+def _graph(*, brief: str = "火车站晨间短片", clip_prompt: str | None = None):
     clip_config: dict[str, object] = {"role": NODE_ROLE_CLIP}
     if clip_prompt is not None:
         clip_config["prompt"] = clip_prompt
@@ -31,8 +31,8 @@ def _graph(*, brief: str = "雨夜赛博朋克短片", clip_prompt: str | None =
             "schema_version": SCHEMA_VERSION,
             "graph_id": "graph_clip01",
             "project_id": "proj_clip01",
-            "title": "街景",
-            "description": "霓虹灯与积水倒影",
+            "title": "火车站",
+            "description": "火车进站，年轻人走下车",
             "source": "manual",
             "nodes": [
                 {
@@ -56,10 +56,10 @@ def _graph(*, brief: str = "雨夜赛博朋克短片", clip_prompt: str | None =
 def test_build_clip_prompt_uses_brief_then_graph_text() -> None:
     graph = _graph()
     clip = graph["nodes"][1]
-    assert "雨夜赛博朋克短片" in build_clip_prompt(graph, clip)
+    assert "火车站晨间短片" in build_clip_prompt(graph, clip)
 
-    clip["config"] = {"role": NODE_ROLE_CLIP, "prompt": "只拍积水倒影"}
-    assert "只拍积水倒影" in build_clip_prompt(graph, clip)
+    clip["config"] = {"role": NODE_ROLE_CLIP, "prompt": "只拍站台"}
+    assert "只拍站台" in build_clip_prompt(graph, clip)
 
 
 def test_build_clip_prompt_reads_upstream_brief_and_storyboard(tmp_path: Path) -> None:
@@ -68,8 +68,8 @@ def test_build_clip_prompt_reads_upstream_brief_and_storyboard(tmp_path: Path) -
 
     brief = tmp_path / "brief.md"
     story = tmp_path / "storyboard.md"
-    brief.write_text("# Brief\n霓虹积水", encoding="utf-8")
-    story.write_text("## 分镜表\n缓推雨夜\n\n## 运镜脚本\n跟移", encoding="utf-8")
+    brief.write_text("# Brief\n火车进站", encoding="utf-8")
+    story.write_text("## 分镜表\n缓推进站\n\n## 运镜脚本\n跟移", encoding="utf-8")
     graph = _graph()
     graph["nodes"].insert(
         1,
@@ -98,8 +98,8 @@ def test_build_clip_prompt_reads_upstream_brief_and_storyboard(tmp_path: Path) -
         },
     )
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
-    assert "霓虹积水" in prompt
-    assert "缓推雨夜" in prompt
+    assert "火车进站" in prompt
+    assert "缓推进站" in prompt
     assert "运镜脚本" in prompt
 
 
@@ -124,8 +124,8 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
     story.write_text(
         "## 分镜表\n"
         "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
-        "| 1 | 0.0-2.0s | 全景/略俯 | 缓摇 | 未入画 | 雨夜巷 |\n"
-        "| 2 | 2.0-5.0s | 中景/平视 | 跟移 | 主体入画 | 霓虹闪 |\n",
+        "| 1 | 0.0-2.0s | 全景/平视 | 缓摇 | 未入画 | 站台 |\n"
+        "| 2 | 2.0-5.0s | 中景/平视 | 跟移 | 主体入画 | 出站 |\n",
         encoding="utf-8",
     )
     video = tmp_path / "generated_clip.mp4"
@@ -174,7 +174,8 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
     assert "shot 1" in prompt.lower()
     assert "缓摇" in prompt
-    assert "跟移" not in prompt
+    assert "This shot from the storyboard" in prompt
+    assert "Full storyboard table" in prompt
 
     seen: dict[str, object] = {}
 
@@ -183,10 +184,12 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
         save_dir: str | None = None,
         first_frame: str | None = None,
         reference_images: list[str] | None = None,
+        reference_file: str | None = None,
         duration: int = 5,
     ) -> dict[str, str]:
         seen["first_frame"] = first_frame
         seen["reference_images"] = reference_images
+        seen["reference_file"] = reference_file
         seen["prompt"] = prompt
         seen["duration"] = duration
         return {"video_path": str(video), "revised_prompt": prompt}
@@ -198,8 +201,10 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
     assert seen["first_frame"] == str(shot1.resolve())
     assert seen["reference_images"] == [str(shot1.resolve())]
+    assert seen["reference_file"] == str(story.resolve())
     assert seen["duration"] == 2
     assert "Shot 1" in str(seen["prompt"])
+    assert "Full storyboard table" in str(seen["prompt"])
 
 
 @pytest.mark.asyncio
@@ -210,7 +215,9 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
         NODE_ROLE_CHARACTER_DESIGN,
         NODE_ROLE_FRAME,
         NODE_ROLE_SCENE,
+        NODE_ROLE_STORYBOARD,
         NODE_TYPE_IMAGE,
+        NODE_TYPE_TABLE,
     )
     from jiuwenswarm.server.runtime.designer.handlers.clip import (
         collect_clip_reference_images,
@@ -220,9 +227,16 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
     frame = tmp_path / "keyframe.png"
     character = tmp_path / "character.png"
     scene = tmp_path / "scene.png"
+    story = tmp_path / "storyboard.md"
     frame.write_bytes(b"png-frame")
     character.write_bytes(b"png-character")
     scene.write_bytes(b"png-scene")
+    story.write_text(
+        "## 分镜表\n"
+        "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
+        "| 1 | 0.0-5.0s | 中景/平视 | 缓推 | 主体入画 | 站台 |\n",
+        encoding="utf-8",
+    )
     video = tmp_path / "generated_clip.mp4"
     video.write_bytes(b"fake-mp4")
     graph = _graph()
@@ -238,6 +252,12 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
             "type": NODE_TYPE_IMAGE,
             "label": "scene",
             "config": {"role": NODE_ROLE_SCENE},
+        },
+        {
+            "id": "n_storyboard",
+            "type": NODE_TYPE_TABLE,
+            "label": "storyboard",
+            "config": {"role": NODE_ROLE_STORYBOARD},
         },
         {
             "id": "n_frame",
@@ -264,6 +284,12 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
                         scene, kind=NODE_TYPE_IMAGE, mime_type="image/png"
                     ),
                 },
+                "n_storyboard": {
+                    "status": "completed",
+                    "output_ref": file_output_ref(
+                        story, kind=NODE_TYPE_TABLE, mime_type="text/markdown"
+                    ),
+                },
                 "n_frame": {
                     "status": "completed",
                     "output_ref": file_output_ref(
@@ -279,8 +305,11 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
         frame.resolve(),
     ]
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
-    assert "character sheet" in prompt
-    assert "shot 1" in prompt.lower()
+    assert "Image 1 is the character sheet" in prompt
+    assert "Image 2 is the scene" in prompt
+    assert "Image 3 is this shot's keyframe" in prompt
+    assert "attached file is the storyboard" in prompt
+    assert "缓推" in prompt
 
     seen: dict[str, object] = {}
 
@@ -293,6 +322,8 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
     ) -> dict[str, str]:
         seen["first_frame"] = first_frame
         seen["reference_images"] = reference_images
+        seen["reference_file"] = kwargs.get("reference_file")
+        seen["prompt"] = prompt
         return {"video_path": str(video), "revised_prompt": prompt}
 
     monkeypatch.setattr(
@@ -300,12 +331,14 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
         fake_generate,
     )
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
-    assert seen["first_frame"] == str(frame.resolve())
+    assert seen["first_frame"] is None
     assert seen["reference_images"] == [
         str(character.resolve()),
         str(scene.resolve()),
         str(frame.resolve()),
     ]
+    assert seen["reference_file"] == str(story.resolve())
+    assert "Image 1 is the character sheet" in str(seen["prompt"])
 
 
 @pytest.mark.asyncio
@@ -322,7 +355,7 @@ async def test_clip_handler_returns_file_output_ref(
         reference_images: list[str] | None = None,
         **kwargs,
     ) -> dict[str, str]:
-        assert "雨夜" in prompt
+        assert "火车站" in prompt
         return {"video_path": str(video), "revised_prompt": prompt}
 
     monkeypatch.setattr(
@@ -437,8 +470,8 @@ async def test_clip_handler_submits_matching_keyframe_for_shot_index(
     story.write_text(
         "## 分镜表\n"
         "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
-        "| 1 | 0.0-2.0s | 全景/略俯 | 缓摇 | 未入画 | 雨夜巷 |\n"
-        "| 2 | 2.0-5.0s | 中景/平视 | 跟移 | 主体入画 | 霓虹闪 |\n",
+        "| 1 | 0.0-2.0s | 全景/平视 | 缓摇 | 未入画 | 站台 |\n"
+        "| 2 | 2.0-5.0s | 中景/平视 | 跟移 | 主体入画 | 出站 |\n",
         encoding="utf-8",
     )
     video = tmp_path / "generated_clip_2.mp4"
@@ -498,6 +531,7 @@ async def test_clip_handler_submits_matching_keyframe_for_shot_index(
         first_frame: str | None = None,
         reference_images: list[str] | None = None,
         duration: int = 5,
+        **kwargs,
     ) -> dict[str, str]:
         seen["first_frame"] = first_frame
         seen["prompt"] = prompt
@@ -513,7 +547,7 @@ async def test_clip_handler_submits_matching_keyframe_for_shot_index(
     assert seen["duration"] == 3
     assert "Shot 2" in str(seen["prompt"])
     assert "跟移" in str(seen["prompt"])
-    assert "缓摇" not in str(seen["prompt"])
+    assert "This shot from the storyboard" in str(seen["prompt"])
 
 
 @pytest.mark.asyncio

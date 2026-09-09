@@ -9,9 +9,9 @@ export const DESIGNER_FAKE_TEXT = '实例文本';
 export const DESIGNER_FAKE_TABLE: { headers: string[]; rows: string[][] } = {
   headers: ['镜头', '画面', '时长'],
   rows: [
-    ['01', '霓虹雨巷全景', '2.0s'],
-    ['02', '角色特写回头', '1.5s'],
-    ['03', '追车过弯', '3.0s'],
+    ['01', 'Opening wide', '2.0s'],
+    ['02', 'Subject enters', '1.5s'],
+    ['03', 'Hold and exit', '3.0s'],
   ],
 };
 

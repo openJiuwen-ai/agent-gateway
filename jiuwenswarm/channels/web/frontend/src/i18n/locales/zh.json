@@ -107,7 +107,7 @@
       "material": "素材",
       "addMaterial": "添加素材",
       "removeMaterial": "移除素材",
-      "promptPlaceholder": "prompt",
+      "promptPlaceholder": "本镜画面描述，将与上方参考图一起发给模型",
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",

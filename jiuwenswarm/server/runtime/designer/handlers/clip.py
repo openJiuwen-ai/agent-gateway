@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
+    GENERATE_PROMPT_ORIGIN_STORYBOARD,
     NODE_ROLE_BRIEF,
     NODE_ROLE_CHARACTER_DESIGN,
     NODE_ROLE_FRAME,
@@ -25,9 +26,11 @@ from jiuwenswarm.common.schema.designer_graph import (
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     graph_prompt,
     node_generate_prompt,
+    node_generate_prompt_origin,
     node_output_image_paths,
     role_output_image_path,
     role_output_text,
+    role_output_text_path,
 )
 from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     StoryboardShot,
@@ -80,7 +83,7 @@ def collect_clip_reference_images(
     ctx: NodeExecutionContext | None,
     shot_index: int = 1,
 ) -> list[Path]:
-    """Explicit I2V inputs: character sheet, scene, then this shot's keyframe."""
+    """Visual references in wan3 Image N order: character, scene, then this shot's keyframe."""
     paths: list[Path] = []
     seen: set[str] = set()
 
@@ -101,6 +104,16 @@ def collect_clip_reference_images(
     return paths
 
 
+def collect_clip_storyboard_file(ctx: NodeExecutionContext | None) -> Path | None:
+    if ctx is None:
+        return None
+    return role_output_text_path(ctx, NODE_ROLE_STORYBOARD)
+
+
+def _graph_has_role(graph: DesignerExecutionGraph, role: str) -> bool:
+    return any(node_role(node) == role for node in (graph.get("nodes") or []))
+
+
 def _shot_for_node(
     graph: DesignerExecutionGraph,
     node: DesignerGraphNode,
@@ -112,7 +125,8 @@ def _shot_for_node(
     if shots and 1 <= index <= len(shots):
         shot = dict(shots[index - 1])
         override = node_generate_prompt(node)
-        if override:
+        origin = node_generate_prompt_origin(node)
+        if override and origin != GENERATE_PROMPT_ORIGIN_STORYBOARD:
             shot["comment"] = override
         return index, shot
     return index, None
@@ -140,26 +154,31 @@ def _clip_prompt_lead(
     has_character: bool,
     has_scene: bool,
     has_frame: bool,
+    has_storyboard: bool,
 ) -> str:
-    attached: list[str] = []
+    image_n = 1
+    lines = [
+        f"Create shot {shot_index} as a {duration}-second video.",
+        "Use the attached references. Image N matches the media array order.",
+    ]
     if has_character:
-        attached.append("character sheet")
+        lines.append(
+            f"Image {image_n} is the character sheet. Keep identity, costume, and materials."
+        )
+        image_n += 1
     if has_scene:
-        attached.append("scene")
+        lines.append(
+            f"Image {image_n} is the scene. Keep location, lighting, and weather."
+        )
+        image_n += 1
     if has_frame:
-        attached.append("this shot's keyframe as the first frame")
-    extras = (
-        " Explicit visual inputs are attached, in order: " + ", ".join(attached) + "."
-        if attached
-        else ""
-    )
-    return (
-        f"Create shot {shot_index} as a {duration}-second video.{extras} "
-        "Keep the character identity, costume, and materials. "
-        "Keep the scene location, lighting, and weather. "
-        "Start from the keyframe composition and film only this shot. "
-        "No subtitles, no cutaways.\n\n"
-    )
+        lines.append(
+            f"Image {image_n} is this shot's keyframe composition. Match framing and pose."
+        )
+    if has_storyboard:
+        lines.append("The attached file is the storyboard table. Film only this shot's row.")
+    lines.append("No subtitles, no cutaways.")
+    return "\n".join(lines) + "\n\n"
 
 
 def build_clip_prompt(
@@ -167,7 +186,7 @@ def build_clip_prompt(
     node: DesignerGraphNode,
     ctx: NodeExecutionContext | None = None,
 ) -> str:
-    """Brief + this shot's storyboard row. Other shots are submitted by sibling clip nodes."""
+    """This shot's storyboard row, full table, then brief. Sibling clips submit other shots."""
     shot_index, shot = _shot_for_node(graph, node, ctx)
     duration = parse_shot_duration_seconds((shot or {}).get("timeline") or "", default=5)
     has_character = (
@@ -175,6 +194,7 @@ def build_clip_prompt(
     )
     has_scene = ctx is not None and role_output_image_path(ctx, NODE_ROLE_SCENE) is not None
     has_frame = collect_clip_first_frame(ctx, shot_index) is not None
+    storyboard = role_output_text(ctx, NODE_ROLE_STORYBOARD) if ctx is not None else ""
     parts: list[str] = [
         _clip_prompt_lead(
             shot_index,
@@ -182,18 +202,20 @@ def build_clip_prompt(
             has_character=has_character,
             has_scene=has_scene,
             has_frame=has_frame,
+            has_storyboard=bool(storyboard or collect_clip_storyboard_file(ctx)),
         )
     ]
+    if shot is not None:
+        parts.append("This shot from the storyboard:\n" + _format_shot_block(shot, shot_index))
+    if storyboard:
+        parts.append("Full storyboard table:\n" + storyboard)
+    elif shot is None:
+        parts.append(graph_prompt(graph, node))
     if ctx is not None:
         brief = role_output_text(ctx, NODE_ROLE_BRIEF)
         if brief:
             parts.append(brief)
-    if shot is not None:
-        parts.append(_format_shot_block(shot, shot_index))
-    else:
-        storyboard = role_output_text(ctx, NODE_ROLE_STORYBOARD) if ctx is not None else ""
-        parts.append(storyboard or graph_prompt(graph, node))
-    return "\n\n".join(part.strip() for part in parts if part.strip())[:6000]
+    return "\n\n".join(part.strip() for part in parts if part.strip())[:8000]
 
 
 async def generate_clip_video(
@@ -201,6 +223,7 @@ async def generate_clip_video(
     save_dir: str | None = None,
     first_frame: str | None = None,
     reference_images: list[str] | None = None,
+    reference_file: str | None = None,
     duration: int = 5,
 ) -> dict[str, Any]:
     """Call the shared video-generation stack. Tests monkeypatch this function."""
@@ -228,6 +251,7 @@ async def generate_clip_video(
         prompt,
         first_frame=first_frame,
         reference_images=reference_images,
+        reference_file=reference_file,
         duration=max(2, min(10, int(duration or 5))),
     )
     if "error" in result:
@@ -248,26 +272,46 @@ async def generate_clip_video(
 
 
 class ClipNodeHandler:
-    """Submit one I2V job per storyboard shot."""
+    """Submit one reference-to-video job per storyboard shot."""
 
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         shot_index = node_shot_index(node)
-        has_frame_node = any(
-            node_role(item) == NODE_ROLE_FRAME for item in (ctx.graph.get("nodes") or [])
-        )
+        has_frame_node = _graph_has_role(ctx.graph, NODE_ROLE_FRAME)
         first_frame = collect_clip_first_frame(ctx, shot_index)
         if has_frame_node and first_frame is None:
             raise RuntimeError(
                 f"Shot {shot_index} has no matching keyframe. Regenerate the Keyframe node for this shot first."
             )
+        missing: list[str] = []
+        character = role_output_image_path(ctx, NODE_ROLE_CHARACTER_DESIGN)
+        scene = role_output_image_path(ctx, NODE_ROLE_SCENE)
+        if _graph_has_role(ctx.graph, NODE_ROLE_CHARACTER_DESIGN) and character is None:
+            missing.append("Character")
+        if _graph_has_role(ctx.graph, NODE_ROLE_SCENE) and scene is None:
+            missing.append("Scene")
+        if missing:
+            raise RuntimeError(
+                "Clip generation must send "
+                + " and ".join(missing)
+                + " as reference images. Finish those nodes first."
+            )
+        if _graph_has_role(ctx.graph, NODE_ROLE_STORYBOARD) and not role_output_text(
+            ctx, NODE_ROLE_STORYBOARD
+        ):
+            raise RuntimeError(
+                "Clip generation must send the Storyboard table. Finish the Storyboard node first."
+            )
         _, shot = _shot_for_node(ctx.graph, node, ctx)
         duration = parse_shot_duration_seconds((shot or {}).get("timeline") or "", default=5)
         prompt = build_clip_prompt(ctx.graph, node, ctx)
         refs = collect_clip_reference_images(ctx, shot_index)
+        storyboard_file = collect_clip_storyboard_file(ctx)
+        identity = character is not None or scene is not None
         result = await generate_clip_video(
             prompt,
-            first_frame=str(first_frame) if first_frame is not None else None,
+            first_frame=None if identity else (str(first_frame) if first_frame is not None else None),
             reference_images=[str(path) for path in refs] or None,
+            reference_file=str(storyboard_file) if storyboard_file is not None else None,
             duration=duration,
         )
         path = Path(str(result["video_path"]))

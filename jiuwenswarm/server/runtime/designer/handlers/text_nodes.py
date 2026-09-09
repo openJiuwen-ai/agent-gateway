@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import TypedDict
 
@@ -16,6 +17,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphNode,
     node_config,
 )
+from jiuwenswarm.server.runtime.designer.handlers import common as handler_io
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     file_output_ref,
     graph_prompt,
@@ -30,8 +32,11 @@ from jiuwenswarm.server.runtime.designer.a2a_collab import (
 from jiuwenswarm.server.runtime.designer.subagent import complete_designer_node_text
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
 
+logger = logging.getLogger(__name__)
+
 _BRIEF_INSTRUCTION = """Turn the request below into an executable short-film Brief.
-Write English Markdown with: one-line logline, visual style, main character/subject, setting, 5-second duration, and what to avoid.
+Write English Markdown with: one-line logline, visual style, main character/subject, setting, and 5-second duration.
+Only list constraints that are in the request. Do not add extra bans or a different setting.
 Output Markdown only, no explanation.
 
 Request:
@@ -39,31 +44,46 @@ Request:
 
 _STORYBOARD_COLUMNS = "Shot | Timeline | Camera | Move | Character action | Scene change | Comment"
 
-_STORYBOARD_INSTRUCTION = """Write a 5-second storyboard from the Brief. This is a camera script table, not a drawing.
-Use English Markdown. Include this heading and one table:
-
-## Storyboard
-
-Use a Markdown table whose columns MUST be:
-Shot | Timeline | Camera | Move | Character action | Scene change | Comment
-
-Rules:
+_STORYBOARD_REQUIREMENTS = f"""Storyboard requirements:
+- Write a 5-second camera-script table from the Brief below. This is not a drawing
+- English Markdown only, with heading ## Storyboard and exactly one table
+- Columns MUST be: {_STORYBOARD_COLUMNS}
 - Whole film about 5 seconds, 2-4 shots
 - Timeline as start-end seconds, e.g. 0.0-2.0s
-- Camera is shot size + angle, e.g. wide/slight high, medium/eye-level
+- Camera is shot size + angle, e.g. close-up / over-shoulder, medium / eye-level
 - Move is push/pull/pan/dolly/static and speed
-- Character action must match the character sheet: same subject, look, costume, materials; only write motion, facing, and enter/exit for this shot
-- Scene change must match the scene sheet: same place, weather, lighting; only write how environment, props, and background change in this shot
-- Comment is the keyframe prompt for this shot: subject, composition, light, action instant, environment. Write English that can go straight to image generation. Do not only repeat other columns
+- Character action must match the Brief: same subject, look, costume; only write motion, facing, and enter/exit for this shot
+- Scene change must match the Brief: same place, weather, lighting. Never invent a different world
+- Comment is the keyframe prompt for this shot: subject, composition, light, action instant, environment from the Brief. Write English that can go straight to image generation. Do not only repeat other columns
+- Every row must be about the Brief's subject and location. Do not use unrelated stock locations
 - Do not invent a new character or a new world
-
-Do not output storyboard drawings. Do not explain.
-
-Brief:
+- Table cells must be a single line: no newlines, no Markdown headings inside a cell
+- Do not output storyboard drawings. Do not explain
 """
+
+
+def build_storyboard_llm_prompt(brief: str, alignment: str = "") -> str:
+    """Chat-API prompt: storyboard rules plus the full Brief (and optional sheets)."""
+    parts = [
+        _STORYBOARD_REQUIREMENTS.strip(),
+        "",
+        "## Brief",
+        (brief or "").strip() or "(missing Brief — use only the user request if it appears above)",
+    ]
+    extra = (alignment or "").strip()
+    if extra:
+        parts.extend(["", "## Character and scene alignment", extra])
+    parts.extend(
+        [
+            "",
+            "Write the storyboard table now from the Brief. Follow the storyboard requirements.",
+        ]
+    )
+    return "\n".join(parts)
 
 _MAX_STORYBOARD_SHOTS = 6
 _TABLE_SEP_CELL = re.compile(r"^:?-{3,}:?$")
+_MARKDOWN_FENCE = re.compile(r"```(?:markdown|md)?\s*\n([\s\S]*?)```", re.IGNORECASE)
 
 
 class StoryboardShot(TypedDict):
@@ -153,12 +173,25 @@ def _shot_from_cells(
     return shot
 
 
+def unwrap_storyboard_markdown(text: str) -> str:
+    """Use fenced markdown if the model wrapped the table in a code block."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    match = _MARKDOWN_FENCE.search(raw)
+    if match:
+        inner = match.group(1).strip()
+        if "|" in inner:
+            return inner
+    return raw
+
+
 def parse_storyboard_shots(text: str) -> list[StoryboardShot]:
     """Read shot rows from the storyboard markdown table."""
     shots: list[StoryboardShot] = []
     header_seen = False
     field_map: dict[int, str] | None = None
-    for line in (text or "").splitlines():
+    for line in unwrap_storyboard_markdown(text).splitlines():
         if "|" not in line:
             continue
         cells = _split_markdown_row(line)
@@ -214,24 +247,106 @@ def shot_generate_prompt(shot: StoryboardShot) -> str:
     return "; ".join(parts)
 
 
+def _markdown_table_cell(text: str, limit: int = 180) -> str:
+    compact = " ".join((text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 1)].rstrip() + "…"
+
+
+def brief_logline(source: str) -> str:
+    """Pull the usable one-line subject from a Brief markdown or raw prompt."""
+    lines = [line.strip() for line in (source or "").splitlines()]
+    for line in lines:
+        stripped = line.lstrip("-* ").strip()
+        if stripped.lower().startswith("logline:"):
+            value = stripped.split(":", 1)[-1].strip()
+            if value:
+                return value
+    body = [
+        line.lstrip("-* ").strip()
+        for line in lines
+        if line and not line.startswith("#") and not line.lower().startswith("duration:")
+        and not line.lower().startswith("resolution:")
+        and not line.lower().startswith("visual:")
+    ]
+    return " ".join(body).strip() or " ".join(lines).strip() or "short film"
+
+
+_GENERATE_PREFIX = re.compile(
+    r"(?is)^(?:please\s+)?(?:generate|make|create|write|写|生成)\s+"
+    r"(?:a\s+|an\s+|一[个条段]?)?(?:\d+p\s+)?(?:video|clip|film|short\s*film|短视频|影片|视频)"
+    r"(?:[^,，;；]{0,80})?[,，;；]\s*"
+)
+_CAM_SPEC = re.compile(r"(?i)\bat least two cams?,?\s*")
+_STORY_SPLIT = re.compile(r"(?i)\s+(?:and|then)\s+|，然后|然后|，并")
+
+
+def brief_story_focus(source: str) -> str:
+    """Drop duration/resolution boilerplate so shots follow the Brief's actual action."""
+    logline = brief_logline(source)
+    focused = _GENERATE_PREFIX.sub("", logline, count=1)
+    focused = _CAM_SPEC.sub("", focused)
+    focused = " ".join(focused.split()).strip(" ,，")
+    return focused or logline
+
+
+def _story_beats(focus: str) -> tuple[str, str]:
+    match = _STORY_SPLIT.search(focus)
+    if match and match.start() >= 8:
+        left = focus[: match.start()].strip(" ,，")
+        right = focus[match.end() :].strip(" ,，")
+        if len(left) >= 8 and len(right) >= 8:
+            return left, right
+    return focus, focus
+
+
 def fallback_brief(prompt: str) -> str:
+    logline = _markdown_table_cell(brief_logline(prompt) or prompt, limit=400)
     return (
         "# Brief\n\n"
-        f"- Logline: {prompt}\n"
+        f"- Logline: {logline}\n"
         "- Duration: 5 seconds\n"
         "- Resolution: 480P (dev)\n"
         "- Visual: follow the user description, avoid unrelated elements\n"
     )
 
 
+_MARKDOWN_TABLE_LINE = re.compile(r"^\s*\|.*\|\s*$")
+
+
+def _drop_markdown_tables(text: str) -> str:
+    lines = [
+        line
+        for line in (text or "").splitlines()
+        if not _MARKDOWN_TABLE_LINE.match(line) and line.strip().count("|") < 2
+    ]
+    return "\n".join(lines).strip()
+
+
 def fallback_storyboard(prompt: str) -> str:
+    """Keep fallback shots on the Brief subject; never a stock demo world."""
+    focus = brief_story_focus(prompt) or (prompt or "").strip() or "the briefed action"
+    beat1, beat2 = _story_beats(focus)
+    shot1 = (
+        "| 1 | 0.0-2.0s | wide / eye-level | slow pan to the main action | "
+        f"{_markdown_table_cell(beat1)} | "
+        f"{_markdown_table_cell('location from the Brief: ' + beat1)} | "
+        f"{_markdown_table_cell('Wide establishing shot: ' + beat1)} |"
+    )
+    shot2 = (
+        "| 2 | 2.0-5.0s | medium close-up / eye-level | follow then hold | "
+        f"{_markdown_table_cell(beat2)} | "
+        f"{_markdown_table_cell('same location as shot 1; continue: ' + beat2)} | "
+        f"{_markdown_table_cell('Closer coverage: ' + beat2)} |"
+    )
     return (
         "# Storyboard\n\n"
         "## Storyboard\n\n"
         f"| {_STORYBOARD_COLUMNS} |\n"
         "| --- | --- | --- | --- | --- | --- | --- |\n"
-        f"| 1 | 0.0-2.0s | wide / slight high | slow pan from puddle reflection to subject | subject not yet in frame, or only the reflection | establish the scene: {prompt[:80]} | rain-night neon alley in a puddle reflection, wide slight-high, subject not yet seen |\n"
-        "| 2 | 2.0-5.0s | medium / eye-level | follow then hold | subject enters and completes one clear action | neon and puddle shatter with the camera | medium eye-level, subject enters and completes one action, neon and puddle shatter |\n"
+        f"{shot1}\n"
+        f"{shot2}\n"
     )
 
 
@@ -244,8 +359,10 @@ class BriefNodeHandler:
                 delegate=str(node_config(node).get("delegate") or ""),
             )
         except Exception:
+            logger.exception("Designer brief LLM failed; using fallback from the request")
             text = ""
         if not text:
+            logger.warning("Designer brief empty; using fallback from the request")
             text = fallback_brief(source)
         path = write_workspace_text(f"designer_brief_{ctx.run_id}_{ctx.node_id}", text)
         return NodeResult(
@@ -265,6 +382,10 @@ def _storyboard_alignment_context(ctx: NodeExecutionContext) -> str:
         or role_output_text(ctx, NODE_ROLE_SCENE)
     )
     if character_notes:
+        character_notes = _drop_markdown_tables(character_notes)
+    if scene_notes:
+        scene_notes = _drop_markdown_tables(scene_notes)
+    if character_notes:
         parts.append("Character sheet / notes (character action must match):\n" + character_notes)
     elif role_output_image_path(ctx, NODE_ROLE_CHARACTER_DESIGN) is not None:
         parts.append("A character sheet exists. Character action must match that look, costume, and materials. Do not invent a new character.")
@@ -275,27 +396,53 @@ def _storyboard_alignment_context(ctx: NodeExecutionContext) -> str:
     return "\n\n".join(parts)
 
 
+async def _complete_storyboard_table(prompt: str) -> str:
+    """Call the default chat model. Retry once if the reply has no shot table."""
+    text = ""
+    for attempt in (1, 2):
+        try:
+            text = unwrap_storyboard_markdown(
+                await handler_io.complete_designer_text(prompt, max_tokens=2400)
+            )
+        except Exception:
+            logger.exception(
+                "Designer storyboard chat API failed attempt=%s", attempt
+            )
+            text = ""
+        if parse_storyboard_shots(text):
+            return text
+        logger.warning(
+            "Designer storyboard chat API missing a shot table; attempt=%s", attempt
+        )
+    return text
+
+
 class StoryboardNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         source = role_output_text(ctx, NODE_ROLE_BRIEF) or graph_prompt(ctx.graph, node)
         alignment = _storyboard_alignment_context(ctx)
-        prompt = _STORYBOARD_INSTRUCTION + source
-        if alignment:
-            prompt = f"{prompt}\n\n{alignment}\n"
-        try:
-            text = await complete_designer_node_text(
-                prompt,
-                delegate=str(node_config(node).get("delegate") or ""),
-                max_tokens=1600,
+        prompt = build_storyboard_llm_prompt(source, alignment)
+        logger.info(
+            "Designer storyboard calling chat API brief_chars=%s prompt_chars=%s",
+            len(source or ""),
+            len(prompt),
+        )
+        text = await _complete_storyboard_table(prompt)
+        if parse_storyboard_shots(text):
+            logger.info("Designer storyboard using LLM table from the Brief")
+        else:
+            logger.warning(
+                "Designer storyboard LLM missing a shot table; writing Brief-derived shots"
             )
-        except Exception:
-            text = ""
-        if not text:
             text = fallback_storyboard(source)
         try:
-            text = await review_storyboard_with_peers(text, run_id=ctx.run_id)
+            reviewed = await review_storyboard_with_peers(
+                text, run_id=ctx.run_id, brief=source
+            )
         except Exception:
-            pass
+            reviewed = ""
+        if parse_storyboard_shots(unwrap_storyboard_markdown(reviewed)):
+            text = unwrap_storyboard_markdown(reviewed)
         path = write_workspace_text(f"designer_storyboard_{ctx.run_id}_{ctx.node_id}", text)
         return NodeResult(
             output_ref=file_output_ref(path, kind=NODE_TYPE_TABLE, mime_type="text/markdown"),

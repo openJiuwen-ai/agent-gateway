@@ -506,6 +506,9 @@ class GraphExecutor:
                     self._store.save_run(run)
                     return
                 run["current_node_ids"] = list(ready_ids)
+                run["updated_at"] = utc_now_ms()
+                self._publish(run, on_update)
+                self._store.save_run(run)
                 await collaborate_ready_wave(graph, run, ready_ids)
                 await asyncio.gather(
                     *(
@@ -624,12 +627,17 @@ class GraphExecutor:
         )
         if topology_matches and not bundled_frames:
             synced = apply_shot_generate_prompts(graph, prompts)
-            if synced is graph:
-                return graph, remaining, data_predecessors(graph), sync_groups(graph)
-            saved = self._store.save_graph(synced)
-            callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
-            if callback is not None:
-                callback(deepcopy(saved))
+            saved = synced if synced is graph else self._store.save_graph(synced)
+            if saved is not graph:
+                callback = self._on_graph_updates.get(str(run.get("run_id") or ""))
+                if callback is not None:
+                    callback(deepcopy(saved))
+            states = run.setdefault("node_states", {})
+            for node in saved.get("nodes") or []:
+                node_id = str(node.get("id") or "")
+                if node_id:
+                    states.setdefault(node_id, {"status": NODE_STATUS_PENDING})
+            remaining = _pending_node_ids(saved, run)
             return saved, remaining, data_predecessors(saved), sync_groups(saved)
 
         saved = self._store.save_graph(
@@ -770,6 +778,8 @@ class GraphExecutor:
                     "blocked_by": blocked_by,
                 },
             )
+            run["updated_at"] = utc_now_ms()
+            self._store.save_run(run)
             self._publish(run, on_update, node_id)
         try:
             ctx = NodeExecutionContext(
@@ -808,6 +818,7 @@ class GraphExecutor:
                 node_role(node) == NODE_ROLE_COMPOSE or _should_auto_promote(kept, primary)
             ):
                 pending = False
+            accepted = kept if pending else primary
             async with lock:
                 self._set_node_state(
                     run,
@@ -816,7 +827,7 @@ class GraphExecutor:
                         "status": NODE_STATUS_COMPLETED,
                         "started_at": started_at,
                         "completed_at": utc_now_ms(),
-                        "output_ref": kept if pending else primary,
+                        "output_ref": accepted,
                         "output_refs": kept_refs if pending else refs,
                         "candidate_output_ref": primary if pending else None,
                         "candidate_output_refs": refs if pending else [],
@@ -824,6 +835,12 @@ class GraphExecutor:
                         "blocked_by": [],
                     },
                 )
+            self._persist_node_output_on_graph(
+                graph,
+                node_id,
+                accepted if isinstance(accepted, dict) else None,
+                run_id=str(run.get("run_id") or ""),
+            )
             if node_role(node) == NODE_ROLE_STORYBOARD:
                 live_graph = self._require_graph(str(run.get("graph_id") or graph.get("graph_id") or ""))
                 self._expand_clips_if_needed(live_graph, run, set(), on_update=on_update)
@@ -855,6 +872,38 @@ class GraphExecutor:
     def _is_cancelled(self, run_id: str) -> bool:
         cancel_flag = self._cancel_flags.get(run_id)
         return cancel_flag is not None and cancel_flag.is_set()
+
+    def _persist_node_output_on_graph(
+        self,
+        graph: DesignerExecutionGraph,
+        node_id: str,
+        ref: dict[str, Any] | None,
+        *,
+        run_id: str,
+    ) -> None:
+        """Write the completed artifact onto the graph so a restart still shows it."""
+        if not node_id or not isinstance(ref, dict) or not str(ref.get("uri") or "").strip():
+            return
+        nodes = []
+        changed = False
+        for node in graph.get("nodes") or []:
+            if str(node.get("id") or "") != node_id:
+                nodes.append(node)
+                continue
+            current = node.get("output_ref")
+            if current == ref:
+                nodes.append(node)
+                continue
+            nodes.append({**node, "output_ref": dict(ref)})
+            changed = True
+        if not changed:
+            return
+        graph["nodes"] = nodes
+        saved = self._store.save_graph(graph)
+        graph.update(saved)
+        callback = self._on_graph_updates.get(run_id)
+        if callback is not None:
+            callback(deepcopy(saved))
 
     @staticmethod
     def _set_node_state(
@@ -982,8 +1031,10 @@ def _is_media_ref(ref: object) -> bool:
 
 
 def _should_auto_promote(kept: object, primary: object) -> bool:
-    """Replace fallback notes with a newly generated image/video instead of asking."""
-    return _is_fallback_text_ref(kept) and _is_media_ref(primary)
+    """Replace fallback notes with media, and replace regenerated markdown/tables in place."""
+    if _is_fallback_text_ref(kept) and _is_media_ref(primary):
+        return True
+    return _is_fallback_text_ref(kept) and _is_fallback_text_ref(primary)
 
 
 def _node_by_id(graph: DesignerExecutionGraph, node_id: str) -> DesignerGraphNode:
@@ -991,6 +1042,18 @@ def _node_by_id(graph: DesignerExecutionGraph, node_id: str) -> DesignerGraphNod
         if node.get("id") == node_id:
             return node
     raise KeyError(f"node not found: {node_id}")
+
+
+def _pending_node_ids(graph: DesignerExecutionGraph, run: DesignerExecutionRun) -> set[str]:
+    states = run.get("node_states") or {}
+    pending: set[str] = set()
+    for node in graph.get("nodes") or []:
+        node_id = str(node.get("id") or "")
+        if not node_id:
+            continue
+        if (states.get(node_id) or {}).get("status") not in _TERMINAL_NODE_STATUSES:
+            pending.add(node_id)
+    return pending
 
 
 def _is_ready(

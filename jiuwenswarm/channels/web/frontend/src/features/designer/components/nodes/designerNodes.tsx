@@ -7,16 +7,14 @@ import {
   Video,
   type LucideIcon,
 } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Handle, NodeToolbar, Position, type Node, type NodeProps } from '@xyflow/react';
+import { designerAssetPreviewUrl, designerAssetTextUrl } from '../../designerAssetUrl';
 import {
-  DESIGNER_FAKE_TABLE,
-  DESIGNER_FAKE_TEXT,
-  getCachedFakeImageUrl,
-  getCachedFakeVideoUrl,
-} from '../../designerFakeAssets';
-import { designerAssetPreviewUrl } from '../../designerAssetUrl';
-import { preferredDesignerPreviewRef } from '../../designerMaterials';
+  DESIGNER_MATERIAL_SAVED_EVENT,
+  preferredDesignerPreviewRef,
+} from '../../designerMaterials';
+import { parseMarkdownTable, storyboardShotPreviews } from '../../designerNodePreview';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
   DESIGNER_NODE_STATUS_FAILED,
@@ -57,6 +55,19 @@ function PlaceholderBody({ nodeType }: { nodeType: string }) {
   return (
     <span className="designer-node__placeholder" data-testid="designer-node-placeholder" data-node-type={nodeType}>
       <Icon className="designer-node__placeholder-icon" size={40} strokeWidth={1.5} aria-hidden />
+    </span>
+  );
+}
+
+function NodeOutputFrame({ running, children }: { running: boolean; children: ReactNode }) {
+  return (
+    <span className="designer-node__output-frame">
+      {children}
+      {running ? (
+        <span className="designer-node__running-overlay" data-testid="designer-node-running">
+          <Loader2 className="designer-node__running-icon" size={22} aria-hidden />
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -115,51 +126,134 @@ function DesignerNodeShell({
   );
 }
 
-function RunningBody() {
+function useDesignerAssetText(uri: string | null | undefined): string | null {
+  const url = designerAssetTextUrl(uri);
+  const [text, setText] = useState<string | null>(null);
+  const [reloadAt, setReloadAt] = useState(0);
+
+  useEffect(() => {
+    const onSaved = (event: Event) => {
+      const savedUri = (event as CustomEvent<{ uri?: string }>).detail?.uri;
+      if (savedUri && uri && savedUri === uri) {
+        setReloadAt(Date.now());
+      }
+    };
+    window.addEventListener(DESIGNER_MATERIAL_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(DESIGNER_MATERIAL_SAVED_EVENT, onSaved);
+  }, [uri]);
+
+  useEffect(() => {
+    if (!url) {
+      setText(null);
+      return;
+    }
+    let cancelled = false;
+    setText(null);
+    const fetchUrl = `${url}${url.includes('?') ? '&' : '?'}t=${reloadAt}`;
+    void fetch(fetchUrl)
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status));
+        return response.text();
+      })
+      .then((value) => {
+        if (!cancelled) setText(value);
+      })
+      .catch(() => {
+        if (!cancelled) setText(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [url, reloadAt]);
+
+  return text;
+}
+
+function useNodePreviewUri(nodeId: string): string | null {
+  const outputUri = useDesignerRunStore((state) => {
+    const nodeState = state.nodeStates[nodeId];
+    return preferredDesignerPreviewRef(
+      nodeState?.output_ref,
+      nodeState?.candidate_output_ref,
+    )?.uri ?? null;
+  });
+  const domainOutputUri = useDesignerStore(
+    (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.output_ref?.uri ?? null,
+  );
+  return outputUri || domainOutputUri;
+}
+
+function TextPreviewBody({ nodeId, nodeType }: { nodeId: string; nodeType: string }) {
+  const uri = useNodePreviewUri(nodeId);
+  const text = useDesignerAssetText(uri);
+  if (!text) return <PlaceholderBody nodeType={nodeType} />;
   return (
-    <span className="designer-node__running" data-testid="designer-node-running">
-      <Loader2 className="designer-node__running-icon" size={22} aria-hidden />
-    </span>
+    <p className="designer-node__text-preview" data-testid="designer-node-text-preview">
+      {text}
+    </p>
   );
 }
 
-function FakeTableBody() {
-  return (
-    <table className="designer-node__table" data-testid="designer-node-fake-table">
-      <thead>
-        <tr>
-          {DESIGNER_FAKE_TABLE.headers.map((header) => (
-            <th key={header}>{header}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {DESIGNER_FAKE_TABLE.rows.map((row) => (
-          <tr key={row.join('|')}>
-            {row.map((cell) => (
-              <td key={`${row[0]}-${cell}`}>{cell}</td>
+function TablePreviewBody({ nodeId }: { nodeId: string }) {
+  const uri = useNodePreviewUri(nodeId);
+  const text = useDesignerAssetText(uri);
+  const shots = text ? storyboardShotPreviews(text) : [];
+  if (shots.length > 0) {
+    return (
+      <ol className="designer-node__shots" data-testid="designer-node-shot-preview">
+        {shots.map((shot) => (
+          <li key={`${shot.shotNo}-${shot.timeline}-${shot.action}`} className="designer-node__shot">
+            <span className="designer-node__shot-head">
+              {shot.shotNo || '·'}
+              {shot.timeline ? ` · ${shot.timeline}` : ''}
+            </span>
+            {shot.action ? (
+              <p className="designer-node__shot-action">{shot.action}</p>
+            ) : null}
+            {shot.picture ? (
+              <p className="designer-node__shot-picture">{shot.picture}</p>
+            ) : null}
+          </li>
+        ))}
+      </ol>
+    );
+  }
+  const table = text ? parseMarkdownTable(text) : null;
+  if (table) {
+    return (
+      <table className="designer-node__table" data-testid="designer-node-table-preview">
+        <thead>
+          <tr>
+            {table.headers.map((header, index) => (
+              <th key={`${header}-${index}`}>{header}</th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
-  );
+        </thead>
+        <tbody>
+          {table.rows.map((row, rowIndex) => (
+            <tr key={row.join('|') || String(rowIndex)}>
+              {row.map((cell, cellIndex) => (
+                <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  if (text) {
+    return (
+      <p className="designer-node__text-preview" data-testid="designer-node-text-preview">
+        {text}
+      </p>
+    );
+  }
+  return <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_TABLE} />;
 }
 
 export function DesignerTextNode({ id, data, selected }: NodeProps<DesignerFlowNode>) {
   const nodeData = data as DesignerNodeData;
   const status = useDesignerRunStore((state) => state.nodeStates[id]?.status ?? 'pending');
-  const body =
-    status === DESIGNER_NODE_STATUS_RUNNING ? (
-      <RunningBody />
-    ) : status === DESIGNER_NODE_STATUS_COMPLETED ? (
-      <p className="designer-node__text" data-testid="designer-node-fake-text">
-        {DESIGNER_FAKE_TEXT}
-      </p>
-    ) : (
-      <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_TEXT} />
-    );
-
   const toolbar = (
     <NodeToolbar
       isVisible={selected}
@@ -178,7 +272,11 @@ export function DesignerTextNode({ id, data, selected }: NodeProps<DesignerFlowN
       label={nodeData.label}
       nodeType={DESIGNER_NODE_TYPE_TEXT}
       selected={selected}
-      body={body}
+      body={
+        <NodeOutputFrame running={status === DESIGNER_NODE_STATUS_RUNNING}>
+          <TextPreviewBody nodeId={id} nodeType={DESIGNER_NODE_TYPE_TEXT} />
+        </NodeOutputFrame>
+      }
       toolbar={toolbar}
     />
   );
@@ -187,14 +285,17 @@ export function DesignerTextNode({ id, data, selected }: NodeProps<DesignerFlowN
 export function DesignerTableNode({ id, data, selected }: NodeProps<DesignerFlowNode>) {
   const nodeData = data as DesignerNodeData;
   const status = useDesignerRunStore((state) => state.nodeStates[id]?.status ?? 'pending');
-  const body =
-    status === DESIGNER_NODE_STATUS_RUNNING ? (
-      <RunningBody />
-    ) : status === DESIGNER_NODE_STATUS_COMPLETED ? (
-      <FakeTableBody />
-    ) : (
-      <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_TABLE} />
-    );
+  const toolbar = (
+    <NodeToolbar
+      isVisible={selected}
+      position={Position.Bottom}
+      offset={16}
+      align="center"
+      className="designer-node-toolbar-portal"
+    >
+      <DesignerNodeToolbar nodeId={id} nodeType={DESIGNER_NODE_TYPE_TABLE} />
+    </NodeToolbar>
+  );
 
   return (
     <DesignerNodeShell
@@ -202,7 +303,12 @@ export function DesignerTableNode({ id, data, selected }: NodeProps<DesignerFlow
       label={nodeData.label}
       nodeType={DESIGNER_NODE_TYPE_TABLE}
       selected={selected}
-      body={body}
+      body={
+        <NodeOutputFrame running={status === DESIGNER_NODE_STATUS_RUNNING}>
+          <TablePreviewBody nodeId={id} />
+        </NodeOutputFrame>
+      }
+      toolbar={toolbar}
     />
   );
 }
@@ -211,64 +317,40 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
   const nodeData = data as DesignerNodeData;
   const nodeType = nodeData.nodeType;
   const status = useDesignerRunStore((state) => state.nodeStates[id]?.status ?? 'pending');
-  const outputUri = useDesignerRunStore((state) => {
-    const nodeState = state.nodeStates[id];
-    return preferredDesignerPreviewRef(
-      nodeState?.output_ref,
-      nodeState?.candidate_output_ref,
-    )?.uri ?? null;
-  });
-  const domainOutputUri = useDesignerStore(
-    (state) => state.domainGraph?.nodes.find((node) => node.id === id)?.output_ref?.uri ?? null,
-  );
-  const previewUri = outputUri || domainOutputUri;
+  const previewUri = useNodePreviewUri(id);
   const previewSrc = designerAssetPreviewUrl(previewUri) || previewUri;
   const hasPreview = Boolean(previewSrc);
-  const showCompletedMedia =
-    status === DESIGNER_NODE_STATUS_COMPLETED || hasPreview;
 
-  let body: ReactNode;
-  if (status === DESIGNER_NODE_STATUS_RUNNING) {
-    body = <RunningBody />;
-  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_IMAGE) {
-    const src = previewSrc || getCachedFakeImageUrl();
-    body = src ? (
+  let inner: ReactNode = <PlaceholderBody nodeType={nodeType} />;
+  if (hasPreview && nodeType === DESIGNER_NODE_TYPE_IMAGE) {
+    inner = (
       <img
         className="designer-node__media-preview"
-        src={src}
+        src={previewSrc || ''}
         alt={nodeData.label}
-        data-testid="designer-node-fake-image"
+        data-testid="designer-node-image-preview"
       />
-    ) : (
-      <PlaceholderBody nodeType={nodeType} />
     );
-  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_VIDEO) {
-    const src = previewSrc || getCachedFakeVideoUrl();
-    body = src ? (
+  } else if (hasPreview && nodeType === DESIGNER_NODE_TYPE_VIDEO) {
+    inner = (
       <video
         className="designer-node__media-preview"
-        src={src}
+        src={previewSrc || ''}
         playsInline
         controls={true}
         autoPlay={false}
-        data-testid="designer-node-fake-video"
+        data-testid="designer-node-video-preview"
       />
-    ) : (
-      <PlaceholderBody nodeType={nodeType} />
     );
-  } else if (showCompletedMedia && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    body = previewSrc ? (
+  } else if (hasPreview && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
+    inner = (
       <audio
         className="designer-node__audio-preview"
-        src={previewSrc}
+        src={previewSrc || ''}
         controls
         data-testid="designer-node-uploaded-audio"
       />
-    ) : (
-      <PlaceholderBody nodeType={DESIGNER_NODE_TYPE_AUDIO} />
     );
-  } else {
-    body = <PlaceholderBody nodeType={nodeType} />;
   }
 
   const toolbar = supportsNodeToolbar(nodeType) ? (
@@ -289,9 +371,13 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       label={nodeData.label}
       nodeType={nodeType}
       media={isMediaNodeType(nodeType)}
-      mediaFilled={hasPreview || status === DESIGNER_NODE_STATUS_COMPLETED}
+      mediaFilled={hasPreview}
       selected={selected}
-      body={body}
+      body={
+        <NodeOutputFrame running={status === DESIGNER_NODE_STATUS_RUNNING}>
+          {inner}
+        </NodeOutputFrame>
+      }
       toolbar={toolbar}
     />
   );

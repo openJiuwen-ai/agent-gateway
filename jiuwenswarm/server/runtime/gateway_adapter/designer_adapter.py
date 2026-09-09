@@ -74,6 +74,34 @@ def _error(
     return build_error_response(request, message, code=code)
 
 
+def hydrate_graph_node_outputs(
+    graph: dict[str, Any],
+    run: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Copy the latest run's node outputs onto the graph so switching graphs shows real previews."""
+    if not graph or not run:
+        return graph
+    states = run.get("node_states") or {}
+    if not isinstance(states, dict) or not states:
+        return graph
+    nodes = []
+    changed = False
+    for node in graph.get("nodes") or []:
+        if not isinstance(node, dict):
+            nodes.append(node)
+            continue
+        state = states.get(str(node.get("id") or "")) or {}
+        ref = state.get("output_ref") if isinstance(state, dict) else None
+        if isinstance(ref, dict) and str(ref.get("uri") or "").strip():
+            if node.get("output_ref") != ref:
+                node = {**node, "output_ref": dict(ref)}
+                changed = True
+        nodes.append(node)
+    if not changed:
+        return graph
+    return {**graph, "nodes": nodes}
+
+
 def _get_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     graph_id = str(params.get("graph_id") or "").strip()
     if not graph_id:
@@ -82,7 +110,8 @@ def _get_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
     if graph is None:
         return None, "graph not found", "NOT_FOUND"
     graph = _executor.reconcile_loaded_graph(graph)
-    return {"graph": dict(graph)}, None, None
+    run = _store.get_latest_run_for_graph(graph_id)
+    return {"graph": dict(hydrate_graph_node_outputs(graph, run))}, None, None
 
 
 def _run_clip_summary(run: dict[str, Any] | None) -> tuple[bool, str | None]:
@@ -109,8 +138,9 @@ def _run_clip_summary(run: dict[str, Any] | None) -> tuple[bool, str | None]:
     return False, None
 
 
-def _summarize_graph(graph: dict[str, Any]) -> dict[str, Any]:
-    run = _store.get_latest_run_for_graph(str(graph.get("graph_id") or ""))
+def _summarize_graph(graph: dict[str, Any], run: dict[str, Any] | None = None) -> dict[str, Any]:
+    if run is None:
+        run = _store.get_latest_run_for_graph(str(graph.get("graph_id") or ""))
     has_video, clip_label = _run_clip_summary(run)
     return {
         "graph_id": graph.get("graph_id"),
@@ -135,10 +165,17 @@ def _list_graphs(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | N
         graphs = _store.list_graphs_for_project(project_id)
     else:
         graphs = _store.list_graphs()
-    payload = [dict(graph) for graph in graphs]
+    payload: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    for graph in graphs:
+        item = dict(graph)
+        run = _store.get_latest_run_for_graph(str(item.get("graph_id") or ""))
+        item = hydrate_graph_node_outputs(item, run)
+        payload.append(item)
+        summaries.append(_summarize_graph(item, run))
     return {
         "graphs": payload,
-        "summaries": [_summarize_graph(graph) for graph in payload],
+        "summaries": summaries,
     }, None, None
 
 

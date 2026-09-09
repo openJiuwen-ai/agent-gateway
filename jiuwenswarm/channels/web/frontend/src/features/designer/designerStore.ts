@@ -1,5 +1,10 @@
 import { create } from 'zustand';
+import {
+  buildDesignerBootstrapPreviewGraph,
+  isDesignerPreviewGraph,
+} from './designerBootstrapGraph';
 import { designerGraphClient } from './designerGraphClient';
+import { resolveDesignerGraphToLoad } from './designerGraphLoad';
 import type { DesignerReactFlowGraph } from './designerGraphAdapter';
 import type { AssetRef, DesignerExecutionGraph, DesignerGraphNode } from './executionGraphTypes';
 
@@ -15,6 +20,7 @@ const SAVE_DEBOUNCE_MS = 500;
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveSeq = 0;
+let loadSeq = 0;
 
 type DesignerStore = {
   graphId: string | null;
@@ -28,7 +34,7 @@ type DesignerStore = {
   setSelectedNodeId: (nodeId: string | null) => void;
   loadForProject: (projectId: string | undefined) => Promise<void>;
   loadGraph: (graphId: string) => Promise<void>;
-  beginBootstrapEntry: () => void;
+  beginBootstrapEntry: (prompt?: string) => void;
   failBootstrapEntry: (message: string) => void;
   applyGraph: (graph: DesignerExecutionGraph) => void;
   updateNodeConfig: (
@@ -67,28 +73,38 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
 
   setSelectedNodeId: (nodeId) => set({ selectedNodeId: nodeId }),
 
-  beginBootstrapEntry: () => {
+  beginBootstrapEntry: (prompt) => {
     clearSaveTimer();
+    const existing = get().domainGraph;
+    const keepExisting = Boolean(existing) && !isDesignerPreviewGraph(existing);
+    const preview = keepExisting ? existing : buildDesignerBootstrapPreviewGraph(prompt);
     set({
-      graphId: null,
-      domainGraph: null,
-      loadStatus: 'bootstrapping',
+      graphId: preview?.graph_id ?? null,
+      domainGraph: preview,
+      loadStatus: preview ? 'ready' : 'bootstrapping',
       loadError: null,
       bootstrapInProgress: true,
-      selectedNodeId: null,
+      selectedNodeId: keepExisting ? get().selectedNodeId : null,
       saveStatus: 'idle',
     });
   },
 
-  failBootstrapEntry: (message) =>
+  failBootstrapEntry: (message) => {
+    const graph = get().domainGraph;
+    const keep = Boolean(graph) && !isDesignerPreviewGraph(graph);
     set({
-      graphId: null,
-      domainGraph: null,
-      loadStatus: 'error',
+      loadStatus: keep ? 'ready' : 'error',
       loadError: message,
       bootstrapInProgress: false,
-      selectedNodeId: null,
-    }),
+      ...(keep
+        ? {}
+        : {
+            graphId: null,
+            domainGraph: null,
+            selectedNodeId: null,
+          }),
+    });
+  },
 
   applyGraph: (graph) => {
     saveSeq += 1;
@@ -104,9 +120,18 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
   loadGraph: async (graphId) => {
     const id = String(graphId ?? '').trim();
     if (!id) return;
-    set({ loadStatus: 'loading', loadError: null });
+    const gen = ++loadSeq;
+    const keepGraph = get().domainGraph;
+    const sameGraph = keepGraph?.graph_id === id;
+    set({
+      graphId: id,
+      domainGraph: sameGraph ? keepGraph : null,
+      loadStatus: sameGraph ? 'ready' : 'loading',
+      loadError: null,
+    });
     try {
       const { graph } = await designerGraphClient.get(id);
+      if (gen !== loadSeq) return;
       set({
         graphId: graph.graph_id,
         domainGraph: graph,
@@ -115,6 +140,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         bootstrapInProgress: false,
       });
     } catch (error) {
+      if (gen !== loadSeq) return;
       set({
         loadStatus: 'error',
         loadError: error instanceof Error ? error.message : String(error),
@@ -304,15 +330,19 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
   flushSave: async () => {
     clearSaveTimer();
     const graph = get().domainGraph;
-    if (!graph || get().bootstrapInProgress) return;
+    if (!graph || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
     const seq = ++saveSeq;
     const sentCount = graph.nodes.length;
+    const savedGraphId = graph.graph_id;
     set({ saveStatus: 'saving' });
     try {
       const { graph: saved } = await designerGraphClient.save(graph);
       if (seq !== saveSeq) return;
       const live = get().domainGraph;
-      if (live && live.graph_id === graph.graph_id && live.nodes.length > sentCount) {
+      if (!live || live.graph_id !== savedGraphId) {
+        return;
+      }
+      if (live.nodes.length > sentCount) {
         set({ saveStatus: 'saved' });
         return;
       }
@@ -360,29 +390,33 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     const previousGraph = get().domainGraph;
     const previousStatus = get().loadStatus;
     const previousGraphId = get().graphId;
+    const gen = loadSeq;
 
     set({
-      loadStatus: 'loading',
+      loadStatus: previousGraph ? 'ready' : 'loading',
       loadError: null,
     });
 
     try {
       const listed = await designerGraphClient.list(effectiveProjectId);
-      if (get().bootstrapInProgress) {
+      if (gen !== loadSeq || get().bootstrapInProgress) {
         return;
       }
       const graphs = listed.graphs || [];
       const summaries = listed.summaries || [];
-      const currentId = String(get().graphId ?? '').trim();
-      const preferred =
-        summaries.find((item) => item.graph_id === currentId) ??
-        graphs.find((item) => item.graph_id === currentId) ??
-        summaries[0] ??
-        graphs[0];
-      const latest = preferred
-        ? graphs.find((item) => item.graph_id === preferred.graph_id) ?? graphs[0]
-        : undefined;
-      if (!latest?.graph_id) {
+      const listedIds = [
+        ...summaries.map((item) => item.graph_id),
+        ...graphs.map((item) => item.graph_id),
+      ].filter((id): id is string => Boolean(id));
+      const targetId = resolveDesignerGraphToLoad({
+        currentId: get().graphId,
+        isPreview: isDesignerPreviewGraph(get().domainGraph),
+        listedIds,
+      });
+      if (previousGraphId && get().graphId && get().graphId !== previousGraphId && get().graphId !== targetId) {
+        return;
+      }
+      if (!targetId) {
         if (previousStatus === 'ready' && previousGraph) {
           set({
             graphId: previousGraphId,
@@ -402,8 +436,12 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         return;
       }
 
-      const { graph } = await designerGraphClient.get(latest.graph_id);
-      if (get().bootstrapInProgress) {
+      if (get().domainGraph?.graph_id === targetId && get().loadStatus === 'ready') {
+        return;
+      }
+
+      const { graph } = await designerGraphClient.get(targetId);
+      if (gen !== loadSeq || get().bootstrapInProgress) {
         return;
       }
       set({
@@ -413,7 +451,7 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
         loadError: null,
       });
     } catch (error) {
-      if (get().bootstrapInProgress) {
+      if (gen !== loadSeq || get().bootstrapInProgress) {
         return;
       }
       if (previousStatus === 'ready' && previousGraph) {

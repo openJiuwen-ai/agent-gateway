@@ -539,9 +539,14 @@ async def _invoke_model_image_generation(
         ds_size = _dashscope_image_size(size)
 
         async def _call():
-            return await model_instance.generate_image(
-                messages=messages, model=model, size=ds_size
-            )
+            def _generate_image_blocking() -> Any:
+                return asyncio.run(
+                    model_instance.generate_image(
+                        messages=messages, model=model, size=ds_size
+                    )
+                )
+
+            return await asyncio.to_thread(_generate_image_blocking)
 
         result = await _RetryExecutor.with_backoff(_call, max_tries=3)
 

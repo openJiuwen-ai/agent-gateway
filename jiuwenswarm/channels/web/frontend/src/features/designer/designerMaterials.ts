@@ -138,6 +138,9 @@ export function preferredDesignerPreviewRef(
   if (isDesignerMediaAsset(candidate) && (!accepted || isDesignerFallbackTextAsset(accepted))) {
     return candidate ?? null;
   }
+  if (isDesignerFallbackTextAsset(candidate) && isDesignerFallbackTextAsset(accepted)) {
+    return candidate ?? null;
+  }
   return accepted || candidate || null;
 }
 
@@ -152,7 +155,10 @@ export function shouldAutoPromoteDesignerRevision(
     mime_type: item.mimeType,
     label: item.label,
   });
-  return isDesignerFallbackTextAsset(asRef(original)) && isDesignerMediaAsset(asRef(incoming));
+  if (isDesignerFallbackTextAsset(asRef(original)) && isDesignerMediaAsset(asRef(incoming))) {
+    return true;
+  }
+  return isDesignerFallbackTextAsset(asRef(original)) && isDesignerFallbackTextAsset(asRef(incoming));
 }
 
 export function hasPendingDesignerRevision(state: DesignerNodeState | undefined): boolean {

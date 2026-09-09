@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { DesignerTextEditor } from '../../DesignerTextEditor';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
 import {
   collectDesignerMaterials,
@@ -8,29 +9,26 @@ import {
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
 import { useDesignerUiStore } from '../../designerUiStore';
-import { DESIGNER_NODE_TYPE_TEXT } from '../../executionGraphTypes';
 import {
+  isMediaNodeType,
+  isTextLikeNodeType,
   readMediaConfig,
-  writeMediaEditPatch,
-  // writeMediaGeneratePatch,
+  writeMediaGeneratePatch,
   writeMediaUploadPatch,
 } from '../../mediaNodeConfig';
-// import { DesignerMaterialStrip } from './DesignerMaterialStrip';
+import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 
 type DesignerNodeToolbarProps = {
   nodeId: string;
   nodeType: string;
 };
 
-type ExpandedPanel = /* 'generate' | */ 'upload' | 'edit' | null;
-
-function notifyNotImplemented(message: string) {
-  window.alert(message);
-}
+type ExpandedPanel = 'generate' | 'upload' | 'edit' | null;
 
 export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarProps) {
   const { t } = useTranslation();
-  const isTextNode = nodeType === DESIGNER_NODE_TYPE_TEXT;
+  const isTextLike = isTextLikeNodeType(nodeType);
+  const isMedia = isMediaNodeType(nodeType);
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const setNodeOutputRef = useDesignerStore((state) => state.setNodeOutputRef);
   const applyUploadedOutput = useDesignerRunStore((state) => state.applyUploadedOutput);
@@ -42,6 +40,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
   const getAsset = useDesignerAssetLibraryStore((state) => state.getById);
   const inspectNode = useDesignerUiStore((state) => state.inspectNode);
+  const startEdit = useDesignerUiStore((state) => state.startEdit);
   const openRevision = useDesignerUiStore((state) => state.openRevision);
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
@@ -49,8 +48,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   const media = readMediaConfig(config, nodeType);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  // First stage only until the user opens upload / edit.
-  // Regenerate currently fires immediately (workflow-style), without expanding a panel.
   const [expanded, setExpanded] = useState<ExpandedPanel>(null);
 
   useEffect(() => {
@@ -66,17 +63,9 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
   );
   const pendingRevision = hasPendingDesignerRevision(nodeState);
 
-  // Temporarily unused while regenerate skips the secondary generate panel.
-  // const patchGenerate = useCallback(
-  //   (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
-  //     updateNodeConfig(nodeId, (current) => writeMediaGeneratePatch(current, patch));
-  //   },
-  //   [nodeId, updateNodeConfig],
-  // );
-
-  const patchEdit = useCallback(
-    (content: string) => {
-      updateNodeConfig(nodeId, (current) => writeMediaEditPatch(current, { content }));
+  const patchGenerate = useCallback(
+    (patch: Parameters<typeof writeMediaGeneratePatch>[1]) => {
+      updateNodeConfig(nodeId, (current) => writeMediaGeneratePatch(current, patch));
     },
     [nodeId, updateNodeConfig],
   );
@@ -144,7 +133,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     void rerunNode(domainGraph, nodeId);
   }, [domainGraph, isRunning, nodeId, rerunNode]);
 
-  const secondaryPanel: ExpandedPanel = isTextNode ? 'edit' : 'upload';
+  const secondaryPanel: ExpandedPanel = isTextLike ? 'edit' : 'upload';
 
   return (
     <div
@@ -173,13 +162,15 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           data-testid="designer-node-toolbar-tab-generate"
           disabled={isRunning || !domainGraph}
           title={t('designer.toolbar.rerunHint')}
-          // Regenerate skips the secondary generate panel.
-          // aria-selected={expanded === 'generate'}
-          // className={`designer-node-toolbar__tab${expanded === 'generate' ? ' is-active' : ''}`}
-          // onClick={() => setExpanded((prev) => (prev === 'generate' ? null : 'generate'))}
-          aria-selected={false}
-          className="designer-node-toolbar__tab"
-          onClick={onGenerateNode}
+          aria-selected={isMedia && expanded === 'generate'}
+          className={`designer-node-toolbar__tab${isMedia && expanded === 'generate' ? ' is-active' : ''}`}
+          onClick={() => {
+            if (isMedia) {
+              setExpanded((prev) => (prev === 'generate' ? null : 'generate'));
+              return;
+            }
+            onGenerateNode();
+          }}
         >
           {t('designer.toolbar.regenerate')}
         </button>
@@ -189,13 +180,21 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           aria-selected={expanded === secondaryPanel}
           className={`designer-node-toolbar__tab${expanded === secondaryPanel ? ' is-active' : ''}`}
           data-testid={
-            isTextNode ? 'designer-node-toolbar-tab-edit' : 'designer-node-toolbar-tab-upload'
+            isTextLike ? 'designer-node-toolbar-tab-edit' : 'designer-node-toolbar-tab-upload'
           }
-          onClick={() =>
-            setExpanded((prev) => (prev === secondaryPanel ? null : secondaryPanel))
-          }
+          onClick={() => {
+            if (isTextLike) {
+              if (hasOutput) {
+                startEdit(material?.id || nodeId);
+                return;
+              }
+              setExpanded((prev) => (prev === 'edit' ? null : 'edit'));
+              return;
+            }
+            setExpanded((prev) => (prev === secondaryPanel ? null : secondaryPanel));
+          }}
         >
-          {isTextNode ? t('designer.toolbar.edit') : t('designer.toolbar.upload')}
+          {isTextLike ? t('designer.toolbar.edit') : t('designer.toolbar.upload')}
         </button>
         {pendingRevision ? (
           <button
@@ -209,8 +208,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
         ) : null}
       </div>
 
-      {/* Temporarily disabled: regenerate opens this second-stage generate panel.
-      {expanded === 'generate' ? (
+      {expanded === 'generate' && isMedia ? (
         <div
           className="designer-node-toolbar__panel"
           role="tabpanel"
@@ -221,67 +219,10 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
             className="designer-node-toolbar__prompt"
             value={media.generate?.prompt ?? ''}
             placeholder={t('designer.toolbar.promptPlaceholder')}
-            rows={3}
+            rows={4}
             data-testid="designer-node-toolbar-prompt"
             onChange={(event) => patchGenerate({ prompt: event.target.value })}
           />
-          {!isTextNode ? (
-            <div className="designer-node-toolbar__params" data-testid="designer-node-toolbar-params">
-              <label className="designer-node-toolbar__param">
-                <span>{t('designer.toolbar.aspectRatio')}</span>
-                <select
-                  value={media.generate?.aspect_ratio ?? '16:9'}
-                  onChange={(event) => patchGenerate({ aspect_ratio: event.target.value })}
-                >
-                  <option value="16:9">16:9</option>
-                  <option value="9:16">9:16</option>
-                  <option value="1:1">1:1</option>
-                  <option value="4:3">4:3</option>
-                </select>
-              </label>
-              <label className="designer-node-toolbar__param">
-                <span>{t('designer.toolbar.resolution')}</span>
-                <select
-                  value={media.generate?.resolution ?? '1080p'}
-                  onChange={(event) => patchGenerate({ resolution: event.target.value })}
-                >
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                  <option value="4k">4K</option>
-                </select>
-              </label>
-              <label className="designer-node-toolbar__param">
-                <span>{t('designer.toolbar.duration')}</span>
-                <select
-                  value={media.generate?.duration ?? '5s'}
-                  onChange={(event) => patchGenerate({ duration: event.target.value })}
-                >
-                  <option value="3s">3s</option>
-                  <option value="5s">5s</option>
-                  <option value="10s">10s</option>
-                </select>
-              </label>
-              <label className="designer-node-toolbar__param designer-node-toolbar__param--check">
-                <input
-                  type="checkbox"
-                  checked={Boolean(media.generate?.has_audio)}
-                  onChange={(event) => patchGenerate({ has_audio: event.target.checked })}
-                />
-                <span>{t('designer.toolbar.hasAudio')}</span>
-              </label>
-              <label className="designer-node-toolbar__param">
-                <span>{t('designer.toolbar.count')}</span>
-                <select
-                  value={String(media.generate?.count ?? 1)}
-                  onChange={(event) => patchGenerate({ count: Number(event.target.value) || 1 })}
-                >
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="4">4</option>
-                </select>
-              </label>
-            </div>
-          ) : null}
           <button
             type="button"
             className="designer-node-toolbar__action"
@@ -294,7 +235,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           </button>
         </div>
       ) : null}
-      */}
 
       {expanded === 'edit' ? (
         <div
@@ -302,22 +242,11 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
           role="tabpanel"
           data-testid="designer-node-toolbar-panel-edit"
         >
-          <textarea
-            className="designer-node-toolbar__prompt designer-node-toolbar__prompt--edit"
-            value={media.edit?.content ?? ''}
-            placeholder={t('designer.toolbar.editPlaceholder')}
-            rows={6}
-            data-testid="designer-node-toolbar-edit-content"
-            onChange={(event) => patchEdit(event.target.value)}
-          />
-          <button
-            type="button"
-            className="designer-node-toolbar__action"
-            data-testid="designer-node-toolbar-edit-action"
-            onClick={() => notifyNotImplemented(t('designer.toolbar.actionNotImplemented'))}
-          >
-            {t('designer.toolbar.editAction')}
-          </button>
+          {material?.textUrl ? (
+            <DesignerTextEditor material={material} compact showStartButton={false} startEditKey={1} />
+          ) : (
+            <p>{t('designer.materials.placeholderHint')}</p>
+          )}
         </div>
       ) : null}
 

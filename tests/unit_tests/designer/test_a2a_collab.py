@@ -9,6 +9,7 @@ import pytest
 from jiuwenswarm.common.schema.designer_graph import (
     NODE_ROLE_CHARACTER_DESIGN,
     NODE_ROLE_SCENE,
+    NODE_TYPE_IMAGE,
     SCHEMA_VERSION,
     build_bootstrap_graph,
     normalize_execution_graph,
@@ -58,11 +59,11 @@ async def test_align_specialists_writes_cards(
     async def fake_text(prompt: str, max_tokens: int = 800) -> str:
         calls.append(prompt)
         if "conflict" in prompt or "constraint" in prompt:
-            return "- Costume must stay wet leather\n- Neon is rim light only"
+            return "- Costume must stay messenger bag\n- Keep morning station light"
         if "character designer" in prompt:
-            return "# Character\nwet leather, short hair"
+            return "# Character\nsmart-casual blazer, messenger bag"
         if "production designer" in prompt:
-            return "# Scene\nrain alley, puddle neon"
+            return "# Scene\nmorning station, glass canopy"
         return "# other"
 
     monkeypatch.setattr(
@@ -70,7 +71,7 @@ async def test_align_specialists_writes_cards(
         fake_text,
     )
     cards = await align_specialists(
-        "雨夜赛博朋克",
+        "火车站晨间",
         [NODE_ROLE_CHARACTER_DESIGN, NODE_ROLE_SCENE],
         run_id="run_align01",
     )
@@ -93,7 +94,16 @@ async def test_collaborate_ready_wave_runs_for_character_and_scene(
         "jiuwenswarm.server.runtime.designer.handlers.common.complete_designer_text",
         fake_text,
     )
-    graph = build_bootstrap_graph(project_id="proj_a2a01", prompt="雨夜")
+    graph = build_bootstrap_graph(project_id="proj_a2a01", prompt="火车站")
+    graph["nodes"].append(
+        {
+            "id": "n_scene",
+            "type": NODE_TYPE_IMAGE,
+            "label": "Scene",
+            "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
+        }
+    )
+    graph = normalize_execution_graph(graph)
     run = normalize_execution_run(
         {
             "schema_version": "designer-execution-run.v1",
@@ -180,7 +190,7 @@ async def test_review_storyboard_keeps_table_when_peers_ok(
         "# 角色\n皮衣", encoding="utf-8"
     )
     workspace.joinpath("designer_a2a_run_rev01_scene.md").write_text(
-        "# 场景\n雨巷", encoding="utf-8"
+        "# 场景\n玻璃站台", encoding="utf-8"
     )
 
     async def fake_text(prompt: str, max_tokens: int = 800) -> str:
@@ -193,6 +203,6 @@ async def test_review_storyboard_keeps_table_when_peers_ok(
     table = (
         "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
         "| --- | --- | --- | --- | --- | --- |\n"
-        "| 1 | 0-5s | 全景 | 固定 | 未入画 | 雨巷 |\n"
+        "| 1 | 0-5s | 全景 | 固定 | 未入画 | 站台 |\n"
     )
     assert await review_storyboard_with_peers(table, run_id="run_rev01") == table

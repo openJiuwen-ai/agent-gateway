@@ -9,6 +9,7 @@ import {
 } from '../designerMaterials';
 import { useDesignerChatStore } from '../designerChatStore';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
+import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { DesignerMaterialViewer } from '../DesignerMaterialViewer';
@@ -53,14 +54,14 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
   // Tasks→Design bootstrap 结束后 bootstrapInProgress 会变 false，若立刻 list/get
   //（尤其 projectId 为空或与新建 project 不一致），会把刚 apply 的图刷成 empty。
   const skipLoadAfterBootstrapRef = useRef(false);
-  const skipLoadAfterSelectRef = useRef(false);
 
   useEffect(() => bindDesignerRuntime(), []);
 
   useEffect(() => {
     if (pendingDesignerGraphId) {
-      skipLoadAfterSelectRef.current = true;
-      void loadGraph(pendingDesignerGraphId).then(() => setPendingDesignerGraphId(null));
+      const nextId = pendingDesignerGraphId;
+      setPendingDesignerGraphId(null);
+      void loadGraph(nextId);
       return;
     }
     if (bootstrapInProgress) {
@@ -69,10 +70,6 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     }
     if (skipLoadAfterBootstrapRef.current) {
       skipLoadAfterBootstrapRef.current = false;
-      return;
-    }
-    if (skipLoadAfterSelectRef.current) {
-      skipLoadAfterSelectRef.current = false;
       return;
     }
     void loadForProject(effectiveProjectId);
@@ -118,14 +115,19 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
   const activeRevision =
     pendingRevisions.find((item) => item.nodeId === chooserNodeId) ?? pendingRevisions[0];
 
-  const showCanvas = loadStatus === 'ready' && domainGraph;
-  const showEmpty = loadStatus === 'empty';
-  const showError = loadStatus === 'error';
+  const graphReady = Boolean(domainGraph) && (!graphId || domainGraph.graph_id === graphId);
+  const showCanvas = graphReady;
+  const showEmpty = !showCanvas && loadStatus === 'empty';
+  const showError = !showCanvas && loadStatus === 'error';
   const showLoading =
-    loadStatus === 'loading' || loadStatus === 'idle' || loadStatus === 'bootstrapping';
+    !showCanvas &&
+    (loadStatus === 'loading' || loadStatus === 'idle' || loadStatus === 'bootstrapping');
 
+  const selectedGraphTitle =
+    designerGraphs.find((item) => item.graph_id === graphId)?.title?.trim() || '';
   const projectTitle =
     domainGraph?.title?.trim() ||
+    selectedGraphTitle ||
     (showLoading || showEmpty || showError ? '' : t('designer.subtitle'));
 
   return (
@@ -143,10 +145,12 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
           <label className="designer-page__recent">
             <span>{t('designer.recentGraphs')}</span>
             <select
-              value={graphId || ''}
+              value={isDesignerPreviewGraph(domainGraph) ? '' : graphId || ''}
               onChange={(event) => {
                 const nextId = event.target.value;
-                if (nextId) setPendingDesignerGraphId(nextId);
+                if (nextId && nextId !== graphId) {
+                  void loadGraph(nextId);
+                }
               }}
               data-testid="designer-recent-graphs"
             >
@@ -163,7 +167,11 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
         <div className="designer-page__toolbar-actions">
           <DesignerRunControl
             graph={showCanvas ? domainGraph : null}
-            disabled={!showCanvas}
+            disabled={
+              !showCanvas ||
+              bootstrapInProgress ||
+              isDesignerPreviewGraph(domainGraph)
+            }
           />
         </div>
       </header>

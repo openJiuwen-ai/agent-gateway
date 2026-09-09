@@ -44,7 +44,7 @@ export function isMediaNodeType(nodeType: string): boolean {
 }
 
 export function supportsNodeToolbar(nodeType: string): boolean {
-  return isMediaNodeType(nodeType) || nodeType === 'text';
+  return isMediaNodeType(nodeType) || isTextLikeNodeType(nodeType);
 }
 
 export function isTextLikeNodeType(nodeType: string): boolean {
@@ -56,7 +56,7 @@ function normalizeInteractionMode(
   nodeType?: string,
 ): MediaInteractionMode {
   if (raw === 'generate') return 'generate';
-  if (nodeType === 'text') {
+  if (nodeType === 'text' || nodeType === 'table') {
     return raw === 'edit' || raw === 'upload' ? 'edit' : 'generate';
   }
   return raw === 'upload' ? 'upload' : 'generate';

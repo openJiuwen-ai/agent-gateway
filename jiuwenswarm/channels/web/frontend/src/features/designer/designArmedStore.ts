@@ -18,6 +18,8 @@ type DesignArmedStore = {
   ensureRuntime: (sessionId: string) => void;
   isArmed: (sessionId: string) => boolean;
   setArmed: (sessionId: string, armed: boolean) => void;
+  /** 若当前 armed 则关掉并返回 true（发送时一次性消费）。 */
+  consumeArmed: (sessionId: string) => boolean;
 };
 
 export const useDesignArmedStore = create<DesignArmedStore>((set, get) => ({
@@ -41,5 +43,11 @@ export const useDesignArmedStore = create<DesignArmedStore>((set, get) => ({
         [sessionId]: { ...(state.runtimes[sessionId] ?? createEmptyRuntime()), armed },
       },
     }));
+  },
+
+  consumeArmed: (sessionId) => {
+    if (!get().isArmed(sessionId)) return false;
+    get().setArmed(sessionId, false);
+    return true;
   },
 }));

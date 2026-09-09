@@ -61,6 +61,16 @@ def node_generate_prompt(node: DesignerGraphNode | None) -> str:
     return str((config or {}).get("prompt") or "").strip()
 
 
+def node_generate_prompt_origin(node: DesignerGraphNode | None) -> str:
+    if node is None:
+        return ""
+    config = node.get("config") if isinstance(node.get("config"), dict) else {}
+    generate = config.get("generate") if isinstance(config, dict) else None
+    if isinstance(generate, dict):
+        return str(generate.get("prompt_origin") or "").strip()
+    return ""
+
+
 def path_from_uri(uri: str) -> Path | None:
     value = (uri or "").strip()
     if not value or value.startswith("designer://"):
@@ -170,6 +180,31 @@ def role_output_image_path(ctx: NodeExecutionContext, role: str) -> Path | None:
     return paths[0] if paths else None
 
 
+_TEXT_SUFFIXES = {".md", ".txt", ".markdown", ".csv"}
+
+
+def role_output_text_path(ctx: NodeExecutionContext, role: str) -> Path | None:
+    """Return the markdown/text artifact for a role, if the node wrote a file."""
+    if ctx.run is None:
+        return None
+    states = ctx.run.get("node_states") or {}
+    for node in ctx.graph.get("nodes") or []:
+        if node_role(node) != role:
+            continue
+        ref = (states.get(node["id"]) or {}).get("output_ref") or {}
+        path = path_from_uri(str(ref.get("uri") or ""))
+        if path is None or not path.is_file():
+            continue
+        candidates = [path] if path.suffix.lower() in _TEXT_SUFFIXES else []
+        sidecar = path.with_suffix(".md")
+        if sidecar not in candidates:
+            candidates.append(sidecar)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
 def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
     if ctx.run is None:
         return ""
@@ -181,8 +216,7 @@ def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
         path = path_from_uri(str(ref.get("uri") or ""))
         if path is None or not path.is_file():
             continue
-        text_suffixes = {".md", ".txt", ".markdown", ".csv"}
-        candidates = [path] if path.suffix.lower() in text_suffixes else []
+        candidates = [path] if path.suffix.lower() in _TEXT_SUFFIXES else []
         sidecar = path.with_suffix(".md")
         if sidecar not in candidates:
             candidates.append(sidecar)
@@ -196,10 +230,49 @@ def role_output_text(ctx: NodeExecutionContext, role: str) -> str:
     return ""
 
 
+def _blocks_to_text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for block in value:
+            if isinstance(block, dict):
+                text = block.get("text") or block.get("content") or ""
+                if text:
+                    parts.append(str(text))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts).strip()
+    if isinstance(value, dict):
+        return _blocks_to_text(value.get("text") or value.get("content"))
+    return ""
+
+
+def model_response_text(response: object) -> str:
+    """Read visible text from a chat-model response, including reasoning-only payloads."""
+    if response is None:
+        return ""
+    if isinstance(response, str):
+        return response.strip()
+    for attr in ("content", "text", "reasoning_content", "output_text"):
+        text = _blocks_to_text(getattr(response, attr, None))
+        if text:
+            return text
+    extra = getattr(response, "model_extra", None) or getattr(response, "extra", None)
+    if isinstance(extra, dict):
+        text = _blocks_to_text(extra.get("content") or extra.get("reasoning_content"))
+        if text:
+            return text
+    return ""
+
+
 async def complete_designer_text(prompt: str, *, max_tokens: int = 1200) -> str:
     """Call the default chat model. Tests monkeypatch this function."""
     from jiuwenswarm.common.config import get_config, get_default_models
-    from openjiuwen.core.foundation.llm import Model, ModelClientConfig
+    from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+    from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 
     entries = get_default_models(get_config())
     entry = next((item for item in entries if item.get("is_default") is True), None)
@@ -211,36 +284,50 @@ async def complete_designer_text(prompt: str, *, max_tokens: int = 1200) -> str:
     api_key = str(client.get("api_key") or "").strip()
     api_base = str(client.get("api_base") or "").strip()
     model_name = str(client.get("model_name") or "").strip()
-    provider = str(client.get("client_provider") or "").strip()
     if not api_key or not model_name:
+        logger.warning(
+            "Designer text model missing api_key or model_name; skipping LLM"
+        )
         return ""
-    kwargs: dict[str, object] = {
-        "api_key": api_key,
-        "api_base": api_base,
-        "client_provider": provider,
-    }
-    profile = str(client.get("endpoint_profile") or "").strip()
-    if profile:
-        kwargs["endpoint_profile"] = profile
-    model = Model(model_client_config=ModelClientConfig(**kwargs))
-    response = await model.invoke(
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.4,
-        max_tokens=max_tokens,
-        model=model_name,
+    mcc_fields = {key: value for key, value in client.items() if key != "model_name"}
+    if not mcc_fields.get("client_provider"):
+        mcc_fields["client_provider"] = "OpenAI"
+    # Designer nodes need a markdown table, not a thinking dump. DeepSeek V4
+    # otherwise spends the output budget on reasoning and Storyboard looks empty.
+    mco = dict((entry or {}).get("model_config_obj") or {}) if isinstance(entry, dict) else {}
+    mco["reasoning_level"] = "off"
+    mco["max_tokens"] = max_tokens
+    request_kwargs = build_reasoning_model_request_kwargs(
+        model_client_config=mcc_fields,
+        model_config_obj=mco,
+        model_name=model_name,
     )
-    content = getattr(response, "content", response)
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("text"):
-                parts.append(str(block["text"]))
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts).strip()
-    return str(content).strip()
+    request_kwargs["max_tokens"] = max_tokens
+    model = Model(
+        model_client_config=ModelClientConfig(**mcc_fields),
+        model_config=ModelRequestConfig(**request_kwargs),
+    )
+
+    async def _invoke() -> str:
+        response = await model.invoke(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=max_tokens,
+            model=model_name,
+        )
+        text = model_response_text(response)
+        if not text:
+            logger.warning(
+                "Designer text LLM empty model=%s response_type=%s",
+                model_name,
+                type(response).__name__,
+            )
+        return text
+
+    text = await _invoke()
+    if not text:
+        text = await _invoke()
+    return text
 
 
 def _image_gen_switch_enabled() -> bool:

@@ -279,7 +279,9 @@ async def collaborate_ready_wave(
         return {}
 
 
-async def review_storyboard_with_peers(table: str, *, run_id: str) -> str:
+async def review_storyboard_with_peers(
+    table: str, *, run_id: str, brief: str = ""
+) -> str:
     """Let character / scene agents comment on a drafted storyboard table."""
     if not table.strip():
         return table
@@ -310,11 +312,14 @@ async def review_storyboard_with_peers(table: str, *, run_id: str) -> str:
             notes.append("production designer:\n" + reply)
     if not notes:
         return table
+    brief_block = (brief or "").strip()
+    brief_section = f"Brief (keep this world; do not replace it):\n{brief_block}\n\n" if brief_block else ""
     revised = await ask_specialist(
         NODE_ROLE_STORYBOARD,
         "Revise the storyboard from colleague A2A notes. Keep this header: "
         "Shot | Timeline | Camera | Move | Character action | Scene change | Comment.\n"
-        "Output the Markdown table only, no explanation.\n\n"
+        "Every row must still match the Brief. Output the Markdown table only, no explanation.\n\n"
+        f"{brief_section}"
         f"Original:\n{table}\n\nNotes:\n" + "\n\n".join(notes),
         max_tokens=1600,
     )

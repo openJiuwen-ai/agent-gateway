@@ -2,8 +2,8 @@
   "schema_version": "designer-execution-graph.v1",
   "graph_id": "graph_fixture001",
   "project_id": "proj_fixture01",
-  "title": "赛博朋克街景短视频",
-  "description": "From the initial prompt, generate Brief, then Character, Scene, Storyboard, and later frames/clips.",
+  "title": "示例短视频",
+  "description": "From the initial prompt, generate Brief, then Character, Storyboard, and later frames/clips.",
   "source": "prompt",
   "nodes": [
     {
@@ -12,7 +12,7 @@
       "label": "Brief",
       "config": {
         "role": "brief",
-        "prompt": "制作一段 30 秒赛博朋克街景短视频，强调霓虹灯与雨夜反射。"
+        "prompt": "根据用户描述生成一段 5 秒短视频。"
       },
       "layout": { "x": 40, "y": 240, "width": 280, "height": 160 }
     },
@@ -24,17 +24,7 @@
         "role": "character_design",
         "inputs": ["n_brief"]
       },
-      "layout": { "x": 400, "y": 40, "width": 280, "height": 160 }
-    },
-    {
-      "id": "n_scene",
-      "type": "image",
-      "label": "Scene",
-      "config": {
-        "role": "scene",
-        "inputs": ["n_brief"]
-      },
-      "layout": { "x": 400, "y": 240, "width": 280, "height": 160 }
+      "layout": { "x": 400, "y": 140, "width": 280, "height": 160 }
     },
     {
       "id": "n_storyboard",
@@ -44,7 +34,7 @@
         "role": "storyboard",
         "inputs": ["n_brief"]
       },
-      "layout": { "x": 400, "y": 440, "width": 280, "height": 160 }
+      "layout": { "x": 400, "y": 340, "width": 280, "height": 160 }
     },
     {
       "id": "n_frame_1",
@@ -53,7 +43,7 @@
       "config": {
         "role": "frame",
         "shot_index": 1,
-        "inputs": ["n_character", "n_scene", "n_storyboard"]
+        "inputs": ["n_character", "n_storyboard"]
       },
       "layout": { "x": 760, "y": 240, "width": 280, "height": 160 }
     },
@@ -64,7 +54,7 @@
       "config": {
         "role": "clip",
         "shot_index": 1,
-        "inputs": ["n_character", "n_scene", "n_storyboard", "n_frame_1"]
+        "inputs": ["n_character", "n_storyboard", "n_frame_1"]
       },
       "layout": { "x": 1120, "y": 240, "width": 280, "height": 160 }
     },
@@ -86,11 +76,6 @@
       "target": "n_character"
     },
     {
-      "id": "e_brief_scene",
-      "source": "n_brief",
-      "target": "n_scene"
-    },
-    {
       "id": "e_brief_storyboard",
       "source": "n_brief",
       "target": "n_storyboard"
@@ -103,20 +88,8 @@
       "label": "Align"
     },
     {
-      "id": "e_scene_storyboard",
-      "source": "n_scene",
-      "target": "n_storyboard",
-      "kind": "sync",
-      "label": "Align"
-    },
-    {
       "id": "e_character_frame",
       "source": "n_character",
-      "target": "n_frame_1"
-    },
-    {
-      "id": "e_scene_frame",
-      "source": "n_scene",
       "target": "n_frame_1"
     },
     {
@@ -127,11 +100,6 @@
     {
       "id": "e_character_n_clip_1",
       "source": "n_character",
-      "target": "n_clip_1"
-    },
-    {
-      "id": "e_scene_n_clip_1",
-      "source": "n_scene",
       "target": "n_clip_1"
     },
     {

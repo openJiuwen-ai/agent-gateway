@@ -60,7 +60,7 @@ export async function launchDesignerFromTask(params: LaunchDesignerFromTaskParam
   const chatStore = useDesignerChatStore.getState();
 
   chatStore.reset();
-  designerStore.beginBootstrapEntry();
+  designerStore.beginBootstrapEntry(prompt);
   chatStore.appendMessage({
     role: 'user',
     content: prompt,

@@ -603,6 +603,7 @@ async def _invoke_dashscope_video_generation(
     resolution: str | None,
     first_frame: str | None = None,
     reference_images: list[str] | None = None,
+    reference_file: str | None = None,
 ) -> dict[str, Any]:
     """Generate a video via DashScope (openjiuwen Model client)."""
     from openjiuwen.core.foundation.llm import (
@@ -653,16 +654,25 @@ async def _invoke_dashscope_video_generation(
         resolution=resolution,
         first_frame=first_frame,
         reference_images=reference_images,
+        reference_file=reference_file,
     )
+    media = video_call.get("media") or []
     logger.info(
-        "Designer video generation model=%s img_url=%s reference_urls=%s shot_type=%s api_base=%s",
+        "Designer video generation model=%s img_url=%s media=%s reference_urls=%s shot_type=%s api_base=%s",
         video_call.get("model"),
         bool(video_call.get("img_url")),
+        [(item.get("type") if isinstance(item, dict) else item) for item in media],
         len(video_call.get("reference_urls") or []),
         video_call.get("shot_type"),
         api_base,
     )
-    result = await model_instance.generate_video(messages=messages, **video_call)
+
+    def _generate_video_blocking() -> Any:
+        return asyncio.run(
+            model_instance.generate_video(messages=messages, **video_call)
+        )
+
+    result = await asyncio.to_thread(_generate_video_blocking)
 
     video_url = getattr(result, "video_url", None)
     video_data = getattr(result, "video_data", None)
@@ -721,6 +731,35 @@ def _as_dashscope_media_url(path: str | None) -> str | None:
         mime = "image/png"
     encoded = base64.b64encode(local.read_bytes()).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _as_dashscope_file_url(path: str | None) -> str | None:
+    """Storyboard markdown is a DashScope ``file`` asset; the SDK uploads local paths."""
+    value = str(path or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    local = _local_media_path(value)
+    if local is None:
+        return None
+    return str(local)
+
+
+def _is_wan3_video(model: str) -> bool:
+    return "wan3" in (model or "").strip().lower()
+
+
+def _unique_dashscope_image_urls(paths: list[str] | None) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in paths or []:
+        url = _as_dashscope_media_url(item)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+    return urls
 
 
 def video_generation_message_content(
@@ -799,34 +838,59 @@ def _build_dashscope_video_call(
     resolution: str | None = None,
     first_frame: str | None = None,
     reference_images: list[str] | None = None,
+    reference_file: str | None = None,
 ) -> dict[str, Any]:
-    """Map Designer clip inputs onto DashScope T2V / I2V parameters."""
-    refs = [_as_dashscope_media_url(item) for item in (reference_images or [])]
-    refs = [item for item in refs if item]
-    img_url = _as_dashscope_media_url(first_frame) or (refs[0] if refs else None)
-    last_url = refs[-1] if img_url and len(refs) >= 2 and refs[-1] != img_url else None
+    """Map Designer clip inputs onto DashScope T2V / I2V / R2V / wan3 media."""
+    refs = _unique_dashscope_image_urls(reference_images)
+    img_url = _as_dashscope_media_url(first_frame)
+    extra_refs = [item for item in refs if item != img_url]
+    file_url = _as_dashscope_file_url(reference_file)
     chosen = model.strip() or "wan2.6-t2v"
     params: dict[str, Any] = {"duration": duration}
+    use_reference_mode = bool(extra_refs or (refs and not img_url) or file_url)
+
+    if _is_wan3_video(chosen):
+        if use_reference_mode:
+            media: list[dict[str, str]] = [
+                {"type": "reference_image", "url": item} for item in refs
+            ]
+            if img_url and img_url not in refs:
+                media.append({"type": "reference_image", "url": img_url})
+            if file_url:
+                media.append({"type": "file", "url": file_url})
+            params["model"] = chosen
+            params["media"] = media
+            # openjiuwen rejects resolution unless img_url is set; wan3 media is not I2V.
+            params["size"] = _normalize_video_size(size) or "1280*720"
+            params["ratio"] = "16:9"
+            return params
+        if img_url:
+            params["model"] = chosen
+            params["img_url"] = img_url
+            params["resolution"] = (resolution or "720P").strip() or "720P"
+            return params
+        params["model"] = chosen
+        params["size"] = _normalize_video_size(size) or "1280*720"
+        return params
+
+    if use_reference_mode:
+        all_refs = list(refs)
+        if img_url and img_url not in all_refs:
+            all_refs.append(img_url)
+        chosen = _switch_wan_task(chosen, "r2v")
+        params["model"] = chosen
+        params["reference_urls"] = all_refs[:5]
+        params["size"] = _normalize_video_size(size) or "1280*720"
+        if any(token in chosen for token in ("2.2", "2.5", "2.6", "2.7")):
+            params["shot_type"] = "multi"
+        return params
     if img_url:
         chosen = _switch_wan_task(chosen, "i2v")
         params["model"] = chosen
         params["img_url"] = img_url
         params["resolution"] = (resolution or "720P").strip() or "720P"
-        extra_refs = [item for item in refs if item and item != img_url]
-        if extra_refs:
-            params["reference_urls"] = extra_refs[:4]
         if any(token in chosen for token in ("2.2", "2.5", "2.6", "2.7")):
-            params["shot_type"] = "multi" if last_url or extra_refs else "single"
-        if last_url and ("2.7" in chosen or "kf2v" in chosen):
-            params["last_frame_url"] = last_url
-        return params
-    if refs:
-        chosen = _switch_wan_task(chosen, "r2v")
-        params["model"] = chosen
-        params["reference_urls"] = refs[:5]
-        params["size"] = _normalize_video_size(size) or "1280*720"
-        if any(token in chosen for token in ("2.2", "2.5", "2.6", "2.7")):
-            params["shot_type"] = "multi"
+            params["shot_type"] = "single"
         return params
     params["model"] = chosen
     params["size"] = _normalize_video_size(size) or "1280*720"
@@ -841,6 +905,7 @@ async def _invoke_model_video_generation(
     resolution: str | None = None,
     first_frame: str | None = None,
     reference_images: list[str] | None = None,
+    reference_file: str | None = None,
 ) -> dict[str, Any]:
     """Generate a video via DashScope / MiniMax / 火山方舟 backends."""
     cfg = get_config() or {}
@@ -930,6 +995,7 @@ async def _invoke_model_video_generation(
             resolution=resolution,
             first_frame=first_frame,
             reference_images=reference_images,
+            reference_file=reference_file,
         )
     except Exception as ex:
         return {"error": f"[ERROR]: Video generation failed: {ex}"}
