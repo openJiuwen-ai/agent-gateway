@@ -2918,6 +2918,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="designer.graph.bootstrap",
         )
 
+    async def _designer_graph_patch(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_GRAPH_PATCH,
+            label="designer.graph.patch",
+        )
+
     async def _designer_run_start(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -2980,6 +2996,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.DESIGNER_RUN_CANCEL,
             label="designer.run.cancel",
+        )
+
+    async def _designer_run_choose_output(ws, req_id, params, session_id, user_id=None):
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT,
+            label="designer.run.choose_output",
         )
 
     async def _project_list(ws, req_id, params, session_id, user_id=None):
@@ -5180,10 +5212,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("designer.graph.list", _designer_graph_list)
     channel.register_method("designer.graph.save", _designer_graph_save)
     channel.register_method("designer.graph.bootstrap", _designer_graph_bootstrap)
+    channel.register_method("designer.graph.patch", _designer_graph_patch)
     channel.register_method("designer.run.start", _designer_run_start)
     channel.register_method("designer.run.get", _designer_run_get)
     channel.register_method("designer.run.pause", _designer_run_pause)
     channel.register_method("designer.run.cancel", _designer_run_cancel)
+    channel.register_method("designer.run.choose_output", _designer_run_choose_output)
 
     channel.register_method("project.list", _project_list)
     channel.register_method("project.info", _project_info)

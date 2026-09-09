@@ -164,24 +164,27 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     const state = get();
     if (state.isRunning || graph.nodes.length === 0) return;
     await persistBeforeRun();
-    const primary = primaryFrom(graph, state.nodeStates, state.currentLayerNodeIds, false);
+    const run = state.run?.graph_id === graph.graph_id ? state.run : null;
+    const nodeStates = run ? state.nodeStates : {};
+    const currentLayerNodeIds = run ? state.currentLayerNodeIds : [];
+    const primary = primaryFrom(graph, nodeStates, currentLayerNodeIds, false);
     set({ runError: null });
     try {
       let result;
-      if (primary === 'continue' && state.run?.run_id) {
-        result = await designerGraphClient.startRun({ runId: state.run.run_id });
+      if (primary === 'continue' && run?.run_id) {
+        result = await designerGraphClient.startRun({ runId: run.run_id });
       } else if (primary === 'retry_failed') {
         const failedId =
-          state.currentLayerNodeIds.find(
-            (nodeId) => state.nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
+          currentLayerNodeIds.find(
+            (nodeId) => nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
           ) ??
-          Object.keys(state.nodeStates).find(
-            (nodeId) => state.nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
+          Object.keys(nodeStates).find(
+            (nodeId) => nodeStates[nodeId]?.status === DESIGNER_NODE_STATUS_FAILED,
           );
         result = failedId
           ? await designerGraphClient.startRun({
               graphId: graph.graph_id,
-              runId: state.run?.run_id,
+              runId: run?.run_id,
               nodeId: failedId,
             })
           : await designerGraphClient.startRun({ graphId: graph.graph_id });
@@ -206,9 +209,10 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
     await persistBeforeRun();
     set({ runError: null });
     try {
+      const run = get().run?.graph_id === graph.graph_id ? get().run : null;
       const result = await designerGraphClient.startRun({
         graphId: graph.graph_id,
-        runId: get().run?.run_id,
+        runId: run?.run_id,
         nodeId,
       });
       get().applyRun(result.run);

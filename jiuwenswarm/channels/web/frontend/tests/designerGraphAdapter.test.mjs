@@ -19,7 +19,7 @@ test('toReactFlowGraph maps domain nodes and edges', () => {
   assert.equal(view.edges.length, fixture.edges.length);
   const brief = view.nodes.find((node) => node.id === 'n_brief');
   assert.ok(brief);
-  assert.deepEqual(brief.position, { x: 40, y: 200 });
+  assert.deepEqual(brief.position, { x: 40, y: 240 });
   assert.equal(brief.type, 'text');
   assert.equal(brief.data.label, '项目 brief');
 });

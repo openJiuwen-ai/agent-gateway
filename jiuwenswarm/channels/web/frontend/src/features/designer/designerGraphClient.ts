@@ -68,4 +68,21 @@ export const designerGraphClient = {
       node_id: params.nodeId,
       choice: params.choice,
     }),
+
+  listAgentTemplates: () =>
+    webRequest<{ templates?: Array<{ id?: string; displayName?: { zh?: string; en?: string } }> }>(
+      'agent_templates.list',
+      {},
+    ),
+
+  getAgentGroup: (id: string) =>
+    webRequest<{
+      group?: {
+        id?: string;
+        members?: Array<{
+          id?: string;
+          displayName?: { zh?: string; en?: string };
+        }>;
+      };
+    }>('agent_groups.show', { id }),
 };

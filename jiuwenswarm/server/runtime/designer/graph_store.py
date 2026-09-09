@@ -23,6 +23,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphValidationError,
     normalize_execution_graph,
     normalize_execution_run,
+    preserve_expanded_shot_nodes,
     utc_now_ms,
 )
 from jiuwenswarm.common.utils import get_agent_root_dir
@@ -80,9 +81,15 @@ class DesignerGraphStore:
 
     def save_graph(self, graph: DesignerExecutionGraph) -> DesignerExecutionGraph:
         normalized = normalize_execution_graph(graph)
-        normalized["updated_at"] = utc_now_ms()
         path = _graphs_dir() / f"{normalized['graph_id']}.json"
         with _STORE_LOCK:
+            if path.is_file():
+                try:
+                    existing = normalize_execution_graph(_read_json(path))
+                    normalized = preserve_expanded_shot_nodes(normalized, existing)
+                except (DesignerGraphValidationError, ValueError, json.JSONDecodeError, OSError):
+                    pass
+            normalized["updated_at"] = utc_now_ms()
             _atomic_write_json(path, dict(normalized))
         return normalized
 
@@ -105,10 +112,8 @@ class DesignerGraphStore:
             logger.warning("Invalid designer graph %s: %s", graph_id, exc)
             return None
 
-    def list_graphs_for_project(self, project_id: str) -> list[DesignerExecutionGraph]:
-        project_id = str(project_id or "").strip()
-        if not project_id:
-            return []
+    def list_graphs(self, project_id: str | None = None) -> list[DesignerExecutionGraph]:
+        wanted = str(project_id or "").strip()
         graphs: list[DesignerExecutionGraph] = []
         with _STORE_LOCK:
             for path in sorted(_graphs_dir().glob("*.json")):
@@ -117,10 +122,17 @@ class DesignerGraphStore:
                     graph = normalize_execution_graph(raw)
                 except (DesignerGraphValidationError, ValueError, json.JSONDecodeError):
                     continue
-                if graph.get("project_id") == project_id:
-                    graphs.append(graph)
+                if wanted and graph.get("project_id") != wanted:
+                    continue
+                graphs.append(graph)
         graphs.sort(key=lambda item: int(item.get("updated_at") or 0), reverse=True)
         return graphs
+
+    def list_graphs_for_project(self, project_id: str) -> list[DesignerExecutionGraph]:
+        project_id = str(project_id or "").strip()
+        if not project_id:
+            return []
+        return self.list_graphs(project_id)
 
     def save_run(self, run: DesignerExecutionRun) -> DesignerExecutionRun:
         normalized = normalize_execution_run(run)

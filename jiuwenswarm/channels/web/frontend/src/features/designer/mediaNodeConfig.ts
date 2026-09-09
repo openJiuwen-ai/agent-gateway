@@ -4,6 +4,7 @@ export type MediaInteractionMode = 'generate' | 'upload' | 'edit';
 
 export type MediaGenerateConfig = {
   prompt?: string;
+  prompt_origin?: 'storyboard' | 'user';
   aspect_ratio?: string;
   resolution?: string;
   duration?: string;
@@ -103,6 +104,7 @@ export function readMediaConfig(
     interaction_mode: mode,
     generate: {
       prompt: raw.generate?.prompt ?? '',
+      prompt_origin: raw.generate?.prompt_origin,
       aspect_ratio: raw.generate?.aspect_ratio ?? '16:9',
       resolution: raw.generate?.resolution ?? '1080p',
       duration: raw.generate?.duration ?? '5s',
@@ -136,16 +138,20 @@ export function writeMediaGeneratePatch(
   patch: Partial<MediaGenerateConfig>,
 ): Record<string, unknown> {
   const current = readMediaConfig(config);
+  const generate = {
+    ...current.generate,
+    ...patch,
+  };
+  if (patch.prompt !== undefined && patch.prompt_origin === undefined) {
+    generate.prompt_origin = 'user';
+  }
   return {
     ...(config ?? {}),
     interaction_mode:
       current.interaction_mode === 'upload' || current.interaction_mode === 'edit'
         ? current.interaction_mode
         : 'generate',
-    generate: {
-      ...current.generate,
-      ...patch,
-    },
+    generate,
   };
 }
 

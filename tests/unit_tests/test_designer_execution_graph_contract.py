@@ -11,6 +11,24 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common.schema.designer_graph import (
+    CONFIG_DELEGATES,
+    CONFIG_DELEGATE_HANDLER,
+    CONFIG_DELEGATE_SUBAGENT,
+    CONFIG_DELEGATE_AGENT,
+    CONFIG_KEYS,
+    DESIGNER_AGENT_GROUP_NAME,
+    ROLE_DEFAULT_TEMPLATES,
+    EDGE_KIND_DATA,
+    EDGE_KIND_SYNC,
+    EDGE_KINDS,
+    NODE_ROLE_BRIEF,
+    NODE_ROLE_CHARACTER_DESIGN,
+    NODE_ROLE_CLIP,
+    NODE_ROLE_COMPOSE,
+    NODE_ROLE_FRAME,
+    NODE_ROLE_SCENE,
+    NODE_ROLE_STORYBOARD,
+    NODE_ROLES,
     NODE_TYPES,
     NODE_TYPE_AUDIO,
     NODE_TYPE_IMAGE,
@@ -79,6 +97,19 @@ def _extract_ts_const_array(path: Path, name: str) -> list[str]:
         (NODE_TYPE_IMAGE, "DESIGNER_NODE_TYPE_IMAGE"),
         (NODE_TYPE_VIDEO, "DESIGNER_NODE_TYPE_VIDEO"),
         (NODE_TYPE_AUDIO, "DESIGNER_NODE_TYPE_AUDIO"),
+        (NODE_ROLE_BRIEF, "DESIGNER_NODE_ROLE_BRIEF"),
+        (NODE_ROLE_CHARACTER_DESIGN, "DESIGNER_NODE_ROLE_CHARACTER_DESIGN"),
+        (NODE_ROLE_SCENE, "DESIGNER_NODE_ROLE_SCENE"),
+        (NODE_ROLE_STORYBOARD, "DESIGNER_NODE_ROLE_STORYBOARD"),
+        (NODE_ROLE_FRAME, "DESIGNER_NODE_ROLE_FRAME"),
+        (NODE_ROLE_CLIP, "DESIGNER_NODE_ROLE_CLIP"),
+        (NODE_ROLE_COMPOSE, "DESIGNER_NODE_ROLE_COMPOSE"),
+        (EDGE_KIND_DATA, "DESIGNER_EDGE_KIND_DATA"),
+        (EDGE_KIND_SYNC, "DESIGNER_EDGE_KIND_SYNC"),
+        (CONFIG_DELEGATE_HANDLER, "DESIGNER_CONFIG_DELEGATE_HANDLER"),
+        (CONFIG_DELEGATE_SUBAGENT, "DESIGNER_CONFIG_DELEGATE_SUBAGENT"),
+        (CONFIG_DELEGATE_AGENT, "DESIGNER_CONFIG_DELEGATE_AGENT"),
+        (DESIGNER_AGENT_GROUP_NAME, "DESIGNER_AGENT_GROUP_NAME"),
     ],
 )
 def test_designer_literal_contract(python_const: str, ts_const: str) -> None:
@@ -88,20 +119,38 @@ def test_designer_literal_contract(python_const: str, ts_const: str) -> None:
 def test_designer_node_types_contract() -> None:
     ts_types = set(_extract_ts_const_array(_TS, "DESIGNER_NODE_TYPES"))
     assert ts_types == set(NODE_TYPES)
+    assert set(_extract_ts_const_array(_TS, "DESIGNER_NODE_ROLES")) == set(NODE_ROLES)
+    assert set(_extract_ts_const_array(_TS, "DESIGNER_EDGE_KINDS")) == set(EDGE_KINDS)
+    assert set(_extract_ts_const_array(_TS, "DESIGNER_CONFIG_DELEGATES")) == set(CONFIG_DELEGATES)
+    assert set(_extract_ts_const_array(_TS, "DESIGNER_NODE_CONFIG_KEYS")) == set(CONFIG_KEYS)
+
+
+def test_designer_role_default_templates_contract() -> None:
+    text = _TS.read_text(encoding="utf-8")
+    start = text.find("export const DESIGNER_ROLE_DEFAULT_TEMPLATES")
+    assert start != -1
+    brace_start = text.find("{", start)
+    brace_end = text.find("} as const;", brace_start)
+    body = text[brace_start : brace_end + 1]
+    for role, ref in ROLE_DEFAULT_TEMPLATES.items():
+        assert ref in body
+        assert role.replace("_", "").lower() in body.replace("_", "").lower() or ref in body
 
 
 def test_designer_fixture_normalizes() -> None:
     payload = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     graph = normalize_execution_graph(payload)
     assert graph["schema_version"] == SCHEMA_VERSION
-    assert len(graph["nodes"]) == 10
-    assert len(graph["edges"]) == 14
+    assert len(graph["nodes"]) == 7
+    assert len(graph["edges"]) == 12
+    assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
+    assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
+    assert any(edge["source"] == "n_scene" and edge["target"] == "n_frame_1" for edge in graph["edges"])
     assert {node["type"] for node in graph["nodes"]} == {"text", "table", "image", "video"}
-    labels = {node["label"] for node in graph["nodes"]}
-    assert "最终视频" in labels
-    assert "视频片段1首帧" in labels
-    assert "视频片段3" in labels
-    edge_pairs = {(edge["source"], edge["target"]) for edge in graph["edges"]}
-    assert ("n_character", "n_storyboard") not in edge_pairs
-    assert ("n_storyboard", "n_clip_1") not in edge_pairs
-    assert ("n_clip_1", "n_final") in edge_pairs
+    sync_edges = [edge for edge in graph["edges"] if edge.get("kind") == EDGE_KIND_SYNC]
+    assert len(sync_edges) == 2
+    sync_pairs = {frozenset((edge["source"], edge["target"])) for edge in sync_edges}
+    assert sync_pairs == {
+        frozenset({"n_character", "n_storyboard"}),
+        frozenset({"n_scene", "n_storyboard"}),
+    }

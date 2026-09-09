@@ -17,6 +17,137 @@ export const DESIGNER_NODE_TYPES = [
 
 export type DesignerNodeType = (typeof DESIGNER_NODE_TYPES)[number];
 
+export const DESIGNER_NODE_ROLE_BRIEF = 'brief' as const;
+export const DESIGNER_NODE_ROLE_CHARACTER_DESIGN = 'character_design' as const;
+export const DESIGNER_NODE_ROLE_SCENE = 'scene' as const;
+export const DESIGNER_NODE_ROLE_STORYBOARD = 'storyboard' as const;
+export const DESIGNER_NODE_ROLE_FRAME = 'frame' as const;
+export const DESIGNER_NODE_ROLE_CLIP = 'clip' as const;
+export const DESIGNER_NODE_ROLE_COMPOSE = 'compose' as const;
+
+export const DESIGNER_NODE_ROLES = [
+  DESIGNER_NODE_ROLE_BRIEF,
+  DESIGNER_NODE_ROLE_CHARACTER_DESIGN,
+  DESIGNER_NODE_ROLE_SCENE,
+  DESIGNER_NODE_ROLE_STORYBOARD,
+  DESIGNER_NODE_ROLE_FRAME,
+  DESIGNER_NODE_ROLE_CLIP,
+  DESIGNER_NODE_ROLE_COMPOSE,
+] as const;
+
+export type DesignerNodeRole = (typeof DESIGNER_NODE_ROLES)[number];
+
+export const DESIGNER_CONFIG_DELEGATE_HANDLER = 'handler' as const;
+export const DESIGNER_CONFIG_DELEGATE_SUBAGENT = 'subagent' as const;
+export const DESIGNER_CONFIG_DELEGATE_AGENT = 'agent' as const;
+
+export const DESIGNER_CONFIG_DELEGATES = [
+  DESIGNER_CONFIG_DELEGATE_HANDLER,
+  DESIGNER_CONFIG_DELEGATE_SUBAGENT,
+  DESIGNER_CONFIG_DELEGATE_AGENT,
+] as const;
+
+export type DesignerConfigDelegate = (typeof DESIGNER_CONFIG_DELEGATES)[number];
+
+export const DESIGNER_AGENT_GROUP_NAME = 'designer' as const;
+
+export const DESIGNER_ROLE_DEFAULT_TEMPLATES = {
+  [DESIGNER_NODE_ROLE_BRIEF]: 'designer/leader',
+  [DESIGNER_NODE_ROLE_CHARACTER_DESIGN]: 'designer/character',
+  [DESIGNER_NODE_ROLE_SCENE]: 'designer/scene',
+  [DESIGNER_NODE_ROLE_STORYBOARD]: 'designer/storyboard',
+  [DESIGNER_NODE_ROLE_FRAME]: 'designer/frame',
+  [DESIGNER_NODE_ROLE_CLIP]: 'designer/clip',
+  [DESIGNER_NODE_ROLE_COMPOSE]: 'designer/clip',
+} as const;
+
+export const DESIGNER_NODE_CONFIG_KEYS = [
+  'role',
+  'prompt',
+  'inputs',
+  'delegate',
+  'agent_template',
+  'collaborate',
+  'generate',
+  'upload',
+  'edit',
+  'interaction_mode',
+  'materials',
+] as const;
+
+export type DesignerMediaGenerateConfig = {
+  prompt?: string;
+  prompt_origin?: 'storyboard' | 'user';
+  aspect_ratio?: string;
+  resolution?: string;
+  duration?: string;
+  has_audio?: boolean;
+  count?: number;
+};
+
+export type DesignerMediaUploadConfig = {
+  filename?: string;
+  asset_id?: string;
+  mime_type?: string;
+};
+
+export type DesignerMediaEditConfig = {
+  content?: string;
+};
+
+export type DesignerMediaMaterialSlot = {
+  id: string;
+  label?: string;
+  filename?: string;
+  mime_type?: string;
+  asset_id?: string;
+};
+
+type DesignerRoleConfig<R extends DesignerNodeRole> = {
+  role: R;
+  prompt?: string;
+  inputs?: string[];
+  delegate?: DesignerConfigDelegate;
+  agent_template?: string;
+  collaborate?: boolean;
+  generate?: DesignerMediaGenerateConfig;
+  upload?: DesignerMediaUploadConfig;
+  edit?: DesignerMediaEditConfig;
+  interaction_mode?: 'generate' | 'upload' | 'edit';
+  materials?: DesignerMediaMaterialSlot[];
+  shot_index?: number;
+};
+
+export type DesignerNodeConfig =
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_BRIEF>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_CHARACTER_DESIGN>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_SCENE>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_STORYBOARD>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_FRAME>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_CLIP>
+  | DesignerRoleConfig<typeof DESIGNER_NODE_ROLE_COMPOSE>
+  | {
+      role?: string;
+      prompt?: string;
+      inputs?: string[];
+      delegate?: string;
+      agent_template?: string;
+      collaborate?: boolean;
+      generate?: DesignerMediaGenerateConfig;
+      upload?: DesignerMediaUploadConfig;
+      edit?: DesignerMediaEditConfig;
+      interaction_mode?: string;
+      materials?: DesignerMediaMaterialSlot[];
+      shot_index?: number;
+    };
+
+export const DESIGNER_EDGE_KIND_DATA = 'data' as const;
+export const DESIGNER_EDGE_KIND_SYNC = 'sync' as const;
+
+export const DESIGNER_EDGE_KINDS = [DESIGNER_EDGE_KIND_DATA, DESIGNER_EDGE_KIND_SYNC] as const;
+
+export type DesignerEdgeKind = (typeof DESIGNER_EDGE_KINDS)[number];
+
 export const DESIGNER_GRAPH_SOURCE_PROMPT = 'prompt' as const;
 export const DESIGNER_GRAPH_SOURCE_MANUAL = 'manual' as const;
 
@@ -51,8 +182,7 @@ export type DesignerGraphNode = {
   id: string;
   type: DesignerNodeType | string;
   label: string;
-  /** Flexible node config (generate / upload / materials / role, …). */
-  config?: Record<string, unknown>;
+  config?: DesignerNodeConfig;
   layout?: NodeLayout;
   output_ref?: AssetRef | null;
 };
@@ -61,7 +191,7 @@ export type DesignerGraphEdge = {
   id: string;
   source: string;
   target: string;
-  kind?: string;
+  kind?: DesignerEdgeKind | string;
   label?: string;
 };
 

@@ -62,7 +62,7 @@ export function toReactFlowGraph(graph: DesignerExecutionGraph): DesignerReactFl
     data: {
       label: node.label,
       nodeType: node.type,
-      config: node.config ?? {},
+      config: (node.config ?? {}) as Record<string, unknown>,
       layout: node.layout ?? {},
       outputRef: node.output_ref ?? null,
     },
@@ -110,7 +110,7 @@ export function fromReactFlowGraph(
       id: rfNode.id,
       type: (existing?.type ?? data.nodeType ?? rfNode.type) as DesignerGraphNode['type'],
       label: data.label ?? existing?.label ?? rfNode.id,
-      config: data.config ?? existing?.config ?? {},
+      config: (data.config ?? existing?.config ?? {}) as DesignerGraphNode['config'],
       layout: mergeLayout(existing?.layout, rfNode.position, rfNode.style),
       output_ref: data.outputRef ?? existing?.output_ref ?? null,
     };
@@ -123,6 +123,7 @@ export function fromReactFlowGraph(
       id: rfEdge.id,
       source: rfEdge.source,
       target: rfEdge.target,
+      kind: existing?.kind,
       label: rfEdge.label ?? existing?.label,
     };
   });

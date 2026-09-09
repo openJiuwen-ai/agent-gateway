@@ -1,14 +1,20 @@
-import { Headphones, Image as ImageIcon, Plus, Video, X } from 'lucide-react';
+import { Headphones, Image as ImageIcon, Plus, Sheet, Video, X } from 'lucide-react';
 import { useCallback, useMemo, useRef, type ChangeEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { designerAssetPreviewUrl } from '../../designerAssetUrl';
+import { preferredDesignerPreviewRef } from '../../designerMaterials';
 import { useDesignerAssetLibraryStore } from '../../designerAssetLibraryStore';
+import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
 import {
   DESIGNER_NODE_TYPE_AUDIO,
+  DESIGNER_NODE_TYPE_TABLE,
+  DESIGNER_NODE_TYPE_TEXT,
   DESIGNER_NODE_TYPE_VIDEO,
 } from '../../executionGraphTypes';
 import {
   isMediaNodeType,
+  isTextLikeNodeType,
   readMediaConfig,
   writeMediaMaterials,
   type MediaMaterialSlot,
@@ -26,6 +32,7 @@ type LinkedMaterial = {
   sourceNodeId: string;
   label: string;
   mediaType: string;
+  previewUrl?: string | null;
 };
 
 type UploadMaterial = {
@@ -48,6 +55,9 @@ function mediaIcon(mediaTypeOrMime: string | undefined): ReactNode {
   if (value === DESIGNER_NODE_TYPE_AUDIO || value.startsWith('audio/')) {
     return <Headphones size={20} aria-hidden />;
   }
+  if (value === DESIGNER_NODE_TYPE_TABLE || value === DESIGNER_NODE_TYPE_TEXT) {
+    return <Sheet size={20} aria-hidden />;
+  }
   return <ImageIcon size={20} aria-hidden />;
 }
 
@@ -63,6 +73,7 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
   const removeEdges = useDesignerStore((state) => state.removeEdges);
   const addFromFile = useDesignerAssetLibraryStore((state) => state.addFromFile);
   const libraryAssets = useDesignerAssetLibraryStore((state) => state.assets);
+  const nodeStates = useDesignerRunStore((state) => state.nodeStates);
 
   const config = useMemo(() => {
     const node = domainGraph?.nodes.find((item) => item.id === nodeId);
@@ -78,18 +89,27 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
     for (const edge of domainGraph.edges) {
       if (edge.target !== nodeId) continue;
       const source = nodesById.get(edge.source);
-      if (!source || !isMediaNodeType(String(source.type))) continue;
+      if (!source) continue;
+      const sourceType = String(source.type);
+      const allowTextLike =
+        nodeType === DESIGNER_NODE_TYPE_VIDEO && isTextLikeNodeType(sourceType);
+      if (!isMediaNodeType(sourceType) && !allowTextLike) continue;
+      const previewRef = preferredDesignerPreviewRef(
+        nodeStates[source.id]?.output_ref,
+        nodeStates[source.id]?.candidate_output_ref,
+      );
       items.push({
         kind: 'linked',
         key: `linked:${edge.id}`,
         edgeId: edge.id,
         sourceNodeId: source.id,
         label: source.label || source.id,
-        mediaType: String(source.type),
+        mediaType: sourceType,
+        previewUrl: designerAssetPreviewUrl(previewRef?.uri),
       });
     }
     return items;
-  }, [domainGraph, nodeId]);
+  }, [domainGraph, nodeId, nodeStates, nodeType]);
 
   const materials = useMemo((): DisplayMaterial[] => {
     const assetById = new Map(libraryAssets.map((asset) => [asset.id, asset]));
@@ -171,7 +191,11 @@ export function DesignerMaterialStrip({ nodeId, nodeType }: DesignerMaterialStri
             {item.label}
           </span>
           <div className="designer-node-toolbar__material-tile">
-            {item.kind === 'upload' && item.previewUrl && item.mimeType?.startsWith('image/') ? (
+            {item.previewUrl &&
+            (item.kind === 'upload'
+              ? Boolean(item.mimeType?.startsWith('image/'))
+              : item.mediaType !== DESIGNER_NODE_TYPE_TABLE &&
+                item.mediaType !== DESIGNER_NODE_TYPE_TEXT) ? (
               <img
                 className="designer-node-toolbar__material-thumb"
                 src={item.previewUrl}

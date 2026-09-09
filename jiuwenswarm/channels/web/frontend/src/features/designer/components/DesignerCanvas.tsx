@@ -190,7 +190,7 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
 export function DesignerCanvas({ graph }: DesignerCanvasProps) {
   return (
     <ReactFlowProvider>
-      <DesignerCanvasInner graph={graph} />
+      <DesignerCanvasInner key={graph.graph_id} graph={graph} />
     </ReactFlowProvider>
   );
 }

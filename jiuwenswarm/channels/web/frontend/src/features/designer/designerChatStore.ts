@@ -21,9 +21,12 @@ export type DesignerChatMessage = {
 export type DesignerBootstrapPhase = 'idle' | 'thinking' | 'bootstrapping' | 'done' | 'error';
 
 type DesignerChatStore = {
+  activeGraphId: string | null;
   messages: DesignerChatMessage[];
+  messagesByGraphId: Record<string, DesignerChatMessage[]>;
   bootstrapPhase: DesignerBootstrapPhase;
   reset: () => void;
+  bindGraph: (graphId: string | null) => void;
   appendMessage: (message: Omit<DesignerChatMessage, 'id' | 'createdAt'> & {
     id?: string;
     createdAt?: number;
@@ -32,17 +35,53 @@ type DesignerChatStore = {
   setBootstrapPhase: (phase: DesignerBootstrapPhase) => void;
 };
 
-export const useDesignerChatStore = create<DesignerChatStore>((set) => ({
+function archiveCurrent(
+  activeGraphId: string | null,
+  messages: DesignerChatMessage[],
+  messagesByGraphId: Record<string, DesignerChatMessage[]>,
+): Record<string, DesignerChatMessage[]> {
+  if (!activeGraphId) return messagesByGraphId;
+  return { ...messagesByGraphId, [activeGraphId]: messages };
+}
+
+export const useDesignerChatStore = create<DesignerChatStore>((set, get) => ({
+  activeGraphId: null,
   messages: [],
+  messagesByGraphId: {},
   bootstrapPhase: 'idle',
 
-  reset: () => set({ messages: [], bootstrapPhase: 'idle' }),
+  reset: () => {
+    const { activeGraphId, messages, messagesByGraphId } = get();
+    set({
+      messages: [],
+      bootstrapPhase: 'idle',
+      activeGraphId: null,
+      messagesByGraphId: archiveCurrent(activeGraphId, messages, messagesByGraphId),
+    });
+  },
+
+  bindGraph: (graphId) => {
+    const id = String(graphId ?? '').trim() || null;
+    const { activeGraphId, messages, messagesByGraphId } = get();
+    if (id === activeGraphId) return;
+    const archived = archiveCurrent(activeGraphId, messages, messagesByGraphId);
+    const pending = !activeGraphId && messages.length > 0 ? messages : [];
+    const nextMessages = id ? (archived[id] ?? pending) : pending;
+    const nextArchive = id && pending.length > 0
+      ? { ...archived, [id]: pending }
+      : archived;
+    set({
+      activeGraphId: id,
+      messages: nextMessages,
+      messagesByGraphId: nextArchive,
+    });
+  },
 
   appendMessage: (message) => {
     const id = message.id ?? generateUuidV4();
     const createdAt = message.createdAt ?? Date.now();
-    set((state) => ({
-      messages: [
+    set((state) => {
+      const next = [
         ...state.messages,
         {
           id,
@@ -51,15 +90,23 @@ export const useDesignerChatStore = create<DesignerChatStore>((set) => ({
           kind: message.kind,
           createdAt,
         },
-      ],
-    }));
+      ];
+      const messagesByGraphId = state.activeGraphId
+        ? { ...state.messagesByGraphId, [state.activeGraphId]: next }
+        : state.messagesByGraphId;
+      return { messages: next, messagesByGraphId };
+    });
     return id;
   },
 
   removeMessage: (id) =>
-    set((state) => ({
-      messages: state.messages.filter((item) => item.id !== id),
-    })),
+    set((state) => {
+      const next = state.messages.filter((item) => item.id !== id);
+      const messagesByGraphId = state.activeGraphId
+        ? { ...state.messagesByGraphId, [state.activeGraphId]: next }
+        : state.messagesByGraphId;
+      return { messages: next, messagesByGraphId };
+    }),
 
   setBootstrapPhase: (phase) => set({ bootstrapPhase: phase }),
 }));

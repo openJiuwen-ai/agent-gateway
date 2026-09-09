@@ -24,6 +24,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * 设计画布 Assistant 发送：已在 Design 页，不跳转导航，直接 bootstrap 上屏。
+ * 与 Tasks 入口共用同一条 ``designer.graph.bootstrap`` 链路。
+ */
+export async function bootstrapDesignerFromChat(params: {
+  prompt: string;
+  projectId?: string;
+  projectDir?: string;
+  workMode?: 'work' | 'code';
+  thinkingText?: string;
+  doneText?: string;
+  errorText?: string;
+}): Promise<void> {
+  await launchDesignerFromTask({
+    ...params,
+    onNavigateToDesign: () => undefined,
+    thinkingMs: 400,
+  });
+}
+
+/**
  * Tasks 页选「设计」后发送：跳转设计栏 → 聊天区展示用户消息 → 模拟思考 → bootstrap 上屏。
  * 不写入主 chatStore，也不走主 agent 链路。
  */
@@ -73,6 +93,7 @@ export async function launchDesignerFromTask(params: LaunchDesignerFromTaskParam
       throw new Error('bootstrap response missing graph');
     }
     useDesignerStore.getState().applyGraph(graph);
+    useDesignerChatStore.getState().bindGraph(graph.graph_id);
     useDesignerChatStore.getState().appendMessage({
       role: 'assistant',
       content: doneText,

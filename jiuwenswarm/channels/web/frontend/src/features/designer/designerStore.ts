@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { designerGraphClient } from './designerGraphClient';
 import type { DesignerReactFlowGraph } from './designerGraphAdapter';
-import type { AssetRef, DesignerExecutionGraph } from './executionGraphTypes';
+import type { AssetRef, DesignerExecutionGraph, DesignerGraphNode } from './executionGraphTypes';
 
 export type DesignerLoadStatus =
   | 'idle'
@@ -90,14 +90,16 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       selectedNodeId: null,
     }),
 
-  applyGraph: (graph) =>
+  applyGraph: (graph) => {
+    saveSeq += 1;
     set({
       graphId: graph.graph_id,
       domainGraph: graph,
       loadStatus: 'ready',
       loadError: null,
       bootstrapInProgress: false,
-    }),
+    });
+  },
 
   loadGraph: async (graphId) => {
     const id = String(graphId ?? '').trim();
@@ -125,8 +127,8 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     if (!graph) return;
     const nodes = graph.nodes.map((node) => {
       if (node.id !== nodeId) return node;
-      const nextConfig = updater({ ...(node.config ?? {}) });
-      return { ...node, config: nextConfig };
+      const nextConfig = updater({ ...(node.config ?? {}) } as Record<string, unknown>);
+      return { ...node, config: nextConfig as DesignerGraphNode['config'] };
     });
     set({
       domainGraph: {
@@ -304,10 +306,16 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     const graph = get().domainGraph;
     if (!graph || get().bootstrapInProgress) return;
     const seq = ++saveSeq;
+    const sentCount = graph.nodes.length;
     set({ saveStatus: 'saving' });
     try {
       const { graph: saved } = await designerGraphClient.save(graph);
       if (seq !== saveSeq) return;
+      const live = get().domainGraph;
+      if (live && live.graph_id === graph.graph_id && live.nodes.length > sentCount) {
+        set({ saveStatus: 'saved' });
+        return;
+      }
       set({
         domainGraph: saved,
         graphId: saved.graph_id,
@@ -365,8 +373,12 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
       }
       const graphs = listed.graphs || [];
       const summaries = listed.summaries || [];
+      const currentId = String(get().graphId ?? '').trim();
       const preferred =
-        summaries.find((item) => item.has_video) ?? summaries[0] ?? graphs[0];
+        summaries.find((item) => item.graph_id === currentId) ??
+        graphs.find((item) => item.graph_id === currentId) ??
+        summaries[0] ??
+        graphs[0];
       const latest = preferred
         ? graphs.find((item) => item.graph_id === preferred.graph_id) ?? graphs[0]
         : undefined;

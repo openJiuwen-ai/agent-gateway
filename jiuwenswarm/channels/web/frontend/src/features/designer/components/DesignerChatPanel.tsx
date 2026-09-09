@@ -7,6 +7,8 @@ import {
   type KeyboardEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useWorkspaceStore } from '../../../stores';
+import { bootstrapDesignerFromChat } from '../designerEntry';
 import { useDesignerChatStore } from '../designerChatStore';
 import { DesignerAssetsPanel } from './DesignerAssetsPanel';
 
@@ -41,7 +43,9 @@ export function DesignerChatPanel() {
   const { t } = useTranslation();
   const messages = useDesignerChatStore((state) => state.messages);
   const bootstrapPhase = useDesignerChatStore((state) => state.bootstrapPhase);
-  const appendMessage = useDesignerChatStore((state) => state.appendMessage);
+  const selectedProject = useWorkspaceStore((state) => state.selectedProject);
+  const workMode = useWorkspaceStore((state) => state.workMode);
+  const loadProjects = useWorkspaceStore((state) => state.loadProjects);
   const bodyRef = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState('');
   const [tab, setTab] = useState<SidebarTab>('assistant');
@@ -58,17 +62,31 @@ export function DesignerChatPanel() {
     const content = draft.trim();
     if (!content || chatBusy) return;
     setDraft('');
-    appendMessage({
-      role: 'user',
-      content,
-      kind: 'user',
+    setTab('assistant');
+    const projectId = selectedProject?.project_id;
+    const useExistingProject = Boolean(
+      projectId && projectId !== 'default' && projectId !== 'default_code',
+    );
+    void bootstrapDesignerFromChat({
+      prompt: content,
+      ...(useExistingProject
+        ? { projectId, projectDir: selectedProject?.project_dir }
+        : { workMode }),
+      thinkingText: t('designer.chat.thinking'),
+      doneText: t('designer.chat.bootstrapDone'),
+      errorText: t('designer.chat.bootstrapError'),
+    }).then(() => {
+      void loadProjects();
     });
-    appendMessage({
-      role: 'assistant',
-      content: t('designer.chat.notImplemented'),
-      kind: 'not_implemented',
-    });
-  }, [appendMessage, chatBusy, draft, t]);
+  }, [
+    chatBusy,
+    draft,
+    loadProjects,
+    selectedProject?.project_dir,
+    selectedProject?.project_id,
+    t,
+    workMode,
+  ]);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {

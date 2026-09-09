@@ -1,35 +1,48 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Node handler registry for Designer graph execution."""
+"""Node handler registry for Designer graph execution.
+
+Dispatch order: ``node.config.role`` (character_design / storyboard / ...)
+then ``node.type`` (image / table / ...). Agent code replaces a role handler
+without changing the UI modality types.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol
 
 from jiuwenswarm.common.schema.designer_graph import (
-    AssetRef,
-    DesignerExecutionGraph,
-    DesignerGraphNode,
+    NODE_ROLE_BRIEF,
+    NODE_ROLE_CHARACTER_DESIGN,
+    NODE_ROLE_CLIP,
+    NODE_ROLE_COMPOSE,
+    NODE_ROLE_FRAME,
+    NODE_ROLE_SCENE,
+    NODE_ROLE_STORYBOARD,
     NODE_TYPE_AUDIO,
     NODE_TYPE_IMAGE,
     NODE_TYPE_TABLE,
     NODE_TYPE_TEXT,
     NODE_TYPE_VIDEO,
+    AssetRef,
+    DesignerGraphNode,
+    node_role,
 )
-
-
-@dataclass(frozen=True)
-class NodeExecutionContext:
-    graph: DesignerExecutionGraph
-    run_id: str
-    node_id: str
-
-
-@dataclass(frozen=True)
-class NodeResult:
-    output_ref: AssetRef | None = None
-    message: str = ""
+from jiuwenswarm.server.runtime.designer.handlers.clip import ClipNodeHandler
+from jiuwenswarm.server.runtime.designer.handlers.compose import ComposeNodeHandler
+from jiuwenswarm.server.runtime.designer.handlers.image_nodes import (
+    CharacterDesignNodeHandler,
+    FrameNodeHandler,
+    SceneNodeHandler,
+)
+from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
+    BriefNodeHandler,
+    StoryboardNodeHandler,
+)
+from jiuwenswarm.server.runtime.designer.handlers.types import (
+    NodeExecutionContext,
+    NodeResult,
+)
 
 
 class NodeHandler(Protocol):
@@ -37,24 +50,41 @@ class NodeHandler(Protocol):
         """Execute a single graph node."""
 
 
-class MockNodeHandler:
-    """Placeholder handler that returns a synthetic asset reference."""
+class RoleNodeHandler:
+    """Placeholder handler keyed by creative role. Replace per-role later."""
+
+    def __init__(self, role: str) -> None:
+        self.role = role
 
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         node_type = str(node.get("type") or "unknown")
         node_id = str(node.get("id") or ctx.node_id)
         output_ref: AssetRef = {
             "kind": node_type,
-            "uri": f"designer://mock/{ctx.run_id}/{node_id}",
+            "uri": f"designer://{self.role}/{ctx.run_id}/{node_id}",
             "label": str(node.get("label") or node_id),
         }
         return NodeResult(
             output_ref=output_ref,
-            message=f"mock completed {node_type}",
+            message=f"{self.role} completed",
         )
 
 
+class MockNodeHandler(RoleNodeHandler):
+    """Fallback when a node has no role."""
+
+    def __init__(self) -> None:
+        super().__init__("mock")
+
+
 NODE_HANDLERS: dict[str, NodeHandler] = {
+    NODE_ROLE_BRIEF: BriefNodeHandler(),
+    NODE_ROLE_CHARACTER_DESIGN: CharacterDesignNodeHandler(),
+    NODE_ROLE_SCENE: SceneNodeHandler(),
+    NODE_ROLE_STORYBOARD: StoryboardNodeHandler(),
+    NODE_ROLE_FRAME: FrameNodeHandler(),
+    NODE_ROLE_CLIP: ClipNodeHandler(),
+    NODE_ROLE_COMPOSE: ComposeNodeHandler(),
     NODE_TYPE_TEXT: MockNodeHandler(),
     NODE_TYPE_TABLE: MockNodeHandler(),
     NODE_TYPE_IMAGE: MockNodeHandler(),
@@ -63,8 +93,19 @@ NODE_HANDLERS: dict[str, NodeHandler] = {
 }
 
 
-def get_node_handler(node_type: str) -> NodeHandler:
-    handler = NODE_HANDLERS.get(node_type)
+def resolve_handler_key(node: DesignerGraphNode) -> str:
+    role = node_role(node)
+    if role and role in NODE_HANDLERS:
+        return role
+    return str(node.get("type") or "")
+
+
+def get_node_handler(node: DesignerGraphNode | str) -> NodeHandler:
+    if isinstance(node, str):
+        key = node
+    else:
+        key = resolve_handler_key(node)
+    handler = NODE_HANDLERS.get(key)
     if handler is None:
-        raise KeyError(f"no handler registered for node type: {node_type!r}")
+        raise KeyError(f"no handler registered for node type: {key!r}")
     return handler

@@ -5,7 +5,9 @@ import { useWorkspaceStore } from '../../../stores';
 import {
   collectDesignerMaterials,
   collectPendingRevisions,
+  shouldAutoPromoteDesignerRevision,
 } from '../designerMaterials';
+import { useDesignerChatStore } from '../designerChatStore';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
@@ -51,11 +53,13 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
   // Tasks→Design bootstrap 结束后 bootstrapInProgress 会变 false，若立刻 list/get
   //（尤其 projectId 为空或与新建 project 不一致），会把刚 apply 的图刷成 empty。
   const skipLoadAfterBootstrapRef = useRef(false);
+  const skipLoadAfterSelectRef = useRef(false);
 
   useEffect(() => bindDesignerRuntime(), []);
 
   useEffect(() => {
     if (pendingDesignerGraphId) {
+      skipLoadAfterSelectRef.current = true;
       void loadGraph(pendingDesignerGraphId).then(() => setPendingDesignerGraphId(null));
       return;
     }
@@ -65,6 +69,10 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     }
     if (skipLoadAfterBootstrapRef.current) {
       skipLoadAfterBootstrapRef.current = false;
+      return;
+    }
+    if (skipLoadAfterSelectRef.current) {
+      skipLoadAfterSelectRef.current = false;
       return;
     }
     void loadForProject(effectiveProjectId);
@@ -82,6 +90,7 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     if (nextId === boundGraphId) return;
     resetUi();
     resetForGraph(domainGraph);
+    useDesignerChatStore.getState().bindGraph(nextId);
   }, [boundGraphId, domainGraph, resetForGraph, resetUi]);
 
   const materials = useMemo(
@@ -92,6 +101,20 @@ export function DesignerPage({ projectId }: DesignerPageProps) {
     () => collectPendingRevisions(domainGraph, run),
     [domainGraph, run],
   );
+  const autoPromotedRef = useRef(new Set<string>());
+  useEffect(() => {
+    const runId = run?.run_id;
+    if (!runId || run?.status === 'running') return;
+    for (const item of pendingRevisions) {
+      const key = `${runId}:${item.nodeId}`;
+      if (autoPromotedRef.current.has(key)) continue;
+      if (!shouldAutoPromoteDesignerRevision(item.original[0], item.incoming[0])) continue;
+      autoPromotedRef.current.add(key);
+      void chooseOutput(item.nodeId, 'new').then(() => {
+        if (chooserNodeId === item.nodeId) closeRevision();
+      });
+    }
+  }, [chooseOutput, chooserNodeId, closeRevision, pendingRevisions, run?.run_id, run?.status]);
   const activeRevision =
     pendingRevisions.find((item) => item.nodeId === chooserNodeId) ?? pendingRevisions[0];
 

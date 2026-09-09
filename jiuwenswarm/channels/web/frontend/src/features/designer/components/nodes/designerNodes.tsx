@@ -16,6 +16,7 @@ import {
   getCachedFakeVideoUrl,
 } from '../../designerFakeAssets';
 import { designerAssetPreviewUrl } from '../../designerAssetUrl';
+import { preferredDesignerPreviewRef } from '../../designerMaterials';
 import {
   DESIGNER_NODE_STATUS_COMPLETED,
   DESIGNER_NODE_STATUS_FAILED,
@@ -210,9 +211,13 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
   const nodeData = data as DesignerNodeData;
   const nodeType = nodeData.nodeType;
   const status = useDesignerRunStore((state) => state.nodeStates[id]?.status ?? 'pending');
-  const outputUri = useDesignerRunStore(
-    (state) => state.nodeStates[id]?.output_ref?.uri ?? null,
-  );
+  const outputUri = useDesignerRunStore((state) => {
+    const nodeState = state.nodeStates[id];
+    return preferredDesignerPreviewRef(
+      nodeState?.output_ref,
+      nodeState?.candidate_output_ref,
+    )?.uri ?? null;
+  });
   const domainOutputUri = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === id)?.output_ref?.uri ?? null,
   );

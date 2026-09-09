@@ -1,0 +1,153 @@
+{
+  "schema_version": "designer-execution-graph.v1",
+  "graph_id": "graph_fixture001",
+  "project_id": "proj_fixture01",
+  "title": "赛博朋克街景短视频",
+  "description": "从初始 prompt 生成 brief，再产出角色图、场景图、分镜表与后续帧/片段。",
+  "source": "prompt",
+  "nodes": [
+    {
+      "id": "n_brief",
+      "type": "text",
+      "label": "项目 brief",
+      "config": {
+        "role": "brief",
+        "prompt": "制作一段 30 秒赛博朋克街景短视频，强调霓虹灯与雨夜反射。"
+      },
+      "layout": { "x": 40, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_character",
+      "type": "image",
+      "label": "角色图",
+      "config": {
+        "role": "character_design",
+        "inputs": ["n_brief"]
+      },
+      "layout": { "x": 400, "y": 40, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_scene",
+      "type": "image",
+      "label": "场景图",
+      "config": {
+        "role": "scene",
+        "inputs": ["n_brief"]
+      },
+      "layout": { "x": 400, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_storyboard",
+      "type": "table",
+      "label": "分镜表",
+      "config": {
+        "role": "storyboard",
+        "inputs": ["n_brief"]
+      },
+      "layout": { "x": 400, "y": 440, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_frame_1",
+      "type": "image",
+      "label": "关键帧 1",
+      "config": {
+        "role": "frame",
+        "shot_index": 1,
+        "inputs": ["n_character", "n_scene", "n_storyboard"]
+      },
+      "layout": { "x": 760, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_clip_1",
+      "type": "video",
+      "label": "视频片段 1",
+      "config": {
+        "role": "clip",
+        "shot_index": 1,
+        "inputs": ["n_character", "n_storyboard", "n_frame_1"]
+      },
+      "layout": { "x": 1120, "y": 240, "width": 280, "height": 160 }
+    },
+    {
+      "id": "n_compose",
+      "type": "video",
+      "label": "成片",
+      "config": {
+        "role": "compose",
+        "inputs": ["n_clip_1"]
+      },
+      "layout": { "x": 1480, "y": 240, "width": 280, "height": 160 }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_brief_character",
+      "source": "n_brief",
+      "target": "n_character"
+    },
+    {
+      "id": "e_brief_scene",
+      "source": "n_brief",
+      "target": "n_scene"
+    },
+    {
+      "id": "e_brief_storyboard",
+      "source": "n_brief",
+      "target": "n_storyboard"
+    },
+    {
+      "id": "e_character_storyboard",
+      "source": "n_character",
+      "target": "n_storyboard",
+      "kind": "sync",
+      "label": "对齐"
+    },
+    {
+      "id": "e_scene_storyboard",
+      "source": "n_scene",
+      "target": "n_storyboard",
+      "kind": "sync",
+      "label": "对齐"
+    },
+    {
+      "id": "e_character_frame",
+      "source": "n_character",
+      "target": "n_frame_1"
+    },
+    {
+      "id": "e_scene_frame",
+      "source": "n_scene",
+      "target": "n_frame_1"
+    },
+    {
+      "id": "e_storyboard_frame",
+      "source": "n_storyboard",
+      "target": "n_frame_1"
+    },
+    {
+      "id": "e_character_n_clip_1",
+      "source": "n_character",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_storyboard_n_clip_1",
+      "source": "n_storyboard",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_frame_n_clip_1",
+      "source": "n_frame_1",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_n_clip_1_compose",
+      "source": "n_clip_1",
+      "target": "n_compose"
+    }
+  ],
+  "metadata": {
+    "bootstrap": "designer.graph.bootstrap.v1"
+  },
+  "created_at": 1700000000000,
+  "updated_at": 1700000000000
+}

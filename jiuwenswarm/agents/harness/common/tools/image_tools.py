@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from fastmcp import FastMCP
 from google import genai
@@ -62,6 +63,82 @@ class _MimeResolver:
         return cls._EXT_MAP.get(ext.lower(), "image/jpeg")
 
 
+def _is_non_retryable_media_error(exc: BaseException) -> bool:
+    text = str(exc)
+    lowered = text.lower()
+    return (
+        "InvalidApiKey" in text
+        or "invalid api-key" in lowered
+        or "invalid api key" in lowered
+        or "authenticationerror" in lowered
+        or "unauthorized" in lowered
+        or "image must be either a public url" in lowered
+    )
+
+
+def _normalize_api_key(value: str) -> str:
+    key = (value or "").strip()
+    if len(key) >= 2 and key[0] == key[-1] and key[0] in {'"', "'"}:
+        key = key[1:-1].strip()
+    return key
+
+
+def _dashscope_image_size(size: str) -> str:
+    """DashScope Qwen-Image expects width*height, not OpenAI-style 1024x1024."""
+    raw = (size or "").strip().lower().replace("x", "*")
+    return raw or "1328*1328"
+
+
+def _local_image_path(path: str) -> Path | None:
+    value = str(path or "").strip()
+    if not value:
+        return None
+    if value.startswith("file:"):
+        parsed = urlparse(value)
+        local = unquote(parsed.path)
+        if len(local) >= 3 and local[0] == "/" and local[2] == ":":
+            local = local[1:]
+        candidate = Path(local)
+    else:
+        candidate = Path(value).expanduser()
+    if not candidate.is_file():
+        return None
+    return candidate.resolve()
+
+
+def _as_dashscope_image_url(path: str | None) -> str | None:
+    """DashScope only accepts public http(s) URLs or data: Base64, not file://."""
+    value = str(path or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://", "data:")):
+        return value
+    local = _local_image_path(value)
+    if local is None:
+        return None
+    mime = _MimeResolver.from_path(str(local))
+    encoded = base64.b64encode(local.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def image_generation_message_content(
+    prompt: str,
+    reference_images: list[str] | None = None,
+) -> str | list[dict[str, str]]:
+    """Build DashScope MultiModalConversation content: images then shot text."""
+    refs = [
+        url
+        for url in (_as_dashscope_image_url(item) for item in (reference_images or []))
+        if url
+    ][:3]
+    text = str(prompt or "").strip()
+    if not refs:
+        return text
+    content: list[dict[str, str]] = [{"image": url} for url in refs]
+    content.append({"text": text})
+    return content
+
+
 class _RetryExecutor:
     @staticmethod
     async def with_backoff(
@@ -76,9 +153,9 @@ class _RetryExecutor:
                 return await coro_factory()
             except Exception as e:
                 last_err = e
-                if i == max_tries:
+                if i == max_tries or _is_non_retryable_media_error(e):
                     if on_failure:
-                        return on_failure(max_tries, e)
+                        return on_failure(i, e)
                     raise
                 await asyncio.sleep(base_delay ** i)
         if on_failure and last_err:
@@ -320,7 +397,12 @@ async def visual_question_answering(image_path_or_url: str, question: str) -> st
     return f"OCR results:\n{ocr_out}\n\nVQA result:\n{vqa_out}"
 
 
-async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", quality: str = "standard") -> dict:
+async def _invoke_model_image_generation(
+    prompt: str,
+    size: str = "1024x1024",
+    quality: str = "standard",
+    reference_images: list[str] | None = None,
+) -> dict:
     """
     Generate image via DashScope / MiniMax / 火山方舟 Seedream.
 
@@ -340,14 +422,16 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
 
     _ = quality  # reserved for OpenAI-style backends; Seedream/MiniMax map size instead
     mc = _get_model_config(get_config() or {}, "image_gen")
-    api_key = str(mc.get("api_key") or os.getenv("IMAGE_GEN_API_KEY") or os.getenv("API_KEY") or "").strip()
+    api_key = _normalize_api_key(
+        str(mc.get("api_key") or os.getenv("IMAGE_GEN_API_KEY") or os.getenv("API_KEY") or "")
+    )
     api_base = str(
         mc.get("api_base")
         or os.getenv("IMAGE_GEN_API_BASE")
         or os.getenv("API_BASE")
         or "https://dashscope.aliyuncs.com/api/v1"
-    ).strip()
-    if not api_key:
+    ).strip().strip("'\"")
+    if not api_key or api_key.lower() in {"sk-xxxxxxxxx", "your-api-key"}:
         return {"error": "[ERROR]: IMAGE_GEN_API_KEY or API_KEY is not configured for image generation."}
 
     model = str(mc.get("model_name") or mc.get("model") or os.getenv("IMAGE_GEN_MODEL_NAME") or "wanx-v1").strip()
@@ -376,6 +460,13 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
         vendor_key,
     )
 
+    logger.info(
+        "Designer image generation calling model=%s api_base=%s key_prefix=%s len=%s",
+        model,
+        api_base,
+        api_key[:8],
+        len(api_key),
+    )
     try:
         if backend == "volcengine":
             return await asyncio.to_thread(
@@ -426,10 +517,31 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
             model_client_config=model_client_config
         )
 
-        messages = [UserMessage(content=prompt)]
+        message_content = image_generation_message_content(prompt, reference_images)
+        image_count = (
+            sum(1 for item in message_content if isinstance(item, dict) and item.get("image"))
+            if isinstance(message_content, list)
+            else 0
+        )
+        if reference_images and image_count == 0:
+            return {
+                "error": (
+                    "[ERROR]: reference images were provided but none could be read "
+                    "as local files or URLs for image-to-image generation."
+                )
+            }
+        logger.info(
+            "Designer image generation model=%s reference_images=%s",
+            model,
+            image_count,
+        )
+        messages = [UserMessage(content=message_content)]
+        ds_size = _dashscope_image_size(size)
 
         async def _call():
-            return await model_instance.generate_image(messages=messages, model=model)
+            return await model_instance.generate_image(
+                messages=messages, model=model, size=ds_size
+            )
 
         result = await _RetryExecutor.with_backoff(_call, max_tries=3)
 

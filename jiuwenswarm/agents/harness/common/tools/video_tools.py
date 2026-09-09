@@ -600,6 +600,8 @@ async def _invoke_dashscope_video_generation(
     size: str | None,
     duration: int,
     resolution: str | None,
+    first_frame: str | None = None,
+    reference_images: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate a video via DashScope (openjiuwen Model client)."""
     from openjiuwen.core.foundation.llm import (
@@ -635,15 +637,22 @@ async def _invoke_dashscope_video_generation(
         model_client_config=model_client_config,
     )
     messages = [UserMessage(content=prompt)]
-    normalized_size = _normalize_video_size(size)
-
-    result = await model_instance.generate_video(
-        messages=messages,
-        model=model,
-        size=normalized_size,
-        resolution=resolution,
+    video_call = _build_dashscope_video_call(
+        model,
+        size=size,
         duration=duration,
+        resolution=resolution,
+        first_frame=first_frame,
+        reference_images=reference_images,
     )
+    logger.info(
+        "Designer video generation model=%s img_url=%s reference_urls=%s shot_type=%s",
+        video_call.get("model"),
+        bool(video_call.get("img_url")),
+        len(video_call.get("reference_urls") or []),
+        video_call.get("shot_type"),
+    )
+    result = await model_instance.generate_video(messages=messages, **video_call)
 
     video_url = getattr(result, "video_url", None)
     video_data = getattr(result, "video_data", None)
@@ -666,23 +675,84 @@ async def _invoke_dashscope_video_generation(
     return {"error": "[ERROR]: No valid video data in response"}
 
 
+def _as_dashscope_media_url(path: str | None) -> str | None:
+    value = str(path or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://", "data:", "file:")):
+        return value
+    return Path(value).resolve().as_uri()
+
+
+def _switch_wan_task(model: str, task: str) -> str:
+    """wan2.6-t2v → wan2.6-i2v / wan2.6-r2v while keeping flash suffixes."""
+    text = (model or "").strip()
+    if not text or task not in {"t2v", "i2v", "r2v"}:
+        return text
+    for kind in ("t2v", "i2v", "r2v"):
+        needle = f"-{kind}"
+        if needle in text:
+            return text.replace(needle, f"-{task}", 1)
+    return text
+
+
+def _build_dashscope_video_call(
+    model: str,
+    *,
+    size: str | None = "1280*720",
+    duration: int = 5,
+    resolution: str | None = None,
+    first_frame: str | None = None,
+    reference_images: list[str] | None = None,
+) -> dict[str, Any]:
+    """Map Designer clip inputs onto DashScope T2V / I2V parameters."""
+    refs = [_as_dashscope_media_url(item) for item in (reference_images or [])]
+    refs = [item for item in refs if item]
+    img_url = _as_dashscope_media_url(first_frame) or (refs[0] if refs else None)
+    last_url = refs[-1] if img_url and len(refs) >= 2 and refs[-1] != img_url else None
+    chosen = model.strip() or "wan2.6-t2v"
+    params: dict[str, Any] = {"duration": duration}
+    if img_url:
+        chosen = _switch_wan_task(chosen, "i2v")
+        params["model"] = chosen
+        params["img_url"] = img_url
+        params["resolution"] = (resolution or "720P").strip() or "720P"
+        extra_refs = [item for item in refs if item and item != img_url]
+        params["shot_type"] = "multi" if last_url or extra_refs else "single"
+        if last_url and ("2.7" in chosen or "kf2v" in chosen):
+            params["last_frame_url"] = last_url
+        return params
+    if refs:
+        chosen = _switch_wan_task(chosen, "r2v")
+        params["model"] = chosen
+        params["reference_urls"] = refs[:5]
+        params["size"] = _normalize_video_size(size) or "1280*720"
+        params["shot_type"] = "multi"
+        return params
+    params["model"] = chosen
+    params["size"] = _normalize_video_size(size) or "1280*720"
+    return params
+
+
 async def _invoke_model_video_generation(
     prompt: str,
     *,
     size: str = "1280*720",
     duration: int = 5,
     resolution: str | None = None,
+    first_frame: str | None = None,
+    reference_images: list[str] | None = None,
 ) -> dict[str, Any]:
     """Generate a video via DashScope / MiniMax / 火山方舟 backends."""
     cfg = get_config() or {}
     mc = _get_model_config(cfg, "video_gen")
 
-    api_key = str(mc.get("api_key") or os.getenv("VIDEO_GEN_API_KEY") or "").strip()
+    api_key = str(mc.get("api_key") or os.getenv("VIDEO_GEN_API_KEY") or "").strip().strip("'\"")
     api_base = str(
         mc.get("api_base")
         or os.getenv("VIDEO_GEN_API_BASE")
         or "https://dashscope.aliyuncs.com/api/v1"
-    ).strip()
+    ).strip().strip("'\"")
     if not api_key:
         return {"error": "[ERROR]: VIDEO_GEN_API_KEY is not configured for video generation."}
 
@@ -755,6 +825,8 @@ async def _invoke_model_video_generation(
             size=size,
             duration=duration,
             resolution=resolution,
+            first_frame=first_frame,
+            reference_images=reference_images,
         )
     except Exception as ex:
         return {"error": f"[ERROR]: Video generation failed: {ex}"}
