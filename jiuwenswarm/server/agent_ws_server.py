@@ -9514,6 +9514,7 @@ class AgentWebSocketServer:
             agent_reload_scopes = {
                 "model",
                 "multimodal",
+                "search",
                 "team",
                 "permissions",
                 "agent_runtime",
