@@ -68,7 +68,7 @@ def _assert_nodes_do_not_overlap(nodes: list) -> None:
 @pytest.fixture()
 def stub_clip_video(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_text(prompt: str, max_tokens: int = 1200) -> str:
-        if "分镜" in prompt or "运镜" in prompt:
+        if "分镜" in prompt or "运镜" in prompt or "Storyboard" in prompt:
             return (
                 "## 分镜表\n\n"
                 "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
@@ -521,6 +521,40 @@ async def test_rerun_single_node_keeps_upstream_outputs(
             },
         }
         executor.create_rerun(graph, source_run=unfinished, node_id="n_clip_1")
+
+
+@pytest.mark.asyncio
+async def test_rerun_compose_replaces_film_in_place(
+    designer_store: DesignerGraphStore, stub_clip_video: None
+) -> None:
+    graph = designer_store.save_graph(
+        _handler_graph(build_bootstrap_graph(project_id="proj_compose_rerun", prompt="rerun film")),
+    )
+    executor = GraphExecutor(designer_store)
+    first = executor.create_run(graph)
+    await executor.start_run(first["run_id"])
+    task = executor._tasks.get(first["run_id"])
+    if task is not None:
+        await task
+    finished = designer_store.get_run(first["run_id"])
+    assert finished is not None
+    original = (finished["node_states"]["n_compose"].get("output_ref") or {}).get("uri")
+    assert original
+
+    rerun = executor.create_rerun(graph, source_run=finished, node_id="n_compose")
+    assert rerun["node_states"]["n_compose"]["status"] == "pending"
+    assert not (rerun["node_states"]["n_compose"].get("output_ref") or {}).get("uri")
+    await executor.start_run(rerun["run_id"])
+    worker = executor._tasks.get(rerun["run_id"])
+    if worker is not None:
+        await worker
+    again = designer_store.get_run(rerun["run_id"])
+    assert again is not None
+    assert again["status"] == RUN_STATUS_COMPLETED
+    replaced = (again["node_states"]["n_compose"].get("output_ref") or {}).get("uri")
+    assert replaced
+    assert replaced != original
+    assert not (again["node_states"]["n_compose"].get("candidate_output_ref") or {}).get("uri")
 
 
 @pytest.mark.asyncio

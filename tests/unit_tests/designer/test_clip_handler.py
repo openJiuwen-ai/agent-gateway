@@ -172,7 +172,7 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
     )
     assert collect_clip_reference_images(ctx) == [shot1.resolve()]
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
-    assert "第1镜" in prompt
+    assert "shot 1" in prompt.lower()
     assert "缓摇" in prompt
     assert "跟移" not in prompt
 
@@ -197,9 +197,9 @@ async def test_clip_handler_sends_keyframes_and_storyboard_as_multimodal(
     )
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
     assert seen["first_frame"] == str(shot1.resolve())
-    assert seen["reference_images"] is None
+    assert seen["reference_images"] == [str(shot1.resolve())]
     assert seen["duration"] == 2
-    assert "第1镜" in str(seen["prompt"])
+    assert "Shot 1" in str(seen["prompt"])
 
 
 @pytest.mark.asyncio
@@ -209,6 +209,7 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
     from jiuwenswarm.common.schema.designer_graph import (
         NODE_ROLE_CHARACTER_DESIGN,
         NODE_ROLE_FRAME,
+        NODE_ROLE_SCENE,
         NODE_TYPE_IMAGE,
     )
     from jiuwenswarm.server.runtime.designer.handlers.clip import (
@@ -218,8 +219,10 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
 
     frame = tmp_path / "keyframe.png"
     character = tmp_path / "character.png"
+    scene = tmp_path / "scene.png"
     frame.write_bytes(b"png-frame")
     character.write_bytes(b"png-character")
+    scene.write_bytes(b"png-scene")
     video = tmp_path / "generated_clip.mp4"
     video.write_bytes(b"fake-mp4")
     graph = _graph()
@@ -229,6 +232,12 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
             "type": NODE_TYPE_IMAGE,
             "label": "character",
             "config": {"role": NODE_ROLE_CHARACTER_DESIGN},
+        },
+        {
+            "id": "n_scene",
+            "type": NODE_TYPE_IMAGE,
+            "label": "scene",
+            "config": {"role": NODE_ROLE_SCENE},
         },
         {
             "id": "n_frame",
@@ -249,6 +258,12 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
                         character, kind=NODE_TYPE_IMAGE, mime_type="image/png"
                     ),
                 },
+                "n_scene": {
+                    "status": "completed",
+                    "output_ref": file_output_ref(
+                        scene, kind=NODE_TYPE_IMAGE, mime_type="image/png"
+                    ),
+                },
                 "n_frame": {
                     "status": "completed",
                     "output_ref": file_output_ref(
@@ -258,10 +273,14 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
             }
         },
     )
-    assert collect_clip_reference_images(ctx) == [frame.resolve()]
+    assert collect_clip_reference_images(ctx) == [
+        character.resolve(),
+        scene.resolve(),
+        frame.resolve(),
+    ]
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
-    assert "本镜关键帧" in prompt
-    assert "第1镜" in prompt
+    assert "character sheet" in prompt
+    assert "shot 1" in prompt.lower()
 
     seen: dict[str, object] = {}
 
@@ -282,7 +301,11 @@ async def test_clip_handler_sends_character_and_keyframe_as_references(
     )
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
     assert seen["first_frame"] == str(frame.resolve())
-    assert seen["reference_images"] is None
+    assert seen["reference_images"] == [
+        str(character.resolve()),
+        str(scene.resolve()),
+        str(frame.resolve()),
+    ]
 
 
 @pytest.mark.asyncio
@@ -390,7 +413,7 @@ async def test_clip_handler_rejects_storyboard_notes_without_keyframes(
             }
         },
     )
-    with pytest.raises(RuntimeError, match="没有对应关键帧"):
+    with pytest.raises(RuntimeError, match="no matching keyframe"):
         await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
 
 
@@ -488,7 +511,7 @@ async def test_clip_handler_submits_matching_keyframe_for_shot_index(
     await ClipNodeHandler().execute(clip, ctx)
     assert seen["first_frame"] == str(shot2.resolve())
     assert seen["duration"] == 3
-    assert "第2镜" in str(seen["prompt"])
+    assert "Shot 2" in str(seen["prompt"])
     assert "跟移" in str(seen["prompt"])
     assert "缓摇" not in str(seen["prompt"])
 
@@ -581,4 +604,83 @@ async def test_compose_handler_merges_clips_in_shot_order(
     assert result.output_ref is not None
     assert result.output_ref["kind"] == NODE_TYPE_VIDEO
     assert str(result.output_ref.get("label") or "").endswith(".mp4")
+
+
+def test_concatenate_clip_videos_concats_shot1_then_shot2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from jiuwenswarm.server.runtime.designer.handlers import compose as compose_mod
+
+    clip1 = tmp_path / "shot1.mp4"
+    clip2 = tmp_path / "shot2.mp4"
+    dest = tmp_path / "film.mp4"
+    clip1.write_bytes(b"clip-1")
+    clip2.write_bytes(b"clip-2")
+    calls: list[list[str]] = []
+    listings: list[str] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        if "-f" in cmd and "concat" in cmd:
+            list_path = Path(cmd[cmd.index("-i") + 1])
+            listings.append(list_path.read_text(encoding="utf-8"))
+        dest.write_bytes(b"concatenated")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
+    assert merged == dest.resolve()
+    assert dest.read_bytes() == b"concatenated"
+    assert calls
+    copy_cmd = calls[0]
+    assert copy_cmd[0] == "ffmpeg"
+    assert "-f" in copy_cmd and "concat" in copy_cmd
+    listing = listings[0]
+    assert clip1.resolve().as_posix() in listing
+    assert clip2.resolve().as_posix() in listing
+    assert listing.index(clip1.resolve().as_posix()) < listing.index(clip2.resolve().as_posix())
+
+
+def test_concatenate_clip_videos_falls_back_to_filter_concat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from jiuwenswarm.server.runtime.designer.handlers import compose as compose_mod
+
+    clip1 = tmp_path / "shot1.mp4"
+    clip2 = tmp_path / "shot2.mp4"
+    dest = tmp_path / "film.mp4"
+    clip1.write_bytes(b"clip-1")
+    clip2.write_bytes(b"clip-2")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        joined = " ".join(cmd)
+        if "-c" in cmd and cmd[cmd.index("-c") + 1] == "copy":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="copy failed")
+        if "-i" in cmd and "-filter_complex" not in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="Stream #0:0: Video: h264, yuv420p, 1280x720"
+            )
+        dest.write_bytes(b"reencoded")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
+    assert merged == dest.resolve()
+    assert dest.read_bytes() == b"reencoded"
+    filter_cmd = next(cmd for cmd in calls if "-filter_complex" in cmd)
+    spec = filter_cmd[filter_cmd.index("-filter_complex") + 1]
+    assert str(clip1.resolve()) in filter_cmd
+    assert str(clip2.resolve()) in filter_cmd
+    assert filter_cmd.index(str(clip1.resolve())) < filter_cmd.index(str(clip2.resolve()))
+    assert "concat=n=2:v=1:a=0" in spec
+    assert "-an" in filter_cmd
+    assert "aac" not in filter_cmd
 

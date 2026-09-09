@@ -149,11 +149,12 @@ class GraphExecutor:
         ]
         if kept_ref is not None and not kept_refs:
             kept_refs = [kept_ref]
-        target_type = str(_node_by_id(graph, node_id).get("type") or "")
+        target_node = _node_by_id(graph, node_id)
+        target_type = str(target_node.get("type") or "")
         if (
             target_type in {NODE_TYPE_IMAGE, NODE_TYPE_VIDEO}
             and _is_fallback_text_ref(kept_ref)
-        ):
+        ) or node_role(target_node) == NODE_ROLE_COMPOSE:
             kept_ref = None
             kept_refs = []
         states[node_id] = {
@@ -803,7 +804,9 @@ class GraphExecutor:
             incoming_uri = str((primary or {}).get("uri") or "") if primary else ""
             kept_uri = str((kept or {}).get("uri") or "") if kept else ""
             pending = bool(kept and primary and incoming_uri and incoming_uri != kept_uri)
-            if pending and _should_auto_promote(kept, primary):
+            if pending and (
+                node_role(node) == NODE_ROLE_COMPOSE or _should_auto_promote(kept, primary)
+            ):
                 pending = False
             async with lock:
                 self._set_node_state(

@@ -126,8 +126,8 @@ async def test_brief_and_storyboard_write_markdown(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fake_text(prompt: str, max_tokens: int = 1200) -> str:
-        if "分镜" in prompt or "运镜" in prompt:
-            return "## 分镜表\n| 1 | 2s |\n\n## 运镜脚本\n| 1 | 缓推 |"
+        if "Storyboard" in prompt or "分镜" in prompt or "运镜" in prompt:
+            return "## Storyboard\n| Shot | Timeline |\n| 1 | 0.0-2.0s |\n"
         return "# Brief\n雨夜短片"
 
     monkeypatch.setattr(
@@ -166,8 +166,8 @@ async def test_brief_and_storyboard_write_markdown(
     )
     assert story.output_ref is not None
     text = (workspace / Path(story.output_ref["label"])).read_text(encoding="utf-8")
-    assert "分镜表" in text
-    assert "运镜脚本" in text
+    assert "Storyboard" in text
+    assert "Timeline" in text
 
 
 @pytest.mark.asyncio
@@ -175,8 +175,8 @@ async def test_storyboard_writes_table_and_does_not_generate_image(
     workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fake_text(prompt: str, max_tokens: int = 1200) -> str:
-        assert "时间轴" in prompt or "镜头视角" in prompt
-        assert "注释" in prompt
+        assert "Timeline" in prompt or "Camera" in prompt
+        assert "Comment" in prompt
         return (
             "## 分镜表\n"
             "| 镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 |\n"
@@ -268,9 +268,9 @@ async def test_storyboard_prompt_aligns_with_character_and_scene(
     prompt = seen["prompt"]
     assert "炭黑机器人" in prompt
     assert "雨夜巷" in prompt
-    assert "人物变化必须与此对齐" in prompt
-    assert "场景变化必须与此对齐" in prompt
-    assert "注释写这一镜关键帧" in prompt
+    assert "character action must match" in prompt
+    assert "scene change must match" in prompt
+    assert "keyframe prompt" in prompt
 
 
 @pytest.mark.asyncio
@@ -296,7 +296,7 @@ async def test_character_falls_back_to_notes_when_image_missing(
     )
     assert result.output_ref is not None
     assert result.output_ref["uri"].endswith(".md")
-    assert "角色设定" in (workspace / Path(result.output_ref["label"])).read_text(encoding="utf-8")
+    assert "Character" in (workspace / Path(result.output_ref["label"])).read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -366,7 +366,7 @@ async def test_frame_passes_character_and_scene_as_img2img_references(
         reference_images: list[str] | None = None,
     ):
         seen["reference_images"] = reference_images
-        assert "图生图" in prompt
+        assert "image-to-image" in prompt
         return {"image_path": str(keyframe)}
 
     monkeypatch.setattr(
@@ -471,7 +471,7 @@ async def test_frame_uses_node_generate_prompt_as_shot_comment(
             run=refs["run"],
         ),
     )
-    assert "按下面这段画面描述生成关键帧：中景平视，白领推开地铁门" in seen["prompt"]
+    assert "Generate the keyframe from this shot description: 中景平视，白领推开地铁门" in seen["prompt"]
     assert "分镜表里的旧注释" not in seen["prompt"]
 
 
@@ -495,11 +495,11 @@ def test_shot_frame_prompt_uses_shot_fields_not_markdown_table() -> None:
         has_character=False,
         has_scene=False,
     )
-    assert "分镜内容" in prompt
-    assert "人物变化 未入画" in prompt
-    assert "场景变化 雨夜巷" in prompt
+    assert "Shot notes" in prompt
+    assert "character action 未入画" in prompt
+    assert "scene change 雨夜巷" in prompt
     assert "| 镜号 |" not in prompt
-    assert "时间轴" not in prompt or "不要把「镜号」「时间轴」" in prompt
+    assert "Do not paint words" in prompt
     assert _strip_markdown_tables(brief) == "# Brief\n\n雨夜霓虹巷。"
 
 
@@ -554,8 +554,8 @@ def test_shot_frame_prompt_uses_comment_as_generation_prompt() -> None:
         has_character=True,
         has_scene=True,
     )
-    assert "按下面这段画面描述生成关键帧：中景平视，白领推开地铁门，霓虹映在积水上" in prompt
-    assert "人物变化 主体入画" in prompt
+    assert "Generate the keyframe from this shot description: 中景平视，白领推开地铁门，霓虹映在积水上" in prompt
+    assert "character action 主体入画" in prompt
 
 
 def test_shot_generate_prompt_prefers_comment_then_row_fields() -> None:
@@ -570,8 +570,8 @@ def test_shot_generate_prompt_prefers_comment_then_row_fields() -> None:
     }
     without_comment = {**with_comment, "comment": ""}
     assert shot_generate_prompt(with_comment) == "积水倒影里的霓虹巷"
-    assert "镜头视角 全景/略俯" in shot_generate_prompt(without_comment)
-    assert "人物变化 未入画" in shot_generate_prompt(without_comment)
+    assert "Camera 全景/略俯" in shot_generate_prompt(without_comment)
+    assert "Character action 未入画" in shot_generate_prompt(without_comment)
 
 
 @pytest.mark.asyncio
@@ -637,9 +637,9 @@ async def test_frame_generates_one_image_per_storyboard_shot(
     )
     result = await FrameNodeHandler().execute(graph["nodes"][3], ctx)
     assert len(prompts) == 1
-    assert "第 1 镜" in prompts[0]
-    assert "分镜内容" in prompts[0]
-    assert "人物变化 未入画" in prompts[0]
+    assert "shot 1" in prompts[0]
+    assert "Shot notes" in prompts[0]
+    assert "character action 未入画" in prompts[0]
     expected_refs = [str(refs["character"].resolve()), str(refs["scene"].resolve())]
     assert seen_refs[0] == expected_refs
     assert "| 镜号 |" not in prompts[0]
@@ -651,8 +651,8 @@ async def test_frame_generates_one_image_per_storyboard_shot(
     graph["nodes"][3]["config"]["shot_index"] = 2
     second = await FrameNodeHandler().execute(graph["nodes"][3], ctx)
     assert len(prompts) == 2
-    assert "第 2 镜" in prompts[1]
-    assert "人物变化 主体入画" in prompts[1]
+    assert "shot 2" in prompts[1]
+    assert "character action 主体入画" in prompts[1]
     assert seen_refs[1] == expected_refs
     assert second.output_refs is not None
     assert second.output_refs[0]["label"] == "designer_frame_run_mid01_n_frame_shot2.png"
@@ -661,7 +661,7 @@ async def test_frame_generates_one_image_per_storyboard_shot(
 @pytest.mark.asyncio
 async def test_frame_requires_character_and_scene_images(workspace: Path) -> None:
     graph = _graph()
-    with pytest.raises(RuntimeError, match="角色图、场景图"):
+    with pytest.raises(RuntimeError, match="Character and Scene"):
         await FrameNodeHandler().execute(
             graph["nodes"][3],
             NodeExecutionContext(graph=graph, run_id="run_mid01", node_id="n_frame"),

@@ -21,7 +21,7 @@ test('toReactFlowGraph maps domain nodes and edges', () => {
   assert.ok(brief);
   assert.deepEqual(brief.position, { x: 40, y: 240 });
   assert.equal(brief.type, 'text');
-  assert.equal(brief.data.label, '项目 brief');
+  assert.equal(brief.data.label, 'Brief');
 });
 
 test('fromReactFlowGraph preserves domain semantics while updating layout', () => {

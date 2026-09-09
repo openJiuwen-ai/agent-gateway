@@ -57,12 +57,12 @@ async def test_align_specialists_writes_cards(
 
     async def fake_text(prompt: str, max_tokens: int = 800) -> str:
         calls.append(prompt)
-        if "冲突" in prompt or "约束" in prompt:
-            return "- 服装必须是湿润皮衣\n- 霓虹只做轮廓光"
-        if "角色设计师" in prompt:
-            return "# 角色\n湿润皮衣，短发"
-        if "场景美术" in prompt:
-            return "# 场景\n雨夜巷，积水霓虹"
+        if "conflict" in prompt or "constraint" in prompt:
+            return "- Costume must stay wet leather\n- Neon is rim light only"
+        if "character designer" in prompt:
+            return "# Character\nwet leather, short hair"
+        if "production designer" in prompt:
+            return "# Scene\nrain alley, puddle neon"
         return "# other"
 
     monkeypatch.setattr(
@@ -76,10 +76,10 @@ async def test_align_specialists_writes_cards(
     )
     assert NODE_ROLE_CHARACTER_DESIGN in cards
     assert NODE_ROLE_SCENE in cards
-    assert "对齐后必须遵守" in cards[NODE_ROLE_CHARACTER_DESIGN]
+    assert "Constraints after aligning" in cards[NODE_ROLE_CHARACTER_DESIGN]
     assert collaboration_card("run_align01", NODE_ROLE_SCENE)
     assert (workspace / "designer_a2a_run_align01_transcript.md").is_file()
-    assert any("A2A" in prompt or "同事" in prompt for prompt in calls)
+    assert any("A2A" in prompt or "colleague" in prompt.lower() for prompt in calls)
 
 
 @pytest.mark.asyncio

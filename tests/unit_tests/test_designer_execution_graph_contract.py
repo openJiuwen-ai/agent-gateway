@@ -142,10 +142,11 @@ def test_designer_fixture_normalizes() -> None:
     graph = normalize_execution_graph(payload)
     assert graph["schema_version"] == SCHEMA_VERSION
     assert len(graph["nodes"]) == 7
-    assert len(graph["edges"]) == 12
+    assert len(graph["edges"]) == 13
     assert any(edge["source"] == "n_frame_1" and edge["target"] == "n_clip_1" for edge in graph["edges"])
     assert any(edge["source"] == "n_clip_1" and edge["target"] == "n_compose" for edge in graph["edges"])
     assert any(edge["source"] == "n_scene" and edge["target"] == "n_frame_1" for edge in graph["edges"])
+    assert any(edge["source"] == "n_scene" and edge["target"] == "n_clip_1" for edge in graph["edges"])
     assert {node["type"] for node in graph["nodes"]} == {"text", "table", "image", "video"}
     sync_edges = [edge for edge in graph["edges"] if edge.get("kind") == EDGE_KIND_SYNC]
     assert len(sync_edges) == 2

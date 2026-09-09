@@ -36,17 +36,17 @@ from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionCont
 
 def _character_prompt(source: str) -> str:
     return (
-        "角色设定图，单一主体，全身或半身，干净背景，电影灯光，赛博朋克或按描述。"
-        "不要字幕、不要分镜格子。\n"
+        "Character design sheet, single subject, full or three-quarter body, clean background, "
+        "cinematic lighting. Follow the brief. No subtitles, no storyboard grid.\n"
         f"{source}"
     )
 
 
 def _scene_prompt(source: str) -> str:
     return (
-        "电影场景建立镜头，只有环境没有人物。"
-        "交代空间、天气、光线、招牌和地面，适合后续把角色放进去。"
-        "不要人物、不要字幕、不要分镜格子。\n"
+        "Cinematic establishing shot of the environment only, no people. "
+        "Show space, weather, lighting, signage, and ground so a character can be placed later. "
+        "No people, no subtitles, no storyboard grid.\n"
         f"{source}"
     )
 
@@ -71,59 +71,60 @@ def _shot_frame_prompt(
     has_character: bool,
     has_scene: bool,
 ) -> str:
-    timeline = f"（{shot['timeline']}）" if shot["timeline"] else ""
+    timeline = f" ({shot['timeline']})" if shot["timeline"] else ""
     comment = str(shot.get("comment") or "").strip()
     lead = (
-        f"电影关键帧，单幅写实静帧，对应分镜第 {shot['shot_no']} 镜{timeline}。"
-        "构图清楚，只画这一镜的瞬间，不要多格拼图。"
+        f"Cinematic keyframe, one photoreal still for shot {shot['shot_no']}{timeline}. "
+        "Clear composition, this instant only, no comic grid."
     )
     if comment:
-        lead += f"按下面这段画面描述生成关键帧：{comment}。"
+        lead += f" Generate the keyframe from this shot description: {comment}."
     lead += (
-        "分镜内容："
-        f"镜号 {shot['shot_no']}；"
-        f"时间轴 {shot['timeline'] or '未写'}；"
-        f"镜头视角 {shot['camera'] or '未写'}；"
-        f"运镜 {shot['move'] or '未写'}；"
-        f"人物变化 {shot['character_action'] or '未写'}；"
-        f"场景变化 {shot['scene_change'] or '未写'}。"
+        " Shot notes: "
+        f"shot {shot['shot_no']}; "
+        f"timeline {shot['timeline'] or 'unspecified'}; "
+        f"camera {shot['camera'] or 'unspecified'}; "
+        f"camera move {shot['move'] or 'unspecified'}; "
+        f"character action {shot['character_action'] or 'unspecified'}; "
+        f"scene change {shot['scene_change'] or 'unspecified'}."
     )
     if has_character and has_scene:
         lead += (
-            "这是图生图：第一张参考图是角色设定，第二张是场景。"
-            "把角色放入该场景，保持角色外貌、服装、材质，以及场景的空间、光线和天气。"
+            " This is image-to-image. The first reference is the character sheet; "
+            "the second is the scene. Place that character in that scene and keep "
+            "identity, costume, materials, location, lighting, and weather."
         )
     elif has_character:
-        lead += "角色外貌、服装和材质必须与角色设定参考图一致，不要另造一套造型。"
+        lead += " Character look, costume, and materials must match the character reference. Do not invent a new design."
     elif has_scene:
-        lead += "场景空间、光线和天气必须与场景参考图一致。"
+        lead += " Location, lighting, and weather must match the scene reference."
     lead += (
-        "画面里只能是电影场景本身。"
-        "不要字幕、不要分镜格子、不要表格、不要Excel、不要单元格、不要竖线表头。"
-        "不要把「镜号」「时间轴」「镜头视角」「运镜」「人物变化」「场景变化」「注释」这些词画进画面。"
+        " The image must be the cinematic scene itself. "
+        "No subtitles, no storyboard grid, no table, no spreadsheet, no cell borders. "
+        "Do not paint words like Shot, Timeline, Camera, Move, Character action, Scene change, or Comment."
     )
     visual = _strip_markdown_tables(brief)
     if visual:
-        return f"{lead}\n整体视觉风格参考：\n{visual}"
+        return f"{lead}\nOverall visual style:\n{visual}"
     return lead
 
 
 def fallback_character_sheet(source: str) -> str:
     return (
-        "# 角色设定\n\n"
+        "# Character\n\n"
         f"{source.strip()}\n\n"
-        "- 外形：按 Brief 中的主体描述\n"
-        "- 服装/材质：与雨夜霓虹或用户指定风格一致\n"
-        "- 未配置图片生成时，先用这份设定稿作为中间产物\n"
+        "- Look: follow the subject in the Brief\n"
+        "- Costume / materials: match the specified style\n"
+        "- Image generation is unavailable; this sheet is the intermediate artifact\n"
     )
 
 
 def fallback_scene_notes(source: str) -> str:
     return (
-        "# 场景\n\n"
+        "# Scene\n\n"
         f"{source.strip()}\n\n"
-        "- 只画环境，不画人物\n"
-        "- 未配置图片生成时，先用这份场景说明\n"
+        "- Environment only, no people\n"
+        "- Image generation is unavailable; these notes are the intermediate artifact\n"
     )
 
 
@@ -132,19 +133,19 @@ def fallback_keyframe_script(source: str, shot_index: int = 1) -> str:
     index = max(1, int(shot_index or 1))
     shot = shots[index - 1] if index <= len(shots) else None
     lines = [
-        "# 关键帧\n",
-        f"- 这是第 {index} 镜的关键帧节点，只对应这一镜\n",
+        "# Keyframe\n",
+        f"- This is the keyframe node for shot {index} only\n",
     ]
     if shot:
         lines.append(
-            f"- 第 {shot['shot_no']} 镜 {shot['timeline']}: {shot['camera']} / {shot['move']}\n"
-            f"- 人物：{shot['character_action']}\n"
-            f"- 场景：{shot['scene_change']}\n"
+            f"- Shot {shot['shot_no']} {shot['timeline']}: {shot['camera']} / {shot['move']}\n"
+            f"- Character: {shot['character_action']}\n"
+            f"- Scene: {shot['scene_change']}\n"
         )
         comment = str(shot.get("comment") or "").strip()
         if comment:
-            lines.append(f"- 画面描述：{comment}\n")
-    lines.append("- 未配置图片生成时，先用这份关键帧说明\n")
+            lines.append(f"- Shot description: {comment}\n")
+    lines.append("- Image generation is unavailable; these notes are the intermediate artifact\n")
     return "".join(lines)
 
 
@@ -249,19 +250,19 @@ class FrameNodeHandler:
         if character is None or scene is None:
             missing = []
             if character is None:
-                missing.append("角色图")
+                missing.append("Character")
             if scene is None:
-                missing.append("场景图")
+                missing.append("Scene")
             raise RuntimeError(
-                "关键帧必须把"
-                + "、".join(missing)
-                + "和这一镜的分镜内容一起发给生图模型。请先完成「角色图」和「场景图」节点。"
+                "Keyframe generation must send "
+                + " and ".join(missing)
+                + " with this shot. Finish the Character and Scene nodes first."
             )
         refs = [str(character), str(scene)]
         shots = storyboard_shots_or_default(storyboard, visual)
         if shot_index > len(shots):
             raise RuntimeError(
-                f"第{shot_index}镜在分镜表中不存在（当前共 {len(shots)} 镜）。"
+                f"Shot {shot_index} is not in the storyboard ({len(shots)} shots)."
             )
         shot = dict(shots[shot_index - 1])
         override = handler_io.node_generate_prompt(node)

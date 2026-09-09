@@ -30,36 +30,36 @@ from jiuwenswarm.server.runtime.designer.a2a_collab import (
 from jiuwenswarm.server.runtime.designer.subagent import complete_designer_node_text
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext, NodeResult
 
-_BRIEF_INSTRUCTION = """把下面的创作需求整理成一份可执行的短片 Brief。
-用中文 Markdown，包含：一句话 logline、视觉风格、主要角色/主体、场景、时长约束（5秒）、不要出现的内容。
-只输出 Markdown，不要解释。
+_BRIEF_INSTRUCTION = """Turn the request below into an executable short-film Brief.
+Write English Markdown with: one-line logline, visual style, main character/subject, setting, 5-second duration, and what to avoid.
+Output Markdown only, no explanation.
 
-需求：
+Request:
 """
 
-_STORYBOARD_COLUMNS = "镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 | 注释"
+_STORYBOARD_COLUMNS = "Shot | Timeline | Camera | Move | Character action | Scene change | Comment"
 
-_STORYBOARD_INSTRUCTION = """根据 Brief 写一份 5 秒短片的分镜表。这是摄影脚本表格，不是图画。
-用中文 Markdown，必须包含下面这个二级标题和一张表：
+_STORYBOARD_INSTRUCTION = """Write a 5-second storyboard from the Brief. This is a camera script table, not a drawing.
+Use English Markdown. Include this heading and one table:
 
-## 分镜表
+## Storyboard
 
-用 Markdown 表格，列必须是：
-镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 | 注释
+Use a Markdown table whose columns MUST be:
+Shot | Timeline | Camera | Move | Character action | Scene change | Comment
 
-约束：
-- 全片合计约 5 秒，2～4 个镜头
-- 时间轴写起止秒，例如 0.0-2.0s
-- 镜头视角写景别+机位，例如 全景/略俯、中景/平视
-- 运镜写推/拉/摇/移/固定及速度
-- 人物变化必须与角色图/角色设定对齐：同一主体、同一外形服装材质，只写该镜里的动作、朝向、进出画
-- 场景变化必须与场景图/场景设定对齐：同一地点和天气光线体系，只写该镜里环境、道具、背景如何变
-- 注释写这一镜关键帧的画面描述，作为后续生图 prompt：主体、构图、光线、动作瞬间、环境细节。写成可直接生图的中文，不要只重复其它列
-- 不要另造角色，不要换场景世界观
+Rules:
+- Whole film about 5 seconds, 2-4 shots
+- Timeline as start-end seconds, e.g. 0.0-2.0s
+- Camera is shot size + angle, e.g. wide/slight high, medium/eye-level
+- Move is push/pull/pan/dolly/static and speed
+- Character action must match the character sheet: same subject, look, costume, materials; only write motion, facing, and enter/exit for this shot
+- Scene change must match the scene sheet: same place, weather, lighting; only write how environment, props, and background change in this shot
+- Comment is the keyframe prompt for this shot: subject, composition, light, action instant, environment. Write English that can go straight to image generation. Do not only repeat other columns
+- Do not invent a new character or a new world
 
-不要输出分镜图画，不要解释。
+Do not output storyboard drawings. Do not explain.
 
-Brief：
+Brief:
 """
 
 _MAX_STORYBOARD_SHOTS = 6
@@ -77,13 +77,13 @@ class StoryboardShot(TypedDict):
 
 
 _FIELD_ALIASES: dict[str, tuple[str, ...]] = {
-    "shot_no": ("镜号",),
-    "timeline": ("时间轴",),
-    "camera": ("镜头视角", "景别"),
-    "move": ("运镜",),
-    "character_action": ("人物变化",),
-    "scene_change": ("场景变化",),
-    "comment": ("注释", "备注", "画面描述", "提示词"),
+    "shot_no": ("Shot", "镜号"),
+    "timeline": ("Timeline", "时间轴"),
+    "camera": ("Camera", "镜头视角", "景别"),
+    "move": ("Move", "运镜"),
+    "character_action": ("Character action", "Character", "人物变化"),
+    "scene_change": ("Scene change", "Scene", "场景变化"),
+    "comment": ("Comment", "Notes", "注释", "备注", "画面描述", "提示词"),
 }
 _POSITIONAL_FIELDS = (
     "shot_no",
@@ -167,7 +167,11 @@ def parse_storyboard_shots(text: str) -> list[StoryboardShot]:
         if all(_TABLE_SEP_CELL.match(cell) for cell in cells if cell):
             continue
         joined = "".join(cells)
-        if not header_seen and ("镜号" in joined or "时间轴" in joined):
+        header_hit = any(
+            marker.casefold() in joined.casefold()
+            for marker in ("Shot", "Timeline", "镜号", "时间轴")
+        )
+        if not header_seen and header_hit:
             header_seen = True
             field_map = _header_field_map(cells)
             continue
@@ -197,37 +201,37 @@ def shot_generate_prompt(shot: StoryboardShot) -> str:
     parts: list[str] = []
     timeline = str(shot.get("timeline") or "").strip()
     if timeline:
-        parts.append(f"时间轴 {timeline}")
+        parts.append(f"Timeline {timeline}")
     for label, key in (
-        ("镜头视角", "camera"),
-        ("运镜", "move"),
-        ("人物变化", "character_action"),
-        ("场景变化", "scene_change"),
+        ("Camera", "camera"),
+        ("Camera move", "move"),
+        ("Character action", "character_action"),
+        ("Scene change", "scene_change"),
     ):
         value = str(shot.get(key) or "").strip()
         if value:
             parts.append(f"{label} {value}")
-    return "；".join(parts)
+    return "; ".join(parts)
 
 
 def fallback_brief(prompt: str) -> str:
     return (
         "# Brief\n\n"
-        f"- Logline：{prompt}\n"
-        "- 时长：5 秒\n"
-        "- 分辨率：480P（开发阶段）\n"
-        "- 视觉：按用户描述执行，避免无关元素\n"
+        f"- Logline: {prompt}\n"
+        "- Duration: 5 seconds\n"
+        "- Resolution: 480P (dev)\n"
+        "- Visual: follow the user description, avoid unrelated elements\n"
     )
 
 
 def fallback_storyboard(prompt: str) -> str:
     return (
-        "# 分镜表\n\n"
-        "## 分镜表\n\n"
+        "# Storyboard\n\n"
+        "## Storyboard\n\n"
         f"| {_STORYBOARD_COLUMNS} |\n"
         "| --- | --- | --- | --- | --- | --- | --- |\n"
-        f"| 1 | 0.0-2.0s | 全景/略俯 | 从积水倒影缓摇至主体 | 主体尚未入画或仅见倒影 | 建立场景：{prompt[:80]} | 雨夜霓虹巷的积水倒影，全景略俯，尚未见到主体 |\n"
-        "| 2 | 2.0-5.0s | 中景/平视 | 跟移后停 | 主体进入并完成一个明确动作 | 霓虹与积水倒影随镜头碎开 | 中景平视，主体入画完成一个明确动作，霓虹与积水倒影碎开 |\n"
+        f"| 1 | 0.0-2.0s | wide / slight high | slow pan from puddle reflection to subject | subject not yet in frame, or only the reflection | establish the scene: {prompt[:80]} | rain-night neon alley in a puddle reflection, wide slight-high, subject not yet seen |\n"
+        "| 2 | 2.0-5.0s | medium / eye-level | follow then hold | subject enters and completes one clear action | neon and puddle shatter with the camera | medium eye-level, subject enters and completes one action, neon and puddle shatter |\n"
     )
 
 
@@ -261,13 +265,13 @@ def _storyboard_alignment_context(ctx: NodeExecutionContext) -> str:
         or role_output_text(ctx, NODE_ROLE_SCENE)
     )
     if character_notes:
-        parts.append("角色图/角色设定（人物变化必须与此对齐）：\n" + character_notes)
+        parts.append("Character sheet / notes (character action must match):\n" + character_notes)
     elif role_output_image_path(ctx, NODE_ROLE_CHARACTER_DESIGN) is not None:
-        parts.append("已有角色图。人物变化必须与该角色的外貌、服装和材质对齐，不要另造角色。")
+        parts.append("A character sheet exists. Character action must match that look, costume, and materials. Do not invent a new character.")
     if scene_notes:
-        parts.append("场景图/场景设定（场景变化必须与此对齐）：\n" + scene_notes)
+        parts.append("Scene sheet / notes (scene change must match):\n" + scene_notes)
     elif role_output_image_path(ctx, NODE_ROLE_SCENE) is not None:
-        parts.append("已有场景图。场景变化必须与该环境的空间、天气和光线对齐，不要换地点。")
+        parts.append("A scene sheet exists. Scene change must match that space, weather, and lighting. Do not change location.")
     return "\n\n".join(parts)
 
 

@@ -46,18 +46,18 @@ COLLAB_ROLES: frozenset[str] = frozenset(
 
 _SPECIALISTS: dict[str, tuple[str, str]] = {
     NODE_ROLE_CHARACTER_DESIGN: (
-        "角色设计师",
-        "你是影视角色设计师。只写外形、服装、材质、体态和辨识特征。"
-        "不要写分镜表，不要安排镜头。用中文短 Markdown。",
+        "character designer",
+        "You are a film character designer. Write look, costume, materials, posture, and identifying traits only. "
+        "Do not write a storyboard. Do not plan shots. Short English Markdown.",
     ),
     NODE_ROLE_SCENE: (
-        "场景美术指导",
-        "你是场景美术指导。只写空间、天气、光线、招牌、地面和道具。"
-        "不要出现人物，不要写分镜表。用中文短 Markdown。",
+        "production designer",
+        "You are a production designer. Write space, weather, lighting, signage, ground, and props only. "
+        "No people. Do not write a storyboard. Short English Markdown.",
     ),
     NODE_ROLE_STORYBOARD: (
-        "分镜导演",
-        "你是分镜导演。保证人物连续、场景地理连续，镜头服务 5 秒短片。",
+        "storyboard director",
+        "You are a storyboard director. Keep character continuity and scene geography. Shots serve a 5-second film.",
     ),
 }
 
@@ -113,7 +113,7 @@ class DesignerA2ABus:
         )
 
     def transcript_markdown(self) -> str:
-        lines = ["# Designer A2A 协作记录", ""]
+        lines = ["# Designer A2A transcript", ""]
         for item in self.messages:
             lines.append(f"## {item.sender} → {item.recipient}")
             lines.append("")
@@ -158,9 +158,9 @@ async def _complete(prompt: str, *, max_tokens: int = 800) -> str:
 
 
 async def ask_specialist(role: str, task: str, *, max_tokens: int = 800) -> str:
-    name, system = _SPECIALISTS.get(role, (role, "你是 Designer 专家。"))
+    name, system = _SPECIALISTS.get(role, (role, "You are a Designer specialist."))
     return await _complete(
-        f"{system}\n\n你的身份：{name}（role={role}）。\n\n{task}\n",
+        f"{system}\n\nYour identity: {name} (role={role}).\n\n{task}\n",
         max_tokens=max_tokens,
     )
 
@@ -215,15 +215,15 @@ async def align_specialists(
     """Draft in parallel, then one A2A cross-talk round per pair."""
     bus = DesignerA2ABus(context_id=run_id)
     task_id = f"align_{run_id}"
-    brief = brief.strip() or "未提供 Brief"
+    brief = brief.strip() or "No Brief provided"
     drafts: dict[str, str] = {}
 
     async def _draft(role: str) -> tuple[str, str]:
         text = await ask_specialist(
             role,
-            "根据下面的 Brief 写一份可执行设定卡，10～20 行。\n\nBrief：\n" + brief,
+            "Write an executable design card from the Brief below, 10-20 lines.\n\nBrief:\n" + brief,
         )
-        bus.send(sender=role, recipient="director", text=text or f"（{role} 草稿为空）", task_id=task_id)
+        bus.send(sender=role, recipient="director", text=text or f"({role} draft empty)", task_id=task_id)
         return role, text
 
     for role, text in await asyncio.gather(*(_draft(role) for role in roles)):
@@ -235,16 +235,16 @@ async def align_specialists(
             mine = drafts.get(dst) or ""
             reply = await ask_specialist(
                 dst,
-                "同事用 A2A 发来设定，指出和你冲突的地方，列出你必须坚持的 3～6 条约束。"
-                "不要重写整份 Brief。\n\n"
-                f"同事（{src}）设定：\n{peer}\n\n你的设定：\n{mine}\n",
+                "A colleague sent this design over A2A. List conflicts with your card and 3-6 constraints you must keep. "
+                "Do not rewrite the whole Brief.\n\n"
+                f"Colleague ({src}) card:\n{peer}\n\nYour card:\n{mine}\n",
                 max_tokens=600,
             )
             bus.send(sender=src, recipient=dst, text=peer, task_id=task_id)
-            bus.send(sender=dst, recipient=src, text=reply or "无冲突", task_id=task_id)
+            bus.send(sender=dst, recipient=src, text=reply or "no conflict", task_id=task_id)
             if reply:
                 drafts[dst] = (
-                    f"{mine}\n\n## 与 {src} 对齐后必须遵守\n\n{reply}".strip()
+                    f"{mine}\n\n## Constraints after aligning with {src}\n\n{reply}".strip()
                     if mine
                     else reply
                 )
@@ -291,31 +291,31 @@ async def review_storyboard_with_peers(table: str, *, run_id: str) -> str:
     if character:
         reply = await ask_specialist(
             NODE_ROLE_CHARACTER_DESIGN,
-            "审这份分镜表的「人物变化」列。指出换装、换人、外形不一致。"
-            "没有问题就回「OK」。\n\n"
-            f"你的角色卡：\n{character}\n\n分镜表：\n{table}\n",
+            "Review the Character action column of this storyboard. Flag costume changes, swapped people, or look mismatches. "
+            "Reply OK if none.\n\n"
+            f"Your character card:\n{character}\n\nStoryboard:\n{table}\n",
             max_tokens=400,
         )
         if reply and reply.strip().upper() != "OK":
-            notes.append("角色设计师：\n" + reply)
+            notes.append("character designer:\n" + reply)
     if scene:
         reply = await ask_specialist(
             NODE_ROLE_SCENE,
-            "审这份分镜表的「场景变化」列。指出换地点、换天气、光线体系崩了。"
-            "没有问题就回「OK」。\n\n"
-            f"你的场景卡：\n{scene}\n\n分镜表：\n{table}\n",
+            "Review the Scene change column of this storyboard. Flag location changes, weather swaps, or broken lighting. "
+            "Reply OK if none.\n\n"
+            f"Your scene card:\n{scene}\n\nStoryboard:\n{table}\n",
             max_tokens=400,
         )
         if reply and reply.strip().upper() != "OK":
-            notes.append("场景美术：\n" + reply)
+            notes.append("production designer:\n" + reply)
     if not notes:
         return table
     revised = await ask_specialist(
         NODE_ROLE_STORYBOARD,
-        "按同事 A2A 意见改分镜表。必须保留表头："
-        "镜号 | 时间轴 | 镜头视角 | 运镜 | 人物变化 | 场景变化 | 注释。\n"
-        "只输出 Markdown 表，不要解释。\n\n"
-        f"原表：\n{table}\n\n意见：\n" + "\n\n".join(notes),
+        "Revise the storyboard from colleague A2A notes. Keep this header: "
+        "Shot | Timeline | Camera | Move | Character action | Scene change | Comment.\n"
+        "Output the Markdown table only, no explanation.\n\n"
+        f"Original:\n{table}\n\nNotes:\n" + "\n\n".join(notes),
         max_tokens=1600,
     )
     return revised or table

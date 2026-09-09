@@ -3,13 +3,13 @@
   "graph_id": "graph_fixture001",
   "project_id": "proj_fixture01",
   "title": "赛博朋克街景短视频",
-  "description": "从初始 prompt 生成 brief，再产出角色图、场景图、分镜表与后续帧/片段。",
+  "description": "From the initial prompt, generate Brief, then Character, Scene, Storyboard, and later frames/clips.",
   "source": "prompt",
   "nodes": [
     {
       "id": "n_brief",
       "type": "text",
-      "label": "项目 brief",
+      "label": "Brief",
       "config": {
         "role": "brief",
         "prompt": "制作一段 30 秒赛博朋克街景短视频，强调霓虹灯与雨夜反射。"
@@ -19,7 +19,7 @@
     {
       "id": "n_character",
       "type": "image",
-      "label": "角色图",
+      "label": "Character",
       "config": {
         "role": "character_design",
         "inputs": ["n_brief"]
@@ -29,7 +29,7 @@
     {
       "id": "n_scene",
       "type": "image",
-      "label": "场景图",
+      "label": "Scene",
       "config": {
         "role": "scene",
         "inputs": ["n_brief"]
@@ -39,7 +39,7 @@
     {
       "id": "n_storyboard",
       "type": "table",
-      "label": "分镜表",
+      "label": "Storyboard",
       "config": {
         "role": "storyboard",
         "inputs": ["n_brief"]
@@ -49,7 +49,7 @@
     {
       "id": "n_frame_1",
       "type": "image",
-      "label": "关键帧 1",
+      "label": "Keyframe 1",
       "config": {
         "role": "frame",
         "shot_index": 1,
@@ -60,18 +60,18 @@
     {
       "id": "n_clip_1",
       "type": "video",
-      "label": "视频片段 1",
+      "label": "Clip 1",
       "config": {
         "role": "clip",
         "shot_index": 1,
-        "inputs": ["n_character", "n_storyboard", "n_frame_1"]
+        "inputs": ["n_character", "n_scene", "n_storyboard", "n_frame_1"]
       },
       "layout": { "x": 1120, "y": 240, "width": 280, "height": 160 }
     },
     {
       "id": "n_compose",
       "type": "video",
-      "label": "成片",
+      "label": "Film",
       "config": {
         "role": "compose",
         "inputs": ["n_clip_1"]
@@ -100,14 +100,14 @@
       "source": "n_character",
       "target": "n_storyboard",
       "kind": "sync",
-      "label": "对齐"
+      "label": "Align"
     },
     {
       "id": "e_scene_storyboard",
       "source": "n_scene",
       "target": "n_storyboard",
       "kind": "sync",
-      "label": "对齐"
+      "label": "Align"
     },
     {
       "id": "e_character_frame",
@@ -127,6 +127,11 @@
     {
       "id": "e_character_n_clip_1",
       "source": "n_character",
+      "target": "n_clip_1"
+    },
+    {
+      "id": "e_scene_n_clip_1",
+      "source": "n_scene",
       "target": "n_clip_1"
     },
     {

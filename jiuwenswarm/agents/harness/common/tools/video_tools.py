@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import requests
 from openjiuwen.core.foundation.tool import tool
@@ -636,7 +637,15 @@ async def _invoke_dashscope_video_generation(
         model_config=model_config,
         model_client_config=model_client_config,
     )
-    messages = [UserMessage(content=prompt)]
+    messages = [
+        UserMessage(
+            content=video_generation_message_content(
+                prompt,
+                first_frame=first_frame,
+                reference_images=reference_images,
+            )
+        )
+    ]
     video_call = _build_dashscope_video_call(
         model,
         size=size,
@@ -646,11 +655,12 @@ async def _invoke_dashscope_video_generation(
         reference_images=reference_images,
     )
     logger.info(
-        "Designer video generation model=%s img_url=%s reference_urls=%s shot_type=%s",
+        "Designer video generation model=%s img_url=%s reference_urls=%s shot_type=%s api_base=%s",
         video_call.get("model"),
         bool(video_call.get("img_url")),
         len(video_call.get("reference_urls") or []),
         video_call.get("shot_type"),
+        api_base,
     )
     result = await model_instance.generate_video(messages=messages, **video_call)
 
@@ -675,13 +685,98 @@ async def _invoke_dashscope_video_generation(
     return {"error": "[ERROR]: No valid video data in response"}
 
 
-def _as_dashscope_media_url(path: str | None) -> str | None:
+_CHINA_DASHSCOPE_API_BASE = "https://dashscope.aliyuncs.com/api/v1"
+_INTL_DASHSCOPE_API_BASE = "https://dashscope-intl.aliyuncs.com/api/v1"
+
+
+def _local_media_path(path: str) -> Path | None:
     value = str(path or "").strip()
     if not value:
         return None
-    if value.startswith(("http://", "https://", "data:", "file:")):
+    if value.startswith("file:"):
+        parsed = urlparse(value)
+        local = unquote(parsed.path)
+        if len(local) >= 3 and local[0] == "/" and local[2] == ":":
+            local = local[1:]
+        candidate = Path(local)
+    else:
+        candidate = Path(value).expanduser()
+    if not candidate.is_file():
+        return None
+    return candidate.resolve()
+
+
+def _as_dashscope_media_url(path: str | None) -> str | None:
+    """DashScope video I2V rejects file://; use http(s) or data: Base64."""
+    value = str(path or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://", "data:")):
         return value
-    return Path(value).resolve().as_uri()
+    local = _local_media_path(value)
+    if local is None:
+        return None
+    mime, _ = mimetypes.guess_type(str(local))
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    encoded = base64.b64encode(local.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def video_generation_message_content(
+    prompt: str,
+    *,
+    first_frame: str | None = None,
+    reference_images: list[str] | None = None,
+) -> str | list[dict[str, str]]:
+    """Build explicit multimodal video input: reference images, then first frame, then text."""
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | None) -> None:
+        url = _as_dashscope_media_url(path)
+        if not url or url in seen:
+            return
+        seen.add(url)
+        urls.append(url)
+
+    for item in reference_images or []:
+        add(item)
+    add(first_frame)
+    text = str(prompt or "").strip()
+    if not urls:
+        return text
+    content: list[dict[str, str]] = [{"image": url} for url in urls]
+    content.append({"text": text})
+    return content
+
+
+def _align_dashscope_video_api_base(api_base: str, api_key: str) -> str:
+    """Keep video calls on the same DashScope region as a working image_gen key."""
+    base = (api_base or "").strip().strip("'\"").rstrip("/")
+    lowered = base.lower()
+    if "compatible-mode" in lowered and "dashscope" in lowered:
+        base = (
+            _INTL_DASHSCOPE_API_BASE
+            if "dashscope-intl" in lowered
+            else _CHINA_DASHSCOPE_API_BASE
+        )
+        lowered = base.lower()
+
+    image_base = str(os.getenv("IMAGE_GEN_API_BASE") or "").strip().strip("'\"").lower()
+    image_key = str(os.getenv("IMAGE_GEN_API_KEY") or "").strip().strip("'\"")
+    same_key = bool(api_key and image_key and api_key == image_key)
+    china = "dashscope.aliyuncs.com" in lowered and "dashscope-intl" not in lowered
+    intl = "dashscope-intl" in lowered
+    image_intl = "dashscope-intl" in image_base
+    image_china = "dashscope.aliyuncs.com" in image_base and "dashscope-intl" not in image_base
+    if same_key and image_intl and china:
+        logger.info("Aligning DashScope video api_base to international host used by image_gen")
+        return _INTL_DASHSCOPE_API_BASE
+    if same_key and image_china and intl:
+        logger.info("Aligning DashScope video api_base to China host used by image_gen")
+        return _CHINA_DASHSCOPE_API_BASE
+    return base or _CHINA_DASHSCOPE_API_BASE
 
 
 def _switch_wan_task(model: str, task: str) -> str:
@@ -718,7 +813,10 @@ def _build_dashscope_video_call(
         params["img_url"] = img_url
         params["resolution"] = (resolution or "720P").strip() or "720P"
         extra_refs = [item for item in refs if item and item != img_url]
-        params["shot_type"] = "multi" if last_url or extra_refs else "single"
+        if extra_refs:
+            params["reference_urls"] = extra_refs[:4]
+        if any(token in chosen for token in ("2.2", "2.5", "2.6", "2.7")):
+            params["shot_type"] = "multi" if last_url or extra_refs else "single"
         if last_url and ("2.7" in chosen or "kf2v" in chosen):
             params["last_frame_url"] = last_url
         return params
@@ -727,7 +825,8 @@ def _build_dashscope_video_call(
         params["model"] = chosen
         params["reference_urls"] = refs[:5]
         params["size"] = _normalize_video_size(size) or "1280*720"
-        params["shot_type"] = "multi"
+        if any(token in chosen for token in ("2.2", "2.5", "2.6", "2.7")):
+            params["shot_type"] = "multi"
         return params
     params["model"] = chosen
     params["size"] = _normalize_video_size(size) or "1280*720"
@@ -751,7 +850,7 @@ async def _invoke_model_video_generation(
     api_base = str(
         mc.get("api_base")
         or os.getenv("VIDEO_GEN_API_BASE")
-        or "https://dashscope.aliyuncs.com/api/v1"
+        or _CHINA_DASHSCOPE_API_BASE
     ).strip().strip("'\"")
     if not api_key:
         return {"error": "[ERROR]: VIDEO_GEN_API_KEY is not configured for video generation."}
@@ -782,13 +881,17 @@ async def _invoke_model_video_generation(
         api_base=api_base,
         model=model,
     )
+    if backend == "dashscope":
+        api_base = _align_dashscope_video_api_base(api_base, api_key)
+        os.environ["VIDEO_GEN_API_BASE"] = api_base
     logger.info(
-        "[generate_video] backend=%s model=%s provider=%s profile=%s vendor=%s",
+        "[generate_video] backend=%s model=%s provider=%s profile=%s vendor=%s api_base=%s",
         backend,
         model,
         provider,
         endpoint_profile,
         vendor_key,
+        api_base,
     )
 
     try:

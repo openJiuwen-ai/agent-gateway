@@ -16,13 +16,13 @@ export type StoryboardShot = {
 };
 
 const FIELD_ALIASES: Record<keyof StoryboardShot, string[]> = {
-  shot_no: ['镜号'],
-  timeline: ['时间轴'],
-  camera: ['镜头视角', '景别'],
-  move: ['运镜'],
-  character_action: ['人物变化'],
-  scene_change: ['场景变化'],
-  comment: ['注释', '备注', '画面描述', '提示词'],
+  shot_no: ['Shot', '镜号'],
+  timeline: ['Timeline', '时间轴'],
+  camera: ['Camera', '镜头视角', '景别'],
+  move: ['Move', '运镜'],
+  character_action: ['Character action', 'Character', '人物变化'],
+  scene_change: ['Scene change', 'Scene', '场景变化'],
+  comment: ['Comment', 'Notes', '注释', '备注', '画面描述', '提示词'],
 };
 
 const POSITIONAL_FIELDS: Array<keyof StoryboardShot> = [
@@ -84,7 +84,7 @@ export function parseStoryboardShots(text: string): StoryboardShot[] {
     if (!cells.some(Boolean)) continue;
     if (isSeparator(cells)) continue;
     const joined = cells.join('');
-    if (!headerSeen && (joined.includes('镜号') || joined.includes('时间轴'))) {
+    if (!headerSeen && /shot|timeline|镜号|时间轴/i.test(joined)) {
       headerSeen = true;
       fieldMap = headerFieldMap(cells);
       continue;
@@ -113,18 +113,18 @@ export function shotGeneratePrompt(shot: StoryboardShot): string {
   if (comment) return comment;
   const parts: string[] = [];
   const timeline = (shot.timeline || '').trim();
-  if (timeline) parts.push(`时间轴 ${timeline}`);
+  if (timeline) parts.push(`Timeline ${timeline}`);
   const fields: Array<[string, keyof StoryboardShot]> = [
-    ['镜头视角', 'camera'],
-    ['运镜', 'move'],
-    ['人物变化', 'character_action'],
-    ['场景变化', 'scene_change'],
+    ['Camera', 'camera'],
+    ['Camera move', 'move'],
+    ['Character action', 'character_action'],
+    ['Scene change', 'scene_change'],
   ];
   fields.forEach(([label, key]) => {
     const value = (shot[key] || '').trim();
     if (value) parts.push(`${label} ${value}`);
   });
-  return parts.join('；');
+  return parts.join('; ');
 }
 
 export function storyboardTextUrl(

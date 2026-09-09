@@ -11,7 +11,9 @@ from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
     NODE_ROLE_BRIEF,
+    NODE_ROLE_CHARACTER_DESIGN,
     NODE_ROLE_FRAME,
+    NODE_ROLE_SCENE,
     NODE_ROLE_STORYBOARD,
     NODE_TYPE_VIDEO,
     AssetRef,
@@ -78,9 +80,25 @@ def collect_clip_reference_images(
     ctx: NodeExecutionContext | None,
     shot_index: int = 1,
 ) -> list[Path]:
-    """Per-shot I2V only needs this shot's keyframe."""
-    frame = collect_clip_first_frame(ctx, shot_index)
-    return [frame] if frame is not None else []
+    """Explicit I2V inputs: character sheet, scene, then this shot's keyframe."""
+    paths: list[Path] = []
+    seen: set[str] = set()
+
+    def add(path: Path | None) -> None:
+        if path is None:
+            return
+        resolved = path.resolve()
+        key = str(resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        paths.append(resolved)
+
+    if ctx is not None:
+        add(role_output_image_path(ctx, NODE_ROLE_CHARACTER_DESIGN))
+        add(role_output_image_path(ctx, NODE_ROLE_SCENE))
+    add(collect_clip_first_frame(ctx, shot_index))
+    return paths
 
 
 def _shot_for_node(
@@ -102,26 +120,45 @@ def _shot_for_node(
 
 def _format_shot_block(shot: StoryboardShot, shot_index: int) -> str:
     lines = [
-        f"第{shot_index}镜（镜号 {shot.get('shot_no') or shot_index}）",
-        f"- 时间轴：{shot.get('timeline') or ''}",
-        f"- 镜头视角：{shot.get('camera') or ''}",
-        f"- 运镜：{shot.get('move') or ''}",
-        f"- 人物变化：{shot.get('character_action') or ''}",
-        f"- 场景变化：{shot.get('scene_change') or ''}",
+        f"Shot {shot_index} (shot no. {shot.get('shot_no') or shot_index})",
+        f"- Timeline: {shot.get('timeline') or ''}",
+        f"- Camera: {shot.get('camera') or ''}",
+        f"- Camera move: {shot.get('move') or ''}",
+        f"- Character action: {shot.get('character_action') or ''}",
+        f"- Scene change: {shot.get('scene_change') or ''}",
     ]
     comment = str(shot.get("comment") or "").strip()
     if comment:
-        lines.append(f"- 画面描述：{comment}")
+        lines.append(f"- Shot description: {comment}")
     return "\n".join(lines)
 
 
-def _clip_prompt_lead(shot_index: int, duration: int) -> str:
+def _clip_prompt_lead(
+    shot_index: int,
+    duration: int,
+    *,
+    has_character: bool,
+    has_scene: bool,
+    has_frame: bool,
+) -> str:
+    attached: list[str] = []
+    if has_character:
+        attached.append("character sheet")
+    if has_scene:
+        attached.append("scene")
+    if has_frame:
+        attached.append("this shot's keyframe as the first frame")
+    extras = (
+        " Explicit visual inputs are attached, in order: " + ", ".join(attached) + "."
+        if attached
+        else ""
+    )
     return (
-        f"制作第{shot_index}镜视频，时长约 {duration} 秒。"
-        "首帧图像是本镜关键帧。只拍这一镜，不要切到其他镜头。"
-        "从该构图起幅，保持角色外貌、服装、场景和构图与首帧一致，"
-        "再按本镜的镜头视角、运镜、人物变化和场景变化运动镜头。"
-        "不要加字幕。\n\n"
+        f"Create shot {shot_index} as a {duration}-second video.{extras} "
+        "Keep the character identity, costume, and materials. "
+        "Keep the scene location, lighting, and weather. "
+        "Start from the keyframe composition and film only this shot. "
+        "No subtitles, no cutaways.\n\n"
     )
 
 
@@ -133,7 +170,20 @@ def build_clip_prompt(
     """Brief + this shot's storyboard row. Other shots are submitted by sibling clip nodes."""
     shot_index, shot = _shot_for_node(graph, node, ctx)
     duration = parse_shot_duration_seconds((shot or {}).get("timeline") or "", default=5)
-    parts: list[str] = [_clip_prompt_lead(shot_index, duration)]
+    has_character = (
+        ctx is not None and role_output_image_path(ctx, NODE_ROLE_CHARACTER_DESIGN) is not None
+    )
+    has_scene = ctx is not None and role_output_image_path(ctx, NODE_ROLE_SCENE) is not None
+    has_frame = collect_clip_first_frame(ctx, shot_index) is not None
+    parts: list[str] = [
+        _clip_prompt_lead(
+            shot_index,
+            duration,
+            has_character=has_character,
+            has_scene=has_scene,
+            has_frame=has_frame,
+        )
+    ]
     if ctx is not None:
         brief = role_output_text(ctx, NODE_ROLE_BRIEF)
         if brief:
@@ -208,15 +258,16 @@ class ClipNodeHandler:
         first_frame = collect_clip_first_frame(ctx, shot_index)
         if has_frame_node and first_frame is None:
             raise RuntimeError(
-                f"第{shot_index}镜没有对应关键帧。请先重跑该镜的「关键帧」节点生成图片。"
+                f"Shot {shot_index} has no matching keyframe. Regenerate the Keyframe node for this shot first."
             )
         _, shot = _shot_for_node(ctx.graph, node, ctx)
         duration = parse_shot_duration_seconds((shot or {}).get("timeline") or "", default=5)
         prompt = build_clip_prompt(ctx.graph, node, ctx)
+        refs = collect_clip_reference_images(ctx, shot_index)
         result = await generate_clip_video(
             prompt,
             first_frame=str(first_frame) if first_frame is not None else None,
-            reference_images=None,
+            reference_images=[str(path) for path in refs] or None,
             duration=duration,
         )
         path = Path(str(result["video_path"]))

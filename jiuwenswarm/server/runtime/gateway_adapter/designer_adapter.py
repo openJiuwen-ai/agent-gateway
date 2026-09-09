@@ -17,6 +17,8 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphValidationError,
     apply_graph_patch,
     build_bootstrap_graph,
+    node_role,
+    NODE_ROLE_COMPOSE,
     normalize_execution_graph,
     utc_now_ms,
 )
@@ -336,6 +338,21 @@ def _get_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None,
     return None, "run_id or graph_id is required", "BAD_REQUEST"
 
 
+def _rerun_error_message(graph: dict[str, Any] | None, node_id: str, exc: Exception) -> str:
+    message = str(exc)
+    if "upstream not ready" not in message:
+        return message
+    role = ""
+    if graph is not None:
+        for node in graph.get("nodes") or []:
+            if str(node.get("id") or "") == node_id:
+                role = node_role(node)
+                break
+    if role == NODE_ROLE_COMPOSE or node_id == "n_compose":
+        return "请先让所有视频片段生成完成，再重新生成成片。"
+    return message
+
+
 def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
     graph_id = str(params.get("graph_id") or "").strip()
     run_id = str(params.get("run_id") or "").strip()
@@ -355,7 +372,7 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
             try:
                 run = _executor.create_rerun(graph, source_run=existing, node_id=node_id)
             except ValueError as exc:
-                return None, str(exc), "BAD_REQUEST"
+                return None, _rerun_error_message(graph, node_id, exc), "BAD_REQUEST"
             except KeyError:
                 return None, "node not found", "NOT_FOUND"
             run_id = run["run_id"]
@@ -366,7 +383,7 @@ def _start_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
         try:
             run = _executor.create_rerun(graph, source_run=source, node_id=node_id)
         except ValueError as exc:
-            return None, str(exc), "BAD_REQUEST"
+            return None, _rerun_error_message(graph, node_id, exc), "BAD_REQUEST"
         except KeyError:
             return None, "node not found", "NOT_FOUND"
         run_id = run["run_id"]

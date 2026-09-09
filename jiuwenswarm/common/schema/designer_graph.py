@@ -11,6 +11,7 @@ cross-layer literals are pinned by
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from typing import Any, TypedDict
@@ -62,6 +63,77 @@ NODE_ROLES: frozenset[str] = frozenset(
         NODE_ROLE_COMPOSE,
     }
 )
+
+_LEGACY_ROLE_LABELS = {
+    NODE_ROLE_BRIEF: (
+        "项目 brief",
+        "Brief",
+        "brief",
+    ),
+    NODE_ROLE_CHARACTER_DESIGN: (
+        "角色图",
+        "Character",
+        "character",
+    ),
+    NODE_ROLE_SCENE: (
+        "场景图",
+        "场景",
+        "Scene",
+        "scene",
+    ),
+    NODE_ROLE_STORYBOARD: (
+        "分镜表",
+        "Storyboard",
+        "storyboard",
+    ),
+    NODE_ROLE_COMPOSE: (
+        "成片",
+        "Film",
+        "Compose",
+        "compose",
+    ),
+}
+_INDEXED_LABEL_RE = re.compile(
+    r"^(?:关键帧|视频片段|Keyframe|Clip)\s*(\d+)?$",
+    re.IGNORECASE,
+)
+
+
+def pipeline_node_label(role: str, shot_index: int = 1) -> str:
+    """English-first canvas title for a Designer pipeline role."""
+    index = max(1, int(shot_index or 1))
+    if role == NODE_ROLE_BRIEF:
+        return "Brief"
+    if role == NODE_ROLE_CHARACTER_DESIGN:
+        return "Character"
+    if role == NODE_ROLE_SCENE:
+        return "Scene"
+    if role == NODE_ROLE_STORYBOARD:
+        return "Storyboard"
+    if role == NODE_ROLE_FRAME:
+        return f"Keyframe {index}"
+    if role == NODE_ROLE_CLIP:
+        return f"Clip {index}"
+    if role == NODE_ROLE_COMPOSE:
+        return "Film"
+    return ""
+
+
+def english_pipeline_label(label: str, role: str, shot_index: int = 1) -> str:
+    """Rewrite known Chinese/legacy titles; leave custom names alone."""
+    desired = pipeline_node_label(role, shot_index)
+    if not desired:
+        return label
+    text = (label or "").strip()
+    if not text:
+        return desired
+    aliases = _LEGACY_ROLE_LABELS.get(role, ())
+    if text in aliases or text.casefold() in {item.casefold() for item in aliases}:
+        return desired
+    indexed = _INDEXED_LABEL_RE.match(text)
+    if indexed and role in {NODE_ROLE_FRAME, NODE_ROLE_CLIP}:
+        return desired
+    return text
 
 # ── Node config (role-discriminated; modality stays on node.type) ─────────────
 
@@ -424,11 +496,19 @@ def normalize_node(raw: Any) -> DesignerGraphNode:
     if node_type not in NODE_TYPES:
         raise DesignerGraphValidationError(f"unsupported node type: {node_type!r}")
     label = raw.get("label")
+    config = normalize_node_config(raw.get("config"))
+    role = str(config.get(CONFIG_KEY_ROLE) or "").strip()
+    shot_raw = config.get("shot_index")
+    try:
+        shot_index = int(shot_raw) if shot_raw is not None else 1
+    except (TypeError, ValueError):
+        shot_index = 1
+    current_label = str(label).strip() if isinstance(label, str) and label.strip() else node_id
     node: DesignerGraphNode = {
         "id": node_id,
         "type": node_type,
-        "label": str(label).strip() if isinstance(label, str) and label.strip() else node_id,
-        "config": normalize_node_config(raw.get("config")),
+        "label": english_pipeline_label(current_label, role, shot_index),
+        "config": config,
         "layout": normalize_layout(raw.get("layout")),
     }
     if "output_ref" in raw:
@@ -456,7 +536,8 @@ def normalize_edge(raw: Any) -> DesignerGraphEdge:
     }
     label = raw.get("label")
     if isinstance(label, str) and label.strip():
-        edge["label"] = label.strip()
+        text = label.strip()
+        edge["label"] = "Align" if text in {"对齐", "Align", "align"} else text
     return edge
 
 
@@ -562,7 +643,7 @@ def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutio
             {
                 "id": "n_scene",
                 "type": NODE_TYPE_IMAGE,
-                "label": "场景图",
+                "label": "Scene",
                 "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
                 "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
             }
@@ -593,7 +674,7 @@ def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutio
             source="n_scene",
             target="n_storyboard",
             kind=EDGE_KIND_SYNC,
-            label="对齐",
+            label="Align",
         )
     if frame_ids:
         clip_nodes = [
@@ -618,13 +699,21 @@ def ensure_bootstrap_pipeline(graph: DesignerExecutionGraph) -> DesignerExecutio
                 target=clip_id,
             )
             _append_node_input(graph, clip_id, frame_id)
+            if "n_scene" in node_ids:
+                _append_unique_edge(
+                    edges,
+                    edge_id=f"e_scene_{clip_id}",
+                    source="n_scene",
+                    target=clip_id,
+                )
+                _append_node_input(graph, clip_id, "n_scene")
         clip_ids = [str(node.get("id") or "") for node in clip_nodes if node.get("id")]
         if clip_ids and "n_compose" not in node_ids:
             graph.setdefault("nodes", []).append(
                 {
                     "id": "n_compose",
                     "type": NODE_TYPE_VIDEO,
-                    "label": "成片",
+                    "label": "Film",
                     "config": {"role": NODE_ROLE_COMPOSE, "inputs": list(clip_ids)},
                     "layout": compose_layout_right_of_clips(
                         [node.get("layout") for node in clip_nodes]
@@ -903,7 +992,7 @@ def expand_shot_nodes(
         frame_id = frame_node_id(index)
         clip_id = clip_node_id(index)
         frame_inputs = [item for item in (character_id, scene_id, storyboard_id) if item]
-        clip_inputs = [item for item in (character_id, storyboard_id, frame_id) if item]
+        clip_inputs = [item for item in (character_id, scene_id, storyboard_id, frame_id) if item]
         frame_config: dict[str, Any] = {
             "role": NODE_ROLE_FRAME,
             "shot_index": index,
@@ -943,7 +1032,7 @@ def expand_shot_nodes(
             {
                 "id": frame_id,
                 "type": NODE_TYPE_IMAGE,
-                "label": f"关键帧 {index}",
+                "label": f"Keyframe {index}",
                 "config": frame_config,
                 "layout": frame_layout,
             }
@@ -952,7 +1041,7 @@ def expand_shot_nodes(
             {
                 "id": clip_id,
                 "type": NODE_TYPE_VIDEO,
-                "label": f"视频片段 {index}",
+                "label": f"Clip {index}",
                 "config": clip_config,
                 "layout": clip_layout,
             }
@@ -974,6 +1063,7 @@ def expand_shot_nodes(
             )
         for source_id, prefix in (
             (character_id, "character"),
+            (scene_id, "scene"),
             (storyboard_id, "storyboard"),
         ):
             if not source_id or source_id not in kept_ids:
@@ -1005,13 +1095,12 @@ def expand_shot_nodes(
     compose_config: dict[str, Any] = {
         "role": NODE_ROLE_COMPOSE,
         "inputs": [clip_node_id(index) for index in range(1, count + 1)],
+        "delegate": CONFIG_DELEGATE_HANDLER,
     }
-    if delegate:
-        compose_config["delegate"] = delegate
     compose_node: DesignerGraphNode = {
         "id": COMPOSE_NODE_ID,
         "type": NODE_TYPE_VIDEO,
-        "label": "成片",
+        "label": "Film",
         "config": compose_config,
         "layout": compose_layout_right_of_clips(
             [node.get("layout") for node in clip_nodes]
@@ -1338,35 +1427,35 @@ def build_bootstrap_graph(
         {
             "id": "n_brief",
             "type": NODE_TYPE_TEXT,
-            "label": "项目 brief",
+            "label": "Brief",
             "config": {"role": NODE_ROLE_BRIEF, "prompt": prompt_text},
             "layout": {"x": 40, "y": 240, "width": 280, "height": 160},
         },
         {
             "id": "n_character",
             "type": NODE_TYPE_IMAGE,
-            "label": "角色图",
+            "label": "Character",
             "config": {"role": NODE_ROLE_CHARACTER_DESIGN, "inputs": ["n_brief"]},
             "layout": {"x": 400, "y": 40, "width": 280, "height": 160},
         },
         {
             "id": "n_scene",
             "type": NODE_TYPE_IMAGE,
-            "label": "场景图",
+            "label": "Scene",
             "config": {"role": NODE_ROLE_SCENE, "inputs": ["n_brief"]},
             "layout": {"x": 400, "y": 240, "width": 280, "height": 160},
         },
         {
             "id": "n_storyboard",
             "type": NODE_TYPE_TABLE,
-            "label": "分镜表",
+            "label": "Storyboard",
             "config": {"role": NODE_ROLE_STORYBOARD, "inputs": ["n_brief"]},
             "layout": {"x": 400, "y": 440, "width": 280, "height": 160},
         },
         {
             "id": "n_frame_1",
             "type": NODE_TYPE_IMAGE,
-            "label": "关键帧 1",
+            "label": "Keyframe 1",
             "config": {
                 "role": NODE_ROLE_FRAME,
                 "shot_index": 1,
@@ -1377,18 +1466,18 @@ def build_bootstrap_graph(
         {
             "id": "n_clip_1",
             "type": NODE_TYPE_VIDEO,
-            "label": "视频片段 1",
+            "label": "Clip 1",
             "config": {
                 "role": NODE_ROLE_CLIP,
                 "shot_index": 1,
-                "inputs": ["n_character", "n_storyboard", "n_frame_1"],
+                "inputs": ["n_character", "n_scene", "n_storyboard", "n_frame_1"],
             },
             "layout": {"x": 1120, "y": 240, "width": 280, "height": 160},
         },
         {
             "id": "n_compose",
             "type": NODE_TYPE_VIDEO,
-            "label": "成片",
+            "label": "Film",
             "config": {"role": NODE_ROLE_COMPOSE, "inputs": ["n_clip_1"]},
             "layout": {"x": 1480, "y": 240, "width": 280, "height": 160},
         },
@@ -1402,19 +1491,20 @@ def build_bootstrap_graph(
             "source": "n_character",
             "target": "n_storyboard",
             "kind": EDGE_KIND_SYNC,
-            "label": "对齐",
+            "label": "Align",
         },
         {
             "id": "e_scene_storyboard",
             "source": "n_scene",
             "target": "n_storyboard",
             "kind": EDGE_KIND_SYNC,
-            "label": "对齐",
+            "label": "Align",
         },
         {"id": "e_character_n_frame_1", "source": "n_character", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
         {"id": "e_scene_n_frame_1", "source": "n_scene", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
         {"id": "e_storyboard_n_frame_1", "source": "n_storyboard", "target": "n_frame_1", "kind": EDGE_KIND_DATA},
         {"id": "e_character_n_clip_1", "source": "n_character", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
+        {"id": "e_scene_n_clip_1", "source": "n_scene", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_storyboard_n_clip_1", "source": "n_storyboard", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_n_frame_1_n_clip_1", "source": "n_frame_1", "target": "n_clip_1", "kind": EDGE_KIND_DATA},
         {"id": "e_n_clip_1_compose", "source": "n_clip_1", "target": "n_compose", "kind": EDGE_KIND_DATA},
