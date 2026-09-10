@@ -3259,6 +3259,8 @@
     "detail": {
       "optimizationResult": "Optimization result",
       "bestArtifact": "Current best artifact",
+      "viewPaper": "View paper",
+      "viewArtifact": "View artifact",
       "baselineScore": "Baseline score",
       "usage": "Usage (tokens)",
       "iterations": "iterations",
