@@ -19,7 +19,10 @@ class InProcessRuntimeClient:
     """Thin client with no server, protocol, socket, or transport concerns."""
 
     def __init__(self, runtime: AgentRuntime | None = None) -> None:
-        self._runtime = runtime or AgentRuntime()
+        if runtime is not None:
+            self._runtime = runtime
+            return
+        self._runtime = AgentRuntime()
 
     @property
     def runtime(self) -> AgentRuntime:
@@ -59,6 +62,5 @@ class InProcessRuntimeClient:
 
     async def close(self) -> None:
         await self._runtime.close()
-
 
 __all__ = ["InProcessRuntimeClient"]
