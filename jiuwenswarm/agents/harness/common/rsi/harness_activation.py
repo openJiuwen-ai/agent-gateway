@@ -530,7 +530,9 @@ def _write_version_refs(
             rewritten_roles.append(role_entry)
         payload["roles"] = rewritten_roles
     refs_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = refs_path.with_name(f".{refs_path.name}.{uuid.uuid4().hex}.tmp")
+    # Keep the atomic-replace path short enough for Windows installations
+    # without long-path support; the installer already serializes writes.
+    temporary = refs_path.with_name(f".{refs_path.name}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         temporary.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),

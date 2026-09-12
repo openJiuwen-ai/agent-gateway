@@ -71,6 +71,7 @@ class RsiWorker:
         self._resume_task_ids: set[str] = set()
         self._control_tasks: dict[str, asyncio.Task[Any]] = {}
         self._execution_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._execution_generations: dict[str, int] = {}
         # 请求 pause/terminate 时用来提前让出执行位；见 ``_run_until_slot_free``。
         self._slot_released: dict[str, asyncio.Future[None]] = {}
         self._winding_down: set[asyncio.Task[Any]] = set()
@@ -221,7 +222,15 @@ class RsiWorker:
                 )
                 resume = task_id in self._resume_task_ids
                 self._resume_task_ids.discard(task_id)
-                exec_task = asyncio.create_task(self._run_until_slot_free(task_id, resume=resume))
+                generation = self._execution_generations.get(task_id, 0) + 1
+                self._execution_generations[task_id] = generation
+                exec_task = asyncio.create_task(
+                    self._run_until_slot_free(
+                        task_id,
+                        resume=resume,
+                        generation=generation,
+                    )
+                )
                 self._execution_tasks[task_id] = exec_task
                 if self.store.get(task_id).status != TaskStatus.RUNNING.value:
                     # A terminate request won the race between RUNNING and
@@ -235,7 +244,13 @@ class RsiWorker:
                 self._running_task_id = None
                 self._queue.task_done()
 
-    async def _run_until_slot_free(self, task_id: str, *, resume: bool = False) -> None:
+    async def _run_until_slot_free(
+        self,
+        task_id: str,
+        *,
+        resume: bool = False,
+        generation: int,
+    ) -> None:
         """占住队列那唯一的执行位，直到运行结束——或者直到有人请求了 pause/terminate。
 
         pause 不会让引擎就地停下：Provider 要先把在飞的那次扩展做完，也就是一次
@@ -246,7 +261,9 @@ class RsiWorker:
         代价是这段时间里两个运行短暂重叠，收尾的那个仍在占 CPU——所以以墙钟为
         指标的任务，那一次评测会偏慢一点。
         """
-        runner = asyncio.create_task(self._execute_task(task_id, resume=resume))
+        runner = asyncio.create_task(
+            self._execute_task(task_id, resume=resume, generation=generation)
+        )
         released: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._slot_released[task_id] = released
         try:
@@ -268,7 +285,13 @@ class RsiWorker:
         if released is not None and not released.done():
             released.set_result(None)
 
-    async def _execute_task(self, task_id: str, *, resume: bool = False) -> None:
+    async def _execute_task(
+        self,
+        task_id: str,
+        *,
+        resume: bool = False,
+        generation: int,
+    ) -> None:
         task_view = self.store.get_view(task_id)
         adapter = self._adapter_for(task_view.scenario, task_view.artifact_type)
         if adapter is None:
@@ -324,15 +347,18 @@ class RsiWorker:
                     result,
                     timeout=self._provider_poll_timeout_for(task_view),
                 )
-            self._apply_result_status(task_id, result)
+            if self._is_current_execution(task_id, generation):
+                self._apply_result_status(task_id, result)
         except asyncio.CancelledError:
             cancelled = True
             logger.info("[RSI] 任务执行被终止 task=%s", task_id)
-            self._mark_terminated(task_id)
+            if self._is_current_execution(task_id, generation):
+                self._mark_terminated(task_id)
             result = None
         except Exception as exc:  # noqa: BLE001
             logger.exception("[RSI] 任务执行失败 task=%s: %s", task_id, exc)
-            self._mark_failed_if_running(task_id, str(exc)[:200])
+            if self._is_current_execution(task_id, generation):
+                self._mark_failed_if_running(task_id, str(exc)[:200])
         finally:
             try:
                 if cancelled:
@@ -357,12 +383,19 @@ class RsiWorker:
                         await consume_task
                     except Exception:  # noqa: BLE001
                         logger.exception("[RSI] 事件消费协程退出异常 task=%s", task_id)
-                self._persist_results(task_id, result)
+                if self._is_current_execution(task_id, generation):
+                    self._persist_results(task_id, result)
             except asyncio.CancelledError:
                 # A late cancellation arriving during cleanup must not kill the
                 # single-worker loop; the public state is already TERMINATED.
                 logger.info("[RSI] 任务清理阶段被取消 task=%s", task_id)
-                self._mark_terminated(task_id)
+                if self._is_current_execution(task_id, generation):
+                    self._mark_terminated(task_id)
+
+    def _is_current_execution(self, task_id: str, generation: int) -> bool:
+        """Reject stale results from an execution superseded by resume."""
+
+        return self._execution_generations.get(task_id) == generation
 
     def _mark_terminated(self, task_id: str) -> None:
         """将运行中的任务落到 TERMINATED（冲突时由其它控制路径持有终态）。"""

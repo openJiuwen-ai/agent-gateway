@@ -16,7 +16,7 @@ from openjiuwen.core.foundation.tool import Tool, ToolCard, McpServerConfig, too
 from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.core.sys_operation import SysOperation
-from openjiuwen.core.foundation.kv_cache import resolve_session_lineage
+from openjiuwen.core.kv_cache import resolve_session_lineage
 from openjiuwen.core.session import get_current_session
 from openjiuwen.core.session.agent import Session
 from openjiuwen.harness.deep_agent import DeepAgent

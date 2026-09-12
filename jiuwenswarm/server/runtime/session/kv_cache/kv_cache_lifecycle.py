@@ -9,7 +9,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from openjiuwen.core.foundation.kv_cache import resolve_kvc_action_timeout
+from openjiuwen.core.kv_cache import resolve_kvc_action_timeout
 
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.kv_cache_affinity_config import (

@@ -8,7 +8,16 @@ import logging
 import os
 from typing import Any
 
-from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
+from openjiuwen.core.kv_cache import (
+    KVCacheAffinityConfig as OpenJiuwenKVCacheAffinityConfig,
+)
+from pydantic import Field
+
+
+class KVCacheAffinityConfig(OpenJiuwenKVCacheAffinityConfig):
+    """Keep the project's release-policy field across openjiuwen API moves."""
+
+    enable_kv_cache_release: bool = Field(default=False)
 
 ASCEND_AFFINITY_PROVIDER = "AscendAffinity"
 logger = logging.getLogger(__name__)

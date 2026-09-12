@@ -37,23 +37,6 @@ async def cancel_pending_tasks() -> None:
         cleanup_callbacks.append(cancel_pending_kv_cache_lifecycle_tasks)
     except Exception as exc:
         logger.warning("[ProductKVCacheHooks] root cleanup unavailable: %s", exc)
-    try:
-        from openjiuwen.core.foundation.kv_cache import (
-            cancel_pending_session_kv_cache_signals,
-        )
-
-        cleanup_callbacks.append(cancel_pending_session_kv_cache_signals)
-    except Exception as exc:
-        logger.warning("[ProductKVCacheHooks] Plan cleanup unavailable: %s", exc)
-    try:
-        from openjiuwen.agent_teams.kv_cache.kv_cache_lifecycle import (
-            cancel_pending_signal_tasks,
-        )
-
-        cleanup_callbacks.append(cancel_pending_signal_tasks)
-    except Exception as exc:
-        logger.warning("[ProductKVCacheHooks] Team cleanup unavailable: %s", exc)
-
     for cleanup in cleanup_callbacks:
         try:
             await cleanup()

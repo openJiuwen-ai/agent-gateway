@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
-from openjiuwen.core.foundation.kv_cache import resolve_session_lineage
+from openjiuwen.core.kv_cache import resolve_session_lineage
 from openjiuwen.core.session.agent import Session
 
 from jiuwenswarm.agents.harness.common.tools import wiki_tools
