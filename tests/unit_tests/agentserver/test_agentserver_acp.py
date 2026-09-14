@@ -25,7 +25,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     RuntimeSessionProvisioner,
     SessionProvisionCommitTiming,
     SessionProvisionState,
@@ -993,7 +993,7 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
     metadata = get_session_metadata("acp_session_001", cache_bust=True)
     assert metadata["mode"] == "agent.work.normal"
-    runtime_session = server._execution_runtime().session_coordinator.snapshot_session(
+    runtime_session = server._execution_runtime()._session_coordinator.snapshot_session(
         "acp_session_001"
     )
     assert runtime_session is not None
@@ -3664,7 +3664,7 @@ async def test_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cl
             events.append(("runtime", channel_id, session_id))
             return True
 
-    async def fake_evict_plan_session(*, session_id):
+    async def fake_release_session_kvc(*, session_id):
         events.append(("evict", None, session_id))
 
     async def fake_release(session_id: str):
@@ -3695,8 +3695,8 @@ async def test_handle_session_delete_drains_runtime_before_kvc_and_checkpoint_cl
         fake_ensure_persistent_checkpointer,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.evict_plan_session",
-        fake_evict_plan_session,
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.release_session_kvc",
+        fake_release_session_kvc,
     )
     monkeypatch.setattr("openjiuwen.core.runner.Runner.release", fake_release)
 
@@ -3751,7 +3751,7 @@ async def test_handle_session_delete_keeps_state_when_cleanup_fails(
                 raise RuntimeError("session runtime is still active")
             return True
 
-    async def fake_evict_plan_session(**kwargs):
+    async def fake_release_session_kvc(**kwargs):
         evict_calls.append(kwargs)
         if failure_stage == "evict":
             raise RuntimeError("plan eviction failed")
@@ -3786,8 +3786,8 @@ async def test_handle_session_delete_keeps_state_when_cleanup_fails(
         fake_ensure_persistent_checkpointer,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.evict_plan_session",
-        fake_evict_plan_session,
+        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.release_session_kvc",
+        fake_release_session_kvc,
     )
     monkeypatch.setattr("openjiuwen.core.runner.Runner.release", fake_release)
 

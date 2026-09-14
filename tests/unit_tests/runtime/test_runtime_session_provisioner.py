@@ -143,7 +143,7 @@ def delete_env(
     from jiuwenswarm.agents.harness import team as team_package
     from jiuwenswarm.common import utils
     from jiuwenswarm.observability import session_delete as trajectory_delete
-    from jiuwenswarm.runtime import session_provisioner as provisioner_module
+    import jiuwenswarm.runtime.session_provisioner as provisioner_module
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
     from jiuwenswarm.server.runtime import team_binding_store
     from jiuwenswarm.server.runtime.session import session_metadata
@@ -199,7 +199,7 @@ def delete_env(
     ) -> None:
         state.hit("kvc.mark", session_id, channel_id, is_team)
 
-    async def evict_plan_session(
+    async def release_session_kvc(
         *,
         session_id: str,
     ) -> bool:
@@ -258,8 +258,8 @@ def delete_env(
     )
     monkeypatch.setattr(
         kv_cache_product_hooks,
-        "evict_plan_session",
-        evict_plan_session,
+        "release_session_kvc",
+        release_session_kvc,
     )
     monkeypatch.setattr(
         kv_cache_product_hooks,
@@ -799,7 +799,7 @@ def test_commit_rejects_failed_result_without_mutating_runtime_state(
     )
 
     with pytest.raises(ValueError, match="cannot commit a failed session delete"):
-        delete_env.runtime.commit_session_delete(result)
+        delete_env.runtime._session_provisioner.commit_session_delete(result)
 
     assert delete_env.plan.active_sessions == {session_id}
     assert delete_env.plan.exited_sessions == {session_id}

@@ -99,6 +99,7 @@ print('UNEXPECTED_RUNTIME_CORE=' + repr(unexpected))
 def test_runtime_lazy_public_exports_remain_discoverable() -> None:
     import jiuwenswarm.runtime as runtime
 
+    assert set(runtime.__all__) == {"AgentRuntime", "RuntimeStateError"}
     assert set(runtime.__all__) <= set(dir(runtime))
     assert runtime.AgentRuntime.__name__ == "AgentRuntime"
 
@@ -281,7 +282,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         "commit_session_delete",
         "commit_trajectory_session_delete",
         "delete_session_runtime",
-        "evict_plan_session",
+        "release_session_kvc",
         "get_agent_nowait",
         "get_agent_sessions_dir",
         "get_session_metadata",
