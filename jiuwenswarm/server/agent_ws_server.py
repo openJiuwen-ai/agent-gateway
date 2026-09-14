@@ -6259,7 +6259,9 @@ class AgentWebSocketServer:
             # 轨迹事件会因 ContextCompressionObservabilityBridge 找不到 parent 而被丢弃。
             # 与 chat 流式路径一致，先同步 observability 再开一个 run root span（session-keyed
             # registry），使压缩状态回调能解析到 parent，事件进入轨迹 v2 展示。
-            sync_agent_observability()
+            # A config change makes this restart the trajectory runtime, which
+            # joins writer threads; keep that off the event loop.
+            await asyncio.to_thread(sync_agent_observability)
             execution_subject = None
             if is_team_mode(canonical_mode):
                 from jiuwenswarm.agents.harness.team import get_team_manager
@@ -6267,12 +6269,15 @@ class AgentWebSocketServer:
                 team_agent = get_team_manager(channel_id).get_team_agent(session_id)
                 if team_agent is not None:
                     execution_subject = team_agent.observability_execution_subject(session_id)
+            # No turn id: manual /compact runs outside any ReAct loop, so it
+            # belongs to no turn. Claiming one (the request id used to stand in
+            # for it) split the session's turn numbering with a span that is
+            # not a turn at all.
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=params.get("mode", "agent"),
                 request_id=request.request_id,
                 run_id=request.request_id,
-                turn_id=request.request_id,
                 execution_subject=execution_subject,
             )
             try:
