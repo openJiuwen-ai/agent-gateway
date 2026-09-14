@@ -227,13 +227,13 @@ class RsiArtifactFilesService:
             "README.md",
             "rsi_artifact_manifest.json",
         )
-        files = [
-            item
-            for item in root.rglob("*")
-            if item.is_file()
-            and "__MACOSX" not in item.parts
-            and "__rsi_artifact__" not in item.parts
-        ]
+        files: list[Path] = []
+        for item in root.rglob("*"):
+            if not item.is_file():
+                continue
+            if "__MACOSX" in item.parts or "__rsi_artifact__" in item.parts:
+                continue
+            files.append(item)
         if not files:
             files = [
                 item

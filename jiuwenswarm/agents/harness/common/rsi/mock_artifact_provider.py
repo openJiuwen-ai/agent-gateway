@@ -292,13 +292,15 @@ class MockArtifactProvider:
             # best node; the remaining candidates deliberately fan out from
             # other historical nodes, so a later iteration can continue a
             # different branch instead of forming one linear chain.
-            prior_nodes = [
-                item
-                for item in tree.get("nodes") or []
-                if isinstance(item, dict)
-                and str(item.get("node_id") or "") != "ROOT"
-                and int(item.get("iteration", 0) or 0) < iteration
-            ]
+            prior_nodes: list[dict[str, Any]] = []
+            for item in tree.get("nodes") or []:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("node_id") or "") == "ROOT":
+                    continue
+                if int(item.get("iteration", 0) or 0) >= iteration:
+                    continue
+                prior_nodes.append(item)
             parent_pool: list[dict[str, Any]] = []
             preferred = str(previous_node_id or "").strip()
             if preferred:
@@ -316,11 +318,11 @@ class MockArtifactProvider:
             accepted_candidate = ((iteration - 1) % self.branching_factor) + 1
             accepted_node_id = str(state.get("best_node_id") or "ROOT")
             accepted_score = state.get("score")
-            existing_candidates = {
-                candidate
-                for item in tree.get("nodes") or []
-                if (candidate := _node_candidate(item, iteration)) is not None
-            }
+            existing_candidates: set[int] = set()
+            for item in tree.get("nodes") or []:
+                candidate = _node_candidate(item, iteration)
+                if candidate is not None:
+                    existing_candidates.add(candidate)
 
             for candidate in range(1, self.branching_factor + 1):
                 # A resumed partial iteration already has a durable node for

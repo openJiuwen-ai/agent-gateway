@@ -188,7 +188,8 @@ class HarnessProvider:
 
     # -- 输入校验（引擎 load_cases 真校验） --
 
-    def validate_input(self, dataset_path: str | None) -> Any:
+    @staticmethod
+    def validate_input(dataset_path: str | None) -> Any:
         return engine_validate_input(dataset_path)
 
     # -- 执行控制 --
@@ -509,11 +510,9 @@ class HarnessProvider:
         if not task_file.is_file():
             return
         try:
-            import json
-
             payload = json.loads(task_file.read_text(encoding="utf-8"))
             materials = ((payload.get("config") or {}).get("rsi_materials") or {})
-        except (OSError, UnicodeError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError):
             return
         if not isinstance(materials, dict):
             return
@@ -529,7 +528,7 @@ class HarnessProvider:
         }
         for role, expected_hash in expected.items():
             expected_hash = str(expected_hash or "").strip()
-            path = Path(actual_paths[role]).expanduser()
+            path = Path(actual_paths.get(role, "")).expanduser()
             if not expected_hash or not path.is_file():
                 self._raise_material_error(resume, f"{role} 材料不可用")
             actual_hash = _sha256(path)
@@ -700,7 +699,8 @@ class HarnessProvider:
         # Projection code must not mutate the shared parsed snapshot.
         return deepcopy(data)
 
-    def _artifact_index(self, task_id: str, state: dict[str, Any]) -> list[ArtifactRef]:
+    @staticmethod
+    def _artifact_index(task_id: str, state: dict[str, Any]) -> list[ArtifactRef]:
         refs: list[ArtifactRef] = []
         if "epoch_checkpoints" in state:
             for event in _epoch_events(state):

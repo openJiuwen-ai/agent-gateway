@@ -22,19 +22,71 @@ from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
 pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
 
-_PRESETS = Path(__file__).resolve().parents[3] / "jiuwenswarm/resources/agent/workspace/plugins/plugin_packages"
-
-
 def _agent():
     return DeepAgent(AgentCard(name="plugin-roundtrip")).configure(
         DeepAgentConfig(enable_task_loop=False, rails=[SkillUseRail(skills_dir=[], include_tools=False)])
     )
 
 
+def _make_plugin_package(root: Path, name: str) -> Path:
+    """Create a disposable native plugin fixture instead of relying on built-ins."""
+    package = root / name
+    (package / "tools").mkdir(parents=True)
+    (package / "rails").mkdir()
+    (package / "tools" / "security_review_tool.py").write_text(
+        """from openjiuwen.core.foundation.tool import Tool, ToolCard
+
+
+class SecurityReviewTool(Tool):
+    def __init__(self):
+        super().__init__(
+            ToolCard(
+                id="security_review",
+                name="security_review",
+                description="A disposable test tool.",
+                input_params={"type": "object", "properties": {}},
+            )
+        )
+
+    async def invoke(self, inputs, **kwargs):
+        return {"success": True}
+
+    async def stream(self, inputs, **kwargs):
+        yield await self.invoke(inputs, **kwargs)
+""",
+        encoding="utf-8",
+    )
+    (package / "rails" / "execution_guard_rail.py").write_text(
+        """from openjiuwen.harness.rails.base import DeepAgentRail
+
+
+class ExecutionGuardRail(DeepAgentRail):
+    pass
+""",
+        encoding="utf-8",
+    )
+    (package / "README.md").write_text("# Disposable plugin fixture\n", encoding="utf-8")
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "plugin",
+                "id": name,
+                "name": name,
+                "description": "Disposable plugin fixture",
+                "tools": [{"file": "./tools/security_review_tool.py", "class": "SecurityReviewTool"}],
+                "rails": [{"file": "./rails/execution_guard_rail.py", "class": "ExecutionGuardRail"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return package
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["coding-guard", "content-creation", "office-document-toolkit"])
 async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name):
-    material = RsiTaskMaterializer(tmp_path / "tasks").materialize_harness_refs("probe", _PRESETS / name)
+    source = _make_plugin_package(tmp_path / "presets", name)
+    material = RsiTaskMaterializer(tmp_path / "tasks").materialize_harness_refs("probe", source)
     agent = _agent()
     record = await agent.load_plugin(material["package_path"])
     assert record.refs
@@ -46,7 +98,8 @@ async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name):
 async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp_path, monkeypatch):
     tasks_root = tmp_path / "rsi" / "tasks"
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
-    material = RsiTaskMaterializer(tasks_root).materialize_harness_refs("probe", _PRESETS / "coding-guard")
+    source = _make_plugin_package(tmp_path / "presets", "coding-guard")
+    material = RsiTaskMaterializer(tasks_root).materialize_harness_refs("probe", source)
     run = tasks_root / "probe" / "run"
     work = MemberWorktreeCoordinator.prepare_integration_worktree("solver", material["package_path"], str(run / "wt"))
     action = MemberOptimizationAction(

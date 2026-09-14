@@ -1,10 +1,14 @@
 # -*- coding: utf-8 -*-
 """AgentServer composition and RSI Harness baseline tests."""
 
+import asyncio
 import json
 import pytest
 
 from jiuwenswarm.agents.harness.common.rsi.harness_activation import RsiHarnessActivationStore
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 
@@ -30,6 +34,36 @@ def test_rsi_context_binds_installer_to_agent_manager(monkeypatch, tmp_path):
     handlers = _bare_server(manager)._get_rsi_handlers()
 
     assert handlers.context.harness_installer.agent_manager is manager
+
+
+@pytest.mark.asyncio
+async def test_rsi_request_awaits_async_handler():
+    class FakeHandlers:
+        async def handle_async(self, request):
+            assert request.req_method is ReqMethod.RSI_TASK_LIST
+            return {"ok": True, "payload": {"tasks": []}}
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, payload):
+            self.sent.append(json.loads(payload))
+
+    server = object.__new__(AgentWebSocketServer)
+    server._rsi_handlers = FakeHandlers()
+    request = AgentRequest(
+        request_id="rsi-request",
+        channel_id="web",
+        req_method=ReqMethod.RSI_TASK_LIST,
+    )
+    ws = FakeWebSocket()
+
+    await server._handle_rsi_request(ws, request, asyncio.Lock())
+
+    response = parse_agent_server_wire_unary(ws.sent[0])
+    assert response.ok is True
+    assert response.payload == {"tasks": []}
 
 
 def test_rsi_active_harness_precedes_generic_registry(monkeypatch, tmp_path):

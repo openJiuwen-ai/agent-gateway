@@ -224,11 +224,14 @@ class RsiTaskService:
 
             validator = None
             if selected_adapter is not None and hasattr(selected_adapter, "validate_input"):
-                validator = lambda path: selected_adapter.validate_input(  # noqa: E731
-                    path,
-                    scenario=Scenario.HARNESS.value,
-                    artifact_type=None,
-                )
+                def _validate_harness(path: str | None) -> Any:
+                    return selected_adapter.validate_input(
+                        path,
+                        scenario=Scenario.HARNESS.value,
+                        artifact_type=None,
+                    )
+
+                validator = _validate_harness
             try:
                 materialization = self.harness_materializer.materialize(
                     task_id,
@@ -461,7 +464,8 @@ class RsiTaskService:
         status = worker.enqueue(task_id)
         return {"status": status}
 
-    def pause(self, params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
+    @staticmethod
+    def pause(params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
         """``rsi.training.pause``（中优先级 I7；协程衔接 TODO）。"""
         task_id = str(params.get("task_id") or "").strip()
         if not task_id:
@@ -469,7 +473,8 @@ class RsiTaskService:
         status = worker.cancel(task_id, "pause")
         return {"status": status}
 
-    def resume(self, params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
+    @staticmethod
+    def resume(params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
         """``rsi.training.resume``（中优先级 I8；fingerprint 校验在 C2）。"""
         task_id = str(params.get("task_id") or "").strip()
         if not task_id:
@@ -477,7 +482,8 @@ class RsiTaskService:
         status = worker.resume(task_id, fingerprint_check=True)
         return {"status": status}
 
-    def terminate(self, params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
+    @staticmethod
+    def terminate(params: dict[str, Any], *, worker: Any) -> dict[str, Any]:
         """``rsi.training.terminate``（中优先级 I9）。"""
         task_id = str(params.get("task_id") or "").strip()
         if not task_id:

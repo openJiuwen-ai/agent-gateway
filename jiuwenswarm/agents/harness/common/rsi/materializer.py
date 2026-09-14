@@ -120,8 +120,6 @@ class RsiTaskMaterializer:
                 if domain
                 else normalize_validation_suite(source)
             )
-        except RsiDatasetInvalid:
-            raise
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise RsiDatasetInvalid(f"数据集校验失败: {exc}") from exc
         check = validator or self.dataset_validator
@@ -421,8 +419,8 @@ class RsiTaskMaterializer:
         )
         return RsiTaskMaterialization(dataset, harness, models, profile)
 
+    @staticmethod
     def _source_path(
-        self,
         raw_path: str | Path,
         allowed_root: Path | None,
         *,
@@ -590,7 +588,7 @@ def _materialize_file_harness(
                 if list_path.suffix.lower() == ".json"
                 else yaml.safe_load(list_path.read_text(encoding="utf-8"))
             )
-        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+        except (OSError, ValueError, yaml.YAMLError) as exc:
             raise RsiInvalidHarness(f"Harness sidecar 配置不可读: {list_path}") from exc
         payloads.append(loaded)
 
@@ -713,26 +711,28 @@ def _resolve_harness_source(source: Path, allowed_root: Path | None, *, role: st
     if not isinstance(data, dict):
         return source
     refs = data.get("harness_refs")
-    if refs is None and any(
-        key in data for key in ("schema_version", "id", "name", "description", "tools", "rails", "skills")
-    ):
-        # A legacy ``harness_config.yaml`` is itself a valid package manifest,
-        # not a top-level ``role: path`` refs wrapper.
-        return source
+    if refs is None:
+        for key in ("schema_version", "id", "name", "description", "tools", "rails", "skills"):
+            if key in data:
+                # A legacy ``harness_config.yaml`` is itself a valid package manifest,
+                # not a top-level ``role: path`` refs wrapper.
+                return source
     if isinstance(refs, dict):
-        candidates = {
-            str(key): str(value).strip()
-            for key, value in refs.items()
-            if str(value or "").strip()
-        }
+        candidates: dict[str, str] = {}
+        for key, value in refs.items():
+            text = str(value or "").strip()
+            if text:
+                candidates[str(key)] = text
     else:
-        candidates = {
-            str(key): str(value).strip()
-            for key, value in data.items()
-            if isinstance(value, str)
-            and str(key) not in {"version", "source_harness_refs_path"}
-            and str(value).strip()
-        }
+        candidates = {}
+        for key, value in data.items():
+            if not isinstance(value, str):
+                continue
+            if str(key) in {"version", "source_harness_refs_path"}:
+                continue
+            text = value.strip()
+            if text:
+                candidates[str(key)] = text
     if not candidates:
         return source
     raw_ref = candidates.get(str(role or "").strip())

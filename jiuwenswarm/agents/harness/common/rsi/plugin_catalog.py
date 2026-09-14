@@ -66,6 +66,16 @@ def _export_manifest(source: Path, destination: Path, installation_id: str) -> N
     (destination / "manifest.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
     )
+    # The develop branch requires imported plugin packages to carry a README.
+    # Harness packages are generated from the runtime bundle, so synthesize the
+    # required package document when the bundle does not provide one.
+    readme = destination / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# RSI Harness package {installation_id}\n\n"
+            "This package is managed by the RSI Harness runtime.\n",
+            encoding="utf-8",
+        )
     load_plugin_package(destination / "manifest.json")
 
 

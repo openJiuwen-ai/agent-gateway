@@ -177,15 +177,11 @@ class RsiProjector:
                 ref_index[incoming.node_id] = incoming.node_id
             self._normalize_parents_locked(task_id)
             metric = self._metric.setdefault(task_id, {})
-            node_iteration = max(
-                (
-                    node.iteration
-                    for node in nodes.values()
-                    if node.node_id != _ROOT
-                    and node.type not in {"PROVISIONAL", "CANDIDATE"}
-                ),
-                default=0,
-            )
+            node_iteration = 0
+            for node in nodes.values():
+                if node.node_id == _ROOT or node.type in {"PROVISIONAL", "CANDIDATE"}:
+                    continue
+                node_iteration = max(node_iteration, node.iteration)
             metric["iteration"] = _safe_int(raw.get("iteration")) if epoch_projection else max(
                 _safe_int(metric.get("iteration")),
                 _safe_int(raw.get("iteration")),

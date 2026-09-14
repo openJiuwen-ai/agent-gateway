@@ -251,7 +251,7 @@ class RsiServiceContext:
         return adapters
 
     def register_worker_push(self, push_callbacks: dict[str, Any]) -> None:
-        self.worker._push_callbacks.update(push_callbacks)  # noqa: SLF001 - 组合根内装配
+        self.worker.register_push_callbacks(push_callbacks)
 
     def ensure_root(self, task_id: str) -> None:
         self.projector.register_root(task_id)

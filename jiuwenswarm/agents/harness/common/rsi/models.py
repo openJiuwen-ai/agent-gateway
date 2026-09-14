@@ -130,13 +130,22 @@ class RsiTask:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RsiTask":
         known = {
-            k
-            for k in (
-                "task_id", "name", "scenario", "status", "created_at", "artifact_type",
-                "input_file", "model_refs", "max_iterations", "search_width",
-                "optimization_instruction", "artifact_path", "config", "run_dir", "updated_at",
-                "status_history",
-            )
+            "task_id",
+            "name",
+            "scenario",
+            "status",
+            "created_at",
+            "artifact_type",
+            "input_file",
+            "model_refs",
+            "max_iterations",
+            "search_width",
+            "optimization_instruction",
+            "artifact_path",
+            "config",
+            "run_dir",
+            "updated_at",
+            "status_history",
         }
         return cls(**{k: v for k, v in data.items() if k in known})
 

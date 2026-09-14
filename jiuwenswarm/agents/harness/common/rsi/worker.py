@@ -15,7 +15,7 @@ import asyncio
 import logging
 import time
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, NoReturn
 
 from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiDatasetInvalid,
@@ -520,12 +520,14 @@ class RsiWorker:
                 else:
                     state = await asyncio.wait_for(read_state_task, timeout=remaining)
             except asyncio.TimeoutError:
-                assert poll_timeout is not None
+                if poll_timeout is None:
+                    last_error = RuntimeError("Provider.read_state timeout has no poll deadline")
+                    break
                 last_error = asyncio.TimeoutError(
                     f"Provider.read_state exceeded {poll_timeout:.1f}s"
                 )
                 break
-            except (FileNotFoundError, KeyError, OSError) as exc:
+            except (KeyError, OSError) as exc:
                 # The Provider may publish its registry/snapshot immediately
                 # after returning from run.  A short retry handles that small
                 # hand-off without blocking event consumption.
@@ -551,8 +553,8 @@ class RsiWorker:
             if sleep_for > 0:
                 await asyncio.sleep(sleep_for)
 
-        assert poll_timeout is not None
-        assert deadline is not None
+        if poll_timeout is None or deadline is None:
+            raise RuntimeError("Provider polling ended without a timeout deadline")
         elapsed = poll_timeout - max(0.0, deadline - time.monotonic())
         logger.error(
             "[RSI] Provider 未在 %.1f 秒内进入终态，task=%s status=%s error=%s",
@@ -591,8 +593,6 @@ class RsiWorker:
                 terminate(task_id),
                 timeout=_PROVIDER_TERMINATE_TIMEOUT_SECONDS,
             )
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:  # noqa: BLE001 - timeout cleanup is best effort
             logger.warning(
                 "[RSI] Provider 超时清理失败，task=%s error=%s",
@@ -625,10 +625,10 @@ class RsiWorker:
             raise RsiScenarioNotSupported(f"当前 Provider 不支持 {mode}")
         try:
             loop = asyncio.get_running_loop()
-        except RuntimeError:
+        except RuntimeError as exc:
             raise RsiNotReady(
                 f"当前无运行中事件循环，无法调用 Provider.{mode}: task={task_id}"
-            )
+            ) from exc
         previous = self._control_tasks.get(task_id)
         if previous is not None and not previous.done():
             logger.warning(
@@ -782,6 +782,11 @@ class RsiWorker:
 
         return _send
 
+    def register_push_callbacks(self, push_callbacks: dict[str, Any]) -> None:
+        """Add transport callbacks without exposing worker internals."""
+
+        self._push_callbacks.update(push_callbacks)
+
     def _dequeue_locked(self, task_id: str) -> None:
         """排队中出队：从队列移除该 task（保持其余顺序）。"""
         remaining: list[str] = []
@@ -798,7 +803,7 @@ class RsiWorker:
             self._queue.put_nowait(item)
 
     @staticmethod
-    def _conflict(task_id: str, message: str) -> None:
+    def _conflict(task_id: str, message: str) -> NoReturn:
         raise RsiTaskStateConflict(message)
 
 

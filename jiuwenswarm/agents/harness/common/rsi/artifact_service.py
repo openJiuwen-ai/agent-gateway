@@ -71,7 +71,13 @@ class RsiArtifactService:
                     name = f"{arcname}/{source.relative_to(src).as_posix()}" if src.is_dir() else arcname
                     zf.write(source, arcname=name)
                     written.append(source)
-        logger.info("[RSI] make_snapshot: task=%s node=%s artifact_id=%s files=%d", task_id, node_id, artifact_id, len(written))
+        logger.info(
+            "[RSI] make_snapshot: task=%s node=%s artifact_id=%s files=%d",
+            task_id,
+            node_id,
+            artifact_id,
+            len(written),
+        )
         return artifact_id
 
     def locate(self, task_id: str, artifact_id: str | None = None) -> ArtifactFile:

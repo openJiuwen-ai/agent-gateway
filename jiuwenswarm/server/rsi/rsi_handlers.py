@@ -97,8 +97,6 @@ class RsiAgentServerHandlers:
             return {"ok": True, "payload": payload}
         except RsiError as exc:
             return {"ok": False, "error": exc.message, "code": exc.code}
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:  # noqa: BLE001 - 统一 INTERNAL_ERROR 语义
             logger.exception("[RSI] %s failed: %s", method, exc)
             return {"ok": False, "error": str(exc), "code": "INTERNAL_ERROR"}
@@ -131,8 +129,6 @@ class RsiAgentServerHandlers:
             return {"ok": True, "payload": payload}
         except RsiError as exc:
             return {"ok": False, "error": exc.message, "code": exc.code}
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:  # noqa: BLE001 - 统一 INTERNAL_ERROR 语义
             logger.exception("[RSI] %s failed: %s", method, exc)
             return {"ok": False, "error": str(exc), "code": "INTERNAL_ERROR"}

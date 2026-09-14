@@ -106,7 +106,7 @@ def _find_manifest(package: Path) -> Path:
     if find_plugin_manifest is not None:
         try:
             return Path(find_plugin_manifest(package)).expanduser().resolve(strict=True)
-        except (FileNotFoundError, OSError, ValueError):
+        except (OSError, ValueError):
             pass
     for name in _MANIFEST_NAMES:
         candidate = package / name
@@ -330,6 +330,11 @@ class RsiHarnessActivationStore:
             return None
         return runtime
 
+    def validate_runtime_path(self, value: Any, *, require_exists: bool) -> Path | None:
+        """Validate a persisted runtime path for callers outside the store."""
+
+        return self._validate_runtime_path(value, require_exists=require_exists)
+
     def get_active(self) -> dict[str, Any] | None:
         active = self._read_document().get("active")
         if not isinstance(active, dict):
@@ -496,12 +501,11 @@ def _read_manifest_extension_name(package: Path) -> tuple[str, Path]:
     extension_name = str(
         payload.get("extension_name") or payload.get("id") or package.name
     ).strip()
-    if (
-        not extension_name
-        or extension_name in {".", ".."}
-        or Path(extension_name).name != extension_name
-        or any(char in extension_name for char in ("/", "\\", ":"))
-    ):
+    if not extension_name or extension_name in {".", ".."}:
+        raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
+    if Path(extension_name).name != extension_name:
+        raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
+    if any(char in extension_name for char in ("/", "\\", ":")):
         raise RsiHarnessInvalid(f"Harness extension_name 非法: {extension_name!r}")
     return extension_name, manifest
 
@@ -591,7 +595,7 @@ class RsiHarnessInstaller:
         )
         versions = []
         for record in records:
-            runtime = self.activation_store._validate_runtime_path(  # noqa: SLF001 - store boundary validator
+            runtime = self.activation_store.validate_runtime_path(
                 record.get("runtime_path"), require_exists=False
             )
             installation_id = str(record.get("installation_id") or "").strip()
@@ -689,7 +693,7 @@ class RsiHarnessInstaller:
 
     def _validate_rollback_target(self, record: dict[str, Any]) -> None:
         try:
-            runtime = self.activation_store._validate_runtime_path(  # noqa: SLF001 - store boundary validator
+            runtime = self.activation_store.validate_runtime_path(
                 record.get("runtime_path"), require_exists=True
             )
         except ValueError as exc:
@@ -824,18 +828,17 @@ class RsiHarnessInstaller:
                         "RSI Harness active 指针写入失败且 live Agent 恢复失败"
                     ) from exc
                 raise RsiHarnessInstallFailed("RSI Harness active 指针写入失败，已恢复旧版本") from exc
-            provenance = {
-                key: record.get(key)
-                for key in (
-                    "installation_id",
-                    "task_id",
-                    "node_id",
-                    "role",
-                    "extension_name",
-                    "sha256",
-                    "installed_at",
-                )
-            }
+            provenance: dict[str, Any] = {}
+            for key in (
+                "installation_id",
+                "task_id",
+                "node_id",
+                "role",
+                "extension_name",
+                "sha256",
+                "installed_at",
+            ):
+                provenance[key] = record.get(key)
             try:
                 self.store.merge_config(task_id, {"rsi_installation": provenance})
             except Exception as exc:  # noqa: BLE001 - pointer remains authoritative
@@ -912,16 +915,15 @@ class RsiHarnessInstaller:
             # providers by returning ``{}`` when raw publication state is not
             # available.  Treat that sentinel as “no reader” and continue to
             # the task run's durable state file instead of masking it.
-            if isinstance(state, dict) and any(
-                key in state
+            if isinstance(state, dict):
                 for key in (
                     "publication_status",
                     "published_harness_refs_path",
                     "current_harness_refs_path",
                     "best_harness_refs_path",
-                )
-            ):
-                return state
+                ):
+                    if key in state:
+                        return state
         path = run_root / _STATE_FILE_NAME
         if not path.is_file():
             raise RsiHarnessNotPublished(f"任务 {task_id} 缺少 single_harness_state.yaml")

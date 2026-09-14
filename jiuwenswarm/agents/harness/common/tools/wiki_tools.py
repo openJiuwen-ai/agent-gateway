@@ -431,13 +431,12 @@ def _create_llm_wiki(
     """
 
     config = get_config()
-    react_config = config.get("react") if isinstance(config, dict) else None
-    react_config = react_config if isinstance(react_config, dict) else {}
     configured = get_configured_read_image_multimodal(config)
     kwargs: Dict[str, Any] = {
         "kv_cache_affinity_config": build_kv_cache_affinity_config(
-            react_config,
+            config,
             provider=model_provider(model),
+            model_client_config=getattr(model, "model_client_config", None),
         ),
     }
     if isinstance(configured, bool):

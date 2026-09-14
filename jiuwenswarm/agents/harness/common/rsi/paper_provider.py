@@ -153,6 +153,29 @@ class _ExecutionOutcome:
     manager_run_ids: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _ManagerReportRequest:
+    task_id: str
+    run_dir: Path
+    manager_run_id: str
+    iteration: int
+    index: int
+    manager_report: dict[str, Any]
+    total_iterations: int
+    on_event: OnEvent | None
+
+
+@dataclass(frozen=True, slots=True)
+class _NodeArtifactRequest:
+    task_id: str
+    run_dir: Path
+    iteration: int
+    report_index: int
+    module: str
+    node_id: str
+    raw_paths: Any
+
+
 class PaperProvider:
     """Adapt autoResearch's real ManagerRuntime to the RSI Provider API."""
 
@@ -718,14 +741,16 @@ class PaperProvider:
                     continue
                 try:
                     await self._record_manager_report(
-                        task_id,
-                        run_dir,
-                        manager_run_id,
-                        iteration,
-                        index,
-                        report,
-                        total_iterations,
-                        on_event,
+                        _ManagerReportRequest(
+                            task_id=task_id,
+                            run_dir=run_dir,
+                            manager_run_id=manager_run_id,
+                            iteration=iteration,
+                            index=index,
+                            manager_report=report,
+                            total_iterations=total_iterations,
+                            on_event=on_event,
+                        )
                     )
                 except Exception:  # noqa: BLE001 - retry the report next poll
                     logger.exception(
@@ -737,17 +762,15 @@ class PaperProvider:
                     continue
                 seen.add(key)
 
-    async def _record_manager_report(
-        self,
-        task_id: str,
-        run_dir: Path,
-        manager_run_id: str,
-        iteration: int,
-        index: int,
-        manager_report: dict[str, Any],
-        total_iterations: int,
-        on_event: OnEvent | None,
-    ) -> None:
+    async def _record_manager_report(self, request: _ManagerReportRequest) -> None:
+        task_id = request.task_id
+        run_dir = request.run_dir
+        manager_run_id = request.manager_run_id
+        iteration = request.iteration
+        index = request.index
+        manager_report = request.manager_report
+        total_iterations = request.total_iterations
+        on_event = request.on_event
         state = self._read_json(task_id, _STATE_FILE)
         report = self._read_json(task_id, _REPORT_FILE)
         tree = self._read_json(task_id, _TREE_FILE)
@@ -759,13 +782,15 @@ class PaperProvider:
         parent_id = _last_node_id(tree) or "ROOT"
         node_artifact = await asyncio.to_thread(
             self._build_node_artifact_ref,
-            task_id,
-            run_dir,
-            iteration,
-            index,
-            module,
-            node_id,
-            manager_report.get("artifact_paths"),
+            _NodeArtifactRequest(
+                task_id=task_id,
+                run_dir=run_dir,
+                iteration=iteration,
+                report_index=index,
+                module=module,
+                node_id=node_id,
+                raw_paths=manager_report.get("artifact_paths"),
+            ),
         )
         artifact_refs = [node_artifact] if node_artifact is not None else []
         report_index = list(report.get("artifact_index") or [])
@@ -1012,44 +1037,23 @@ class PaperProvider:
         return str(candidate) if candidate.is_file() else None
 
     def _build_node_artifact_ref(
-        self,
-        task_id: str,
-        run_dir: Path,
-        iteration: int,
-        report_index: int,
-        module: str,
-        node_id: str,
-        raw_paths: Any,
+        self, request: _NodeArtifactRequest
     ) -> dict[str, Any] | None:
-        package = self._make_node_package(
-            task_id,
-            run_dir,
-            iteration,
-            report_index,
-            module,
-            node_id,
-            raw_paths,
-        )
+        package = self._make_node_package(request)
         if package is None:
             return None
         return self._artifact_ref(
-            task_id,
+            request.task_id,
             package,
-            node_id=node_id,
-            artifact_id=f"{task_id}:artifact:node:{iteration}:{report_index}",
+            node_id=request.node_id,
+            artifact_id=(
+                f"{request.task_id}:artifact:node:"
+                f"{request.iteration}:{request.report_index}"
+            ),
             kind="paper_node",
         )
 
-    def _make_node_package(
-        self,
-        task_id: str,
-        run_dir: Path,
-        iteration: int,
-        report_index: int,
-        module: str,
-        node_id: str,
-        raw_paths: Any,
-    ) -> Path | None:
+    def _make_node_package(self, request: _NodeArtifactRequest) -> Path | None:
         """Package all files reported by one manager module into one node artifact.
 
         Manager reports often contain several paths from different parts of
@@ -1059,17 +1063,25 @@ class PaperProvider:
         while retaining every file produced by that module.
         """
 
-        candidates = self._collect_provider_files(run_dir, raw_paths, node_id=node_id)
+        candidates = self._collect_provider_files(
+            request.run_dir, request.raw_paths, node_id=request.node_id
+        )
         if not candidates:
             return None
 
-        safe_module = re.sub(r"[^A-Za-z0-9_.-]+", "-", module).strip("-.") or "module"
-        node_digest = hashlib.sha256(node_id.encode("utf-8")).hexdigest()[:12]
+        safe_module = (
+            re.sub(r"[^A-Za-z0-9_.-]+", "-", request.module).strip("-.")
+            or "module"
+        )
+        node_digest = hashlib.sha256(request.node_id.encode("utf-8")).hexdigest()[:12]
         destination = (
-            run_dir
+            request.run_dir
             / _ARTIFACTS_DIR
             / _NODE_ARTIFACTS_DIR
-            / f"paper-{safe_module}-{iteration:03d}-{report_index:03d}-{node_digest}"
+            / (
+                f"paper-{safe_module}-{request.iteration:03d}-"
+                f"{request.report_index:03d}-{node_digest}"
+            )
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._remove_staging_path(destination)
@@ -1077,15 +1089,17 @@ class PaperProvider:
         manifest = {
             "provider": "PaperProvider",
             "artifact_kind": "paper_node",
-            "task_id": task_id,
-            "node_id": node_id,
-            "iteration": iteration,
-            "module": module,
-            "source_files": [self._relative_to(run_dir, path) for path in candidates],
+            "task_id": request.task_id,
+            "node_id": request.node_id,
+            "iteration": request.iteration,
+            "module": request.module,
+            "source_files": [
+                self._relative_to(request.run_dir, path) for path in candidates
+            ],
         }
         destination.mkdir(parents=True, exist_ok=True)
         for path in candidates:
-            relative = self._relative_to(run_dir, path)
+            relative = self._relative_to(request.run_dir, path)
             if not relative:
                 continue
             target = destination / Path(relative)
@@ -1133,8 +1147,8 @@ class PaperProvider:
             return unique[:_MAX_PROVIDER_FILES]
         return unique
 
+    @staticmethod
     def _artifact_ref(
-        self,
         task_id: str,
         path: Path,
         *,
@@ -1156,7 +1170,8 @@ class PaperProvider:
             )
         )
 
-    def _provider_path(self, run_dir: Path, raw: Any) -> Path | None:
+    @staticmethod
+    def _provider_path(run_dir: Path, raw: Any) -> Path | None:
         if not raw:
             return None
         candidate = Path(str(raw)).expanduser()
@@ -1305,22 +1320,21 @@ def _read_usage_ledger(run_dir: Path) -> RsiUsage | None:
 
 
 def _compact_manager_report(report: dict[str, Any]) -> dict[str, Any]:
-    view = {
-        key: report.get(key)
-        for key in (
-            "report_id",
-            "module",
-            "mode",
-            "attempt",
-            "outcome",
-            "retryable",
-            "runtime_failure",
-            "summary",
-            "artifact_paths",
-            "handoff",
-        )
-        if key in report
-    }
+    view: dict[str, Any] = {}
+    for key in (
+        "report_id",
+        "module",
+        "mode",
+        "attempt",
+        "outcome",
+        "retryable",
+        "runtime_failure",
+        "summary",
+        "artifact_paths",
+        "handoff",
+    ):
+        if key in report:
+            view[key] = report.get(key)
     encoded = json.dumps(view, ensure_ascii=False, default=str)
     if len(encoded) <= 12000:
         return view
@@ -1342,13 +1356,15 @@ def _find_best_node(tree: dict[str, Any], package: Path) -> dict[str, Any] | Non
     match = _PACKAGE_ITERATION_RE.search(package.stem)
     iteration = int(match.group(1)) if match else None
     nodes = [item for item in tree.get("nodes") or [] if isinstance(item, dict)]
-    candidates = [
-        item
-        for item in nodes
-        if item.get("node_id") != "ROOT"
-        and (iteration is None or int(item.get("iteration", 0) or 0) == iteration)
-        and bool(item.get("adopted"))
-    ]
+    candidates: list[dict[str, Any]] = []
+    for item in nodes:
+        if item.get("node_id") == "ROOT":
+            continue
+        if iteration is not None and int(item.get("iteration", 0) or 0) != iteration:
+            continue
+        if not bool(item.get("adopted")):
+            continue
+        candidates.append(item)
     return candidates[-1] if candidates else (nodes[-1] if nodes else None)
 
 

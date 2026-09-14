@@ -7,6 +7,60 @@ const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
 const A = 1_700_000_035_000; // reasoning 末帧（updatedAt）
 
+test('全双工简短确认和后续发言在运行中及完成后均保持展开', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const ack = assistantMessage(U + 1_000, U + 1_000, 'spoken-ack');
+      ack.message.content = '好的，没问题，我现在就帮你生成这道题的代码。';
+      ack.message.keepExpanded = true;
+      const result = assistantMessage(U + 2_000, U + 2_000, 'result');
+      result.message.presentation = 'tool_result';
+      const receipt = assistantMessage(U + 3_000, U + 3_000, 'spoken-receipt');
+      receipt.message.keepExpanded = true;
+      const out = buildRenderItems([userMessage(U), ack, result, receipt], isTeam, isProcessing);
+      const replies = out.filter((item) => item.type === 'message' && item.message.role === 'assistant');
+      assert.equal(replies.length, 3);
+      for (const item of replies) assert.equal(item.hideMeta, false);
+    }
+  }
+});
+
+test('完整工具结果在后续简报到来后仍独立显示，普通中间回应保持折叠', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const first = assistantMessage(U + 2_000, U + 2_000, 'result-1');
+      first.message.presentation = 'tool_result';
+      const second = assistantMessage(U + 3_000, U + 3_000, 'result-2');
+      second.message.presentation = 'tool_result';
+      const out = buildRenderItems([
+        userMessage(U),
+        assistantMessage(U + 1_000, U + 1_000, 'ack'),
+        first,
+        second,
+        assistantMessage(U + 4_000, U + 4_000, 'brief'),
+      ], isTeam, isProcessing);
+      const messages = out.filter((item) => item.type === 'message');
+      assert.equal(messages.find((item) => item.message.id === 'result-1').hideMeta, false);
+      assert.equal(messages.find((item) => item.message.id === 'result-2').hideMeta, false);
+      assert.equal(messages.find((item) => item.message.id === 'ack').hideMeta, true);
+      if (!isProcessing) assert.equal(messages.find((item) => item.message.id === 'brief').hideMeta, false);
+    }
+  }
+});
+
+test('异步工具结果不把它前面的普通最终回答变成中间过程', () => {
+  const result = assistantMessage(U + 3_000, U + 3_000, 'result');
+  result.message.presentation = 'tool_result';
+  const out = buildRenderItems([
+    userMessage(U),
+    assistantMessage(U + 2_000, U + 2_000, 'answer'),
+    result,
+  ], false, false);
+  for (const item of out.filter((item) => item.type === 'message' && item.message.role === 'assistant')) {
+    assert.equal(item.hideMeta, false);
+  }
+});
+
 function iso(ms) {
   return new Date(ms).toISOString();
 }
@@ -56,10 +110,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
     message: {
       id,
       role: 'system',
-      content: '/btw side question\nside answer',
+      content: '/compact\ncontext compressed',
       timestamp: iso(ms),
       isCommandOutput: true,
-      commandName: 'btw',
+      commandName: 'compact',
     },
   };
 }
@@ -68,7 +122,7 @@ function turnSummaryOf(items) {
   return items.find((item) => item.type === 'turnSummary');
 }
 
-function execution({ status, startedAt, updatedAt }) {
+function execution({ status, startedAt, updatedAt, agentTemplateName }) {
   return {
     toolCallId: `tc-${startedAt}`,
     toolCall: { id: `tc-${startedAt}`, name: 'bash', arguments: {} },
@@ -76,8 +130,47 @@ function execution({ status, startedAt, updatedAt }) {
     startedAt: iso(startedAt),
     updatedAt: iso(updatedAt),
     timeoutAt: iso(startedAt + 60_000),
+    ...(agentTemplateName ? { agentTemplateName } : {}),
   };
 }
+
+test('tool-first group keeps the Web Agent identity for its avatar', () => {
+  const items = [
+    userMessage(U),
+    {
+      type: 'toolExecution',
+      key: 'tc-agent',
+      timestampMs: S,
+      sourceIndex: 0,
+      execution: execution({
+        status: 'pending',
+        startedAt: S,
+        updatedAt: S,
+        agentTemplateName: 'expert-a',
+      }),
+    },
+  ];
+
+  const toolGroup = buildRenderItems(items, false, true).find((item) => item.type === 'toolGroup');
+  assert.equal(toolGroup?.agentTemplateName, 'expert-a');
+});
+
+test('adjacent reasoning keeps a later Agent identity when the first segment lacks one', () => {
+  const items = [
+    userMessage(U),
+    reasoningItem({ id: 'rsn-first', text: 'first', startedAt: S, closed: true }),
+    reasoningItem({
+      id: 'rsn-second',
+      text: 'second',
+      startedAt: S + 1,
+      closed: true,
+      agentTemplateName: 'expert-a',
+    }, 1),
+  ];
+
+  const reasoning = buildRenderItems(items, false, false).find((item) => item.type === 'reasoning');
+  assert.equal(reasoning?.segment.agentTemplateName, 'expert-a');
+});
 
 test('异常结束（无 closedAt）：reasoning.updatedAt 兜底为耗时终点', () => {
   const items = [

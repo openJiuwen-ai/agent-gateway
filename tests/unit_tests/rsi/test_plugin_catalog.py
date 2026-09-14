@@ -13,13 +13,13 @@ from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
 )
 from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
-from tests.unit_tests.rsi.test_plugin_roundtrip import _PRESETS, _agent
+from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _make_plugin_package
 
 pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
 
 def _package(tmp_path, *, legacy=False):
     source = tmp_path / "published"
-    shutil.copytree(_PRESETS / "coding-guard", source)
+    shutil.copytree(_make_plugin_package(tmp_path / "preset", "coding-guard"), source)
     manifest = source / "manifest.json"
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     skill = source / "skills" / "verification"

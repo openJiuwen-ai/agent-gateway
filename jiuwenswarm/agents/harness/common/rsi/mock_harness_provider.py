@@ -78,7 +78,8 @@ class MockHarnessProvider:
             else max(0.0, self.iteration_delay * 0.25)
         )
 
-    def validate_input(self, dataset_path: str | None) -> Any:
+    @staticmethod
+    def validate_input(dataset_path: str | None) -> Any:
         if not dataset_path:
             return {
                 "valid": False,
@@ -464,8 +465,8 @@ class MockHarnessProvider:
         await _emit(on_event, EventStatus(status="completed"))
         return self._result(task_id, "completed", final_node_id=state.get("best_node_id"))
 
+    @staticmethod
     def _write_artifact(
-        self,
         target: Path,
         request: HarnessEngineRequest,
         iteration: int,
