@@ -58,7 +58,11 @@ import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
-import { canLoadOlderHistory, shouldShowHistoryRetry } from '../../features/historyPagination';
+import {
+  canLoadOlderHistory,
+  resolveHistoryPrependScrollTop,
+  shouldShowHistoryRetry,
+} from '../../features/historyPagination';
 import {
   DESKTOP_FILE_DRAG_EVENT,
   DESKTOP_LOCAL_FILES_EVENT,
@@ -73,8 +77,9 @@ import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/Applicat
 import { generateUuidV4 } from '../../utils/uuid';
 
 export interface ChatHistoryPagerProps {
-  loadedPages: number;
-  totalPages: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  hasMore: boolean;
   loadingMore: boolean;
   prepending?: boolean;
   retryAvailable?: boolean;
@@ -983,7 +988,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const lastConsumedDesktopDropIdRef = useRef<string | null>(null);
   const historyLayoutSnapshotRef = useRef<{
     sessionId: string;
-    loadedPages: number;
+    publishedBatchSeq: number;
     scrollHeight: number;
     scrollTop: number;
   } | null>(null);
@@ -994,16 +999,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
-  const historyLoadedPages = historyPager?.loadedPages ?? 0;
-  const historyTotalPages = historyPager?.totalPages ?? 0;
+  const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
+  const historyPublishedBatchSeq = historyPager?.publishedBatchSeq ?? 0;
+  const historyHasMore = historyPager?.hasMore ?? false;
   const historyLoadingMore = historyPager?.loadingMore ?? false;
   const historyPrepending = historyPager?.prepending ?? false;
   const historyRetryAvailable = historyPager?.retryAvailable ?? false;
   const historyOnLoadMore = historyPager?.onLoadMore;
   const hasHistoryPager = Boolean(historyPager);
   const historyLoadMoreState = {
-    loadedPages: historyLoadedPages,
-    totalPages: historyTotalPages,
+    loadedBatchSeq: historyLoadedBatchSeq,
+    publishedBatchSeq: historyPublishedBatchSeq,
+    hasMore: historyHasMore,
     loadingMore: historyLoadingMore,
     prepending: historyPrepending,
   };
@@ -1187,12 +1194,12 @@ export const ChatPanel = React.memo(function ChatPanel({
     (sessionId: string, el: HTMLDivElement) => {
       historyLayoutSnapshotRef.current = {
         sessionId,
-        loadedPages: historyLoadedPages,
+        publishedBatchSeq: historyPublishedBatchSeq,
         scrollHeight: el.scrollHeight,
         scrollTop: el.scrollTop,
       };
     },
-    [historyLoadedPages],
+    [historyPublishedBatchSeq],
   );
 
   const restoreSessionScrollTop = useCallback(
@@ -1225,12 +1232,27 @@ export const ChatPanel = React.memo(function ChatPanel({
 
     const currentSessionId = activeSessionId ?? '';
     rememberSessionScrollTop(currentSessionId, el);
+    updateHistoryLayoutSnapshot(currentSessionId, el);
 
     // 当滚动到顶部且有更多历史消息时，加载更多
-    if (el.scrollTop <= LOAD_OLDER_THRESHOLD_PX && canRequestOlderHistory && historyOnLoadMore) {
+    const hasTimelineAdmissionBoundary = Boolean(
+      el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]')
+    );
+    if (
+      el.scrollTop <= LOAD_OLDER_THRESHOLD_PX
+      && !hasTimelineAdmissionBoundary
+      && canRequestOlderHistory
+      && historyOnLoadMore
+    ) {
       void historyOnLoadMore();
     }
-  }, [activeSessionId, canRequestOlderHistory, historyOnLoadMore, rememberSessionScrollTop]);
+  }, [
+    activeSessionId,
+    canRequestOlderHistory,
+    historyOnLoadMore,
+    rememberSessionScrollTop,
+    updateHistoryLayoutSnapshot,
+  ]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -1263,13 +1285,19 @@ export const ChatPanel = React.memo(function ChatPanel({
     (e: React.WheelEvent<HTMLDivElement>) => {
       // 只有向上滚动时才触发
       if (e.deltaY < 0) {
+        userScrolledUpRef.current = true;
         stickToBottomUntilStableRef.current = false;
       }
       if (e.deltaY < 0 && canRequestOlderHistory && historyOnLoadMore) {
         // 检查是否已经在顶部（没有滚动条时 scrollTop 始终为 0）
         const el = scrollContainerRef.current;
         if (el && el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
-          void historyOnLoadMore();
+          const hasTimelineAdmissionBoundary = Boolean(
+            el.querySelector('[data-testid="chat-panel-timeline-history-sentinel"]'),
+          );
+          if (!hasTimelineAdmissionBoundary) {
+            void historyOnLoadMore();
+          }
         }
       }
     },
@@ -1304,17 +1332,34 @@ export const ChatPanel = React.memo(function ChatPanel({
     const snapshot = historyLayoutSnapshotRef.current;
     const currentSessionId = activeSessionId ?? '';
 
+    // 以真实布局为准补偿可能被主线程繁忙延迟的 scroll 事件：内容高度未变、
+    // scrollTop 却已变化时，按当前真实位置更新阅读意图，再处理新页。
+    if (
+      snapshot?.sessionId === currentSessionId &&
+      snapshot.scrollHeight === el.scrollHeight &&
+      snapshot.scrollTop !== el.scrollTop
+    ) {
+      const atBottom = isScrollAtBottom(el);
+      userScrolledUpRef.current = !atBottom;
+      if (!atBottom) {
+        stickToBottomUntilStableRef.current = false;
+      }
+    }
+
     if (
       lastSessionIdRef.current === currentSessionId &&
       hasHistoryPager &&
-      snapshot &&
-      snapshot.sessionId === currentSessionId &&
-      snapshot.loadedPages > 0 &&
-      historyLoadedPages > snapshot.loadedPages
+      snapshot?.sessionId === currentSessionId
     ) {
-      const delta = el.scrollHeight - snapshot.scrollHeight;
-      if (delta !== 0) {
-        el.scrollTop = snapshot.scrollTop + delta;
+      const nextScrollTop = resolveHistoryPrependScrollTop({
+        previousPublishedBatchSeq: snapshot.publishedBatchSeq,
+        publishedBatchSeq: historyPublishedBatchSeq,
+        previousScrollHeight: snapshot.scrollHeight,
+        scrollHeight: el.scrollHeight,
+        previousScrollTop: snapshot.scrollTop,
+      });
+      if (nextScrollTop !== null) {
+        el.scrollTop = nextScrollTop;
         suppressNextScrollToEndRef.current = true;
       }
     }
@@ -1323,7 +1368,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, [
     activeSessionId,
     hasHistoryPager,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     messages.length,
     toolExecutionOrder.length,
     updateHistoryLayoutSnapshot,
@@ -1379,7 +1424,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     isThinking,
     contextCompressionRuntime,
     contextCompressionSummary,
-    historyLoadedPages,
+    historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
     teamHumanShareCommands.length,
@@ -1681,6 +1726,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                   <MessageList
                     messages={messages}
                     renderAfterMessage={renderCodeChangesAfterMessage}
+                    canLoadOlderHistory={canRequestOlderHistory}
+                    onLoadOlderHistory={historyOnLoadMore}
                     teamGroupIdentityOverride={teamGroupIdentity}
                   />
                   {shouldShowHumanShare && (
