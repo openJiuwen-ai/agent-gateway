@@ -36,7 +36,6 @@
     "work": "Tasks",
     "agent": "Experts",
     "experiments": "Experiments",
-    "teams": "Teams",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -490,7 +489,6 @@
     "noGroupMessages": "No group messages",
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
-    "noMemberTasks": "No tasks assigned to this member",
     "noProcessData": "No execution process data for this member",
     "collapseView": "Collapse view",
     "expandView": "Expand view",
@@ -1338,7 +1336,7 @@
       "viaChatPrompt": "Let's set up a scheduled task together. First, explain how scheduled tasks work in WorkSwarm. Then ask me what I'd like to schedule and when it should run."
     },
     "stats": {
-      "total": "Total tasks ({{count}})"
+      "total": "Total tasks {{count}}"
     },
     "tabs": {
       "list": "Tasks",
@@ -1973,6 +1971,7 @@
       "install": "Install",
       "installing": "Installing...",
       "uninstall": "Uninstall",
+      "uninstalling": "Uninstalling...",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",
@@ -3321,7 +3320,6 @@
     "closed": "Closed",
     "failed": "Error",
     "cancelled": "Cancelled",
-    "tasksEmpty": "No tasks",
     "activityTitle": "Activity",
     "activityEmpty": "No activity yet",
     "historyLoading": "Restoring history…",

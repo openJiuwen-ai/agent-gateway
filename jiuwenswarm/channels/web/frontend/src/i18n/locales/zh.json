@@ -36,7 +36,6 @@
     "work": "任务",
     "agent": "专家",
     "experiments": "实验",
-    "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -472,7 +471,6 @@
     "noGroupMessages": "暂无群聊消息",
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
-    "noMemberTasks": "暂无可归属到该成员的任务",
     "noProcessData": "暂无该成员的执行过程数据",
     "collapseView": "收起视图",
     "expandView": "展开视图",
@@ -1320,7 +1318,7 @@
       "viaChatPrompt": "我们一起来设置一个定时任务吧。首先，说明定时任务在 WorkSwarm 中的工作方式。然后询问我需要安排什么，以及应该在什么时候运行。"
     },
     "stats": {
-      "total": "任务总数（{{count}}）"
+      "total": "任务总数 {{count}}"
     },
     "tabs": {
       "list": "任务列表",
@@ -1954,6 +1952,7 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "uninstalling": "卸载中...",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",
@@ -3302,7 +3301,6 @@
     "closed": "已关闭",
     "failed": "异常",
     "cancelled": "已取消",
-    "tasksEmpty": "暂无任务",
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
