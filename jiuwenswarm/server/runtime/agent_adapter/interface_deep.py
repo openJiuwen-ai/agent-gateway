@@ -6762,6 +6762,15 @@ class JiuWenSwarmDeepAdapter:
 
     @staticmethod
     def _native_image_input_enabled(config: dict[str, Any], model: Any | None) -> bool:
+        # Per-model declaration (``supports_vision`` on ModelClientConfig) takes
+        # priority over the global react config and the probe cache.
+        if model is not None:
+            mcc = getattr(model, "model_client_config", None)
+            if mcc is not None:
+                supports_vision = getattr(mcc, "supports_vision", None)
+                if isinstance(supports_vision, bool):
+                    return supports_vision
+
         configured = config.get("enable_read_image_multimodal")
         if isinstance(configured, bool):
             return configured
@@ -16875,6 +16884,7 @@ class JiuWenSwarmDeepAdapter:
                             if raw_output is not None:
                                 result_payload["raw_output"] = raw_output
                             for key in (
+                                "rendered_result",
                                 "status",
                                 "success",
                                 "is_error",
