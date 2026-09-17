@@ -114,6 +114,7 @@ from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
+from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -3870,8 +3871,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
         """Send a minimal chat completion (user message \"Hi\") using draft default-model fields.
 
-        Tries ``max_tokens=infimum_max_tokens`` first to limit cost; if the API rejects it (e.g. minimum output length),
-        retries with ``max_tokens=supremum_max_tokens``.
+        Tries ``max_tokens=infimum_max_tokens`` first to limit cost. If the API
+        rejects it or returns no content, retries with
+        ``max_tokens=supremum_max_tokens``.
         """
         if max_tokens_bounds is None:
             max_tokens_bounds = {
@@ -3971,66 +3973,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         llm = Model(model_config=model_request_config, model_client_config=model_client_config)
 
-        async def test_invoke(max_tokens: int):
-            return await llm.invoke(
-                [{"role": "user", "content": "Hi"}],
-                max_tokens=max_tokens,
-            )
-
         try:
-            try:
-                resp = await test_invoke(infimum_max_tokens)
-            except Exception as first_exc:  # noqa: BLE001
-                logger.info(
-                    "[config.validate_model] max_tokens=%d failed, retrying with %d: %s",
-                    infimum_max_tokens,
-                    supremum_max_tokens,
-                    first_exc,
-                )
-                try:
-                    resp = await test_invoke(supremum_max_tokens)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[config.validate_model] Testing LLM failed: %s", exc)
-                    await channel.send_response(
-                        ws, req_id, ok=False,
-                        error=str(exc).strip() or "LLM request failed",
-                        code="LLM_ERROR",
-                    )
-                    return
+            await probe_model_connection(
+                llm,
+                token_limits=(infimum_max_tokens, supremum_max_tokens),
+                log_context="config.validate_model",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[config.validate_model] LLM probe failed: %s", exc)
             await channel.send_response(
                 ws, req_id, ok=False,
                 error=str(exc).strip() or "LLM request failed",
-                code="LLM_ERROR",
-            )
-            return
-
-        if hasattr(resp, "content"):
-            content = resp.content
-        elif isinstance(resp, dict):
-            content = resp.get("content", "")
-        else:
-            content = str(resp)
-        # For reasoning models (e.g. deepseek-v4-flash), the model may put all
-        # tokens into reasoning_content while leaving content empty.  Treat a
-        # non-empty reasoning_content as a valid response as well.
-        reasoning_content = getattr(resp, "reasoning_content", None) if hasattr(resp, "reasoning_content") else None
-        # Some backends report thinking in a field the client does not map at
-        # all (e.g. Ollama's "reasoning"), leaving both content and
-        # reasoning_content empty.  Generated-token usage still proves the
-        # endpoint, credentials, and model name are all valid.
-        usage = getattr(resp, "usage_metadata", None)
-        output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else getattr(usage, "output_tokens", None)
-        has_valid_response = (
-            (isinstance(content, str) and content)
-            or (isinstance(reasoning_content, str) and reasoning_content)
-            or (isinstance(output_tokens, (int, float)) and output_tokens > 0)
-        )
-        if not has_valid_response:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="Empty response from model",
                 code="LLM_ERROR",
             )
             return
