@@ -871,6 +871,7 @@
     "extensionMore": "More",
     "recentTasks": "Progress",
     "applicationTasks": {
+      "unknown": "Status unconfirmed",
       "cancelling": "Stopping",
       "cancelled": "Cancelled",
       "controls": {

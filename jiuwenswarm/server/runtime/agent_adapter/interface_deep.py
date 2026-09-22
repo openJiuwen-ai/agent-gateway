@@ -1818,6 +1818,19 @@ class JiuWenSwarmDeepAdapter:
     - Deep interrupt / user_answer 处理
     """
 
+    @property
+    def task_execution_binding(self):
+        """Expose the session-owned harness and callback rail to task management."""
+        return self._instance, self._voice_agent_task_rail
+
+    async def install_voice_task_rail(self, *, reload=False):
+        """Keep task rail lifecycle and internal Agent ownership inside the Host."""
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
+
+        self._voice_agent_task_rail = await install_task_rail(
+            self._instance, self._voice_agent_task_rail, reload=reload
+        )
+
     def __init__(self) -> None:
         # Apply the MCP per-call timeout patch once per process: wraps
         # StreamableHttpClient/SseClient.call_tool & list_tools in
@@ -1835,6 +1848,7 @@ class JiuWenSwarmDeepAdapter:
         self._instance: DeepAgent | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._session_input_guard: SessionInputGuard | None = None
+        self._voice_agent_task_rail = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -10932,6 +10946,8 @@ class JiuWenSwarmDeepAdapter:
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
         await self.install_session_input_guard(reload=True)
+        if getattr(self, "_voice_agent_task_rail", None) is not None:
+            await self.install_voice_task_rail(reload=True)
         self._sync_active_evolution_review_agent_after_reload()
 
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
@@ -12136,6 +12152,8 @@ class JiuWenSwarmDeepAdapter:
         )
         await session.pre_run(inputs={})
         await self.install_session_input_guard()
+        if session_id.startswith("managed-task-"):
+            await self.install_voice_task_rail()
         await self._instance.start(session=session)
         if getattr(self._instance, "_interaction_started", True) is not True:
             raise RuntimeError(f"DeepAgent interaction did not become ready: {session_id}")
@@ -13489,6 +13507,10 @@ class JiuWenSwarmDeepAdapter:
                 reason="user_cancel",
             )
             cancel_call_completed = True
+            if request.channel_id == "video_tool":
+                from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
+
+                await close_task_output(self._voice_agent_task_rail, request)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] interrupt(%s): interaction round cancel "
                 "cancelled=%s session=%s",
@@ -14913,8 +14935,11 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one request."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+
             with self._bind_permission_request_context(request):
-                return await self._process_message_impl(request, inputs)
+                async with bind_task_execution(request, self, inputs):
+                    return await self._process_message_impl(request, inputs)
 
     async def _process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -15519,10 +15544,13 @@ class JiuWenSwarmDeepAdapter:
         """Bind trusted host identity and command execution for one stream."""
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+
             with self._bind_permission_request_context(request):
-                async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
-                    async for chunk in stream:
-                        yield chunk
+                async with bind_task_execution(request, self, inputs):
+                    async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
+                        async for chunk in stream:
+                            yield chunk
 
     async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
@@ -16462,6 +16490,9 @@ class JiuWenSwarmDeepAdapter:
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
+
+            await bind_task_output(self._voice_agent_task_rail, request, interaction_stream)
             async for chunk in interaction_stream:
                 first_chunk_seen, run_failure = observe_runner_stream_chunk(
                     chunk,
