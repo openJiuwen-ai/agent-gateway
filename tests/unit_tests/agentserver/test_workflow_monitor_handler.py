@@ -560,6 +560,36 @@ class TestExtractProgressPassthrough:
         assert p.parent_phase == "review"
         assert p.script_path == "/abs/path/foo.py"
 
+    @staticmethod
+    def test_dict_payload_passes_agent_type() -> None:
+        handler = WorkflowMonitorHandler(monitor=_FakeTeamMonitor(), session_id="s")
+        payload = {"kind": "agent_started", "phase": "review", "label": "ext", "node_type": "agent", "agent_type": "codex"}
+        progress = handler._extract_progress(SimpleNamespace(payload=payload))
+        assert progress is not None
+        assert progress.agent_type == "codex"
+
+    @staticmethod
+    def test_object_fallback_copies_agent_type() -> None:
+        """The getattr whitelist must name agent_type or the fallback silently drops it."""
+        h = WorkflowMonitorHandler.__new__(WorkflowMonitorHandler)
+        h._session_id = "s"
+
+        class _Payload:
+            kind = "agent_started"
+            run_id = "wf_1"; workflow_name = "w"; description = None; phase = "review"
+            label = "ext"; prompt = None; model = "gpt-5-codex"; outcome = None; text = None
+            phases = None; correlation_id = None; node_type = "agent"; agent_id = "k1"; answer = None
+            agent_type = "codex"
+
+        class _Ev:
+            def get_payload(self):  # noqa: ANN202
+                return _Payload()
+
+        p = h._extract_progress(_Ev())
+        assert p is not None
+        assert p.agent_type == "codex"
+        assert p.model == "gpt-5-codex"
+
 
 # ---------------------------------------------------------------------------
 # workflow_started script_path passthrough (冷启动续跑情境注入)

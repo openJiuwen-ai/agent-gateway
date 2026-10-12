@@ -802,6 +802,43 @@ class TestAgentNodeType:
         assert agents[2].kind == "agent"
 
     @staticmethod
+    def test_agent_started_copies_agent_type():
+        """A third-party node carries its provider kind; snapshot and delta expose it."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="ext"))
+        delta = state.apply(_make_progress(
+            "agent_started", phase="P1", label="reviewer",
+            agent_id="main/call:0", node_type="agent", agent_type="codex", model="gpt-5-codex",
+        ))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_type == "codex"
+        assert agent.kind == "agent"
+        assert agent.model == "gpt-5-codex"
+        assert agent.to_dict()["agent_type"] == "codex"
+        assert delta["phases"][0]["agents"][0]["agent_type"] == "codex"
+        assert state.to_workflow_run_dict()["phases"][0]["agents"][0]["agent_type"] == "codex"
+
+    @staticmethod
+    def test_native_agent_omits_agent_type():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="native"))
+        state.apply(_make_progress("agent_started", phase="P1", label="coder", agent_id="main/call:0", node_type="agent"))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_type is None
+        assert "agent_type" not in agent.to_dict()
+
+    @staticmethod
+    def test_resume_reuse_refreshes_agent_type():
+        """Re-emitted agent_started on resume updates the existing node, no duplicate."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="resume"))
+        state.apply(_make_progress("agent_started", phase="P1", label="x", agent_id="main/call:0", node_type="agent"))
+        state.apply(_make_progress("agent_completed", phase="P1", label="x", agent_id="main/call:0", outcome="ok"))
+        state.apply(_make_progress("agent_started", phase="P1", label="x", agent_id="main/call:0", node_type="agent", agent_type="claude"))
+        assert len(state.phases[0].agents) == 1
+        assert state.phases[0].agents[0].agent_type == "claude"
+
+    @staticmethod
     def test_phase_less_node_falls_back_to_unnamed_phase():
         """A node whose event carries no ``phase`` lands on a placeholder phase
         card named "unnamed phase" (replacing the cryptic "?"). All phase-less
