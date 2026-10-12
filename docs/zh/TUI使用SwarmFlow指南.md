@@ -374,6 +374,13 @@ sess = agent_session(label="iter", options={"agent_type": "claude"})
 | Web 展示 | 运行树每个节点行显示头像：三方节点为 CLI 品牌头像，`human` / `human_session` 为人类头像，native 为默认插画；`agent_session` 分组只在分组头显示一个头像；`model` 列显示装配期已知值（池模型 / builtin 名），否则运行中为空、完成后显示 CLI 实际回报的模型 |
 | TUI | `/swarmflows` 查看器不区分三方节点（未适配） |
 
+### Web 展示：工具活动与 run 分组
+
+以下两项为 Web 端节点展示的补充行为，对三方与 native 节点均适用：
+
+- **工具活动（live-only）**：运行中的树状图节点行内提示最近工具名，节点详情面板列出工具活动对（`tool_call` / `tool_result`）；完成轮次后，成员调用列表同步呈现该成员的调用记录（既有链）；活动**仅 live 生效**：缓存命中或续跑回放不重发，整页刷新后树内活动随 checkpoint 恢复。
+- **run 分组**：成员列表、会话缩略图、任务面板按工作流 run 分组展示，组头显示工作流名 + run 短 id + 状态徽标；真实队友与普通任务不受影响。整页刷新后，镜像成员（含已结束 run）随团队快照恢复并保持分组。
+
 ---
 
 ## SwarmFlow 交互式查看器

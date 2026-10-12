@@ -374,6 +374,13 @@ sess = agent_session(label="iter", options={"agent_type": "claude"})
 | Web display | Every node row in the run tree shows an avatar: CLI brand for third-party nodes, the human face for `human` / `human_session`, the default illustration for native; an `agent_session` group shows one avatar on its header only; the `model` column shows known-at-assembly values (pool model / builtin name), otherwise empty while running and the CLI's actually reported model after completion |
 | TUI | The `/swarmflows` viewer does not distinguish third-party nodes (not adapted) |
 
+### Web display: tool activity and run grouping
+
+These two extra Web-side display behaviors apply to all workflow nodes, third-party and native alike:
+
+- **Tool activity (live-only)**: A running tree node shows the latest tool name as an inline hint, the node detail panel lists the tool-activity pairs (`tool_call` / `tool_result`), and once a turn completes the member call list shows that workflow member's call records (existing chain); activity is **live-only** (cache hits and resume replays do not resend it), and after a full page refresh tree activity is restored from the checkpoint.
+- **Run grouping**: The member list, session thumbnails, and task panel are grouped by workflow run; a group header shows the workflow name + short run id + status badge. Real teammates and normal tasks are unaffected. After a full page refresh, mirror members (including finished runs) are restored with the team snapshot and keep their grouping.
+
 ---
 
 ## SwarmFlow Interactive Viewer
