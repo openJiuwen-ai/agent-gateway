@@ -1,4 +1,5 @@
 import type { TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+import type { TeamTask } from '../../stores/sessionStore';
 
 /**
  * SwarmFlow workflow 共享类型与工具函数。
@@ -24,6 +25,12 @@ export interface WorkflowAgentActivity {
   timestamp: string;
   type: 'tool_call' | 'tool_result';
   content: string;
+  /** The invoked tool; set on both call rows and orphan result rows. */
+  tool_name?: string | null;
+  /** Pairs a tool_call row with its result; absent on legacy rows. */
+  tool_call_id?: string | null;
+  /** Paired result preview, filled on the call row when its result arrives. */
+  tool_result_preview?: string | null;
 }
 
 export interface WorkflowBudget {
@@ -593,6 +600,36 @@ export function childPhasesOf(workflow: WorkflowRun, parent: WorkflowPhase): Wor
   return (workflow.phases ?? []).filter(
     (phase) => phase.phase_type === 'child' && phase.parent_phase === parent.name,
   );
+}
+
+// ── 镜像任务 worker 解析 ──────────────────────────────────
+
+/**
+ * workflow phase 任务 → 该 phase 的 workers。
+ *
+ * 镜像 task 的 task_id 是 ``<run_id>:<phase_id>``（后端 _workflow_updated_to_team_events
+ * 构造），workflow_run_id 即 run id——按 phase id 直连 run.phases 是诚实 join。
+ * 同名 worker 去重（循环迭代复用同一 worker，栈上每个 worker 只出现一次）；
+ * phase agents 尚未懒加载（detail_pending）时返回 []，调用方回落旧渲染。
+ */
+export function workflowPhaseWorkers(task: TeamTask, runs: WorkflowRun[]): WorkflowAgent[] {
+  const runId = task.workflow_run_id;
+  if (!runId || !task.task_id) return [];
+  const run = runs.find((candidate) => candidate.id === runId);
+  if (!run) return [];
+  const prefix = `${runId}:`;
+  if (!task.task_id.startsWith(prefix)) return [];
+  const phase = (run.phases ?? []).find((candidate) => candidate.id === task.task_id.slice(prefix.length));
+  if (!phase?.agents) return [];
+  const seen = new Set<string>();
+  const workers: WorkflowAgent[] = [];
+  for (const agent of phase.agents) {
+    const key = agent.member_name ?? agent.name;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    workers.push(agent);
+  }
+  return workers;
 }
 
 // ── 增量合并 ──────────────────────────────────────────────

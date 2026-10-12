@@ -57,6 +57,7 @@ import {
   AgentDetailModal,
   buildDetailSections,
   type AgentModalState,
+  type CallRecordsSource,
   type DetailSectionKey,
 } from './AgentDetailModal';
 
@@ -850,6 +851,7 @@ export function SwarmflowGraphView({
 
   const [modalState, setModalState] = useState<AgentModalState | null>(null);
   const [modalAgentName, setModalAgentName] = useState('');
+  const [callRecordsSource, setCallRecordsSource] = useState<CallRecordsSource | null>(null);
 
   // 统一处理节点点击：agent/session 节点 → waiting_for_human 打开 ask-user，否则打开详情弹窗
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: Node) => {
@@ -884,7 +886,9 @@ export function SwarmflowGraphView({
     // 其它状态：若有输入/输出等内容则打开详情弹窗
     const sections = buildDetailSections(t, agent);
     if (sections.length > 0) {
+      const runId = (node.data?.runId as string) ?? '';
       setModalAgentName(agent.name);
+      setCallRecordsSource({ sessionId, memberId: `${runId}:${agent.id}` });
       setModalState({ sections, activeKey: sections[0].key });
     }
   }, [sessionId, t]);
@@ -912,10 +916,14 @@ export function SwarmflowGraphView({
       <AgentDetailModal
         state={modalState}
         agentName={modalAgentName}
-        onClose={() => setModalState(null)}
+        onClose={() => {
+          setModalState(null);
+          setCallRecordsSource(null);
+        }}
         onTabChange={(key: DetailSectionKey) =>
           setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))
         }
+        callRecordsSource={callRecordsSource}
       />
     </div>
   );
