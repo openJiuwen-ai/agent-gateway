@@ -4119,20 +4119,22 @@ def _workflow_updated_to_team_events(
             if member_id not in spawned_members:
                 spawned_members.add(member_id)
                 seen_agent[member_id] = "running"
-                out.append(
-                    _team_event_envelope(
-                        "team.member",
-                        session_id,
-                        {
-                            "type": "team.member.spawned",
-                            "team_id": team_id,
-                            "member_id": member_id,
-                            "name": agent.get("name") or agent_id,
-                            "status": "busy",
-                            "workflow_run_id": run_id,
-                        },
-                    )
-                )
+                spawned_event: dict[str, Any] = {
+                    "type": "team.member.spawned",
+                    "team_id": team_id,
+                    "member_id": member_id,
+                    "name": agent.get("name") or agent_id,
+                    "status": "busy",
+                    "workflow_run_id": run_id,
+                }
+                # Same identity fields the roster uses for real members, so the
+                # member list resolves the same avatar as the workflow tree.
+                if agent.get("agent_type"):
+                    spawned_event["cli_agent"] = agent["agent_type"]
+                elif agent.get("kind") == "human":
+                    spawned_event["role"] = TeamRole.HUMAN_AGENT.value
+                    spawned_event["mode"] = "human"
+                out.append(_team_event_envelope("team.member", session_id, spawned_event))
 
             if seen_agent.get(member_id) != agent_status:
                 old_status = seen_agent.get(member_id, "busy")

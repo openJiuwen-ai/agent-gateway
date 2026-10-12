@@ -626,7 +626,8 @@ function AgentNode({
             <TeamMemberAvatar
               member={agent.name}
               identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0"
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
               alt={agent.name}
             />
           </>
@@ -646,7 +647,8 @@ function AgentNode({
             <TeamMemberAvatar
               member={agent.name}
               identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0"
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
               alt={agent.name}
             />
           </>

@@ -797,6 +797,8 @@ class WorkflowRunState(BaseModel):
             agent.outcome = outcome
         if error is not None:
             agent.error = error
+        if progress.model:
+            agent.model = progress.model  # the CLI-reported model beats the assembly-time guess
 
         self._bump_completion(phase, progress, agent)
         logger.info(
@@ -884,6 +886,9 @@ class WorkflowRunState(BaseModel):
                 updated = True
             if error is not None and not agent.error:
                 agent.error = error
+                updated = True
+            if progress.model and not agent.model:
+                agent.model = progress.model
                 updated = True
             if updated:
                 if progress.tokens is not None:
