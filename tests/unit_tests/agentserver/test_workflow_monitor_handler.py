@@ -798,3 +798,125 @@ class TestStopRun:
         assert await handler.stop_run("wf_live") is False
         assert live.status == "running"
         assert handler._event_queue.empty()
+
+
+# ---------------------------------------------------------------------------
+# agent_activity batching — activity-only deltas coalesce per run in a window
+# ---------------------------------------------------------------------------
+
+async def _drain_events(
+    handler: WorkflowMonitorHandler,
+    collected: list[dict[str, Any]],
+) -> None:
+    """Drain handler.events() into ``collected`` until the stop sentinel."""
+    async for item in handler.events():
+        collected.append(item)
+
+
+class TestWorkflowActivityBatching:
+    """Activity-only deltas coalesce per run in a 300ms window; a non-activity
+    delta flushes the pending buffer immediately (merged into its own push).
+    """
+
+    @staticmethod
+    def _start_flow(monitor: _FakeTeamMonitor) -> None:
+        monitor.put_event(_FakeRawEvent(kind="workflow_started", workflow_name="flow"))
+        monitor.put_event(_FakeRawEvent(kind="agent_started", phase="p", label="x", agent_id="a1"))
+
+    @pytest.mark.anyio
+    async def test_activity_deltas_in_window_coalesce_into_one_push(
+        self, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(WorkflowMonitorHandler, "_ACTIVITY_BATCH_WINDOW_SEC", 0.05)
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+        await handler.start()
+        collected: list[dict[str, Any]] = []
+        consumer = asyncio.create_task(_drain_events(handler, collected))
+        self._start_flow(monitor)
+        for i in range(3):
+            monitor.put_event(_FakeRawEvent(
+                kind="agent_activity", phase="p", label="x", agent_id="a1",
+                activity_type="tool_call", tool_call_id=f"t{i}", tool_name="bash",
+                content=f"call {i}",
+            ))
+        await monitor.drain()
+        # Let the 300ms window close so the flush task pushes the merged delta.
+        await asyncio.sleep(0.15)
+        await handler.stop()
+        await consumer
+
+        # started + agent_started + ONE merged activity push — not three.
+        assert len(collected) == 3
+        activity_push = collected[-1]["workflow"]
+        agent = activity_push["phases"][0]["agents"][0]
+        assert [a["tool_call_id"] for a in agent["activity"]] == ["t0", "t1", "t2"]
+        assert [a["content"] for a in agent["activity"]] == ["call 0", "call 1", "call 2"]
+
+    @pytest.mark.anyio
+    async def test_status_delta_flushes_pending_activity_immediately(
+        self, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(WorkflowMonitorHandler, "_ACTIVITY_BATCH_WINDOW_SEC", 60)
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+        await handler.start()
+        collected: list[dict[str, Any]] = []
+        consumer = asyncio.create_task(_drain_events(handler, collected))
+        self._start_flow(monitor)
+        monitor.put_event(_FakeRawEvent(
+            kind="agent_activity", phase="p", label="x", agent_id="a1",
+            activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+        ))
+        monitor.put_event(_FakeRawEvent(
+            kind="agent_completed", phase="p", label="x", agent_id="a1", outcome="ok",
+        ))
+        await monitor.drain()
+        await asyncio.sleep(0.05)  # let the collect task reach the completion
+        await handler.stop()
+        await consumer
+
+        # started + agent_started + completion push carrying the buffered activity.
+        assert len(collected) == 3
+        completion = collected[-1]["workflow"]
+        agent = completion["phases"][0]["agents"][0]
+        assert agent["status"] == "completed"
+        assert agent["outcome"] == "ok"
+        assert [a["tool_call_id"] for a in agent["activity"]] == ["t1"]
+
+    @pytest.mark.anyio
+    async def test_activity_batching_is_per_run(self, monkeypatch) -> None:
+        monkeypatch.setattr(WorkflowMonitorHandler, "_ACTIVITY_BATCH_WINDOW_SEC", 0.05)
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+        await handler.start()
+        collected: list[dict[str, Any]] = []
+        consumer = asyncio.create_task(_drain_events(handler, collected))
+        for run_id, label in (("r1", "a"), ("r2", "b")):
+            monitor.put_event(_FakeRawEvent(
+                kind="workflow_started", run_id=run_id, workflow_name=f"flow-{run_id}",
+            ))
+            monitor.put_event(_FakeRawEvent(
+                kind="agent_started", run_id=run_id, phase="p", label=label, agent_id=f"{run_id}-1",
+            ))
+            monitor.put_event(_FakeRawEvent(
+                kind="agent_activity", run_id=run_id, phase="p", label=label,
+                agent_id=f"{run_id}-1",
+                activity_type="tool_call", tool_call_id="t1", tool_name="bash", content=run_id,
+            ))
+        await monitor.drain()
+        await asyncio.sleep(0.15)
+        await handler.stop()
+        await consumer
+
+        # One merged activity push per run — buffers never cross runs.
+        activity_pushes = [
+            e for e in collected
+            if any(a.get("activity") for ph in e["workflow"].get("phases", []) for a in ph.get("agents", []))
+        ]
+        assert len(activity_pushes) == 2
+        by_run = {e["workflow"]["id"]: e["workflow"] for e in activity_pushes}
+        assert {run: by_run[run]["phases"][0]["agents"][0]["activity"][0]["content"] for run in ("r1", "r2")} == {
+            "r1": "r1", "r2": "r2",
+        }
+
