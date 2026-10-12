@@ -369,8 +369,9 @@ sess = agent_session(label="iter", options={"agent_type": "claude"})
 | 会话记忆 | `agent_session` 的记忆按 **run** 隔离：同一 run 续跑找回上下文；同脚本全新 run 从零开始 |
 | fork | 三方 `agent_session` 的 `fork()` 只支持 `full` / `before`（走 CLI 原生分支：Claude 离线复制转写、Codex `thread/fork`）；`after` 与两种 compact 模式直接报错。`before` 的 `keep_rounds` 越界或该轮无标记**直接报错，不降级为 full**；子会话与父会话必须同一 `agent_type`。凭据不写入 journal：续跑时脚本重跑 `fork()`，子会话已有自己指针时直接续接、不产生第二条分支 |
 | 结构化输出 | `schema=` 走"提示词约束 + JSON 解析"；CLI 未按要求返回 JSON 时与 native 未提交同语义（重试后返回 `None`） |
+| 模型 | `model` 命中团队模型池且协议兼容（Claude ↔ Anthropic 协议条目，Codex ↔ 其他）→ CLI 走池端点；`builtin_model` 命中该 CLI 声明的内置目录 → 用 CLI 自带登录跑该型号（可配 `effort`，缺省取默认档）；两者互斥、都不填则用 CLI 自带登录的默认模型。校验失败（不在池 / 不在目录 / 互斥 / effort 越档）发射前报错并列出可用清单——**无兜底**：CLI 登录失效等环境错误会以 `AGENT_FAILED` 呈现（文案含根因与"加 `model=` 绕行"建议），修改脚本后重跑即可（已缓存节点不会重算）。注意：旧文档中"`model` 直接传 CLI 原生模型名"的用法已移除，请改用 `builtin_model`（需在设置里声明内置目录）。 |
 | 预算 | 三方轮次在轮末计入 Team / run 两本账；最坏超支一个轮次 |
-| Web 展示 | 运行树每个节点行显示头像：三方节点为 CLI 品牌头像，`human` / `human_session` 为人类头像，native 为默认插画；`agent_session` 分组只在分组头显示一个头像；`model` 列显示三方实际模型名 |
+| Web 展示 | 运行树每个节点行显示头像：三方节点为 CLI 品牌头像，`human` / `human_session` 为人类头像，native 为默认插画；`agent_session` 分组只在分组头显示一个头像；`model` 列显示装配期已知值（池模型 / builtin 名），否则运行中为空、完成后显示 CLI 实际回报的模型 |
 | TUI | `/swarmflows` 查看器不区分三方节点（未适配） |
 
 ---
