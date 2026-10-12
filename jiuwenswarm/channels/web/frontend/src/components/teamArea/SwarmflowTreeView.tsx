@@ -46,6 +46,7 @@ import {
   computeLoopStatus,
   computeSessionStatus,
   findActiveIterationIndex,
+  workflowAgentIdentity,
   isForkSessionNode,
   forkParentDisplay,
   parseVerifyOutcome,
@@ -68,6 +69,7 @@ import {
   type AgentModalState,
   type DetailSection,
 } from './AgentDetailModal';
+import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
@@ -621,6 +623,12 @@ function AgentNode({
             >
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
+            <TeamMemberAvatar
+              member={agent.name}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0"
+              alt={agent.name}
+            />
           </>
         ) : (
           <>
@@ -635,6 +643,12 @@ function AgentNode({
                 {roleTag}
               </span>
             )}
+            <TeamMemberAvatar
+              member={agent.name}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0"
+              alt={agent.name}
+            />
           </>
         )}
         <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>

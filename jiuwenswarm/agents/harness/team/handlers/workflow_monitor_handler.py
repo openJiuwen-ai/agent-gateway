@@ -281,6 +281,7 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 correlation_id=getattr(payload, "correlation_id", None),
                 node_type=getattr(payload, "node_type", None),
                 agent_id=getattr(payload, "agent_id", None),
+                agent_type=getattr(payload, "agent_type", None),
                 answer=getattr(payload, "answer", None),
                 tokens=getattr(payload, "tokens", None),
                 budget=getattr(payload, "budget", None),

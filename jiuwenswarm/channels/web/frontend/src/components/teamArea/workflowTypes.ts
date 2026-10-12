@@ -1,3 +1,5 @@
+import type { TeamMemberIdentity } from '../../utils/teamMemberAvatar';
+
 /**
  * SwarmFlow workflow 共享类型与工具函数。
  *
@@ -127,6 +129,8 @@ export interface WorkflowAgent {
   duration_ms?: number | null;
   kind?: 'agent' | 'human';
   node_type?: WorkflowNodeType;
+  /** External provider kind on third-party nodes ("claude" | "codex"); absent for native workers. */
+  agent_type?: string;
   correlation_id?: string;
   /**
    * Fork child (node_type=agent_session_fork): parent session's avatar member
@@ -340,6 +344,19 @@ export function verifyRoundText(
   if (group.verdict === 'pass') return t('swarmflow.verifyPass');
   if (group.verdict === 'fail') return t('swarmflow.verifyFail');
   return t('swarmflow.verifyUndecided');
+}
+
+/**
+ * 节点身份 → 头像身份：三方节点认 CLI 品牌脸，人类节点认人类脸，
+ * native 节点给空身份，只按名字哈希取插画，不回落名册。
+ * agent_type 优先于 kind：三方节点永远不是人。
+ */
+export function workflowAgentIdentity(
+  agent: Pick<WorkflowAgent, 'agent_type' | 'kind'>,
+): TeamMemberIdentity {
+  if (agent.agent_type) return { cliAgent: agent.agent_type };
+  if (agent.kind === 'human') return { role: 'human_agent' };
+  return {};
 }
 
 export function sessionGroupKey(

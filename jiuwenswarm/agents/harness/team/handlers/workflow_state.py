@@ -60,6 +60,8 @@ class WorkflowProgress(BaseModel):
                            sole source of node kind — kind derives:
                            node_type in {human, human_session} -> human)
       agent_id       -> agent_id  (AGENT_*: deterministic resume-stable node id)
+      agent_type     -> agent_type  (AGENT_STARTED: external provider kind
+                           claude/codex; None for native workers)
       answer         -> answer  (HUMAN_REPLIED: the person's raw reply text)
 
     """
@@ -81,6 +83,8 @@ class WorkflowProgress(BaseModel):
     correlation_id: Optional[str] = None
     node_type: Optional[str] = None
     agent_id: Optional[str] = None
+    # AGENT_STARTED: external provider kind (claude / codex); None for native workers.
+    agent_type: Optional[str] = None
     answer: Optional[str] = None
     tokens: Optional[int] = None
     budget: Optional[dict] = None
@@ -184,6 +188,7 @@ class WorkflowAgentState(BaseModel):
     duration_ms: Optional[int] = None
     kind: str = "agent"  # "agent" | "human" — derived: node_type in {"human","human_session"} -> "human"
     node_type: Optional[str] = None
+    agent_type: Optional[str] = None  # "claude" | "codex" | None (native)
     correlation_id: Optional[str] = None
     # Fork child (node_type=agent_session_fork): the parent session's avatar
     # member name (unique per session), carried on every AGENT_STARTED turn so
@@ -1332,6 +1337,7 @@ class WorkflowRunState(BaseModel):
                 correlation_id=progress.correlation_id,
                 parent_session_id=progress.parent_session_id,
                 member_name=progress.member_name,
+                agent_type=progress.agent_type,
             )
 
         def _reuse_existing(existing: WorkflowAgentState) -> None:
@@ -1347,6 +1353,7 @@ class WorkflowRunState(BaseModel):
             existing.status = "running"
             existing.prompt = progress.prompt
             existing.model = progress.model
+            existing.agent_type = progress.agent_type
             existing.parent_session_id = progress.parent_session_id
             existing.member_name = progress.member_name
             existing.completed_at = None
