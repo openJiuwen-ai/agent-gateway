@@ -158,13 +158,14 @@ jiuwenswarm-tui
 
 运行时配置文件：`~/.jiuwenswarm/config/config.yaml`（由 `jiuwenswarm-init` 从 **`jiuwenswarm/resources/config.yaml`** 初始化）。
 
-SwarmFlow 仅涉及 `modes.team.jiuwen_team` 下两项（仓库模板原文如下）：
+SwarmFlow 仅涉及 `modes.team.jiuwen_team` 下三项（仓库模板原文如下）：
 
 ```yaml
 modes:
   team:
     jiuwen_team:
       enable_swarmflow: false
+      swarmflow_progressive_tool: false
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -176,6 +177,7 @@ modes:
 |------|------|--------|
 | `enable_swarmflow` | 为 `true` 时 Leader 可调用 `swarmflow()` 启动工作流；为 `false` 时即使 `/mode team` 也**不会**跑 SwarmFlow | `false` |
 | `swarmflow_budget` | Leader 级 token 上限，本 Team 下所有 run **共享**；脚本内 `budget.total` / `spent()` / `remaining()` 可读。设为**正整数**启用上限；**未设置或 `null`** 表示无硬上限 | 未设置（模板中为注释） |
+| `swarmflow_progressive_tool` | Worker 渐进式工具暴露（`tool_search` 按需检索工具）；仅 `enable_swarmflow: true` 时生效；不与单 Agent 的 `progressive_tool_enabled` 共用；**只能改 `config.yaml`**，前端与 `/swarmflow` 命令不提供开关 | `false` |
 
 出厂模板默认 **关闭** SwarmFlow（`enable_swarmflow: false`），首次使用请在下列途径之一将其打开。
 
@@ -183,7 +185,7 @@ modes:
 
 | 途径 | 适用项 | 做法 | 生效方式 |
 |------|--------|------|----------|
-| **1. 编辑 `config.yaml`** | `enable_swarmflow`、`swarmflow_budget` | 修改 `~/.jiuwenswarm/config/config.yaml` 中 `modes.team.jiuwen_team` 对应字段 | **重启后端服务**后全局生效 |
+| **1. 编辑 `config.yaml`** | `enable_swarmflow`、`swarmflow_budget`、`swarmflow_progressive_tool` | 修改 `~/.jiuwenswarm/config/config.yaml` 中 `modes.team.jiuwen_team` 对应字段 | **重启后端服务**后全局生效 |
 | **2. Web 前端** | 仅 `enable_swarmflow` | 进入 **更多 → 配置信息 → 其他配置 → SwarmFlow**，勾选「启用 SwarmFlow」开关（**集群模式**；前端**不暴露** `swarmflow_budget`，预算须改 `config.yaml` 或用 TUI `/swarmflow on --budget`） | **不支持热更新**：保存后需**新建会话**（新开聊天或等价操作）才生效；正在跑的 workflow 不会被中断 |
 | **3. TUI `/swarmflow`** | `enable_swarmflow`；`swarmflow_budget` 可用 `on --budget` | `/swarmflow on` / `off` 开关；`/swarmflow on --budget <tokens\|none>` 改预算；`/swarmflow` 查询状态 | 写入配置后提示 **`Use /new to apply.`** — 当前 session 不热更新，执行 **`/new`** 新建 session 后生效 |
 

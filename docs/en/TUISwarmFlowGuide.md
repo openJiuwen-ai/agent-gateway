@@ -160,13 +160,14 @@ On first use, you need to set up the model API in the configuration. You can do 
 
 Runtime config: `~/.jiuwenswarm/config/config.yaml` (initialized by `jiuwenswarm-init` from **`jiuwenswarm/resources/config.yaml`**).
 
-SwarmFlow uses only two fields under `modes.team.jiuwen_team` (excerpt from the repo template):
+SwarmFlow uses only three fields under `modes.team.jiuwen_team` (excerpt from the repo template):
 
 ```yaml
 modes:
   team:
     jiuwen_team:
       enable_swarmflow: false
+      swarmflow_progressive_tool: false
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -178,6 +179,7 @@ modes:
 |-------|-------------|---------|
 | `enable_swarmflow` | When `true`, the Leader may call `swarmflow()` to start runs; when `false`, SwarmFlow **does not** run even in `/mode team` | `false` |
 | `swarmflow_budget` | Leader-level token cap shared by **all** runs in this team; readable in scripts via `budget.total` / `spent()` / `remaining()`. A **positive integer** sets a cap; **unset or `null`** means unbounded | unset (commented in template) |
+| `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; independent of the single-agent `progressive_tool_enabled`; **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
 
 The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). Enable it via one of the paths below on first use.
 
@@ -185,7 +187,7 @@ The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). 
 
 | Path | Fields | How | When it takes effect |
 |------|--------|-----|----------------------|
-| **1. Edit `config.yaml`** | `enable_swarmflow`, `swarmflow_budget` | Edit `modes.team.jiuwen_team` in `~/.jiuwenswarm/config/config.yaml` | **Restart the backend** for global effect |
+| **1. Edit `config.yaml`** | `enable_swarmflow`, `swarmflow_budget`, `swarmflow_progressive_tool` | Edit `modes.team.jiuwen_team` in `~/.jiuwenswarm/config/config.yaml` | **Restart the backend** for global effect |
 | **2. Web UI** | `enable_swarmflow` only | Go to **More → Configuration Info → Other Config → SwarmFlow** and toggle on "Enable SwarmFlow" (**cluster mode**; the Web UI does **not** expose `swarmflow_budget` — set the budget via `config.yaml` or TUI `/swarmflow on --budget`) | **No hot reload**: after saving, **start a new session** (new chat or equivalent); active workflows are not interrupted |
 | **3. TUI `/swarmflow`** | `enable_swarmflow`; budget via `on --budget` | `/swarmflow on` / `off`; `/swarmflow on --budget <tokens\|none>`; `/swarmflow` to query | Writes config, then **`Use /new to apply.`** — current session is not hot-reloaded; run **`/new`** for a fresh session |
 
