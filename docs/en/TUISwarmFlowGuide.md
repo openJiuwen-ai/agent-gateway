@@ -69,6 +69,8 @@ Supported on `agent()`, `human()`, and `agent_session()` / `human_session()` via
 | `timeout` | `agent` / `human` | Timeout in seconds: backend call for `agent`; wait-for-human for `human` |
 | `isolation` | `agent` | Only `'worktree'`: run worker in an isolated git worktree (parallel file edits; costly) |
 | `agent_type` | `agent` / `agent_session` | Hand the node to a third-party CLI agent (`'claude'` / `'codex'`, must be on the team's third-party agent allowlist); composable with `schema`, see "Third-party agents" below |
+| `builtin_model` | `agent` / `agent_session` | Third-party nodes only: run a model from the CLI's declared built-in catalog on its own login; mutually exclusive with `model`, see "Third-party agents → Model" below |
+| `effort` | `agent` / `agent_session` | Third-party nodes only, and only alongside `builtin_model`: reasoning effort tier, must be one the model declares; omit for the default tier |
 
 Example:
 
@@ -160,7 +162,7 @@ On first use, you need to set up the model API in the configuration. You can do 
 
 Runtime config: `~/.jiuwenswarm/config/config.yaml` (initialized by `jiuwenswarm-init` from **`jiuwenswarm/resources/config.yaml`**).
 
-SwarmFlow uses only three fields under `modes.team.jiuwen_team` (excerpt from the repo template):
+SwarmFlow involves four fields under `modes.team.jiuwen_team` (excerpt from the repo template; keys unrelated to SwarmFlow such as `external_transport` are omitted):
 
 ```yaml
 modes:
@@ -168,6 +170,7 @@ modes:
     jiuwen_team:
       enable_swarmflow: false
       swarmflow_progressive_tool: false
+      external_cli_agents: []
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -180,6 +183,7 @@ modes:
 | `enable_swarmflow` | When `true`, the Leader may call `swarmflow()` to start runs; when `false`, SwarmFlow **does not** run even in `/mode team` | `false` |
 | `swarmflow_budget` | Leader-level token cap shared by **all** runs in this team; readable in scripts via `budget.total` / `spent()` / `remaining()`. A **positive integer** sets a cap; **unset or `null`** means unbounded | unset (commented in template) |
 | `swarmflow_progressive_tool` | Progressive tool exposure for workers (`tool_search` fetches tools on demand); only effective when `enable_swarmflow: true`; independent of the single-agent `progressive_tool_enabled`; **config.yaml only** — no Web toggle, no `/swarmflow` flag | `false` |
+| `external_cli_agents` | Third-party CLI member declarations (`claude` / `codex`); doubles as the allowlist for the script's `agent_type` — an undeclared backend cannot be dispatched by a workflow; the Web "Third-Party Agents" setting edits this field | `[]` |
 
 The shipped template defaults SwarmFlow to **off** (`enable_swarmflow: false`). Enable it via one of the paths below on first use.
 

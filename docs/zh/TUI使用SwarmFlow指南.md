@@ -69,6 +69,8 @@
 | `timeout` | `agent` / `human` | 超时（秒）：`agent` 为单次 backend 调用；`human` 为等待真人回复 |
 | `isolation` | `agent` | 仅支持 `'worktree'`：在独立 git worktree 中跑 worker（并行改文件防冲突，开销较大） |
 | `agent_type` | `agent` / `agent_session` | 把节点派给三方 CLI Agent（`'claude'` / `'codex'`，须在团队三方 Agent 白名单内）；与 `schema` 可组合，详见下文「三方 Agent」 |
+| `builtin_model` | `agent` / `agent_session` | 仅三方节点：用 CLI 自带登录跑其内置目录中的型号；与 `model` 互斥，详见下文「三方 Agent → 模型」 |
+| `effort` | `agent` / `agent_session` | 仅三方节点且伴随 `builtin_model`：推理强度档位，须在该型号声明的档位内；缺省取默认档 |
 
 示例：
 
@@ -158,7 +160,7 @@ jiuwenswarm-tui
 
 运行时配置文件：`~/.jiuwenswarm/config/config.yaml`（由 `jiuwenswarm-init` 从 **`jiuwenswarm/resources/config.yaml`** 初始化）。
 
-SwarmFlow 仅涉及 `modes.team.jiuwen_team` 下三项（仓库模板原文如下）：
+SwarmFlow 涉及 `modes.team.jiuwen_team` 下四个字段（仓库模板节选，`external_transport` 等与 SwarmFlow 无关的键已省略）：
 
 ```yaml
 modes:
@@ -166,6 +168,7 @@ modes:
     jiuwen_team:
       enable_swarmflow: false
       swarmflow_progressive_tool: false
+      external_cli_agents: []
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -178,6 +181,7 @@ modes:
 | `enable_swarmflow` | 为 `true` 时 Leader 可调用 `swarmflow()` 启动工作流；为 `false` 时即使 `/mode team` 也**不会**跑 SwarmFlow | `false` |
 | `swarmflow_budget` | Leader 级 token 上限，本 Team 下所有 run **共享**；脚本内 `budget.total` / `spent()` / `remaining()` 可读。设为**正整数**启用上限；**未设置或 `null`** 表示无硬上限 | 未设置（模板中为注释） |
 | `swarmflow_progressive_tool` | Worker 渐进式工具暴露（`tool_search` 按需检索工具）；仅 `enable_swarmflow: true` 时生效；不与单 Agent 的 `progressive_tool_enabled` 共用；**只能改 `config.yaml`**，前端与 `/swarmflow` 命令不提供开关 | `false` |
+| `external_cli_agents` | 三方 CLI 成员声明（`claude` / `codex`），同时是脚本 `agent_type` 的白名单——未声明的后端不能被工作流派活；Web 设置「三方 Agent」即改此项 | `[]` |
 
 出厂模板默认 **关闭** SwarmFlow（`enable_swarmflow: false`），首次使用请在下列途径之一将其打开。
 
