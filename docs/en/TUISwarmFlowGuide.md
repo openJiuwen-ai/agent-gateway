@@ -68,7 +68,7 @@ Supported on `agent()`, `human()`, and `agent_session()` / `human_session()` via
 | `model` | `agent` / `agent_session` | Override this worker's model name; **omit by default** to inherit teammate model |
 | `timeout` | `agent` / `human` | Timeout in seconds: backend call for `agent`; wait-for-human for `human` |
 | `isolation` | `agent` | Only `'worktree'`: run worker in an isolated git worktree (parallel file edits; costly) |
-| `agent_type` | `agent` | Use a named expert subagent instead of the default worker (composable with `schema`) |
+| `agent_type` | `agent` / `agent_session` | Hand the node to a third-party CLI agent (`'claude'` / `'codex'`, must be on the team's third-party agent allowlist); composable with `schema`, see "Third-party agents" below |
 
 Example:
 
@@ -348,6 +348,30 @@ When the script uses `human` / `human_session`, nodes enter **`waiting_for_human
 | **`/swarmflow` / `on` / `off`** | Toggle SwarmFlow, query status |
 | **`/swarmflows`** | Full-screen run tree |
 | **`h`** | Pending human replies on the main view |
+
+---
+
+## Third-party agents (Claude Code / Codex)
+
+> **Prerequisite**: requires an agent-core build that includes swarmflow third-party agent support (`agent()` consumes `agent_type`). On an older engine `agent_type` is silently ignored and the node runs as a native worker with no error — this section only takes effect after the `openjiuwen` dependency is upgraded.
+
+A script can hand a single node to an external CLI agent:
+
+```python
+result = await agent("review this diff", label="review",
+                     options={"agent_type": "codex", "model": "gpt-5-codex"})
+sess = agent_session(label="iter", options={"agent_type": "claude"})
+```
+
+| Topic | Notes |
+|-------|-------|
+| Allow-list | `agent_type` must be an engine-supported SDK backend (`claude` / `codex`) **and** declared in this team's `modes.team.<team>.external_cli_agents` (Web: Settings → Experimental → Third-Party Agents (Team mode only)). Otherwise the node fails immediately and the error lists both sets |
+| Session memory | `agent_session` memory is scoped per **run**: resuming the same run restores context; a fresh run of the same script starts empty |
+| fork | `fork()` on a third-party `agent_session` supports only `full` / `before` (CLI-native branching: Claude copies the transcript offline, Codex uses `thread/fork`); `after` and both compact modes raise. For `before`, an out-of-range `keep_rounds` or a round without a marker **raises instead of degrading to full**; child and parent must share the same `agent_type`. Credentials are not journaled: on resume the script re-runs `fork()`, and a child that already persisted its own pointer resumes it without creating a second branch |
+| Structured output | `schema=` uses a prompt instruction plus JSON parsing; a CLI that does not return JSON behaves like a native worker that never submitted (retries, then `None`) |
+| Budget | Third-party turns are billed to the Team / run ledgers at turn end; worst case one turn of overrun |
+| Web display | Every node row in the run tree shows an avatar: CLI brand for third-party nodes, the human face for `human` / `human_session`, the default illustration for native; an `agent_session` group shows one avatar on its header only; the `model` column shows the third-party model actually used |
+| TUI | The `/swarmflows` viewer does not distinguish third-party nodes (not adapted) |
 
 ---
 

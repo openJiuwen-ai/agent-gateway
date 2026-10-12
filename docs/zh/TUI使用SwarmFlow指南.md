@@ -68,7 +68,7 @@
 | `model` | `agent` / `agent_session` | 覆盖本次 worker 的模型名；**默认省略**，继承团队 teammate 模型 |
 | `timeout` | `agent` / `human` | 超时（秒）：`agent` 为单次 backend 调用；`human` 为等待真人回复 |
 | `isolation` | `agent` | 仅支持 `'worktree'`：在独立 git worktree 中跑 worker（并行改文件防冲突，开销较大） |
-| `agent_type` | `agent` | 用具名专家 subagent 替代默认 worker（与 `schema` 可组合） |
+| `agent_type` | `agent` / `agent_session` | 把节点派给三方 CLI Agent（`'claude'` / `'codex'`，须在团队三方 Agent 白名单内）；与 `schema` 可组合，详见下文「三方 Agent」 |
 
 示例：
 
@@ -348,6 +348,30 @@ Leader Agent 会：
 | **`/swarmflow` / `on` / `off`** | 开关 SwarmFlow、查状态 |
 | **`/swarmflows`** | 全屏查看运行树 |
 | **`h`** | 主界面 pending 人工回复列表 |
+
+---
+
+## 三方 Agent（Claude Code / Codex）
+
+> **前置条件**：需要 agent-core 已包含 swarmflow 三方 Agent 支持（`agent()` 消费 `agent_type`）。若后端引擎版本较旧，`agent_type` 会被静默忽略、节点按 native worker 执行，且不会报错——升级 `openjiuwen` 依赖后本节功能才生效。
+
+脚本可把单个节点派给外部 CLI Agent：
+
+```python
+result = await agent("审查这段 diff", label="review",
+                     options={"agent_type": "codex", "model": "gpt-5-codex"})
+sess = agent_session(label="iter", options={"agent_type": "claude"})
+```
+
+| 要点 | 说明 |
+|------|------|
+| 白名单 | `agent_type` 必须同时是引擎支持的 SDK 后端（`claude` / `codex`）**且**在本团队 `modes.team.<team>.external_cli_agents` 中已声明（Web：设置 → 实验功能 → 三方 Agent（仅集群模式））。不满足时该节点直接失败，错误里给出两个名单 |
+| 会话记忆 | `agent_session` 的记忆按 **run** 隔离：同一 run 续跑找回上下文；同脚本全新 run 从零开始 |
+| fork | 三方 `agent_session` 的 `fork()` 只支持 `full` / `before`（走 CLI 原生分支：Claude 离线复制转写、Codex `thread/fork`）；`after` 与两种 compact 模式直接报错。`before` 的 `keep_rounds` 越界或该轮无标记**直接报错，不降级为 full**；子会话与父会话必须同一 `agent_type`。凭据不写入 journal：续跑时脚本重跑 `fork()`，子会话已有自己指针时直接续接、不产生第二条分支 |
+| 结构化输出 | `schema=` 走"提示词约束 + JSON 解析"；CLI 未按要求返回 JSON 时与 native 未提交同语义（重试后返回 `None`） |
+| 预算 | 三方轮次在轮末计入 Team / run 两本账；最坏超支一个轮次 |
+| Web 展示 | 运行树每个节点行显示头像：三方节点为 CLI 品牌头像，`human` / `human_session` 为人类头像，native 为默认插画；`agent_session` 分组只在分组头显示一个头像；`model` 列显示三方实际模型名 |
+| TUI | `/swarmflows` 查看器不区分三方节点（未适配） |
 
 ---
 
