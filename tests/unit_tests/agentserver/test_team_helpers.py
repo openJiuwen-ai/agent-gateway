@@ -6450,6 +6450,45 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
     assert "team.member.status_changed" not in types
 
 
+def test_workflow_updated_to_team_events_spawned_member_carries_node_identity():
+    """The roster mirror must resolve to the same avatar as the workflow tree:
+    third-party nodes carry ``cli_agent``, human nodes carry the human role."""
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event(
+            [
+                {
+                    "id": "impl-1",
+                    "name": "impl",
+                    "status": "running",
+                    "agents": [
+                        {"id": "a-codex", "name": "impl:codex", "status": "running",
+                         "agent_type": "codex", "kind": "agent"},
+                        {"id": "a-gate", "name": "gate", "status": "running",
+                         "kind": "human", "node_type": "human"},
+                        {"id": "a-native", "name": "impl:native", "status": "running",
+                         "kind": "agent"},
+                    ],
+                }
+            ]
+        ),
+        "sess-wf",
+        seen_phase,
+        seen_agent,
+        spawned,
+    )
+    spawned_events = {e["event"]["member_id"]: e["event"] for e in out if e["event"]["type"] == "team.member.spawned"}
+    codex = spawned_events["run-1:a-codex"]
+    assert codex["cli_agent"] == "codex"
+    assert "role" not in codex
+    gate = spawned_events["run-1:a-gate"]
+    assert gate["role"] == "human_agent"
+    assert gate["mode"] == "human"
+    assert "cli_agent" not in gate
+    native = spawned_events["run-1:a-native"]
+    assert "cli_agent" not in native and "role" not in native
+
+
 def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
     seen_phase, seen_agent, spawned = {}, {}, set()
     phases = [

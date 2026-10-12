@@ -291,6 +291,81 @@ class TestWorkflowRunStateLifecycle:
         assert state.phases[1].agents[0].name == "alice-vote"
         assert state.agent_count == 3
 
+    @staticmethod
+    def test_agent_completed_model_overwrites_the_started_value():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="claude-one", agent_type="claude", model=None))
+        assert state.phases[0].agents[0].model is None
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-5.3"))
+        assert state.phases[0].agents[0].model == "GLM-5.3"
+
+    @staticmethod
+    def test_agent_completed_without_model_keeps_the_existing_value():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="codex-one", agent_type="codex", model="gpt-5-codex"))
+        assert state.phases[0].agents[0].model == "gpt-5-codex"
+        state.apply(_make_progress("agent_completed", phase="impl", label="codex-one", outcome="OK"))
+        assert state.phases[0].agents[0].model == "gpt-5-codex"
+
+    @staticmethod
+    def test_agent_failed_model_overwrites_too():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="deepseek-one", agent_type="deepseek", model=None))
+        assert state.phases[0].agents[0].model is None
+        state.apply(_make_progress("agent_failed", phase="impl", label="deepseek-one", model="deepseek-v4-flash"))
+        assert state.phases[0].agents[0].model == "deepseek-v4-flash"
+
+    @staticmethod
+    def test_late_duplicate_completed_backfills_model_when_missing():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="test"))
+        state.apply(_make_progress("phase", phase="impl"))
+        state.apply(_make_progress("agent_started", phase="impl", label="claude-one", agent_type="claude", model=None))
+        # First completion is bare (no model, no outcome): a phase seal / teardown
+        # stamps a node completed before its real completion arrives, so the late
+        # duplicate resolves through the sealed-outcome backfill locator.
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one"))
+        agent = state.phases[0].agents[0]
+        assert agent.model is None
+        assert agent.outcome is None
+        # Late duplicate carries the CLI-reported model + outcome — fills both.
+        delta = state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-5.3"))
+        assert agent.model == "GLM-5.3"
+        assert agent.outcome == "OK"
+        assert delta is not None  # the fill must be pushed, not silently stored
+        # A later duplicate must never clobber the filled value.
+        state.apply(_make_progress("agent_completed", phase="impl", label="claude-one", outcome="OK", model="GLM-6.0"))
+        assert agent.model == "GLM-5.3"
+
+    @staticmethod
+    def test_session_turn_reports_refresh_the_session_model():
+        """agent_session turns each carry their own CLI-reported model on their
+        own row; the session's group header (latest turn) reflects the newest."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="sess"))
+        for n, model in (("1", "claude-sonnet-4-5"), ("2", "claude-opus-5")):
+            state.apply(_make_progress(
+                "agent_started", phase="review", label="chat",
+                agent_id=f"main/call:{n}", node_type="agent_session",
+                correlation_id=f"review:chat:{n}",
+            ))
+            state.apply(_make_progress(
+                "agent_completed", phase="review", label="chat",
+                agent_id=f"main/call:{n}", correlation_id=f"review:chat:{n}",
+                outcome="ok", model=model,
+            ))
+        a0, a1 = state.phases[0].agents
+        assert a0.model == "claude-sonnet-4-5"
+        assert a1.model == "claude-opus-5"
+        # the group header (latest turn row) reflects the newest model
+        assert state.phases[0].agents[-1].model == "claude-opus-5"
+
 
 class TestWorkflowRunStateDelta:
     """Verify delta only contains changed phase/agent objects."""
