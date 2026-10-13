@@ -1020,6 +1020,37 @@ class TestAgentNodeType:
         assert state.to_workflow_run_dict()["phases"][0]["agents"][0]["agent_type"] == "codex"
 
     @staticmethod
+    def test_agent_started_copies_agent_template_and_display_name():
+        """An expert node carries its member name + display name; delta and snapshot expose both;
+        a plain node omits both (exclude_none)."""
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="design"))
+        delta = state.apply(_make_progress(
+            "agent_started", phase="镜头", label="clip_3",
+            agent_id="main/call:0", node_type="agent",
+            agent_template="clip", display_name="视频镜头师",
+        ))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_template == "clip" and agent.display_name == "视频镜头师"
+        assert delta["phases"][0]["agents"][0]["display_name"] == "视频镜头师"
+        assert state.to_workflow_run_dict()["phases"][0]["agents"][0]["agent_template"] == "clip"
+        state.apply(_make_progress("agent_started", phase="镜头", label="plain", agent_id="main/call:1", node_type="agent"))
+        plain = state.phases[0].agents[1].to_dict()
+        assert "agent_template" not in plain and "display_name" not in plain
+
+    @staticmethod
+    def test_resume_reuse_refreshes_agent_template():
+        state = WorkflowRunState()
+        state.apply(_make_progress("workflow_started", workflow_name="design"))
+        state.apply(_make_progress("agent_started", phase="P", label="x", agent_id="k", node_type="agent"))
+        state.apply(_make_progress("agent_completed", phase="P", label="x", agent_id="k", outcome="ok"))
+        state.apply(_make_progress("agent_started", phase="P", label="x", agent_id="k", node_type="agent",
+                                   agent_template="clip", display_name="视频镜头师"))
+        agent = state.phases[0].agents[0]
+        assert agent.agent_template == "clip" and agent.display_name == "视频镜头师"
+        assert len(state.phases[0].agents) == 1
+
+    @staticmethod
     def test_native_agent_omits_agent_type():
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="native"))

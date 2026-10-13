@@ -8339,3 +8339,21 @@ def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
     )
     assert [e["event"]["type"] for e in out] == ["team.task.completed", "team.member.status_changed"]
     assert not [e for e in out if e["event_type"] in {"chat.tool_call", "chat.tool_result"}]
+
+
+def test_wf_spawned_member_event_carries_expert_identity():
+    """An expert node mirrors into the member list under its display name, keeping the member name."""
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _wf_spawned_member_event
+
+    expert = _wf_spawned_member_event(
+        "run-1", "team-1",
+        {"id": "a1", "name": "clip_3", "agent_template": "clip", "display_name": "视频镜头师"},
+        status="busy",
+    )
+    assert expert["name"] == "视频镜头师"
+    assert expert["agent_template"] == "clip" and expert["display_name"] == "视频镜头师"
+    assert "cli_agent" not in expert and "role" not in expert
+
+    plain = _wf_spawned_member_event("run-1", "team-1", {"id": "a2", "name": "free"}, status="busy")
+    assert plain["name"] == "free"
+    assert "agent_template" not in plain and "display_name" not in plain
