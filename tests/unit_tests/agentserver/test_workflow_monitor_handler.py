@@ -885,6 +885,37 @@ class TestWorkflowActivityBatching:
         assert [a["tool_call_id"] for a in agent["activity"]] == ["t1"]
 
     @pytest.mark.anyio
+    async def test_status_delta_in_another_phase_carries_pending_activity(
+        self, monkeypatch,
+    ) -> None:
+        """A status delta that claims the buffer must push the buffered phase too:
+        the activity sits in a different phase, so the status delta alone would
+        not re-include it."""
+        monkeypatch.setattr(WorkflowMonitorHandler, "_ACTIVITY_BATCH_WINDOW_SEC", 60)
+        monitor = _FakeTeamMonitor()
+        handler = WorkflowMonitorHandler(monitor=monitor, session_id="sess-1")
+        await handler.start()
+        collected: list[dict[str, Any]] = []
+        consumer = asyncio.create_task(_drain_events(handler, collected))
+        self._start_flow(monitor)
+        monitor.put_event(_FakeRawEvent(
+            kind="agent_activity", phase="p", label="x", agent_id="a1",
+            activity_type="tool_call", tool_call_id="t1", tool_name="bash", content="ls",
+        ))
+        monitor.put_event(_FakeRawEvent(kind="agent_started", phase="q", label="y", agent_id="b1"))
+        await monitor.drain()
+        await asyncio.sleep(0.05)
+        await handler.stop()
+        await consumer
+
+        # started + agent_started(p) + agent_started(q) carrying p's buffered activity.
+        assert len(collected) == 3
+        phases = {ph["name"]: ph for ph in collected[-1]["workflow"]["phases"]}
+        assert set(phases) == {"p", "q"}
+        assert [a["tool_call_id"] for a in phases["p"]["agents"][0]["activity"]] == ["t1"]
+        assert phases["q"]["agents"][0]["status"] == "running"
+
+    @pytest.mark.anyio
     async def test_activity_batching_is_per_run(self, monkeypatch) -> None:
         monkeypatch.setattr(WorkflowMonitorHandler, "_ACTIVITY_BATCH_WINDOW_SEC", 0.05)
         monitor = _FakeTeamMonitor()

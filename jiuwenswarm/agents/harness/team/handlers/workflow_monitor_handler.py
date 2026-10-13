@@ -171,7 +171,7 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         if progress.kind == "agent_activity":
             self._buffer_activity_delta(run_state.id, delta)
             return
-        self._flush_pending_activity(run_state.id, delta)
+        delta = self._flush_pending_activity(run_state.id, delta)
 
         updated_event = self._build_updated_event(delta)
 
