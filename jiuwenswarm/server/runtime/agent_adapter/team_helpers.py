@@ -4285,9 +4285,6 @@ def _workflow_updated_to_team_events(
                         row_type,
                         tool_call_id if tool_call_id else f"no-id:{row_content}",
                     )
-                    if row_key in seen_rows:
-                        continue
-                    seen_rows.add(row_key)
                     # role=teammate + member_name gate the frame into the
                     # frontend's hidden-teammate execution-event chain, exactly
                     # like _enrich_teammate_event does for real teammate frames.
@@ -4298,6 +4295,21 @@ def _workflow_updated_to_team_events(
                     }
                     if row.get("timestamp"):
                         base["timestamp"] = row["timestamp"]
+                    preview = row.get("tool_result_preview") if row_type == "tool_call" else None
+                    preview_key = (
+                        "tool_result",
+                        tool_call_id if tool_call_id else f"no-id:{preview or ''}",
+                    )
+                    if row_key in seen_rows:
+                        # The call row was mirrored before its result paired back
+                        # (the call outlived the activity batch window): the
+                        # preview is the only new information, so emit just its
+                        # result frame — once.
+                        if preview is not None and preview_key not in seen_rows:
+                            seen_rows.add(preview_key)
+                            out.append(_activity_result_frame(base, row, tool_call_id, preview))
+                        continue
+                    seen_rows.add(row_key)
                     if row_type == "tool_call":
                         frame: dict[str, Any] = {
                             **base,
@@ -4314,30 +4326,26 @@ def _workflow_updated_to_team_events(
                         if tool_call_id:
                             frame["tool_call"]["id"] = tool_call_id
                         out.append(frame)
-                        preview = row.get("tool_result_preview")
                         if preview is not None:
-                            preview_key = (
-                                "tool_result",
-                                tool_call_id if tool_call_id else f"no-id:{preview or ''}",
-                            )
                             seen_rows.add(preview_key)
-                            out.append({
-                                **base,
-                                "event_type": "chat.tool_result",
-                                "tool_name": row.get("tool_name") or "unknown",
-                                **({"tool_call_id": tool_call_id} if tool_call_id else {}),
-                                "result": preview or "",
-                            })
+                            out.append(_activity_result_frame(base, row, tool_call_id, preview))
                     elif row_type == "tool_result":
-                        out.append({
-                            **base,
-                            "event_type": "chat.tool_result",
-                            "tool_name": row.get("tool_name") or "unknown",
-                            **({"tool_call_id": tool_call_id} if tool_call_id else {}),
-                            "result": row_content,
-                        })
+                        out.append(_activity_result_frame(base, row, tool_call_id, row_content))
 
     return out
+
+
+def _activity_result_frame(
+    base: dict[str, Any], row: dict[str, Any], tool_call_id: Any, result: str,
+) -> dict[str, Any]:
+    """One ``chat.tool_result`` frame for a mirrored activity row (paired or orphan)."""
+    return {
+        **base,
+        "event_type": "chat.tool_result",
+        "tool_name": row.get("tool_name") or "unknown",
+        **({"tool_call_id": tool_call_id} if tool_call_id else {}),
+        "result": result or "",
+    }
 
 
 def _detect_human_waiting_prompts(

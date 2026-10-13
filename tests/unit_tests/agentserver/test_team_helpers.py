@@ -7757,6 +7757,34 @@ def test_workflow_updated_to_team_events_activity_dedup_across_deltas():
     assert [f["event_type"] for f in t2_frames] == ["chat.tool_call", "chat.tool_result"]
 
 
+def test_workflow_updated_to_team_events_late_preview_emits_tool_result():
+    """A result paired after its call row was mirrored (the call outlived the
+    activity batch window) still produces exactly one chat.tool_result frame."""
+    dedup = team_helpers._WorkflowMirrorDedup()
+    call = {"timestamp": "ts", "type": "tool_call", "content": "ls",
+            "tool_name": "bash", "tool_call_id": "t1"}
+    paired = {**call, "tool_result_preview": "file1 file2"}
+
+    first = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([call])]), "sess-wf", dedup,
+    )
+    assert [e["event_type"] for e in first if e["event_type"].startswith("chat.")] == ["chat.tool_call"]
+
+    second = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([paired])]), "sess-wf", dedup,
+    )
+    results = [e for e in second if e["event_type"].startswith("chat.")]
+    assert [e["event_type"] for e in results] == ["chat.tool_result"]
+    assert results[0]["tool_call_id"] == "t1"
+    assert results[0]["tool_name"] == "bash"
+    assert results[0]["result"] == "file1 file2"
+
+    third = team_helpers._workflow_updated_to_team_events(
+        _activity_event([_activity_agent([paired])]), "sess-wf", dedup,
+    )
+    assert [e for e in third if e["event_type"].startswith("chat.")] == []
+
+
 def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
     """A status delta without activity mirrors no tool frames."""
     seen_phase, seen_agent, spawned = {}, {}, set()
