@@ -17,6 +17,12 @@ from typing import Any, NoReturn, TextIO
 
 from jiuwenswarm.channels.process_cli.display_context import resolve_cli_work_mode
 from jiuwenswarm.channels.process_cli.diagnostics import capture_diagnostics
+from jiuwenswarm.channels.process_cli.model_options import (
+    ModelOptionsError,
+    prepare_model_options,
+    validate_model_options,
+)
+from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 
 def _configure_forwarded_stdio(args: argparse.Namespace) -> None:
@@ -183,6 +189,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sessions.add_argument(
         "--offset", type=int, help="会话列表跳过的条数，非负整数；默认 0。"
+    )
+    parser.add_argument(
+        "-m", "--model", metavar="MODEL",
+        help="本次任务的模型名称、唯一别名或 name#索引；省略时使用已有默认配置。",
+    )
+    parser.add_argument(
+        "--api-base", metavar="URL",
+        help="本次任务的 HTTP(S) 模型 API 基础地址；需同时指定 --model 和 --api-key-env。",
+    )
+    parser.add_argument(
+        "--api-key-env", metavar="ENV_NAME",
+        help="保存本次模型密钥的环境变量名称（不是密钥值）；需同时指定 --model。",
+    )
+    parser.add_argument(
+        "--model-provider", choices=("OpenAI", "Anthropic"),
+        help="API 协议提供方；需同时指定 --api-base；新模型默认 OpenAI，已配置模型沿用其提供方。",
     )
     parser.add_argument(
         "--query-json",
@@ -372,6 +394,10 @@ def main() -> None:
             parser.error("交互模式仅支持 --output human")
         if args.prompt is None and args.debug:
             parser.error("--debug 仅支持非交互式运行")
+        try:
+            api_key = validate_model_options(args)
+        except ModelOptionsError as exc:
+            parser.error(str(exc))
         if args.prompt is None:
             from jiuwenswarm.channels.process_cli.repl import run_repl
 
@@ -386,7 +412,15 @@ def main() -> None:
             debug=args.debug or worker,
         ) as streams:
             diagnostic_log_path = streams.log_path
-            with contextlib.redirect_stdout(sys.stderr):
+            try:
+                model_entry = prepare_model_options(args, api_key)
+            except ModelOptionsError as exc:
+                _write_stderr(streams.stderr, f"jiuwenswarm-process: 错误：{exc}")
+                sys.exit(2)
+            with (
+                runtime_model_config(model_entry),
+                contextlib.redirect_stdout(sys.stderr),
+            ):
                 from jiuwenswarm.channels.process_cli.app import run
 
                 async def run_command() -> int:
