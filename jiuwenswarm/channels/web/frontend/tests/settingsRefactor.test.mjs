@@ -1430,7 +1430,18 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
     'chrome_path',
     'headless',
+    'decision_mode',
+    'decision_provider',
   ]);
+  assert.match(browserDefinition, /\{ value: 'openrouter', labelKey: 'settingsPanel\.browser\.providerOpenrouter' \}/);
+  assert.match(browserDefinition, /\{ value: 'typesafe', labelKey: 'settingsPanel\.browser\.providerTypesafe' \}/);
+  // The Jev key is write-only: the page shows configured/not configured and never reads the key back.
+  assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
+  assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
+  for (const mode of ['llm', 'shadow', 'hybrid']) {
+    assert.match(browserDefinition, new RegExp(`\{ value: '${mode}', labelKey: 'settingsPanel\.browser\.decision`));
+  }
+  assert.match(sourceContract, /\['decision_mode', 'select'\]/);
   assert.match(browserDefinition, /\{ value: false, labelKey: 'settingsPanel\.browser\.headed' \}/);
   assert.match(browserDefinition, /\{ value: true, labelKey: 'settingsPanel\.browser\.headless' \}/);
   assert.doesNotMatch(browserDefinition, /browser_type|browserType/);
@@ -1898,6 +1909,32 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.equal(existsSync(new URL('src/components/ExtensionsHubPanel/index.tsx', root)), false);
   assert.match(modelDialog, /OpenAIAccountSettings, useOpenAIAccountController/);
   assert.equal(existsSync(new URL('src/features/settings/modules/models/OpenAIAccountField.tsx', root)), true);
+});
+
+test('Jev browser settings preserve mode, provider and write-only key contracts', () => {
+  const definition = source('src/features/settings/modules/browser/definition.ts');
+  const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
+  const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
+  assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
+    'chrome_path', 'headless', 'decision_mode', 'decision_provider',
+  ]);
+  for (const mode of ['llm', 'shadow', 'hybrid']) {
+    assert.ok(definition.includes(`value: '${mode}'`));
+  }
+  for (const name of ['openrouter', 'typesafe']) {
+    assert.ok(definition.includes(`value: '${name}'`));
+    const field = `jev_${name}_api_key`;
+    assert.deepEqual(buildConfigSavePayload({ [field]: 'synthetic-test-key' }), {
+      config: { [field]: 'synthetic-test-key' },
+    });
+    assert.deepEqual(buildConfigSavePayload({ [field]: '' }), { config: { [field]: '' } });
+    assert.ok(keySettings.includes(field));
+  }
+  assert.match(definition, /component: 'custom', render: JevKeySettings/);
+  assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
+  assert.match(keySettings, /config=\{\{\}\}/);
+  assert.match(keySettings, /decision_mode: 'llm'/);
+  assert.match(keySettings, /request\('config\.save_all', buildConfigSavePayload\(updates\)/);
 });
 
 test('legacy page translations and Harness package state are removed without deleting shared Settings keys', () => {

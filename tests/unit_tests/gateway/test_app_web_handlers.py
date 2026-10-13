@@ -835,6 +835,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     agent_client = WebSocketAgentServerClient()
     saved_configs: list[dict] = []
     lifecycle_calls: list[tuple[str, object]] = []
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
 
     monkeypatch.setattr(
         app_web_handlers,
@@ -890,10 +891,45 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
         "payload": {
             "chrome_path": "C:\\Chrome\\chrome.exe",
             "headless": False,
+            "decision_mode": "llm",
+            "decision_provider": "typesafe",
+            "jev_key_configured": False,
         },
         "error": None,
         "code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Jev without a key would fail at every browser step; the save is refused before any write."""
+    channel = FakeWebChannel()
+    agent_client = WebSocketAgentServerClient()
+    writes: list[object] = []
+    monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", writes.append)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"browser": {"decision": {"provider": "openrouter", "api_key_env": "TEST_JEV_UI_KEY"}}},
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        writes.append("runtime touched")
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", fail_if_called)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", fail_if_called)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
+
+    await channel.methods["path.set"](
+        object(), "req-jev", {"chrome_path": "", "headless": True, "decision_mode": "hybrid"}, "sess-1"
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+    assert writes == []
 
 
 class FakeUpdaterService:
@@ -1456,6 +1492,30 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
 
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["setup_guide_enabled"] == expected
+
+
+@pytest.mark.asyncio
+async def test_config_get_never_returns_the_jev_keys(monkeypatch):
+    """The Jev keys are saved through config.save_all but must not be sent back to the browser."""
+    channel = FakeWebChannel()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-openrouter-secret")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-typesafe-secret")
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(
+        ExtensionRegistry,
+        "get_instance",
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-get-jev", {}, "sess-get-jev")
+
+    payload = channel.responses[-1]["payload"]
+    assert payload["jev_openrouter_api_key"] == "" and payload["jev_typesafe_api_key"] == ""
+    assert "synthetic-" not in repr(payload)
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_openrouter_api_key"] == "OPENROUTER_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["jev_typesafe_api_key"] == "TYPESAFE_API_KEY"
 
 
 @pytest.mark.asyncio

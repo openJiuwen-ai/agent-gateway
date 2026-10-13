@@ -851,6 +851,18 @@ def update_browser_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
+    """只更新 browser.decision 中给定的字段，保留阈值等其余字段。"""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if not isinstance(data.get("browser"), dict):
+        data["browser"] = {}
+    if not isinstance(data["browser"].get("decision"), dict):
+        data["browser"]["decision"] = {}
+    for key, value in updates.items():
+        data["browser"]["decision"][key] = value
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
 def update_context_engine_enabled_in_config(value: bool) -> None:
     """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

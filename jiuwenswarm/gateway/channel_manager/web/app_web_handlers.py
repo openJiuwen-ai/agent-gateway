@@ -3374,9 +3374,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
+        from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={
+                "chrome_path": chrome_path,
+                "headless": headless,
+                **browser_decision_state(config),
+            },
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
@@ -3393,6 +3399,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         raw_headless = params.get("headless", True)
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
+        # Older clients omit the decision fields; the saved values are then left untouched.
+        set_params = {"chrome_path": chrome_path, "headless": headless}
+        for decision_key in ("decision_mode", "decision_provider"):
+            if params.get(decision_key) is not None:
+                set_params[decision_key] = params[decision_key]
 
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             fetch_agent_unary,
@@ -3446,7 +3457,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                params={"chrome_path": chrome_path, "headless": headless},
+                params=set_params,
                 session_id=session_id, user_id=user_id,
                 req_method=ReqMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
@@ -3466,8 +3477,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
+        from jiuwenswarm.agents.harness.common.browser_config import (
+            browser_decision_state,
+            browser_decision_updates,
+        )
+        from jiuwenswarm.common.config import update_browser_decision_in_config
+
+        decision_updates, error = browser_decision_updates(
+            set_params.get("decision_mode"), set_params.get("decision_provider"), get_config()
+        )
+        if error:
+            await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
+            return
+
         try:
             update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
+            if decision_updates:
+                update_browser_decision_in_config(decision_updates)
             resolved_agent_client = _resolve(agent_client)
             await _clear_agent_config_cache(resolved_agent_client)
         except Exception as e:  # noqa: BLE001
@@ -3489,7 +3515,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless, **browser_decision_state(get_config())},
         )
 
     async def _path_select_directory(ws, req_id, params, session_id, user_id=None):
