@@ -607,7 +607,9 @@ function addPhaseChildren(
       nodes.push({
         id: nodeId,
         type: 'sessionNode',
-        data: { agent: nodeAgent, members: session.members, run, sessionId },
+        // runId mirrors agentNode: onNodeClick reads it for the ask-user
+        // request id and the detail modal's call-record member key.
+        data: { agent: nodeAgent, members: session.members, run, runId: run.id, sessionId },
         position: { x: 0, y: 0 },
       });
       edges.push({
