@@ -30,7 +30,7 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
-import { workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
@@ -171,7 +171,7 @@ export function CompactTaskList({
 function CompactWorkerStack({ workers }: { workers: WorkflowAgent[] }) {
   const visible = workers.slice(0, 3);
   const extra = workers.length - visible.length;
-  const names = workers.map((worker) => worker.name).join(', ');
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
   return (
     <div
       className="flex items-center shrink-0"
@@ -184,9 +184,9 @@ function CompactWorkerStack({ workers }: { workers: WorkflowAgent[] }) {
           className={index > 0 ? '-ml-1.5 rounded-full ring-2 ring-[var(--color-surface-card)]' : 'rounded-full'}
         >
           <TeamMemberAvatar
-            member={worker.name}
+            member={workflowAgentAvatarName(worker)}
             identity={workflowAgentIdentity(worker)}
-            alt={worker.name}
+            alt={workflowAgentAvatarName(worker)}
             className="h-4 w-4 rounded-full"
             imageClassName="rounded-full"
           />

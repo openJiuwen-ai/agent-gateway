@@ -47,6 +47,8 @@ import {
   computeSessionStatus,
   findActiveIterationIndex,
   workflowAgentIdentity,
+  workflowAgentDisplayName,
+  workflowAgentAvatarName,
   isForkSessionNode,
   forkParentDisplay,
   parseVerifyOutcome,
@@ -454,7 +456,7 @@ function AgentNode({
    *  否则 analyst 分属基线/综合/裁决三个 phase 时每张卡只聚到本 phase 的轮次。 */
   workflow?: WorkflowRun;
   /** 头像键：展示名可被调用方裁剪（verify 面板剥前缀），但头像哈希必须用
-   *  原名才能与成员列表同源，缺省即 agent.name。 */
+   *  原名才能与成员列表同源，缺省即 workflowAgentAvatarName(agent)。 */
   avatarName?: string;
 }) {
   const { t } = useTranslation();
@@ -642,11 +644,11 @@ function AgentNode({
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
             <TeamMemberAvatar
-              member={avatarName ?? agent.name}
+              member={avatarName ?? workflowAgentAvatarName(agent)}
               identity={workflowAgentIdentity(agent)}
               className="w-5 h-5 shrink-0 rounded-full"
               imageClassName="rounded-full"
-              alt={avatarName ?? agent.name}
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
             />
           </>
         ) : (
@@ -663,15 +665,15 @@ function AgentNode({
               </span>
             )}
             <TeamMemberAvatar
-              member={avatarName ?? agent.name}
+              member={avatarName ?? workflowAgentAvatarName(agent)}
               identity={workflowAgentIdentity(agent)}
               className="w-5 h-5 shrink-0 rounded-full"
               imageClassName="rounded-full"
-              alt={avatarName ?? agent.name}
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
             />
           </>
         )}
-        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
+        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{workflowAgentDisplayName(agent)}</span>
         {verdict && (
           <span className={`shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
             verdict.type === 'pass'

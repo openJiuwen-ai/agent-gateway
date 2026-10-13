@@ -138,6 +138,10 @@ export interface WorkflowAgent {
   node_type?: WorkflowNodeType;
   /** External provider kind on third-party nodes ("claude" | "codex"); absent for native workers. */
   agent_type?: string;
+  /** AgentGroup member picked via options.agent_template; absent for the generic worker. */
+  agent_template?: string;
+  /** That expert's display name; shown instead of the label and used as the avatar key. */
+  display_name?: string;
   correlation_id?: string;
   /**
    * Fork child (node_type=agent_session_fork): parent session's avatar member
@@ -364,6 +368,16 @@ export function workflowAgentIdentity(
   if (agent.agent_type) return { cliAgent: agent.agent_type };
   if (agent.kind === 'human') return { role: 'human_agent' };
   return {};
+}
+
+/** Label the tree shows for a node: the expert's display name when it has one, else the call label. */
+export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.display_name ?? agent.name;
+}
+
+/** String the avatar illustration is hashed from — the same one the mirrored member list uses. */
+export function workflowAgentAvatarName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
+  return agent.display_name ?? agent.name;
 }
 
 export function sessionGroupKey(

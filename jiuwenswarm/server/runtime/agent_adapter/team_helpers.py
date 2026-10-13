@@ -4654,10 +4654,16 @@ def _wf_spawned_member_event(
         "type": "team.member.spawned",
         "team_id": team_id,
         "member_id": f"{run_id}:{agent_id}",
-        "name": agent.get("name") or agent_id,
+        "name": agent.get("display_name") or agent.get("name") or agent_id,
         "status": status,
         "workflow_run_id": run_id,
     }
+    # Expert nodes keep both identities: the member name (what the script named)
+    # and the display name the roster shows — same string the tree hashes its
+    # avatar from, so list and tree resolve the same face.
+    if agent.get("agent_template"):
+        event["agent_template"] = agent["agent_template"]
+        event["display_name"] = agent.get("display_name") or event["name"]
     # Same identity fields the roster uses for real members, so the member
     # list resolves the same avatar as the workflow tree.
     if agent.get("agent_type"):
