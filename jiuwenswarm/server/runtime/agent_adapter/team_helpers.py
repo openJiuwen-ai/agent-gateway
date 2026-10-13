@@ -12,7 +12,7 @@ import re
 import time
 from contextlib import AsyncExitStack, aclosing
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -4070,6 +4070,7 @@ _WF_PHASE_STATUS_TO_TASK: dict[str, tuple[str, str]] = {
 _WF_TERMINAL_PLANNED_TASK: tuple[str, str] = ("team.task.skipped", "cancelled")
 _WF_TERMINAL_PLANNED_CONTENT = "i18n:team.taskDetail.skipReasonPlanned"
 
+
 def _team_event_envelope(
     category: str, session_id: str, event: dict[str, Any]
 ) -> dict[str, Any]:
@@ -4132,20 +4133,32 @@ def _wf_agent_status_to_member_status(agent_status: str) -> str:
     return "busy" if agent_status in ("running", "waiting_for_human") else "idle"
 
 
+@dataclass(slots=True)
+class _WorkflowMirrorDedup:
+    """Session-scoped dedup tables behind the ``workflow.updated`` → team mirror.
+
+    The tables belong to the workflow handler (they must outlive one consumer
+    loop so a resume replay is not re-emitted); this bundle only carries them
+    by reference into the converter.
+    """
+
+    seen_phase: dict[str, str] = field(default_factory=dict)
+    seen_agent: dict[str, str] = field(default_factory=dict)
+    spawned_members: set[str] = field(default_factory=set)
+    seen_activity: dict[str, set[tuple[str, str]]] = field(default_factory=dict)
+
+
 def _workflow_updated_to_team_events(
     event: dict[str, Any],
     session_id: str,
-    seen_phase: dict[str, str],
-    seen_agent: dict[str, str],
-    spawned_members: set[str],
-    seen_activity: dict[str, set[tuple[str, str]]] | None = None,
+    dedup: _WorkflowMirrorDedup,
 ) -> list[dict[str, Any]]:
     """Convert one ``workflow.updated`` event into web ``team.member`` / ``team.task`` events.
 
     Each swarmflow phase becomes a ``team.task`` and each worker (agent) becomes a
     ``team.member``. Only status *changes* produce events — the ``workflow.updated``
     delta repeatedly re-includes a running phase (once per agent that starts inside
-    it), so ``seen_phase`` / ``seen_agent`` dedup by last-observed status.
+    it), so ``dedup.seen_phase`` / ``dedup.seen_agent`` dedup by last-observed status.
 
     Worker tool activity mirrors onto the member call list through the same
     ``chat.tool_call`` / ``chat.tool_result`` frames real teammates produce
@@ -4154,7 +4167,7 @@ def _workflow_updated_to_team_events(
     ``chat.tool_call`` frame, a paired ``tool_result_preview`` emits a matching
     ``chat.tool_result`` frame with the same ``tool_call_id`` (the frontend's
     existing call/result pairing links them), and an orphan ``tool_result`` row
-    emits a lone ``chat.tool_result`` frame. ``seen_activity`` (per member,
+    emits a lone ``chat.tool_result`` frame. ``dedup.seen_activity`` (per member,
     ``(type, tool_call_id)`` keys) dedups rows that a later delta re-includes.
     """
     if event.get("event_type") != "workflow.updated":
@@ -4165,8 +4178,10 @@ def _workflow_updated_to_team_events(
     team_id = str(wf.get("name") or run_id or "swarmflow")
     if not run_id:
         return []
-    if seen_activity is None:
-        seen_activity = {}
+    seen_phase = dedup.seen_phase
+    seen_agent = dedup.seen_agent
+    spawned_members = dedup.spawned_members
+    seen_activity = dedup.seen_activity
 
     # At workflow terminal status, a still-planned phase never started; map it
     # via _WF_TERMINAL_PLANNED_TASK to skipped/cancelled with a reason string,
@@ -4394,10 +4409,12 @@ async def _consume_workflow_events(
     # Phase/agent dedup lives on the handler (session-scoped): this loop is
     # cancelled on team pause, and a resume relaunch replays the cached
     # prefix — a fresh per-loop table would re-emit the replay as new tasks.
-    seen_phase = workflow_handler.seen_phase
-    seen_agent = workflow_handler.seen_agent
-    spawned_members = workflow_handler.spawned_members
-    seen_activity = workflow_handler.seen_activity
+    mirror_dedup = _WorkflowMirrorDedup(
+        seen_phase=workflow_handler.seen_phase,
+        seen_agent=workflow_handler.seen_agent,
+        spawned_members=workflow_handler.spawned_members,
+        seen_activity=workflow_handler.seen_activity,
+    )
     seen_human_waiting: set[str] = set()
     try:
         logger.info(
@@ -4474,7 +4491,7 @@ async def _consume_workflow_events(
 
             # ── 非 TUI: 额外转换扁平 team.task/team.member 事件（向后兼容）──
             for team_ev in _workflow_updated_to_team_events(
-                event, session_id, seen_phase, seen_agent, spawned_members, seen_activity,
+                event, session_id, mirror_dedup,
             ):
                 await run_history_io(_persist_team_history_event, channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)

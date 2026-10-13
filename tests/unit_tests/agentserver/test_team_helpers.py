@@ -6653,7 +6653,7 @@ def _wf_event(phases: list[dict], *, run_id: str = "run-1", name: str = "wf") ->
 
 def test_workflow_updated_to_team_events_ignores_non_workflow_events():
     out = team_helpers._workflow_updated_to_team_events(
-        {"event_type": "team.member", "event": {}}, "sess-wf", {}, {}, set()
+        {"event_type": "team.member", "event": {}}, "sess-wf", team_helpers._WorkflowMirrorDedup({}, {}, set())
     )
     assert out == []
 
@@ -6663,9 +6663,7 @@ def test_workflow_updated_to_team_events_planned_phase_creates_task():
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "planning-1", "name": "planning", "status": "planned"}]),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert len(out) == 1
     ev = out[0]
@@ -6693,16 +6691,19 @@ def test_workflow_updated_to_team_events_repeated_status_carries_distinct_timest
     seen_phase, seen_agent, spawned = {}, {}, set()
     out1 = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "ph-1", "name": "impl", "status": "completed"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     # Phase re-entered (status running) then completed again.
     out2 = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "ph-1", "name": "impl", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     out3 = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "ph-1", "name": "impl", "status": "completed"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     completed = [
         ev["event"] for ev in (out1 + out3)
@@ -6726,18 +6727,21 @@ def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_t
     seen_phase, seen_agent, spawned = {}, {}, set()
     team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "paused"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.paused", "in_progress", True),
     ]
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.claimed", "in_progress", False),
@@ -6760,9 +6764,7 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.claimed" in types
@@ -6797,9 +6799,7 @@ def test_workflow_updated_to_team_events_spawned_member_carries_node_identity():
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     spawned_events = {e["event"]["member_id"]: e["event"] for e in out if e["event"]["type"] == "team.member.spawned"}
     codex = spawned_events["run-1:a-codex"]
@@ -6824,12 +6824,12 @@ def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
         }
     ]
     first = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
+        _wf_event(phases), "sess-wf", team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned)
     )
     assert first  # first delta emits events
     # Same delta again (e.g. another agent_started re-includes the running phase)
     second = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
+        _wf_event(phases), "sess-wf", team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned)
     )
     assert second == []  # no status change -> nothing re-emitted
 
@@ -6849,9 +6849,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     # Then: agent completed, phase completed
     out = team_helpers._workflow_updated_to_team_events(
@@ -6866,9 +6864,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.completed" in types
@@ -6894,9 +6890,7 @@ def test_workflow_updated_to_team_events_first_sight_terminal_spawns_then_status
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned),
     )
     member_types = [e["event"]["type"] for e in out if e["event_type"] == "team.member"]
     assert member_types == ["team.member.spawned", "team.member.status_changed"]
@@ -7678,7 +7672,8 @@ def test_workflow_updated_to_team_events_activity_emits_tool_frames():
                  "tool_name": "bash", "tool_call_id": "t3"},
             ]),
         ]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
 
     spawned_events = [
@@ -7736,21 +7731,24 @@ def test_workflow_updated_to_team_events_activity_dedup_across_deltas():
 
     first = team_helpers._workflow_updated_to_team_events(
         _activity_event([_activity_agent([t1])]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
     assert len([e for e in first if e["event_type"] == "chat.tool_call"]) == 1
 
     # Same delta re-broadcast (activity buffered then flushed) — no duplicates.
     again = team_helpers._workflow_updated_to_team_events(
         _activity_event([_activity_agent([t1])]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
     assert [e["event_type"] for e in again if e["event_type"] != "team.member"] == []
 
     # A later delta carries t1 (already seen) + t2 (new) — only t2 mirrors.
     third = team_helpers._workflow_updated_to_team_events(
         _activity_event([_activity_agent([t1, t2])]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
     t2_frames = [
         e for e in third if e["event_type"] in {"chat.tool_call", "chat.tool_result"}
@@ -7768,14 +7766,16 @@ def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
             {"id": "impl-1", "name": "impl", "status": "running",
              "agents": [{"id": "coder-1", "name": "coder", "status": "running"}]},
         ]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([
             {"id": "impl-1", "name": "impl", "status": "completed",
              "agents": [{"id": "coder-1", "name": "coder", "status": "completed"}]},
         ]),
-        "sess-wf", seen_phase, seen_agent, spawned, seen_activity,
+        "sess-wf",
+        team_helpers._WorkflowMirrorDedup(seen_phase, seen_agent, spawned, seen_activity),
     )
     assert [e["event"]["type"] for e in out] == ["team.task.completed", "team.member.status_changed"]
     assert not [e for e in out if e["event_type"] in {"chat.tool_call", "chat.tool_result"}]

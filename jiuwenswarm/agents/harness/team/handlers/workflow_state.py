@@ -702,6 +702,22 @@ class WorkflowRunState(BaseModel):
         groups = phase.verify_groups
         return bool(groups) and all(g.status == "settled" for g in groups)
 
+    def _author_phase_sealable(self, phase: WorkflowPhaseState, *, require_settled: bool) -> bool:
+        """True when a running author phase has gone quiet enough to seal.
+
+        Every agent must be terminal. Then either the phase is no longer the
+        active one (no further event can reach it), or it is a verify phase
+        whose rounds have all settled; ``require_settled`` demands the latter
+        regardless of the active slot (the settle event re-check).
+        """
+        if phase.phase_type == "child" or phase.status != "running":
+            return False
+        if not self._all_agents_terminal(phase):
+            return False
+        if require_settled or phase is self._last_phase:
+            return self._verify_rounds_all_settled(phase)
+        return True
+
     @staticmethod
     def _phase_status_from_agents(phase: WorkflowPhaseState) -> str:
         """Phase status mirrored from its agents by priority.
@@ -1033,12 +1049,7 @@ class WorkflowRunState(BaseModel):
         # all rounds settled gets nothing further by construction, and waiting
         # for the next phase to displace it leaves a finished card spinning for
         # as long as a sibling branch keeps retrying elsewhere.
-        if (
-            phase.phase_type != "child"
-            and phase.status == "running"
-            and self._all_agents_terminal(phase)
-            and (phase is not self._last_phase or self._verify_rounds_all_settled(phase))
-        ):
+        if self._author_phase_sealable(phase, require_settled=False):
             phase.status = self._phase_status_from_agents(phase)
             logger.info(
                 "[WF_DBG WorkflowRunState] sealed author phase=%s (last agent terminal, status=%s)",
@@ -1400,12 +1411,7 @@ class WorkflowRunState(BaseModel):
         # The settle may land after the last reviewer's terminal event (the
         # engine aggregates votes once every reviewer returned): re-run the
         # author seal so a fully settled verify phase closes on this event.
-        if (
-            phase.phase_type != "child"
-            and phase.status == "running"
-            and self._all_agents_terminal(phase)
-            and self._verify_rounds_all_settled(phase)
-        ):
+        if self._author_phase_sealable(phase, require_settled=True):
             phase.status = self._phase_status_from_agents(phase)
             logger.info(
                 "[WF_DBG WorkflowRunState] sealed verify phase=%s (all rounds settled, status=%s)",
