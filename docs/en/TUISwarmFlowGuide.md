@@ -406,7 +406,7 @@ sess = agent_session(label="design", options={"agent_template": "designer"})
 | Capability source | The worker runs with that member's persona and capability snapshot (skills / tools / rails / MCP) and **does not inherit** the generic teammate tools |
 | Both primitives, locked on first turn | Available on `agent()` and `agent_session()`; a session locks the member on its **first real turn**, so switching members mid-session requires `fork()` |
 | Pre-launch failures | Four cases error out before launch and list the currently available member names: the name is not in the AgentGroup, the name contains `/`, it is combined with `agent_type`, or the member declares an external runtime |
-| Unchanged by default | Omitting `agent_template` behaves exactly as before; setting it makes the canvas node show that member's display name and avatar |
+| Unchanged by default | Omitting `agent_template` behaves exactly as before; setting it keeps the label as the node's main text, the tooltip reads "Expert: display name (member name)", the face is an illustration hashed from the display name with a ★ expert badge (package member avatars appear only in the AgentGroup management page). The member roster and task cards resolve the same face; roster entries show the label and `@member_id` like any worker, with an extra `★ display name (member name)` hint line for experts. `agent_template` must not be `leader` (the Team Leader is not a worker); both the validator and the engine reject it |
 
 ---
 
