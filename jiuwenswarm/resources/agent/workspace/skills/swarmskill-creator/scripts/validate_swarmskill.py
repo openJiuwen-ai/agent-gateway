@@ -912,6 +912,12 @@ def _agent_options_issues(node: ast.Call, call_name: str, line: int) -> list[str
                     f"line {line}: agent_template must be the bare member name of the bound "
                     f"AgentGroup (no 'group/' prefix), got {value!r}"
                 )
+            elif value == "leader":
+                errors.append(
+                    f"line {line}: agent_template 'leader' is the Team Leader, not a worker; "
+                    "it already drives the conversation and cannot be a swarmflow node — "
+                    "pick a worker member of the bound AgentGroup"
+                )
     return errors
 
 

@@ -25,6 +25,7 @@ import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
 import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
 import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 import { groupByWorkflowRun } from './runGrouping';
 import { RunGroupHeader } from './RunGroupHeader';
 
@@ -158,6 +159,7 @@ export function ProgressSection({
 }) {
   const { t } = useTranslation();
   const emptyIllustrationSize = displayMode === 'count' ? 48 : 72;
+  useEnsurePhaseAgents(tasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (

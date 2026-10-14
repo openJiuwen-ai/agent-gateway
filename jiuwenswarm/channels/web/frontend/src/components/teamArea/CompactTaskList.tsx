@@ -31,6 +31,7 @@ import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
 import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
@@ -63,6 +64,9 @@ export function CompactTaskList({
   onTaskClick,
 }: CompactTaskListProps) {
   const { t } = useTranslation();
+  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
+  // 必须在早退之前：空列表 ↔ 非空切换时 hook 数量变化会炸整棵树（React #310）
+  useEnsurePhaseAgents(visibleTasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (
@@ -76,8 +80,6 @@ export function CompactTaskList({
       </div>
     );
   }
-
-  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
 
   return (
     <div className="flex flex-col gap-1">

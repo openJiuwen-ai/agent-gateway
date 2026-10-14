@@ -47,7 +47,6 @@ import {
   computeSessionStatus,
   findActiveIterationIndex,
   workflowAgentIdentity,
-  workflowAgentDisplayName,
   workflowAgentAvatarName,
   isForkSessionNode,
   forkParentDisplay,
@@ -673,7 +672,21 @@ function AgentNode({
             />
           </>
         )}
-        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{workflowAgentDisplayName(agent)}</span>
+        {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
+            专家身份靠头像 ★ 与悬浮提示"专家：展示名（成员名）"，不占行内空间。 */}
+        <span
+          className="text-sm text-text break-words flex-1 inline-flex items-baseline gap-1.5 min-w-0"
+          data-testid="team-area-swarmflow-agent-name"
+          data-variant={agent.id}
+          title={agent.agent_template
+            ? t('swarmflow.expertIdentity', {
+                name: agent.display_name ?? agent.agent_template,
+                template: agent.agent_template,
+              })
+            : undefined}
+        >
+          {agent.name}
+        </span>
         {verdict && (
           <span className={`shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
             verdict.type === 'pass'
@@ -1107,7 +1120,7 @@ function VerifyPanel({
                 <AgentNode
                   key={agent.id}
                   agent={shortName === agent.name ? agent : { ...agent, name: shortName }}
-                  avatarName={agent.name}
+                  avatarName={workflowAgentAvatarName(agent)}
                   phaseAgents={phaseAgents}
                   depth={0}
                   runId={runId}
