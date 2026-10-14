@@ -1039,6 +1039,21 @@ class TestAgentNodeType:
         assert "agent_template" not in plain and "display_name" not in plain
 
     @staticmethod
+    def test_phase_summary_keeps_node_identity_for_cold_restore():
+        """After a page refresh the tree is rebuilt from ``get_phase`` summaries; dropping the
+        identity fields there turns every expert / third-party node back into a plain one."""
+        from jiuwenswarm.server.wire_truncate import _workflow_agent_summary
+        summary = _workflow_agent_summary({
+            "id": "main/call:0", "name": "clip_3", "status": "completed",
+            "agent_template": "clip", "display_name": "视频镜头师", "agent_type": "codex",
+            "prompt": "heavy" * 100,
+        })
+        assert summary["agent_template"] == "clip"
+        assert summary["display_name"] == "视频镜头师"
+        assert summary["agent_type"] == "codex"
+        assert "prompt" not in summary and summary["detail_pending"] is True
+
+    @staticmethod
     def test_resume_reuse_refreshes_agent_template():
         state = WorkflowRunState()
         state.apply(_make_progress("workflow_started", workflow_name="design"))

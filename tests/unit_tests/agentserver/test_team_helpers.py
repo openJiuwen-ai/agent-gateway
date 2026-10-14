@@ -7622,7 +7622,7 @@ def test_persist_and_restore_session_budget(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     snapshot = {"total": 500000, "spent": 280000, "remaining": 220000, "scope": "session", "exhausted": False}
@@ -7663,7 +7663,7 @@ def test_persist_and_restore_session_swarmflow_config(monkeypatch: pytest.Monkey
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     config = {"enable_swarmflow": True, "swarmflow_budget": 50000}
@@ -7676,6 +7676,71 @@ def test_persist_and_restore_session_swarmflow_config(monkeypatch: pytest.Monkey
         lambda session_id, cache_bust=True: {**store, "session_swarmflow_config": config},
     )
     assert team_helpers.restore_session_swarmflow_config("sess-swarmflow-cfg") == config
+
+
+def test_persist_session_swarmflow_config_survives_agent_group_sync_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """First build of an AgentGroup session persists the swarmflow config and then, right
+    after, the agent_group binding with ``cache_bust=True, sync_write=True``. That writer
+    reads disk, so a config that only sits in the async write queue is clobbered and the
+    swarmflow toggle vanishes on the next session switch."""
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    for target in (
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.common.utils.get_agent_sessions_dir",
+    ):
+        monkeypatch.setattr(target, lambda: sessions_root)
+    # Freeze the async worker: the queued write must not race the test.
+    monkeypatch.setattr(session_metadata, "_ensure_worker_started", lambda: None)
+    session_id = "sess-swarmflow-race"
+    session_metadata.init_session_metadata(session_id=session_id, channel_id="web", title="t", mode="team")
+
+    config = {"enable_swarmflow": True, "swarmflow_budget": None, "swarmflow_worktree": None}
+    team_helpers.persist_session_swarmflow_config(session_id, config)
+    session_metadata.update_session_metadata(
+        session_id=session_id,
+        agent_group_name="designer",
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+    on_disk = json.loads((sessions_root / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert on_disk["agent_group_name"] == "designer"
+    assert on_disk["session_swarmflow_config"] == config
+
+
+def test_persist_workflow_runs_survives_turn_metadata_sync_write(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """``workflow_completed`` lands in the async queue; the end-of-turn metadata sync then
+    reads disk (cache_bust) and replaces the whole file. If the checkpoint is still queued,
+    the completed run is rolled back to its pre-terminal state (restores as 'running 19/19')."""
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    for target in (
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        "jiuwenswarm.common.utils.get_agent_sessions_dir",
+    ):
+        monkeypatch.setattr(target, lambda: sessions_root)
+    monkeypatch.setattr(session_metadata, "_ensure_worker_started", lambda: None)
+    session_id = "sess-wf-persist-race"
+    session_metadata.init_session_metadata(session_id=session_id, channel_id="web", title="t", mode="team")
+
+    run = WorkflowRunState(id="wf_1", name="n", status="completed")
+    team_helpers.persist_workflow_runs({"wf_1": run}, session_id, session_budget={"spent": 7})
+    session_metadata.sync_session_request_metadata(
+        session_id=session_id, channel_id="web", mode="team", model=None, last_user_message_at=1.0,
+    )
+
+    on_disk = json.loads((sessions_root / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert on_disk["workflow_runs"]["wf_1"]["status"] == "completed"
+    assert on_disk["session_budget"] == {"spent": 7}
 
 
 def test_restore_session_swarmflow_config_absent_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -7744,7 +7809,7 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
     monkeypatch.setattr(
         session_metadata,
         "_enqueue_write",
-        lambda session_id, metadata: written.append((session_id, dict(metadata))),
+        lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata))),
     )
 
     config = {"enable_swarmflow": True, "swarmflow_budget": 30000}
@@ -8342,7 +8407,7 @@ def test_workflow_updated_to_team_events_non_activity_delta_unchanged():
 
 
 def test_wf_spawned_member_event_carries_expert_identity():
-    """An expert node mirrors into the member list under its display name, keeping the member name."""
+    """An expert node mirrors under its script label like any worker, carrying the expert identity alongside."""
     from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _wf_spawned_member_event
 
     expert = _wf_spawned_member_event(
@@ -8350,7 +8415,7 @@ def test_wf_spawned_member_event_carries_expert_identity():
         {"id": "a1", "name": "clip_3", "agent_template": "clip", "display_name": "视频镜头师"},
         status="busy",
     )
-    assert expert["name"] == "视频镜头师"
+    assert expert["name"] == "clip_3"
     assert expert["agent_template"] == "clip" and expert["display_name"] == "视频镜头师"
     assert "cli_agent" not in expert and "role" not in expert
 

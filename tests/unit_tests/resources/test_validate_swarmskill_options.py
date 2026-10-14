@@ -59,6 +59,12 @@ def test_agent_template_with_group_prefix_is_an_error(validator):
     assert any("agent_template" in e and "bare member name" in e for e in errors)
 
 
+def test_agent_template_leader_is_an_error(validator):
+    # the Team Leader runs the conversation; only worker members can be swarmflow nodes
+    errors = _issues(validator, _OK.replace('"clip", "model"', '"leader", "model"'))
+    assert any("agent_template" in e and "Team Leader" in e for e in errors)
+
+
 def test_agent_session_options_are_validated_too(validator):
     errors = _issues(validator, _SESSION_BAD)
     assert any("agent_template" in e for e in errors)
