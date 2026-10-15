@@ -706,12 +706,9 @@ def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
         return "team_root"
     if normalized_mode == "code" and normalized_sub_mode == "team":
         return "team_root"
-    if normalized_mode in {"agent", "code"} and normalized_sub_mode in {
-        "",
-        "normal",
-        "plan",
-        "fast",
-    }:
+    from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+
+    if supports_single_agent_permission_profile(mode, sub_mode):
         return "single_agent"
     return "unsupported"
 
@@ -11338,6 +11335,8 @@ class JiuWenSwarmDeepAdapter:
             when the caller is about to write plan state: that starts the same
             session the chat turn will reuse, instead of a throwaway Session.
         """
+        if self._permission_state.permission_isolated:
+            return None
         if self._is_session_scoped_adapter:
             return self._instance
         adapter = self._get_cached_session_adapter(session_id)
@@ -11397,6 +11396,8 @@ class JiuWenSwarmDeepAdapter:
         Returns:
             The DeepAgent instance, or None when it could not be built.
         """
+        if self._permission_state.permission_isolated:
+            raise RuntimeError("permission_session_isolated")
         if getattr(self, "_external_harness_binding", None) is not None:
             return None
         if self._instance is not None:
@@ -11404,6 +11405,8 @@ class JiuWenSwarmDeepAdapter:
         if self._root_instance_lock is None:
             self._root_instance_lock = asyncio.Lock()
         async with self._root_instance_lock:
+            if self._permission_state.permission_isolated:
+                raise RuntimeError("permission_session_isolated")
             if self._instance is not None:
                 return self._instance
             self._root_instance_requested = True
