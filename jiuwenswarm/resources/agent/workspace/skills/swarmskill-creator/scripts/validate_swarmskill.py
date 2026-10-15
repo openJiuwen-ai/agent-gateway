@@ -502,7 +502,8 @@ SUPPORTED_SWARMFLOW_OPERATORS = {
 SUPPORTED_SWARMFLOW_TYPES = {"AgentSession", "HumanSession"}
 # Keys the engine accepts in agent()/agent_session() options (engine set ∪ team backend set).
 SUPPORTED_AGENT_OPTIONS: frozenset[str] = frozenset(
-    {"label", "phase", "schema", "model", "timeout", "isolation", "agent_type", "builtin_model", "effort", "agent_template"}
+    {"label", "phase", "schema", "model", "timeout", "isolation", "agent_type", "builtin_model", "effort",
+     "agent_template"}
 )
 PROTECTED_SWARMFLOW_NAMES = SUPPORTED_SWARMFLOW_OPERATORS
 DEFERRED_THUNK_OPERATORS = {"map_parallel", "parallel", "pipeline", "pmap"}
