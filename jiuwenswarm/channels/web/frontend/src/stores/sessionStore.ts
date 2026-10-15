@@ -532,6 +532,10 @@ interface TeamMember {
   cli_agent?: string | null;
   /** 产生该成员的 swarmflow run（镜像 worker 才有，真实队友无此字段） */
   workflow_run_id?: string;
+  /** 专家节点引用的专家团成员名（镜像的专家 worker 才有） */
+  agent_template?: string | null;
+  /** 专家的展示名（镜像的专家 worker 才有） */
+  display_name?: string | null;
 }
 
 /** 增量成员事件里的空字段不得覆盖已知值：返回 next，空则回退 prev。 */
@@ -1744,6 +1748,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             member.workflow_run_id,
             existingMember.workflow_run_id,
           ),
+          agent_template: keepKnownMemberField(member.agent_template, existingMember.agent_template),
+          display_name: keepKnownMemberField(member.display_name, existingMember.display_name),
         };
         return {
           runtimes: {

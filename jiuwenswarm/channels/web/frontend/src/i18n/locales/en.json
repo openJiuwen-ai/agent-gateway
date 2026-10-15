@@ -4605,6 +4605,7 @@
     "verifyReviewing": "Reviewing…",
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
+    "expertIdentity": "Expert: {{name}} ({{template}})",
     "verifyFail": "✗ Fail",
     "verifyUndecided": "? Undecided",
     "verifyThreshold": "Threshold {{count}}",
