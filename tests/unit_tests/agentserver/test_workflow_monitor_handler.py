@@ -455,7 +455,7 @@ class TestWorkflowMonitorHandlerPersist:
         original_read = sm._read_metadata
         original_enqueue = sm._enqueue_write
         sm._read_metadata = lambda session_id, cache_bust=True: dict(store)
-        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        sm._enqueue_write = lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata)))
         try:
             handler._persist()
         finally:
@@ -482,7 +482,7 @@ class TestWorkflowMonitorHandlerPersist:
         original_read = sm._read_metadata
         original_enqueue = sm._enqueue_write
         sm._read_metadata = lambda session_id, cache_bust=True: {"session_id": "sess-persist2"}
-        sm._enqueue_write = lambda session_id, metadata: written.append((session_id, dict(metadata)))
+        sm._enqueue_write = lambda session_id, metadata, **kwargs: written.append((session_id, dict(metadata)))
         try:
             handler._persist()
         finally:
