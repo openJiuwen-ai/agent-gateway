@@ -446,6 +446,18 @@ def enrich_team_spec_for_swarm(
     # across a serialization boundary (spawned teammate, distributed remote,
     # cold recovery) can reconstruct the context via the registered factory.
     spec.build_context_seed = base.to_seed()
+    group_members = (request_metadata or {}).get("group_members")
+    if group_members is not None:
+        if agent_group_name:
+            raise ValueError("a public group roster cannot also select a single AgentGroup")
+        from jiuwenswarm.agents.swarm.group_chat import assemble_group_members, GROUP_MEMBER_TEMPLATE
+        from openjiuwen.harness.schema.deep_agent_spec import RailSpec
+
+        assemble_group_members(spec, group_members)
+        # Future members use the shared role without rewriting a running spec.
+        teammate = spec.agents["teammate"]
+        teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
+            params={"initial_names": [member["member_name"] for member in group_members]})]
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",
