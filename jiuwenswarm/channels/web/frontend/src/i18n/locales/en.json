@@ -2207,6 +2207,7 @@
       "version": "Version {{version}}",
       "installed": "Installed",
       "notInstalled": "Not installed",
+      "disabled": "Off",
       "detecting": "Detecting…",
       "executablePath": "Executable path",
       "builtinPathPlaceholder": "Built-in CLI (managed)",
