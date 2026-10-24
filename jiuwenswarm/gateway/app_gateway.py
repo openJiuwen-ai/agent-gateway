@@ -2098,7 +2098,7 @@ async def _run(
     # 读取其重依赖 (slack_bolt/telegram/redis/aiohttp 等), 缩短 Gateway 就绪时间。
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.common.cleanup import start_background_cleanup
+    from jiuwenswarm.gateway.cleanup import start_background_cleanup
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.updater import UpdaterService
     from jiuwenswarm.extensions.manager import ExtensionManager
