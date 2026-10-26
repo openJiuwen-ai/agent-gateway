@@ -217,6 +217,7 @@ workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-sou
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "0ab5913b250d565b35bff3828dae438939cb1acd" }
 openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "edfdae9a8a876b7a15dbf6bce501b929d235b6dc", subdirectory = "openjiuwen-protocol" }
 
+
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
 test = [
