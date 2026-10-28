@@ -146,7 +146,7 @@
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
-      "duration": "Duration",
+      "duration": "Video duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -164,6 +164,7 @@
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
       "durationValue": "{{seconds}}s",
+      "durationUnit": "s",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
