@@ -14,16 +14,19 @@ import pytest
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
     SessionRunAdmission,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
+from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.context import (
     get_current_agent_manager,
     get_current_runtime,
     get_runtime_context,
 )
-from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
@@ -2881,8 +2884,8 @@ async def test_early_stream_close_delivers_post_event_to_callback() -> None:
 async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
@@ -2942,8 +2945,8 @@ async def test_runtime_owned_extensions_are_reference_counted(monkeypatch) -> No
 async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.runtime import checkpointer
 
     ExtensionRegistry.reset_instance()
@@ -2995,6 +2998,7 @@ async def test_runtime_does_not_close_externally_owned_extensions(monkeypatch) -
 @pytest.mark.asyncio
 async def test_process_dependencies_are_reference_counted(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
@@ -3039,6 +3043,7 @@ async def test_process_dependency_lease_rolls_back_on_start_failure(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     monkeypatch.setattr(
@@ -3073,6 +3078,7 @@ async def test_checkpointer_init_error_survives_close_error_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock(
@@ -3126,6 +3132,7 @@ async def test_dispose_error_resets_checkpointer_state_and_reinitializes(
     tmp_path,
 ) -> None:
     from openjiuwen.core.session.checkpointer import CheckpointerFactory
+
     from jiuwenswarm.runtime import checkpointer
 
     dispose_error = RuntimeError("dispose failed")
@@ -3176,6 +3183,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     initialize = AsyncMock()
@@ -3222,6 +3230,7 @@ async def test_runner_start_error_survives_checkpointer_rollback_error_and_retri
 @pytest.mark.asyncio
 async def test_runner_false_start_result_is_rolled_back(monkeypatch) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     runner_stop = AsyncMock(return_value=True)
@@ -3256,6 +3265,7 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
     monkeypatch,
 ) -> None:
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.runtime import checkpointer
 
     runner_start = AsyncMock(return_value=True)
@@ -3299,8 +3309,8 @@ async def test_runner_false_stop_result_closes_runtime_and_allows_retry(
 async def test_extension_load_error_survives_shutdown_error_and_retries(
     monkeypatch,
 ) -> None:
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
 
     ExtensionRegistry.reset_instance()
     load_extensions = AsyncMock(
@@ -4209,12 +4219,15 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
 ) -> None:
     """Real cached adapters clean promptly, with or without a parked request."""
     from collections import Counter
+
     from jiuwenswarm.agents.harness import team as team_harness
-    from jiuwenswarm.server.runtime.agent_manager import AgentManager
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-    from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
     from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
+    from jiuwenswarm.server.runtime.session.session_manager import SessionManager
 
     sid = "web_parked_3"
     other_sid = "web_other"
