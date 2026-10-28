@@ -1144,7 +1144,7 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
 
 @pytest.mark.asyncio
 async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
-    from jiuwenswarm.common import config as config_module
+    from gateway.common import config as config_module
 
     current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
@@ -1182,7 +1182,8 @@ async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_p
     from dotenv import dotenv_values
     import yaml
 
-    from jiuwenswarm.common import config as config_module
+    from gateway.common import config as config_module
+    from jiuwenswarm.common import config as server_config_module
     from jiuwenswarm.common.browser_settings import JEV_PROVIDER_DEFAULTS
 
     config_path = tmp_path / "config.yaml"
@@ -1199,6 +1200,8 @@ async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_p
     env_path.write_text("OPENROUTER_API_KEY=synthetic-router\nTYPESAFE_API_KEY=synthetic-typesafe\n", encoding="utf-8")
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
     monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(server_config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(server_config_module, "get_config_file", lambda: config_path)
     monkeypatch.setattr(config_set_handlers, "ENV_FILE", env_path)
     monkeypatch.setattr(config_set_handlers, "_get_crypto_provider", lambda: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-router")
