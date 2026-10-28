@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwenswarm-gateway"
+version = "0.2.5.beta1"
+description = "Gateway process for WorkSwarm"
+requires-python = ">=3.11,<3.14"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
+dependencies = [
+    # 过渡期：gateway 仍引用 workswarm（jiuwenswarm.*）内部模块（阶段3 清零），
+    # 解耦完成后删除本行。
+    "workswarm @ git+https://gitcode.com/openJiuwen/jiuwenswarm.git@c31346560b77a9a1730fee51b6e29a812a51d318",
+    # 协议/Agent 内核（git 依赖）
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@eaa30e1a67dc04f17e5a88d7ca280b2141e366a2#subdirectory=openjiuwen-protocol",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f9f50368d526dde64cd3ad10473956b660a50694",
+    # Web / HTTP / 序列化
+    "fastapi>=0.115,<1.0",
+    "starlette>=0.49.1,<1",
+    "uvicorn[standard]>=0.30,<1.0",
+    "aiohttp>=3.10,<4",
+    "httpx[http2,socks]>=0.27,<1.0",
+    "requests>=2.31,<3",
+    "websockets>=12.0,<16",
+    "pydantic>=2.0,<3.0",
+    "json-repair>=0.30.0,<0.60",
+    "charset-normalizer>=3.0,<4",
+    # 调度 / 系统 / 日志
+    "croniter>=2.0.0,<7",
+    "portalocker>=3.2.0,<4",
+    "psutil>=7.2.2,<8",
+    "loguru>=0.7.3,<0.8",
+    "asyncssh>=2.14,<3",
+    "python-socks>=2.8.1,<3",
+    # IM 渠道
+    "lark-oapi>=1.5.3,<2",
+    "dingtalk-stream>=0.24.3,<0.25",
+    "discord.py>=2.4.0,<3",
+    "slack-bolt>=1.30.0,<2",
+    "wecom-aibot-sdk>=1.0.5,<2",
+    "python-telegram-bot>=20.0,<23",
+    # A2A 协议
+    "a2a-sdk>=1.0,<2",
+]
+
+# 说明：workswarm 为过渡期硬依赖（见上方 dependencies 首行）。待 gateway 侧
+# jiuwenswarm.* 引用清零后移除，届时本包可完全独立安装。
+
+[dependency-groups]
+# UT 流水线所需的最小测试工具链
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=7.0.0",
+]
+
+[project.scripts]
+jiuwenswarm-gateway = "jiuwenswarm_gateway.app_gateway:main"
+jiuwenswarm-acp = "jiuwenswarm_gateway.channel_manager.protocol.acp.acp_connect:main"
+
+[tool.setuptools]
+py-modules = []
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["jiuwenswarm_gateway*"]
+namespaces = false

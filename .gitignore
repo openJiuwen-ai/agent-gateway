@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+
+# logs
+logs/
+
+# 本地验证工作区
+.local-home/
