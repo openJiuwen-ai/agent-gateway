@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-gateway"
-version = "0.2.5.beta1"
-description = "JiuwenSwarm Gateway - channel/protocol front for AgentServer"
+version = "0.0.1"
+description = "Agent Gateway - channel/protocol front for AgentServer"
 requires-python = ">=3.11,<3.14"
 license = { text = "Apache-2.0" }
 classifiers = [
@@ -74,8 +74,8 @@ dev = [
 ]
 
 [project.scripts]
-jiuwenswarm-gateway = "agent_gateway.app_gateway:main"
-jiuwenswarm-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
+agent-gateway = "agent_gateway.app_gateway:main"
+agent-gateway-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
 
 [tool.setuptools]
 py-modules = []

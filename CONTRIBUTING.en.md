@@ -1,6 +1,6 @@
 # Contributing Guide
 
-Thank you for your interest in JiuwenSwarm Gateway. Bug reports, features, documentation, and examples are all welcome.
+Thank you for your interest in Agent Gateway. Bug reports, features, documentation, and examples are all welcome.
 
 中文: [CONTRIBUTING.md](CONTRIBUTING.md)
 

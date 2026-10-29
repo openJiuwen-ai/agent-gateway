@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 JiuwenSwarm Gateway 的关注。无论是提交 Bug、开发功能、完善文档还是补充示例，都欢迎参与。
+感谢你对 Agent Gateway 的关注。无论是提交 Bug、开发功能、完善文档还是补充示例，都欢迎参与。
 
 English: [CONTRIBUTING.en.md](CONTRIBUTING.en.md)
 

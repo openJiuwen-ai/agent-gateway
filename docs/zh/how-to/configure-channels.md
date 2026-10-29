@@ -1,20 +1,20 @@
-# 配置渠道
+# 配置频道
 
-Gateway 是 IM 平台、Web UI、TUI 与 ACP 客户端的统一接入层。渠道按需惰性加载：只有 `config.yaml` 的 `channels` 中出现对应条目时，才会初始化该渠道及其依赖。
+Gateway 是 IM 平台、Web UI、TUI 与 ACP 客户端的统一接入层。频道按需惰性加载：只有 `config.yaml` 的 `channels` 中出现对应条目时，才会初始化该频道及其依赖。
 
 ## 配置文件
 
-默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。文件不存在时 Gateway 告警并使用默认值（不启用任何 IM 渠道）。修改保存后，Gateway 会自动重载发生变化的渠道配置。
+默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。文件不存在时 Gateway 告警并使用默认值（不启用任何 IM 频道）。修改保存后，Gateway 会自动重载发生变化的频道配置。
 
-最小配置——显式关闭所有 IM 渠道：
+最小配置——显式关闭所有 IM 频道：
 
 ```yaml
 channels: {}
 ```
 
-## 支持的渠道
+## 支持的频道
 
-| 区域 | 渠道 | 配置键 | 私聊 | 群聊 |
+| 区域 | 频道 | 配置键 | 私聊 | 群聊 |
 | --- | --- | --- | --- | --- |
 | 国内 | 小艺 | `xiaoyi` | 支持 | 不支持 |
 | 国内 | 飞书 | `feishu` | 支持 | 支持（@机器人） |
@@ -51,9 +51,9 @@ channels:
     client_secret: "xxx"           # 替换为钉钉应用 Client Secret
 ```
 
-## 各渠道配置项
+## 各频道配置项
 
-| 渠道 | 主要配置项 |
+| 频道 | 主要配置项 |
 | --- | --- |
 | `feishu` | `apps[]`：`app_id`、`app_secret`、`encrypt_key`、`verification_token`、`allow_from`、`enable_streaming`、`group_digital_avatar`、`my_user_id`、`bot_name` |
 | `xiaoyi` | `apps[]`：`ak`、`sk`、`agent_id`、`api_id`、`enable_streaming` |
@@ -67,16 +67,16 @@ channels:
 
 ## 平台凭据获取
 
-各平台的应用创建、权限申请与凭据获取步骤较长，统一维护在 JiuwenSwarm 文档中：
+各平台的应用创建、权限申请与凭据获取步骤较长，统一维护在外部平台接入文档中：
 
-- 国内渠道：[国内频道](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/国内频道.md)
-- 海外渠道：[海外频道](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/海外频道.md)
+- [国内频道](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/国内频道.md)
+- [海外频道](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/zh/海外频道.md)
 
 ## 验证
 
-1. 启动 Gateway，日志中应出现 `[ExtensionManager] 加载 ...` 以及对应渠道的注册日志。
+1. 启动 Gateway，日志中应出现 `[ExtensionManager] 加载 ...` 以及对应频道的注册日志。
 2. 若日志显示 `channels.<name> missing or invalid`，检查配置键名与必填凭据。
-3. 若渠道未启动，确认该条目没有显式设置 `enabled: false`，且必填凭据非空。
+3. 若频道未启动，确认该条目没有显式设置 `enabled: false`，且必填凭据非空。
 
 ---
 

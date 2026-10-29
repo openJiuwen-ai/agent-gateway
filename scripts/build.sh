@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# jiuwenswarm-gateway 打包脚本
+# agent-gateway 打包脚本
 # 1. 同步依赖（uv sync，构建本身使用隔离环境）
 # 2. 清理历史产物
 # 3. 构建 wheel / sdist 到 dist/

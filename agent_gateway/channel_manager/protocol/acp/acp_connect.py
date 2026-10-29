@@ -44,7 +44,7 @@ from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import parse_dotenv_early
 
-parse_dotenv_early("jiuwenswarm-acp-channel")
+parse_dotenv_early("agent-gateway-acp")
 
 # --- Now safe to import jiuwenswarm modules ---
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -1833,7 +1833,7 @@ def main() -> None:
     setup_gateway_logger()
 
     parser = argparse.ArgumentParser(
-        prog="jiuwenswarm-acp",
+        prog="agent-gateway-acp",
         description="Start JiuwenSwarm ACP stdio entrypoint.",
     )
     parser.add_argument(

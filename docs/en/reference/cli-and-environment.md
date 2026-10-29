@@ -1,10 +1,10 @@
 # CLI and Environment Reference
 
-This page lists the `jiuwenswarm-gateway` command-line options, environment variables, configuration file, and runtime directories.
+This page lists the `agent-gateway` command-line options, environment variables, configuration file, and runtime directories.
 
 ## CLI options
 
-Entry points: `jiuwenswarm-gateway` (gateway + channels) and `jiuwenswarm-acp` (ACP bridge).
+Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP bridge).
 
 | Option | Default | Description |
 | --- | --- | --- |

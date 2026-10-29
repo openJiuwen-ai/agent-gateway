@@ -1,7 +1,7 @@
-<h1 align="center">JiuwenSwarm Gateway</h1>
+<h1 align="center">Agent Gateway</h1>
 
 <p align="center">
-  <strong>所有客户端到 Agent 的统一网关：多渠道接入、请求路由与调度</strong>
+  <strong>所有客户端到 Agent 的统一网关：多频道接入、请求路由与调度</strong>
 </p>
 
 <p align="center">
@@ -11,7 +11,7 @@
   ·
   <a href="docs/zh/how-to/local-validation.md">本地验证</a>
   ·
-  <a href="https://gitcode.com/openJiuwen/jiuwenswarm">JiuwenSwarm</a>
+  <a href="https://gitcode.com/openJiuwen/agent-gateway">代码仓</a>
 </p>
 
 <p align="center">
@@ -22,23 +22,21 @@
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
 </p>
 
-**JiuwenSwarm Gateway** 是 JiuwenSwarm 分离部署（Gateway + AgentServer）中的网关进程。它位于用户侧渠道与 AgentServer 之间：接收来自 Web UI、TUI、ACP 客户端与 IM 平台的连接，把请求经单条 WebSocket（E2A 协议）路由给 AgentServer，并承载跨会话的公共服务——定时任务、心跳、健康检查与多实例隔离。
+**Agent Gateway** 是（Gateway + AgentServer）分离部署中的网关进程。它位于用户侧频道与 AgentServer 之间：接收来自 Web UI、TUI、ACP 客户端与 IM 平台的连接，把请求经单条 WebSocket（E2A 协议）路由给 AgentServer，并承载跨会话的公共服务——定时任务、心跳、健康检查与多实例隔离。
 
-Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入口：`jiuwenswarm-gateway`（Gateway + 渠道）与 `jiuwenswarm-acp`（ACP 桥接）。
-
-> 本仓以独立包形式维护 Gateway：不依赖 `workswarm`（`jiuwenswarm.*` 模块），仅与 JiuwenSwarm 共用 `openjiuwen` / `openjiuwen-protocol` 两个包。
+Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入口：`agent-gateway`（Gateway + 频道）与 `agent-gateway-acp`（ACP 桥接）。
 
 ## 核心特性
 
 | 能力 | 价值 |
 | --- | --- |
-| 多渠道接入 | 一个进程同时服务 Web UI、TUI、ACP 客户端与 IM 平台（小艺、飞书、钉钉、企业微信、个人微信、Telegram、Discord、Slack、WhatsApp），各渠道按配置惰性加载 |
+| 多频道接入 | 一个进程同时服务 Web UI、TUI、ACP 客户端与 IM 平台（小艺、飞书、钉钉、企业微信、个人微信、Telegram、Discord、Slack、WhatsApp），各频道按配置惰性加载 |
 | 请求路由 | 客户端请求统一归一化后经一条 E2A WebSocket 转发给 AgentServer，响应与流式分片按 request id 多路复用回收 |
-| 会话与项目路由 | Gateway 维护路由状态（会话、项目、工作模式、渠道绑定），客户端重连或切换时不丢上下文 |
+| 会话与项目路由 | Gateway 维护路由状态（会话、项目、工作模式、频道绑定），客户端重连或切换时不丢上下文 |
 | 定时任务 | cron 存储、调度器与命令回执在 Gateway；任务由 AgentServer 执行；系统自有的 `proactive.tick` 任务禁止手动创建或修改 |
 | 媒体与文件转发 | IM 平台文件经 AgentServer 落盘，Gateway 不直接写入用户工程目录 |
-| 安全防护 | WebSocket Origin 校验、user_id 白名单、显式剔除客户端伪造的认证键，凭据只从已认证渠道转发 |
-| 协议桥接 | ACP、A2A、SSH relay 与 web proxy 渠道复用同一套路由层 |
+| 安全防护 | WebSocket Origin 校验、user_id 白名单、显式剔除客户端伪造的认证键，凭据只从已认证频道转发 |
+| 协议桥接 | ACP、A2A、SSH relay 与 web proxy 频道复用同一套路由层 |
 | 健康检查与心跳 | 周期性健康检查与心跳让 Gateway / AgentServer 状态可观测，便于守护进程拉起异常的一半 |
 | 多实例隔离 | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` 隔离工作区，工作区锁避免两个 Gateway 服务同一实例 |
 
@@ -66,7 +64,7 @@ Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入�
 git clone https://gitcode.com/openJiuwen/agent-gateway.git
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 三方依赖已在 `pyproject.toml` 中完整声明；本包不依赖 `workswarm`，可独立安装运行。
@@ -105,7 +103,7 @@ export AGENT_SERVER_PORT=18092
 export WEB_HOST=127.0.0.1
 export WEB_PORT=19000
 
-uv run jiuwenswarm-gateway --port 19000
+uv run agent-gateway --port 19000
 ```
 
 日志中的就绪标志：
@@ -121,10 +119,10 @@ uv run jiuwenswarm-gateway --port 19000
 ## 架构
 
 ```text
- Web UI / TUI / ACP / IM 渠道
+ Web UI / TUI / ACP / IM 频道
               │  WebSocket（E2A 帧）
               ▼
-     JiuwenSwarm Gateway
+     Agent Gateway
        ├─ MessageHandler + ChannelManager
        ├─ WebChannel（uvicorn）/ TUI 路由
        ├─ cron 调度器 · 心跳 · 健康检查
@@ -161,7 +159,7 @@ Gateway 不承担 Agent 执行：所有涉及工作区、模型凭据与工具�
 
 ### config.yaml
 
-配置文件位于 `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。首次运行可以不创建——文件缺失时 Gateway 告警并使用默认值。如需显式关闭所有 IM 渠道：
+配置文件位于 `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。首次运行可以不创建——文件缺失时 Gateway 告警并使用默认值。如需显式关闭所有 IM 频道：
 
 ```yaml
 channels: {}
@@ -170,18 +168,18 @@ health_check:
   target: web
 ```
 
-渠道（`feishu`、`dingtalk`、`telegram`、`discord`、`slack`、`wecom`、`wechat`、`xiaoyi`、`whatsapp`）按需惰性加载：只有 `channels` 中出现的条目才会连同其依赖一起初始化。
+频道（`feishu`、`dingtalk`、`telegram`、`discord`、`slack`、`wecom`、`wechat`、`xiaoyi`、`whatsapp`）按需惰性加载：只有 `channels` 中出现的条目才会连同其依赖一起初始化。
 
-## 支持的渠道
+## 支持的频道
 
-在 Web UI 中启用渠道，或在 `config.yaml` 中以 `enabled: true` 加上该平台凭据启用。
+在 Web UI 中启用频道，或在 `config.yaml` 中以 `enabled: true` 加上该平台凭据启用。
 
-| 区域 | 渠道 |
+| 区域 | 频道 |
 | --- | --- |
 | 国内 | 小艺、飞书、钉钉、企业微信、个人微信 |
 | 海外 | Telegram、Discord、Slack、WhatsApp |
 
-各平台能力有差异：小艺与 WhatsApp 仅支持私聊；飞书、企业微信、钉钉、Telegram、Discord、Slack 还支持群聊，通常通过 @机器人 使用。飞书与企业微信额外支持数字人功能。详见[配置渠道](docs/zh/how-to/configure-channels.md)。
+各平台能力有差异：小艺与 WhatsApp 仅支持私聊；飞书、企业微信、钉钉、Telegram、Discord、Slack 还支持群聊，通常通过 @机器人 使用。飞书与企业微信额外支持数字人功能。详见[配置频道](docs/zh/how-to/configure-channels.md)。
 
 ## 本地验证
 
@@ -218,7 +216,7 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 
 ## 参与贡献
 
-欢迎开发者参与 JiuwenSwarm Gateway 的建设：
+欢迎开发者参与 Agent Gateway 的建设：
 
 - 提交 Bug、功能建议或使用问题：[Issues](https://gitcode.com/openJiuwen/agent-gateway/issues)
 - 提交代码、文档或示例：[Pull Requests](https://gitcode.com/openJiuwen/agent-gateway/pulls)
@@ -231,7 +229,7 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 | --- | --- | --- |
 | 官网 | 产品介绍、动态与生态建设 | [访问官网](https://openjiuwen.com) |
 | SIG | 技术路线、工程实践、生态共建 | [加入 SIG](https://openjiuwen.com/community/sig-center) |
-| Swarm Skills Hub | 浏览、发布和复用 JiuwenSwarm Skill | [访问 Swarm Skills Hub](https://swarmskills.openjiuwen.com/) |
+| Swarm Skills Hub | 浏览、发布和复用 Agent Skill | [访问 Swarm Skills Hub](https://swarmskills.openjiuwen.com/) |
 
 ## License
 

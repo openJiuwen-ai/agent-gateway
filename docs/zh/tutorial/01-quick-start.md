@@ -1,6 +1,6 @@
 # 快速开始
 
-> 目标：在本地 15 分钟内跑通 JiuwenSwarm Gateway——用一个 Mock AgentServer 模拟下游，启动 Gateway，再通过 `/tui` 路由发一条 `chat.send`，看到下游回显。
+> 目标：在本地 15 分钟内跑通 Agent Gateway——用一个 Mock AgentServer 模拟下游，启动 Gateway，再通过 `/tui` 路由发一条 `chat.send`，看到下游回显。
 >
 > English: [../../en/tutorial/01-quick-start.md](../../en/tutorial/01-quick-start.md)
 
@@ -19,7 +19,7 @@
 git clone https://gitcode.com/openJiuwen/agent-gateway.git
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 若 `uv sync` 因网络失败，可先配置镜像：
@@ -54,7 +54,7 @@ export WEB_PORT=19500
 export GATEWAY_HOST=127.0.0.1
 export GATEWAY_PORT=19502
 
-uv run jiuwenswarm-gateway --port 19500
+uv run agent-gateway --port 19500
 ```
 
 日志中出现以下内容，说明 Gateway 已完成启动：
@@ -91,7 +91,7 @@ uv run python examples/mock-agent-server/gw_client.py ws://127.0.0.1:19502/tui
 ## 下一步
 
 - 完整验证步骤与排错：[本地功能验证](../how-to/local-validation.md)
-- 接入 IM 渠道：[配置渠道](../how-to/configure-channels.md)
+- 接入 IM 频道：[配置频道](../how-to/configure-channels.md)
 - 运行多个实例：[单机多实例](../how-to/run-multiple-instances.md)
 - 命令行与环境变量：[参考文档](../reference/cli-and-environment.md)
 - 架构与设计：[架构说明](../explanation/architecture.md)

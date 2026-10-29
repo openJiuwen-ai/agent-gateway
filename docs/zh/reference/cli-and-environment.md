@@ -1,10 +1,10 @@
 # 命令行与环境变量参考
 
-本文列出 `jiuwenswarm-gateway` 的命令行参数、环境变量、配置文件与运行时目录。
+本文列出 `agent-gateway` 的命令行参数、环境变量、配置文件与运行时目录。
 
 ## 命令行参数
 
-入口：`jiuwenswarm-gateway`（Gateway + 渠道）与 `jiuwenswarm-acp`（ACP 桥接）。
+入口：`agent-gateway`（Gateway + 频道）与 `agent-gateway-acp`（ACP 桥接）。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -61,7 +61,7 @@
 | --- | --- | --- |
 | `HEALTH_CHECK_INTERVAL` / `HEARTBEAT_INTERVAL` | `config.yaml` 的 `health_check.every`，否则 `60` | 检查间隔（秒） |
 | `HEALTH_CHECK_TIMEOUT` | 未设置 | 单次检查超时（秒） |
-| `HEALTH_CHECK_RELAY_CHANNEL_ID` / `HEARTBEAT_RELAY_CHANNEL_ID` | `config.yaml` 的 `health_check.target`，否则 `web` | 结果回传渠道 |
+| `HEALTH_CHECK_RELAY_CHANNEL_ID` / `HEARTBEAT_RELAY_CHANNEL_ID` | `config.yaml` 的 `health_check.target`，否则 `web` | 结果回传频道 |
 
 ## 配置文件
 
@@ -70,17 +70,17 @@
 文件不存在或读取失败时，Gateway 告警并使用默认值。常用配置项：
 
 ```yaml
-channels: {}          # 仅初始化此处出现的 IM 渠道
+channels: {}          # 仅初始化此处出现的 IM 频道
 health_check:
   every: 60           # 健康检查间隔（秒）
-  target: web         # 结果回传渠道
+  target: web         # 结果回传频道
 ```
 
 ## 运行时目录
 
 | 路径 | 内容 |
 | --- | --- |
-| `<root>/config/config.yaml` | Gateway / 渠道配置 |
+| `<root>/config/config.yaml` | Gateway / 频道配置 |
 | `<root>/agent/sessions/` | 会话数据（由 AgentServer 写入） |
 | `<root>/agent/.logs/` | Gateway、AgentServer 与汇总日志 |
 | `<root>/.gateway.lock` | 工作区单例锁 |
@@ -94,7 +94,7 @@ health_check:
 | --- | --- |
 | 工作区锁已被占用 | 输出 `[App] Another Gateway is already serving this workspace`，以非零状态退出 |
 | `--name` 指定的实例不存在或工作区缺失 | 启动前报错并以非零状态退出 |
-| `Ctrl+C` | 关闭 WebChannel、渠道与后台任务后退出 |
+| `Ctrl+C` | 关闭 WebChannel、频道与后台任务后退出 |
 
 ---
 

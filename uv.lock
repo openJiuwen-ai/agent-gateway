@@ -44,7 +44,7 @@ http-server = [
 
 [[package]]
 name = "agent-gateway"
-version = "0.2.5b1"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
