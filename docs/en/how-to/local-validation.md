@@ -21,7 +21,7 @@ uv sync
 uv run jiuwenswarm-gateway --help
 ```
 
-All third-party dependencies are declared in `pyproject.toml`. `workswarm` is a transitional hard dependency because the gateway still imports `jiuwenswarm.*` modules; it will be removed after decoupling.
+All third-party dependencies are declared in `pyproject.toml`; the package does not depend on `workswarm` and can be installed standalone.
 
 If `uv sync` fails because of network issues, configure a mirror first:
 
@@ -149,11 +149,11 @@ Expected: `{"type":"res","id":"req-list","ok":true,"payload":{"sessions":[],"cur
 | Log shows `等待 connection.ack 超时` | The mock did not send `connection.ack`, so `server_ready` stays false and some proxy entries are unavailable |
 | Port already in use | Change `WEB_PORT` / `GATEWAY_PORT` / the mock port |
 | IM channels not started | Expected: only channels explicitly enabled under `channels` are started |
-| `uv sync` is slow or times out | The first run pulls git sources such as workswarm / openjiuwen; make sure gitcode is reachable or configure `UV_DEFAULT_INDEX` |
+| `uv sync` is slow or times out | The first run pulls git sources such as openjiuwen; make sure gitcode is reachable or configure `UV_DEFAULT_INDEX` |
 
-## Appendix A: Debug against a local workswarm checkout
+## Appendix A: Run with the JiuwenSwarm venv
 
-To modify workswarm and gateway together, skip the git dependency and run this repository with the workswarm repository's venv:
+To debug gateway and JiuwenSwarm side by side, reuse the jiuwenswarm repository's venv instead of creating a new one:
 
 ```bash
 JIUWENSWARM_HOME=/tmp/gw-home \
@@ -163,7 +163,7 @@ PYTHONPATH=/path/to/agent-gateway \
 /path/to/jiuwenswarm/.venv/bin/python -m jiuwenswarm_gateway.app_gateway --port 19500
 ```
 
-The venv must already have workswarm's full dependencies (the workswarm repository's own `.venv` satisfies this).
+The venv must already have the gateway's dependencies (the jiuwenswarm repository's own `.venv` satisfies this).
 
 ---
 

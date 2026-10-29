@@ -26,7 +26,7 @@
 
 The gateway builds and runs as its own Python package `jiuwenswarm-gateway` with two entry points: `jiuwenswarm-gateway` (gateway + channels) and `jiuwenswarm-acp` (ACP bridge).
 
-> This repository is being prepared for an independent pipeline. During the transition the package still depends on `workswarm` (the `jiuwenswarm.*` modules) and will shed that dependency once the import decoupling is complete.
+> This repository hosts the gateway as a standalone package: it has no dependency on `workswarm` (the `jiuwenswarm.*` modules) and shares only the `openjiuwen` / `openjiuwen-protocol` packages with JiuwenSwarm.
 
 ## Core Features
 
@@ -69,7 +69,7 @@ uv sync
 uv run jiuwenswarm-gateway --help
 ```
 
-All third-party dependencies are declared in `pyproject.toml`. `workswarm` is a transitional hard dependency — the gateway still imports `jiuwenswarm.*` modules; it will be removed once the decoupling is finished.
+All third-party dependencies are declared in `pyproject.toml`; the package does not depend on `workswarm` and can be installed standalone.
 
 If `uv sync` is slow or fails on the git sources, configure an index mirror first:
 

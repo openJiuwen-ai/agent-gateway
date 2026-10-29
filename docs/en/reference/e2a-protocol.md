@@ -1,9 +1,7 @@
 # E2A (Everything-to-Agent) Protocol
 
-> **Implementation**: `jiuwenswarm/common/e2a/` (`models.py`, `adapters.py`, `constants.py`, `__init__.py`). **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.  
+> **Implementation**: `openjiuwen_protocol.e2a`（`models.py`, `adapters.py`, `constants.py`, `__init__.py`）. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
 > **Chinese**: [../../zh/reference/e2a-protocol.md](../../zh/reference/e2a-protocol.md)
->
-> **Note**: During the transition this repository still uses `jiuwenswarm/common/e2a/` through the `workswarm` dependency; the implementation will move out after decoupling, while this protocol document stays unchanged.
 
 ---
 

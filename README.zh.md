@@ -26,7 +26,7 @@
 
 Gateway 以独立 Python 包 `jiuwenswarm-gateway` 构建和运行，提供两个入口：`jiuwenswarm-gateway`（Gateway + 渠道）与 `jiuwenswarm-acp`（ACP 桥接）。
 
-> 本仓目前用于搭建独立流水线。过渡期内本包仍依赖 `workswarm`（即 `jiuwenswarm.*` 模块），待 import 解耦完成后移除。
+> 本仓以独立包形式维护 Gateway：不依赖 `workswarm`（`jiuwenswarm.*` 模块），仅与 JiuwenSwarm 共用 `openjiuwen` / `openjiuwen-protocol` 两个包。
 
 ## 核心特性
 
@@ -69,7 +69,7 @@ uv sync
 uv run jiuwenswarm-gateway --help
 ```
 
-三方依赖已在 `pyproject.toml` 中完整声明。`workswarm` 是过渡期硬依赖——Gateway 仍引用 `jiuwenswarm.*` 内部模块，解耦完成后移除。
+三方依赖已在 `pyproject.toml` 中完整声明；本包不依赖 `workswarm`，可独立安装运行。
 
 若 `uv sync` 因网络失败或过慢，可先配置镜像：
 

@@ -1,9 +1,7 @@
 # E2A（Everything-to-Agent）协议说明
 
-> **实现**：`jiuwenswarm/common/e2a/`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。  
+> **实现**：`openjiuwen_protocol.e2a`（`models.py`、`adapters.py`、`constants.py`、`__init__.py`）。**版本**：`E2A_PROTOCOL_VERSION`（默认 `1.0`）。**冲突时**：以 `models.py` 中 dataclass 字段为最终实现源，并回头修正本文。请求：`E2AEnvelope`；响应：`E2AResponse`。
 > **English**：[../../en/reference/e2a-protocol.md](../../en/reference/e2a-protocol.md)
->
-> **说明**：本仓过渡期仍通过 `workswarm` 依赖使用 `jiuwenswarm/common/e2a/` 实现；解耦完成后实现将迁出，本协议文档保持不变。
 
 ---
 

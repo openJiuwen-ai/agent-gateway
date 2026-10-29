@@ -21,8 +21,7 @@ uv sync
 uv run jiuwenswarm-gateway --help
 ```
 
-依赖说明：`pyproject.toml` 中已声明全部三方依赖；`workswarm` 是**过渡期硬依赖**
-（gateway 仍引用 `jiuwenswarm.*` 内部模块），解耦完成后会移除。
+依赖说明：`pyproject.toml` 中已声明全部三方依赖；本包不依赖 `workswarm`，可独立安装运行。
 
 若 `uv sync` 因网络失败，可先配置镜像：
 
@@ -150,11 +149,11 @@ EOF
 | 日志出现 `等待 connection.ack 超时` | Mock 未发送 `connection.ack`，`server_ready` 会一直为 False，部分代理入口返回不可用 |
 | 端口占用 | 调整 `WEB_PORT` / `GATEWAY_PORT` / Mock 端口 |
 | IM 渠道未启动 | 属于正常行为：仅 `channels` 中显式启用的渠道才会拉起 |
-| `uv sync` 很慢或超时 | 首次需拉取 workswarm / openjiuwen 等 git 源；确认可访问 gitcode，或配置 `UV_DEFAULT_INDEX` 镜像 |
+| `uv sync` 很慢或超时 | 首次需拉取 openjiuwen 等 git 源；确认可访问 gitcode，或配置 `UV_DEFAULT_INDEX` 镜像 |
 
-## 附录 A：复用本地 workswarm 源码调试
+## 附录 A：复用 JiuwenSwarm 的 venv 运行
 
-若需要在本地同时修改 workswarm 与 gateway，可跳过 git 依赖、直接用 workswarm 仓库的 venv 运行本仓代码：
+若需要在本地同时调试 gateway 与 JiuwenSwarm，可直接复用 jiuwenswarm 仓库的 venv，无需另建环境：
 
 ```bash
 JIUWENSWARM_HOME=/tmp/gw-home \
@@ -164,7 +163,7 @@ PYTHONPATH=/path/to/agent-gateway \
 /path/to/jiuwenswarm/.venv/bin/python -m jiuwenswarm_gateway.app_gateway --port 19500
 ```
 
-注意：该 venv 需已安装 workswarm 的完整依赖（workswarm 仓库自身 `.venv` 满足）。
+注意：该 venv 需已安装 gateway 的全部依赖（jiuwenswarm 仓库自身 `.venv` 满足）。
 
 ---
 
