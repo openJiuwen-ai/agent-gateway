@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+
+# logs
+logs/
+
+# 本地验证工作区
+.local-home/
+# 无用户工作区时运行期在仓库根生成的配置/锁文件
+/config/
