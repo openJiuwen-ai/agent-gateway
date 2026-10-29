@@ -24,7 +24,7 @@
 
 **JiuwenSwarm Gateway** 是 JiuwenSwarm 分离部署（Gateway + AgentServer）中的网关进程。它位于用户侧渠道与 AgentServer 之间：接收来自 Web UI、TUI、ACP 客户端与 IM 平台的连接，把请求经单条 WebSocket（E2A 协议）路由给 AgentServer，并承载跨会话的公共服务——定时任务、心跳、健康检查与多实例隔离。
 
-Gateway 以独立 Python 包 `jiuwenswarm-gateway` 构建和运行，提供两个入口：`jiuwenswarm-gateway`（Gateway + 渠道）与 `jiuwenswarm-acp`（ACP 桥接）。
+Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入口：`jiuwenswarm-gateway`（Gateway + 渠道）与 `jiuwenswarm-acp`（ACP 桥接）。
 
 > 本仓以独立包形式维护 Gateway：不依赖 `workswarm`（`jiuwenswarm.*` 模块），仅与 JiuwenSwarm 共用 `openjiuwen` / `openjiuwen-protocol` 两个包。
 
@@ -82,7 +82,7 @@ uv sync
 
 ```bash
 bash scripts/build.sh --wheel
-pip install dist/jiuwenswarm_gateway-*.whl
+pip install dist/agent_gateway-*.whl
 ```
 
 ## 快速上手
@@ -198,8 +198,8 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 
 产物位于 `dist/`：
 
-- `dist/jiuwenswarm_gateway-<version>-py3-none-any.whl`
-- `dist/jiuwenswarm_gateway-<version>.tar.gz`
+- `dist/agent_gateway-<version>-py3-none-any.whl`
+- `dist/agent_gateway-<version>.tar.gz`
 
 ## 测试
 
@@ -210,7 +210,7 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 ./run_tests.sh -p           # 并行执行（需 pytest-xdist）
 ```
 
-`pytest.ini` 默认对 `jiuwenswarm_gateway` 开启覆盖率，输出：
+`pytest.ini` 默认对 `agent_gateway` 开启覆盖率，输出：
 
 - 终端报告（term-missing）
 - `htmlcov/index.html`

@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jiuwenswarm-gateway"
+name = "agent-gateway"
 version = "0.2.5.beta1"
 description = "JiuwenSwarm Gateway - channel/protocol front for AgentServer"
 requires-python = ">=3.11,<3.14"
@@ -74,19 +74,19 @@ dev = [
 ]
 
 [project.scripts]
-jiuwenswarm-gateway = "jiuwenswarm_gateway.app_gateway:main"
-jiuwenswarm-acp = "jiuwenswarm_gateway.channel_manager.protocol.acp.acp_connect:main"
+jiuwenswarm-gateway = "agent_gateway.app_gateway:main"
+jiuwenswarm-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
 
 [tool.setuptools]
 py-modules = []
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["jiuwenswarm_gateway*"]
+include = ["agent_gateway*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-jiuwenswarm_gateway = [
+agent_gateway = [
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",

@@ -160,7 +160,7 @@ JIUWENSWARM_HOME=/tmp/gw-home \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501 \
 WEB_PORT=19500 GATEWAY_PORT=19502 \
 PYTHONPATH=/path/to/agent-gateway \
-/path/to/jiuwenswarm/.venv/bin/python -m jiuwenswarm_gateway.app_gateway --port 19500
+/path/to/jiuwenswarm/.venv/bin/python -m agent_gateway.app_gateway --port 19500
 ```
 
 注意：该 venv 需已安装 gateway 的全部依赖（jiuwenswarm 仓库自身 `.venv` 满足）。
