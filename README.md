@@ -1,4 +1,4 @@
-<h1 align="center">JiuwenSwarm Gateway</h1>
+<h1 align="center">Agent Gateway</h1>
 
 <p align="center">
   <strong>One gateway from every client to the agent — multi-channel access, routing, scheduling</strong>
@@ -11,7 +11,7 @@
   ·
   <a href="docs/en/how-to/local-validation.md">Local Validation</a>
   ·
-  <a href="https://gitcode.com/openJiuwen/jiuwenswarm">JiuwenSwarm</a>
+  <a href="https://gitcode.com/openJiuwen/agent-gateway">Repository</a>
 </p>
 
 <p align="center">
@@ -22,11 +22,9 @@
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg" alt="OS Support" />
 </p>
 
-**JiuwenSwarm Gateway** is the gateway process of JiuwenSwarm's split deployment (Gateway + AgentServer). It sits between user-facing channels and the AgentServer: it accepts connections from the Web UI, TUI, ACP clients and IM platforms, routes requests to the AgentServer over a single WebSocket (E2A protocol), and owns the cross-session services — scheduled tasks, heartbeat, health checks and multi-instance isolation.
+**Agent Gateway** is the gateway process of the split deployment (Gateway + AgentServer). It sits between user-facing channels and the AgentServer: it accepts connections from the Web UI, TUI, ACP clients and IM platforms, routes requests to the AgentServer over a single WebSocket (E2A protocol), and owns the cross-session services — scheduled tasks, heartbeat, health checks and multi-instance isolation.
 
-The gateway builds and runs as its own Python package `agent-gateway` with two entry points: `jiuwenswarm-gateway` (gateway + channels) and `jiuwenswarm-acp` (ACP bridge).
-
-> This repository hosts the gateway as a standalone package: it has no dependency on `workswarm` (the `jiuwenswarm.*` modules) and shares only the `openjiuwen` / `openjiuwen-protocol` packages with JiuwenSwarm.
+The gateway builds and runs as its own Python package `agent-gateway` with two entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP bridge).
 
 ## Core Features
 
@@ -66,7 +64,7 @@ The gateway builds and runs as its own Python package `agent-gateway` with two e
 git clone https://gitcode.com/openJiuwen/agent-gateway.git
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 All third-party dependencies are declared in `pyproject.toml`; the package does not depend on `workswarm` and can be installed standalone.
@@ -105,7 +103,7 @@ export AGENT_SERVER_PORT=18092
 export WEB_HOST=127.0.0.1
 export WEB_PORT=19000
 
-uv run jiuwenswarm-gateway --port 19000
+uv run agent-gateway --port 19000
 ```
 
 Ready markers in the log:
@@ -124,7 +122,7 @@ For a fully self-contained walkthrough (mock downstream + `chat.send` round trip
  Web UI / TUI / ACP / IM channels
               │  WebSocket (E2A frames)
               ▼
-     JiuwenSwarm Gateway
+     Agent Gateway
        ├─ MessageHandler + ChannelManager
        ├─ WebChannel (uvicorn) / TUI route
        ├─ Cron scheduler · heartbeat · health check
@@ -218,7 +216,7 @@ Artifacts are written to `dist/`:
 
 ## Contributing
 
-We welcome developers to contribute to JiuwenSwarm Gateway:
+We welcome developers to contribute to Agent Gateway:
 
 - Report bugs, feature requests, or usage issues: [Issues](https://gitcode.com/openJiuwen/agent-gateway/issues)
 - Submit code, documentation, or examples: [Pull Requests](https://gitcode.com/openJiuwen/agent-gateway/pulls)
@@ -231,7 +229,7 @@ Before contributing, read the [Contributing Guide](CONTRIBUTING.en.md) for the d
 | ---------------- | ------------------------------------------------------------ | ------------------------------------------------------------- |
 | Website          | Product info, updates, and ecosystem                         | [Visit Website](https://openjiuwen.com/en/)                   |
 | SIG              | Technical roadmap, engineering practices, ecosystem building | [Join SIG](https://openjiuwen.com/en/community/sig-center)    |
-| Swarm Skills Hub | Browse, publish, and reuse JiuwenSwarm Skills                | [Visit Swarm Skills Hub](https://swarmskills.openjiuwen.com/) |
+| Swarm Skills Hub | Browse, publish, and reuse agent skills                | [Visit Swarm Skills Hub](https://swarmskills.openjiuwen.com/) |
 
 ## License
 

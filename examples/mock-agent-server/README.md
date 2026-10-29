@@ -1,6 +1,6 @@
 # Mock AgentServer 示例
 
-用两个脚本在本地模拟 Gateway 的上下游，无需真实 AgentServer、模型凭据或 IM 渠道：
+用两个脚本在本地模拟 Gateway 的上下游，无需真实 AgentServer、模型凭据或 IM 频道：
 
 - `mock_agent_server.py`：下游 AgentServer。连接后立即发送 `connection.ack`，对每个请求回 Echo，并在 `is_stream` 请求时发送 3 条流式分片。
 - `gw_client.py`：上游客户端。连接 Gateway 的 `/tui` 路由，发送一条 `chat.send` 并打印回推事件。
@@ -25,7 +25,7 @@ export AGENT_SERVER_PORT=19501
 export WEB_PORT=19500
 export GATEWAY_PORT=19502
 
-uv run jiuwenswarm-gateway --port 19500
+uv run agent-gateway --port 19500
 ```
 
 终端 C（客户端）：

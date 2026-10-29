@@ -1,10 +1,10 @@
 # Architecture
 
-This page explains the role, data flow, module layout, and key design decisions of JiuwenSwarm Gateway.
+This page explains the role, data flow, module layout, and key design decisions of Agent Gateway.
 
 ## Role
 
-JiuwenSwarm uses a split deployment: **Gateway + AgentServer**.
+The system uses a split deployment: **Gateway + AgentServer**.
 
 - **Gateway**: the access layer for clients and IM platforms. It handles multi-channel access, request normalization, routing, session binding, cron scheduling, heartbeat, and health checks.
 - **AgentServer**: the execution layer. It runs the agent loop, model calls, workspace I/O, tool sandboxing, and file persistence.
@@ -17,7 +17,7 @@ The gateway is stateless with respect to agent execution: everything that touche
  Web UI / TUI / ACP / IM channels
               │  WebSocket (E2A frames)
               ▼
-     JiuwenSwarm Gateway
+     Agent Gateway
        ├─ MessageHandler + ChannelManager
        ├─ WebChannel (uvicorn) / TUI route
        ├─ Cron scheduler · heartbeat · health check

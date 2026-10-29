@@ -1,6 +1,6 @@
-# JiuwenSwarm Gateway Documentation
+# Agent Gateway Documentation
 
-This documentation covers installation, usage, reference, and design for JiuwenSwarm Gateway. Chinese is the authoritative source; the English structure mirrors it.
+This documentation covers installation, usage, reference, and design for Agent Gateway. Chinese is the authoritative source; the English structure mirrors it.
 
 ## Coverage
 

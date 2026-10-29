@@ -27,7 +27,7 @@ uv run jiuwenswarm-agentserver
 JIUWENSWARM_DATA_DIR=/srv/gw-a \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=18092 \
 WEB_PORT=19000 GATEWAY_PORT=19001 \
-uv run jiuwenswarm-gateway
+uv run agent-gateway
 ```
 
 Instance B (terminals 3 and 4):
@@ -42,7 +42,7 @@ uv run jiuwenswarm-agentserver
 JIUWENSWARM_DATA_DIR=/srv/gw-b \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19092 \
 WEB_PORT=20000 GATEWAY_PORT=20001 \
-uv run jiuwenswarm-gateway
+uv run agent-gateway
 ```
 
 Notes:
@@ -75,11 +75,11 @@ Start with `--name`. Ports come from the bootstrap `.env` in each workspace (all
 ```bash
 # Instance dev
 uv run jiuwenswarm-agentserver --name dev
-uv run jiuwenswarm-gateway --name dev
+uv run agent-gateway --name dev
 
 # Instance prod
 uv run jiuwenswarm-agentserver --name prod
-uv run jiuwenswarm-gateway --name prod
+uv run agent-gateway --name prod
 ```
 
 ## Verify

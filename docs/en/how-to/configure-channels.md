@@ -67,7 +67,7 @@ channels:
 
 ## Platform credentials
 
-App creation, permission requests, and credential acquisition differ per platform and are maintained in the JiuwenSwarm documentation:
+App creation, permission requests, and credential acquisition differ per platform and are maintained in the external platform documentation:
 
 - China channels: [China Channels](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/ChinaChannels.md)
 - International channels: [International Channels](https://gitcode.com/openJiuwen/jiuwenswarm/blob/develop/docs/en/InternationalChannels.md)

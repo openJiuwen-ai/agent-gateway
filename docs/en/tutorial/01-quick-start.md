@@ -1,6 +1,6 @@
 # Quick Start
 
-> Goal: run JiuwenSwarm Gateway locally in about 15 minutes — use a mock AgentServer as the downstream, start the gateway, send a `chat.send` request through the `/tui` route, and see the echo.
+> Goal: run Agent Gateway locally in about 15 minutes — use a mock AgentServer as the downstream, start the gateway, send a `chat.send` request through the `/tui` route, and see the echo.
 >
 > 中文: [../../zh/tutorial/01-quick-start.md](../../zh/tutorial/01-quick-start.md)
 
@@ -19,7 +19,7 @@
 git clone https://gitcode.com/openJiuwen/agent-gateway.git
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 If `uv sync` fails because of network issues, configure a mirror first:
@@ -54,7 +54,7 @@ export WEB_PORT=19500
 export GATEWAY_HOST=127.0.0.1
 export GATEWAY_PORT=19502
 
-uv run jiuwenswarm-gateway --port 19500
+uv run agent-gateway --port 19500
 ```
 
 The gateway is ready when the log shows:

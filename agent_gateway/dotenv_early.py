@@ -126,7 +126,7 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     return loaded
 
 
-def parse_dotenv_early(component_name: str = "jiuwenswarm-gateway") -> Path | None:
+def parse_dotenv_early(component_name: str = "agent-gateway") -> Path | None:
     """Parse --dotenv/--name and load an existing env file.
 
     Scans ``sys.argv`` and does not remove the arguments. ``--dotenv`` wins
@@ -223,7 +223,7 @@ def _load_bootstrap_by_name_early(name: str, component_name: str) -> Path | None
 
 
 _parsed_dotenv: Path | None = None
-_component_name: str = "jiuwenswarm-gateway"
+_component_name: str = "agent-gateway"
 
 
 def get_parsed_dotenv() -> Path | None:

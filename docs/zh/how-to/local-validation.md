@@ -1,6 +1,6 @@
 # Gateway 本地功能验证指南
 
-在本地用 Mock AgentServer 模拟上下游接口，验证 `jiuwenswarm-gateway` 的基本功能（启动、下游连接、上游 WebSocket 往返）。
+在本地用 Mock AgentServer 模拟上下游接口，验证 `agent-gateway` 的基本功能（启动、下游连接、上游 WebSocket 往返）。
 
 - **下游（South）**：AgentServer WebSocket，本指南用 Mock 服务代替真实 AgentServer。
 - **上游（North）**：Gateway 内置的 `/tui` WebSocket 路由（帧格式与真实客户端一致）。
@@ -18,7 +18,7 @@
 ```bash
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 依赖说明：`pyproject.toml` 中已声明全部三方依赖；本包不依赖 `workswarm`，可独立安装运行。
@@ -56,7 +56,7 @@ export JIUWENSWARM_HOME="$PWD/.local-home"
 
 ### 2.3 config.yaml（可选）
 
-文件不存在时 Gateway 会告警并使用默认值，最小验证无需创建。如需显式关闭所有 IM 渠道：
+文件不存在时 Gateway 会告警并使用默认值，最小验证无需创建。如需显式关闭所有 IM 频道：
 
 ```yaml
 channels: {}
@@ -65,7 +65,7 @@ health_check:
   target: web
 ```
 
-仅当 `channels` 中出现对应条目时，才会惰性加载 feishu / dingtalk / telegram / discord / slack / wecom 等渠道及其依赖。
+仅当 `channels` 中出现对应条目时，才会惰性加载 feishu / dingtalk / telegram / discord / slack / wecom 等频道及其依赖。
 
 ## 3. 启动下游 Mock AgentServer
 
@@ -87,7 +87,7 @@ export JIUWENSWARM_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1 WEB_PORT=19500 GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=19502
 
-uv run jiuwenswarm-gateway --port 19500
+uv run agent-gateway --port 19500
 ```
 
 就绪标志（日志）：
@@ -144,26 +144,26 @@ EOF
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| `ModuleNotFoundError: No module named 'jiuwenswarm'` | 依赖未安装完全，重新 `uv sync`；或检查是否绕过了项目 venv |
+| `ModuleNotFoundError: No module named 'agent_gateway'` | 依赖未安装完全，重新 `uv sync`；或检查是否绕过了项目 venv |
 | 启动即报 “Another Gateway is already serving this workspace” | 同一 `JIUWENSWARM_HOME` 已有 Gateway 在跑（`.gateway.lock`），换目录或先停旧进程 |
 | 日志出现 `等待 connection.ack 超时` | Mock 未发送 `connection.ack`，`server_ready` 会一直为 False，部分代理入口返回不可用 |
 | 端口占用 | 调整 `WEB_PORT` / `GATEWAY_PORT` / Mock 端口 |
-| IM 渠道未启动 | 属于正常行为：仅 `channels` 中显式启用的渠道才会拉起 |
+| IM 频道未启动 | 属于正常行为：仅 `channels` 中显式启用的频道才会拉起 |
 | `uv sync` 很慢或超时 | 首次需拉取 openjiuwen 等 git 源；确认可访问 gitcode，或配置 `UV_DEFAULT_INDEX` 镜像 |
 
-## 附录 A：复用 JiuwenSwarm 的 venv 运行
+## 附录 A：复用已有 venv 运行
 
-若需要在本地同时调试 gateway 与 JiuwenSwarm，可直接复用 jiuwenswarm 仓库的 venv，无需另建环境：
+若本地已有安装 gateway 依赖的 venv，可直接复用，无需另建环境：
 
 ```bash
 JIUWENSWARM_HOME=/tmp/gw-home \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501 \
 WEB_PORT=19500 GATEWAY_PORT=19502 \
 PYTHONPATH=/path/to/agent-gateway \
-/path/to/jiuwenswarm/.venv/bin/python -m agent_gateway.app_gateway --port 19500
+/path/to/venv/bin/python -m agent_gateway.app_gateway --port 19500
 ```
 
-注意：该 venv 需已安装 gateway 的全部依赖（jiuwenswarm 仓库自身 `.venv` 满足）。
+注意：该 venv 需已安装 gateway 的全部依赖。
 
 ---
 

@@ -1,6 +1,6 @@
 # Local Validation Guide
 
-Validate `jiuwenswarm-gateway` locally with a mock AgentServer: startup, downstream connection, and the upstream WebSocket round trip.
+Validate `agent-gateway` locally with a mock AgentServer: startup, downstream connection, and the upstream WebSocket round trip.
 
 - **Downstream (South)**: AgentServer WebSocket; this guide uses a mock service instead of a real AgentServer.
 - **Upstream (North)**: the gateway's built-in `/tui` WebSocket route (same frame format as real clients).
@@ -18,7 +18,7 @@ Validate `jiuwenswarm-gateway` locally with a mock AgentServer: startup, downstr
 ```bash
 cd agent-gateway
 uv sync
-uv run jiuwenswarm-gateway --help
+uv run agent-gateway --help
 ```
 
 All third-party dependencies are declared in `pyproject.toml`; the package does not depend on `workswarm` and can be installed standalone.
@@ -87,7 +87,7 @@ export JIUWENSWARM_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1 WEB_PORT=19500 GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=19502
 
-uv run jiuwenswarm-gateway --port 19500
+uv run agent-gateway --port 19500
 ```
 
 Ready markers in the log:
@@ -144,26 +144,26 @@ Expected: `{"type":"res","id":"req-list","ok":true,"payload":{"sessions":[],"cur
 
 | Symptom | Cause / fix |
 |---|---|
-| `ModuleNotFoundError: No module named 'jiuwenswarm'` | Dependencies are incomplete; run `uv sync` again, or check that you are not bypassing the project venv |
+| `ModuleNotFoundError: No module named 'agent_gateway'` | Dependencies are incomplete; run `uv sync` again, or check that you are not bypassing the project venv |
 | Startup reports "Another Gateway is already serving this workspace" | Another gateway is running with the same `JIUWENSWARM_HOME` (`.gateway.lock`); use another directory or stop the old process |
 | Log shows `等待 connection.ack 超时` | The mock did not send `connection.ack`, so `server_ready` stays false and some proxy entries are unavailable |
 | Port already in use | Change `WEB_PORT` / `GATEWAY_PORT` / the mock port |
 | IM channels not started | Expected: only channels explicitly enabled under `channels` are started |
 | `uv sync` is slow or times out | The first run pulls git sources such as openjiuwen; make sure gitcode is reachable or configure `UV_DEFAULT_INDEX` |
 
-## Appendix A: Run with the JiuwenSwarm venv
+## Appendix A: Run with an existing venv
 
-To debug gateway and JiuwenSwarm side by side, reuse the jiuwenswarm repository's venv instead of creating a new one:
+If a venv with the gateway's dependencies already exists, reuse it instead of creating a new one:
 
 ```bash
 JIUWENSWARM_HOME=/tmp/gw-home \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501 \
 WEB_PORT=19500 GATEWAY_PORT=19502 \
 PYTHONPATH=/path/to/agent-gateway \
-/path/to/jiuwenswarm/.venv/bin/python -m agent_gateway.app_gateway --port 19500
+/path/to/venv/bin/python -m agent_gateway.app_gateway --port 19500
 ```
 
-The venv must already have the gateway's dependencies (the jiuwenswarm repository's own `.venv` satisfies this).
+The venv must already have the gateway's dependencies.
 
 ---
 

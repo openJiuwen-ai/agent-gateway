@@ -1,6 +1,6 @@
-# JiuwenSwarm Gateway 文档
+# Agent Gateway 文档
 
-本文档汇总 JiuwenSwarm Gateway 的安装、使用、参考与设计说明。中文为权威源，英文版本结构与内容对称。
+本文档汇总 Agent Gateway 的安装、使用、参考与设计说明。中文为权威源，英文版本结构与内容对称。
 
 ## 文档覆盖范围
 

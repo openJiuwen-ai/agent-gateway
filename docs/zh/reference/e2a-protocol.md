@@ -11,10 +11,10 @@
 |------|------|
 | **docs/zh/reference/e2a-protocol.md**（本文，中文） | 规范说明、易混点、示例 |
 | **docs/en/reference/e2a-protocol.md** | 同上，英文版 |
-| `jiuwenswarm/common/e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
-| `jiuwenswarm/common/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
-| `jiuwenswarm/common/e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
-| `jiuwenswarm/common/e2a/__init__.py` | 对外导出 |
+| `openjiuwen_protocol/e2a/models.py` | 请求 `E2AEnvelope`、响应 `E2AResponse` 与子结构；`from_dict` / `to_dict` |
+| `openjiuwen_protocol/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**、**`E2A_RESPONSE_KINDS`**、**`E2A_RESPONSE_STATUS_*`**、ACP 方法名与 SessionUpdate 字符串（运行时以元组为准） |
+| `openjiuwen_protocol/e2a/adapters.py` | ACP / A2A → E2A；E2A → ACP JSON-RPC；**`E2AResponse` → ACP / A2A 投影**（见 §8） |
+| `openjiuwen_protocol/e2a/__init__.py` | 对外导出 |
 
 ---
 
@@ -133,7 +133,7 @@
 
 ## 6. `constants.py` 中的 ACP 字符串（桥接参考）
 
-以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `jiuwenswarm.common.e2a.constants` 中元组为准：
+以下**仅**用于 ACP 桥接或文档对照，**运行时**以 `openjiuwen_protocol.e2a.constants` 中元组为准：
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**：客户端 → Agent 的 JSON-RPC method 名
 - **`ACP_AGENT_TO_CLIENT_METHODS`**、**`ACP_NOTIFICATION_NAMES`**：下行 / 通知
@@ -146,7 +146,7 @@
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python：`jiuwenswarm.common.e2a.merge_params_to_acp_prompt(envelope)`。
+Python：`openjiuwen_protocol.e2a.merge_params_to_acp_prompt(envelope)`。
 
 当且仅当 **`method == "session/prompt"`** 时：
 
@@ -397,7 +397,7 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 
 ---
 
-*本文与 `jiuwenswarm/common/e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
+*本文与 `openjiuwen_protocol/e2a/models.py`（`E2AEnvelope`、`E2AResponse`）同步维护。*
 
 ## 变更记录
 

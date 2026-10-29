@@ -63,7 +63,7 @@ _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 
-parse_dotenv_early("jiuwenswarm-gateway")
+parse_dotenv_early("agent-gateway")
 _mark_startup_import_phase("dotenv_parsed")
 
 # Gateway 自带日志初始化：共同安装时母仓已配置则复用，独立安装时按同一路径自建
@@ -3871,7 +3871,7 @@ def main() -> None:
     from agent_gateway.dotenv_early import get_parsed_dotenv
 
     parser = argparse.ArgumentParser(
-        prog="jiuwenswarm-gateway",
+        prog="agent-gateway",
         description="Start JiuwenSwarm Gateway + Channels (split deployment; connects to jiuwenswarm-agentserver).",
     )
     parser.add_argument(
