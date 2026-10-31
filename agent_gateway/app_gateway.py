@@ -306,6 +306,59 @@ async def _initialize_cron_runtime(
     )
 
 
+async def _initialize_heartbeat_runtime(
+    message_handler: Any,
+    client: Any,
+    health_check_cfg: Any,
+    log_startup_stage: Callable[[str], None],
+):
+    from agent_gateway.health_check import (
+        GatewayHealthCheckService,
+        HealthCheckConfig,
+    )
+
+    if isinstance(health_check_cfg, dict):
+        cfg_every = health_check_cfg.get("every")
+        cfg_target = health_check_cfg.get("target")
+        cfg_active_hours = health_check_cfg.get("active_hours")
+    else:
+        cfg_every = None
+        cfg_target = None
+        cfg_active_hours = None
+
+    heartbeat_interval = float(
+        os.getenv("HEALTH_CHECK_INTERVAL")
+        or os.getenv("HEARTBEAT_INTERVAL")
+        or (str(cfg_every) if cfg_every is not None else "60")
+    )
+    health_check_timeout_raw = os.getenv("HEALTH_CHECK_TIMEOUT") or os.getenv(
+        "HEARTBEAT_TIMEOUT"
+    )
+    heartbeat_timeout = (
+        float(health_check_timeout_raw) if health_check_timeout_raw else None
+    )
+    heartbeat_relay_channel = (
+        os.getenv("HEALTH_CHECK_RELAY_CHANNEL_ID")
+        or os.getenv("HEARTBEAT_RELAY_CHANNEL_ID")
+        or (str(cfg_target) if cfg_target is not None else "web")
+    )
+
+    heartbeat_config = HealthCheckConfig(
+        interval_seconds=heartbeat_interval,
+        timeout_seconds=heartbeat_timeout,
+        relay_channel_id=heartbeat_relay_channel,
+        active_hours=cfg_active_hours if isinstance(cfg_active_hours, dict) else None,
+    )
+    heartbeat_service = GatewayHealthCheckService(
+        client,
+        heartbeat_config,
+        message_handler=message_handler,
+    )
+    await heartbeat_service.start()
+    log_startup_stage("heartbeat_started")
+    return heartbeat_service
+
+
 class GatewayServer(BaseWebChannel):
     """通用多路路由 WebSocket Gateway Server。
 
@@ -908,15 +961,6 @@ async def _run(
     from agent_gateway.common.config import get_config
     from agent_gateway.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from agent_gateway.common.updater import UpdaterService
-    from agent_gateway.cron import (
-        CronController,
-        CronSchedulerService,
-        create_gateway_cron_store,
-    )
-    from agent_gateway.health_check import (
-        GatewayHealthCheckService,
-        HealthCheckConfig,
-    )
     from agent_gateway.heartbeat import HeartbeatControllerProxy
     from agent_gateway.message_handler.message_handler import MessageHandler
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
@@ -1011,45 +1055,12 @@ async def _run(
             overrides_handler=client.apply_remote_overrides,
         )
 
-    if isinstance(health_check_cfg, dict):
-        cfg_every = health_check_cfg.get("every")
-        cfg_target = health_check_cfg.get("target")
-        cfg_active_hours = health_check_cfg.get("active_hours")
-    else:
-        cfg_every = None
-        cfg_target = None
-        cfg_active_hours = None
-
-    heartbeat_interval = float(
-        os.getenv("HEALTH_CHECK_INTERVAL")
-        or os.getenv("HEARTBEAT_INTERVAL")
-        or (str(cfg_every) if cfg_every is not None else "60")
-    )
-    health_check_timeout_raw = os.getenv("HEALTH_CHECK_TIMEOUT") or os.getenv(
-        "HEARTBEAT_TIMEOUT"
-    )
-    heartbeat_timeout = (
-        float(health_check_timeout_raw) if health_check_timeout_raw else None
-    )
-    heartbeat_relay_channel = (
-        os.getenv("HEALTH_CHECK_RELAY_CHANNEL_ID")
-        or os.getenv("HEARTBEAT_RELAY_CHANNEL_ID")
-        or (str(cfg_target) if cfg_target is not None else "web")
-    )
-
-    heartbeat_config = HealthCheckConfig(
-        interval_seconds=heartbeat_interval,
-        timeout_seconds=heartbeat_timeout,
-        relay_channel_id=heartbeat_relay_channel,
-        active_hours=cfg_active_hours if isinstance(cfg_active_hours, dict) else None,
-    )
-    heartbeat_service = GatewayHealthCheckService(
-        client,
-        heartbeat_config,
+    heartbeat_service = await _initialize_heartbeat_runtime(
         message_handler=message_handler,
+        client=client,
+        health_check_cfg=health_check_cfg,
+        log_startup_stage=log_startup_stage,
     )
-    await heartbeat_service.start()
-    log_startup_stage("heartbeat_started")
 
     _cleanup_task = start_background_cleanup()
 
