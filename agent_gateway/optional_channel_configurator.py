@@ -378,6 +378,44 @@ class OptionalChannelConfigurator:
         self._dingtalk_task = asyncio.create_task(self._dingtalk_channel.start(), name="dingtalk")
         logger.info("[App] DingTalkChannel registered from config.yaml.channels.dingtalk")
 
+    async def _apply_telegram_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "telegram" not in changed_channels:
+            return
+
+        telegram_conf = conf.get("telegram") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._telegram_channel,
+            self._telegram_task,
+            "telegram",
+            channel_manager=self._channel_manager,
+        )
+        self._telegram_channel, self._telegram_task = None, None
+
+        if not isinstance(telegram_conf, dict):
+            logger.info("[App] channels.telegram missing or invalid, TelegramChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(telegram_conf, ["bot_token"])
+        if not enabled:
+            logger.info("[App] channels.telegram.%s, TelegramChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.telegram.telegram_connect import (
+            TelegramChannel,
+            TelegramChannelConfig,
+        )
+        telegram_config = TelegramChannelConfig(
+            enabled=True,
+            bot_token=str(telegram_conf.get("bot_token") or "").strip(),
+            allow_from=telegram_conf.get("allow_from") or [],
+            parse_mode=str(telegram_conf.get("parse_mode") or "Markdown").strip(),
+            group_chat_mode=str(telegram_conf.get("group_chat_mode") or "mention").strip(),
+        )
+        self._telegram_channel = TelegramChannel(telegram_config, self._dummy_bus_cls())
+        self._channel_manager.register_channel(self._telegram_channel)
+        self._telegram_task = asyncio.create_task(self._telegram_channel.start(), name="telegram")
+        logger.info("[App] TelegramChannel registered from config.yaml.channels.telegram")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -410,38 +448,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_dingtalk_channels(conf, changed_channels)
 
-        if "telegram" in changed_channels:
-            telegram_conf = conf.get("telegram") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._telegram_channel,
-                self._telegram_task,
-                "telegram",
-                channel_manager=self._channel_manager,
-            )
-            self._telegram_channel, self._telegram_task = None, None
-
-            if isinstance(telegram_conf, dict):
-                enabled, reason = _is_channel_enabled(telegram_conf, ["bot_token"])
-                if not enabled:
-                    logger.info("[App] channels.telegram.%s, TelegramChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.telegram.telegram_connect import (
-                        TelegramChannel,
-                        TelegramChannelConfig,
-                    )
-                    telegram_config = TelegramChannelConfig(
-                        enabled=True,
-                        bot_token=str(telegram_conf.get("bot_token") or "").strip(),
-                        allow_from=telegram_conf.get("allow_from") or [],
-                        parse_mode=str(telegram_conf.get("parse_mode") or "Markdown").strip(),
-                        group_chat_mode=str(telegram_conf.get("group_chat_mode") or "mention").strip(),
-                    )
-                    self._telegram_channel = TelegramChannel(telegram_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._telegram_channel)
-                    self._telegram_task = asyncio.create_task(self._telegram_channel.start(), name="telegram")
-                    logger.info("[App] TelegramChannel registered from config.yaml.channels.telegram")
-            else:
-                logger.info("[App] channels.telegram missing or invalid, TelegramChannel disabled")
+        await self._apply_telegram_channels(conf, changed_channels)
 
         if "discord" in changed_channels:
             discord_conf = conf.get("discord") if isinstance(conf, dict) else None
