@@ -359,6 +359,140 @@ async def _initialize_heartbeat_runtime(
     return heartbeat_service
 
 
+@dataclass
+class _GatewayWebChannelRuntime:
+    web_channel: Any
+    homepage_request_dispatched: asyncio.Event
+
+
+async def _initialize_web_channel_runtime(
+    *,
+    client: Any,
+    message_handler: Any,
+    channel_manager: Any,
+    on_config_saved: Any,
+    heartbeat_service: Any,
+    cron_controller: Any,
+    heartbeat_controller: Any,
+    updater_service: Any,
+    extension_registry: Any,
+    web_host: str,
+    web_port: int,
+    web_path: str,
+    log_startup_stage: Callable[[str], None],
+) -> _GatewayWebChannelRuntime:
+    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+        WebProxyChannelConfig,
+    )
+    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+        WebPortManager,
+        register_3rdagent_web_method,
+    )
+    from agent_gateway.channel_manager.web.app_web_handlers import (
+        WebHandlersBindParams,
+        _register_web_handlers,
+    )
+    from agent_gateway.channel_manager.web.web_connect import (
+        WebChannel,
+        WebChannelConfig,
+    )
+
+    web_channel = WebChannel(
+        WebChannelConfig(
+            enabled=True,
+            host=web_host,
+            port=web_port,
+            path=web_path,
+        ),
+        _DummyBus(),
+        agent_client=client,
+    )
+    register_3rdagent_web_method(web_channel)
+
+    async def show_prompt_suggestion(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
+        """Forward a suggestion AgentServer already checked and recorded."""
+        if payload.get("event_type") != PROMPT_SUGGESTION_READY_EVENT:
+            return
+        await web_channel.send(Message(
+            id=f"prompt-suggestion:{payload.get('suggestion_id')}",
+            type="event",
+            channel_id=web_channel.channel_id,
+            session_id=session_id,
+            params={},
+            timestamp=time.time(),
+            ok=True,
+            payload=payload,
+        ))
+
+    async def show_recommendation_event(event_type: str, payload: dict[str, Any]) -> None:
+        if event_type in {TOPIC_STARTERS_READY_EVENT, TOPIC_STARTERS_CONTROL_CHANGED_EVENT}:
+            await web_channel.broadcast_event(event_type, payload)
+
+    message_handler.on_prompt_suggestion = show_prompt_suggestion
+    message_handler.on_recommendation_event = show_recommendation_event
+
+    # 注入 Git diff 监控注册表(设计文档阶段10):
+    # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
+    # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
+    from agent_gateway.channel_manager.web.git_diff_watcher import (
+        get_git_diff_watcher_registry,
+    )
+    _git_watcher_registry = get_git_diff_watcher_registry()
+    web_channel.git_watcher_registry = _git_watcher_registry
+    _git_watcher_registry.set_channel(web_channel)
+
+    # Git watch 状态计算委托：diff 状态、项目解析与工作目录访问都在目标
+    # AgentServer 注入目录完成，Gateway 只做指纹比对与事件推送（方案 §10.6 C）。
+    async def _git_diff_status_fetcher(request: dict):
+        from agent_gateway.routing.e2a_proxy import fetch_git_diff_status
+
+        hunk_paths = request.get("hunk_paths")
+        return await fetch_git_diff_status(
+            agent_client=client,
+            project_id=request.get("project_id"),
+            session_id=request.get("session_id") or None,
+            include_files=request.get("include_files"),
+            include_hunks=request.get("include_hunks"),
+            hunk_paths=list(hunk_paths) if hunk_paths else None,
+            user_id=request.get("user_id"),
+            channel_id="web",
+        )
+
+    _git_watcher_registry.set_diff_status_fetcher(_git_diff_status_fetcher)
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=web_channel,
+            agent_client=client,
+            message_handler=message_handler,
+            channel_manager=channel_manager,
+            on_config_saved=on_config_saved,
+            heartbeat_service=heartbeat_service,
+            cron_controller=cron_controller,
+            heartbeat_controller=heartbeat_controller,
+            updater_service=updater_service,
+        )
+    )
+
+    async def _media_normalizer(params: dict[str, Any], session_id: str | None) -> None:
+        # A1g：小图落盘经 E2A 到 AgentServer，闭包捕获启动装配的 client
+        await normalize_chat_media_attachments(
+            params, session_id, agent_client=client, user_id=None
+        )
+
+    extension_registry.bind_application_plugins(
+        web_channel,
+        agent_client=client,
+        media_attachment_normalizer=_media_normalizer,
+    )
+    log_startup_stage("web_handlers_registered")
+
+    return _GatewayWebChannelRuntime(
+        web_channel=web_channel,
+        homepage_request_dispatched=asyncio.Event(),
+    )
+
+
 class GatewayServer(BaseWebChannel):
     """通用多路路由 WebSocket Gateway Server。
 
@@ -941,21 +1075,12 @@ async def _run(
     )
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
         WebPortManager,
-        register_3rdagent_web_method,
-    )
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        WebHandlersBindParams,
-        _register_web_handlers,
     )
     from agent_gateway.channel_manager.web.web_handler_constants import (
         _DummyBus,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
         spawn_background_task,
-    )
-    from agent_gateway.channel_manager.web.web_connect import (
-        WebChannel,
-        WebChannelConfig,
     )
     from agent_gateway.cleanup import start_background_cleanup
     from agent_gateway.common.config import get_config
@@ -1106,94 +1231,24 @@ async def _run(
             reload_options=reload_options,
         )
 
-    web_channel = None
+    web_runtime = await _initialize_web_channel_runtime(
+        client=client,
+        message_handler=message_handler,
+        channel_manager=channel_manager,
+        on_config_saved=_on_config_saved,
+        heartbeat_service=heartbeat_service,
+        cron_controller=cron_controller,
+        heartbeat_controller=heartbeat_controller,
+        updater_service=updater_service,
+        extension_registry=extension_registry,
+        web_host=web_host,
+        web_port=web_port,
+        web_path=web_path,
+        log_startup_stage=log_startup_stage,
+    )
+    web_channel = web_runtime.web_channel
+    homepage_request_dispatched = web_runtime.homepage_request_dispatched
     tui_channel = None
-    web_config = WebChannelConfig(
-        enabled=True,
-        host=web_host,
-        port=web_port,
-        path=web_path,
-    )
-    web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
-    register_3rdagent_web_method(web_channel)
-
-    async def show_prompt_suggestion(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
-        """Forward a suggestion AgentServer already checked and recorded."""
-        if payload.get("event_type") != PROMPT_SUGGESTION_READY_EVENT:
-            return
-        await web_channel.send(Message(
-            id=f"prompt-suggestion:{payload.get('suggestion_id')}",
-            type="event",
-            channel_id=web_channel.channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload=payload,
-        ))
-
-    async def show_recommendation_event(event_type: str, payload: dict[str, Any]) -> None:
-        if event_type in {TOPIC_STARTERS_READY_EVENT, TOPIC_STARTERS_CONTROL_CHANGED_EVENT}:
-            await web_channel.broadcast_event(event_type, payload)
-
-    message_handler.on_prompt_suggestion = show_prompt_suggestion
-    message_handler.on_recommendation_event = show_recommendation_event
-
-    # 注入 Git diff 监控注册表(设计文档阶段10):
-    # 1. 让 ``_mark_git_watcher_dirty`` 能通过 ``channel.git_watcher_registry`` 唤醒轮询
-    # 2. 通过 ``set_channel`` 让 registry 拿到 send_event 的发送句柄
-    from agent_gateway.channel_manager.web.git_diff_watcher import (
-        get_git_diff_watcher_registry,
-    )
-    _git_watcher_registry = get_git_diff_watcher_registry()
-    web_channel.git_watcher_registry = _git_watcher_registry
-    _git_watcher_registry.set_channel(web_channel)
-
-    # Git watch 状态计算委托：diff 状态、项目解析与工作目录访问都在目标
-    # AgentServer 注入目录完成，Gateway 只做指纹比对与事件推送（方案 §10.6 C）。
-    async def _git_diff_status_fetcher(request: dict):
-        from agent_gateway.routing.e2a_proxy import fetch_git_diff_status
-
-        hunk_paths = request.get("hunk_paths")
-        return await fetch_git_diff_status(
-            agent_client=client,
-            project_id=request.get("project_id"),
-            session_id=request.get("session_id") or None,
-            include_files=request.get("include_files"),
-            include_hunks=request.get("include_hunks"),
-            hunk_paths=list(hunk_paths) if hunk_paths else None,
-            user_id=request.get("user_id"),
-            channel_id="web",
-        )
-
-    _git_watcher_registry.set_diff_status_fetcher(_git_diff_status_fetcher)
-
-    _register_web_handlers(
-        WebHandlersBindParams(
-            channel=web_channel,
-            agent_client=client,
-            message_handler=message_handler,
-            channel_manager=channel_manager,
-            on_config_saved=_on_config_saved,
-            heartbeat_service=heartbeat_service,
-            cron_controller=cron_controller,
-            heartbeat_controller=heartbeat_controller,
-            updater_service=updater_service,
-        )
-    )
-
-    async def _media_normalizer(params: dict[str, Any], session_id: str | None) -> None:
-        # A1g：小图落盘经 E2A 到 AgentServer，闭包捕获启动装配的 client
-        await normalize_chat_media_attachments(
-            params, session_id, agent_client=client, user_id=None
-        )
-
-    extension_registry.bind_application_plugins(
-        web_channel,
-        agent_client=client,
-        media_attachment_normalizer=_media_normalizer,
-    )
-    log_startup_stage("web_handlers_registered")
 
     def _make_norm_and_forward(
             forward_methods: set[str] | frozenset[str],
