@@ -87,6 +87,7 @@ from openjiuwen.core.common.logging import (
 )
 
 from agent_gateway.channel_manager.base import BaseWebChannel
+from agent_gateway.connection_registry import ConnectionRegistry
 
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 
@@ -196,13 +197,14 @@ class GatewayServer(BaseWebChannel):
         self._server = None
         self._running = False
         self._on_message_cb = None
-        self._clients: set[Any] = set()
+        self._connections = ConnectionRegistry(self._client_route_key)
+        self._clients = self._connections.clients
         # V2: key 升级为 (channel_id, session_id, agent_ref_str|None)，
         # 兼容旧 2-tuple key（agent_ref 为 None 时回退）。
-        self._request_to_client: dict[tuple, Any] = {}
-        self._session_to_client: dict[tuple, Any] = {}
+        self._request_to_client = self._connections.request_to_client
+        self._session_to_client = self._connections.session_to_client
         # ACP 延迟绑定：session 在握手期先挂起，等首个 agent 请求 promote。
-        self._pending_session_clients: dict[tuple[str, str], Any] = {}
+        self._pending_session_clients = self._connections.pending_session_clients
         self.message_handler_ref = None
         self._acp_bridge = AcpGatewayBridge(
             self._dispatch_on_message,
@@ -308,10 +310,7 @@ class GatewayServer(BaseWebChannel):
         return (channel, scope)
 
     def _find_channel_clients(self, channel_id: str) -> list[Any]:
-        return [
-            client_ws for key, client_ws in self._session_to_client.items()
-            if isinstance(key, tuple) and key[0] == channel_id and not getattr(client_ws, "closed", False)
-        ]
+        return self._connections.find_channel_clients(channel_id)
 
     def _lookup_client(
         self,
@@ -350,10 +349,9 @@ class GatewayServer(BaseWebChannel):
         return table.get(scope)
 
     def is_session_bound_to_client(self, channel_id: str, session_id: str, ws: Any) -> bool:
-        session_key = self._client_route_key(channel_id, session_id)
-        if session_key is None:
-            return False
-        return self._session_to_client.get(session_key) is ws
+        return self._connections.is_session_bound_to_client(
+            channel_id, session_id, ws
+        )
 
     def get_active_session_ids(
         self,
@@ -366,20 +364,7 @@ class GatewayServer(BaseWebChannel):
         排除 exclude_ws（通常是发起 session.list 请求的连接本身），并跳过已关闭的 ws，
         与实时防线（forward 阶段 SESSION_IN_USE 检查）口径保持一致。
         """
-        active: set[str] = set()
-        for key, client_ws in self._session_to_client.items():
-            if not isinstance(key, tuple) or len(key) < 2:
-                continue
-            if key[0] != channel_id:
-                continue
-            if client_ws is exclude_ws:
-                continue
-            if bool(getattr(client_ws, "closed", False)):
-                continue
-            session_id = key[1]
-            if isinstance(session_id, str) and session_id:
-                active.add(session_id)
-        return active
+        return self._connections.active_session_ids(channel_id, exclude_ws)
 
     @staticmethod
     def _extract_routing_session_id(msg, *, include_top_level: bool = True) -> str | None:
@@ -439,9 +424,7 @@ class GatewayServer(BaseWebChannel):
         return bool(result)
 
     def _bind_acp_session_client(self, session_id: str, ws: Any, agent_ref: Any = None) -> None:
-        session_key = self._client_route_key("acp", session_id, agent_ref)
-        if session_key is not None:
-            self._session_to_client[session_key] = ws
+        self._connections.bind_acp_session_client(session_id, ws, agent_ref)
 
     async def _bind_route_session_client(
         self,
@@ -449,65 +432,18 @@ class GatewayServer(BaseWebChannel):
         session_id: str,
         ws: Any,
     ) -> bool:
-        session_key = self._client_route_key(route.channel_id, session_id)
-        if session_key is None:
-            return False
-        existing_ws = self._session_to_client.get(session_key)
-        if (
-            existing_ws is not None
-            and existing_ws is not ws
-            and not bool(getattr(existing_ws, "closed", False))
-        ):
-            if self._ws_is_open(ws):
-                self._pending_session_clients[session_key] = ws
-            return False
-        self._session_to_client[session_key] = ws
-        if self._pending_session_clients.get(session_key) is ws:
-            self._pending_session_clients.pop(session_key, None)
-        if existing_ws is ws or route.session_bind_handler is None:
-            return True
-        try:
-            result = route.session_bind_handler(route.channel_id, session_id)
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception:
-            logger.warning(
-                "GatewayServer session bind handler failed: channel_id=%s session_id=%s",
-                route.channel_id,
-                session_id,
-                exc_info=True,
-            )
-        return True
+        return await self._connections.bind_route_session_client(
+            route, session_id, ws
+        )
 
     async def _promote_pending_session_client(
         self,
         route: RouteConfig,
         session_key: tuple[str, str],
     ) -> None:
-        pending_ws = self._pending_session_clients.pop(session_key, None)
-        if not self._ws_is_open(pending_ws):
-            return
-        existing_ws = self._session_to_client.get(session_key)
-        if (
-            existing_ws is not None
-            and existing_ws is not pending_ws
-            and self._ws_is_open(existing_ws)
-        ):
-            return
-        self._session_to_client[session_key] = pending_ws
-        if route.session_bind_handler is None:
-            return
-        try:
-            result = route.session_bind_handler(route.channel_id, session_key[1])
-            if asyncio.iscoroutine(result):
-                await result
-        except Exception:
-            logger.warning(
-                "GatewayServer pending session bind handler failed: channel_id=%s session_id=%s",
-                route.channel_id,
-                session_key[1],
-                exc_info=True,
-            )
+        await self._connections.promote_pending_session_client(
+            route, session_key
+        )
 
     def _get_message_handler(self):
         return self.message_handler_ref
@@ -640,10 +576,7 @@ class GatewayServer(BaseWebChannel):
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in list(self._clients)]
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
-        self._clients.clear()
-        self._request_to_client.clear()
-        self._session_to_client.clear()
-        self._pending_session_clients.clear()
+        self._connections.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -664,7 +597,7 @@ class GatewayServer(BaseWebChannel):
             await ws.close(code=1008, reason=f"unsupported path: {request_path}")
             return
 
-        self._clients.add(ws)
+        self._connections.add_client(ws)
 
         ws_user_id = self._extract_ws_user_id(ws)
         setattr(ws, "_gateway_user_id", ws_user_id)
@@ -751,22 +684,11 @@ class GatewayServer(BaseWebChannel):
                     "[App] WebSocket connection closed (normal): channel=%s",
                     route.channel_id,
                 )
-            self._clients.discard(ws)
-            stale_request_keys = [
-                key for key, client in self._request_to_client.items() if client is ws
-            ]
-            for request_key in stale_request_keys:
-                self._request_to_client.pop(request_key, None)
-            stale_session_keys = [
-                key for key, client in self._session_to_client.items() if client is ws
-            ]
-            for session_key in stale_session_keys:
-                self._session_to_client.pop(session_key, None)
-            stale_pending_session_keys = [
-                key for key, client in self._pending_session_clients.items() if client is ws
-            ]
-            for session_key in stale_pending_session_keys:
-                self._pending_session_clients.pop(session_key, None)
+            (
+                stale_request_keys,
+                stale_session_keys,
+                stale_pending_session_keys,
+            ) = self._connections.remove_client(ws)
             # V2: 委托 ws_channel（tui 的 TuiChannel）摘除死 ws + 清 per-ws writer。
             # 放在 _session_to_client 清理之后、disconnect_handler 之前；ws_channel
             # 反查不依赖 _session_to_client，顺序无强约束，但先摘可避免后续投递命中死 ws。
