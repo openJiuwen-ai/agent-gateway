@@ -700,8 +700,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     register_connection_handlers(channel, agent_client, message_handler, _resolve)
 
-    register_vendor_handlers(channel)
-
     register_cron_handlers(channel, cron_controller, agent_client, _resolve)
 
     from agent_gateway.channel_manager.web.external_cli_rpc_handlers import (
