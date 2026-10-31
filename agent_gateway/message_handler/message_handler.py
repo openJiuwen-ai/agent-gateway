@@ -44,6 +44,11 @@ from agent_gateway.common.mode_matrix import (
     is_team_mode,
 )
 from agent_gateway.hooks.handler import GatewayHookHandler
+from agent_gateway.message_handler.agent_events import (
+    merge_agent_metadata as _merge_agent_metadata_impl,
+    normalize_agent_error_event as _normalize_agent_error_event_impl,
+    uses_legacy_chat_error_protocol as _uses_legacy_chat_error_protocol_impl,
+)
 from agent_gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
     steer_busy_im_chat,
@@ -184,18 +189,6 @@ _NON_STREAM_TEAM_NOTICE = (
     "集群模式需要开启流式输出才能运行（成员协作事件是流式下发的）。"
     "请在该通道配置中开启 enable_streaming，或改用单 Agent 模式。"
 )
-_DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
-    "app_id",
-    "chat_type",
-    "im_chat_type",
-    "feishu_chat_id",
-    "feishu_open_id",
-    "open_id",
-    "im_sender_user_id",
-    "im_thread_id",
-})
-
-
 if TYPE_CHECKING:
     from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
     from openjiuwen_protocol.e2a.models import E2AEnvelope
@@ -2808,67 +2801,11 @@ class MessageHandler(ABC):
         return message_to_e2a_or_fallback(msg)
 
 
-    @staticmethod
-    def _merge_agent_metadata(
-        request_metadata: dict[str, Any] | None,
-        response_metadata: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """合并 Agent 响应 metadata 与网关请求 metadata。
-
-        send_push / 工具链返回的响应常不带 metadata，通道（如钉钉 batchSend）需要
-        请求侧的 dingtalk_sender_id、conversation_type 等；响应中有同名字段时优先响应。
-        """
-        req_md = request_metadata or {}
-        resp_md = response_metadata or {}
-        if not req_md and not resp_md:
-            return None
-        merged: dict[str, Any] = {**req_md, **resp_md}
-        for key in _DELIVERY_IDENTITY_METADATA_KEYS:
-            if key in req_md:
-                merged[key] = req_md[key]
-        return merged
-
-    @staticmethod
-    def _normalize_agent_error_event(
-        payload: dict[str, Any],
-        *,
-        legacy_failed: bool,
-    ) -> str | None:
-        """Normalize Runtime and legacy Agent errors for Channel delivery."""
-        source_event = payload.get("event_type")
-        runtime_error = source_event in ("runtime.error", "chat.error")
-        legacy_error = (
-            legacy_failed
-            and source_event in (None, "")
-            and "error" in payload
-        )
-        if runtime_error or legacy_error:
-            payload["event_type"] = "chat.error"
-            payload["is_complete"] = True
-            return "chat.error"
-        return source_event if isinstance(source_event, str) else None
-
-    @staticmethod
-    def _uses_legacy_chat_error_protocol(
-        request_method: Any,
-        request_params: dict[str, Any] | None = None,
-    ) -> bool:
-        """Whether a source-less unary failure belongs to the chat event flow."""
-        from openjiuwen_protocol.message import ReqMethod
-
-        method = getattr(request_method, "value", request_method)
-        if method in {
-            ReqMethod.CHAT_SEND.value,
-            ReqMethod.CHAT_RESUME.value,
-            ReqMethod.CHAT_ANSWER.value,
-            ReqMethod.CHAT_SWARMFLOW_REPLY.value,
-        }:
-            return True
-        return (
-            method == ReqMethod.CHAT_CANCEL.value
-            and isinstance(request_params, dict)
-            and request_params.get("intent") == "resume"
-        )
+    _merge_agent_metadata = staticmethod(_merge_agent_metadata_impl)
+    _normalize_agent_error_event = staticmethod(_normalize_agent_error_event_impl)
+    _uses_legacy_chat_error_protocol = staticmethod(
+        _uses_legacy_chat_error_protocol_impl
+    )
 
     @staticmethod
     def _response_to_message(
