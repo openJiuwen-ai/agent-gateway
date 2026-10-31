@@ -10,6 +10,21 @@ from typing import Any
 
 logger = logging.getLogger("gateway")
 
+_OPTIONAL_CHANNEL_NAMES: tuple[str, ...] = (
+    "feishu",
+    "feishu_enterprise",
+    "xiaoyi",
+    "dingtalk",
+    "telegram",
+    "whatsapp",
+    "discord",
+    "slack",
+    "wecom",
+    "wechat",
+    "ssh",
+    "web_proxy",
+)
+
 
 def _should_restart_channel(channel_name: str, old_conf: dict, new_conf: dict) -> bool:
     old_channel_conf = old_conf.get(channel_name) if isinstance(old_conf, dict) else None
@@ -19,6 +34,26 @@ def _should_restart_channel(channel_name: str, old_conf: dict, new_conf: dict) -
     if old_channel_conf is None:
         return False
     return old_channel_conf != new_channel_conf
+
+
+def _changed_optional_channels(
+    old_conf: dict,
+    new_conf: dict,
+    restart_pending: set[str],
+) -> list[str]:
+    """Return channels to restart, preserving the configured optional-channel order."""
+    changed: list[str] = []
+    for channel_name in _OPTIONAL_CHANNEL_NAMES:
+        config_changed = _should_restart_channel(channel_name, old_conf, new_conf)
+        force_restart = channel_name in restart_pending
+        if config_changed or force_restart:
+            if force_restart and not config_changed:
+                logger.info(
+                    "[App] channels.%s force restart requested; cached runtime state must be dropped",
+                    channel_name,
+                )
+            changed.append(channel_name)
+    return changed
 
 
 async def _stop_channel(

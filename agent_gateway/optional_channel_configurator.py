@@ -9,6 +9,7 @@ import logging
 from typing import Any, Callable
 
 from agent_gateway.channel_lifecycle import (
+    _changed_optional_channels,
     _is_channel_enabled,
     _should_restart_channel,
     _stop_channel,
@@ -108,32 +109,11 @@ class OptionalChannelConfigurator:
         # ==========================================================
 
         restart_pending = self._channel_manager.pop_channel_restart_pending()
-        changed_channels: list[str] = []
-        for channel_name in [
-            "feishu",
-            "feishu_enterprise",
-            "xiaoyi",
-            "dingtalk",
-            "telegram",
-            "whatsapp",
-            "discord",
-            "slack",
-            "wecom",
-            "wechat",
-            "ssh",
-            "web_proxy",
-        ]:
-            if _should_restart_channel(
-                channel_name, self._last_channels_conf, conf
-            ) or channel_name in restart_pending:
-                if channel_name in restart_pending and not _should_restart_channel(
-                    channel_name, self._last_channels_conf, conf
-                ):
-                    logger.info(
-                        "[App] channels.%s force restart requested; cached runtime state must be dropped",
-                        channel_name,
-                    )
-                changed_channels.append(channel_name)
+        changed_channels = _changed_optional_channels(
+            self._last_channels_conf,
+            conf,
+            restart_pending,
+        )
         self._last_channels_conf = dict(conf or {})
 
         if "feishu" in changed_channels:

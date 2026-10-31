@@ -3,6 +3,7 @@
 import asyncio
 
 from agent_gateway.channel_lifecycle import (
+    _changed_optional_channels,
     _is_channel_enabled,
     _should_restart_channel,
     _stop_channel,
@@ -15,6 +16,22 @@ def test_should_restart_channel_compares_presence_and_value():
     assert _should_restart_channel(
         "feishu", {"feishu": {"enabled": True}}, {"feishu": {"enabled": False}}
     )
+
+
+def test_changed_optional_channels_preserves_configured_order():
+    old_conf = {"feishu": {}, "xiaoyi": {}}
+    new_conf = {"feishu": {"enabled": True}, "xiaoyi": {}, "wechat": {}}
+
+    assert _changed_optional_channels(old_conf, new_conf, set()) == [
+        "feishu",
+        "wechat",
+    ]
+
+
+def test_changed_optional_channels_forces_restart_without_config_change():
+    assert _changed_optional_channels({"feishu": {}}, {"feishu": {}}, {"feishu"}) == [
+        "feishu"
+    ]
     assert not _should_restart_channel(
         "feishu", {"feishu": {"enabled": True}}, {"feishu": {"enabled": True}}
     )
