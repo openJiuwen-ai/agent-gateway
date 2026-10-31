@@ -59,6 +59,15 @@ from agent_gateway.message_handler.request_state import (
     is_unsupported_non_stream_team_send as _is_unsupported_non_stream_team_send_impl,
     should_cancel_existing_stream_before_chat_send as _should_cancel_existing_stream_before_chat_send_impl,
 )
+from agent_gateway.message_handler.runtime_state import (
+    expert_stream_route as _expert_stream_route_impl,
+    is_terminal_stream_chunk as _is_terminal_stream_chunk_impl,
+    non_stream_rpc_may_run_parallel as _non_stream_rpc_may_run_parallel_impl,
+    should_emit_processing_status_for_stream as _should_emit_processing_status_for_stream_impl,
+    should_trigger_before_chat_request_hook as _should_trigger_before_chat_request_hook_impl,
+    snapshot_hook_watch_params as _snapshot_hook_watch_params_impl,
+    stream_method_value as _stream_method_value_impl,
+)
 from agent_gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
     steer_busy_im_chat,
@@ -3399,23 +3408,7 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
-    @staticmethod
-    def _is_terminal_stream_chunk(chunk: AgentResponseChunk) -> bool:
-        """识别仅用于结束流的哨兵 chunk，避免被当作业务事件继续下发。"""
-        if not bool(getattr(chunk, "is_complete", False)):
-            return False
-        payload = getattr(chunk, "payload", None)
-        if not payload:
-            return True
-        if not isinstance(payload, dict):
-            return False
-        if payload.get("event_type"):
-            return False
-        if payload.get("content") not in (None, ""):
-            return False
-        if payload.get("error") not in (None, ""):
-            return False
-        return payload.get("is_complete") is True and set(payload.keys()) <= {"is_complete"}
+    _is_terminal_stream_chunk = staticmethod(_is_terminal_stream_chunk_impl)
 
     async def publish_stream_chunk(
         self,
@@ -3486,47 +3479,17 @@ class MessageHandler(ABC):
         )
         await self.publish_robot_messages(out)
 
-    @staticmethod
-    def _non_stream_rpc_may_run_parallel(env: "E2AEnvelope") -> bool:
-        """可与其它非流式 RPC 并发，不阻塞 _forward_loop。
+    _non_stream_rpc_may_run_parallel = staticmethod(
+        _non_stream_rpc_may_run_parallel_impl
+    )
 
-        网关队列否则串行 await Agent，慢请求（如 SkillNet 搜索）会堵住后续的 skills.list 刷新。
-        普通非流式聊天由独立的 Session 顺序队列管理。
-        """
-        from openjiuwen_protocol.message import ReqMethod
+    _should_trigger_before_chat_request_hook = staticmethod(
+        _should_trigger_before_chat_request_hook_impl
+    )
 
-        m = getattr(env.method, "value", env.method)
-        if not m:
-            return False
-        return m not in (
-            ReqMethod.CHAT_SEND.value,
-            ReqMethod.CHAT_RESUME.value,
-            ReqMethod.CHAT_CANCEL.value,
-            ReqMethod.CHAT_ANSWER.value,
-        )
-
-    @staticmethod
-    def _should_trigger_before_chat_request_hook(msg: "Message") -> bool:
-        from openjiuwen_protocol.message import ReqMethod
-
-        return msg.req_method in (
-            ReqMethod.CHAT_SEND,
-            ReqMethod.CHAT_RESUME,
-            ReqMethod.CHAT_ANSWER,
-        )
-
-    @staticmethod
-    def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
-        from openjiuwen_protocol.message import ReqMethod
-
-        if msg.req_method != ReqMethod.CHAT_SEND:
-            return False
-        # An attach-only stream is a pure observation subscription: it must
-        # neither raise the Session's processing state on start nor block the
-        # authoritative is_processing=False of the streams that actually own
-        # the turn (a blocked terminal leaves the busy map stuck on True).
-        params = msg.params if isinstance(msg.params, dict) else {}
-        return params.get(TEAM_ATTACH_ONLY_PARAM) is not True
+    _should_emit_processing_status_for_stream = staticmethod(
+        _should_emit_processing_status_for_stream_impl
+    )
 
     def _session_has_streams_blocking_processing_false(
         self, session_id: str | None, *, exclude_rid: str | None = None
@@ -3560,14 +3523,7 @@ class MessageHandler(ABC):
                 return True
         return False
 
-    @staticmethod
-    def _expert_stream_route(params: dict[str, Any] | None) -> dict[str, str]:
-        """Derive expert routing from the request, independent of UI selection."""
-        params = params if isinstance(params, dict) else {}
-        team_id = str(params.get("target_team_id") or "").strip()
-        if not team_id or not ChannelMode.is_team_mode(params.get("mode")):
-            return {}
-        return {"team_id": team_id, "team_name": team_id, "source": "org_expert_direct"}
+    _expert_stream_route = staticmethod(_expert_stream_route_impl)
 
     async def _is_targeted_expert_cancel(self, msg: "Message") -> bool:
         route = self._expert_stream_route(msg.params)
@@ -3610,13 +3566,7 @@ class MessageHandler(ABC):
         # 那时连 target 是否合法都无从判断，维持原有的会话级行为）。
         return not owner_id or route["team_id"] != owner_id
 
-    @staticmethod
-    def _stream_method_value(msg: "Message") -> str:
-        """Normalize ``msg.req_method`` to its wire value string."""
-        req_method = getattr(msg, "req_method", None)
-        if req_method is None:
-            return ""
-        return str(getattr(req_method, "value", req_method) or "")
+    _stream_method_value = staticmethod(_stream_method_value_impl)
 
     async def _trigger_before_chat_request_hook(self, msg: "Message") -> None:
         if not self._should_trigger_before_chat_request_hook(msg):
@@ -3637,11 +3587,9 @@ class MessageHandler(ABC):
 
         await ExtensionRegistry.get_instance().trigger(GatewayHookEvents.BEFORE_CHAT_REQUEST, ctx)
 
-    @staticmethod
-    def _snapshot_hook_watch_params(msg: "Message") -> dict[str, Any]:
-        """钩子触发前拍下用户可见参数快照，用于事后 diff。"""
-        params = msg.params if isinstance(msg.params, dict) else {}
-        return {k: params.get(k) for k in _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS}
+    _snapshot_hook_watch_params = staticmethod(
+        _snapshot_hook_watch_params_impl
+    )
 
     async def _publish_hook_params_update_if_changed(
         self,
