@@ -126,6 +126,9 @@ from agent_gateway.message_normalization import (
     normalize_gateway_message as _normalize_gateway_message,
     refresh_expired_login_credential as _refresh_expired_login_credential,
 )
+from agent_gateway.inbound_server import (
+    InboundGatewayServer as _InboundGatewayServer,
+)
 from agent_gateway.restart import (
     GatewayRestartRequest,
     exec_gateway_restart as _exec_gateway_restart,
@@ -184,50 +187,6 @@ _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口域名
 _DINGTALK_DEFAULT_OAPI_BASE = "https://oapi.dingtalk.com"  # 旧版 media 接口域名
 _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook"
-class _InboundGatewayServer:
-    """Gateway internal inbound service for forwarding channel messages to MessageHandler."""
-
-    def __init__(self, inbound_handler):
-        self._inbound_handler = inbound_handler
-        self._queue: asyncio.Queue = asyncio.Queue()
-        self._task: asyncio.Task | None = None
-        self._running = False
-
-    async def start(self) -> None:
-        if self._task is not None:
-            return
-        self._running = True
-        self._task = asyncio.create_task(self._serve_loop(), name="gateway-inbound-server")
-
-    async def stop(self) -> None:
-        self._running = False
-        task = self._task
-        self._task = None
-        if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def handle_message(self, msg) -> bool:
-        await self._queue.put(msg)
-        return True
-
-    async def _serve_loop(self) -> None:
-        while self._running:
-            try:
-                msg = await self._queue.get()
-            except asyncio.CancelledError:
-                break
-            try:
-                handled = self._inbound_handler(msg)
-                if asyncio.iscoroutine(handled):
-                    await handled
-            except Exception:  # noqa: BLE001
-                logger.exception("[App] Gateway inbound handling failed: id=%s", getattr(msg, "id", None))
-
-
 async def _connect_with_retry(
         client,
         uri: str,
