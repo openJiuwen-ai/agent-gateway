@@ -162,6 +162,7 @@ from agent_gateway.message_handler.session_state import (
     save_channel_state_to_config as _save_channel_state_to_config_impl,
     apply_channel_state as _apply_channel_state_impl,
 )
+from agent_gateway.message_handler.switch_command import handle_switch_command
 from agent_gateway.message_handler.stream_state import (
     active_chat_request_ids as _active_chat_request_ids_impl,
     active_non_team_modes as _active_non_team_modes_impl,
@@ -1634,64 +1635,14 @@ class MessageHandler(ABC):
                 msg=msg,
             )
         if parsed.action is ParsedControlAction.SWITCH_OK:
-            switch_str = parsed.switch_subcommand or ""
-            target_mode: ChannelMode | None = None
-            # state.mode 经 handle_mode_switch 落定后必为新 canonical，故判据查新
-            # canonical 字符串集合（与旧 ``in (ChannelMode.X, ...)`` 等价，见
-            # ``_SWITCH_AGENT_WORK_MODES`` / ``_SWITCH_CODE_MODES``）。
-            if switch_str == "plan":
-                # agent 下 plan / fast 已合并：/switch plan 保持 agent.work.normal。
-                if state.mode.value in _SWITCH_AGENT_WORK_MODES:
-                    target_mode = ChannelMode.AGENT_WORK_NORMAL
-                elif state.mode.value in _SWITCH_CODE_MODES:
-                    target_mode = ChannelMode.AGENT_CODE_PLAN
-            elif switch_str == "fast":
-                # agent 下 plan / fast 已合并：/switch fast 保持 agent.work.normal。
-                if state.mode.value in _SWITCH_AGENT_WORK_MODES:
-                    target_mode = ChannelMode.AGENT_WORK_NORMAL
-            elif switch_str == "normal":
-                if state.mode.value in _SWITCH_CODE_MODES:
-                    target_mode = ChannelMode.AGENT_CODE_NORMAL
-            elif switch_str == "team":
-                if state.mode.value in _SWITCH_CODE_MODES:
-                    target_mode = ChannelMode.TEAM_CODE_NORMAL
-            if target_mode is None:
-                asyncio.create_task(
-                    self.send_channel_notice(
-                        user_infos,
-                        ch,
-                        msg.session_id,
-                        "非法指令",
-                    )
-                )
-                return True
-            old_mode = state.mode
-            old_sid = state.session_id
-            state.mode = target_mode
-            new_label = state.mode.value
-            if old_mode != state.mode:
-                asyncio.create_task(
-                    self._mode_change_cancel_and_notice(
-                        ModeChangeCancelParams(
-                            user_infos=user_infos,
-                            channel_id=ch,
-                            reply_session_id=msg.session_id,
-                            old_sid=old_sid,
-                            new_mode_label=new_label,
-                        ),
-                        msg,
-                    )
-                )
-            else:
-                asyncio.create_task(
-                    self.send_channel_notice(
-                        user_infos,
-                        ch,
-                        msg.session_id,
-                        self._build_mode_change_notice_text(new_label),
-                    )
-                )
-            return True
+            return await handle_switch_command(
+                self,
+                msg,
+                parsed,
+                state,
+                user_infos,
+                ch,
+            )
         if parsed.action in (ParsedControlAction.MODE_BAD, ParsedControlAction.SWITCH_BAD):
             asyncio.create_task(
                 self.send_channel_notice(
