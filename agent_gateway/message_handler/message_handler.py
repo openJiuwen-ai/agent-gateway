@@ -49,6 +49,16 @@ from agent_gateway.message_handler.agent_events import (
     normalize_agent_error_event as _normalize_agent_error_event_impl,
     uses_legacy_chat_error_protocol as _uses_legacy_chat_error_protocol_impl,
 )
+from agent_gateway.message_handler.request_state import (
+    is_chat_send_message as _is_chat_send_message_impl,
+    is_interaction_managed_chat_send as _is_interaction_managed_chat_send_impl,
+    is_interrupt_resume_chat_send as _is_interrupt_resume_chat_send_impl,
+    is_session_input_message as _is_session_input_message_impl,
+    is_team_chat_send as _is_team_chat_send_impl,
+    is_unknown_team_mode_send as _is_unknown_team_mode_send_impl,
+    is_unsupported_non_stream_team_send as _is_unsupported_non_stream_team_send_impl,
+    should_cancel_existing_stream_before_chat_send as _should_cancel_existing_stream_before_chat_send_impl,
+)
 from agent_gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
     steer_busy_im_chat,
@@ -160,12 +170,6 @@ _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
     "slack_",
     "whatsapp_",
 )
-_INTERRUPT_RESUME_SOURCES = frozenset({
-    "ask_user_interrupt",
-    "confirm_interrupt",
-    "permission_interrupt",
-    "evolution_interrupt",
-})
 # 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
 # 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
 _CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
@@ -609,31 +613,9 @@ class MessageHandler(ABC):
         params["original_request"] = original_request
         return replace(msg, params=params)
 
-    @staticmethod
-    def _is_chat_send_message(msg: "Message") -> bool:
-        method = getattr(msg, "req_method", None)
-        value = getattr(method, "value", method)
-        return value == "chat.send" or str(value) == "ReqMethod.CHAT_SEND"
-
-    @staticmethod
-    def _is_team_chat_send(msg: "Message") -> bool:
-        if not isinstance(msg.params, dict):
-            return False
-        return ChannelMode.is_team_mode(str(msg.params.get("mode") or ""))
-
-    @classmethod
-    def _is_unknown_team_mode_send(cls, msg: "Message") -> bool:
-        """True when a chat.send mode starts with "team" but is not a known team mode.
-
-        Only team.* is tightened; other unknown modes keep the lenient path.
-        """
-        if not cls._is_chat_send_message(msg):
-            return False
-        params = msg.params if isinstance(msg.params, dict) else {}
-        mode = str(params.get("mode") or "").strip().lower()
-        if not mode or mode.split(".", 1)[0] != "team":
-            return False
-        return not ChannelMode.is_team_mode(mode)
+    _is_chat_send_message = staticmethod(_is_chat_send_message_impl)
+    _is_team_chat_send = staticmethod(_is_team_chat_send_impl)
+    _is_unknown_team_mode_send = staticmethod(_is_unknown_team_mode_send_impl)
 
     async def _reject_unknown_team_mode_send(self, msg: "Message") -> None:
         """Reply with an error listing the known team modes."""
@@ -671,24 +653,9 @@ class MessageHandler(ABC):
             mode,
         )
 
-    @classmethod
-    def _is_unsupported_non_stream_team_send(cls, msg: "Message") -> bool:
-        """Whether this is a team ``chat.send`` on a non-streaming channel.
-
-        Team rounds only exist on the streaming path: ``process_message_impl``
-        has no team branch, so a non-streaming request would silently run as a
-        single agent. Rejecting at the gateway keeps that surprise out of the
-        conversation instead of answering as the wrong runtime.
-
-        Args:
-            msg: The inbound message, after ``_apply_channel_state`` injected mode.
-
-        Returns:
-            True when the request must be refused.
-        """
-        if getattr(msg, "enable_streaming", True):
-            return False
-        return cls._is_chat_send_message(msg) and cls._is_team_chat_send(msg)
+    _is_unsupported_non_stream_team_send = staticmethod(
+        _is_unsupported_non_stream_team_send_impl
+    )
 
     async def _reject_non_stream_team_send(self, msg: "Message") -> None:
         """Answer a non-streaming team request with an explanation."""
@@ -721,56 +688,16 @@ class MessageHandler(ABC):
             (msg.params or {}).get("mode") if isinstance(msg.params, dict) else None,
         )
 
-    @classmethod
-    def _is_interrupt_resume_chat_send(cls, msg: "Message") -> bool:
-        if not isinstance(msg.params, dict):
-            return False
-        source = str(msg.params.get("source") or "").strip()
-        answers = msg.params.get("answers")
-        request_id = str(msg.params.get("request_id") or "").strip()
-        if bool(request_id) and isinstance(answers, list) and source in _INTERRUPT_RESUME_SOURCES:
-            return True
-        return cls._is_interrupt_evolution_approval_answer_payload(msg.params)
-
-    @classmethod
-    def _should_cancel_existing_stream_before_chat_send(cls, msg: "Message") -> bool:
-        # 主动推荐消息不取消现有流式任务，避免干扰用户当前对话
-        if isinstance(msg.params, dict) and msg.params.get("source") == "proactive_recommendation":
-            return False
-        return (
-            cls._is_chat_send_message(msg)
-            and not cls._is_team_chat_send(msg)
-            and not cls._is_interrupt_resume_chat_send(msg)
-            and not cls._is_interaction_managed_chat_send(msg)
-        )
-
-    @staticmethod
-    def _is_interaction_managed_chat_send(msg: "Message") -> bool:
-        """Whether this input must reach DeepAgent without host stream replacement.
-
-        Ordinary chat keeps JiuwenSwarm's established replace flow: Gateway
-        finishes the previous host stream before starting the next request.
-        Clients that explicitly set ``input_mode`` / ``runtime_mode`` to
-        ``steer`` or ``follow_up``, or set ``attach_goal=true`` for the second
-        step of goal set/resume, must not cancel the existing host stream —
-        OpenJiuwen routes those inputs atomically while the output consumer
-        remains attached.
-
-        Requests without those fields still cancel-then-start (pre-Goal
-        behavior).
-        """
-        params = msg.params if isinstance(msg.params, dict) else {}
-        if params.get("attach_goal") is True:
-            return True
-        return resolve_session_input_mode(params) is not None
-
-    @classmethod
-    def _is_session_input_message(cls, msg: "Message") -> bool:
-        return (
-            cls._is_chat_send_message(msg)
-            and not cls._is_interrupt_resume_chat_send(msg)
-            and resolve_session_input_mode(msg.params) is not None
-        )
+    _is_interrupt_resume_chat_send = staticmethod(
+        _is_interrupt_resume_chat_send_impl
+    )
+    _should_cancel_existing_stream_before_chat_send = staticmethod(
+        _should_cancel_existing_stream_before_chat_send_impl
+    )
+    _is_interaction_managed_chat_send = staticmethod(
+        _is_interaction_managed_chat_send_impl
+    )
+    _is_session_input_message = staticmethod(_is_session_input_message_impl)
 
     def _get_channel_default_state(self, channel_id: str) -> ChannelControlState:
         """从 config.yaml 读取 Channel 的默认 session_id / mode."""
