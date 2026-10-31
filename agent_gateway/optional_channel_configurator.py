@@ -267,6 +267,77 @@ class OptionalChannelConfigurator:
                 channel_id,
             )
 
+    async def _apply_xiaoyi_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "xiaoyi" not in changed_channels:
+            return
+
+        xiaoyi_conf = conf.get("xiaoyi") if isinstance(conf, dict) else {}
+
+        # ---- 停止旧 apps 实例（从 channel_manager 查找） ----
+        # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
+        # 批量删除后后续 key 访问抛 KeyError
+        for ch in self._channel_manager.pop_channels_by_id("xiaoyi"):
+            await _stop_channel(
+                ch,
+                getattr(ch, "start_task", None),
+                f"xiaoyi_app[{ch.app_id}]",
+                channel_manager=self._channel_manager,
+            )
+
+        # 单变量置空（不再使用，但保持 nonlocal 兼容）
+        self._xiaoyi_channel, self._xiaoyi_task = None, None
+
+        apps = xiaoyi_conf.get("apps") or []
+        if not apps:
+            logger.info("[App] channels.xiaoyi.apps empty, XiaoyiChannel disabled")
+            return
+
+        from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
+            XiaoyiChannel,
+            XiaoyiChannelConfig,
+        )
+        for app in apps:
+            if not app.get("enabled", True):
+                continue
+            enabled, reason = _is_channel_enabled(app, ["ak", "sk", "agent_id"])
+            if not enabled:
+                logger.info("[App] channels.xiaoyi.apps[].%s, skipping", reason)
+                continue
+
+            api_id = str(app.get("api_id") or "").strip()
+            is_default = app.get("is_default", False) or len(apps) == 1
+            if not api_id and not is_default:
+                logger.warning(
+                    "[App] channels.xiaoyi.apps[].api_id required for non-default, skipping"
+                )
+                continue
+
+            channel_id = "xiaoyi"
+            config = XiaoyiChannelConfig(
+                enabled=True,
+                channel_id=channel_id,
+                mode=str(app.get("mode") or "xiaoyi_channel").strip(),
+                ak=str(app.get("ak") or "").strip(),
+                sk=str(app.get("sk") or "").strip(),
+                agent_id=str(app.get("agent_id") or "").strip(),
+                api_id=api_id,
+                enable_streaming=bool(app.get("enable_streaming", True)),
+                # 以下字段 _normalize_xiaoyi_conf 会自动填充缺省值，
+                # 此处显式读取以兼容直接使用 apps 格式的场景
+                ws_url1=str(app.get("ws_url1") or "").strip(),
+                ws_url2=str(app.get("ws_url2") or "").strip(),
+                uid=str(app.get("uid") or "").strip(),
+                api_key=str(app.get("api_key") or "").strip(),
+                push_id=str(app.get("push_id") or "").strip(),
+                push_url=str(app.get("push_url") or "").strip() or _XIAOYI_DEFAULT_PUSH_URL,
+                file_upload_url=str(app.get("file_upload_url") or "").strip(),
+            )
+            channel = XiaoyiChannel(config, self._dummy_bus_cls())
+            self._channel_manager.register_channel(channel)
+            task = asyncio.create_task(channel.start(), name=f"xiaoyi-{api_id or 'default'}")
+            channel.start_task = task  # 挂到 channel 对象上，不另存 dict
+            logger.info("[App] XiaoyiChannel(api_id=%s) from channels.xiaoyi.apps", api_id or "default")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -295,72 +366,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_feishu_enterprise_channels(conf, changed_channels)
 
-        if "xiaoyi" in changed_channels:
-            xiaoyi_conf = conf.get("xiaoyi") if isinstance(conf, dict) else {}
-
-            # ---- 停止旧 apps 实例（从 channel_manager 查找） ----
-            # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
-            # 批量删除后后续 key 访问抛 KeyError
-            for ch in self._channel_manager.pop_channels_by_id("xiaoyi"):
-                await _stop_channel(
-                    ch,
-                    getattr(ch, "start_task", None),
-                    f"xiaoyi_app[{ch.app_id}]",
-                    channel_manager=self._channel_manager,
-                )
-
-            # 单变量置空（不再使用，但保持 nonlocal 兼容）
-            self._xiaoyi_channel, self._xiaoyi_task = None, None
-
-            apps = xiaoyi_conf.get("apps") or []
-            if not apps:
-                logger.info("[App] channels.xiaoyi.apps empty, XiaoyiChannel disabled")
-            else:
-                from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
-                    XiaoyiChannel,
-                    XiaoyiChannelConfig,
-                )
-                for app in apps:
-                    if not app.get("enabled", True):
-                        continue
-                    enabled, reason = _is_channel_enabled(app, ["ak", "sk", "agent_id"])
-                    if not enabled:
-                        logger.info("[App] channels.xiaoyi.apps[].%s, skipping", reason)
-                        continue
-
-                    api_id = str(app.get("api_id") or "").strip()
-                    is_default = app.get("is_default", False) or len(apps) == 1
-                    if not api_id and not is_default:
-                        logger.warning(
-                            "[App] channels.xiaoyi.apps[].api_id required for non-default, skipping"
-                        )
-                        continue
-
-                    channel_id = "xiaoyi"
-                    config = XiaoyiChannelConfig(
-                        enabled=True,
-                        channel_id=channel_id,
-                        mode=str(app.get("mode") or "xiaoyi_channel").strip(),
-                        ak=str(app.get("ak") or "").strip(),
-                        sk=str(app.get("sk") or "").strip(),
-                        agent_id=str(app.get("agent_id") or "").strip(),
-                        api_id=api_id,
-                        enable_streaming=bool(app.get("enable_streaming", True)),
-                        # 以下字段 _normalize_xiaoyi_conf 会自动填充缺省值，
-                        # 此处显式读取以兼容直接使用 apps 格式的场景
-                        ws_url1=str(app.get("ws_url1") or "").strip(),
-                        ws_url2=str(app.get("ws_url2") or "").strip(),
-                        uid=str(app.get("uid") or "").strip(),
-                        api_key=str(app.get("api_key") or "").strip(),
-                        push_id=str(app.get("push_id") or "").strip(),
-                        push_url=str(app.get("push_url") or "").strip() or _XIAOYI_DEFAULT_PUSH_URL,
-                        file_upload_url=str(app.get("file_upload_url") or "").strip(),
-                    )
-                    channel = XiaoyiChannel(config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(channel)
-                    task = asyncio.create_task(channel.start(), name=f"xiaoyi-{api_id or 'default'}")
-                    channel.start_task = task  # 挂到 channel 对象上，不另存 dict
-                    logger.info("[App] XiaoyiChannel(api_id=%s) from channels.xiaoyi.apps", api_id or "default")
+        await self._apply_xiaoyi_channels(conf, changed_channels)
 
         if "dingtalk" in changed_channels:
             dingtalk_conf = conf.get("dingtalk") if isinstance(conf, dict) else None
