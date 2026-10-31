@@ -118,12 +118,12 @@ from agent_gateway.config_saved import (
     handle_config_saved,
 )
 from agent_gateway.message_normalization import (
-    build_event_frame as _build_event_frame,
     inject_session_work_mode as _inject_session_work_mode,
     normalize_and_forward_message as _normalize_and_forward_message,
     normalize_gateway_message as _normalize_gateway_message,
     refresh_expired_login_credential as _refresh_expired_login_credential,
 )
+from agent_gateway.outbound_delivery import OutboundMessageDelivery
 from agent_gateway.inbound_server import (
     InboundGatewayServer as _InboundGatewayServer,
 )
@@ -209,6 +209,16 @@ class GatewayServer(BaseWebChannel):
             bind_session_client=self._bind_acp_session_client,
             channel_id="acp",
             idle_finalize_seconds=lambda: _PROMPT_IDLE_FINALIZE_SECONDS,
+        )
+        self._outbound_delivery = OutboundMessageDelivery(
+            routes=self.config.routes,
+            request_to_client=self._request_to_client,
+            session_to_client=self._session_to_client,
+            client_route_key=self._client_route_key,
+            extract_routing_session_id=self._extract_routing_session_id,
+            lookup_client=self._lookup_client,
+            find_channel_clients=self._find_channel_clients,
+            acp_bridge=self._acp_bridge,
         )
         self._install_default_route_hooks()
 
@@ -641,164 +651,7 @@ class GatewayServer(BaseWebChannel):
         logger.info("[App] Gateway server stopped")
 
     async def send(self, msg, *, routing_target: "RoutingTarget | None" = None) -> None:
-        # V2: 提取 agent_ref，优先 3 元组查找，2↔3 双向兜底（_lookup_client）。
-        _agent_ref = getattr(msg, "agent_ref", None) or None
-        _send_cid = getattr(msg, "channel_id", None)
-        _send_sid = getattr(msg, "session_id", None)
-        _send_id = getattr(msg, "id", None)
-        ws: Any = None
-        # 三级级联 fallback 查找投递目标 ws：任一级命中可用（非 None 且未关闭）ws 即短路，
-        # 不再执行后续更低优先级的查找。三级依次为：
-        #   1) routing_target（team fan_out 投递，经 dispatch_to_session 调用）
-        #   2) request_id 精确回响应（常规 res/event 回到发起请求的 ws）
-        #   3) session_id 兜底（同 session 任意活跃 ws，或无 session_id 时广播）
-
-        # ── 第 1 级：fan_out 投递（team 模式经 dispatch_to_session 调用）──
-        # GatewayServer 不像 BaseWsChannel 维护 ws_id 物理索引，这里按
-        # routing_target.routing_keys 的 session_id 维度查 _session_to_client，
-        # 命中任一仍活跃的 ws 即投递。保证 TUI/ACP 误入 team 路径时 GodView/
-        # mention fan_out 不会因签名不符而静默丢弃。
-        if routing_target is not None:
-            _rt_keys = getattr(routing_target, "routing_keys", None) or []
-            for _rk in _rt_keys:
-                _rk_sid = getattr(_rk, "session_id", None)
-                if not _rk_sid:
-                    continue
-                _cand = self._lookup_client(
-                    self._session_to_client,
-                    getattr(_rk, "channel_id", None) or _send_cid,
-                    _rk_sid,
-                    getattr(_rk, "agent_ref", None),
-                )
-                if _cand is not None and not bool(getattr(_cand, "closed", False)):
-                    ws = _cand
-                    break
-        # ── 第 2 级：request_id 精确回响应（回到发起该请求的 ws）──
-        if ws is None:
-            ws = self._lookup_client(
-                self._request_to_client,
-                _send_cid,
-                _send_id,
-                _agent_ref,
-            )
-        # ── 第 3 级：session_id 兜底（同 session 任意活跃 ws）──
-        # 前级返回 None 或已关闭的 ws 时，仍尝试按 session 路由。
-        if ws is None or bool(getattr(ws, "closed", False)):
-            ws = self._lookup_client(
-                self._session_to_client,
-                _send_cid,
-                _send_sid,
-                _agent_ref,
-            )
-        if ws is None or bool(getattr(ws, "closed", False)):
-            if ws is None:
-                channel_id = getattr(msg, "channel_id", None)
-                # 多 TUI 窗口：有 session_id 时精确路由；无 session_id 时广播（如 cron 推送到 TUI）。
-                if channel_id and channel_id != "acp":
-                    if msg.type == "res":
-                        payload_data = dict(msg.payload or {}) if isinstance(msg.payload, dict) else {}
-                        frame = {"type": "res", "id": msg.id, "ok": bool(msg.ok), "payload": payload_data}
-                    else:
-                        frame = _build_event_frame(msg)
-
-                    session_id = self._extract_routing_session_id(msg, include_top_level=False)
-                    if session_id:
-                        session_key = self._client_route_key(channel_id, session_id)
-                        if session_key:
-                            client = self._session_to_client.get(session_key)
-                            if client is not None and not bool(getattr(client, "closed", False)):
-                                data = json.dumps(frame, ensure_ascii=False)
-                                try:
-                                    await client.send(data)
-                                except Exception:
-                                    logger.debug(
-                                        "[GatewayServer] session-routed send failed: session_id=%s",
-                                        session_id,
-                                        exc_info=True,
-                                    )
-                                return
-                    elif not self._extract_routing_session_id(msg, include_top_level=True):
-                        clients = self._find_channel_clients(channel_id)
-                        if clients:
-                            data = json.dumps(frame, ensure_ascii=False)
-                            logger.info(
-                                "[GatewayServer] broadcast fallback (no session_id): "
-                                "channel_id=%s clients=%d id=%s type=%s",
-                                channel_id, len(clients), getattr(msg, "id", None), msg.type,
-                            )
-                            await asyncio.gather(
-                                *[c.send(data) for c in clients],
-                                return_exceptions=True,
-                            )
-                            return
-                # delivery target 没注册上：附 sess_table_keys 便于反查为何反查不到 ws
-                logger.warning(
-                    "[GatewayServer] message dropped: no WebSocket client found for"
-                    " channel_id=%s session_id=%s id=%s sess_table_keys=%s",
-                    getattr(msg, "channel_id", None),
-                    getattr(msg, "session_id", None),
-                    getattr(msg, "id", None),
-                    [str(k) for k in self._session_to_client.keys()],
-                )
-            else:
-                logger.warning(
-                    "[GatewayServer] ws already closed, drop: channel_id=%s id=%s session_id=%s ws=%s",
-                    _send_cid, _send_id, _send_sid, hex(id(ws)),
-                )
-            return
-
-        if getattr(msg, "channel_id", None) == "acp":
-            handled = await self._acp_bridge.send_message(msg, ws)
-            if handled:
-                return
-
-        # 让 route 的 outbound_interceptor 有机会拦截
-        for route in self.config.routes.values():
-            if route.channel_id == msg.channel_id and route.outbound_interceptor is not None:
-                try:
-                    handled = route.outbound_interceptor(msg, ws)
-                    if asyncio.iscoroutine(handled):
-                        handled = await handled
-                    if handled:
-                        return
-                except Exception:
-                    logger.warning(
-                        "GatewayServer outbound interceptor failed: channel_id=%s",
-                        msg.channel_id,
-                        exc_info=True,
-                    )
-                break
-
-        if msg.type == "res":
-            payload = dict(msg.payload or {}) if isinstance(msg.payload, dict) else {}
-            frame: dict[str, Any] = {
-                "type": "res",
-                "id": msg.id,
-                "ok": bool(msg.ok),
-                "payload": payload,
-            }
-            if not msg.ok:
-                frame["error"] = str(payload.get("error") or "request failed")
-                # 提升 payload.code 为顶层 code(与本地 handler 的 send_response
-                # 错误帧结构一致,设计文档 §1.3 前端按顶层 code 分流)
-                code_val = payload.get("code")
-                if isinstance(code_val, str) and code_val.strip():
-                    frame["code"] = code_val.strip()
-            await ws.send(json.dumps(frame, ensure_ascii=False))
-            return
-
-        event_name = "chat.final"
-        if msg.event_type is not None:
-            event_name = msg.event_type.value
-
-        if isinstance(msg.payload, dict):
-            payload = {**msg.payload}
-            payload.setdefault("session_id", msg.session_id)
-        else:
-            payload = {"session_id": msg.session_id, "content": str(msg.payload or "")}
-
-        frame = {"type": "event", "event": event_name, "payload": payload}
-        await ws.send(json.dumps(frame, ensure_ascii=False))
+        await self._outbound_delivery.send(msg, routing_target=routing_target)
 
     async def _connection_handler(self, ws: Any, path: str | None = None) -> None:
         raw_path = path if path is not None else getattr(ws, "path", "")
