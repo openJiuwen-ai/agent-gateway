@@ -132,12 +132,8 @@ from agent_gateway.message_handler.models import (
     channel_mode_from_str,
     normalize_legacy_health_check_relay_payload,
 )
-from agent_gateway.message_handler.prompts.review_prompt import build_review_prompt
-from agent_gateway.message_handler.prompts.security_review_prompt import (
-    GitPreExecError,
-    build_security_review_prompt,
-)
 from agent_gateway.message_handler.review_prompt_injection import (
+    apply_inbound_review_prompt,
     inject_review_prompt,
     inject_security_review_prompt,
 )
@@ -3898,78 +3894,15 @@ class MessageHandler(ABC):
                         stripped = content.strip()
                         if stripped:
                             parsed = parse_channel_control_text(stripped)
-                            if parsed.action is ParsedControlAction.REVIEW_BAD:
-                                asyncio.create_task(
-                                    self.send_channel_notice(
-                                        {"id": msg.id, "meta_data": msg.metadata},
-                                        msg.channel_id,
-                                        msg.session_id,
-                                        "非法指令，/review 参数过长或含有非法控制字符",
-                                    )
-                                )
+                            review_result = await apply_inbound_review_prompt(
+                                self,
+                                msg,
+                                parsed,
+                            )
+                            if review_result.skip:
                                 continue
-                            if parsed.action is ParsedControlAction.REVIEW_OK:
-                                pr_arg = parsed.pr_arg or ""
-                                review_prompt = build_review_prompt(pr_arg)
-                                msg.params = dict(msg.params)
-                                msg.params["query"] = review_prompt
-                                if "content" in msg.params:
-                                    msg.params["content"] = review_prompt
-                                content = review_prompt
-                                logger.info(
-                                    "[MessageHandler] /review prompt injected for chat.send "
-                                    "channel=%s pr_arg=%s",
-                                    getattr(msg, "channel_id", ""),
-                                    pr_arg or "<none>",
-                                )
-                            elif parsed.action is ParsedControlAction.SECURITY_REVIEW_BAD:
-                                asyncio.create_task(
-                                    self.send_channel_notice(
-                                        {"id": msg.id, "meta_data": msg.metadata},
-                                        msg.channel_id,
-                                        msg.session_id,
-                                        "非法指令，/security-review 参数过长或含有非法控制字符",
-                                    )
-                                )
-                                continue
-                            elif parsed.action is ParsedControlAction.SECURITY_REVIEW_OK:
-                                extra_arg = parsed.security_review_arg or ""
-                                cwd = (
-                                    msg.metadata.get("cwd")
-                                    if isinstance(msg.metadata, dict)
-                                    else None
-                                )
-                                try:
-                                    # 预执行只读 git 并内联输出；
-                                    # 失败则发 notice 中止，不转发给 Agent。
-                                    # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
-                                    security_prompt = (
-                                        await asyncio.get_event_loop().run_in_executor(
-                                            None,
-                                            build_security_review_prompt,
-                                            extra_arg,
-                                            cwd,
-                                        )
-                                    )
-                                except GitPreExecError as exc:
-                                    await self.send_channel_notice(
-                                        {"id": msg.id, "meta_data": msg.metadata},
-                                        msg.channel_id,
-                                        msg.session_id,
-                                        f"/security-review 无法执行：{exc}",
-                                    )
-                                    continue
-                                msg.params = dict(msg.params)
-                                msg.params["query"] = security_prompt
-                                if "content" in msg.params:
-                                    msg.params["content"] = security_prompt
-                                content = security_prompt
-                                logger.info(
-                                    "[MessageHandler] /security-review prompt injected "
-                                    "for chat.send channel=%s extra_arg=%s",
-                                    getattr(msg, "channel_id", ""),
-                                    extra_arg or "<none>",
-                                )
+                            if review_result.prompt is not None:
+                                content = review_result.prompt
 
                         cwd = None
                         if isinstance(msg.metadata, dict):
