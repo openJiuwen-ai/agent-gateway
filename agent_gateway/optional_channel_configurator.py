@@ -11,7 +11,6 @@ from typing import Any, Callable
 from agent_gateway.channel_lifecycle import (
     _changed_optional_channels,
     _is_channel_enabled,
-    _should_restart_channel,
     _stop_channel,
 )
 
@@ -92,6 +91,87 @@ class OptionalChannelConfigurator:
         except Exception as exc:  # noqa: BLE001
             logger.warning("[App] failed to set AgentOS SSH key issuer: %s", exc)
 
+    async def _apply_feishu_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "feishu" not in changed_channels:
+            return
+
+        feishu_conf = conf.get("feishu") if isinstance(conf, dict) else {}
+
+        # ---- 停止旧 apps 实例（从 channel_manager 查找） ----
+        # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
+        # 批量删除后后续 key 访问抛 KeyError
+        for ch in self._channel_manager.pop_channels_by_id("feishu"):
+            await _stop_channel(
+                ch,
+                getattr(ch, "start_task", None),
+                f"feishu_app[{ch.app_id}]",
+                channel_manager=self._channel_manager,
+            )
+        # 统一注销 adapter（所有 feishu app 共享 "feishu" 标识）
+        self._im_inbound.unregister_adapter("feishu")
+        self._im_outbound.unregister_adapter("feishu")
+
+        # 单变量置空（不再使用，但保持 nonlocal 兼容）
+        self._feishu_channel, self._feishu_task = None, None
+
+        apps = feishu_conf.get("apps") or []
+        if not apps:
+            logger.info("[App] channels.feishu.apps empty, FeishuChannel disabled")
+            return
+
+        from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+            FeishuChannel,
+            FeishuConfig,
+        )
+        for app in apps:
+            if not app.get("enabled", True):
+                continue
+            enabled, reason = _is_channel_enabled(app, ["app_id", "app_secret"])
+            if not enabled:
+                logger.info("[App] channels.feishu.apps[].%s, skipping", reason)
+                continue
+
+            app_id = str(app.get("app_id") or "").strip()
+            channel_id = "feishu"
+
+            feishu_config = FeishuConfig(
+                enabled=True,
+                app_id=app_id,
+                app_secret=str(app.get("app_secret") or "").strip(),
+                encrypt_key=str(app.get("encrypt_key") or "").strip(),
+                verification_token=str(app.get("verification_token") or "").strip(),
+                allow_from=app.get("allow_from") or [],
+                enable_streaming=bool(app.get("enable_streaming", True)),
+                chat_id=str(app.get("chat_id") or "").strip(),
+                channel_id=channel_id,
+                last_chat_id=str(app.get("last_chat_id") or "").strip(),
+                last_open_id=str(app.get("last_open_id") or "").strip(),
+                group_digital_avatar=bool(app.get("group_digital_avatar", False)),
+                my_user_id=str(app.get("my_user_id") or app.get("my_open_id") or "").strip(),
+                bot_name=str(app.get("bot_name") or "").strip(),
+                enable_memory=bool(app.get("enable_memory", False)),
+                message_merge_window_ms=int(app.get("message_merge_window_ms", 15000)),
+                api_base=str(app.get("api_base") or "").strip() or _FEISHU_DEFAULT_API_BASE,
+            )
+            # 数字分身 adapter（共享 "feishu" key）
+            feishu_adapter = None
+            if feishu_config.group_digital_avatar:
+                from agent_gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
+                    FeishuIMPlatformAdapter,
+                )
+                feishu_adapter = FeishuIMPlatformAdapter(
+                    my_open_id=feishu_config.my_user_id,
+                    bot_name=feishu_config.bot_name,
+                )
+                self._im_inbound.register_adapter(channel_id, feishu_adapter)
+                self._im_outbound.register_adapter(channel_id, feishu_adapter)
+
+            channel = FeishuChannel(feishu_config, self._dummy_bus_cls(), im_platform_adapter=feishu_adapter)
+            self._channel_manager.register_channel(channel)
+            task = asyncio.create_task(channel.start(), name=f"feishu-{app_id}")
+            channel.start_task = task  # 挂到 channel 对象上，不另存 dict
+            logger.info("[App] FeishuChannel(app=%s) registered from channels.feishu.apps", app_id)
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -116,82 +196,7 @@ class OptionalChannelConfigurator:
         )
         self._last_channels_conf = dict(conf or {})
 
-        if "feishu" in changed_channels:
-            feishu_conf = conf.get("feishu") if isinstance(conf, dict) else {}
-
-            # ---- 停止旧 apps 实例（从 channel_manager 查找） ----
-            # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
-            # 批量删除后后续 key 访问抛 KeyError
-            for ch in self._channel_manager.pop_channels_by_id("feishu"):
-                await _stop_channel(
-                    ch,
-                    getattr(ch, "start_task", None),
-                    f"feishu_app[{ch.app_id}]",
-                    channel_manager=self._channel_manager,
-                )
-            # 统一注销 adapter（所有 feishu app 共享 "feishu" 标识）
-            self._im_inbound.unregister_adapter("feishu")
-            self._im_outbound.unregister_adapter("feishu")
-
-            # 单变量置空（不再使用，但保持 nonlocal 兼容）
-            self._feishu_channel, self._feishu_task = None, None
-
-            apps = feishu_conf.get("apps") or []
-            if not apps:
-                logger.info("[App] channels.feishu.apps empty, FeishuChannel disabled")
-            else:
-                from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
-                    FeishuChannel,
-                    FeishuConfig,
-                )
-                for app in apps:
-                    if not app.get("enabled", True):
-                        continue
-                    enabled, reason = _is_channel_enabled(app, ["app_id", "app_secret"])
-                    if not enabled:
-                        logger.info("[App] channels.feishu.apps[].%s, skipping", reason)
-                        continue
-
-                    app_id = str(app.get("app_id") or "").strip()
-                    channel_id = "feishu"
-
-                    feishu_config = FeishuConfig(
-                        enabled=True,
-                        app_id=app_id,
-                        app_secret=str(app.get("app_secret") or "").strip(),
-                        encrypt_key=str(app.get("encrypt_key") or "").strip(),
-                        verification_token=str(app.get("verification_token") or "").strip(),
-                        allow_from=app.get("allow_from") or [],
-                        enable_streaming=bool(app.get("enable_streaming", True)),
-                        chat_id=str(app.get("chat_id") or "").strip(),
-                        channel_id=channel_id,
-                        last_chat_id=str(app.get("last_chat_id") or "").strip(),
-                        last_open_id=str(app.get("last_open_id") or "").strip(),
-                        group_digital_avatar=bool(app.get("group_digital_avatar", False)),
-                        my_user_id=str(app.get("my_user_id") or app.get("my_open_id") or "").strip(),
-                        bot_name=str(app.get("bot_name") or "").strip(),
-                        enable_memory=bool(app.get("enable_memory", False)),
-                        message_merge_window_ms=int(app.get("message_merge_window_ms", 15000)),
-                        api_base=str(app.get("api_base") or "").strip() or _FEISHU_DEFAULT_API_BASE,
-                    )
-                    # 数字分身 adapter（共享 "feishu" key）
-                    feishu_adapter = None
-                    if feishu_config.group_digital_avatar:
-                        from agent_gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
-                            FeishuIMPlatformAdapter,
-                        )
-                        feishu_adapter = FeishuIMPlatformAdapter(
-                            my_open_id=feishu_config.my_user_id,
-                            bot_name=feishu_config.bot_name,
-                        )
-                        self._im_inbound.register_adapter(channel_id, feishu_adapter)
-                        self._im_outbound.register_adapter(channel_id, feishu_adapter)
-
-                    channel = FeishuChannel(feishu_config, self._dummy_bus_cls(), im_platform_adapter=feishu_adapter)
-                    self._channel_manager.register_channel(channel)
-                    task = asyncio.create_task(channel.start(), name=f"feishu-{app_id}")
-                    channel.start_task = task  # 挂到 channel 对象上，不另存 dict
-                    logger.info("[App] FeishuChannel(app=%s) registered from channels.feishu.apps", app_id)
+        await self._apply_feishu_channels(conf, changed_channels)
 
         if "feishu_enterprise" in changed_channels:
             for bot_key, task in list(self._feishu_enterprise_tasks.items()):
