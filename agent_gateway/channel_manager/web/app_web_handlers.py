@@ -824,44 +824,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     register_cron_handlers(channel, cron_controller, agent_client, _resolve)
 
-    async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
-        """Send a recommendation panel call to AgentServer and return its payload."""
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
-
-        if (
-            action == "prompt_suggestion_event"
-            and isinstance(params, dict)
-            and params.get("event_type") == "input_changed"
-        ):
-            target_session = params.get("session_id")
-            if not isinstance(target_session, str) or not target_session.strip():
-                await channel.send_response(
-                    ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
-                )
-                return
-        body = dict(params) if isinstance(params, dict) else {}
-        if action == "control":
-            # The panel verb (enable/disable/delete) shares the name ``action``.
-            # Keep it before the RPC action overwrites that field.
-            body["control_action"] = body.get("action")
-        auth_session = getattr(ws, "_jiuwen_auth_session", "") or ""
-        if auth_session:
-            body["auth_session"] = auth_session
-        body["action"] = action
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=body,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.RECOMMENDATION,
-            label="recommendation",
-        )
-
     from agent_gateway.channel_manager.web.external_cli_rpc_handlers import (
         register_external_cli_handlers,
     )
