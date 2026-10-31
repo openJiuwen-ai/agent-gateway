@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import secrets
+import asyncio
 import time
 from collections.abc import Mapping
 from dataclasses import replace
@@ -14,6 +15,71 @@ from openjiuwen_protocol.message import Message, ReqMethod
 
 from agent_gateway.message_handler.session_identity import is_single_user_channel
 from agent_gateway.message_handler.session_state import make_channel_state_key
+
+
+def collect_stream_tasks_to_cancel(
+    *,
+    stream_tasks: Mapping[str, asyncio.Task],
+    stream_sessions: Mapping[str, str | None],
+    stream_channels: Mapping[str, str],
+    non_stream_chat_messages: Mapping[str, Any],
+    old_sid: str | None,
+    channel_id: str | None,
+) -> tuple[list[asyncio.Task], list[str], bool]:
+    """Collect in-flight tasks matching a session (and optional channel) filter."""
+    tasks_to_cancel: list[asyncio.Task] = []
+    rids_cancelled: list[str] = []
+
+    for rid, task in list(stream_tasks.items()):
+        if stream_sessions.get(rid) != old_sid:
+            continue
+        if channel_id is not None and stream_channels.get(rid) != channel_id:
+            continue
+        if not task.done():
+            rids_cancelled.append(rid)
+            tasks_to_cancel.append(task)
+
+    has_unary = any(
+        item.session_id == old_sid and (channel_id is None or item.channel_id == channel_id)
+        for item in non_stream_chat_messages.values()
+    )
+    return tasks_to_cancel, rids_cancelled, has_unary
+
+
+def resolve_cancel_params(
+    msg_params: dict[str, Any] | None,
+    old_sid: str | None,
+    msg_channel_id: str,
+    *,
+    channel_states: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build cancel request params from message params and channel state."""
+    sid_for_agent = (old_sid or "").strip()
+    cancel_params: dict[str, Any] = {
+        "intent": "cancel",
+        "session_id": sid_for_agent,
+    }
+    cancel_mode = None
+    if isinstance(msg_params, dict) and msg_params.get("mode"):
+        cancel_mode = msg_params["mode"]
+    else:
+        state = channel_states.get(
+            make_channel_state_key(msg_channel_id, sid_for_agent)
+        ) or channel_states.get(msg_channel_id)
+        if state is not None:
+            cancel_mode = state.mode.value if hasattr(state.mode, "value") else str(state.mode)
+    if cancel_mode:
+        cancel_params["mode"] = cancel_mode
+    if isinstance(msg_params, dict) and msg_params.get("team"):
+        cancel_params["team"] = msg_params["team"]
+    if isinstance(msg_params, dict) and msg_params.get("trusted_dirs"):
+        cancel_params["trusted_dirs"] = msg_params["trusted_dirs"]
+    if isinstance(msg_params, dict):
+        for key in ("work_mode", "project_dir"):
+            value = msg_params.get(key)
+            if value is not None and str(value).strip():
+                cancel_params[key] = value
+    return cancel_params
 
 
 def clone_message_for_session_cancel(

@@ -54,8 +54,10 @@ from agent_gateway.message_handler.agent_events import (
 )
 from agent_gateway.message_handler.disconnect import (
     build_disconnect_cancel_message as _build_disconnect_cancel_message_impl,
+    collect_stream_tasks_to_cancel as _collect_stream_tasks_to_cancel_impl,
     clone_message_for_session_cancel as _clone_message_for_session_cancel_impl,
     merge_disconnect_session_keys as _merge_disconnect_session_keys_impl,
+    resolve_cancel_params as _resolve_cancel_params_impl,
     resolve_stream_cancel_session_id as _resolve_stream_cancel_session_id_impl,
     should_cancel_stream_on_channel as _should_cancel_stream_on_channel_impl,
 )
@@ -996,21 +998,13 @@ class MessageHandler(ABC):
         self._clear_session_evolution_states(old_sid)
 
         # 收集需要取消的流式任务（先不取消）
-        tasks_to_cancel: list[asyncio.Task] = []
-        rids_cancelled: list[str] = []
-
-        for rid, task in list(self._stream_tasks.items()):
-            if self._stream_sessions.get(rid) != old_sid:
-                continue
-            if channel_id is not None and self._stream_channels.get(rid) != channel_id:
-                continue
-            if not task.done():
-                rids_cancelled.append(rid)
-                tasks_to_cancel.append(task)
-
-        has_unary = any(
-            item.session_id == old_sid and (channel_id is None or item.channel_id == channel_id)
-            for item in self._non_stream_chat_messages.values()
+        tasks_to_cancel, rids_cancelled, has_unary = _collect_stream_tasks_to_cancel_impl(
+            stream_tasks=self._stream_tasks,
+            stream_sessions=self._stream_sessions,
+            stream_channels=self._stream_channels,
+            non_stream_chat_messages=self._non_stream_chat_messages,
+            old_sid=old_sid,
+            channel_id=channel_id,
         )
         if old_sid is None and not rids_cancelled and not has_unary:
             return True
@@ -1027,36 +1021,12 @@ class MessageHandler(ABC):
 
         # 从 msg.params（已被 _apply_channel_state 注入 mode）或 channel_states
         # 获取 mode 信息，注入到 cancel params 以确保 AgentServer 找到正确的 agent
-        cancel_params = {
-            "intent": "cancel",
-            "session_id": sid_for_agent,
-        }
-        cancel_mode = None
-        if isinstance(msg.params, dict) and msg.params.get("mode"):
-            # _apply_channel_state 已将 mode 写入 msg.params
-            cancel_mode = msg.params["mode"]
-        else:
-            # 回退到 channel_states（按被 cancel 的 session，而非触发消息的 session）
-            state = self._channel_states.get(
-                self._get_channel_state_key(msg.channel_id, sid_for_agent)
-            ) or self._channel_states.get(msg.channel_id)
-            if state is not None:
-                cancel_mode = state.mode.value if hasattr(state.mode, 'value') else str(state.mode)
-        if cancel_mode:
-            cancel_params["mode"] = cancel_mode
-        # 前端 cancel/supplement 请求可能带 team 标识，确保传递到 AgentServer
-        # 以便 _handle_cancel 能正确走 team runtime 清理路径
-        if isinstance(msg.params, dict) and msg.params.get("team"):
-            cancel_params["team"] = msg.params["team"]
-        if isinstance(msg.params, dict) and msg.params.get("trusted_dirs"):
-            cancel_params["trusted_dirs"] = msg.params["trusted_dirs"]
-        # Preserve the same Runtime agent identity used by the original request.
-        # This is required for code/work composition and project-scoped caches.
-        if isinstance(msg.params, dict):
-            for key in ("work_mode", "project_dir"):
-                value = msg.params.get(key)
-                if value is not None and str(value).strip():
-                    cancel_params[key] = value
+        cancel_params = _resolve_cancel_params_impl(
+            msg.params,
+            old_sid,
+            msg.channel_id,
+            channel_states=self._channel_states,
+        )
         cancel_metadata = dict(msg.metadata or {})
         cancel_metadata.pop(E2A_INTERNAL_CANCEL_SOURCE_KEY, None)
         cancel_source_value = (
