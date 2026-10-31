@@ -1902,13 +1902,15 @@ async def _run(
         register_3rdagent_web_method,
     )
     from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-        _FORWARD_REQ_METHODS,
         WebHandlersBindParams,
-        _DummyBus,
         _normalize_feishu_conf,
         _normalize_xiaoyi_conf,
         _register_web_handlers,
+    )
+    from agent_gateway.channel_manager.web.web_handler_constants import (
+        _DummyBus,
+        _FORWARD_NO_LOCAL_HANDLER_METHODS,
+        _FORWARD_REQ_METHODS,
         spawn_background_task,
     )
     from agent_gateway.channel_manager.web.web_connect import (
