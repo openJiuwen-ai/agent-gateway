@@ -73,6 +73,7 @@ from agent_gateway.channel_manager.web.external_cli_runtime import (
     _update_codex_dependency_install_status,
     _update_external_cli_dependency_install_status,
 )
+from agent_gateway.channel_manager.web.locale_rpc_handlers import register_locale_handlers
 from agent_gateway.common.config import (
     get_config,
     get_config_raw,
@@ -81,7 +82,6 @@ from agent_gateway.common.config import (
     update_browser_in_config,
     update_channel_in_config,
     update_health_check_in_config,
-    update_preferred_language_in_config,
 )
 from agent_gateway.common.updater import UpdaterService
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
@@ -3096,80 +3096,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["limit"] = params.get("limit")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
-    async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
-        """Return the selected AgentServer user's preferred language."""
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            try:
-                cfg = get_config()
-                lang = str(cfg.get("preferred_language") or "zh").strip().lower()
-                if lang not in ("zh", "en"):
-                    lang = "zh"
-                await channel.send_response(
-                    ws, req_id, ok=True, payload={"preferred_language": lang}
-                )
-            except Exception as e:
-                logger.exception("[locale.get_conf] %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-            return
-
-        await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
-            req_id=req_id, params={}, session_id=session_id, user_id=user_id,
-            req_method=ReqMethod.LOCALE_GET_CONF, label="locale.get_conf",
-        )
-
-    async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
-        """Update preferred language in the selected AgentServer directory."""
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        lang_raw = params.get("preferred_language")
-        if not isinstance(lang_raw, str):
-            await channel.send_response(
-                ws, req_id, ok=False, error="preferred_language must be string", code="BAD_REQUEST"
-            )
-            return
-        lang = lang_raw.strip().lower()
-        if lang not in ("zh", "en"):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="preferred_language must be zh or en",
-                code="BAD_REQUEST"
-            )
-            return
-        resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            try:
-                update_preferred_language_in_config(lang)
-                await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
-            except Exception as e:
-                logger.warning("[locale.set_conf] 写回 config.yaml 失败: %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-            return
-        await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
-            req_id=req_id, params={"preferred_language": lang}, session_id=session_id,
-            user_id=user_id, req_method=ReqMethod.LOCALE_SET_CONF,
-            label="locale.set_conf",
-        )
-
     async def _health_check_get_conf(ws, req_id, params, session_id):
         """返回当前探活配置（every / target / active_hours）。"""
         hb = _resolve(heartbeat_service)
@@ -4631,8 +4557,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("topic_starters.foreground", _topic_starters_foreground)
     channel.register_method("topic_starters.event", _topic_starters_event)
     channel.register_method("prompt_suggestion.event", _prompt_suggestion_event)
-    channel.register_method("locale.get_conf", _locale_get_conf)
-    channel.register_method("locale.set_conf", _locale_set_conf)
+    register_locale_handlers(channel, agent_client, _resolve)
     register_updater_handlers(channel, updater_service)
     channel.register_method("health_check.get_conf", _health_check_get_conf)
     channel.register_method("health_check.set_conf", _health_check_set_conf)
