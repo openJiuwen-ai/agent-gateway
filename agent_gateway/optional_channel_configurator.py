@@ -92,7 +92,7 @@ class OptionalChannelConfigurator:
             logger.warning("[App] failed to set AgentOS SSH key issuer: %s", exc)
 
     async def apply(self, conf: dict) -> None:
-        from agent_gateway.channel_manager.web.app_web_handlers import (
+        from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
             _normalize_xiaoyi_conf,
         )
