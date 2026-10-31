@@ -17,6 +17,23 @@ measurable.
 4. Run compile checks and tests after every extraction.
 5. Keep refactors behavior-neutral unless a test exposes a defect.
 
+## Current baseline
+
+- Channel configuration handlers now use a shared registration function for
+  the standard channel set. `_send_rpc_error` keeps error response shape in one
+  place.
+- Route order remains: `health_check`, `heartbeat`, `feishu`, `xiaoyi`,
+  `telegram`, `dingtalk`, `whatsapp`, `discord`, `slack`, `wecom`, `wechat`, and
+  WeChat UI/unbind.
+- Telegram intentionally registers before DingTalk. DingTalk and
+  Feishu/Xiaoyi are not yet folded into the standard spec because their
+  persistence and cache-clearing timing differs.
+- Remaining extraction hotspots are `message_handler.py`, `app_gateway.py`,
+  `web_connect.py`, `cron/scheduler.py`, and `feishu_connect.py`.
+- The next shared pipeline candidate is Feishu/Xiaoyi: both normalize by
+  `app_id`, retain sensitive fields, and persist configuration, but cache
+  cleanup timing must be preserved.
+
 ## Phases
 
 ### Phase 0 - Safety net

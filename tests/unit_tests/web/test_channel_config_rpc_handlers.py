@@ -77,16 +77,29 @@ class _FakeHeartbeatService:
         )
 
 
-def _register(channel_manager=None, heartbeat_service=None):
+async def _noop_clear_agent_config_cache(client):
+    return None
+
+
+def _register(
+    channel_manager=None,
+    heartbeat_service=None,
+    clear_agent_config_cache=None,
+    agent_client=None,
+):
     channel = _FakeChannel()
     register_channel_config_handlers(
         channel,
         channel_manager,
         heartbeat_service,
-        object(),
+        agent_client if agent_client is not None else object(),
         _resolve=lambda ref: ref,
         _schedule_clear_agent_config_cache=lambda label: None,
-        _clear_agent_config_cache=lambda client: None,
+        _clear_agent_config_cache=(
+            clear_agent_config_cache
+            if clear_agent_config_cache is not None
+            else _noop_clear_agent_config_cache
+        ),
     )
     return channel
 
@@ -302,5 +315,116 @@ async def test_wechat_unbind_marks_restart_pending(monkeypatch):
             "req_id": "rpc-8",
             "ok": True,
             "payload": {"config": {"bot_token": None}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_standard_set_conf_without_channel_manager_is_unavailable():
+    channel = _register(channel_manager=None)
+
+    await channel.methods["channel.telegram.set_conf"](
+        object(), "rpc-9", {"enabled": True}, "session-9"
+    )
+
+    assert channel.responses == [
+        {
+            "req_id": "rpc-9",
+            "ok": False,
+            "error": "channel manager not available",
+            "code": "SERVICE_UNAVAILABLE",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_standard_set_conf_requires_object_params():
+    manager = _FakeChannelManager()
+    channel = _register(manager)
+
+    await channel.methods["channel.whatsapp.set_conf"](
+        object(), "rpc-10", [], "session-10"
+    )
+
+    assert channel.responses == [
+        {
+            "req_id": "rpc-10",
+            "ok": False,
+            "error": "params must be object",
+            "code": "BAD_REQUEST",
+        }
+    ]
+    assert manager.set_conf_calls == []
+
+
+@pytest.mark.asyncio
+async def test_standard_set_conf_succeeds_after_persistence_failure(monkeypatch):
+    from agent_gateway.channel_manager.web import channel_config_rpc_handlers
+
+    manager = _FakeChannelManager()
+    cleared = []
+
+    async def clear_agent_config_cache(client):
+        cleared.append(client)
+
+    def fail_update(channel_id, conf):
+        raise RuntimeError("write failed")
+
+    monkeypatch.setattr(
+        channel_config_rpc_handlers,
+        "update_channel_in_config",
+        fail_update,
+    )
+    channel = _register(
+        manager,
+        clear_agent_config_cache=clear_agent_config_cache,
+    )
+
+    await channel.methods["channel.slack.set_conf"](
+        object(),
+        "rpc-11",
+        {"enabled": True},
+        "session-11",
+    )
+
+    assert manager.set_conf_calls == [("slack", {"enabled": True})]
+    assert cleared == []
+    assert channel.responses == [
+        {
+            "req_id": "rpc-11",
+            "ok": True,
+            "payload": {"config": {"enabled": True}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_standard_set_conf_clears_agent_config_cache_after_persistence():
+    manager = _FakeChannelManager()
+    cleared = []
+    agent_client = object()
+
+    async def clear_agent_config_cache(client):
+        cleared.append(client)
+
+    channel = _register(
+        manager,
+        clear_agent_config_cache=clear_agent_config_cache,
+        agent_client=agent_client,
+    )
+
+    await channel.methods["channel.discord.set_conf"](
+        object(),
+        "rpc-12",
+        {"enabled": True},
+        "session-12",
+    )
+
+    assert cleared == [agent_client]
+    assert channel.responses == [
+        {
+            "req_id": "rpc-12",
+            "ok": True,
+            "payload": {"config": {"enabled": True}},
         }
     ]

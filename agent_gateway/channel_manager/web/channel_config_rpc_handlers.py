@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent_gateway.common.config import (
@@ -17,14 +18,16 @@ from agent_gateway.common.config import (
 
 logger = logging.getLogger(__name__)
 
-_STANDARD_CHANNEL_IDS = (
-    "telegram",
-    "whatsapp",
-    "discord",
-    "slack",
-    "wecom",
-    "wechat",
-)
+async def _send_rpc_error(
+    channel: Any,
+    ws: Any,
+    req_id: Any,
+    *,
+    error: str,
+    code: str,
+) -> None:
+    await channel.send_response(ws, req_id, ok=False, error=error, code=code)
+
 
 from agent_gateway.channel_manager.web.channel_config_normalizers import (
     _FEISHU_APP_DEFAULTS,
@@ -35,6 +38,24 @@ from agent_gateway.channel_manager.web.channel_config_normalizers import (
     _normalize_single_xiaoyi_to_app,
     _normalize_xiaoyi_conf,
     _validate_wechat_numeric_params,
+)
+
+
+@dataclass(frozen=True)
+class _StandardChannelSpec:
+    channel_id: str
+    validate_params: Callable[[dict[str, Any]], str | None] | None = None
+
+
+_STANDARD_CHANNEL_SPECS_BEFORE_DINGTALK = (
+    _StandardChannelSpec("telegram"),
+)
+_STANDARD_CHANNEL_SPECS_AFTER_DINGTALK = (
+    _StandardChannelSpec("whatsapp"),
+    _StandardChannelSpec("discord"),
+    _StandardChannelSpec("slack"),
+    _StandardChannelSpec("wecom"),
+    _StandardChannelSpec("wechat", _validate_wechat_numeric_params),
 )
 
 
@@ -62,10 +83,10 @@ def register_channel_config_handlers(
         async def _get_conf(ws, req_id, params, session_id):
             cm = _resolve(channel_manager)
             if cm is None:
-                await channel.send_response(
+                await _send_rpc_error(
+                    channel,
                     ws,
                     req_id,
-                    ok=False,
                     error="channel manager not available",
                     code="SERVICE_UNAVAILABLE",
                 )
@@ -75,24 +96,30 @@ def register_channel_config_handlers(
                 await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
             except Exception as e:  # noqa: BLE001
                 logger.exception(f"[channel.{channel_id}.get_conf] %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error=str(e),
+                    code="INTERNAL_ERROR",
+                )
 
         async def _set_conf(ws, req_id, params, session_id):
             cm = _resolve(channel_manager)
             if cm is None:
-                await channel.send_response(
+                await _send_rpc_error(
+                    channel,
                     ws,
                     req_id,
-                    ok=False,
                     error="channel manager not available",
                     code="SERVICE_UNAVAILABLE",
                 )
                 return
             if not isinstance(params, dict):
-                await channel.send_response(
+                await _send_rpc_error(
+                    channel,
                     ws,
                     req_id,
-                    ok=False,
                     error="params must be object",
                     code="BAD_REQUEST",
                 )
@@ -100,10 +127,10 @@ def register_channel_config_handlers(
             if validate_params is not None:
                 validation_error = validate_params(params)
                 if validation_error is not None:
-                    await channel.send_response(
+                    await _send_rpc_error(
+                        channel,
                         ws,
                         req_id,
-                        ok=False,
                         error=validation_error,
                         code="BAD_REQUEST",
                     )
@@ -119,7 +146,13 @@ def register_channel_config_handlers(
                 await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
             except Exception as e:  # noqa: BLE001
                 logger.exception(f"[channel.{channel_id}.set_conf] %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error=str(e),
+                    code="INTERNAL_ERROR",
+                )
 
         channel.register_method(f"channel.{channel_id}.get_conf", _get_conf)
         channel.register_method(f"channel.{channel_id}.set_conf", _set_conf)
@@ -493,29 +526,27 @@ def register_channel_config_handlers(
     channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
     channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)
     channel.register_method("channel.xiaoyi.set_conf", _channel_xiaoyi_set_conf)
-    _register_standard_channel_conf_handlers(
-        channel,
-        channel_manager,
-        agent_client,
-        _resolve,
-        _clear_agent_config_cache,
-        channel_id=_STANDARD_CHANNEL_IDS[0],
-    )
-    channel.register_method("channel.dingtalk.get_conf", _channel_dingtalk_get_conf)
-    channel.register_method("channel.dingtalk.set_conf", _channel_dingtalk_set_conf)
-    for channel_id in _STANDARD_CHANNEL_IDS[1:]:
+    for spec in _STANDARD_CHANNEL_SPECS_BEFORE_DINGTALK:
         _register_standard_channel_conf_handlers(
             channel,
             channel_manager,
             agent_client,
             _resolve,
             _clear_agent_config_cache,
-            channel_id=channel_id,
-            validate_params=(
-                _validate_wechat_numeric_params
-                if channel_id == "wechat"
-                else None
-            ),
+            channel_id=spec.channel_id,
+            validate_params=spec.validate_params,
+        )
+    channel.register_method("channel.dingtalk.get_conf", _channel_dingtalk_get_conf)
+    channel.register_method("channel.dingtalk.set_conf", _channel_dingtalk_set_conf)
+    for spec in _STANDARD_CHANNEL_SPECS_AFTER_DINGTALK:
+        _register_standard_channel_conf_handlers(
+            channel,
+            channel_manager,
+            agent_client,
+            _resolve,
+            _clear_agent_config_cache,
+            channel_id=spec.channel_id,
+            validate_params=spec.validate_params,
         )
     channel.register_method("channel.wechat.get_login_ui", _channel_wechat_get_login_ui)
     channel.register_method("channel.wechat.unbind", _channel_wechat_unbind)
