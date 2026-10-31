@@ -152,6 +152,7 @@ from agent_gateway.message_handler.session_state import (
     make_channel_state_key as _make_channel_state_key_impl,
     remember_alloc_state_key as _remember_alloc_state_key_impl,
     save_channel_state_to_config as _save_channel_state_to_config_impl,
+    apply_channel_state as _apply_channel_state_impl,
 )
 from agent_gateway.message_handler.stream_state import (
     active_chat_request_ids as _active_chat_request_ids_impl,
@@ -2118,45 +2119,7 @@ class MessageHandler(ABC):
 
     def _apply_channel_state(self, msg: "Message") -> None:
         """将当前 Channel 的控制状态应用到消息上（session_id / mode）."""
-        channel_type = self._resolve_control_channel_type(msg)
-        if channel_type not in self._control_channel_types:
-            return
-
-        # V2: 若 resolve_member_by_user 已识别为 team 成员（metadata 含 member_name），
-        # 则 session_id 和 mode 已由 handle_message 正确设置，不覆盖。
-        if isinstance(msg.metadata, dict) and msg.metadata.get("member_name"):
-            # 确保 mode=team，否则 AgentServer 不会走 process_team_message_stream
-            if msg.params is None:
-                msg.params = {}
-            if isinstance(msg.params, dict):
-                msg.params["mode"] = "team"
-            return
-
-        state = self.get_or_create_channel_state(msg)
-
-        # 仅 _session_map_channel_types 中的通道族使用 SessionMap；其它受控通道仍按 config/state 与入站 session_id。
-        cid = str(getattr(msg, "channel_id", "") or "")
-        identity_key = self._extract_identity_tuple(msg)
-        if identity_key and self._channel_id_matches_session_map_types(cid):
-            sid = self._session_map.find_session_id(*identity_key)
-            if sid:
-                state.session_id = sid
-                msg.session_id = sid
-            else:
-                msg.session_id = None
-        elif state.session_id:
-            msg.session_id = state.session_id
-        else:
-            # 受控通道且状态里没有正式会话：先记住本次状态键（此刻 msg.session_id 仍是
-            # 入站逻辑会话 id），_ensure_inbound_session 分配后写回同一状态复用。
-            self._remember_alloc_state_key(msg, cid)
-            msg.session_id = None
-
-        # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取
-        if msg.params is None:
-            msg.params = {}
-        if isinstance(msg.params, dict):
-            msg.params.setdefault("mode", state.mode.value)
+        _apply_channel_state_impl(self, msg)
 
     # ---------- user_messages ----------
 

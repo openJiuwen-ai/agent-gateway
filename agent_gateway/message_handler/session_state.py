@@ -91,3 +91,49 @@ def remember_alloc_state_key(
     handler._pending_alloc_state_key[msg.id] = handler._get_channel_state_key(
         str(channel_id or ""), msg.session_id
     )
+
+
+def apply_channel_state(
+    handler: Any, msg: "Message"
+) -> None:
+    """Apply the current channel's session and mode state to a message."""
+    channel_type = handler._resolve_control_channel_type(msg)
+    if channel_type not in handler._control_channel_types:
+        return
+
+    # V2: 若 resolve_member_by_user 已识别为 team 成员（metadata 含 member_name），
+    # 则 session_id 和 mode 已由 handle_message 正确设置，不覆盖。
+    if isinstance(msg.metadata, dict) and msg.metadata.get("member_name"):
+        # 确保 mode=team，否则 AgentServer 不会走 process_team_message_stream
+        if msg.params is None:
+            msg.params = {}
+        if isinstance(msg.params, dict):
+            msg.params["mode"] = "team"
+        return
+
+    state = handler.get_or_create_channel_state(msg)
+
+    # 仅 _session_map_channel_types 中的通道族使用 SessionMap；其它受控通道仍按
+    # config/state 与入站 session_id。
+    cid = str(getattr(msg, "channel_id", "") or "")
+    identity_key = handler._extract_identity_tuple(msg)
+    if identity_key and handler._channel_id_matches_session_map_types(cid):
+        sid = handler._session_map.find_session_id(*identity_key)
+        if sid:
+            state.session_id = sid
+            msg.session_id = sid
+        else:
+            msg.session_id = None
+    elif state.session_id:
+        msg.session_id = state.session_id
+    else:
+        # 受控通道且状态里没有正式会话：先记住本次状态键（此刻 msg.session_id 仍是
+        # 入站逻辑会话 id），_ensure_inbound_session 分配后写回同一状态复用。
+        handler._remember_alloc_state_key(msg, cid)
+        msg.session_id = None
+
+    # 将 mode 写入 params，后续 E2A / Agent 侧从 params["mode"] 读取
+    if msg.params is None:
+        msg.params = {}
+    if isinstance(msg.params, dict):
+        msg.params.setdefault("mode", state.mode.value)

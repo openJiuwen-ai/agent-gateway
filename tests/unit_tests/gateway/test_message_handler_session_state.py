@@ -157,3 +157,70 @@ def test_resolve_external_channel_session_reuses_alias():
     assert second_msg.metadata["external_session_id"] == "external-1"
     assert allocation_calls == [ChannelMode.AGENT_CODE_PLAN]
     assert handler._external_session_aliases == {("a2a", "external-1"): "real-sid"}
+
+
+def test_apply_channel_state_ignores_unsupported_channel():
+    handler = _make_handler()
+    msg = SimpleNamespace(
+        channel_id="web",
+        session_id="original-sid",
+        params={"mode": "agent.code.normal"},
+        metadata={},
+    )
+
+    MessageHandler._apply_channel_state(handler, msg)
+
+    assert msg.session_id == "original-sid"
+    assert msg.params == {"mode": "agent.code.normal"}
+
+
+def test_apply_channel_state_resolves_session_map_identity():
+    handler = _make_handler()
+    handler._session_map.find_session_id = lambda *parts: "mapped-sid"
+    msg = SimpleNamespace(
+        channel_id="feishu",
+        session_id="conversation-1",
+        provider="feishu",
+        chat_id="chat-1",
+        bot_id="bot-1",
+        user_id="user-1",
+        params={},
+        metadata={},
+    )
+
+    MessageHandler._apply_channel_state(handler, msg)
+
+    assert msg.session_id == "mapped-sid"
+    assert msg.params == {"mode": "agent.work.normal"}
+
+
+def test_apply_channel_state_preserves_team_member_identity():
+    handler = _make_handler()
+    msg = SimpleNamespace(
+        channel_id="feishu",
+        session_id="team-sid",
+        params={},
+        metadata={"member_name": "alice"},
+    )
+
+    MessageHandler._apply_channel_state(handler, msg)
+
+    assert msg.session_id == "team-sid"
+    assert msg.params == {"mode": "team"}
+
+
+def test_apply_channel_state_remembers_pending_key_for_sticky_channel():
+    handler = _make_handler()
+    msg = SimpleNamespace(
+        id="msg-1",
+        channel_id="xiaoyi",
+        session_id="conversation-1",
+        params={},
+        metadata={},
+    )
+
+    MessageHandler._apply_channel_state(handler, msg)
+
+    assert msg.session_id is None
+    assert msg.params == {"mode": "agent.work.normal"}
+    assert handler._pending_alloc_state_key == {"msg-1": "xiaoyi:conversation-1"}
