@@ -49,6 +49,12 @@ from agent_gateway.message_handler.agent_events import (
     normalize_agent_error_event as _normalize_agent_error_event_impl,
     uses_legacy_chat_error_protocol as _uses_legacy_chat_error_protocol_impl,
 )
+from agent_gateway.message_handler.message_builders import (
+    build_error_out_message as _build_error_out_message_impl,
+    build_queued_chat_send_message as _build_queued_chat_send_message_impl,
+    build_supplement_continuation_query as _build_supplement_continuation_query_impl,
+    build_tool_result_message as _build_tool_result_message_impl,
+)
 from agent_gateway.message_handler.request_state import (
     is_chat_send_message as _is_chat_send_message_impl,
     is_interaction_managed_chat_send as _is_interaction_managed_chat_send_impl,
@@ -3761,65 +3767,12 @@ class MessageHandler(ABC):
     def _clear_session_evolution_states(self, session_id: str | None) -> None:
         self._evolution_approval.clear_session(session_id)
 
-    @staticmethod
-    def _build_supplement_continuation_query(
-        new_input: str,
-        original_request: str = "",
-    ) -> str:
-        trimmed = str(new_input or "").strip()
-        original = str(original_request or "").strip()
-        original_section = (
-            f"\n\n原始任务请求如下，请以它作为继续执行 todo 时的上下文，尤其要保留其中的文件路径、目录、约束和目标：\n{original[:8000]}"
-            if original
-            else ""
-        )
-        return (
-            "用户在当前任务执行中追加了补充/调整请求：\n"
-            f"{trimmed}\n\n"
-            "请先处理这个补充/调整请求，然后检查并继续执行当前会话 todo 列表中仍未完成的 "
-            "in_progress 或 pending 任务。不要因为补充请求本身处理完成就询问用户下一步；"
-            "只有在确认 todo 列表没有未完成任务时，才可以总结或询问后续方向。\n\n"
-            "注意：追加补充请求会中断上一轮流式输出，用户界面上上一轮正在输出的任务结果可能只展示了一部分。"
-            "如果补充请求发生时某个 todo 正在输出结果，或者 todo 状态已经前进但该任务结果可能没有完整展示，"
-            "继续执行时请先补全或简要重述这个被中断任务的完整结果，再推进后续 todo；"
-            "不要仅因为 todo 状态已经变为 completed 就跳过用户尚未完整看到的任务结果。"
-            f"{original_section}"
-        )
-
-    @staticmethod
-    def _build_queued_chat_send_message(
-        msg: "Message",
-        new_input: str,
-        attachments: list[dict[str, Any]] | None = None,
-        original_request: str = "",
-    ) -> "Message":
-        from openjiuwen_protocol.message import Message, ReqMethod
-
-        new_req_id = f"req_{int(time.time() * 1000):x}_{msg.id}"
-        params: dict[str, Any] = {
-            "query": MessageHandler._build_supplement_continuation_query(
-                new_input,
-                original_request,
-            ),
-            "supplement_input": new_input,
-            "original_request": original_request,
-            "session_id": msg.session_id,
-            "is_supplement": True,
-        }
-        if attachments:
-            params["attachments"] = attachments
-        return Message(
-            id=new_req_id,
-            type="req",
-            channel_id=msg.channel_id,
-            session_id=msg.session_id,
-            params=params,
-            timestamp=time.time(),
-            ok=True,
-            req_method=ReqMethod.CHAT_SEND,
-            is_stream=True,
-            user_id=getattr(msg, "user_id", None),
-        )
+    _build_supplement_continuation_query = staticmethod(
+        _build_supplement_continuation_query_impl
+    )
+    _build_queued_chat_send_message = staticmethod(
+        _build_queued_chat_send_message_impl
+    )
 
     async def _effective_session_model(
         self, session_id: str, params: dict[str, Any], user_id: str | None = None
@@ -5116,56 +5069,8 @@ class MessageHandler(ABC):
             is_processing,
         )
 
-    def _build_error_out_message(self, msg: "Message", error: Exception) -> "Message":
-        from openjiuwen_protocol.message import Message
-
-        payload: dict[str, Any] = {"error": str(error)}
-        code = getattr(error, "code", None)
-        if isinstance(code, str) and code:
-            payload["code"] = code
-
-        return Message(
-            id=msg.id,
-            type="res",
-            channel_id=msg.channel_id,
-            session_id=msg.session_id,
-            params={},
-            timestamp=time.time(),
-            ok=False,
-            payload=payload,
-            metadata=msg.metadata,
-            app_id=msg.app_id or "",
-        )
-
-    def _build_tool_result_message(
-        self,
-        channel_id: str,
-        session_id: str,
-        tool_info: dict,
-        metadata: dict | None,
-    ) -> "Message":
-        """Build tool_result message for cancelled tool execution."""
-        from openjiuwen_protocol.message import EventType, Message
-
-        return Message(
-            id=f"tool_result_{int(time.time() * 1000):x}_{secrets.token_hex(3)}",
-            type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "tool_result": {
-                    "tool_name": tool_info.get("tool_name", ""),
-                    "tool_call_id": tool_info.get("tool_call_id", ""),
-                    "result": tool_info.get("result", ""),
-                    "status": tool_info.get("status", "error"),
-                },
-            },
-            event_type=EventType.CHAT_TOOL_RESULT,
-            metadata=metadata,
-        )
+    _build_error_out_message = staticmethod(_build_error_out_message_impl)
+    _build_tool_result_message = staticmethod(_build_tool_result_message_impl)
 
     async def _send_cancelled_tool_results(
         self,
