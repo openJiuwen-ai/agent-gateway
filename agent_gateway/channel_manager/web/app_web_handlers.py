@@ -45,6 +45,7 @@ from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
 )
+from agent_gateway.channel_manager.web.updater_rpc_handlers import register_updater_handlers
 from agent_gateway.channel_manager.web.external_cli_runtime import (
     _activate_managed_external_cli_paths_if_needed,
     _append_codex_dependency_install_log,
@@ -81,8 +82,8 @@ from agent_gateway.common.config import (
     update_channel_in_config,
     update_health_check_in_config,
     update_preferred_language_in_config,
-    update_updater_in_config,
 )
+from agent_gateway.common.updater import UpdaterService
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
 )
@@ -103,7 +104,6 @@ from agent_gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
-from agent_gateway.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from agent_gateway.dotenv_early import load_dotenv_runtime
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
@@ -1920,77 +1920,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except _OPENAI_ACCOUNT_LOCAL_ERRORS as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
-
-    async def _updater_get_status(ws, req_id, params, session_id):
-        service = updater_service or UpdaterService()
-        await channel.send_response(ws, req_id, ok=True, payload=service.get_status())
-
-    async def _updater_check(ws, req_id, params, session_id):
-        service = updater_service or UpdaterService()
-        manual = bool((params or {}).get("manual", False)) if isinstance(params, dict) else False
-        payload = await asyncio.to_thread(service.check, manual)
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _updater_download(ws, req_id, params, session_id):
-        service = updater_service or UpdaterService()
-        payload = service.start_download()
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _updater_upgrade(ws, req_id, params, session_id):
-        service = updater_service or UpdaterService()
-        payload = await asyncio.to_thread(service.start_upgrade)
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _updater_get_conf(ws, req_id, params, session_id):
-        service = updater_service or UpdaterService()
-        await channel.send_response(ws, req_id, ok=True, payload=service.get_runtime_config())
-
-    async def _updater_reset_source(ws, req_id, params, session_id):
-        try:
-            update_updater_in_config(dict(DEFAULT_SOURCE_CONFIG))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[updater.reset_source] 写回 config.yaml 失败: %s", exc)
-            await channel.send_response(ws, req_id, ok=False,
-                                        error=str(exc), code="INTERNAL_ERROR")
-            return
-
-        service = updater_service or UpdaterService()
-        await channel.send_response(ws, req_id, ok=True, payload=service.get_runtime_config())
-
-    async def _updater_set_conf(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-
-        updates: dict[str, Any] = {}
-        if "enabled" in params:
-            updates["enabled"] = bool(params.get("enabled"))
-        for key in ("repo_owner", "repo_name", "release_api_url", "asset_name_pattern",
-                "release_api_type", "pypi_mirror"):
-            if key in params:
-                updates[key] = str(params.get(key) or "").strip()
-        for plat in ("windows", "macos", "linux"):
-            key = f"asset_name_pattern_{plat}"
-            if key in params:
-                updates[key] = str(params.get(key) or "").strip()
-        if "timeout_seconds" in params:
-            try:
-                updates["timeout_seconds"] = max(5, int(params.get("timeout_seconds")))
-            except (TypeError, ValueError):
-                await channel.send_response(ws, req_id, ok=False,
-                                            error="timeout_seconds must be integer", code="BAD_REQUEST")
-                return
-
-        try:
-            update_updater_in_config(updates)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[updater.set_conf] 写回 config.yaml 失败: %s", exc)
-            await channel.send_response(ws, req_id, ok=False,
-                                        error=str(exc), code="INTERNAL_ERROR")
-            return
-
-        service = updater_service or UpdaterService()
-        await channel.send_response(ws, req_id, ok=True, payload=service.get_runtime_config())
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
         """返回会话列表，包含完整的会话管理信息。
@@ -4704,13 +4633,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("prompt_suggestion.event", _prompt_suggestion_event)
     channel.register_method("locale.get_conf", _locale_get_conf)
     channel.register_method("locale.set_conf", _locale_set_conf)
-    channel.register_method("updater.get_status", _updater_get_status)
-    channel.register_method("updater.check", _updater_check)
-    channel.register_method("updater.download", _updater_download)
-    channel.register_method("updater.upgrade", _updater_upgrade)
-    channel.register_method("updater.get_conf", _updater_get_conf)
-    channel.register_method("updater.reset_source", _updater_reset_source)
-    channel.register_method("updater.set_conf", _updater_set_conf)
+    register_updater_handlers(channel, updater_service)
     channel.register_method("health_check.get_conf", _health_check_get_conf)
     channel.register_method("health_check.set_conf", _health_check_set_conf)
     # Deprecated aliases for clients upgrading from the pre-split probe API.
