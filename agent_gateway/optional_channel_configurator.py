@@ -416,6 +416,46 @@ class OptionalChannelConfigurator:
         self._telegram_task = asyncio.create_task(self._telegram_channel.start(), name="telegram")
         logger.info("[App] TelegramChannel registered from config.yaml.channels.telegram")
 
+    async def _apply_discord_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "discord" not in changed_channels:
+            return
+
+        discord_conf = conf.get("discord") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._discord_channel,
+            self._discord_task,
+            "discord",
+            channel_manager=self._channel_manager,
+        )
+        self._discord_channel, self._discord_task = None, None
+
+        if not isinstance(discord_conf, dict):
+            logger.info("[App] channels.discord missing or invalid, DiscordChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(discord_conf, ["bot_token"])
+        if not enabled:
+            logger.info("[App] channels.discord.%s, DiscordChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.discord.discord_connect import (
+            DiscordChannel,
+            DiscordChannelConfig,
+        )
+        discord_config = DiscordChannelConfig(
+            enabled=True,
+            bot_token=str(discord_conf.get("bot_token") or "").strip(),
+            application_id=str(discord_conf.get("application_id") or "").strip(),
+            guild_id=str(discord_conf.get("guild_id") or "").strip(),
+            channel_id=str(discord_conf.get("channel_id") or "").strip(),
+            allow_from=discord_conf.get("allow_from") or [],
+            block_dm=(str(discord_conf.get("block_dm")).lower() in ["true", "1"]) or False,
+        )
+        self._discord_channel = DiscordChannel(discord_config, self._dummy_bus_cls())
+        self._channel_manager.register_channel(self._discord_channel)
+        self._discord_task = asyncio.create_task(self._discord_channel.start(), name="discord")
+        logger.info("[App] DiscordChannel registered from config.yaml.channels.discord")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -450,40 +490,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_telegram_channels(conf, changed_channels)
 
-        if "discord" in changed_channels:
-            discord_conf = conf.get("discord") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._discord_channel,
-                self._discord_task,
-                "discord",
-                channel_manager=self._channel_manager,
-            )
-            self._discord_channel, self._discord_task = None, None
-
-            if isinstance(discord_conf, dict):
-                enabled, reason = _is_channel_enabled(discord_conf, ["bot_token"])
-                if not enabled:
-                    logger.info("[App] channels.discord.%s, DiscordChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.discord.discord_connect import (
-                        DiscordChannel,
-                        DiscordChannelConfig,
-                    )
-                    discord_config = DiscordChannelConfig(
-                        enabled=True,
-                        bot_token=str(discord_conf.get("bot_token") or "").strip(),
-                        application_id=str(discord_conf.get("application_id") or "").strip(),
-                        guild_id=str(discord_conf.get("guild_id") or "").strip(),
-                        channel_id=str(discord_conf.get("channel_id") or "").strip(),
-                        allow_from=discord_conf.get("allow_from") or [],
-                        block_dm=(str(discord_conf.get("block_dm")).lower() in ["true", "1"]) or False,
-                    )
-                    self._discord_channel = DiscordChannel(discord_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._discord_channel)
-                    self._discord_task = asyncio.create_task(self._discord_channel.start(), name="discord")
-                    logger.info("[App] DiscordChannel registered from config.yaml.channels.discord")
-            else:
-                logger.info("[App] channels.discord missing or invalid, DiscordChannel disabled")
+        await self._apply_discord_channels(conf, changed_channels)
 
         if "slack" in changed_channels:
             slack_conf = conf.get("slack") if isinstance(conf, dict) else None
