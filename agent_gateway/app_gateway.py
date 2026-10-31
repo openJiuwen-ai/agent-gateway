@@ -172,6 +172,88 @@ logger = logging.getLogger("gateway")
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 
+@dataclass
+class _GatewayExtensionRuntime:
+    extension_registry: Any
+    client: Any
+    third_agent: Any
+    using_adx_router: bool
+
+
+async def _initialize_extension_runtime(
+    agent_server_url: str,
+    startup_t0: float,
+    log_startup_stage: Callable[[str], None],
+) -> _GatewayExtensionRuntime:
+    from agent_gateway.common.config import get_config
+    from openjiuwen.core.runner import Runner
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+
+    callback_framework = Runner.callback_framework
+    extension_registry = ExtensionRegistry.create_instance(
+        callback_framework=callback_framework,
+        config={},
+        logger=logger,
+    )
+    extension_manager = ExtensionManager(registry=extension_registry)
+    log_startup_stage("extension_manager_created")
+    await extension_manager.load_all_extensions()
+    logger.info(
+        "[App] extensions loaded: %d (elapsed %.2fs)",
+        len(extension_manager.list_extensions()),
+        time.monotonic() - startup_t0,
+    )
+    log_startup_stage("extensions_loaded")
+
+    max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
+    retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
+
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    agent_server_ext = extension_registry.get_agent_server_client_extension()
+    gateway_config = get_config().get("gateway") or {}
+    agent_client_config = gateway_config.get("agent_client") or {}
+    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
+    if using_adx_router:
+        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
+            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
+    if agent_server_ext is not None:
+        logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
+        client = agent_server_ext.get_client()
+    else:
+        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
+
+    from agent_gateway.routing.third_agent import get_unsupported_third_agent
+
+    third_agent_ext = extension_registry.get_third_agent_extension()
+    if third_agent_ext is not None:
+        logger.info("[App] using extension ThirdAgent: %s", third_agent_ext.metadata.name)
+        third_agent = third_agent_ext.get_third_agent()
+    else:
+        third_agent = get_unsupported_third_agent()
+
+    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    if isinstance(client, WebSocketAgentServerClient):
+        await _connect_with_retry(
+            client,
+            agent_server_url,
+            max_retries=max_retries,
+            interval=retry_interval,
+        )
+    else:
+        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
+        await client.connect("")
+    log_startup_stage("agent_server_connected")
+
+    return _GatewayExtensionRuntime(
+        extension_registry=extension_registry,
+        client=client,
+        third_agent=third_agent,
+        using_adx_router=using_adx_router,
+    )
+
+
 class GatewayServer(BaseWebChannel):
     """通用多路路由 WebSocket Gateway Server。
 
@@ -748,8 +830,6 @@ async def _run(
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
     # 读取其重依赖 (slack_bolt/telegram/redis/aiohttp 等), 缩短 Gateway 就绪时间。
-    from openjiuwen.core.runner import Runner
-
     from agent_gateway.channel_manager.channel_manager import ChannelManager
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
         WebProxyChannelConfig,
@@ -781,16 +861,12 @@ async def _run(
         CronSchedulerService,
         create_gateway_cron_store,
     )
-    from agent_gateway.extensions.manager import ExtensionManager
-    from agent_gateway.extensions.registry import ExtensionRegistry
     from agent_gateway.health_check import (
         GatewayHealthCheckService,
         HealthCheckConfig,
     )
     from agent_gateway.heartbeat import HeartbeatControllerProxy
     from agent_gateway.message_handler.message_handler import MessageHandler
-    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
@@ -812,60 +888,15 @@ async def _run(
     log_startup_stage("run_entered")
     restart_request = GatewayRestartRequest()
 
-    callback_framework = Runner.callback_framework
-    extension_registry = ExtensionRegistry.create_instance(
-        callback_framework=callback_framework,
-        config={},
-        logger=logger,
+    extension_runtime = await _initialize_extension_runtime(
+        agent_server_url=agent_server_url,
+        startup_t0=startup_t0,
+        log_startup_stage=log_startup_stage,
     )
-    extension_manager = ExtensionManager(registry=extension_registry)
-    log_startup_stage("extension_manager_created")
-    await extension_manager.load_all_extensions()
-    logger.info(
-        "[App] extensions loaded: %d (elapsed %.2fs)",
-        len(extension_manager.list_extensions()),
-        time.monotonic() - startup_t0,
-    )
-    log_startup_stage("extensions_loaded")
-
-    max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
-    retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
-
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
-    agent_server_ext = extension_registry.get_agent_server_client_extension()
-    gateway_config = get_config().get("gateway") or {}
-    agent_client_config = gateway_config.get("agent_client") or {}
-    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
-    if using_adx_router:
-        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
-            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
-    if agent_server_ext is not None:
-        logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
-        client = agent_server_ext.get_client()
-    else:
-        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
-
-    from agent_gateway.routing.third_agent import get_unsupported_third_agent
-
-    third_agent_ext = extension_registry.get_third_agent_extension()
-    if third_agent_ext is not None:
-        logger.info("[App] using extension ThirdAgent: %s", third_agent_ext.metadata.name)
-        third_agent = third_agent_ext.get_third_agent()
-    else:
-        third_agent = get_unsupported_third_agent()
-
-    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
-    if isinstance(client, WebSocketAgentServerClient):
-        await _connect_with_retry(
-            client,
-            agent_server_url,
-            max_retries=max_retries,
-            interval=retry_interval,
-        )
-    else:
-        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
-        await client.connect("")
-    log_startup_stage("agent_server_connected")
+    extension_registry = extension_runtime.extension_registry
+    client = extension_runtime.client
+    third_agent = extension_runtime.third_agent
+    using_adx_router = extension_runtime.using_adx_router
 
     message_handler = MessageHandler(client)
     await message_handler.start_forwarding()
