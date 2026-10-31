@@ -172,6 +172,101 @@ class OptionalChannelConfigurator:
             channel.start_task = task  # 挂到 channel 对象上，不另存 dict
             logger.info("[App] FeishuChannel(app=%s) registered from channels.feishu.apps", app_id)
 
+    async def _apply_feishu_enterprise_channels(
+        self,
+        conf: dict,
+        changed_channels: set[str],
+    ) -> None:
+        if "feishu_enterprise" not in changed_channels:
+            return
+
+        for bot_key, task in list(self._feishu_enterprise_tasks.items()):
+            await _stop_channel(
+                self._feishu_enterprise_channels.get(bot_key),
+                task,
+                f"feishu_enterprise[{bot_key}]",
+                channel_manager=self._channel_manager,
+            )
+        for _old_ch in self._feishu_enterprise_channels.values():
+            _old_ch_id = getattr(_old_ch, "_channel_id", "") or getattr(_old_ch, "name", "")
+            if _old_ch_id:
+                self._im_inbound.unregister_adapter(_old_ch_id)
+                self._im_outbound.unregister_adapter(_old_ch_id)
+        self._feishu_enterprise_channels = {}
+        self._feishu_enterprise_tasks = {}
+
+        enterprise_conf = conf.get("feishu_enterprise") if isinstance(conf, dict) else None
+        if not isinstance(enterprise_conf, dict):
+            logger.info(
+                "[App] channels.feishu_enterprise missing or invalid; "
+                "FeishuEnterpriseChannel disabled"
+            )
+            return
+
+        from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
+            FeishuChannel,
+            FeishuConfig,
+        )
+        for bot_key, bot_conf_raw in enterprise_conf.items():
+            if not isinstance(bot_key, str) or not bot_key.strip():
+                continue
+            bot_conf = bot_conf_raw if isinstance(bot_conf_raw, dict) else None
+            if bot_conf is None:
+                logger.info("[App] channels.feishu_enterprise.%s invalid config, skipping", bot_key)
+                continue
+            enabled, reason = _is_channel_enabled(bot_conf, ["app_id", "app_secret"])
+            if not enabled:
+                logger.info(
+                    "[App] channels.feishu_enterprise.%s.%s, FeishuEnterpriseChannel disabled",
+                    bot_key,
+                    reason,
+                )
+                continue
+
+            bot_key = bot_key.strip()
+            app_id = str(bot_conf.get("app_id") or "").strip()
+            channel_id = f"feishu_enterprise:{app_id}"
+            feishu_config = FeishuConfig(
+                enabled=True,
+                app_id=app_id,
+                app_secret=str(bot_conf.get("app_secret") or "").strip(),
+                encrypt_key=str(bot_conf.get("encrypt_key") or "").strip(),
+                verification_token=str(bot_conf.get("verification_token") or "").strip(),
+                allow_from=bot_conf.get("allow_from") or [],
+                enable_streaming=bool(bot_conf.get("enable_streaming", True)),
+                chat_id=str(bot_conf.get("chat_id") or "").strip(),
+                channel_id=channel_id,
+                bot_key=bot_key,
+                last_chat_id=str(bot_conf.get("last_chat_id") or "").strip(),
+                last_open_id=str(bot_conf.get("last_open_id") or "").strip(),
+                my_user_id=str(bot_conf.get("my_user_id") or "").strip(),
+                bot_name=str(bot_conf.get("bot_name") or "").strip(),
+                group_digital_avatar=bool(bot_conf.get("group_digital_avatar", False)),
+                enable_memory=bool(bot_conf.get("enable_memory", False)),
+                api_base=str(bot_conf.get("api_base") or "").strip() or _FEISHU_DEFAULT_API_BASE,
+            )
+            feishu_adapter = None
+            if feishu_config.group_digital_avatar:
+                from agent_gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
+                    FeishuIMPlatformAdapter,
+                )
+                feishu_adapter = FeishuIMPlatformAdapter(
+                    my_open_id=feishu_config.my_user_id,
+                    bot_name=feishu_config.bot_name,
+                )
+                self._im_inbound.register_adapter(channel_id, feishu_adapter)
+                self._im_outbound.register_adapter(channel_id, feishu_adapter)
+            channel = FeishuChannel(feishu_config, self._dummy_bus_cls(), im_platform_adapter=feishu_adapter)
+            self._channel_manager.register_channel(channel)
+            task = asyncio.create_task(channel.start(), name=f"feishu-enterprise-{bot_key}")
+            self._feishu_enterprise_channels[bot_key] = channel
+            self._feishu_enterprise_tasks[bot_key] = task
+            logger.info(
+                "[App] registered FeishuChannel(%s) from config.yaml.channels.feishu_enterprise.%s",
+                bot_key,
+                channel_id,
+            )
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -198,92 +293,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_feishu_channels(conf, changed_channels)
 
-        if "feishu_enterprise" in changed_channels:
-            for bot_key, task in list(self._feishu_enterprise_tasks.items()):
-                await _stop_channel(
-                    self._feishu_enterprise_channels.get(bot_key),
-                    task,
-                    f"feishu_enterprise[{bot_key}]",
-                    channel_manager=self._channel_manager,
-                )
-            for _old_ch in self._feishu_enterprise_channels.values():
-                _old_ch_id = getattr(_old_ch, "_channel_id", "") or getattr(_old_ch, "name", "")
-                if _old_ch_id:
-                    self._im_inbound.unregister_adapter(_old_ch_id)
-                    self._im_outbound.unregister_adapter(_old_ch_id)
-            self._feishu_enterprise_channels = {}
-            self._feishu_enterprise_tasks = {}
-
-            enterprise_conf = conf.get("feishu_enterprise") if isinstance(conf, dict) else None
-            if not isinstance(enterprise_conf, dict):
-                logger.info(
-                    "[App] channels.feishu_enterprise missing or invalid; "
-                    "FeishuEnterpriseChannel disabled"
-                )
-            else:
-                from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
-                    FeishuChannel,
-                    FeishuConfig,
-                )
-                for bot_key, bot_conf_raw in enterprise_conf.items():
-                    if not isinstance(bot_key, str) or not bot_key.strip():
-                        continue
-                    bot_conf = bot_conf_raw if isinstance(bot_conf_raw, dict) else None
-                    if bot_conf is None:
-                        logger.info("[App] channels.feishu_enterprise.%s invalid config, skipping", bot_key)
-                        continue
-                    enabled, reason = _is_channel_enabled(bot_conf, ["app_id", "app_secret"])
-                    if not enabled:
-                        logger.info(
-                            "[App] channels.feishu_enterprise.%s.%s, FeishuEnterpriseChannel disabled",
-                            bot_key,
-                            reason,
-                        )
-                        continue
-
-                    bot_key = bot_key.strip()
-                    app_id = str(bot_conf.get("app_id") or "").strip()
-                    channel_id = f"feishu_enterprise:{app_id}"
-                    feishu_config = FeishuConfig(
-                        enabled=True,
-                        app_id=app_id,
-                        app_secret=str(bot_conf.get("app_secret") or "").strip(),
-                        encrypt_key=str(bot_conf.get("encrypt_key") or "").strip(),
-                        verification_token=str(bot_conf.get("verification_token") or "").strip(),
-                        allow_from=bot_conf.get("allow_from") or [],
-                        enable_streaming=bool(bot_conf.get("enable_streaming", True)),
-                        chat_id=str(bot_conf.get("chat_id") or "").strip(),
-                        channel_id=channel_id,
-                        bot_key=bot_key,
-                        last_chat_id=str(bot_conf.get("last_chat_id") or "").strip(),
-                        last_open_id=str(bot_conf.get("last_open_id") or "").strip(),
-                        my_user_id=str(bot_conf.get("my_user_id") or "").strip(),
-                        bot_name=str(bot_conf.get("bot_name") or "").strip(),
-                        group_digital_avatar=bool(bot_conf.get("group_digital_avatar", False)),
-                        enable_memory=bool(bot_conf.get("enable_memory", False)),
-                        api_base=str(bot_conf.get("api_base") or "").strip() or _FEISHU_DEFAULT_API_BASE,
-                    )
-                    feishu_adapter = None
-                    if feishu_config.group_digital_avatar:
-                        from agent_gateway.channel_manager.im_platforms.feishu.feishu_im_adapter import (
-                            FeishuIMPlatformAdapter,
-                        )
-                        feishu_adapter = FeishuIMPlatformAdapter(
-                            my_open_id=feishu_config.my_user_id,
-                            bot_name=feishu_config.bot_name,
-                        )
-                        self._im_inbound.register_adapter(channel_id, feishu_adapter)
-                        self._im_outbound.register_adapter(channel_id, feishu_adapter)
-                    channel = FeishuChannel(feishu_config, self._dummy_bus_cls(), im_platform_adapter=feishu_adapter)
-                    self._channel_manager.register_channel(channel)
-                    task = asyncio.create_task(channel.start(), name=f"feishu-enterprise-{bot_key}")
-                    self._feishu_enterprise_channels[bot_key] = channel
-                    self._feishu_enterprise_tasks[bot_key] = task
-                    logger.info(
-                        "[App] registered FeishuChannel(%s) from config.yaml.channels.feishu_enterprise.%s",
-                        bot_key,
-                        channel_id,
-                    )
+        await self._apply_feishu_enterprise_channels(conf, changed_channels)
 
         if "xiaoyi" in changed_channels:
             xiaoyi_conf = conf.get("xiaoyi") if isinstance(conf, dict) else {}
