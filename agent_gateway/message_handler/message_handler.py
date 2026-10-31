@@ -146,6 +146,12 @@ from agent_gateway.runtime.session_input import (
     validate_session_input,
 )
 
+from agent_gateway.message_handler.wire_messages import (
+    chunk_to_message as _chunk_to_message_impl,
+    message_to_e2a as _message_to_e2a_impl,
+    response_to_message as _response_to_message_impl,
+)
+
 logger = logging.getLogger(__name__)
 
 _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
@@ -2684,12 +2690,7 @@ class MessageHandler(ABC):
         _resolve_structured_attachments_impl
     )
 
-    @staticmethod
-    def message_to_e2a(msg: "Message") -> "E2AEnvelope":
-        from openjiuwen_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
-
-        return message_to_e2a_or_fallback(msg)
-
+    message_to_e2a = staticmethod(_message_to_e2a_impl)
 
     _merge_agent_metadata = staticmethod(_merge_agent_metadata_impl)
     _normalize_agent_error_event = staticmethod(_normalize_agent_error_event_impl)
@@ -2697,88 +2698,7 @@ class MessageHandler(ABC):
         _uses_legacy_chat_error_protocol_impl
     )
 
-    @staticmethod
-    def _response_to_message(
-        resp: "AgentResponse",
-        session_id: str | None,
-        *,
-        request_metadata: dict[str, Any] | None = None,
-        app_id: str | None = None,
-        request_method: Any = None,
-        request_params: dict[str, Any] | None = None,
-    ) -> "Message":
-        from openjiuwen_protocol.message import EventType, Message
-
-        metadata = MessageHandler._merge_agent_metadata(request_metadata, resp.metadata)
-
-        # ── V2: 合并 resp 的 agent_ref ──
-        resp_agent_ref = getattr(resp, "agent_ref", None)
-
-        # 从 metadata 中提取 group_digital_avatar 和 enable_memory 字段
-        # 这些字段在 message_to_e2a 中被放入 metadata，需要在这里提取出来
-        group_digital_avatar = bool(metadata.get("group_digital_avatar", False)) if metadata else False
-        enable_memory = bool(metadata.get("enable_memory", True)) if metadata else True
-
-        # 检查 payload 中是否包含 event_type，如果包含则创建事件消息
-        event_type = None
-        payload = resp.payload
-        if resp.payload and isinstance(resp.payload, dict):
-            payload = apply_a2ui_text_fallback_to_gateway_payload(
-                dict(resp.payload),
-                channel_id=resp.channel_id,
-            )
-            payload = normalize_legacy_health_check_relay_payload(payload)
-            event_type_str = MessageHandler._normalize_agent_error_event(
-                payload,
-                legacy_failed=(
-                    not bool(resp.ok)
-                    and MessageHandler._uses_legacy_chat_error_protocol(
-                        request_method,
-                        request_params,
-                    )
-                ),
-            )
-            if isinstance(event_type_str, str):
-                try:
-                    event_type = EventType(event_type_str)
-                    # 如果是事件类型，创建事件消息而不是响应消息
-                    return Message(
-                        id=resp.request_id,
-                        type="event",
-                        channel_id=resp.channel_id,
-                        session_id=session_id,
-                        params={},
-                        timestamp=time.time(),
-                        ok=event_type != EventType.CHAT_ERROR,
-                        payload=payload,
-                        event_type=event_type,
-                        metadata=metadata,
-                        app_id=app_id,
-                        agent_ref=resp_agent_ref,
-                        group_digital_avatar=group_digital_avatar,
-                        enable_memory=enable_memory,
-                    )
-                except ValueError:
-                    # 不是有效的 EventType，继续作为普通响应处理
-                    pass
-
-        # 普通响应消息
-        return Message(
-            id=resp.request_id,
-            type="res",
-            channel_id=resp.channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=resp.ok,
-            payload=payload,
-            event_type=EventType.CHAT_FINAL,
-            metadata=metadata,
-            app_id=app_id,
-            agent_ref=resp_agent_ref,
-            group_digital_avatar=group_digital_avatar,
-            enable_memory=enable_memory,
-        )
+    _response_to_message = staticmethod(_response_to_message_impl)
 
     async def _handle_login_credential_refresh_push(self, chunk: Any) -> bool:
         """AgentServer 请求给在用的登录模型凭据续期。是这类消息返回 ``True``。
@@ -3300,67 +3220,7 @@ class MessageHandler(ABC):
                 "[Cron] run_now ack push failed: request_id=%s error=%s", request_id, exc
             )
 
-    @staticmethod
-    def _chunk_to_message(
-        chunk: AgentResponseChunk,
-        session_id: str | None,
-        *,
-        metadata: dict[str, Any] | None = None,
-        app_id: str | None = None,
-    ) -> Message:
-        """将 AgentResponseChunk 转换为 Message（用于流式处理）。
-        metadata 传入 request 的 metadata，供 Feishu/Xiaoyi 等通道回发时使用平台身份。
-        """
-        from openjiuwen_protocol.message import EventType, Message
-
-        # 从 metadata 中提取 group_digital_avatar 和 enable_memory 字段
-        # 这些字段在 message_to_e2a 中被放入 metadata，需要在这里提取出来
-        group_digital_avatar = bool(metadata.get("group_digital_avatar", False)) if metadata else False
-        enable_memory = bool(metadata.get("enable_memory", True)) if metadata else True
-
-        # ── V2: 合并 chunk.metadata（含 fan_out_targets）+ chunk.agent_ref ──
-        chunk_md = getattr(chunk, "metadata", None) or {}
-        merged_metadata: dict[str, Any] | None = None
-        if metadata or chunk_md:
-            merged_metadata = {**(metadata or {}), **chunk_md}
-
-        chunk_agent_ref = getattr(chunk, "agent_ref", None)
-
-        # 从 payload 中提取 event_type（如果存在）
-        event_type = None
-        payload = chunk.payload
-        if chunk.payload and isinstance(chunk.payload, dict):
-            payload = apply_a2ui_text_fallback_to_gateway_payload(
-                dict(chunk.payload),
-                channel_id=chunk.channel_id,
-            )
-            payload = normalize_legacy_health_check_relay_payload(payload)
-            event_type_str = MessageHandler._normalize_agent_error_event(
-                payload,
-                legacy_failed=bool(getattr(chunk, "is_complete", False)),
-            )
-            if isinstance(event_type_str, str):
-                try:
-                    event_type = EventType(event_type_str)
-                except ValueError:
-                    logger.debug("未知的 event_type: %s", event_type_str)
-
-        return Message(
-            id=chunk.request_id,
-            type="event",
-            channel_id=chunk.channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=event_type != EventType.CHAT_ERROR,
-            payload=payload,
-            event_type=event_type,
-            metadata=merged_metadata,
-            app_id=app_id,
-            agent_ref=chunk_agent_ref,
-            group_digital_avatar=group_digital_avatar,
-            enable_memory=enable_memory,
-        )
+    _chunk_to_message = staticmethod(_chunk_to_message_impl)
 
     _is_terminal_stream_chunk = staticmethod(_is_terminal_stream_chunk_impl)
 
