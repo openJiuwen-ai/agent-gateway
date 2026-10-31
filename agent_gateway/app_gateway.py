@@ -180,6 +180,13 @@ class _GatewayExtensionRuntime:
     using_adx_router: bool
 
 
+@dataclass
+class _GatewayCronRuntime:
+    store: Any
+    scheduler: Any
+    controller: Any
+
+
 async def _initialize_extension_runtime(
     agent_server_url: str,
     startup_t0: float,
@@ -251,6 +258,51 @@ async def _initialize_extension_runtime(
         client=client,
         third_agent=third_agent,
         using_adx_router=using_adx_router,
+    )
+
+
+async def _initialize_cron_runtime(
+    message_handler: Any,
+    client: Any,
+) -> _GatewayCronRuntime:
+    from agent_gateway.common.config import get_config
+    from agent_gateway.common.external_providers import register as _register_provider
+    from agent_gateway.common.model_migration import migrate_legacy_cron_selections
+    from agent_gateway.cron import (
+        CronController,
+        CronSchedulerService,
+        create_gateway_cron_store,
+    )
+    from agent_gateway.runtime.cron import factory as _cron_factory
+    from agent_gateway.runtime.cron.factory import load_cron_store_settings
+
+    cron_store = await create_gateway_cron_store()
+
+    # Shared etcd jobs need the target user's catalog; that migration runs on
+    # the per-user resource/reference boundary, never using Gateway's catalog.
+    if load_cron_store_settings(get_config()).backend == "file":
+        try:
+            await migrate_legacy_cron_selections(cron_store, user_id=None)
+        except Exception:  # noqa: BLE001
+            logger.warning("Cron model-selection migration deferred", exc_info=True)
+
+    cron_scheduler = CronSchedulerService(
+        store=cron_store,
+        agent_client=client,
+        message_handler=message_handler,
+    )
+    cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.bind_agent_client(client)
+    message_handler.set_cron_controller(cron_controller)
+
+    # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
+    # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
+    _register_provider("cron_store_factory", _cron_factory)
+
+    return _GatewayCronRuntime(
+        store=cron_store,
+        scheduler=cron_scheduler,
+        controller=cron_controller,
     )
 
 
@@ -909,31 +961,13 @@ async def _run(
     message_handler.set_inbound_pipeline(im_inbound)
     message_handler.set_outbound_pipeline(im_outbound)
 
-    cron_store = await create_gateway_cron_store()
-    from agent_gateway.common.model_migration import migrate_legacy_cron_selections
-    from agent_gateway.runtime.cron.factory import load_cron_store_settings
-
-    # Shared etcd jobs need the target user's catalog; that migration runs on
-    # the per-user resource/reference boundary, never using Gateway's catalog.
-    if load_cron_store_settings(get_config()).backend == "file":
-        try:
-            await migrate_legacy_cron_selections(cron_store, user_id=None)
-        except Exception:  # noqa: BLE001
-            logger.warning("Cron model-selection migration deferred", exc_info=True)
-    cron_scheduler = CronSchedulerService(
-        store=cron_store,
-        agent_client=client,
+    cron_runtime = await _initialize_cron_runtime(
         message_handler=message_handler,
+        client=client,
     )
-    cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
-    cron_controller.bind_agent_client(client)
-    message_handler.set_cron_controller(cron_controller)
-    # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
-    # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
-    from agent_gateway.common.external_providers import register as _register_provider
-    from agent_gateway.runtime.cron import factory as _cron_factory
-
-    _register_provider("cron_store_factory", _cron_factory)
+    cron_store = cron_runtime.store
+    cron_scheduler = cron_runtime.scheduler
+    cron_controller = cron_runtime.controller
     # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
     from agent_gateway.routing.session_metadata_remote import (
         bind_agent_client as _bind_session_meta_client,
