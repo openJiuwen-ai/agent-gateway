@@ -23,10 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from openjiuwen.core.common.logging import LogManager
-from agent_gateway.channel_manager.web.task_asr import (
-    TaskAsrError,
-    transcribe_task_audio,
-)
 from agent_gateway.channel_manager.web.channel_config_rpc_handlers import (
     # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     _merge_apps_by_id,
@@ -75,6 +71,9 @@ from agent_gateway.channel_manager.web.media_document_rpc_handlers import (
 )
 from agent_gateway.channel_manager.web.conversation_rpc_handlers import (
     register_conversation_handlers,
+)
+from agent_gateway.channel_manager.web.channel_task_rpc_handlers import (
+    register_channel_task_handlers,
 )
 from agent_gateway.channel_manager.web.chat_rpc_handlers import register_chat_send_handler
 from agent_gateway.channel_manager.web.permissions_harness_rpc_handlers import (
@@ -818,37 +817,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await request_zen_warmup(_resolve(agent_client))
 
-    async def _channel_get(ws, req_id, params, session_id):
-        """返回已注册的 channel 列表."""
-        cm = _resolve(channel_manager)
-        if cm is not None:
-            channels = [{"channel_id": cid} for cid in cm.enabled_channels]
-        else:
-            channels = []
-        await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
-
-    async def _task_asr_transcribe(ws, req_id, params, session_id):
-        del session_id
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        try:
-            text = await transcribe_task_audio(params)
-        except TaskAsrError as exc:
-            await channel.send_response(
-                ws, req_id, ok=False, error=str(exc), code=exc.code
-            )
-            return
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[task.asr.transcribe] unexpected failure")
-            await channel.send_response(
-                ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
-            )
-            return
-        await channel.send_response(ws, req_id, ok=True, payload={"text": text})
-
     register_vendor_handlers(channel)
 
     register_cron_handlers(channel, cron_controller, agent_client, _resolve)
@@ -1039,8 +1007,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
     register_vendor_handlers(channel)
-    channel.register_method("channel.get", _channel_get)
-    channel.register_method("task.asr.transcribe", _task_asr_transcribe)
+    register_channel_task_handlers(
+        channel,
+        channel_manager,
+        agent_client,
+        _resolve,
+    )
     from agent_gateway.channel_manager.web.openai_account_rpc_handlers import (
         register_openai_account_handlers,
     )
