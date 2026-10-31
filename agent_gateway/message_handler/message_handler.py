@@ -2653,42 +2653,14 @@ class MessageHandler(ABC):
 
 
                 if msg.req_method == ReqMethod.CHAT_ANSWER:
-                    answer_payload = msg.params if isinstance(msg.params, dict) else {}
-                    is_evolution_approval_answer = self._is_evolution_approval_payload(answer_payload)
-                    if is_evolution_approval_answer:
-                        msg.params = self._ensure_regular_evolution_approval_metadata(answer_payload)
-                        if self._is_interrupt_evolution_approval_answer_payload(msg.params):
-                            await self._dispatch_interrupt_evolution_approval_as_chat_send(msg)
-                            continue
-                    agent_msg = await self._prepare_agent_dispatch_message(msg)
-                    env = self.message_to_e2a(agent_msg)
-                    resp = await self._process_non_stream_request(msg, env)
-                    answer_payload = msg.params if isinstance(msg.params, dict) else {}
-                    answer_request_id = answer_payload.get("request_id")
-                    if is_evolution_approval_answer:
-                        if self._approval_response_resolved(resp):
-                            await self._complete_evolution_approval_if_current(
-                                msg,
-                                str(answer_request_id or ""),
-                            )
-                        else:
-                            logger.info(
-                                "[MessageHandler] evolution approval answered but not resolved: "
-                                "id=%s session_id=%s request_id=%s",
-                                msg.id,
-                                msg.session_id,
-                                answer_request_id,
-                            )
+                    await self._handle_chat_answer(msg)
                     continue
 
+
                 if msg.req_method == ReqMethod.CHAT_SWARMFLOW_REPLY:
-                    # Forward a swarmflow human reply to the agent adapter
-                    # (non-stream). Unlike CHAT_ANSWER, no evolution-approval
-                    # machinery; unlike CHAT_SEND, no cancel-existing-stream.
-                    agent_msg = await self._prepare_agent_dispatch_message(msg)
-                    env = self.message_to_e2a(agent_msg)
-                    await self._process_non_stream_request(msg, env)
+                    await self._handle_swarmflow_reply(msg)
                     continue
+
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
                     await handle_interrupt_dispatch(self, msg)
@@ -2704,69 +2676,10 @@ class MessageHandler(ABC):
                         if not should_forward:
                             continue  # 不相关消息，跳过
 
-                # ---- Resolve @file references in chat.send content ----
                 if msg.req_method == ReqMethod.CHAT_SEND and msg.params and not is_session_input:
-                    content = msg.params.get("query") or msg.params.get("content") or ""
-                    attachments = msg.params.get("attachments")
-                    if isinstance(content, str):
-                        # ---- Resolve /review and /security-review slash commands (all channels) ----
-                        stripped = content.strip()
-                        if stripped:
-                            parsed = parse_channel_control_text(stripped)
-                            review_result = await apply_inbound_review_prompt(
-                                self,
-                                msg,
-                                parsed,
-                            )
-                            if review_result.skip:
-                                continue
-                            if review_result.prompt is not None:
-                                content = review_result.prompt
-
-                        cwd = None
-                        if isinstance(msg.metadata, dict):
-                            cwd = msg.metadata.get("cwd")
-                        enriched = content
-                        if attachments:
-                            enriched = self._resolve_structured_attachments(
-                                content,
-                                attachments,
-                                cwd=cwd,
-                            )
-                        elif content and "@" in content:
-                            enriched = self.resolve_at_file_references(content, cwd=cwd)
-
-                        # ---- Resolve @agent-xxx mentions ----
-                        agent_mentions = self.extract_agent_mentions(content)
-                        if agent_mentions:
-                            hint_parts = []
-                            for agent_name in agent_mentions:
-                                hint_parts.append(
-                                    f"用户表达了调用智能体 \"{agent_name}\" 的意图。"
-                                    f"请按需调用该智能体，并向其传递所需的上下文。"
-                                )
-                            agent_hint = "\n".join(hint_parts)
-                            enriched = (
-                                enriched
-                                + "\n\n<system-reminder>\n"
-                                + agent_hint
-                                + "\n</system-reminder>"
-                            )
-                            logger.info(
-                                "[MessageHandler] Agent mentions detected: %s",
-                                agent_mentions,
-                            )
-
-                        if enriched != content:
-                            msg.params = dict(msg.params)
-                            msg.params["query"] = enriched
-                            if "content" in msg.params:
-                                msg.params["content"] = enriched
-                            logger.info(
-                                "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
-                                msg.id,
-                            )
-
+                    skip = await self._enrich_chat_send_content(msg, is_session_input=is_session_input)
+                    if skip:
+                        continue
                 logger.info(
                     "[MessageHandler] dispatch: request_id=%s channel=%s session_id=%s user_id=%s is_stream=%s",
                     msg.id,
@@ -2861,6 +2774,110 @@ class MessageHandler(ABC):
                             "[MessageHandler] failed to publish forward-loop error: id=%s",
                             getattr(msg, "id", None),
                         )
+
+    async def _handle_chat_answer(self, msg: "Message") -> None:
+        """Handle CHAT_ANSWER: evolution approval answers and other unary replies."""
+        answer_payload = msg.params if isinstance(msg.params, dict) else {}
+        is_evolution_approval_answer = self._is_evolution_approval_payload(answer_payload)
+        if is_evolution_approval_answer:
+            msg.params = self._ensure_regular_evolution_approval_metadata(answer_payload)
+            if self._is_interrupt_evolution_approval_answer_payload(msg.params):
+                await self._dispatch_interrupt_evolution_approval_as_chat_send(msg)
+                return
+        agent_msg = await self._prepare_agent_dispatch_message(msg)
+        env = self.message_to_e2a(agent_msg)
+        resp = await self._process_non_stream_request(msg, env)
+        answer_payload = msg.params if isinstance(msg.params, dict) else {}
+        answer_request_id = answer_payload.get("request_id")
+        if is_evolution_approval_answer:
+            if self._approval_response_resolved(resp):
+                await self._complete_evolution_approval_if_current(
+                    msg,
+                    str(answer_request_id or ""),
+                )
+            else:
+                logger.info(
+                    "[MessageHandler] evolution approval answered but not resolved: "
+                    "id=%s session_id=%s request_id=%s",
+                    msg.id,
+                    msg.session_id,
+                    answer_request_id,
+                )
+
+    async def _handle_swarmflow_reply(self, msg: "Message") -> None:
+        """Forward a swarmflow human reply to the agent adapter (non-stream)."""
+        agent_msg = await self._prepare_agent_dispatch_message(msg)
+        env = self.message_to_e2a(agent_msg)
+        await self._process_non_stream_request(msg, env)
+
+    async def _enrich_chat_send_content(self, msg: "Message", *, is_session_input: bool) -> bool:
+        """Resolve @file/@agent references in chat.send content.
+
+        Returns True when the message should be skipped (review slash command consumed it).
+        """
+        content = msg.params.get("query") or msg.params.get("content") or ""
+        attachments = msg.params.get("attachments")
+        if not isinstance(content, str):
+            return False
+
+        # ---- Resolve /review and /security-review slash commands (all channels) ----
+        stripped = content.strip()
+        if stripped:
+            parsed = parse_channel_control_text(stripped)
+            review_result = await apply_inbound_review_prompt(
+                self,
+                msg,
+                parsed,
+            )
+            if review_result.skip:
+                return True
+            if review_result.prompt is not None:
+                content = review_result.prompt
+
+        cwd = None
+        if isinstance(msg.metadata, dict):
+            cwd = msg.metadata.get("cwd")
+        enriched = content
+        if attachments:
+            enriched = self._resolve_structured_attachments(
+                content,
+                attachments,
+                cwd=cwd,
+            )
+        elif content and "@" in content:
+            enriched = self.resolve_at_file_references(content, cwd=cwd)
+
+        # ---- Resolve @agent-xxx mentions ----
+        agent_mentions = self.extract_agent_mentions(content)
+        if agent_mentions:
+            hint_parts = []
+            for agent_name in agent_mentions:
+                hint_parts.append(
+                    f"用户表达了调用智能体 \"{agent_name}\" 的意图。"
+                    f"请按需调用该智能体，并向其传递所需的上下文。"
+                )
+            agent_hint = "\n".join(hint_parts)
+            enriched = (
+                enriched
+                + "\n\n<system-reminder>\n"
+                + agent_hint
+                + "\n</system-reminder>"
+            )
+            logger.info(
+                "[MessageHandler] Agent mentions detected: %s",
+                agent_mentions,
+            )
+
+        if enriched != content:
+            msg.params = dict(msg.params)
+            msg.params["query"] = enriched
+            if "content" in msg.params:
+                msg.params["content"] = enriched
+            logger.info(
+                "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
+                msg.id,
+            )
+        return False
 
     async def process_stream(
         self,
