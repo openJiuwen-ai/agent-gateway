@@ -157,6 +157,135 @@ def register_channel_config_handlers(
         channel.register_method(f"channel.{channel_id}.get_conf", _get_conf)
         channel.register_method(f"channel.{channel_id}.set_conf", _set_conf)
 
+    def _register_multi_app_channel_conf_handlers(
+        *,
+        channel_id: str,
+        normalize_conf: Callable[[dict[str, Any]], dict[str, Any]],
+        defer_agent_cache_clear_until_after_response: bool,
+    ) -> None:
+        async def _get_conf(ws, req_id, params, session_id):
+            cm = _resolve(channel_manager)
+            if cm is None:
+                logger.warning(
+                    "[channel.%s.get_conf] channel_manager not available, req_id=%s",
+                    channel_id,
+                    req_id,
+                )
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error="channel manager not available",
+                    code="SERVICE_UNAVAILABLE",
+                )
+                return
+            try:
+                raw = cm.get_conf(channel_id)
+                conf = normalize_conf(raw)
+                apps = conf.get("apps", [])
+                app_names = [a.get("name", "?") for a in apps]
+                logger.debug(
+                    "[channel.%s.get_conf] ok, req_id=%s, apps=%d, names=%s",
+                    channel_id,
+                    req_id,
+                    len(apps),
+                    app_names,
+                )
+                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            except Exception as e:  # noqa: BLE001
+                logger.exception("[channel.%s.get_conf] 异常, req_id=%s: %s", channel_id, req_id, e)
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error=str(e),
+                    code="INTERNAL_ERROR",
+                )
+
+        async def _set_conf(ws, req_id, params, session_id):
+            cm = _resolve(channel_manager)
+            if cm is None:
+                logger.warning(
+                    "[channel.%s.set_conf] channel_manager not available, req_id=%s",
+                    channel_id,
+                    req_id,
+                )
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error="channel manager not available",
+                    code="SERVICE_UNAVAILABLE",
+                )
+                return
+            if not isinstance(params, dict):
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error="params must be object",
+                    code="BAD_REQUEST",
+                )
+                return
+            try:
+                apps = params["apps"]
+                app_names = [a.get("name", "?") for a in apps]
+                logger.debug(
+                    "[channel.%s.set_conf] req_id=%s, apps=%d, names=%s",
+                    channel_id,
+                    req_id,
+                    len(apps),
+                    app_names,
+                )
+                normalized_apps = normalize_conf({"apps": apps})["apps"]
+                existing_conf = cm.get_conf(channel_id)
+                existing_apps = (
+                    existing_conf.get("apps", [])
+                    if isinstance(existing_conf, dict)
+                    else []
+                )
+                merged_apps = _merge_apps_by_id(normalized_apps, existing_apps)
+                await cm.set_conf(channel_id, {"apps": merged_apps})
+                should_clear_agent_config_cache = False
+                try:
+                    replace_channel_subsection_with_cleanup(
+                        channel_id,
+                        "apps",
+                        merged_apps,
+                        {"apps", "send_file_allowed"},
+                    )
+                    if defer_agent_cache_clear_until_after_response:
+                        should_clear_agent_config_cache = True
+                    else:
+                        await _clear_agent_config_cache(_resolve(agent_client))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[channel.%s.set_conf] 写回 config.yaml apps 失败: %s",
+                        channel_id,
+                        e,
+                    )
+                try:
+                    await channel.send_response(
+                        ws, req_id, ok=True, payload={"config": {"apps": merged_apps}}
+                    )
+                finally:
+                    if should_clear_agent_config_cache:
+                        _schedule_clear_agent_config_cache(
+                            f"channel.{channel_id}.set_conf"
+                        )
+            except Exception as e:  # noqa: BLE001
+                logger.exception("[channel.%s.set_conf] 异常, req_id=%s: %s", channel_id, req_id, e)
+                await _send_rpc_error(
+                    channel,
+                    ws,
+                    req_id,
+                    error=str(e),
+                    code="INTERNAL_ERROR",
+                )
+
+        channel.register_method(f"channel.{channel_id}.get_conf", _get_conf)
+        channel.register_method(f"channel.{channel_id}.set_conf", _set_conf)
+
     async def _health_check_get_conf(ws, req_id, params, session_id):
         """返回当前探活配置（every / target / active_hours）。"""
         hb = _resolve(heartbeat_service)
@@ -252,165 +381,6 @@ def register_channel_config_handlers(
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:
             logger.exception("[health_check.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_feishu_get_conf(ws, req_id, params, session_id):
-        """返回 FeishuChannel 的当前配置（由 ChannelManager 管理）。"""
-        cm = _resolve(channel_manager)
-        if cm is None:
-            logger.warning("[channel.feishu.get_conf] channel_manager not available, req_id=%s", req_id)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            raw = cm.get_conf("feishu")
-            conf = _normalize_feishu_conf(raw)
-            apps = conf.get("apps", [])
-            app_names = [a.get("name", "?") for a in apps]
-            logger.debug(
-                "[channel.feishu.get_conf] ok, req_id=%s, apps=%d, names=%s",
-                req_id, len(apps), app_names,
-            )
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.feishu.get_conf] 异常, req_id=%s: %s", req_id, e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_feishu_set_conf(ws, req_id, params, session_id):
-        """更新 FeishuChannel 的配置，并按新配置重新实例化通道。
-
-        ``params`` 必须含 ``apps`` 键，保存到 channels.feishu.apps。
-        """
-        cm = _resolve(channel_manager)
-        if cm is None:
-            logger.warning("[channel.feishu.set_conf] channel_manager not available, req_id=%s", req_id)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            # 多应用模式：params 必须含 apps 键
-            apps = params["apps"]
-            app_names = [a.get("name", "?") for a in apps]
-            logger.debug(
-                "[channel.feishu.set_conf] req_id=%s, apps=%d, names=%s",
-                req_id, len(apps), app_names,
-            )
-            # 先归一化（用 _FEISHU_APP_DEFAULTS 补充前端未发送的字段），再持久化
-            normalized_apps = _normalize_feishu_conf({"apps": apps})["apps"]
-            # 从 cm 读取已有 apps，按 app_id 合并保留未发送的敏感字段
-            existing_feishu = cm.get_conf("feishu")
-            existing_apps = existing_feishu.get("apps", []) if isinstance(existing_feishu, dict) else []
-            merged_apps = _merge_apps_by_id(normalized_apps, existing_apps)
-            await cm.set_conf("feishu", {"apps": merged_apps})
-            should_clear_agent_config_cache = False
-            try:
-                replace_channel_subsection_with_cleanup("feishu", "apps", merged_apps, {"apps", "send_file_allowed"})
-                should_clear_agent_config_cache = True
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.feishu.set_conf] 写回 config.yaml apps 失败: %s", e)
-            try:
-                await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
-            finally:
-                if should_clear_agent_config_cache:
-                    _schedule_clear_agent_config_cache("channel.feishu.set_conf")
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.feishu.set_conf] 异常, req_id=%s: %s", req_id, e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_xiaoyi_get_conf(ws, req_id, params, session_id):
-        """返回 XiaoyiChannel 的当前配置（由 ChannelManager 管理）。"""
-        cm = _resolve(channel_manager)
-        if cm is None:
-            logger.warning("[channel.xiaoyi.get_conf] channel_manager not available, req_id=%s", req_id)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            raw = cm.get_conf("xiaoyi")
-            conf = _normalize_xiaoyi_conf(raw)
-            apps = conf.get("apps", [])
-            app_names = [a.get("name", "?") for a in apps]
-            logger.debug(
-                "[channel.xiaoyi.get_conf] ok, req_id=%s, apps=%d, names=%s",
-                req_id, len(apps), app_names,
-            )
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.xiaoyi.get_conf] 异常, req_id=%s: %s", req_id, e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_xiaoyi_set_conf(ws, req_id, params, session_id):
-        """更新 XiaoyiChannel 的配置，并按新配置重新实例化通道。
-
-        ``params`` 必须含 ``apps`` 键，保存到 channels.xiaoyi.apps。
-        """
-        cm = _resolve(channel_manager)
-        if cm is None:
-            logger.warning("[channel.xiaoyi.set_conf] channel_manager not available, req_id=%s", req_id)
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            # 多应用模式：params 必须含 apps 键
-            apps = params["apps"]
-            app_names = [a.get("name", "?") for a in apps]
-            logger.debug(
-                "[channel.xiaoyi.set_conf] req_id=%s, apps=%d, names=%s",
-                req_id, len(apps), app_names,
-            )
-            # 先归一化（用 _XIAOYI_APP_DEFAULTS 补充前端未发送的字段），再持久化
-            normalized_apps = _normalize_xiaoyi_conf({"apps": apps})["apps"]
-            # 从 cm 读取已有 apps，按 app_id 合并保留未发送的敏感字段
-            existing_xiaoyi = cm.get_conf("xiaoyi")
-            existing_apps = existing_xiaoyi.get("apps", []) if isinstance(existing_xiaoyi, dict) else []
-            merged_apps = _merge_apps_by_id(normalized_apps, existing_apps)
-            await cm.set_conf("xiaoyi", {"apps": merged_apps})
-            try:
-                replace_channel_subsection_with_cleanup("xiaoyi", "apps", merged_apps, {"apps", "send_file_allowed"})
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.xiaoyi.set_conf] 写回 config.yaml apps 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.xiaoyi.set_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _channel_dingtalk_get_conf(ws, req_id, params, session_id):
@@ -522,10 +492,16 @@ def register_channel_config_handlers(
     channel.register_method("health_check.set_conf", _health_check_set_conf)
     channel.register_method("heartbeat.get_conf", _health_check_get_conf)
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
-    channel.register_method("channel.feishu.get_conf", _channel_feishu_get_conf)
-    channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
-    channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)
-    channel.register_method("channel.xiaoyi.set_conf", _channel_xiaoyi_set_conf)
+    _register_multi_app_channel_conf_handlers(
+        channel_id="feishu",
+        normalize_conf=_normalize_feishu_conf,
+        defer_agent_cache_clear_until_after_response=True,
+    )
+    _register_multi_app_channel_conf_handlers(
+        channel_id="xiaoyi",
+        normalize_conf=_normalize_xiaoyi_conf,
+        defer_agent_cache_clear_until_after_response=False,
+    )
     for spec in _STANDARD_CHANNEL_SPECS_BEFORE_DINGTALK:
         _register_standard_channel_conf_handlers(
             channel,

@@ -86,6 +86,7 @@ def _register(
     heartbeat_service=None,
     clear_agent_config_cache=None,
     agent_client=None,
+    schedule_calls=None,
 ):
     channel = _FakeChannel()
     register_channel_config_handlers(
@@ -94,7 +95,11 @@ def _register(
         heartbeat_service,
         agent_client if agent_client is not None else object(),
         _resolve=lambda ref: ref,
-        _schedule_clear_agent_config_cache=lambda label: None,
+        _schedule_clear_agent_config_cache=(
+            schedule_calls.append
+            if schedule_calls is not None
+            else lambda label: None
+        ),
         _clear_agent_config_cache=(
             clear_agent_config_cache
             if clear_agent_config_cache is not None
@@ -427,4 +432,90 @@ async def test_standard_set_conf_clears_agent_config_cache_after_persistence():
             "ok": True,
             "payload": {"config": {"enabled": True}},
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_feishu_set_conf_persists_merged_apps_and_defers_agent_cache_clear(monkeypatch):
+    from agent_gateway.channel_manager.web import channel_config_rpc_handlers
+
+    manager = _FakeChannelManager(
+        {"feishu": {"apps": [{"app_id": "app-1", "app_secret": "old-secret"}]}}
+    )
+    scheduled = []
+    cleared = []
+    agent_client = object()
+
+    async def clear_agent_config_cache(client):
+        cleared.append(client)
+
+    monkeypatch.setattr(
+        channel_config_rpc_handlers,
+        "replace_channel_subsection_with_cleanup",
+        lambda channel, key, apps, allowed: None,
+    )
+    channel = _register(
+        manager,
+        clear_agent_config_cache=clear_agent_config_cache,
+        agent_client=agent_client,
+        schedule_calls=scheduled,
+    )
+
+    await channel.methods["channel.feishu.set_conf"](
+        object(),
+        "rpc-13",
+        {"apps": [{"app_id": "app-1", "name": "renamed"}]},
+        "session-13",
+    )
+
+    merged_apps = manager.set_conf_calls[0][1]["apps"]
+    assert manager.set_conf_calls == [("feishu", {"apps": merged_apps})]
+    assert scheduled == ["channel.feishu.set_conf"]
+    assert cleared == []
+    assert channel.responses == [
+        {"req_id": "rpc-13", "ok": True, "payload": {"config": {"apps": merged_apps}}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_xiaoyi_set_conf_persists_merged_apps_and_clears_agent_cache_immediately(
+    monkeypatch,
+):
+    from agent_gateway.channel_manager.web import channel_config_rpc_handlers
+
+    manager = _FakeChannelManager(
+        {"xiaoyi": {"apps": [{"app_id": "app-1", "sk": "old-secret"}]}}
+    )
+    scheduled = []
+    cleared = []
+    agent_client = object()
+
+    async def clear_agent_config_cache(client):
+        cleared.append(client)
+
+    monkeypatch.setattr(
+        channel_config_rpc_handlers,
+        "replace_channel_subsection_with_cleanup",
+        lambda channel, key, apps, allowed: None,
+    )
+    channel = _register(
+        manager,
+        clear_agent_config_cache=clear_agent_config_cache,
+        agent_client=agent_client,
+        schedule_calls=scheduled,
+    )
+
+    await channel.methods["channel.xiaoyi.set_conf"](
+        object(),
+        "rpc-14",
+        {"apps": [{"app_id": "app-1", "name": "renamed"}]},
+        "session-14",
+    )
+
+    merged_apps = manager.set_conf_calls[0][1]["apps"]
+    assert manager.set_conf_calls == [("xiaoyi", {"apps": merged_apps})]
+    assert cleared == [agent_client]
+    assert scheduled == []
+    assert channel.responses == [
+        {"req_id": "rpc-14", "ok": True, "payload": {"config": {"apps": merged_apps}}}
     ]

@@ -30,9 +30,9 @@ measurable.
   persistence and cache-clearing timing differs.
 - Remaining extraction hotspots are `message_handler.py`, `app_gateway.py`,
   `web_connect.py`, `cron/scheduler.py`, and `feishu_connect.py`.
-- The next shared pipeline candidate is Feishu/Xiaoyi: both normalize by
-  `app_id`, retain sensitive fields, and persist configuration, but cache
-  cleanup timing must be preserved.
+- Feishu/Xiaoyi now share one multi-app registration pipeline. Their
+  normalization, sensitive-field handling, and cache-clear timing remain
+  explicit.
 
 ## Phases
 
