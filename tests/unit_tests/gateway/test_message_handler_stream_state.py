@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.message_handler.stream_state import build_global_running_event
+from openjiuwen_protocol.message import ReqMethod
 
 
 def _make_handler():
@@ -113,3 +114,104 @@ async def test_broadcast_task_global_running_without_web_channel_is_quiet():
     handler._channel_manager = SimpleNamespace(get_channel=lambda channel_id: None)
 
     await handler._broadcast_task_global_running()
+
+
+def _session_stream_state_handler():
+    handler = object.__new__(MessageHandler)
+    handler._non_stream_chat_messages = {}
+    handler._stream_sessions = {}
+    handler._stream_team_ids = {}
+    handler._stream_emits_processing_status = {}
+    handler._stream_methods = {}
+    return handler
+
+
+def test_non_stream_chat_blocks_processing_false_for_same_session():
+    handler = _session_stream_state_handler()
+    handler._non_stream_chat_messages["req-1"] = SimpleNamespace(
+        session_id="sess-1", params={}
+    )
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is True
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-2"
+    ) is False
+
+
+def test_non_stream_team_chat_does_not_block_processing_false():
+    handler = _session_stream_state_handler()
+    handler._non_stream_chat_messages["req-1"] = SimpleNamespace(
+        session_id="sess-1",
+        params={"mode": "team.plan.normal", "target_team_id": "team-1"},
+    )
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is False
+
+
+def test_stream_with_processing_status_blocks_processing_false():
+    handler = _session_stream_state_handler()
+    rid = "req-1"
+    handler._stream_sessions[rid] = "sess-1"
+    handler._stream_team_ids[rid] = ""
+    handler._stream_emits_processing_status[rid] = True
+    handler._stream_methods[rid] = ReqMethod.CHAT_SEND.value
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is True
+
+
+def test_command_goal_stream_blocks_processing_false():
+    handler = _session_stream_state_handler()
+    rid = "req-1"
+    handler._stream_sessions[rid] = "sess-1"
+    handler._stream_team_ids[rid] = ""
+    handler._stream_emits_processing_status[rid] = False
+    handler._stream_methods[rid] = ReqMethod.COMMAND_GOAL.value
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is True
+
+
+def test_low_status_read_stream_does_not_block_processing_false():
+    handler = _session_stream_state_handler()
+    rid = "req-1"
+    handler._stream_sessions[rid] = "sess-1"
+    handler._stream_team_ids[rid] = ""
+    handler._stream_emits_processing_status[rid] = False
+    handler._stream_methods[rid] = "history.get"
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is False
+
+
+def test_team_stream_does_not_block_processing_false():
+    handler = _session_stream_state_handler()
+    rid = "req-1"
+    handler._stream_sessions[rid] = "sess-1"
+    handler._stream_team_ids[rid] = "team-1"
+    handler._stream_emits_processing_status[rid] = True
+    handler._stream_methods[rid] = ReqMethod.CHAT_SEND.value
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1"
+    ) is False
+
+
+def test_exclude_rid_skips_matching_stream():
+    handler = _session_stream_state_handler()
+    rid = "req-1"
+    handler._stream_sessions[rid] = "sess-1"
+    handler._stream_team_ids[rid] = ""
+    handler._stream_emits_processing_status[rid] = True
+    handler._stream_methods[rid] = ReqMethod.CHAT_SEND.value
+
+    assert MessageHandler._session_has_streams_blocking_processing_false(
+        handler, "sess-1", exclude_rid=rid
+    ) is False

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 
 from agent_gateway.message_handler.models import ChannelMode
 from typing import Any
+from openjiuwen_protocol.message import ReqMethod
 
 
 def is_chat_stream(
@@ -95,3 +96,26 @@ def build_global_running_event(
         "running": bool(count),
         "count": count,
     }
+
+
+def session_has_streams_blocking_processing_false(
+    handler: Any, session_id: str | None, *, exclude_rid: str | None = None
+) -> bool:
+    """Return whether any stream should block a processing-status false send."""
+    if any(
+        msg.session_id == session_id and not handler._expert_stream_route(msg.params)
+        for msg in handler._non_stream_chat_messages.values()
+    ):
+        return True
+    for active_rid, sid in handler._stream_sessions.items():
+        if active_rid == exclude_rid:
+            continue
+        if sid != session_id:
+            continue
+        if handler._stream_team_ids.get(active_rid):
+            continue
+        if handler._stream_emits_processing_status.get(active_rid, True):
+            return True
+        if handler._stream_methods.get(active_rid) == ReqMethod.COMMAND_GOAL.value:
+            return True
+    return False

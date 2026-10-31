@@ -204,6 +204,7 @@ from agent_gateway.message_handler.stream_state import (
     has_active_streams as _has_active_streams_impl,
     is_chat_stream as _is_chat_stream_impl,
     iter_active_stream_modes as _iter_active_stream_modes_impl,
+    session_has_streams_blocking_processing_false as _session_has_streams_blocking_processing_false_impl,
 )
 from agent_gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
@@ -1986,34 +1987,9 @@ class MessageHandler(ABC):
     def _session_has_streams_blocking_processing_false(
         self, session_id: str | None, *, exclude_rid: str | None = None
     ) -> bool:
-        """同 session 是否还有应挡住 ``is_processing=false`` 补发的流.
-
-        - ``chat.send``（emit=True）：正常对话仍在跑
-        - ``command.goal``（emit=False 长流）：权限同意短流结束时不得误清前端，
-          否则会出现「前端已结束、后端 Goal 还在跑、后续 delta 收不到」
-
-        ``history.get`` 等短只读流不计入，否则 chat 结束时若并发拉历史，会永远
-        等不到 false（这些流自身 emit=False，退出时也不会补发）。
-        """
-        from openjiuwen_protocol.message import ReqMethod
-
-        if any(
-            msg.session_id == session_id and not self._expert_stream_route(msg.params)
-            for msg in self._non_stream_chat_messages.values()
-        ):
-            return True
-        for active_rid, sid in self._stream_sessions.items():
-            if active_rid == exclude_rid:
-                continue
-            if sid != session_id:
-                continue
-            if self._stream_team_ids.get(active_rid):
-                continue
-            if self._stream_emits_processing_status.get(active_rid, True):
-                return True
-            if self._stream_methods.get(active_rid) == ReqMethod.COMMAND_GOAL.value:
-                return True
-        return False
+        return _session_has_streams_blocking_processing_false_impl(
+            self, session_id, exclude_rid=exclude_rid
+        )
 
     _expert_stream_route = staticmethod(_expert_stream_route_impl)
 
