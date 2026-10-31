@@ -137,6 +137,10 @@ from agent_gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
     build_security_review_prompt,
 )
+from agent_gateway.message_handler.review_prompt_injection import (
+    inject_review_prompt,
+    inject_security_review_prompt,
+)
 from agent_gateway.message_handler.references import (
     _is_absolute_reference_path as _is_absolute_reference_path_impl,
     _normalize_structured_attachments as _normalize_structured_attachments_impl,
@@ -1796,18 +1800,12 @@ class MessageHandler(ABC):
 
         # ── origin/develop: /review / /security-review 指令 ──
         if parsed.action is ParsedControlAction.REVIEW_OK:
-            # /review [args]：注入 review prompt，转发 Agent 执行 gh pr list/view/diff 并分析
-            pr_arg = parsed.pr_arg or ""
-            review_prompt = build_review_prompt(pr_arg)
-            if msg.params is None:
-                msg.params = {}
-            msg.params["query"] = review_prompt
-            logger.info(
-                "[MessageHandler] /review prompt injected channel=%s pr_arg=%s",
-                channel_type,
-                pr_arg or "<none>",
+            return await inject_review_prompt(
+                self,
+                msg,
+                parsed,
+                channel_type=channel_type,
             )
-            return False  # 继续转发给 AgentServer，让 Agent 执行审查
 
         if parsed.action is ParsedControlAction.SECURITY_REVIEW_BAD:
             asyncio.create_task(
@@ -1821,37 +1819,12 @@ class MessageHandler(ABC):
             return True
 
         if parsed.action is ParsedControlAction.SECURITY_REVIEW_OK:
-            extra_arg = parsed.security_review_arg or ""
-            cwd = (
-                msg.metadata.get("cwd")
-                if isinstance(msg.metadata, dict)
-                else None
+            return await inject_security_review_prompt(
+                self,
+                msg,
+                parsed,
+                channel_type=channel_type,
             )
-            try:
-                # 在注入阶段预执行只读 git 命令并把输出内联进 prompt；
-                # 任一命令非零退出（如 origin/HEAD 未设置 / 无共同历史）即中止，
-                # 不转发给 Agent。
-                # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
-                security_prompt = await asyncio.get_event_loop().run_in_executor(
-                    None, build_security_review_prompt, extra_arg, cwd
-                )
-            except GitPreExecError as exc:
-                await self.send_channel_notice(
-                    user_infos,
-                    ch,
-                    msg.session_id,
-                    f"/security-review 无法执行：{exc}",
-                )
-                return True
-            if msg.params is None:
-                msg.params = {}
-            msg.params["query"] = security_prompt
-            logger.info(
-                "[MessageHandler] /security-review prompt injected channel=%s extra_arg=%s",
-                channel_type,
-                extra_arg or "<none>",
-            )
-            return False
 
         return False
 
