@@ -92,6 +92,7 @@ from agent_gateway.message_handler.session_state import (
 from agent_gateway.message_handler.stream_state import (
     active_chat_request_ids as _active_chat_request_ids_impl,
     active_non_team_modes as _active_non_team_modes_impl,
+    build_global_running_event as _build_global_running_event_impl,
     has_active_streams as _has_active_streams_impl,
     is_chat_stream as _is_chat_stream_impl,
     iter_active_stream_modes as _iter_active_stream_modes_impl,
@@ -2583,19 +2584,22 @@ class MessageHandler(ABC):
         try:
             web_channel = self._resolve_web_channel()
             if web_channel is not None:
-                all_modes = self._iter_active_stream_modes()
-                count = sum(
-                    1 for mode in all_modes
-                    if not ChannelMode.is_team_mode(mode)
+                event = _build_global_running_event_impl(
+                    self._stream_modes,
+                    self._stream_emits_processing_status,
+                    self._active_chat_tasks,
                 )
-                # 非团队活跃 mode 明细，供排查“保存锁卡禁用”时定位是哪个 rid 残留。
-                non_team_modes = [m for m in all_modes if not ChannelMode.is_team_mode(m)]
-                team_modes = [m for m in all_modes if ChannelMode.is_team_mode(m)]
-                await web_channel.broadcast_event("task.global_running", {
-                    "event_type": "task.global_running",
-                    "running": bool(count),
-                    "count": count,
-                })
+                count = event["count"]
+                non_team_modes = (
+                    self._iter_active_stream_modes() if logger.isEnabledFor(logging.INFO) else []
+                )
+                team_modes = [
+                    mode for mode in non_team_modes if ChannelMode.is_team_mode(mode)
+                ]
+                await web_channel.broadcast_event(
+                    "task.global_running",
+                    event,
+                )
                 # chat_stream_rids 计入运行态的对话流数；stream_rids 为注册流总数
                 # （含 history.get 等 emit=False 非对话流），故前者 <= 后者。
                 chat_stream_rids = sum(

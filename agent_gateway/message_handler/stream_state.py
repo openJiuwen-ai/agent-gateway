@@ -7,6 +7,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from agent_gateway.message_handler.models import ChannelMode
+from typing import Any
 
 
 def is_chat_stream(
@@ -75,3 +76,22 @@ def active_non_team_modes(
         if not ChannelMode.is_team_mode(mode):
             result.append((rid, mode))
     return result
+
+
+def build_global_running_event(
+    stream_modes: Mapping[str, str],
+    stream_emits_processing_status: Mapping[str, bool],
+    active_chat_tasks: Mapping[str, str],
+) -> dict[str, Any]:
+    """Build the task.global_running payload from active task state."""
+    all_modes = iter_active_stream_modes(
+        stream_modes,
+        stream_emits_processing_status,
+        active_chat_tasks,
+    )
+    count = sum(1 for mode in all_modes if not ChannelMode.is_team_mode(mode))
+    return {
+        "event_type": "task.global_running",
+        "running": bool(count),
+        "count": count,
+    }
