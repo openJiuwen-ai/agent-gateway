@@ -1059,6 +1059,112 @@ class GatewayServer(BaseWebChannel):
         )
 
 
+@dataclass
+class _GatewayRouteRuntime:
+    acp_inbound_server: Any
+    tui_channel: Any
+    gateway_server: Any
+
+
+async def _initialize_gateway_route_runtime(
+    *,
+    client: Any,
+    message_handler: Any,
+    channel_manager: Any,
+    third_agent: Any,
+    on_config_saved: Any,
+    cron_controller: Any,
+    heartbeat_controller: Any,
+    make_norm_and_forward: Callable[..., Any],
+    forward_req_methods: set[str] | frozenset[str],
+    forward_no_local_handler_methods: set[str] | frozenset[str],
+    log_startup_stage: Callable[[str], None],
+) -> _GatewayRouteRuntime:
+    # TUI routes use lazy imports for the same reason as other optional
+    # channels: keep cold start independent of optional client dependencies.
+    from agent_gateway.channel_manager.tui.tui_channel import (
+        TuiChannel,
+        TuiChannelConfig,
+    )
+    from agent_gateway.channel_manager.tui.tui_connect import (
+        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
+        CLI_FORWARD_REQ_METHODS,
+        CliRouteBindParams,
+        build_cli_route_binding,
+    )
+    from agent_gateway.channel_manager.web.web_handler_constants import (
+        _DummyBus,
+    )
+
+    tui_channel = TuiChannel(TuiChannelConfig(enabled=True), _DummyBus())
+    tui_norm_and_forward = make_norm_and_forward(
+        CLI_FORWARD_REQ_METHODS,
+        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
+        "TUI",
+    )
+    channel_manager.register_channel_with_inbound(tui_channel, tui_norm_and_forward)
+
+    # Web/TUI 注册后再订阅连接钩子，否则 get_channel 拿不到 channel。
+    subscribe_fn = getattr(client, "set_channel_manager", None)
+    if callable(subscribe_fn):
+        subscribe_fn(channel_manager)
+
+    acp_inbound_server = _InboundGatewayServer(
+        lambda msg: _normalize_and_forward_message(msg, channel_manager)
+    )
+    await acp_inbound_server.start()
+
+    route_bindings = [
+        _build_acp_route_binding(
+            path="/acp",
+            channel_id="acp",
+            forward_methods=forward_req_methods,
+            forward_no_local_handler_methods=forward_no_local_handler_methods,
+            on_message_cb=acp_inbound_server.handle_message,
+        ),
+        build_cli_route_binding(
+            CliRouteBindParams(
+                agent_client=client,
+                message_handler=message_handler,
+                third_agent=third_agent,
+                on_config_saved=on_config_saved,
+                path="/tui",
+                channel_id="tui",
+                cron_controller=cron_controller,
+                heartbeat_controller=heartbeat_controller,
+                ws_channel=tui_channel,
+            )
+        ),
+    ]
+
+    gateway_server_config = GatewayServerConfig(
+        enabled=True,
+        host=os.getenv("GATEWAY_HOST", "127.0.0.1"),
+        port=int(os.getenv("GATEWAY_PORT", "19001")),
+        routes=_build_route_config_map(route_bindings),
+    )
+    gateway_server = GatewayServer(gateway_server_config, _DummyBus())
+    gateway_server.message_handler_ref = message_handler
+    for binding in route_bindings:
+        route_config = gateway_server_config.routes[binding.path]
+        # tui 出站已由 TuiChannel 接管（register_channel_with_inbound），
+        # 不再把 gateway_server 注册为 tui channel；acp 等仍走 gateway_server。
+        # 但 install（register_cli_handlers 注册 local handler 如 _chat_send）
+        # 仍须执行——local handler 依赖 gateway_server 上的 session/request 索引。
+        if route_config.channel_id != "tui":
+            channel_manager.register_external_channel(route_config.channel_id, gateway_server)
+        if binding.install is not None:
+            binding.install(gateway_server)
+    gateway_server.on_message(acp_inbound_server.handle_message)
+    log_startup_stage("gateway_routes_registered")
+
+    return _GatewayRouteRuntime(
+        acp_inbound_server=acp_inbound_server,
+        tui_channel=tui_channel,
+        gateway_server=gateway_server,
+    )
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
@@ -1318,83 +1424,22 @@ async def _run(
     await asyncio.sleep(0.20)
     log_startup_stage("web_core_ready")
 
-    # ── V2: TUI 独立 Channel（出站契约 + 五维索引）──
-    # GatewayServer 仍是 /tui ws 宿主 + 入站帧解析 + local handler 派发（install 仍挂
-    # gateway_server）；TuiChannel 只接管出站 send 与 ws 五维索引，被 GatewayServer
-    # 在 forward 分支委托 register_ws/unregister_ws。移除原 register_external_channel("tui",
-    # gateway_server)，tui 出站不再走 GatewayServer.send（其 routing_target 反查缺五维索引）。
-    from agent_gateway.channel_manager.tui.tui_channel import (
-        TuiChannel,
-        TuiChannelConfig,
+    route_runtime = await _initialize_gateway_route_runtime(
+        client=client,
+        message_handler=message_handler,
+        channel_manager=channel_manager,
+        third_agent=third_agent,
+        on_config_saved=_on_config_saved,
+        cron_controller=cron_controller,
+        heartbeat_controller=heartbeat_controller,
+        make_norm_and_forward=_make_norm_and_forward,
+        forward_req_methods=_FORWARD_REQ_METHODS,
+        forward_no_local_handler_methods=_FORWARD_NO_LOCAL_HANDLER_METHODS,
+        log_startup_stage=log_startup_stage,
     )
-    from agent_gateway.channel_manager.tui.tui_connect import (
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-        CLI_FORWARD_REQ_METHODS,
-        CliRouteBindParams,
-        build_cli_route_binding,
-    )
-
-    tui_channel = TuiChannel(TuiChannelConfig(enabled=True), _DummyBus())
-    tui_norm_and_forward = _make_norm_and_forward(
-        CLI_FORWARD_REQ_METHODS,
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-        "TUI",
-    )
-    channel_manager.register_channel_with_inbound(tui_channel, tui_norm_and_forward)
-
-    # Web/TUI 注册后再订阅连接钩子，否则 get_channel 拿不到 channel。
-    subscribe_fn = getattr(client, "set_channel_manager", None)
-    if callable(subscribe_fn):
-        subscribe_fn(channel_manager)
-
-    acp_inbound_server = _InboundGatewayServer(
-        lambda msg: _normalize_and_forward_message(msg, channel_manager)
-    )
-    await acp_inbound_server.start()
-
-    route_bindings = [
-        _build_acp_route_binding(
-            path="/acp",
-            channel_id="acp",
-            forward_methods=_FORWARD_REQ_METHODS,
-            forward_no_local_handler_methods=_FORWARD_NO_LOCAL_HANDLER_METHODS,
-            on_message_cb=acp_inbound_server.handle_message,
-        ),
-        build_cli_route_binding(
-            CliRouteBindParams(
-                agent_client=client,
-                message_handler=message_handler,
-                third_agent=third_agent,
-                on_config_saved=_on_config_saved,
-                path="/tui",
-                channel_id="tui",
-                cron_controller=cron_controller,
-                heartbeat_controller=heartbeat_controller,
-                ws_channel=tui_channel,
-            )
-        ),
-    ]
-
-    gateway_server_config = GatewayServerConfig(
-        enabled=True,
-        host=os.getenv("GATEWAY_HOST", "127.0.0.1"),
-        port=int(os.getenv("GATEWAY_PORT", "19001")),
-        routes=_build_route_config_map(route_bindings),
-    )
-    gateway_server = GatewayServer(gateway_server_config, _DummyBus())
-    gateway_server.message_handler_ref = message_handler
-    for binding in route_bindings:
-        route_config = gateway_server_config.routes[binding.path]
-        # tui 出站已由 TuiChannel 接管（register_channel_with_inbound），
-        # 不再把 gateway_server 注册为 tui channel；acp 等仍走 gateway_server。
-        # 但 install（register_cli_handlers 注册 local handler 如 _chat_send）
-        # 仍须执行——local handler 依赖 gateway_server 上的 session/request 索引。
-        if route_config.channel_id != "tui":
-            channel_manager.register_external_channel(route_config.channel_id, gateway_server)
-        if binding.install is not None:
-            binding.install(gateway_server)
-    gateway_server.on_message(acp_inbound_server.handle_message)
-    log_startup_stage("gateway_routes_registered")
+    acp_inbound_server = route_runtime.acp_inbound_server
+    tui_channel = route_runtime.tui_channel
+    gateway_server = route_runtime.gateway_server
 
     a2a_server_enabled = str(os.getenv("A2A_SERVER_ENABLED", "")).strip().lower() in {
         "1",
