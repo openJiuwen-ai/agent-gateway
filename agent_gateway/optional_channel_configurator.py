@@ -502,6 +502,66 @@ class OptionalChannelConfigurator:
         self._slack_task = asyncio.create_task(self._slack_channel.start(), name="slack")
         logger.info("[App] SlackChannel registered from config.yaml.channels.slack")
 
+    async def _apply_whatsapp_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "whatsapp" not in changed_channels:
+            return
+
+        whatsapp_conf = conf.get("whatsapp") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._whatsapp_channel,
+            self._whatsapp_task,
+            "whatsapp",
+            channel_manager=self._channel_manager,
+        )
+        self._whatsapp_channel, self._whatsapp_task = None, None
+
+        if not isinstance(whatsapp_conf, dict):
+            logger.info("[App] channels.whatsapp missing or invalid, WhatsAppChannel disabled")
+            return
+
+        bridge_ws_url = str(whatsapp_conf.get("bridge_ws_url") or "ws://127.0.0.1:19600/ws").strip()
+        default_jid = str(whatsapp_conf.get("default_jid") or "").strip()
+        allow_from = whatsapp_conf.get("allow_from") or []
+        enable_streaming = bool(whatsapp_conf.get("enable_streaming", True))
+        auto_start_bridge = bool(whatsapp_conf.get("auto_start_bridge", False))
+        bridge_command = str(
+            whatsapp_conf.get("bridge_command") or "node scripts/whatsapp-bridge.js"
+        ).strip()
+        bridge_workdir = str(whatsapp_conf.get("bridge_workdir") or "").strip()
+        bridge_env_raw = whatsapp_conf.get("bridge_env") or {}
+        bridge_env = bridge_env_raw if isinstance(bridge_env_raw, dict) else {}
+
+        enabled_raw = whatsapp_conf.get("enabled", None)
+        if enabled_raw is None:
+            enabled = bool(bridge_ws_url)
+        else:
+            enabled = bool(enabled_raw)
+
+        if not enabled:
+            logger.info("[App] channels.whatsapp.enabled = false, WhatsAppChannel disabled")
+        elif not bridge_ws_url:
+            logger.info("[App] channels.whatsapp missing bridge_ws_url, WhatsAppChannel disabled")
+        else:
+            from agent_gateway.channel_manager.im_platforms.whatsapp.whatsapp_connect import (
+                WhatsAppChannel,
+                WhatsAppChannelConfig,
+            )
+            whatsapp_config = WhatsAppChannelConfig(
+                enabled=True,
+                enable_streaming=enable_streaming,
+                bridge_ws_url=bridge_ws_url,
+                allow_from=allow_from,
+                default_jid=default_jid,
+                auto_start_bridge=auto_start_bridge,
+                bridge_command=bridge_command,
+                bridge_workdir=bridge_workdir,
+                bridge_env={str(k): str(v) for k, v in bridge_env.items()},
+            )
+            self._whatsapp_channel = WhatsAppChannel(whatsapp_config, self._dummy_bus_cls())
+            self._channel_manager.register_channel(self._whatsapp_channel)
+            self._whatsapp_task = asyncio.create_task(self._whatsapp_channel.start(), name="whatsapp")
+            logger.info("[App] WhatsAppChannel registered from config.yaml.channels.whatsapp")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -540,61 +600,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_slack_channels(conf, changed_channels)
 
-        if "whatsapp" in changed_channels:
-            whatsapp_conf = conf.get("whatsapp") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._whatsapp_channel,
-                self._whatsapp_task,
-                "whatsapp",
-                channel_manager=self._channel_manager,
-            )
-            self._whatsapp_channel, self._whatsapp_task = None, None
-
-            if isinstance(whatsapp_conf, dict):
-                bridge_ws_url = str(whatsapp_conf.get("bridge_ws_url") or "ws://127.0.0.1:19600/ws").strip()
-                default_jid = str(whatsapp_conf.get("default_jid") or "").strip()
-                allow_from = whatsapp_conf.get("allow_from") or []
-                enable_streaming = bool(whatsapp_conf.get("enable_streaming", True))
-                auto_start_bridge = bool(whatsapp_conf.get("auto_start_bridge", False))
-                bridge_command = str(
-                    whatsapp_conf.get("bridge_command") or "node scripts/whatsapp-bridge.js"
-                ).strip()
-                bridge_workdir = str(whatsapp_conf.get("bridge_workdir") or "").strip()
-                bridge_env_raw = whatsapp_conf.get("bridge_env") or {}
-                bridge_env = bridge_env_raw if isinstance(bridge_env_raw, dict) else {}
-
-                enabled_raw = whatsapp_conf.get("enabled", None)
-                if enabled_raw is None:
-                    enabled = bool(bridge_ws_url)
-                else:
-                    enabled = bool(enabled_raw)
-
-                if not enabled:
-                    logger.info("[App] channels.whatsapp.enabled = false, WhatsAppChannel disabled")
-                elif not bridge_ws_url:
-                    logger.info("[App] channels.whatsapp missing bridge_ws_url, WhatsAppChannel disabled")
-                else:
-                    from agent_gateway.channel_manager.im_platforms.whatsapp.whatsapp_connect import (
-                        WhatsAppChannel,
-                        WhatsAppChannelConfig,
-                    )
-                    whatsapp_config = WhatsAppChannelConfig(
-                        enabled=True,
-                        enable_streaming=enable_streaming,
-                        bridge_ws_url=bridge_ws_url,
-                        allow_from=allow_from,
-                        default_jid=default_jid,
-                        auto_start_bridge=auto_start_bridge,
-                        bridge_command=bridge_command,
-                        bridge_workdir=bridge_workdir,
-                        bridge_env={str(k): str(v) for k, v in bridge_env.items()},
-                    )
-                    self._whatsapp_channel = WhatsAppChannel(whatsapp_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._whatsapp_channel)
-                    self._whatsapp_task = asyncio.create_task(self._whatsapp_channel.start(), name="whatsapp")
-                    logger.info("[App] WhatsAppChannel registered from config.yaml.channels.whatsapp")
-            else:
-                logger.info("[App] channels.whatsapp missing or invalid, WhatsAppChannel disabled")
+        await self._apply_whatsapp_channels(conf, changed_channels)
 
         if "wecom" in changed_channels:
             wecom_conf = conf.get("wecom") if isinstance(conf, dict) else None
