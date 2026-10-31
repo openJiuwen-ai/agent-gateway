@@ -2194,61 +2194,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     if callable(register_disconnect):
         register_disconnect(_on_disconnect)
 
-    async def _external_cli_detect(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        cli_agent = str(params.get("cli_agent") or "").strip().lower()
-        cli_path = str(params.get("cli_path") or "").strip()
-        raw_use_builtin = params.get("use_builtin")
-        use_builtin = raw_use_builtin is True or str(raw_use_builtin).strip().lower() == "true"
-        _activate_managed_external_cli_paths_if_needed()
-        result = _detect_external_cli_agent(cli_agent, cli_path, use_builtin)
-        await channel.send_response(ws, req_id, ok=True, payload=result)
-
-    async def _external_cli_codex_install_status(ws, req_id, params, session_id):
-        await channel.send_response(ws, req_id, ok=True, payload=_snapshot_codex_dependency_install_status())
-
-    async def _external_cli_install_status(ws, req_id, params, session_id):
-        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
-        if cli_agent not in _known_external_cli_agents():
-            await channel.send_response(
-                ws, req_id, ok=False, error="unsupported external cli agent", code="BAD_REQUEST"
-            )
-            return
-        payload = _snapshot_external_cli_dependency_install_status(cli_agent)
-        if _is_frozen_runtime():
-            payload["runtime"] = _managed_external_cli_runtime_status(cli_agent)
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _external_cli_install(ws, req_id, params, session_id):
-        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
-        if cli_agent not in _known_external_cli_agents():
-            await channel.send_response(
-                ws, req_id, ok=False, error="unsupported external cli agent", code="BAD_REQUEST"
-            )
-            return
-        if not _is_frozen_runtime():
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="managed external CLI runtimes are installed by the desktop app only",
-                code="UNSUPPORTED",
-            )
-            return
-        payload = _install_managed_external_cli_runtime_if_needed(cli_agent)
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _external_cli_custom_agent_remove(ws, req_id, params, session_id):
-        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
-        try:
-            await asyncio.to_thread(_remove_custom_external_cli_agent, cli_agent)
-        except ValueError as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
-            return
-        await channel.send_response(ws, req_id, ok=True, payload={"cli_agent": cli_agent})
-
     async def _request_zen_warmup() -> None:
         from agent_gateway.zen_query import request_zen_warmup
 
@@ -5128,11 +5073,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _topic_starters_event(ws, req_id, params, session_id, user_id=None):
         await _forward_recommendation(ws, req_id, params, session_id, user_id, action="event")
 
-    channel.register_method("external_cli.detect", _external_cli_detect)
-    channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
-    channel.register_method("external_cli.install_status", _external_cli_install_status)
-    channel.register_method("external_cli.install", _external_cli_install)
-    channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
+    from agent_gateway.channel_manager.web.external_cli_rpc_handlers import (
+        register_external_cli_handlers,
+    )
+
+    register_external_cli_handlers(channel)
 
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
         """Execute configuration RPCs in the target AgentServer's directories.
