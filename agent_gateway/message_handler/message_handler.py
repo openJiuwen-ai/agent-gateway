@@ -86,6 +86,11 @@ from agent_gateway.message_handler.runtime_state import (
     snapshot_hook_watch_params as _snapshot_hook_watch_params_impl,
     stream_method_value as _stream_method_value_impl,
 )
+from agent_gateway.message_handler.session_allocation import (
+    allocate_channel_session as _allocate_channel_session_impl,
+    ensure_inbound_session as _ensure_inbound_session_impl,
+    resolve_external_channel_session as _resolve_external_channel_session_impl,
+)
 from agent_gateway.message_handler.session_context import (
     attach_original_request_to_ask_user_answer as _attach_original_request_to_ask_user_answer_impl,
     get_last_originator as _get_last_originator_impl,
@@ -659,42 +664,12 @@ class MessageHandler(ABC):
         persist_session: bool = False,
     ) -> str:
         """Allocate and persist a real AgentServer-owned session for a channel."""
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
-
-        channel_type = self._resolve_control_channel_type(msg)
-        mode = state.mode.value
-        params = dict(msg.params or {})
-        create_params = {
-            "create_token": secrets.token_hex(16),
-            "mode": mode,
-            "is_swarm": ChannelMode.is_team_mode(mode),
-        }
-        if persist_session:
-            create_params["persist_session"] = True
-        for name in ("project_id", "project_dir", "work_mode", "model_name"):
-            if params.get(name) is not None:
-                create_params[name] = params[name]
-        env = e2a_from_agent_fields(
-            request_id=f"session-create-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
-            channel_id=channel_type,
-            req_method=ReqMethod.SESSION_CREATE,
-            params=create_params,
-            is_stream=False,
-            timestamp=time.time(),
+        return await _allocate_channel_session_impl(
+            self,
+            msg,
+            state,
+            persist_session=persist_session,
         )
-        resp = await self._send_non_stream_agent_request(env)
-        payload = dict(resp.payload or {}) if isinstance(resp.payload, dict) else {}
-        if not resp.ok:
-            raise RuntimeError(str(payload.get("error") or "session.create failed"))
-        sid = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
-        if not sid:
-            raise RuntimeError("session.create returned empty session_id")
-        state.session_id = sid
-        identity_key = self._extract_identity_tuple(msg)
-        if identity_key and self._channel_id_matches_session_map_types(str(msg.channel_id or "")):
-            self._session_map.set_session_id(*identity_key, sid)
-        return sid
 
     def _remember_alloc_state_key(self, msg: "Message", channel_id: str) -> None:
         """受控通道无正式会话时，记录本次状态键供 session 分配写回复用。
@@ -710,49 +685,14 @@ class MessageHandler(ABC):
 
     async def _ensure_inbound_session(self, msg: "Message") -> None:
         """受控通道入站无 session 时为它分配一个，并写回入站所属的状态。"""
-        channel_type = self._resolve_control_channel_type(msg)
-        if channel_type not in self._control_channel_types:
-            return
-        if str(msg.session_id or "").strip():
-            return
-        key = self._pending_alloc_state_key.pop(msg.id, "")
-        state = self._channel_states.get(key) if key else None
-        if state is None:
-            state = self.get_or_create_channel_state(msg)
-        msg.session_id = await self._allocate_channel_session(msg, state)
-        # 兼容旧行为：同一次分配也留一份 channel 级状态（cancel/disconnect 的
-        # mode 兜底按 channel_id 键读取）。
-        self._channel_states.setdefault(channel_type, state)
+        await _ensure_inbound_session_impl(self, msg)
 
     async def _resolve_external_channel_session(self, msg: "Message") -> None:
         """Map A2A protocol IDs onto AgentServer-owned product Sessions.
 
         SSH is AgentOS relay-only and must not allocate a jiuwenswarm Session.
         """
-        channel_id = str(msg.channel_id or "").strip()
-        external_id = str(msg.session_id or "").strip()
-        if channel_id != "a2a" or not external_id:
-            return
-        key = (channel_id, external_id)
-        resolved = self._external_session_aliases.get(key)
-        if resolved is None:
-            async with self._external_session_alias_lock:
-                resolved = self._external_session_aliases.get(key)
-                if resolved is None:
-                    raw_mode = str((msg.params or {}).get("mode") or "agent")
-                    # 与 /mode 分发同源：旧 canonical 先经 deprecate_mode 映射到
-                    # 新 canonical 再构造 ChannelMode，否则 a2a 通道的旧值（如
-                    # agent.fast / team.plan）会被原样解析成 ValueError 兜底为
-                    # AGENT，丢失原有语义。
-                    mode = channel_mode_from_str(raw_mode)
-                    resolved = await self._allocate_channel_session(
-                        msg, ChannelControlState(mode=mode)
-                    )
-                    self._external_session_aliases[key] = resolved
-        metadata = dict(msg.metadata or {})
-        metadata.setdefault("external_session_id", external_id)
-        msg.metadata = metadata
-        msg.session_id = resolved
+        await _resolve_external_channel_session_impl(self, msg)
 
     @staticmethod
     def _extract_identity_tuple(msg: "Message") -> tuple[str, str, str, str] | None:
