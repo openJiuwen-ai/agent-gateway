@@ -23,13 +23,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-try:
-    import psutil as _psutil
-    _HAS_PSUTIL = True
-except ImportError:
-    _psutil = None  # type: ignore[assignment]
-    _HAS_PSUTIL = False
 from openjiuwen.core.common.logging import LogManager
 from openjiuwen.extensions.external_provider.openai_auth.openai_account_auth import (
     OpenAIAccountAuthError,
@@ -74,6 +67,7 @@ from agent_gateway.channel_manager.web.external_cli_runtime import (
     _update_external_cli_dependency_install_status,
 )
 from agent_gateway.channel_manager.web.locale_rpc_handlers import register_locale_handlers
+from agent_gateway.channel_manager.web.memory_rpc_handlers import register_memory_handlers
 from agent_gateway.common.config import (
     get_config,
     get_config_raw,
@@ -134,31 +128,6 @@ def spawn_background_task(coro: Any, *, name: str) -> None:
 _PROJECT_ROOT = get_root_dir()
 _ENV_FILE = get_env_file()
 load_dotenv_runtime(dotenv_path=_ENV_FILE, override=True)
-
-
-def _read_proc_meminfo() -> tuple[float, float, float]:
-    """Fallback for platforms without psutil: read /proc/meminfo.
-
-    Returns (rss_mb, total_mb, available_mb).  Returns (0, 0, 0) on failure.
-    """
-    try:
-        info: dict[str, int] = {}
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 2:
-                    info[parts[0].rstrip(":")] = int(parts[1])  # kB
-        total_mb = info.get("MemTotal", 0) / 1024
-        available_mb = info.get("MemAvailable", info.get("MemFree", 0)) / 1024
-        # RSS from /proc/self/status
-        with open("/proc/self/status", "r") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    rss_mb = int(line.split()[1]) / 1024  # kB → MB
-                    return rss_mb, total_mb, available_mb
-        return 0.0, total_mb, available_mb
-    except OSError:
-        return 0.0, 0.0, 0.0
 
 
 _OPENAI_ACCOUNT_LOGIN_MAX_TTL_SECONDS = 5 * 60
@@ -2924,21 +2893,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload={"path": selected, "cancelled": False})
 
-    async def _memory_compute(ws, req_id, params, session_id):
-        if _HAS_PSUTIL:
-            process = _psutil.Process()  # type: ignore[union-attribute]
-            rss_mb = process.memory_info().rss / (1024 * 1024)
-
-            mem = _psutil.virtual_memory()  # type: ignore[union-attribute]
-            total_mb = mem.total / (1024 * 1024)
-            available_mb = mem.available / (1024 * 1024)
-        else:
-            rss_mb, total_mb, available_mb = _read_proc_meminfo()
-
-        await channel.send_response(ws, req_id, ok=True,
-                                    payload={"rss_mb": rss_mb, "total_mb": total_mb,
-                                             "available_mb": available_mb})
-
     async def _commands_list(ws, req_id, params, session_id):
         """下发快捷面板命令清单（静态元数据，本地直接返回，不转发 AgentServer）。"""
         try:
@@ -4506,7 +4460,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             req_method=ReqMethod.HOOKS_LIST, label="hooks.list",
         )
 
-    channel.register_method("memory.compute", _memory_compute)
     channel.register_method("hooks.list", _hooks_list)
     # 注意：commands.list 是本地 handler，刻意不加入 _FORWARD_REQ_METHODS（否则会被
     # 转发到 AgentServer 与本地 handler 冲突）。静态元数据本地返回最快、依赖最少。
@@ -5101,55 +5054,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
     _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
 
-    async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
-            return
-        try:
-            cfg = get_config() or {}
-            payload = cfg.get("memory", {}).get("forbidden_memory_definition", {})
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except Exception as e:
-            logger.exception("[memory.forbidden.get] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _memory_forbidden_set(ws, req_id, params, session_id, user_id=None):
-        from agent_gateway.common.config import update_memory_forbidden_in_config
-        if not isinstance(params, dict):
-            await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
-            return
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
-            return
-        try:
-            update_memory_forbidden_in_config(params)
-            await channel.send_response(ws, req_id, ok=True, payload={"ok": True})
-        except Exception as e:
-            logger.exception("[memory.forbidden.set] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    channel.register_method("memory.forbidden.get", _memory_forbidden_get)
-    channel.register_method("memory.forbidden.set", _memory_forbidden_set)
+    register_memory_handlers(channel, agent_client, _resolve)
 
     async def _forward_harness_to_agent(ws, req_id, params, session_id, user_id=None, *, req_method):
         """harness.*：经 E2A 转发到 AgentServer（harness 包目录在 AgentServer 注入目录）。
