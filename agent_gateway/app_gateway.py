@@ -20,7 +20,6 @@ import inspect
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import time
@@ -54,8 +53,6 @@ from agent_gateway.common.ws_diagnostics import (
     format_ws_diagnostics,
 )
 
-# user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
-_SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 
@@ -108,10 +105,7 @@ from agent_gateway.common.process_supervision import (
     GATEWAY_RESTART_EXIT_CODE,
     SUPERVISOR_PID_ENV,
 )
-from agent_gateway.common.security.ws_origin import (
-    extract_handshake_request,
-    get_header_value,
-)
+from agent_gateway.common.security.ws_origin import extract_handshake_request
 from agent_gateway.config_saved import (
     ConfigSavedContext,
     handle_config_saved,
@@ -136,9 +130,17 @@ from agent_gateway.restart import (
 from agent_gateway.route_config import (
     RouteConfig,
     GatewayServerConfig,
-    LocalHandlerContext as _LocalHandlerContext,
     build_acp_route_binding as _build_acp_route_binding,
     build_route_config_map as _build_route_config_map,
+)
+from agent_gateway.connection_helpers import (
+    client_route_key as _client_route_key,
+    connection_agent_type as _connection_agent_type,
+    connection_user_id as _connection_user_id,
+    extract_routing_session_id as _extract_routing_session_id,
+    extract_ws_user_id as _extract_ws_user_id,
+    invoke_local_handler as _invoke_local_handler,
+    ws_is_open as _ws_is_open,
 )
 from agent_gateway.agent_prewarm import AgentPrewarmCoordinator
 from agent_gateway.runtime_config import load_gateway_runtime_config
@@ -537,60 +539,22 @@ class GatewayServer(BaseWebChannel):
 
     @staticmethod
     def _extract_ws_user_id(ws: Any) -> str | None:
-        """从 WebSocket 握手 Header 或 URL 查询参数读取 user_id。
-
-        优先从 X-User-Id Header 读取（TUI / 代理注入场景）；
-        浏览器 ``new WebSocket()`` 无法设置自定义 Header，回退到 URL query string。
-        """
-        headers = (
-            getattr(getattr(ws, "request", None), "headers", None)
-            or getattr(ws, "request_headers", None)
-        )
-        raw = get_header_value(headers, "X-User-Id")
-        if raw is not None:
-            text = str(raw).strip()
-            if text and _SAFE_USER_ID_RE.match(text):
-                return text
-
-        raw_path = (
-            getattr(ws, "path", "")
-            or getattr(getattr(ws, "request", None), "path", "")
-        )
-        if raw_path:
-            parsed = urlparse(raw_path)
-            qs = parse_qs(parsed.query)
-            user_ids = qs.get("user_id", [])
-            if user_ids:
-                candidate = str(user_ids[0]).strip()
-                if candidate and _SAFE_USER_ID_RE.match(candidate):
-                    return candidate
-        return None
+        return _extract_ws_user_id(ws)
 
     @staticmethod
     def _connection_user_id(ws: Any) -> str | None:
-        """返回连接建立时缓存的 user_id（来自握手 Header）。"""
-        uid = getattr(ws, "_gateway_user_id", None)
-        if uid is None:
-            return None
-        text = str(uid).strip()
-        return text or None
+        return _connection_user_id(ws)
 
     @staticmethod
     def _connection_agent_type(ws: Any) -> str:
-        """返回当前 WS 连接绑定的 agent_type（缺省 jiuwenswarm）。"""
-        raw = getattr(ws, "_gateway_agent_type", None)
-        text = str(raw or "jiuwenswarm").strip().lower()
-        return text or "jiuwenswarm"
+        return _connection_agent_type(ws)
 
     @staticmethod
     def _invoke_local_handler(
         handler: Callable[..., Awaitable[None]],
-        ctx: _LocalHandlerContext,
+            ctx: LocalHandlerContext,
     ) -> Awaitable[None]:
-        kwargs: dict[str, Any] = {}
-        if "user_id" in inspect.signature(handler).parameters:
-            kwargs["user_id"] = ctx.user_id
-        return handler(ctx.ws, ctx.req_id, ctx.params, ctx.session_id, **kwargs)
+        return _invoke_local_handler(handler, ctx)
 
     @staticmethod
     def _client_route_key(
@@ -598,27 +562,7 @@ class GatewayServer(BaseWebChannel):
         scoped_id: str | None,
         agent_ref: Any = None,
     ) -> tuple | None:
-        """构造客户端路由键。
-
-        V2: 可选 agent_ref 作为第三维，支撑同 session 多 agent_ref 共存（场景 2）。
-        传入 agent_ref 时返回 (channel_id, scoped_id, agent_ref_str) 三元组；
-        不传时返回 (channel_id, scoped_id) 二元组，兼容旧路径。
-        """
-        channel = str(channel_id or "").strip()
-        scope = str(scoped_id or "").strip()
-        if not channel or not scope:
-            return None
-        if agent_ref is not None:
-            ar_str = ""
-            if hasattr(agent_ref, "mode") and hasattr(agent_ref, "id"):
-                ar_str = f"{agent_ref.mode}:{agent_ref.id}"
-            elif isinstance(agent_ref, dict):
-                ar_str = f"{agent_ref.get('mode', '')}:{agent_ref.get('id', '')}"
-            elif isinstance(agent_ref, str) and agent_ref.strip():
-                ar_str = agent_ref.strip()
-            if ar_str:
-                return (channel, scope, ar_str)
-        return (channel, scope)
+        return _client_route_key(channel_id, scoped_id, agent_ref)
 
     def _find_channel_clients(self, channel_id: str) -> list[Any]:
         return self._connections.find_channel_clients(channel_id)
@@ -679,26 +623,14 @@ class GatewayServer(BaseWebChannel):
 
     @staticmethod
     def _extract_routing_session_id(msg, *, include_top_level: bool = True) -> str | None:
-        """Best-effort session id from message fields for outbound event routing."""
-        if include_top_level:
-            sid = getattr(msg, "session_id", None)
-            if sid is not None and str(sid).strip():
-                return str(sid).strip()
-        payload = getattr(msg, "payload", None)
-        if isinstance(payload, dict):
-            sid = payload.get("session_id")
-            if sid is not None and str(sid).strip():
-                return str(sid).strip()
-        params = getattr(msg, "params", None)
-        if isinstance(params, dict):
-            sid = params.get("session_id")
-            if sid is not None and str(sid).strip():
-                return str(sid).strip()
-        return None
+        return _extract_routing_session_id(
+            msg,
+            include_top_level=include_top_level,
+        )
 
     @staticmethod
     def _ws_is_open(ws: Any) -> bool:
-        return ws is not None and not bool(getattr(ws, "closed", False))
+        return _ws_is_open(ws)
 
     async def _send_frame_to_ws(
         self,
