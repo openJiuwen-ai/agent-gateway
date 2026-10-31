@@ -338,6 +338,46 @@ class OptionalChannelConfigurator:
             channel.start_task = task  # 挂到 channel 对象上，不另存 dict
             logger.info("[App] XiaoyiChannel(api_id=%s) from channels.xiaoyi.apps", api_id or "default")
 
+    async def _apply_dingtalk_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "dingtalk" not in changed_channels:
+            return
+
+        dingtalk_conf = conf.get("dingtalk") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._dingtalk_channel,
+            self._dingtalk_task,
+            "dingtalk",
+            background_wait=True,
+            channel_manager=self._channel_manager,
+        )
+        self._dingtalk_channel, self._dingtalk_task = None, None
+
+        if not isinstance(dingtalk_conf, dict):
+            logger.info("[App] channels.dingtalk missing or invalid, DingTalkChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(dingtalk_conf, ["client_id", "client_secret"])
+        if not enabled:
+            logger.info("[App] channels.dingtalk.%s, DingTalkChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+            DingTalkChannel,
+            DingTalkConfig,
+        )
+        dingtalk_config = DingTalkConfig(
+            enabled=True,
+            client_id=str(dingtalk_conf.get("client_id") or "").strip(),
+            client_secret=str(dingtalk_conf.get("client_secret") or "").strip(),
+            allow_from=dingtalk_conf.get("allow_from") or [],
+            api_base=str(dingtalk_conf.get("api_base") or "").strip() or _DINGTALK_DEFAULT_API_BASE,
+            oapi_base=str(dingtalk_conf.get("oapi_base") or "").strip() or _DINGTALK_DEFAULT_OAPI_BASE,
+        )
+        self._dingtalk_channel = DingTalkChannel(dingtalk_config, self._dummy_bus_cls())
+        self._channel_manager.register_channel(self._dingtalk_channel)
+        self._dingtalk_task = asyncio.create_task(self._dingtalk_channel.start(), name="dingtalk")
+        logger.info("[App] DingTalkChannel registered from config.yaml.channels.dingtalk")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -368,40 +408,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_xiaoyi_channels(conf, changed_channels)
 
-        if "dingtalk" in changed_channels:
-            dingtalk_conf = conf.get("dingtalk") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._dingtalk_channel,
-                self._dingtalk_task,
-                "dingtalk",
-                background_wait=True,
-                channel_manager=self._channel_manager,
-            )
-            self._dingtalk_channel, self._dingtalk_task = None, None
-
-            if isinstance(dingtalk_conf, dict):
-                enabled, reason = _is_channel_enabled(dingtalk_conf, ["client_id", "client_secret"])
-                if not enabled:
-                    logger.info("[App] channels.dingtalk.%s, DingTalkChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
-                        DingTalkChannel,
-                        DingTalkConfig,
-                    )
-                    dingtalk_config = DingTalkConfig(
-                        enabled=True,
-                        client_id=str(dingtalk_conf.get("client_id") or "").strip(),
-                        client_secret=str(dingtalk_conf.get("client_secret") or "").strip(),
-                        allow_from=dingtalk_conf.get("allow_from") or [],
-                        api_base=str(dingtalk_conf.get("api_base") or "").strip() or _DINGTALK_DEFAULT_API_BASE,
-                        oapi_base=str(dingtalk_conf.get("oapi_base") or "").strip() or _DINGTALK_DEFAULT_OAPI_BASE,
-                    )
-                    self._dingtalk_channel = DingTalkChannel(dingtalk_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._dingtalk_channel)
-                    self._dingtalk_task = asyncio.create_task(self._dingtalk_channel.start(), name="dingtalk")
-                    logger.info("[App] DingTalkChannel registered from config.yaml.channels.dingtalk")
-            else:
-                logger.info("[App] channels.dingtalk missing or invalid, DingTalkChannel disabled")
+        await self._apply_dingtalk_channels(conf, changed_channels)
 
         if "telegram" in changed_channels:
             telegram_conf = conf.get("telegram") if isinstance(conf, dict) else None
