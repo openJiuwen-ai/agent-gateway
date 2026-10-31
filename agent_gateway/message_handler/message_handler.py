@@ -86,6 +86,12 @@ from agent_gateway.message_handler.runtime_state import (
     snapshot_hook_watch_params as _snapshot_hook_watch_params_impl,
     stream_method_value as _stream_method_value_impl,
 )
+from agent_gateway.message_handler.session_context import (
+    attach_original_request_to_ask_user_answer as _attach_original_request_to_ask_user_answer_impl,
+    get_last_originator as _get_last_originator_impl,
+    get_last_user_query as _get_last_user_query_impl,
+    remember_user_query_context as _remember_user_query_context_impl,
+)
 from agent_gateway.im_pipeline.im_session_input import (
     prepare_im_session_input,
     steer_busy_im_chat,
@@ -555,56 +561,30 @@ class MessageHandler(ABC):
     # ---------- Channel 控制状态：\new_session / \mode ----------
 
     def _remember_user_query_context(self, msg: "Message") -> None:
-        if not self._is_chat_send_message(msg):
-            return
-        if not isinstance(msg.params, dict) or msg.params.get("is_supplement") is True:
-            return
-        session_id = str(msg.session_id or "").strip()
-        if not session_id:
-            return
-        query = str(msg.params.get("query") or msg.params.get("content") or "").strip()
-        if not query:
-            return
-        self._session_last_user_query[session_id] = query[:8000]
-        # 记录最近人类发起者身份（member_name 由 resolve_member_by_user 注入 msg.metadata），
-        # 供 send_file 在 file msg 不携带发起者时按 session_id 反查定向。
-        # 排除 GodView：它是通道级自动注册的伪 member，非真实 /join 人类席位，不应作为发起者定向。
-        # 无 member_name 的入站（如 web：web 不 /join，resolve_member_by_user 不命中）→ 清空
-        # last-originator，避免 web 发起时残留上一次 feishu 用户导致文件误投到 feishu。
-        origin_member = str((msg.metadata or {}).get("member_name") or "").strip()
-        if origin_member and origin_member != SubRole.GODVIEW:
-            self._session_last_originator[session_id] = (
-                str(msg.channel_id or "").strip(),
-                origin_member,
-            )
-        else:
-            self._session_last_originator.pop(session_id, None)
+        _remember_user_query_context_impl(
+            msg,
+            user_queries=self._session_last_user_query,
+            originators=self._session_last_originator,
+        )
 
     def _get_session_last_user_query(self, session_id: str | None) -> str:
-        if not session_id:
-            return ""
-        return self._session_last_user_query.get(str(session_id), "")
+        return _get_last_user_query_impl(
+            self._session_last_user_query,
+            session_id,
+        )
 
     def get_session_last_originator(self, session_id: str | None) -> tuple[str, str] | None:
         """返回该 session 最近一次人类发起请求的 (channel_id, member_name)，供 send_file 定向。"""
-        if not session_id:
-            return None
-        return self._session_last_originator.get(str(session_id))
+        return _get_last_originator_impl(
+            self._session_last_originator,
+            session_id,
+        )
 
     def _attach_original_request_to_ask_user_answer(self, msg: "Message") -> "Message":
-        if not isinstance(msg.params, dict):
-            return msg
-        if str(msg.params.get("source") or "").strip() != "ask_user_interrupt":
-            return msg
-        if msg.params.get("original_request"):
-            return msg
-        original_request = self._get_session_last_user_query(msg.session_id)
-        if not original_request:
-            return msg
-
-        params = dict(msg.params)
-        params["original_request"] = original_request
-        return replace(msg, params=params)
+        return _attach_original_request_to_ask_user_answer_impl(
+            msg,
+            user_queries=self._session_last_user_query,
+        )
 
     _is_chat_send_message = staticmethod(_is_chat_send_message_impl)
     _is_team_chat_send = staticmethod(_is_team_chat_send_impl)
