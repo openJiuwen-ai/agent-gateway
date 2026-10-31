@@ -456,6 +456,52 @@ class OptionalChannelConfigurator:
         self._discord_task = asyncio.create_task(self._discord_channel.start(), name="discord")
         logger.info("[App] DiscordChannel registered from config.yaml.channels.discord")
 
+    async def _apply_slack_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "slack" not in changed_channels:
+            return
+
+        slack_conf = conf.get("slack") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._slack_channel,
+            self._slack_task,
+            "slack",
+            channel_manager=self._channel_manager,
+        )
+        self._slack_channel, self._slack_task = None, None
+
+        if not isinstance(slack_conf, dict):
+            logger.info("[App] channels.slack missing or invalid, SlackChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(slack_conf, ["bot_token", "app_token"])
+        if not enabled:
+            logger.info("[App] channels.slack.%s, SlackChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.slack.slack_connect import (
+            SlackChannel,
+            SlackChannelConfig,
+        )
+        reply_in_thread_raw = slack_conf.get("reply_in_thread", True)
+        reply_in_thread = (
+            str(reply_in_thread_raw).strip().lower() in ("true", "1", "yes", "on")
+            if isinstance(reply_in_thread_raw, str)
+            else bool(reply_in_thread_raw)
+        )
+        slack_config = SlackChannelConfig(
+            enabled=True,
+            bot_token=str(slack_conf.get("bot_token") or "").strip(),
+            app_token=str(slack_conf.get("app_token") or "").strip(),
+            allow_from=slack_conf.get("allow_from") or [],
+            allowed_channel_ids=slack_conf.get("allowed_channel_ids") or [],
+            default_channel_id=str(slack_conf.get("default_channel_id") or "").strip(),
+            reply_in_thread=reply_in_thread,
+        )
+        self._slack_channel = SlackChannel(slack_config, self._dummy_bus_cls())
+        self._channel_manager.register_channel(self._slack_channel)
+        self._slack_task = asyncio.create_task(self._slack_channel.start(), name="slack")
+        logger.info("[App] SlackChannel registered from config.yaml.channels.slack")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -492,46 +538,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_discord_channels(conf, changed_channels)
 
-        if "slack" in changed_channels:
-            slack_conf = conf.get("slack") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._slack_channel,
-                self._slack_task,
-                "slack",
-                channel_manager=self._channel_manager,
-            )
-            self._slack_channel, self._slack_task = None, None
-
-            if isinstance(slack_conf, dict):
-                enabled, reason = _is_channel_enabled(slack_conf, ["bot_token", "app_token"])
-                if not enabled:
-                    logger.info("[App] channels.slack.%s, SlackChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.slack.slack_connect import (
-                        SlackChannel,
-                        SlackChannelConfig,
-                    )
-                    reply_in_thread_raw = slack_conf.get("reply_in_thread", True)
-                    reply_in_thread = (
-                        str(reply_in_thread_raw).strip().lower() in ("true", "1", "yes", "on")
-                        if isinstance(reply_in_thread_raw, str)
-                        else bool(reply_in_thread_raw)
-                    )
-                    slack_config = SlackChannelConfig(
-                        enabled=True,
-                        bot_token=str(slack_conf.get("bot_token") or "").strip(),
-                        app_token=str(slack_conf.get("app_token") or "").strip(),
-                        allow_from=slack_conf.get("allow_from") or [],
-                        allowed_channel_ids=slack_conf.get("allowed_channel_ids") or [],
-                        default_channel_id=str(slack_conf.get("default_channel_id") or "").strip(),
-                        reply_in_thread=reply_in_thread,
-                    )
-                    self._slack_channel = SlackChannel(slack_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._slack_channel)
-                    self._slack_task = asyncio.create_task(self._slack_channel.start(), name="slack")
-                    logger.info("[App] SlackChannel registered from config.yaml.channels.slack")
-            else:
-                logger.info("[App] channels.slack missing or invalid, SlackChannel disabled")
+        await self._apply_slack_channels(conf, changed_channels)
 
         if "whatsapp" in changed_channels:
             whatsapp_conf = conf.get("whatsapp") if isinstance(conf, dict) else None
