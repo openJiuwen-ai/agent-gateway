@@ -44,6 +44,9 @@ from agent_gateway.common.mode_matrix import (
     is_team_mode,
 )
 from agent_gateway.hooks.handler import GatewayHookHandler
+from agent_gateway.message_handler.channel_notices import (
+    build_channel_notice_message as _build_channel_notice_message_impl,
+)
 from agent_gateway.message_handler.agent_events import (
     merge_agent_metadata as _merge_agent_metadata_impl,
     normalize_agent_error_event as _normalize_agent_error_event_impl,
@@ -878,27 +881,11 @@ class MessageHandler(ABC):
         关闭「处理中」接收周期）。CLI 控制指令等 notice 均为终态回包，必须默认 True；
         若确需多帧未完结，调用方显式传入 is_complete=False。
         """
-        from openjiuwen_protocol.message import EventType, Message
-
-        if isinstance(text_or_payload, dict):
-            payload = dict(text_or_payload)
-            payload.setdefault("is_complete", True)
-        else:
-            payload = {"content": text_or_payload, "is_complete": True}
-
-        _app_id = user_infos.get("app_id") or user_infos.get("bot_id", "")
-        msg = Message(
-            id=user_infos['id'],
-            type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload=payload,
-            event_type=EventType.CHAT_FINAL,
-            metadata=user_infos['meta_data'],
-            app_id=_app_id or None,
+        msg = _build_channel_notice_message_impl(
+            user_infos,
+            channel_id,
+            session_id,
+            text_or_payload,
         )
         await self.publish_robot_messages(msg)
 
