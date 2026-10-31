@@ -85,6 +85,10 @@ from agent_gateway.message_handler.references import (
     resolve_at_file_references as _resolve_at_file_references_impl,
     strip_attached_mentions as _strip_attached_mentions_impl,
 )
+from agent_gateway.message_handler.session_state import (
+    channel_state_from_config,
+    make_channel_state_key,
+)
 from agent_gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
 )
@@ -773,25 +777,11 @@ class MessageHandler(ABC):
             cfg: Dict[str, Any] = self._get_config_raw()
         except Exception:  # noqa: BLE001
             cfg = {}
-        channels_cfg = cfg.get("channels") or {}
-        ch_cfg = channels_cfg.get(channel_id) or {}
-        sid_raw = ch_cfg.get("default_session_id") or ""
-        sid = str(sid_raw).strip() or None
-        mode_raw = str(ch_cfg.get("default_mode") or "agent").strip().lower()
-        # 与 /mode 分发同源：deprecate_mode 把旧 canonical（含 team.plan 等别名）
-        # 静默映射到新 canonical，再以 ChannelMode 直接构造（P2 已加 8 个新成员）。
-        # 历史值 plan / fast 经 deprecate_mode 归一到 agent.work.normal；agent.plan
-        # 是真实 plan 模式，经 deprecate_mode 落到 agent.work.plan；裸 code 归一到
-        # agent.code.normal；不在 NEW_CANONICAL_MODES 的串（如未来未迁移值）兜底为
-        # AGENT，与旧 mode_map.get(mode_raw, ChannelMode.AGENT) 一致。
-        mode = channel_mode_from_str(mode_raw)
-        return ChannelControlState(session_id=sid, mode=mode)
+        return channel_state_from_config(channel_id, cfg)
 
     def _get_channel_state_key(self, channel_id: str, conversation_id: str | None) -> str:
         """生成 channel 状态的复合键：channel_id:conversation_id."""
-        if conversation_id:
-            return f"{channel_id}:{conversation_id}"
-        return channel_id
+        return make_channel_state_key(channel_id, conversation_id)
 
     def get_or_create_channel_state(self, msg: "Message") -> ChannelControlState:
         """获取或创建消息对应 channel 状态（使用复合键）。
