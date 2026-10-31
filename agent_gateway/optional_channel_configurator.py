@@ -562,6 +562,62 @@ class OptionalChannelConfigurator:
             self._whatsapp_task = asyncio.create_task(self._whatsapp_channel.start(), name="whatsapp")
             logger.info("[App] WhatsAppChannel registered from config.yaml.channels.whatsapp")
 
+    async def _apply_wecom_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "wecom" not in changed_channels:
+            return
+
+        wecom_conf = conf.get("wecom") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._wecom_channel,
+            self._wecom_task,
+            "wecom",
+            channel_manager=self._channel_manager,
+        )
+        self._wecom_channel, self._wecom_task = None, None
+
+        if not isinstance(wecom_conf, dict):
+            logger.info("[App] channels.wecom missing or invalid, WecomChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(wecom_conf, ["bot_id", "secret"])
+        if not enabled:
+            logger.info("[App] channels.wecom.%s, WecomChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.wecom.wecom_connect import (
+            WecomChannel,
+            WecomConfig,
+        )
+        wecom_config = WecomConfig(
+            enabled=True,
+            bot_id=str(wecom_conf.get("bot_id") or "").strip(),
+            secret=str(wecom_conf.get("secret") or "").strip(),
+            ws_url=str(wecom_conf.get("ws_url") or "wss://openws.work.weixin.qq.com").strip(),
+            allow_from=wecom_conf.get("allow_from") or [],
+            enable_streaming=bool(wecom_conf.get("enable_streaming", True)),
+            send_thinking_message=bool(wecom_conf.get("send_thinking_message", True)),
+            group_digital_avatar=bool(wecom_conf.get("group_digital_avatar", False)),
+            my_user_id=str(wecom_conf.get("my_user_id") or "").strip(),
+            bot_name=str(wecom_conf.get("bot_name") or "").strip(),
+            enable_memory=bool(wecom_conf.get("enable_memory", False)),
+        )
+        # 数字分身：创建 adapter 并注册到 pipeline
+        wecom_adapter = None
+        if wecom_config.group_digital_avatar:
+            from agent_gateway.channel_manager.im_platforms.wecom.wecom_im_adapter import (
+                WecomIMPlatformAdapter,
+            )
+            wecom_adapter = WecomIMPlatformAdapter(
+                my_user_id=wecom_config.my_user_id,
+                bot_name=wecom_config.bot_name,
+            )
+            self._im_inbound.register_adapter("wecom", wecom_adapter)
+            self._im_outbound.register_adapter("wecom", wecom_adapter)
+        self._wecom_channel = WecomChannel(wecom_config, self._dummy_bus_cls(), im_platform_adapter=wecom_adapter)
+        self._channel_manager.register_channel(self._wecom_channel)
+        self._wecom_task = asyncio.create_task(self._wecom_channel.start(), name="wecom")
+        logger.info("[App] WecomChannel registered from config.yaml.channels.wecom")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -602,56 +658,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_whatsapp_channels(conf, changed_channels)
 
-        if "wecom" in changed_channels:
-            wecom_conf = conf.get("wecom") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._wecom_channel,
-                self._wecom_task,
-                "wecom",
-                channel_manager=self._channel_manager,
-            )
-            self._wecom_channel, self._wecom_task = None, None
-
-            if isinstance(wecom_conf, dict):
-                enabled, reason = _is_channel_enabled(wecom_conf, ["bot_id", "secret"])
-                if not enabled:
-                    logger.info("[App] channels.wecom.%s, WecomChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.wecom.wecom_connect import (
-                        WecomChannel,
-                        WecomConfig,
-                    )
-                    wecom_config = WecomConfig(
-                        enabled=True,
-                        bot_id=str(wecom_conf.get("bot_id") or "").strip(),
-                        secret=str(wecom_conf.get("secret") or "").strip(),
-                        ws_url=str(wecom_conf.get("ws_url") or "wss://openws.work.weixin.qq.com").strip(),
-                        allow_from=wecom_conf.get("allow_from") or [],
-                        enable_streaming=bool(wecom_conf.get("enable_streaming", True)),
-                        send_thinking_message=bool(wecom_conf.get("send_thinking_message", True)),
-                        group_digital_avatar=bool(wecom_conf.get("group_digital_avatar", False)),
-                        my_user_id=str(wecom_conf.get("my_user_id") or "").strip(),
-                        bot_name=str(wecom_conf.get("bot_name") or "").strip(),
-                        enable_memory=bool(wecom_conf.get("enable_memory", False)),
-                    )
-                    # 数字分身：创建 adapter 并注册到 pipeline
-                    wecom_adapter = None
-                    if wecom_config.group_digital_avatar:
-                        from agent_gateway.channel_manager.im_platforms.wecom.wecom_im_adapter import (
-                            WecomIMPlatformAdapter,
-                        )
-                        wecom_adapter = WecomIMPlatformAdapter(
-                            my_user_id=wecom_config.my_user_id,
-                            bot_name=wecom_config.bot_name,
-                        )
-                        self._im_inbound.register_adapter("wecom", wecom_adapter)
-                        self._im_outbound.register_adapter("wecom", wecom_adapter)
-                    self._wecom_channel = WecomChannel(wecom_config, self._dummy_bus_cls(), im_platform_adapter=wecom_adapter)
-                    self._channel_manager.register_channel(self._wecom_channel)
-                    self._wecom_task = asyncio.create_task(self._wecom_channel.start(), name="wecom")
-                    logger.info("[App] WecomChannel registered from config.yaml.channels.wecom")
-            else:
-                logger.info("[App] channels.wecom missing or invalid, WecomChannel disabled")
+        await self._apply_wecom_channels(conf, changed_channels)
 
         if "wechat" in changed_channels:
             wechat_conf = conf.get("wechat") if isinstance(conf, dict) else None
