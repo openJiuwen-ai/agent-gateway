@@ -171,6 +171,9 @@ from agent_gateway.message_handler.interrupt_dispatch import (
     send_interrupt_to_agent as _send_interrupt_to_agent_impl,
     handle_interrupt_dispatch,
 )
+from agent_gateway.message_handler.expert_cancel import (
+    is_targeted_expert_cancel as _is_targeted_expert_cancel_impl,
+)
 from agent_gateway.message_handler.references import (
     _is_absolute_reference_path as _is_absolute_reference_path_impl,
     _normalize_structured_attachments as _normalize_structured_attachments_impl,
@@ -1994,45 +1997,7 @@ class MessageHandler(ABC):
     _expert_stream_route = staticmethod(_expert_stream_route_impl)
 
     async def _is_targeted_expert_cancel(self, msg: "Message") -> bool:
-        route = self._expert_stream_route(msg.params)
-        if not route or not msg.session_id:
-            return False
-        from agent_gateway.routing.session_metadata_remote import (
-            SessionMetadataRemoteUnavailable,
-        )
-
-        try:
-            from agent_gateway.common.external_providers import provider
-
-            metadata = await provider("session_metadata").get_session_metadata_async(
-                msg.session_id, enable_writeback=False, user_id=msg.user_id,
-            )
-            owner_id = str((metadata or {}).get("team_name") or "").strip()
-        except SessionMetadataRemoteUnavailable:
-            # 传输失败≠读为空：owner 未知时宁可照常走定向取消分支（成员
-            # 校验由 AgentServer 权威执行，最坏是被拒），绝不放大成会话级
-            # 取消——该分支上方的约束是"Never enter the session-wide path"。
-            logger.warning(
-                "[MessageHandler] expert cancel owner lookup unavailable; "
-                "forwarding as targeted cancel: session=%s",
-                msg.session_id,
-            )
-            return True
-        except Exception:
-            logger.warning(
-                "[MessageHandler] expert cancel owner lookup failed: session=%s",
-                msg.session_id,
-                exc_info=True,
-            )
-            return False
-        # **owner 未知时保守判为「定向」**：这条分支的替代路径是会话级中断，会把 owner
-        # 团队正在跑的 turn 一起取消（AgentServer 侧 `_is_targeted_expert_cancel_request`
-        # 与本处同向；只有给 chat.send 路由用的 `_is_targeted_expert_request` 兜底方向相反，
-        # 那是另一套语义）。
-        # 交给 AgentServer 裁决更安全：它会因 owner 未知明确返回 success=false 并给出原因，
-        # 而不会取消别人的 turn。查表抛异常时不走这条（元数据服务不可用 ≠ owner 未知，
-        # 那时连 target 是否合法都无从判断，维持原有的会话级行为）。
-        return not owner_id or route["team_id"] != owner_id
+        return await _is_targeted_expert_cancel_impl(msg)
 
     _stream_method_value = staticmethod(_stream_method_value_impl)
 
