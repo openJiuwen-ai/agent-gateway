@@ -103,13 +103,6 @@ from agent_gateway.common.paths import (
     get_env_file,
     get_root_dir,
 )
-from agent_gateway.common.work_mode import (
-    DEFAULT_PROJECT_ID_CODE,
-    DEFAULT_TUI_WORK_MODE,
-    DEFAULT_WEB_WORK_MODE,
-    SUPPORTED_WORK_MODES,
-    is_default_project_id,
-)
 from agent_gateway.dotenv_early import load_dotenv_runtime
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
@@ -619,63 +612,6 @@ def _supports_container_file_api(client: Any) -> bool:
     return all(callable(getattr(client, name, None)) for name in _CONTAINER_FILE_API_METHODS)
 
 
-def _project_info_payload(
-    proj: Any | None,
-    *,
-    default_id: str | None = None,
-    stats: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Serialize a project item consistently for project.list/info/create."""
-    st = stats or {"session_count": 0, "last_message_at": None, "last_user_message_at": None}
-    git = getattr(proj, "git", {}) if proj is not None else {}
-    git_defaults = {
-        "enabled": False,
-        "repo_root": "",
-        "initialized_by_jiuwenswarm": False,
-        "detected_at": 0,
-        "status": "disabled",
-        "branch": "",
-        "error": "",
-        "error_code": "",
-        "hint": "",
-        "is_dirty": False,
-    }
-    git_payload = {**git_defaults, **dict(git)} if isinstance(git, dict) and git else git_defaults
-    if default_id is not None:
-        work_mode = DEFAULT_TUI_WORK_MODE if default_id == DEFAULT_PROJECT_ID_CODE else DEFAULT_WEB_WORK_MODE
-        return {
-            "project_id": default_id,
-            "name": "默认项目",
-            "project_dir": "",
-            "pinned": False,
-            "pin_order": 0,
-            "is_default": True,
-            "work_mode": work_mode,
-            "git": git_payload,
-            "session_count": st["session_count"],
-            "last_message_at": st["last_message_at"],
-            "last_user_message_at": st["last_user_message_at"],
-            "created_at": 0,
-            "updated_at": 0,
-        }
-    work_mode = getattr(proj, "work_mode", "") or DEFAULT_WEB_WORK_MODE
-    return {
-        "project_id": proj.project_id,
-        "name": proj.name,
-        "project_dir": proj.project_dir,
-        "pinned": proj.pinned,
-        "pin_order": proj.pin_order,
-        "is_default": False,
-        "work_mode": work_mode,
-        "git": git_payload,
-        "session_count": st["session_count"],
-        "last_message_at": st["last_message_at"],
-        "last_user_message_at": st["last_user_message_at"],
-        "created_at": proj.created_at,
-        "updated_at": getattr(proj, "updated_at", 0),
-    }
-
-
 def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     """注册 Web 前端需要的 method 与 on_connect。
     on_config_saved: 可选，config.set 写回后调用的回调；
@@ -814,11 +750,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     register_disconnect = getattr(channel, "on_disconnect", None)
     if callable(register_disconnect):
         register_disconnect(_on_disconnect)
-
-    async def _request_zen_warmup() -> None:
-        from agent_gateway.zen_query import request_zen_warmup
-
-        await request_zen_warmup(_resolve(agent_client))
 
     register_vendor_handlers(channel)
 
