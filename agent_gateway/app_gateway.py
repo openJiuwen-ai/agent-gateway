@@ -119,6 +119,7 @@ from agent_gateway.config_saved import (
     ConfigSavedContext,
     handle_config_saved,
 )
+from agent_gateway.runtime_config import load_gateway_runtime_config
 from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from agent_gateway.routing.route_binding import GatewayRouteBinding
 
@@ -163,91 +164,6 @@ _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口域名
 _DINGTALK_DEFAULT_OAPI_BASE = "https://oapi.dingtalk.com"  # 旧版 media 接口域名
 _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook"
-
-
-def _resolve_health_check_config(full_cfg: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Prefer health_check and read legacy heartbeat probe keys during migration."""
-    if not isinstance(full_cfg, dict):
-        return None
-    current = full_cfg.get("health_check")
-    if isinstance(current, dict):
-        return current
-    legacy = full_cfg.get("heartbeat")
-    if not isinstance(legacy, dict):
-        return None
-    migrated = {
-        key: legacy[key]
-        for key in ("every", "target", "active_hours")
-        if key in legacy
-    }
-    return migrated or None
-
-
-def _load_gateway_runtime_config(
-    message_handler: Any,
-) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
-    """Load Gateway config without coupling optional migrations to channels.
-
-    A failed legacy HealthCheck migration must not discard otherwise readable
-    channel configuration. Evolution config propagation is optional for the
-    same reason: it may fail independently without changing the loaded config.
-    """
-    import agent_gateway.common.config as config_module
-
-    try:
-        if config_module.migrate_legacy_heartbeat_probe_config():
-            logger.info(
-                "[App] migrated legacy heartbeat probe config to health_check"
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to migrate legacy heartbeat probe config; "
-            "continuing with the existing config: %s",
-            exc,
-        )
-
-    try:
-        full_cfg = config_module.get_config()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to read config.yaml, using defaults: %s",
-            exc,
-        )
-        return {}, None, None
-
-    if not isinstance(full_cfg, dict):
-        logger.warning(
-            "[App] config.yaml root must be an object, using defaults"
-        )
-        return {}, None, None
-
-    try:
-        message_handler.update_evolution_auto_save(full_cfg)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to apply evolution auto-save config; "
-            "continuing with channel config: %s",
-            exc,
-        )
-
-    health_check_cfg = _resolve_health_check_config(full_cfg)
-    if (
-        isinstance(health_check_cfg, dict)
-        and not isinstance(full_cfg.get("health_check"), dict)
-    ):
-        logger.warning(
-            "[App] legacy heartbeat probe config detected; "
-            "migrate it to health_check"
-        )
-    channels_cfg = full_cfg.get("channels")
-    return (
-        full_cfg,
-        health_check_cfg,
-        channels_cfg if isinstance(channels_cfg, dict) else None,
-    )
-
-
-
 def _build_event_frame(msg) -> dict[str, Any]:
     event_name = "chat.final"
     if msg.event_type is not None:
@@ -2024,7 +1940,7 @@ async def _run(
     # Gateway keeps only the stable public-interface proxy wired to Web/TUI.
     heartbeat_controller = HeartbeatControllerProxy(client)
 
-    full_cfg, health_check_cfg, channels_cfg = _load_gateway_runtime_config(
+    full_cfg, health_check_cfg, channels_cfg = await load_gateway_runtime_config(
         message_handler
     )
     log_startup_stage("runtime_config_loaded")
