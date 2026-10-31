@@ -89,6 +89,13 @@ from agent_gateway.message_handler.session_state import (
     channel_state_from_config,
     make_channel_state_key,
 )
+from agent_gateway.message_handler.stream_state import (
+    active_chat_request_ids as _active_chat_request_ids_impl,
+    active_non_team_modes as _active_non_team_modes_impl,
+    has_active_streams as _has_active_streams_impl,
+    is_chat_stream as _is_chat_stream_impl,
+    iter_active_stream_modes as _iter_active_stream_modes_impl,
+)
 from agent_gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
 )
@@ -2513,7 +2520,10 @@ class MessageHandler(ABC):
         先于 mode 写入、两者成对 pop（见 ``_pop_stream_tracking``），故
         ``_stream_modes`` 中的 rid 必有对应标志项。
         """
-        return bool(self._stream_emits_processing_status.get(rid))
+        return _is_chat_stream_impl(
+            self._stream_emits_processing_status,
+            rid,
+        )
 
     def _iter_active_stream_modes(self) -> list[str]:
         """计入运行态的活跃对话任务 mode 快照（流式 chat + 非流式 chat）。
@@ -2521,11 +2531,11 @@ class MessageHandler(ABC):
         流式只取对话流（见 ``_is_chat_stream``），``_active_chat_tasks`` 天然
         都是对话任务，二者合并即覆盖全部“需触发配置保存锁”的任务。
         """
-        return [
-            mode
-            for rid, mode in self._stream_modes.items()
-            if self._is_chat_stream(rid)
-        ] + [*self._active_chat_tasks.values()]
+        return _iter_active_stream_modes_impl(
+            self._stream_modes,
+            self._stream_emits_processing_status,
+            self._active_chat_tasks,
+        )
 
     def has_active_streams(self) -> bool:
         """是否有非 team 模式的用户对话任务正在运行（配置保存锁用，只读）。
@@ -2537,16 +2547,18 @@ class MessageHandler(ABC):
         default fallback mode（如 ``"plan"``）经 ``is_team_mode`` 返回 False，
         不会误判为 team，故历史无 mode 的路径仍计入锁。
         """
-        return any(
-            not ChannelMode.is_team_mode(mode)
-            for mode in self._iter_active_stream_modes()
+        return _has_active_streams_impl(
+            self._stream_modes,
+            self._stream_emits_processing_status,
+            self._active_chat_tasks,
         )
 
     def active_chat_request_ids(self) -> frozenset[str]:
         """Request ids of the user chat tasks this gateway is still running (read-only)."""
-        return frozenset(
-            [rid for rid in self._stream_modes if self._is_chat_stream(rid)]
-            + [*self._active_chat_tasks]
+        return _active_chat_request_ids_impl(
+            self._stream_modes,
+            self._stream_emits_processing_status,
+            self._active_chat_tasks,
         )
 
     def active_non_team_modes(self) -> list[tuple[str, str]]:
@@ -2555,14 +2567,11 @@ class MessageHandler(ABC):
         口径与 ``_iter_active_stream_modes`` 一致，再按 team 排除。
         供保存锁拒绝日志定位“是哪个 rid 让运行态误判为 true”。
         """
-        result: list[tuple[str, str]] = []
-        for rid, mode in self._stream_modes.items():
-            if self._is_chat_stream(rid) and not ChannelMode.is_team_mode(mode):
-                result.append((rid, mode))
-        for rid, mode in self._active_chat_tasks.items():
-            if not ChannelMode.is_team_mode(mode):
-                result.append((rid, mode))
-        return result
+        return _active_non_team_modes_impl(
+            self._stream_modes,
+            self._stream_emits_processing_status,
+            self._active_chat_tasks,
+        )
 
     async def _broadcast_task_global_running(self) -> None:
         """向所有 web ws 客户端广播当前全局运行态快照（task.global_running）。
