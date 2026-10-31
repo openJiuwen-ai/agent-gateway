@@ -12,7 +12,6 @@ import logging
 import os
 import queue
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -77,6 +76,9 @@ from agent_gateway.channel_manager.web.channel_task_rpc_handlers import (
 )
 from agent_gateway.channel_manager.web.config_rpc_handlers import (
     register_config_proxy_handlers,
+)
+from agent_gateway.channel_manager.web.connection_rpc_handlers import (
+    register_connection_handlers,
 )
 from agent_gateway.channel_manager.web.chat_rpc_handlers import register_chat_send_handler
 from agent_gateway.channel_manager.web.permissions_harness_rpc_handlers import (
@@ -568,13 +570,6 @@ async def _restart_agent_browser_runtime(
         raise RuntimeError(str(error))
 
 
-def _make_session_id() -> str:
-    # 与前端 generateSessionId 保持一致：毫秒时间戳(16进制) + 6位随机16进制
-    ts = format(int(time.time() * 1000), "x")
-    suffix = secrets.token_hex(3)
-    return f"sess_{ts}_{suffix}"
-
-
 # ---------------------------------------------------------------------------
 # 飞书 Feishu / 小艺 Xiaoyi 多应用配置 — 默认值 & 归一化函数
 # ---------------------------------------------------------------------------
@@ -630,8 +625,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     cron_controller = bind.cron_controller
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
-
-    from openjiuwen_protocol.message import EventType, Message
 
     def _resolve(ref, key="value"):
         """若为 ref 字典则取 key（无则返回 None），否则返回自身。"""
@@ -705,51 +698,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         else:
             return value
 
-    async def _on_connect(ws):
-        ac = _resolve(agent_client)
-        if ac is None or not getattr(ac, "server_ready", False):
-            logger.debug("[_on_connect] Agent 未就绪，跳过 connection.ack")
-            return
-        # V2: 复用 ws 握手时注册的占位 session_id，而不是另 make 一个新 sid。
-        # 原实现凭空生成 sid_B 与 ws 在 _clients_by_key 中注册的 sid_A 不一致，
-        # 导致 send() 按 session_id 反查落空、ACK 被丢弃，前端收不到 connection.ack。
-        # 复用 sid_A 后，ACK 走标准 send 流程即可命中本 ws，无需特殊路由兜底。
-        sid = getattr(ws, "_jiuwen_initial_sid", None) or _make_session_id()
-
-        ack_msg = Message(
-            id=f"ack-{sid}",
-            type="event",
-            channel_id=channel.channel_id,
-            session_id=sid,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            event_type=EventType.CONNECTION_ACK,
-            payload={
-                "session_id": sid,
-                "mode": "BUILD",
-                "tools": [],
-                "protocol_version": "1.0",
-            },
-        )
-        mh = _resolve(message_handler)
-        if mh:
-            await mh.publish_robot_messages(ack_msg)
-        else:
-            await channel.send(ack_msg)
-
-    channel.on_connect(_on_connect)
-
-    async def _on_disconnect(ws, _session_ids):
-        mh = _resolve(message_handler)
-        cleanup = getattr(mh, "unregister_ws_subscriptions", None)
-        ws_id = str(getattr(ws, "_jiuwen_ws_id", "") or "").strip()
-        if callable(cleanup) and ws_id:
-            await cleanup(channel.channel_id, ws_id)
-
-    register_disconnect = getattr(channel, "on_disconnect", None)
-    if callable(register_disconnect):
-        register_disconnect(_on_disconnect)
+    register_connection_handlers(channel, agent_client, message_handler, _resolve)
 
     register_vendor_handlers(channel)
 
