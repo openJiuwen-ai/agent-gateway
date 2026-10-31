@@ -24,7 +24,6 @@ import re
 import signal
 import sys
 import time
-import uuid as uuid_module
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
@@ -38,7 +37,6 @@ _STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
 def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
@@ -142,6 +140,7 @@ from agent_gateway.route_config import (
     build_acp_route_binding as _build_acp_route_binding,
     build_route_config_map as _build_route_config_map,
 )
+from agent_gateway.agent_prewarm import AgentPrewarmCoordinator
 from agent_gateway.runtime_config import load_gateway_runtime_config
 from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from agent_gateway.routing.route_binding import GatewayRouteBinding
@@ -173,18 +172,6 @@ logger = logging.getLogger("gateway")
 
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
-_AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
-
-
-def _agent_prewarm_enabled() -> bool:
-    """Return whether background session prewarming is switched on.
-
-    Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
-    must not emit agent.prewarm.sync requests or related log noise.
-    """
-    from agent_gateway.runtime.agent_prewarm import prewarm_enabled_by_env
-
-    return prewarm_enabled_by_env()
 
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
@@ -1511,59 +1498,13 @@ async def _run(
     message_handler.set_channel_manager(channel_manager)
 
     updater_service = UpdaterService()
-    prewarm_sync_debounce_task: asyncio.Task[None] | None = None
-
-    async def _sync_agent_prewarm_channels() -> None:
-        if using_adx_router or not _agent_prewarm_enabled():
-            return
-        try:
-            prewarm_channels = {
-                channel
-                for channel in channel_manager.enabled_channels
-                if channel.lower() not in _AGENT_PREWARM_EXCLUDED_CHANNELS
-            }
-            env = e2a_from_agent_fields(
-                request_id=f"agent-prewarm-sync-{uuid_module.uuid4().hex[:8]}",
-                channel_id="",
-                req_method=ReqMethod.AGENT_PREWARM_SYNC,
-                params={
-                    "enabled_channels": sorted(prewarm_channels),
-                },
-            )
-            resp = await client.send_request(env)
-            if not getattr(resp, "ok", False):
-                raise RuntimeError(
-                    f"agent.prewarm.sync rejected: {getattr(resp, 'payload', None)}"
-                )
-        except Exception as exc:  # noqa: BLE001 - prewarm never blocks Gateway config
-            logger.warning("[App] agent.prewarm.sync failed (non-fatal): %s", exc)
-
-    async def _periodic_agent_prewarm_sync() -> None:
-        while True:
-            await asyncio.sleep(60)
-            await _sync_agent_prewarm_channels()
-
-    def _schedule_agent_prewarm_sync(
-        name: str, *, delay_seconds: float = 1.0
-    ) -> None:
-        """Coalesce startup/config/channel churn into one settled sync."""
-        nonlocal prewarm_sync_debounce_task
-        if using_adx_router or not _agent_prewarm_enabled():
-            return
-        previous = prewarm_sync_debounce_task
-        if previous is not None and not previous.done():
-            previous.cancel()
-
-        async def _delayed_sync() -> None:
-            try:
-                await asyncio.sleep(max(0.0, delay_seconds))
-                await _sync_agent_prewarm_channels()
-            except asyncio.CancelledError:
-                return
-
-        prewarm_sync_debounce_task = asyncio.create_task(
-            _delayed_sync(), name=name
-        )
+    prewarm_coordinator = AgentPrewarmCoordinator(
+        client=client,
+        channel_manager=channel_manager,
+        using_adx_router=using_adx_router,
+    )
+    _periodic_agent_prewarm_sync = prewarm_coordinator.periodic_agent_prewarm_sync
+    _schedule_agent_prewarm_sync = prewarm_coordinator.schedule_agent_prewarm_sync
 
     config_saved_context = ConfigSavedContext(
         client=client,
@@ -2692,7 +2633,7 @@ async def _run(
             _periodic_agent_prewarm_sync(),
             name="agent-prewarm-periodic-sync",
         )
-        if not using_adx_router and _agent_prewarm_enabled()
+        if prewarm_coordinator.should_run_periodic
         else None
     )
 
@@ -2888,12 +2829,7 @@ async def _run(
             retry_task.cancel()
         if channel_retry_tasks:
             await asyncio.gather(*channel_retry_tasks, return_exceptions=True)
-        if prewarm_sync_debounce_task is not None:
-            prewarm_sync_debounce_task.cancel()
-            try:
-                await prewarm_sync_debounce_task
-            except asyncio.CancelledError:
-                pass
+        await prewarm_coordinator.stop_debounce()
         if prewarm_sync_task is not None:
             prewarm_sync_task.cancel()
             try:
