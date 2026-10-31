@@ -140,6 +140,11 @@ from agent_gateway.route_config import (
     build_acp_route_binding as _build_acp_route_binding,
     build_route_config_map as _build_route_config_map,
 )
+from agent_gateway.channel_lifecycle import (
+    _should_restart_channel,
+    _stop_channel,
+    _is_channel_enabled,
+)
 from agent_gateway.agent_prewarm import AgentPrewarmCoordinator
 from agent_gateway.runtime_config import load_gateway_runtime_config
 from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
@@ -1848,6 +1853,7 @@ async def _run(
     wechat_task = None
     ssh_channel = None
     ssh_task = None
+    _last_channels_conf: dict = {}
 
     def _set_agentos_ssh_key_issuer(
         issuer,
@@ -1862,70 +1868,6 @@ async def _run(
             setter(issuer, ephemeral_key_ttl_sec=ephemeral_key_ttl_sec)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[App] failed to set AgentOS SSH key issuer: %s", exc)
-
-    _last_channels_conf: dict = {}
-
-    def _should_restart_channel(channel_name: str, old_conf: dict, new_conf: dict) -> bool:
-        old_channel_conf = old_conf.get(channel_name) if isinstance(old_conf, dict) else None
-        new_channel_conf = new_conf.get(channel_name) if isinstance(new_conf, dict) else None
-        if (old_channel_conf is None) != (new_channel_conf is None):
-            return True
-        if old_channel_conf is None:
-            return False
-        return old_channel_conf != new_channel_conf
-
-    async def _stop_channel(channel, task, channel_name: str, background_wait: bool = False) -> None:
-        if task is not None:
-            task.cancel()
-            if background_wait:
-
-                async def wait_cancel():
-                    try:
-                        await task
-                    except (TypeError, asyncio.CancelledError):
-                        logger.info("[App] cancelled previous %sChannel task", channel_name.capitalize())
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning(
-                            "[App] ignored exception while waiting for previous %sChannel task: %s",
-                            channel_name.capitalize(),
-                            e,
-                        )
-
-                asyncio.create_task(wait_cancel(), name=f"wait_{channel_name}_cancel")
-            else:
-                try:
-                    await asyncio.wait_for(task, timeout=5.0)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "[App] timeout while waiting for %sChannel task cancellation",
-                        channel_name.capitalize(),
-                    )
-                except asyncio.CancelledError:
-                    pass
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "[App] ignored exception while waiting for previous %sChannel task: %s",
-                        channel_name.capitalize(),
-                        e,
-                    )
-
-        if channel is not None:
-            try:
-                await asyncio.wait_for(channel.stop(), timeout=10.0)
-            except asyncio.TimeoutError:
-                logger.warning("[App] timeout while stopping %sChannel", channel_name.capitalize())
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[App] failed to stop previous %sChannel: %s", channel_name.capitalize(), e)
-            channel_manager.unregister_channel(channel.channel_id)
-
-    def _is_channel_enabled(conf: dict | None, required_fields: list[str]) -> tuple[bool, str]:
-        if conf is None:
-            return False, "missing or invalid config"
-        enabled_raw = conf.get("enabled", None)
-        if enabled_raw is None:
-            all_fields_present = all(conf.get(f) for f in required_fields)
-            return all_fields_present, f"missing {','.join(required_fields)}" if not all_fields_present else ""
-        return bool(enabled_raw), "enabled = false" if not enabled_raw else ""
 
     async def _apply_channel_config(conf: dict) -> None:
         nonlocal feishu_channel, feishu_task, xiaoyi_channel, xiaoyi_task
@@ -1983,7 +1925,12 @@ async def _run(
             # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
             # 批量删除后后续 key 访问抛 KeyError
             for ch in channel_manager.pop_channels_by_id("feishu"):
-                await _stop_channel(ch, getattr(ch, "start_task", None), f"feishu_app[{ch.app_id}]")
+                await _stop_channel(
+                    ch,
+                    getattr(ch, "start_task", None),
+                    f"feishu_app[{ch.app_id}]",
+                    channel_manager=channel_manager,
+                )
             # 统一注销 adapter（所有 feishu app 共享 "feishu" 标识）
             im_inbound.unregister_adapter("feishu")
             im_outbound.unregister_adapter("feishu")
@@ -2054,6 +2001,7 @@ async def _run(
                     feishu_enterprise_channels.get(bot_key),
                     task,
                     f"feishu_enterprise[{bot_key}]",
+                    channel_manager=channel_manager,
                 )
             for _old_ch in feishu_enterprise_channels.values():
                 _old_ch_id = getattr(_old_ch, "_channel_id", "") or getattr(_old_ch, "name", "")
@@ -2141,7 +2089,12 @@ async def _run(
             # 先 pop 再停止，避免 _stop_channel 内部 unregister_channel(channel_id)
             # 批量删除后后续 key 访问抛 KeyError
             for ch in channel_manager.pop_channels_by_id("xiaoyi"):
-                await _stop_channel(ch, getattr(ch, "start_task", None), f"xiaoyi_app[{ch.app_id}]")
+                await _stop_channel(
+                    ch,
+                    getattr(ch, "start_task", None),
+                    f"xiaoyi_app[{ch.app_id}]",
+                    channel_manager=channel_manager,
+                )
 
             # 单变量置空（不再使用，但保持 nonlocal 兼容）
             xiaoyi_channel, xiaoyi_task = None, None
@@ -2198,7 +2151,13 @@ async def _run(
 
         if "dingtalk" in changed_channels:
             dingtalk_conf = conf.get("dingtalk") if isinstance(conf, dict) else None
-            await _stop_channel(dingtalk_channel, dingtalk_task, "dingtalk", background_wait=True)
+            await _stop_channel(
+                dingtalk_channel,
+                dingtalk_task,
+                "dingtalk",
+                background_wait=True,
+                channel_manager=channel_manager,
+            )
             dingtalk_channel, dingtalk_task = None, None
 
             if isinstance(dingtalk_conf, dict):
@@ -2227,7 +2186,12 @@ async def _run(
 
         if "telegram" in changed_channels:
             telegram_conf = conf.get("telegram") if isinstance(conf, dict) else None
-            await _stop_channel(telegram_channel, telegram_task, "telegram")
+            await _stop_channel(
+                telegram_channel,
+                telegram_task,
+                "telegram",
+                channel_manager=channel_manager,
+            )
             telegram_channel, telegram_task = None, None
 
             if isinstance(telegram_conf, dict):
@@ -2255,7 +2219,12 @@ async def _run(
 
         if "discord" in changed_channels:
             discord_conf = conf.get("discord") if isinstance(conf, dict) else None
-            await _stop_channel(discord_channel, discord_task, "discord")
+            await _stop_channel(
+                discord_channel,
+                discord_task,
+                "discord",
+                channel_manager=channel_manager,
+            )
             discord_channel, discord_task = None, None
 
             if isinstance(discord_conf, dict):
@@ -2285,7 +2254,12 @@ async def _run(
 
         if "slack" in changed_channels:
             slack_conf = conf.get("slack") if isinstance(conf, dict) else None
-            await _stop_channel(slack_channel, slack_task, "slack")
+            await _stop_channel(
+                slack_channel,
+                slack_task,
+                "slack",
+                channel_manager=channel_manager,
+            )
             slack_channel, slack_task = None, None
 
             if isinstance(slack_conf, dict):
@@ -2321,7 +2295,12 @@ async def _run(
 
         if "whatsapp" in changed_channels:
             whatsapp_conf = conf.get("whatsapp") if isinstance(conf, dict) else None
-            await _stop_channel(whatsapp_channel, whatsapp_task, "whatsapp")
+            await _stop_channel(
+                whatsapp_channel,
+                whatsapp_task,
+                "whatsapp",
+                channel_manager=channel_manager,
+            )
             whatsapp_channel, whatsapp_task = None, None
 
             if isinstance(whatsapp_conf, dict):
@@ -2372,7 +2351,12 @@ async def _run(
 
         if "wecom" in changed_channels:
             wecom_conf = conf.get("wecom") if isinstance(conf, dict) else None
-            await _stop_channel(wecom_channel, wecom_task, "wecom")
+            await _stop_channel(
+                wecom_channel,
+                wecom_task,
+                "wecom",
+                channel_manager=channel_manager,
+            )
             wecom_channel, wecom_task = None, None
 
             if isinstance(wecom_conf, dict):
@@ -2418,7 +2402,12 @@ async def _run(
 
         if "wechat" in changed_channels:
             wechat_conf = conf.get("wechat") if isinstance(conf, dict) else None
-            await _stop_channel(wechat_channel, wechat_task, "wechat")
+            await _stop_channel(
+                wechat_channel,
+                wechat_task,
+                "wechat",
+                channel_manager=channel_manager,
+            )
             wechat_channel, wechat_task = None, None
 
             if isinstance(wechat_conf, dict):
@@ -2456,7 +2445,12 @@ async def _run(
 
         if "ssh" in changed_channels:
             ssh_conf = conf.get("ssh") if isinstance(conf, dict) else None
-            await _stop_channel(ssh_channel, ssh_task, "ssh")
+            await _stop_channel(
+                ssh_channel,
+                ssh_task,
+                "ssh",
+                channel_manager=channel_manager,
+            )
             ssh_channel, ssh_task = None, None
             # Clear issuer whenever SSH channel is torn down / reconfigured.
             _set_agentos_ssh_key_issuer(None)
