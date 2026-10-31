@@ -52,6 +52,13 @@ from agent_gateway.message_handler.agent_events import (
     normalize_agent_error_event as _normalize_agent_error_event_impl,
     uses_legacy_chat_error_protocol as _uses_legacy_chat_error_protocol_impl,
 )
+from agent_gateway.message_handler.disconnect import (
+    build_disconnect_cancel_message as _build_disconnect_cancel_message_impl,
+    clone_message_for_session_cancel as _clone_message_for_session_cancel_impl,
+    merge_disconnect_session_keys as _merge_disconnect_session_keys_impl,
+    resolve_stream_cancel_session_id as _resolve_stream_cancel_session_id_impl,
+    should_cancel_stream_on_channel as _should_cancel_stream_on_channel_impl,
+)
 from agent_gateway.message_handler.message_builders import (
     build_error_out_message as _build_error_out_message_impl,
     build_queued_chat_send_message as _build_queued_chat_send_message_impl,
@@ -932,10 +939,11 @@ class MessageHandler(ABC):
         mode: str | None = None,
     ) -> "Message":
         """Build a Message suitable for ``_cancel_agent_work_for_session``."""
-        params = dict(msg.params) if isinstance(msg.params, dict) else {}
-        if mode:
-            params["mode"] = mode
-        return replace(msg, session_id=session_id, params=params)
+        return _clone_message_for_session_cancel_impl(
+            msg,
+            session_id,
+            mode=mode,
+        )
 
     def _should_cancel_stream_on_channel(
         self,
@@ -952,30 +960,23 @@ class MessageHandler(ABC):
         is reached. ACP additionally replaces an orphan stream from another
         session because it is a single-user channel.
         """
-        if new_session_id and task_session == new_session_id:
-            return True
-        return self._is_single_user_channel(channel_id)
+        return _should_cancel_stream_on_channel_impl(
+            channel_id,
+            new_session_id,
+            task_session,
+        )
 
     def _resolve_stream_cancel_session_id(
         self,
         channel_id: str,
     ) -> str | None:
         """Best-effort session id when a stream task lacks ``_stream_sessions``."""
-        for rid, sess in self._stream_sessions.items():
-            if self._stream_channels.get(rid) != channel_id:
-                continue
-            candidate = (sess or "").strip()
-            if candidate:
-                return candidate
-        state_key_prefix = f"{channel_id}:"
-        for key in self._channel_states:
-            if key == channel_id:
-                continue
-            if key.startswith(state_key_prefix):
-                suffix = key[len(state_key_prefix):].strip()
-                if suffix:
-                    return suffix
-        return None
+        return _resolve_stream_cancel_session_id_impl(
+            channel_id,
+            stream_sessions=self._stream_sessions,
+            stream_channels=self._stream_channels,
+            channel_states=self._channel_states,
+        )
 
     async def _cancel_stream_tasks_for_channel(
         self,
@@ -1408,34 +1409,11 @@ class MessageHandler(ABC):
         *,
         stale_request_keys: list[tuple[str, ...]] | None = None,
     ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        merged: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-
-        def add(channel_id: str, session_id: str) -> bool:
-            sid = (session_id or "").strip()
-            if not channel_id or not sid:
-                return False
-            entry = (channel_id, sid)
-            if entry in seen:
-                return False
-            seen.add(entry)
-            merged.append(entry)
-            return True
-
-        for route_key in session_keys or []:
-            if len(route_key) >= 2:
-                add(route_key[0], route_key[1])
-
-        recovered_via_requests: list[tuple[str, str]] = []
-        for route_key in stale_request_keys or []:
-            if len(route_key) < 2:
-                continue
-            channel_id, request_id = route_key[:2]
-            task_session = (self._stream_sessions.get(request_id) or "").strip()
-            if add(channel_id, task_session):
-                recovered_via_requests.append((channel_id, task_session))
-
-        return merged, recovered_via_requests
+        return _merge_disconnect_session_keys_impl(
+            session_keys,
+            stale_request_keys=stale_request_keys,
+            stream_sessions=self._stream_sessions,
+        )
 
     def _build_disconnect_cancel_message(
         self,
@@ -1444,44 +1422,12 @@ class MessageHandler(ABC):
         user_id: str | None = None,
         mode: str | None = None,
     ) -> "Message":
-        from openjiuwen_protocol.message import Message, ReqMethod
-
-        disconnect_params = {
-            "intent": "cancel",
-            "session_id": session_id,
-        }
-        # mode decides whether AgentServer routes the cancel into the team
-        # interrupt path (workflow_disposition=pause for disconnects). An
-        # explicit mode (the TUI's tui.disconnect request carries the live
-        # client mode) wins; the channel-state table is the fallback for
-        # passive transport-close cancels — for TUI/web the table is never
-        # populated (they are not control channels), and a mode-less cancel
-        # falls into the non-team terminate path, hard-stopping running
-        # workflows instead of pausing them.
-        cancel_mode = (mode or "").strip()
-        if not cancel_mode:
-            disconnect_state = self._channel_states.get(
-                self._get_channel_state_key(channel_id, session_id)
-            ) or self._channel_states.get(channel_id)
-            if disconnect_state is not None:
-                cancel_mode = (
-                    disconnect_state.mode.value
-                    if hasattr(disconnect_state.mode, "value")
-                    else str(disconnect_state.mode)
-                )
-        if cancel_mode:
-            disconnect_params["mode"] = cancel_mode
-        return Message(
-            id=f"ws_drop_{int(time.time() * 1000):x}_{secrets.token_hex(4)}",
-            type="req",
-            channel_id=channel_id,
-            session_id=session_id,
-            params=disconnect_params,
-            timestamp=time.time(),
-            ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
-            is_stream=False,
+        return _build_disconnect_cancel_message_impl(
+            channel_id,
+            session_id,
             user_id=user_id,
+            mode=mode,
+            channel_states=self._channel_states,
         )
 
     async def _cancel_disconnect_session(
