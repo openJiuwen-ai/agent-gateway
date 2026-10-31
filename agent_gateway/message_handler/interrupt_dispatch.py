@@ -9,7 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from openjiuwen_protocol.message import ReqMethod
+from openjiuwen_protocol.message import EventType, ReqMethod
 
 
 if TYPE_CHECKING:
@@ -19,6 +19,110 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+async def send_interrupt_to_agent(
+    handler: Any,
+    env: Any,
+    *,
+    channel_id: str | None = None,
+    session_id: str | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Fire-and-forget: 发送中断到 AgentServer，不阻塞转发循环.
+
+    ``interrupt_result`` 已由调用方提前推送；此处仍要把响应里的
+    ``cancelled_tools`` 转成 ``chat.tool_result``，否则前端 tool 卡片会一直转圈，
+    直到刷新历史才看到 ``[Interrupted]``.
+    """
+    try:
+        resp = await handler._send_non_stream_agent_request(env)
+        logger.info(
+            "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
+            resp.request_id, resp.ok,
+        )
+        payload = resp.payload if isinstance(resp.payload, dict) else {}
+        ch = (channel_id or getattr(env, "channel", None) or "").strip()
+        sid = (session_id or getattr(env, "session_id", None) or "").strip()
+        if ch and sid and payload.get("cancelled_tools"):
+            await handler._send_cancelled_tool_results(ch, sid, payload, metadata)
+    except Exception as e:
+        logger.warning("[MessageHandler] AgentServer 中断请求失败(忽略): %s", e)
+
+
+async def send_interrupt_result_notification(
+    handler: Any,
+    request_id: str,
+    channel_id: str,
+    session_id: str | None,
+    intent: str,
+    message: str | None = None,
+    success: bool = True,
+    has_active_task: bool | None = None,
+) -> None:
+    """发送 interrupt_result 事件到前端（pause / resume 等）."""
+    from openjiuwen_protocol.message import Message
+
+    # 根据 has_active_task 调整 pause/resume 的消息
+    success_messages_map = {
+        "pause": "任务已暂停" if has_active_task else "任务已完成",
+        "resume": "任务已恢复" if has_active_task else "任务已完成",
+        "cancel": "任务已取消",
+        "supplement": "任务已切换",
+    }
+    failure_messages_map = {
+        "pause": "任务暂停失败",
+        "resume": "任务恢复失败",
+        "cancel": "任务终止失败",
+        "supplement": "任务切换失败",
+    }
+    payload_dict: dict = {
+        "event_type": "chat.interrupt_result",
+        "intent": intent,
+        "success": success,
+        "message": message
+        or (
+            success_messages_map.get(intent, "任务已中断")
+            if success
+            else failure_messages_map.get(intent, "任务中断失败")
+        ),
+    }
+    if has_active_task is not None:
+        payload_dict["has_active_task"] = has_active_task
+    notify_msg = Message(
+        id=request_id,
+        type="event",
+        channel_id=channel_id,
+        session_id=session_id,
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload=payload_dict,
+        event_type=EventType.CHAT_INTERRUPT_RESULT,
+        metadata=None,
+    )
+    await handler.publish_robot_messages(notify_msg)
+    logger.info(
+        "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s",
+        intent, request_id,
+    )
+
+
+async def send_cancelled_tool_results(
+    handler: Any,
+    channel_id: str,
+    session_id: str,
+    payload: dict,
+    metadata: dict | None,
+) -> None:
+    """Send cancelled tool results to frontend from interrupt response payload."""
+    cancelled_tools = payload.get("cancelled_tools", [])
+    for tool_info in cancelled_tools:
+        await handler.publish_robot_messages(
+            handler._build_tool_result_message(
+                channel_id, session_id, tool_info, metadata
+            )
+        )
 
 
 async def handle_interrupt_dispatch(

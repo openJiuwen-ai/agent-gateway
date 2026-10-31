@@ -166,6 +166,9 @@ from agent_gateway.message_handler.cron_agentos_sync import (
     sync_agentos_cron_jobs,
 )
 from agent_gateway.message_handler.interrupt_dispatch import (
+    send_cancelled_tool_results as _send_cancelled_tool_results_impl,
+    send_interrupt_result_notification as _send_interrupt_result_notification_impl,
+    send_interrupt_to_agent as _send_interrupt_to_agent_impl,
     handle_interrupt_dispatch,
 )
 from agent_gateway.message_handler.references import (
@@ -2998,19 +3001,13 @@ class MessageHandler(ABC):
         ``cancelled_tools`` 转成 ``chat.tool_result``，否则前端 tool 卡片会一直转圈，
         直到刷新历史才看到 ``[Interrupted]``.
         """
-        try:
-            resp = await self._send_non_stream_agent_request(env)
-            logger.info(
-                "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
-                resp.request_id, resp.ok,
-            )
-            payload = resp.payload if isinstance(resp.payload, dict) else {}
-            ch = (channel_id or getattr(env, "channel", None) or "").strip()
-            sid = (session_id or getattr(env, "session_id", None) or "").strip()
-            if ch and sid and payload.get("cancelled_tools"):
-                await self._send_cancelled_tool_results(ch, sid, payload, metadata)
-        except Exception as e:
-            logger.warning("[MessageHandler] AgentServer 中断请求失败(忽略): %s", e)
+        await _send_interrupt_to_agent_impl(
+            self,
+            env,
+            channel_id=channel_id,
+            session_id=session_id,
+            metadata=metadata,
+        )
 
     async def _send_interrupt_result_notification(
         self,
@@ -3023,50 +3020,15 @@ class MessageHandler(ABC):
         has_active_task: bool | None = None,
     ) -> None:
         """发送 interrupt_result 事件到前端（pause / resume 等）."""
-        from openjiuwen_protocol.message import EventType, Message
-
-        # 根据 has_active_task 调整 pause/resume 的消息
-        success_messages_map = {
-            "pause": "任务已暂停" if has_active_task else "任务已完成",
-            "resume": "任务已恢复" if has_active_task else "任务已完成",
-            "cancel": "任务已取消",
-            "supplement": "任务已切换",
-        }
-        failure_messages_map = {
-            "pause": "任务暂停失败",
-            "resume": "任务恢复失败",
-            "cancel": "任务终止失败",
-            "supplement": "任务切换失败",
-        }
-        payload_dict: dict = {
-            "event_type": "chat.interrupt_result",
-            "intent": intent,
-            "success": success,
-            "message": message
-            or (
-                success_messages_map.get(intent, "任务已中断")
-                if success
-                else failure_messages_map.get(intent, "任务中断失败")
-            ),
-        }
-        if has_active_task is not None:
-            payload_dict["has_active_task"] = has_active_task
-        notify_msg = Message(
-            id=request_id,
-            type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload=payload_dict,
-            event_type=EventType.CHAT_INTERRUPT_RESULT,
-            metadata=None,
-        )
-        await self.publish_robot_messages(notify_msg)
-        logger.info(
-            "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s",
-            intent, request_id,
+        await _send_interrupt_result_notification_impl(
+            self,
+            request_id,
+            channel_id,
+            session_id,
+            intent,
+            message=message,
+            success=success,
+            has_active_task=has_active_task,
         )
 
     async def _send_processing_status(
@@ -3127,13 +3089,13 @@ class MessageHandler(ABC):
             payload: Response payload containing cancelled_tools.
             metadata: Message metadata.
         """
-        cancelled_tools = payload.get("cancelled_tools", [])
-        for tool_info in cancelled_tools:
-            await self.publish_robot_messages(
-                self._build_tool_result_message(
-                    channel_id, session_id, tool_info, metadata
-                )
-            )
+        await _send_cancelled_tool_results_impl(
+            self,
+            channel_id,
+            session_id,
+            payload,
+            metadata,
+        )
 
     async def start_forwarding(self) -> None:
         """启动入队 -> AgentServer -> 出队 的转发任务."""
