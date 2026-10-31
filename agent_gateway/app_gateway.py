@@ -1165,6 +1165,79 @@ async def _initialize_gateway_route_runtime(
     )
 
 
+@dataclass
+class _GatewayA2ARuntime:
+    channel: Any
+    task: asyncio.Task[None] | None
+
+
+def _initialize_a2a_runtime(
+    *,
+    channel_manager: Any,
+    dummy_bus: Any,
+) -> _GatewayA2ARuntime:
+    a2a_server_enabled = str(os.getenv("A2A_SERVER_ENABLED", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if not a2a_server_enabled:
+        return _GatewayA2ARuntime(channel=None, task=None)
+
+    # A2A is disabled in the normal Desktop path.  Avoid importing its
+    # protocol server and dependencies unless this optional listener is on.
+    from agent_gateway.channel_manager.protocol.a2a.a2a_connect import (
+        A2AChannel,
+        A2AChannelConfig,
+    )
+
+    a2a_channel = A2AChannel(
+        A2AChannelConfig(
+            enabled=True,
+            host=str(os.getenv("A2A_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",
+            port=int(os.getenv("A2A_SERVER_PORT", "19100")),
+            rpc_path=str(os.getenv("A2A_SERVER_PATH", "/a2a")).strip() or "/a2a",
+            protocol_version=str(os.getenv("A2A_SERVER_PROTOCOL_VERSION", "1.0.0")).strip() or "1.0.0",
+            card_path=str(
+                os.getenv("A2A_SERVER_CARD_PATH", "/.well-known/agent-card.json")
+            ).strip() or "/.well-known/agent-card.json",
+            extended_card_path=str(
+                os.getenv("A2A_SERVER_EXTENDED_CARD_PATH", "/agent/authenticatedExtendedCard")
+            ).strip() or "/agent/authenticatedExtendedCard",
+            app_name=str(
+                os.getenv("A2A_SERVER_APP_NAME", "JiuwenSwarm Gateway A2A Server")
+            ).strip() or "JiuwenSwarm Gateway A2A Server",
+            app_description=str(
+                os.getenv("A2A_SERVER_APP_DESCRIPTION", "A2A ingress for JiuwenSwarm Gateway")
+            ).strip() or "A2A ingress for JiuwenSwarm Gateway",
+            app_version=str(os.getenv("A2A_SERVER_APP_VERSION", "0.1.0")).strip() or "0.1.0",
+            expose_reasoning=str(os.getenv("A2A_SERVER_EXPOSE_REASONING", "true")).strip().lower()
+            not in {"0", "false", "no", "off"},
+        ),
+        dummy_bus,
+    )
+    channel_manager.register_channel(a2a_channel)
+    a2a_task = asyncio.create_task(a2a_channel.start(), name="a2a-channel")
+
+    # Keep gateway startup non-blocking; surface background A2A boot failures with actionable logs.
+    def _on_a2a_task_done(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[App] A2A server failed to start: %s. "
+                "If A2A is enabled, install optional dependency with "
+                "`uv sync --extra a2a` or `pip install \"agent-gateway[a2a]\"`.",
+                exc,
+            )
+
+    a2a_task.add_done_callback(_on_a2a_task_done)
+    return _GatewayA2ARuntime(channel=a2a_channel, task=a2a_task)
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
@@ -1441,66 +1514,12 @@ async def _run(
     tui_channel = route_runtime.tui_channel
     gateway_server = route_runtime.gateway_server
 
-    a2a_server_enabled = str(os.getenv("A2A_SERVER_ENABLED", "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    a2a_channel = None
-    a2a_task: asyncio.Task | None = None
-    if a2a_server_enabled:
-        # A2A is disabled in the normal Desktop path.  Avoid importing its
-        # protocol server and dependencies unless this optional listener is on.
-        from agent_gateway.channel_manager.protocol.a2a.a2a_connect import (
-            A2AChannel,
-            A2AChannelConfig,
-        )
-
-        a2a_channel = A2AChannel(
-            A2AChannelConfig(
-                enabled=True,
-                host=str(os.getenv("A2A_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",
-                port=int(os.getenv("A2A_SERVER_PORT", "19100")),
-                rpc_path=str(os.getenv("A2A_SERVER_PATH", "/a2a")).strip() or "/a2a",
-                protocol_version=str(os.getenv("A2A_SERVER_PROTOCOL_VERSION", "1.0.0")).strip() or "1.0.0",
-                card_path=str(
-                    os.getenv("A2A_SERVER_CARD_PATH", "/.well-known/agent-card.json")
-                ).strip() or "/.well-known/agent-card.json",
-                extended_card_path=str(
-                    os.getenv("A2A_SERVER_EXTENDED_CARD_PATH", "/agent/authenticatedExtendedCard")
-                ).strip() or "/agent/authenticatedExtendedCard",
-                app_name=str(
-                    os.getenv("A2A_SERVER_APP_NAME", "JiuwenSwarm Gateway A2A Server")
-                ).strip() or "JiuwenSwarm Gateway A2A Server",
-                app_description=str(
-                    os.getenv("A2A_SERVER_APP_DESCRIPTION", "A2A ingress for JiuwenSwarm Gateway")
-                ).strip() or "A2A ingress for JiuwenSwarm Gateway",
-                app_version=str(os.getenv("A2A_SERVER_APP_VERSION", "0.1.0")).strip() or "0.1.0",
-                expose_reasoning=str(os.getenv("A2A_SERVER_EXPOSE_REASONING", "true")).strip().lower()
-                not in {"0", "false", "no", "off"},
-            ),
-            _DummyBus(),
-        )
-        channel_manager.register_channel(a2a_channel)
-        a2a_task = asyncio.create_task(a2a_channel.start(), name="a2a-channel")
-
-        # Keep gateway startup non-blocking; surface background A2A boot failures with actionable logs.
-
-        def _on_a2a_task_done(task: asyncio.Task) -> None:
-            try:
-                task.result()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "[App] A2A server failed to start: %s. "
-                    "If A2A is enabled, install optional dependency with "
-                    "`uv sync --extra a2a` or `pip install \"agent-gateway[a2a]\"`.",
-                    exc,
-                )
-
-        a2a_task.add_done_callback(_on_a2a_task_done)
+    a2a_runtime = _initialize_a2a_runtime(
+        channel_manager=channel_manager,
+        dummy_bus=_DummyBus,
+    )
+    a2a_channel = a2a_runtime.channel
+    a2a_task = a2a_runtime.task
 
     from agent_gateway.optional_channel_configurator import OptionalChannelConfigurator
     optional_channel_configurator = OptionalChannelConfigurator(
