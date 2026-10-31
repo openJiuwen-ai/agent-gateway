@@ -666,6 +666,94 @@ class OptionalChannelConfigurator:
         self._wechat_task = asyncio.create_task(self._wechat_channel.start(), name="wechat")
         logger.info("[App] WechatChannel registered from config.yaml.channels.wechat")
 
+    async def _apply_ssh_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "ssh" not in changed_channels:
+            return
+
+        ssh_conf = conf.get("ssh") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._ssh_channel,
+            self._ssh_task,
+            "ssh",
+            channel_manager=self._channel_manager,
+        )
+        self._ssh_channel, self._ssh_task = None, None
+        # Clear issuer whenever SSH channel is torn down / reconfigured.
+        self._set_agentos_ssh_key_issuer(None)
+
+        if not isinstance(ssh_conf, dict):
+            logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
+            return
+
+        # 南向经 agent client（如 agentos_router -> yuanrong）动态解析。
+        enabled, reason = _is_channel_enabled(ssh_conf, ["listen_port"])
+        full_cfg = self._get_config()
+        gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
+        agent_client_cfg = (
+            gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
+        )
+        client_type = (
+            str(agent_client_cfg.get("type") or "websocket").strip().lower()
+            if isinstance(agent_client_cfg, dict)
+            else "websocket"
+        )
+        if not enabled:
+            logger.info("[App] channels.ssh.%s, SshChannel disabled", reason)
+            return
+        if client_type != "agentos_router":
+            logger.warning(
+                "[App] channels.ssh.enabled=true but gateway.agent_client.type=%s "
+                "(require agentos_router); SshChannel will not start",
+                client_type,
+            )
+            return
+
+        # SSH is optional and disabled for the normal Desktop path;
+        # keep its cryptography/runtime imports out of Gateway cold start.
+        from agent_gateway.channel_manager.protocol.ssh.ssh_connect import (
+            SshChannel,
+            SshChannelConfig,
+        )
+        from agent_gateway.extensions.auth.ssh_key_registry import (
+            KeyRegistry,
+        )
+
+        ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
+        self._ssh_channel = SshChannel(
+            ssh_config,
+            self._dummy_bus_cls(),
+            key_registry=KeyRegistry(),
+        )
+        self._channel_manager.register_channel(self._ssh_channel)
+        self._ssh_task = asyncio.create_task(self._ssh_channel.start(), name="ssh")
+
+        def _on_ssh_task_done(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "[App] SSH channel failed to start: %s. "
+                    "If SSH is enabled, install optional dependency with "
+                    "`uv sync --extra ssh` or `pip install \"agent-gateway[ssh]\"`.",
+                    exc,
+                )
+
+        self._ssh_task.add_done_callback(_on_ssh_task_done)
+        if ssh_config.auth.enabled:
+            self._set_agentos_ssh_key_issuer(
+                self._ssh_channel.key_issuer,
+                ephemeral_key_ttl_sec=ssh_config.auth.ephemeral_key_ttl_sec,
+            )
+        logger.info(
+            "[App] SshChannel registered from config.yaml.channels.ssh "
+            "(listen %s:%s -> MessageHandler; southbound via agent client; auth=%s)",
+            ssh_config.listen_host,
+            ssh_config.listen_port,
+            ssh_config.auth.enabled,
+        )
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -710,87 +798,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_wechat_channels(conf, changed_channels)
 
-        if "ssh" in changed_channels:
-            ssh_conf = conf.get("ssh") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._ssh_channel,
-                self._ssh_task,
-                "ssh",
-                channel_manager=self._channel_manager,
-            )
-            self._ssh_channel, self._ssh_task = None, None
-            # Clear issuer whenever SSH channel is torn down / reconfigured.
-            self._set_agentos_ssh_key_issuer(None)
-
-            if isinstance(ssh_conf, dict):
-                # 南向经 agent client（如 agentos_router -> yuanrong）动态解析。
-                enabled, reason = _is_channel_enabled(ssh_conf, ["listen_port"])
-                full_cfg = self._get_config()
-                gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
-                agent_client_cfg = (
-                    gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
-                )
-                client_type = (
-                    str(agent_client_cfg.get("type") or "websocket").strip().lower()
-                    if isinstance(agent_client_cfg, dict)
-                    else "websocket"
-                )
-                if not enabled:
-                    logger.info("[App] channels.ssh.%s, SshChannel disabled", reason)
-                elif client_type != "agentos_router":
-                    logger.warning(
-                        "[App] channels.ssh.enabled=true but gateway.agent_client.type=%s "
-                        "(require agentos_router); SshChannel will not start",
-                        client_type,
-                    )
-                else:
-                    # SSH is optional and disabled for the normal Desktop path;
-                    # keep its cryptography/runtime imports out of Gateway cold start.
-                    from agent_gateway.channel_manager.protocol.ssh.ssh_connect import (
-                        SshChannel,
-                        SshChannelConfig,
-                    )
-                    from agent_gateway.extensions.auth.ssh_key_registry import (
-                        KeyRegistry,
-                    )
-
-                    ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
-                    self._ssh_channel = SshChannel(
-                        ssh_config,
-                        self._dummy_bus_cls(),
-                        key_registry=KeyRegistry(),
-                    )
-                    self._channel_manager.register_channel(self._ssh_channel)
-                    self._ssh_task = asyncio.create_task(self._ssh_channel.start(), name="ssh")
-
-                    def _on_ssh_task_done(task: asyncio.Task) -> None:
-                        try:
-                            task.result()
-                        except asyncio.CancelledError:
-                            return
-                        except Exception as exc:  # noqa: BLE001
-                            logger.error(
-                                "[App] SSH channel failed to start: %s. "
-                                "If SSH is enabled, install optional dependency with "
-                                "`uv sync --extra ssh` or `pip install \"agent-gateway[ssh]\"`.",
-                                exc,
-                            )
-
-                    self._ssh_task.add_done_callback(_on_ssh_task_done)
-                    if ssh_config.auth.enabled:
-                        self._set_agentos_ssh_key_issuer(
-                            self._ssh_channel.key_issuer,
-                            ephemeral_key_ttl_sec=ssh_config.auth.ephemeral_key_ttl_sec,
-                        )
-                    logger.info(
-                        "[App] SshChannel registered from config.yaml.channels.ssh "
-                        "(listen %s:%s -> MessageHandler; southbound via agent client; auth=%s)",
-                        ssh_config.listen_host,
-                        ssh_config.listen_port,
-                        ssh_config.auth.enabled,
-                    )
-            else:
-                logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
+        await self._apply_ssh_channels(conf, changed_channels)
 
         if "web_proxy" in changed_channels:
             web_proxy_conf = conf.get("web_proxy") if isinstance(conf, dict) else None
