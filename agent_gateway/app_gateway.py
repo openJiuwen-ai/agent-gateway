@@ -42,8 +42,6 @@ from openjiuwen_protocol.message import (
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,
     Message,
-    Mode,
-    ReqMethod,
 )
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
@@ -128,6 +126,7 @@ from agent_gateway.outbound_delivery import OutboundMessageDelivery
 from agent_gateway.inbound_server import (
     InboundGatewayServer as _InboundGatewayServer,
 )
+from agent_gateway.inbound_request_dispatcher import InboundRequestDispatcher
 from agent_gateway.restart import (
     GatewayRestartRequest,
     exec_gateway_restart as _exec_gateway_restart,
@@ -148,7 +147,6 @@ from agent_gateway.channel_lifecycle import (
 )
 from agent_gateway.agent_prewarm import AgentPrewarmCoordinator
 from agent_gateway.runtime_config import load_gateway_runtime_config
-from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from agent_gateway.routing.route_binding import GatewayRouteBinding
 from agent_gateway.startup_retry import (
     _connect_with_retry,
@@ -222,6 +220,7 @@ class GatewayServer(BaseWebChannel):
             find_channel_clients=self._find_channel_clients,
             acp_bridge=self._acp_bridge,
         )
+        self._inbound_dispatcher = InboundRequestDispatcher(self)
         self._install_default_route_hooks()
 
     @staticmethod
@@ -743,276 +742,8 @@ class GatewayServer(BaseWebChannel):
                     )
 
     async def _handle_raw_message(self, ws: Any, raw: str, request_path: str, route: RouteConfig) -> None:
-
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            await ws.send(
-                json.dumps(
-                    {"type": "res", "id": "", "ok": False, "error": "invalid json"},
-                    ensure_ascii=False,
-                )
-            )
-            return
-
-        if route.channel_id == "acp":
-            handled = await self._acp_bridge.handle_jsonrpc_request(ws, data)
-            if handled:
-                return
-
-        if route.channel_id == "acp" and self._acp_bridge.is_jsonrpc_request(data):
-            return
-
-        # route 级别的原始帧拦截（如 ACP JSON-RPC response）
-        if route.inbound_interceptor is not None:
-            try:
-                handled = route.inbound_interceptor(ws, data)
-                if asyncio.iscoroutine(handled):
-                    handled = await handled
-                if handled:
-                    return
-            except Exception:
-                logger.warning(
-                    "GatewayServer inbound interceptor failed: path=%s",
-                    request_path,
-                    exc_info=True,
-                )
-
-        if not isinstance(data, dict) or data.get("type") != "req":
-            await ws.send(
-                json.dumps(
-                    {"type": "res", "id": "", "ok": False, "error": "invalid request"},
-                    ensure_ascii=False,
-                )
-            )
-            return
-
-        req_id = str(data.get("id") or "").strip()
-        method = str(data.get("method") or "").strip()
-        params = data.get("params") if isinstance(data.get("params"), dict) else {}
-        if not req_id or not method:
-            await ws.send(
-                json.dumps(
-                    {"type": "res", "id": req_id, "ok": False, "error": "invalid request"},
-                    ensure_ascii=False,
-                )
-            )
-            return
-
-        explicit_session_id = bool(str(params.get("session_id") or "").strip())
-        session_id = (str(params.get("session_id") or "").strip()) or req_id
-        session_key = self._client_route_key(route.channel_id, session_id) if explicit_session_id else None
-
-        req_user_id = self._connection_user_id(ws)
-
-        # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
-        if method in route.forward_methods:
-            req_method = None
-            for item in ReqMethod:
-                if item.value == method:
-                    req_method = item
-                    break
-
-            if req_method is None:
-                await ws.send(
-                    json.dumps(
-                        {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                        ensure_ascii=False,
-                    )
-                )
-                return
-
-            # V2: 提取 agent_ref 用于路由键（支撑场景 2 同 session 切 mode 不串窗）。
-            # 客户端未发送 agent_ref 时不合成——保持 2 元组注册，与响应查找侧
-            # （AgentServer 普通模式不回带 agent_ref → msg.agent_ref=None → 2 元组）
-            # 对称，避免 3/2 元组不匹配导致响应消息被丢弃（设计 §1.1 非 team 零改动）。
-            _agent_ref = params.get("agent_ref")
-
-            request_key = self._client_route_key(route.channel_id, req_id, _agent_ref)
-            # 升级 session_key 为 3 元组（含 agent_ref），与 _session_to_client 键一致。
-            session_key = (
-                self._client_route_key(route.channel_id, session_id, _agent_ref)
-                if explicit_session_id else None
-            )
-            # 检测 session 是否已在其他窗口打开：若已绑定到另一个仍活跃的连接，
-            # 拒绝当前请求，避免多窗口 session 冲突（事件路由串台、binding 被覆盖）。
-            # 前端 session.list 的 active_in_window 标记是"事后快照"，此处是实时防线。
-            if session_key is not None:
-                existing_ws = self._session_to_client.get(session_key)
-                if (
-                    existing_ws is not None
-                    and existing_ws is not ws
-                    and not bool(getattr(existing_ws, "closed", False))
-                ):
-                    logger.warning(
-                        "GatewayServer reject %s: session %s already active in another %s connection",
-                        method, session_id, route.channel_id,
-                    )
-                    await self.send_response(
-                        ws, req_id, ok=False,
-                        error=f"Session {session_id} is already active in another window. Close that window first.",
-                        code="SESSION_IN_USE",
-                    )
-                    return
-            if request_key is not None:
-                self._request_to_client[request_key] = ws
-            if session_key is not None:
-                await self._bind_route_session_client(route, session_id, ws)
-
-            default_mode = Mode.CODE_NORMAL if route.channel_id == "tui" else Mode.AGENT
-            mode = Mode.from_raw(params.get("mode"), default=default_mode)
-
-            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer。
-            # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
-            # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
-            params = dict(params)
-            if not isinstance(params.get("mode"), str):
-                params["mode"] = mode.value
-
-            # 连接级 agent_type 为 SSOT，注入后续转发请求
-            # （3rdagent.switch 由 TUI local_handler 写回 ws._gateway_agent_type）
-            params["agent_type"] = self._connection_agent_type(ws)
-
-            # V2: agent_ref 全链路透传（阶段2）。
-            # tui 客户端从不发 agent_ref（_agent_ref 恒 None）→ 按 mode/agent_id 合成 AgentRef，
-            # 用于：(1) 委托 _register 的 RoutingKey.agent_ref；(2) msg.agent_ref 经 E2A 透传到
-            # AgentServer，chunk 回带同 agent_ref；(3) _maybe_register_godview 用 msg.agent_ref 构造
-            # GodView RoutingKey.agent_ref（与入站注册同源，routing_keys 兜底能命中）。
-            # acp 等非 ws_channel route 不合成（保留原 _agent_ref，走各自路径）。
-            from agent_gateway.routing.keys import AgentRef as _AgentRef
-
-            _resolved_agent_ref = _agent_ref
-            if route.ws_channel is not None and not isinstance(_resolved_agent_ref, _AgentRef):
-                _agent_id_raw = str(params.get("agent_id") or "default").strip() or "default"
-                _resolved_agent_ref = _AgentRef(mode=mode.value, id=_agent_id_raw)
-
-            # V2: 委托 ws 注册进 route.ws_channel（tui 的 TuiChannel）的五维索引。
-            # GatewayServer 仍保留 _session_to_client/_request_to_client 用于入站响应反查
-            # （send_response / local handler 回包），但出站 chunk 的精确路由改由
-            # TuiChannel 的 _ws_by_id（物理寻址）/ _clients_by_key（五维逻辑）承担。
-            # 同步把 ws_id 注入 metadata，供 _maybe_register_godview 构造带真 ws_id 的
-            # TuiDeliveryTarget（修掉原 tui _kind="group" + ws_id 恒空导致投递不到）。
-            _ws_id_for_metadata = ""
-            if route.ws_channel is not None:
-                from agent_gateway.routing.keys import RoutingKey
-
-                # user_id 取 "tui"：与 _maybe_register_godview 的 _user 兜底（... or _ch）
-                # 同源，保证 GodView 订阅的 RoutingKey.user_id 与此处入站注册一致。
-                _tui_rk = RoutingKey(
-                    user_id="tui",
-                    channel_id=route.channel_id,
-                    app_id="default",
-                    agent_ref=_resolved_agent_ref,
-                    session_id=session_id,
-                )
-                try:
-                    await route.ws_channel.register_ws(ws, _tui_rk)
-                    _ws_id_for_metadata = getattr(ws, "_jiuwen_ws_id", "") or ""
-                except Exception:
-                    logger.warning(
-                        "GatewayServer delegate _register to ws_channel failed: channel_id=%s session_id=%s",
-                        route.channel_id, session_id, exc_info=True,
-                    )
-
-            # 从 params 中提取 cwd/project_dir，注入到 metadata 中
-            # cwd 供 message_handler 解析 @file 引用；project_dir 供 session.list 按项目过滤
-            metadata = {"method": method}
-            if _ws_id_for_metadata:
-                metadata["ws_id"] = _ws_id_for_metadata
-            cwd = params.get("cwd")
-            if cwd and isinstance(cwd, str) and cwd.strip():
-                metadata["cwd"] = cwd.strip()
-            project_dir = params.get("project_dir")
-            if project_dir and isinstance(project_dir, str) and project_dir.strip():
-                metadata["project_dir"] = project_dir.strip()
-                # 记录会话首条消息时所在的 git 分支，供 /resume 按分支过滤（Ctrl+B）。
-                # 非 git/detached/失败时为哨兵 "HEAD"。
-                from agent_gateway.common.paths import resolve_git_branch
-
-                metadata["git_branch"] = resolve_git_branch(project_dir.strip())
-            client_timeout_ms = coerce_client_timeout_ms(data.get("timeout_ms"))
-            if route.channel_id == "tui" and client_timeout_ms is not None:
-                metadata["client_timeout_ms"] = client_timeout_ms
-
-            is_stream = bool(data.get("is_stream", False))
-
-            msg = Message(
-                id=req_id,
-                type="req",
-                channel_id=route.channel_id,
-                session_id=session_id,
-                params=params,
-                timestamp=time.time(),
-                ok=True,
-                req_method=req_method,
-                mode=mode,
-                metadata=metadata,
-                is_stream=is_stream,
-                # V2: 透传 agent_ref 到请求 Message，经 E2A 线协议传到 AgentServer，
-                # 响应侧 chunk/response 回带，gateway 查找侧 3 元组匹配（设计 §6.3）。
-                # 阶段2：tui ws_channel route 用合成的 _resolved_agent_ref（与 _register /
-                # GodView 同源）；非 ws_channel route 保留原 _agent_ref。
-                agent_ref=_resolved_agent_ref,
-                user_id=req_user_id,
-            )
-
-            if self._on_message_cb is not None:
-                result = self._on_message_cb(msg)
-                if asyncio.iscoroutine(result):
-                    await result
-
-            # ACP route may receive legacy ``type=req`` frames from some clients.
-            # They should be forwarded upstream without falling through to the
-            # generic "unknown method" error path.
-            if route.channel_id == "acp":
-                return
-
-            # 如果在 forward_no_local_handler_methods 中，不需要本地 ack
-            if method in route.forward_no_local_handler_methods:
-                return
-
-        # 2. 本地 handler：发 ack 或纯本地处理
-        local_handler = route.local_handlers.get(method)
-        if local_handler is not None:
-            if session_key is not None:
-                await self._bind_route_session_client(route, session_id, ws)
-            try:
-                await self._invoke_local_handler(
-                    local_handler,
-                    _LocalHandlerContext(
-                        ws=ws,
-                        req_id=req_id,
-                        params=params,
-                        session_id=session_id,
-                        user_id=req_user_id,
-                    ),
-                )
-            except Exception as e:
-                ws_closed = bool(getattr(ws, "closed", False))
-                if ws_closed:
-                    logger.warning("GatewayServer local handler aborted on closed ws (%s): %s", method, e)
-                    return
-                logger.error("GatewayServer local handler error (%s): %s", method, e)
-                try:
-                    await self.send_response(
-                        ws, req_id, ok=False,
-                        error=f"handler error: {e}", code="INTERNAL_ERROR",
-                    )
-                except Exception:
-                    logger.debug(
-                        "GatewayServer failed to send handler error response: method=%s id=%s",
-                        method,
-                        req_id,
-                        exc_info=True,
-                    )
-            return
-
-        # 3. 无 forward 也无本地 handler
-        await ws.send(
-            json.dumps(
-                {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                ensure_ascii=False,
-            )
+        await self._inbound_dispatcher.handle_raw_message(
+            ws, raw, request_path, route
         )
 
 
