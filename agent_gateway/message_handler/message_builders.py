@@ -8,8 +8,35 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
+from openjiuwen_protocol.message import EventType, Message
+
+from agent_gateway.common.mode_matrix import (
+    DEPRECATION_MAP,
+    MODE_ALIASES,
+    NEW_CANONICAL_MODES,
+    is_team_mode,
+)
+
 if TYPE_CHECKING:
     from openjiuwen_protocol.message import Message
+
+
+_VALID_MODE_INPUTS: frozenset[str] = frozenset(
+    NEW_CANONICAL_MODES | set(DEPRECATION_MAP.keys()) | set(MODE_ALIASES.keys())
+)
+_KNOWN_TEAM_MODE_INPUTS: tuple[str, ...] = tuple(
+    sorted(mode for mode in _VALID_MODE_INPUTS if is_team_mode(mode))
+)
+
+
+_UNKNOWN_TEAM_MODE_NOTICE = (
+    "不支持的模式 '{mode}'：以 team 开头的 mode 必须是已知的 Team 模式"
+    "（{valid}）。请修正 mode 后重试。"
+)
+_NON_STREAM_TEAM_NOTICE = (
+    "集群模式需要开启流式输出才能运行（成员协作事件是流式下发的）。"
+    "请在该通道配置中开启 enable_streaming，或改用单 Agent 模式。"
+)
 
 
 def build_supplement_continuation_query(
@@ -124,4 +151,56 @@ def build_tool_result_message(
         },
         event_type=EventType.CHAT_TOOL_RESULT,
         metadata=metadata,
+    )
+
+
+def build_unknown_team_mode_error_message(msg: "Message") -> "Message":
+    """Build the rejection notice for an unknown team.* mode."""
+    params = msg.params if isinstance(msg.params, dict) else {}
+    mode = str(params.get("mode") or "").strip()
+    metadata = msg.metadata if isinstance(msg.metadata, dict) else None
+
+    return Message(
+        id=msg.id,
+        type="event",
+        channel_id=msg.channel_id,
+        session_id=msg.session_id,
+        params={},
+        timestamp=time.time(),
+        ok=False,
+        payload={
+            "event_type": EventType.CHAT_ERROR.value,
+            "error": _UNKNOWN_TEAM_MODE_NOTICE.format(
+                mode=mode,
+                valid=", ".join(_KNOWN_TEAM_MODE_INPUTS),
+            ),
+            "code": "UNKNOWN_TEAM_MODE",
+            "is_complete": True,
+        },
+        event_type=EventType.CHAT_ERROR,
+        metadata=metadata,
+        enable_streaming=False,
+    )
+
+
+def build_non_stream_team_notice_message(msg: "Message") -> "Message":
+    """Build the notice for non-streaming team requests."""
+    metadata = msg.metadata if isinstance(msg.metadata, dict) else None
+
+    return Message(
+        id=msg.id,
+        type="event",
+        channel_id=msg.channel_id,
+        session_id=msg.session_id,
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload={
+            "event_type": EventType.CHAT_FINAL.value,
+            "content": _NON_STREAM_TEAM_NOTICE,
+            "is_complete": True,
+        },
+        event_type=EventType.CHAT_FINAL,
+        metadata=metadata,
+        enable_streaming=False,
     )

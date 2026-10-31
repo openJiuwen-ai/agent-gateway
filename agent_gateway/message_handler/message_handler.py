@@ -61,7 +61,9 @@ from agent_gateway.message_handler.disconnect import (
 )
 from agent_gateway.message_handler.message_builders import (
     build_error_out_message as _build_error_out_message_impl,
+    build_non_stream_team_notice_message as _build_non_stream_team_notice_message_impl,
     build_queued_chat_send_message as _build_queued_chat_send_message_impl,
+    build_unknown_team_mode_error_message as _build_unknown_team_mode_error_message_impl,
     build_supplement_continuation_query as _build_supplement_continuation_query_impl,
     build_tool_result_message as _build_tool_result_message_impl,
 )
@@ -610,31 +612,7 @@ class MessageHandler(ABC):
 
     async def _reject_unknown_team_mode_send(self, msg: "Message") -> None:
         """Reply with an error listing the known team modes."""
-        from openjiuwen_protocol.message import EventType, Message
-
-        params = msg.params if isinstance(msg.params, dict) else {}
-        mode = str(params.get("mode") or "").strip()
-        metadata = msg.metadata if isinstance(msg.metadata, dict) else None
-        out = Message(
-            id=msg.id,
-            type="event",
-            channel_id=msg.channel_id,
-            session_id=msg.session_id,
-            params={},
-            timestamp=time.time(),
-            ok=False,
-            payload={
-                "event_type": EventType.CHAT_ERROR.value,
-                "error": _UNKNOWN_TEAM_MODE_NOTICE.format(
-                    mode=mode, valid=", ".join(_KNOWN_TEAM_MODE_INPUTS)
-                ),
-                "code": "UNKNOWN_TEAM_MODE",
-                "is_complete": True,
-            },
-            event_type=EventType.CHAT_ERROR,
-            metadata=metadata,
-            enable_streaming=False,
-        )
+        out = _build_unknown_team_mode_error_message_impl(msg)
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] rejected unknown team.* chat.send: "
@@ -650,26 +628,7 @@ class MessageHandler(ABC):
 
     async def _reject_non_stream_team_send(self, msg: "Message") -> None:
         """Answer a non-streaming team request with an explanation."""
-        from openjiuwen_protocol.message import EventType, Message
-
-        metadata = msg.metadata if isinstance(msg.metadata, dict) else None
-        out = Message(
-            id=msg.id,
-            type="event",
-            channel_id=msg.channel_id,
-            session_id=msg.session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "event_type": EventType.CHAT_FINAL.value,
-                "content": _NON_STREAM_TEAM_NOTICE,
-                "is_complete": True,
-            },
-            event_type=EventType.CHAT_FINAL,
-            metadata=metadata,
-            enable_streaming=False,
-        )
+        out = _build_non_stream_team_notice_message_impl(msg)
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] rejected non-streaming team chat.send: "
@@ -3565,6 +3524,12 @@ class MessageHandler(ABC):
     )
     _build_queued_chat_send_message = staticmethod(
         _build_queued_chat_send_message_impl
+    )
+    _build_unknown_team_mode_error_message = staticmethod(
+        _build_unknown_team_mode_error_message_impl
+    )
+    _build_non_stream_team_notice_message = staticmethod(
+        _build_non_stream_team_notice_message_impl
     )
 
     async def _effective_session_model(

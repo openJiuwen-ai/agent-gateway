@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 from agent_gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import EventType, Message
 
 
 def test_build_queued_chat_send_message_preserves_request_identity():
@@ -76,3 +77,61 @@ def test_build_tool_result_message_normalizes_cancelled_tool_info():
     assert built.payload["tool_result"]["result"] == "done"
     assert built.payload["tool_result"]["status"] == "error"
     assert built.metadata == {"request": "req-2"}
+
+
+def test_build_unknown_team_mode_error_message_lists_known_team_modes():
+    msg = Message(
+        id="req-team-1",
+        type="req",
+        channel_id="web",
+        session_id="sess-team-1",
+        params={"mode": "team.plan"},
+        timestamp=1.0,
+        ok=True,
+        metadata={"channel": "web"},
+    )
+
+    built = MessageHandler._build_unknown_team_mode_error_message(msg)
+
+    assert built.id == "req-team-1"
+    assert built.type == "event"
+    assert built.channel_id == "web"
+    assert built.session_id == "sess-team-1"
+    assert built.ok is False
+    assert built.params == {}
+    assert built.payload["event_type"] == EventType.CHAT_ERROR.value
+    assert built.payload["error"].startswith("不支持的模式 'team.plan'：")
+    assert "team.code.normal" in built.payload["error"]
+    assert built.payload["code"] == "UNKNOWN_TEAM_MODE"
+    assert built.payload["is_complete"] is True
+    assert built.event_type == EventType.CHAT_ERROR
+    assert built.metadata == {"channel": "web"}
+    assert built.enable_streaming is False
+
+
+def test_build_non_stream_team_notice_message_preserves_metadata():
+    msg = Message(
+        id="req-team-2",
+        type="req",
+        channel_id="feishu",
+        session_id="sess-team-2",
+        params={"mode": "team.work.plan"},
+        timestamp=2.0,
+        ok=True,
+        metadata={"channel": "feishu"},
+    )
+
+    built = MessageHandler._build_non_stream_team_notice_message(msg)
+
+    assert built.id == "req-team-2"
+    assert built.type == "event"
+    assert built.channel_id == "feishu"
+    assert built.session_id == "sess-team-2"
+    assert built.ok is True
+    assert built.params == {}
+    assert built.payload["event_type"] == EventType.CHAT_FINAL.value
+    assert "enable_streaming" in built.payload["content"]
+    assert built.payload["is_complete"] is True
+    assert built.event_type == EventType.CHAT_FINAL
+    assert built.metadata == {"channel": "feishu"}
+    assert built.enable_streaming is False
