@@ -618,6 +618,54 @@ class OptionalChannelConfigurator:
         self._wecom_task = asyncio.create_task(self._wecom_channel.start(), name="wecom")
         logger.info("[App] WecomChannel registered from config.yaml.channels.wecom")
 
+    async def _apply_wechat_channels(self, conf: dict, changed_channels: set[str]) -> None:
+        if "wechat" not in changed_channels:
+            return
+
+        wechat_conf = conf.get("wechat") if isinstance(conf, dict) else None
+        await _stop_channel(
+            self._wechat_channel,
+            self._wechat_task,
+            "wechat",
+            channel_manager=self._channel_manager,
+        )
+        self._wechat_channel, self._wechat_task = None, None
+
+        if not isinstance(wechat_conf, dict):
+            logger.info("[App] channels.wechat missing or invalid, WechatChannel disabled")
+            return
+
+        enabled, reason = _is_channel_enabled(wechat_conf, [])
+        if not enabled:
+            logger.info("[App] channels.wechat.%s, WechatChannel disabled", reason)
+            return
+
+        from agent_gateway.channel_manager.im_platforms.wechat.wechat_connect import (
+            WechatChannel,
+            WechatConfig,
+        )
+        wechat_config = WechatConfig(
+            enabled=True,
+            base_url=str(wechat_conf.get("base_url") or "https://ilinkai.weixin.qq.com").strip(),
+            bot_token=str(wechat_conf.get("bot_token") or "").strip(),
+            ilink_bot_id=str(wechat_conf.get("ilink_bot_id") or "").strip(),
+            ilink_user_id=str(wechat_conf.get("ilink_user_id") or "").strip(),
+            allow_from=wechat_conf.get("allow_from") or [],
+            auto_login=bool(wechat_conf.get("auto_login", True)),
+            qrcode_poll_interval_sec=float(wechat_conf.get("qrcode_poll_interval_sec", 2.0)),
+            long_poll_timeout_sec=int(wechat_conf.get("long_poll_timeout_sec", 45)),
+            backoff_base_sec=float(wechat_conf.get("backoff_base_sec", 1.0)),
+            backoff_max_sec=float(wechat_conf.get("backoff_max_sec", 30.0)),
+            credential_file=str(
+                wechat_conf.get("credential_file") or "~/.wx-ai-bridge/credentials.json"
+            ).strip(),
+            enable_streaming=bool(wechat_conf.get("enable_streaming", True)),
+        )
+        self._wechat_channel = WechatChannel(wechat_config, self._dummy_bus_cls())
+        self._channel_manager.register_channel(self._wechat_channel)
+        self._wechat_task = asyncio.create_task(self._wechat_channel.start(), name="wechat")
+        logger.info("[App] WechatChannel registered from config.yaml.channels.wechat")
+
     async def apply(self, conf: dict) -> None:
         from agent_gateway.channel_manager.web.channel_config_normalizers import (
             _normalize_feishu_conf,
@@ -660,48 +708,7 @@ class OptionalChannelConfigurator:
 
         await self._apply_wecom_channels(conf, changed_channels)
 
-        if "wechat" in changed_channels:
-            wechat_conf = conf.get("wechat") if isinstance(conf, dict) else None
-            await _stop_channel(
-                self._wechat_channel,
-                self._wechat_task,
-                "wechat",
-                channel_manager=self._channel_manager,
-            )
-            self._wechat_channel, self._wechat_task = None, None
-
-            if isinstance(wechat_conf, dict):
-                enabled, reason = _is_channel_enabled(wechat_conf, [])
-                if not enabled:
-                    logger.info("[App] channels.wechat.%s, WechatChannel disabled", reason)
-                else:
-                    from agent_gateway.channel_manager.im_platforms.wechat.wechat_connect import (
-                        WechatChannel,
-                        WechatConfig,
-                    )
-                    wechat_config = WechatConfig(
-                        enabled=True,
-                        base_url=str(wechat_conf.get("base_url") or "https://ilinkai.weixin.qq.com").strip(),
-                        bot_token=str(wechat_conf.get("bot_token") or "").strip(),
-                        ilink_bot_id=str(wechat_conf.get("ilink_bot_id") or "").strip(),
-                        ilink_user_id=str(wechat_conf.get("ilink_user_id") or "").strip(),
-                        allow_from=wechat_conf.get("allow_from") or [],
-                        auto_login=bool(wechat_conf.get("auto_login", True)),
-                        qrcode_poll_interval_sec=float(wechat_conf.get("qrcode_poll_interval_sec", 2.0)),
-                        long_poll_timeout_sec=int(wechat_conf.get("long_poll_timeout_sec", 45)),
-                        backoff_base_sec=float(wechat_conf.get("backoff_base_sec", 1.0)),
-                        backoff_max_sec=float(wechat_conf.get("backoff_max_sec", 30.0)),
-                        credential_file=str(
-                            wechat_conf.get("credential_file") or "~/.wx-ai-bridge/credentials.json"
-                        ).strip(),
-                        enable_streaming=bool(wechat_conf.get("enable_streaming", True)),
-                    )
-                    self._wechat_channel = WechatChannel(wechat_config, self._dummy_bus_cls())
-                    self._channel_manager.register_channel(self._wechat_channel)
-                    self._wechat_task = asyncio.create_task(self._wechat_channel.start(), name="wechat")
-                    logger.info("[App] WechatChannel registered from config.yaml.channels.wechat")
-            else:
-                logger.info("[App] channels.wechat missing or invalid, WechatChannel disabled")
+        await self._apply_wechat_channels(conf, changed_channels)
 
         if "ssh" in changed_channels:
             ssh_conf = conf.get("ssh") if isinstance(conf, dict) else None
