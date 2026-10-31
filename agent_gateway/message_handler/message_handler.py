@@ -11,8 +11,7 @@ import re
 import secrets
 import time
 from abc import ABC
-from dataclasses import dataclass, replace
-from enum import Enum
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Literal
@@ -41,13 +40,7 @@ from agent_gateway.common.host_services import (
 from agent_gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
-    NEW_AGENT_CODE_NORMAL,
-    NEW_AGENT_CODE_PLAN,
-    NEW_AGENT_WORK_NORMAL,
-    NEW_AGENT_WORK_PLAN,
     NEW_CANONICAL_MODES,
-    NEW_TEAM_CODE_NORMAL,
-    deprecate_mode,
     is_team_mode,
 )
 from agent_gateway.hooks.handler import GatewayHookHandler
@@ -67,6 +60,17 @@ from agent_gateway.message_handler.evolution_approval import (
     is_interrupt_evolution_approval_answer_payload,
 )
 from agent_gateway.message_handler.join_exit_handlers import JoinExitHandlers
+from agent_gateway.message_handler.models import (
+    ChannelControlState,
+    ChannelMode,
+    _SWITCH_AGENT_WORK_MODES,
+    _SWITCH_CODE_MODES,
+    ModeChangeCancelParams,
+    NewSessionCancelParams,
+    apply_a2ui_text_fallback_to_gateway_payload,
+    channel_mode_from_str,
+    normalize_legacy_health_check_relay_payload,
+)
 from agent_gateway.message_handler.prompts.review_prompt import build_review_prompt
 from agent_gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
@@ -136,7 +140,6 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "permission_interrupt",
     "evolution_interrupt",
 })
-_A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
 # 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
 # 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
 _CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
@@ -170,136 +173,6 @@ _DELIVERY_IDENTITY_METADATA_KEYS = frozenset({
     "im_sender_user_id",
     "im_thread_id",
 })
-
-
-def apply_a2ui_text_fallback_to_gateway_payload(
-    payload: dict[str, Any],
-    *,
-    channel_id: str,
-) -> dict[str, Any]:
-    """Convert A2UI blocks to text for non-Web channel payloads."""
-    if not any(_A2UI_OPEN_TAG_MARKER in value for value in payload.values() if isinstance(value, str)):
-        return payload
-
-    from agent_gateway.runtime.a2ui_text import apply_non_web_text_fallback_to_payload
-
-    return apply_non_web_text_fallback_to_payload(payload, channel_id=channel_id)
-
-
-def normalize_legacy_health_check_relay_payload(
-    payload: dict[str, Any],
-) -> dict[str, Any]:
-    """Normalize the pre-split probe relay before channel fan-out."""
-    if payload.get("event_type") != "heartbeat.relay":
-        return payload
-    payload["event_type"] = "health_check.relay"
-    if "health_check" not in payload and "heartbeat" in payload:
-        payload["health_check"] = payload["heartbeat"]
-    return payload
-
-
-
-class ChannelMode(str, Enum):
-    AGENT = "agent"
-    # 历史值：plan / fast 已合并为 agent，保留以兼容旧持久化 channel state。
-    AGENT_PLAN = "agent.plan"
-    AGENT_FAST = "agent.fast"
-    CODE_PLAN = "code.plan"
-    CODE_NORMAL = "code.normal"
-    CODE_TEAM = "code.team"
-    TEAM = "team"
-    TEAM_PLAN = "team.plan.normal"
-    TEAM_PLAN_NORMAL = "team.plan.normal"
-    TEAM_PLAN_CODE = "team.plan.code"
-    # 新三段命名 canonical（P2 引入；旧成员保留以兼容历史持久化反解析）。
-    AGENT_WORK_NORMAL = "agent.work.normal"
-    AGENT_WORK_PLAN = "agent.work.plan"
-    AGENT_CODE_NORMAL = "agent.code.normal"
-    AGENT_CODE_PLAN = "agent.code.plan"
-    TEAM_WORK_NORMAL = "team.work.normal"
-    TEAM_WORK_PLAN = "team.work.plan"
-    TEAM_CODE_NORMAL = "team.code.normal"
-    TEAM_CODE_PLAN = "team.code.plan"
-
-    @classmethod
-    def is_team_mode(cls, mode: str) -> bool:
-        """Return True if *mode* resolves to any team variant (case-insensitive)."""
-        return is_team_mode(mode)
-
-
-def channel_mode_from_str(mode_str: str) -> ChannelMode:
-    """把任意 mode 字符串归一到 :class:`ChannelMode`。
-
-    与 ``/mode`` 分发同源：``deprecate_mode`` 先把旧 canonical（含 team.plan 等
-    别名）静默映射到新 canonical，再用 ``ChannelMode`` 直接构造；不在
-    :data:`NEW_CANONICAL_MODES` 的串（如未知值、未迁移值）兜底为
-    :attr:`ChannelMode.AGENT`。集中此逻辑避免 ``_get_channel_default_state``、
-    ``handle_mode_switch``、``_external_session_aliases`` 等多处手抄。
-    """
-    new_mode_str = deprecate_mode(mode_str)
-    if new_mode_str in NEW_CANONICAL_MODES:
-        try:
-            return ChannelMode(new_mode_str)
-        except ValueError:
-            logger.warning(
-                "channel_mode_from_str: new canonical '%s' 命中 NEW_CANONICAL_MODES "
-                "但 ChannelMode 构造失败，兜底 AGENT (raw=%r)",
-                new_mode_str, mode_str,
-            )
-            pass
-    if new_mode_str != (mode_str or "").strip().lower():
-        logger.debug(
-            "channel_mode_from_str: '%s' -> new canonical '%s' (非 NEW_CANONICAL_MODES，兜底 AGENT)",
-            mode_str, new_mode_str,
-        )
-    else:
-        logger.debug(
-            "channel_mode_from_str: '%s' 未命中 NEW_CANONICAL_MODES，兜底 AGENT",
-            mode_str,
-        )
-    return ChannelMode.AGENT
-
-
-# ``/switch`` 子指令判据：``state.mode`` 经 ``handle_mode_switch`` 落定后必为新
-# canonical，旧枚举成员（AGENT / AGENT_PLAN / CODE_PLAN / CODE_TEAM …）永不命中，
-# 故判据改查新 canonical 字符串集合，行为与旧 ``in (ChannelMode.X, ...)`` 等价。
-# 历史等价：``agent`` / ``agent.plan`` / ``agent.fast`` → 新 ``agent.work.*``；
-# ``code.plan`` / ``code.normal`` / ``code.team`` → 新 ``agent.code.plan`` /
-# ``agent.code.normal`` / ``team.code.normal``。
-_SWITCH_AGENT_WORK_MODES: frozenset[str] = frozenset(
-    {NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN}
-)
-_SWITCH_CODE_MODES: frozenset[str] = frozenset(
-    {NEW_AGENT_CODE_PLAN, NEW_AGENT_CODE_NORMAL, NEW_TEAM_CODE_NORMAL}
-)
-
-
-@dataclass
-class ChannelControlState:
-    session_id: str | None = None
-    mode: ChannelMode = ChannelMode.AGENT
-
-
-@dataclass
-class NewSessionCancelParams:
-    """\\new_session 时取消旧会话并发通知所需的具名参数（避免过长形参列表）。"""
-
-    user_infos: dict[str, Any]
-    channel_id: str
-    reply_session_id: str | None
-    new_sid: str
-    old_sid: str | None
-
-
-@dataclass
-class ModeChangeCancelParams:
-    """\\mode 切换时取消旧会话并发通知所需的具名参数。"""
-
-    user_infos: dict[str, Any]
-    channel_id: str
-    reply_session_id: str | None
-    old_sid: str | None
-    new_mode_label: str
 
 
 if TYPE_CHECKING:
