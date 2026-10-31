@@ -109,6 +109,14 @@ from agent_gateway.message_handler.references import (
     resolve_at_file_references as _resolve_at_file_references_impl,
     strip_attached_mentions as _strip_attached_mentions_impl,
 )
+from agent_gateway.message_handler.session_identity import (
+    extract_session_id_from_ref as _extract_session_id_from_ref_impl,
+    extract_team_name_from_ref as _extract_team_name_from_ref_impl,
+    is_known_jiuwenswarm_session_id as _is_known_jiuwenswarm_session_id_impl,
+    is_session_map_style_session_id as _is_session_map_style_session_id_impl,
+    is_single_user_channel as _is_single_user_channel_impl,
+    resolve_app_id as _resolve_app_id_impl,
+)
 from agent_gateway.message_handler.session_state import (
     channel_state_from_config,
     make_channel_state_key,
@@ -158,27 +166,8 @@ _UNKNOWN_TEAM_MODE_NOTICE = (
 )
 # ACP: one in-flight chat replaces any prior work on that channel.
 # TUI/CLI 已移除此列表：多窗口 TUI 各自维护独立 session，互不干扰。
-_SINGLE_USER_CHANNEL_IDS = frozenset({
-    ChannelType.ACP.value,
-})
 _TUI_DISCONNECT_CANCEL_GRACE_SECONDS = 60.0
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
-_KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
-    "sess_",
-    "web_",
-    "tui_",
-    "acp_",
-    "cron_",
-    "feishu_",
-    "wechat_",
-    "xiaoyi_",
-    "dingtalk_",
-    "wecom_",
-    "telegram_",
-    "discord_",
-    "slack_",
-    "whatsapp_",
-)
 # 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
 # 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
 _CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
@@ -418,38 +407,9 @@ class MessageHandler(ABC):
         """已创建则返回单例；尚未初始化返回 ``None``，不抛。"""
         return cls._instance
 
-    @staticmethod
-    def extract_session_id_from_ref(session_ref: str | None) -> str | None:
-        """从 session_ref 提取 session_id。
-
-        支持两种格式：
-        - 完整: team_<name>_session_<id> → 提取 <id>
-        - 简化: <session_id> → 直接返回
-        """
-        if not session_ref:
-            return None
-        parts = session_ref.split("_session_")
-        if len(parts) == 2:
-            return parts[1]
-        # 简化格式：直接就是 session_id（如 sess_xxx）
-        return session_ref
-
-    @staticmethod
-    def extract_team_name_from_ref(session_ref: str | None) -> str:
-        if not session_ref:
-            return "unknown"
-        prefix = session_ref.replace("team_", "", 1)
-        return prefix.split("_session_")[0]
-
-    @staticmethod
-    def resolve_app_id(msg: "Message") -> str:
-        """从 Message 提取有效的 app_id。
-
-        msg.app_id 是 V2 新增字段，渠道尚未迁移填充（始终为 None）；
-        兜底读 msg.bot_id——渠道已将其设为 channel.config.app_id。
-        修复后后续可将 msg.bot_id 逐步迁移为 msg.app_id。
-        """
-        return getattr(msg, "app_id", None) or getattr(msg, "bot_id", None) or "default"
+    extract_session_id_from_ref = staticmethod(_extract_session_id_from_ref_impl)
+    extract_team_name_from_ref = staticmethod(_extract_team_name_from_ref_impl)
+    resolve_app_id = staticmethod(_resolve_app_id_impl)
 
     async def handle_message(self, msg: "Message") -> None:
         """Channel 同步回调：将消息放入 user_messages 队列，由转发循环发给 AgentServer."""
@@ -963,10 +923,7 @@ class MessageHandler(ABC):
                 exc_info=True,
             )
 
-    @staticmethod
-    def _is_single_user_channel(channel_id: str) -> bool:
-        """Channels where a new chat.send replaces all in-flight work on that channel (ACP only)."""
-        return channel_id in _SINGLE_USER_CHANNEL_IDS
+    _is_single_user_channel = staticmethod(_is_single_user_channel_impl)
 
     def _clone_message_for_session_cancel(
         self,
@@ -2607,21 +2564,12 @@ class MessageHandler(ABC):
         except asyncio.TimeoutError:
             return None
 
-    @staticmethod
-    def _is_session_map_style_session_id(session_id: str) -> bool:
-        parts = [part.strip() for part in str(session_id or "").split("::")]
-        if len(parts) not in (5, 6):
-            return False
-        return all(parts)
-
-    @classmethod
-    def _is_known_jiuwenswarm_session_id(cls, session_id: str | None) -> bool:
-        sid = str(session_id or "").strip()
-        if not sid:
-            return False
-        if sid.startswith(_KNOWN_JIUWENSWARM_SESSION_PREFIXES):
-            return True
-        return cls._is_session_map_style_session_id(sid)
+    _is_session_map_style_session_id = staticmethod(
+        _is_session_map_style_session_id_impl
+    )
+    _is_known_jiuwenswarm_session_id = staticmethod(
+        _is_known_jiuwenswarm_session_id_impl
+    )
 
     async def _ensure_acp_agent_session(self) -> str:
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
