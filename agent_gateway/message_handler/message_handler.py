@@ -86,6 +86,14 @@ from agent_gateway.message_handler.runtime_state import (
     snapshot_hook_watch_params as _snapshot_hook_watch_params_impl,
     stream_method_value as _stream_method_value_impl,
 )
+from agent_gateway.message_handler.acp_sessions import (
+    ACP_CHANNEL_ID as _ACP_CHANNEL_ID,
+    ACP_ORIGINAL_SESSION_ID_KEY as _ACP_ORIGINAL_SESSION_ID_KEY,
+    ensure_acp_agent_session as _ensure_acp_agent_session_impl,
+    prepare_agent_dispatch_message as _prepare_agent_dispatch_message_impl,
+    resolve_acp_external_session_id as _resolve_acp_external_session_id_impl,
+    resolve_acp_internal_session_id as _resolve_acp_internal_session_id_impl,
+)
 from agent_gateway.message_handler.session_allocation import (
     allocate_channel_session as _allocate_channel_session_impl,
     ensure_inbound_session as _ensure_inbound_session_impl,
@@ -182,8 +190,6 @@ from agent_gateway.message_handler.wire_messages import (
 logger = logging.getLogger(__name__)
 
 _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
-_ACP_CHANNEL_ID = "acp"
-_ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
 # + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）。
 # 单一事实源，前置校验与分发同源，避免和 ModeSubcommand/_VALID_MODE_LINES 漂移。
@@ -2329,99 +2335,27 @@ class MessageHandler(ABC):
     )
 
     async def _ensure_acp_agent_session(self) -> str:
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
-
-        env = e2a_from_agent_fields(
-            request_id=f"acp-session-create-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
-            channel_id=_ACP_CHANNEL_ID,
-            req_method=ReqMethod.SESSION_CREATE,
-            params={
-                "create_token": secrets.token_hex(16),
-                "mode": "agent",
-                "is_swarm": False,
-            },
-            is_stream=False,
-            timestamp=time.time(),
-        )
-        resp = await self._send_non_stream_agent_request(env)
-        if not resp.ok:
-            payload = dict(resp.payload or {}) if isinstance(resp.payload, dict) else {}
-            raise RuntimeError(str(payload.get("error") or "acp session.create failed"))
-        payload = dict(resp.payload or {}) if isinstance(resp.payload, dict) else {}
-        resolved = payload.get("sessionId") or payload.get("session_id")
-        resolved_str = str(resolved or "").strip()
-        if not resolved_str:
-            raise RuntimeError("acp session.create returned empty session_id")
-        return resolved_str
+        return await _ensure_acp_agent_session_impl(self)
 
     async def _resolve_acp_internal_session_id(
         self,
         external_session_id: str | None,
     ) -> tuple[str | None, bool]:
-        external = str(external_session_id or "").strip()
-        if not external:
-            return None, False
-
-        cached = self._acp_session_aliases.get(external)
-        if cached:
-            return cached, cached != external
-
-        async with self._acp_session_alias_lock:
-            cached = self._acp_session_aliases.get(external)
-            if cached:
-                return cached, cached != external
-
-            ensured = await self._ensure_acp_agent_session()
-            self._acp_session_aliases[external] = ensured
-            return ensured, ensured != external
+        return await _resolve_acp_internal_session_id_impl(
+            self, external_session_id
+        )
 
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
-        from openjiuwen_protocol.message import ReqMethod
-
-        msg = self._attach_original_request_to_ask_user_answer(msg)
-        if msg.channel_id != _ACP_CHANNEL_ID:
-            return msg
-        if msg.req_method in (ReqMethod.INITIALIZE, ReqMethod.SESSION_CREATE):
-            return msg
-
-        internal_session_id, aliased = await self._resolve_acp_internal_session_id(msg.session_id)
-        if not internal_session_id:
-            return msg
-
-        params = dict(msg.params or {})
-        params["session_id"] = internal_session_id
-
-        metadata = dict(msg.metadata or {})
-        if aliased:
-            metadata.setdefault(_ACP_ORIGINAL_SESSION_ID_KEY, str(msg.session_id or ""))
-
-        return replace(
-            msg,
-            session_id=internal_session_id,
-            params=params,
-            metadata=metadata or None,
-        )
+        return await _prepare_agent_dispatch_message_impl(self, msg)
 
     def _resolve_acp_external_session_id(
         self,
         session_id: str | None,
         metadata: dict[str, Any] | None = None,
     ) -> str | None:
-        sid = str(session_id or "").strip()
-        if not sid:
-            return None
-
-        original = ""
-        if isinstance(metadata, dict):
-            original = str(metadata.get(_ACP_ORIGINAL_SESSION_ID_KEY) or "").strip()
-        if original:
-            return original
-
-        for external, internal in self._acp_session_aliases.items():
-            if internal == sid:
-                return external
-        return sid
+        return _resolve_acp_external_session_id_impl(
+            self, session_id, metadata
+        )
 
     resolve_at_file_references = staticmethod(_resolve_at_file_references_impl)
     extract_agent_mentions = staticmethod(_extract_agent_mentions_impl)
