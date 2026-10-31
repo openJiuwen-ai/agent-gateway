@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import Any, Callable
 
 from agent_gateway.common.config import (
     get_config_raw,
@@ -16,6 +16,15 @@ from agent_gateway.common.config import (
 
 
 logger = logging.getLogger(__name__)
+
+_STANDARD_CHANNEL_IDS = (
+    "telegram",
+    "whatsapp",
+    "discord",
+    "slack",
+    "wecom",
+    "wechat",
+)
 
 from agent_gateway.channel_manager.web.channel_config_normalizers import (
     _FEISHU_APP_DEFAULTS,
@@ -39,6 +48,81 @@ def register_channel_config_handlers(
     _clear_agent_config_cache: Any,
 ) -> None:
     """Register channel configuration RPC handlers in original order."""
+
+    def _register_standard_channel_conf_handlers(
+        channel: Any,
+        channel_manager: Any,
+        agent_client: Any,
+        _resolve: Any,
+        _clear_agent_config_cache: Any,
+        *,
+        channel_id: str,
+        validate_params: Callable[[dict[str, Any]], str | None] | None = None,
+    ) -> None:
+        async def _get_conf(ws, req_id, params, session_id):
+            cm = _resolve(channel_manager)
+            if cm is None:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="channel manager not available",
+                    code="SERVICE_UNAVAILABLE",
+                )
+                return
+            try:
+                conf = cm.get_conf(channel_id)
+                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            except Exception as e:  # noqa: BLE001
+                logger.exception(f"[channel.{channel_id}.get_conf] %s", e)
+                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+        async def _set_conf(ws, req_id, params, session_id):
+            cm = _resolve(channel_manager)
+            if cm is None:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="channel manager not available",
+                    code="SERVICE_UNAVAILABLE",
+                )
+                return
+            if not isinstance(params, dict):
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="params must be object",
+                    code="BAD_REQUEST",
+                )
+                return
+            if validate_params is not None:
+                validation_error = validate_params(params)
+                if validation_error is not None:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error=validation_error,
+                        code="BAD_REQUEST",
+                    )
+                    return
+            try:
+                await cm.set_conf(channel_id, params)
+                conf = cm.get_conf(channel_id)
+                try:
+                    update_channel_in_config(channel_id, conf)
+                    await _clear_agent_config_cache(_resolve(agent_client))
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[channel.{channel_id}.set_conf] 写回 config.yaml 失败: %s", e)
+                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
+            except Exception as e:  # noqa: BLE001
+                logger.exception(f"[channel.{channel_id}.set_conf] %s", e)
+                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+        channel.register_method(f"channel.{channel_id}.get_conf", _get_conf)
+        channel.register_method(f"channel.{channel_id}.set_conf", _set_conf)
 
     async def _health_check_get_conf(ws, req_id, params, session_id):
         """返回当前探活配置（every / target / active_hours）。"""
@@ -296,59 +380,6 @@ def register_channel_config_handlers(
             logger.exception("[channel.xiaoyi.set_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
-    async def _channel_telegram_get_conf(ws, req_id, params, session_id):
-        """返回 TelegramChannel 的当前配置（由 ChannelManager 管理）。"""
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("telegram")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.telegram.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_telegram_set_conf(ws, req_id, params, session_id):
-        """更新 TelegramChannel 的配置，并按新配置重新实例化通道。"""
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("telegram", params)
-            conf = cm.get_conf("telegram")
-            try:
-                update_channel_in_config("telegram", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.telegram.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.telegram.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
     async def _channel_dingtalk_get_conf(ws, req_id, params, session_id):
         cm = _resolve(channel_manager)
         if cm is None:
@@ -403,272 +434,6 @@ def register_channel_config_handlers(
                     _schedule_clear_agent_config_cache("channel.dingtalk.set_conf")
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.dingtalk.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_whatsapp_get_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("whatsapp")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.whatsapp.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_whatsapp_set_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("whatsapp", params)
-            conf = cm.get_conf("whatsapp")
-            try:
-                update_channel_in_config("whatsapp", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.whatsapp.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.whatsapp.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_discord_get_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("discord")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.discord.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_discord_set_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("discord", params)
-            conf = cm.get_conf("discord")
-            try:
-                update_channel_in_config("discord", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.discord.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.discord.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_slack_get_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("slack")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.slack.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_slack_set_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("slack", params)
-            conf = cm.get_conf("slack")
-            try:
-                update_channel_in_config("slack", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.slack.set_conf] failed to persist config.yaml: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.slack.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_wecom_get_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("wecom")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.wecom.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_wecom_set_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("wecom", params)
-            conf = cm.get_conf("wecom")
-            try:
-                update_channel_in_config("wecom", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.wecom.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.wecom.set_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_wechat_get_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        try:
-            conf = cm.get_conf("wechat")
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.wechat.get_conf] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
-    async def _channel_wechat_set_conf(ws, req_id, params, session_id):
-        cm = _resolve(channel_manager)
-        if cm is None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="channel manager not available",
-                code="SERVICE_UNAVAILABLE",
-            )
-            return
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="params must be object",
-                code="BAD_REQUEST",
-            )
-            return
-        # 数值参数写盘前校验：拒绝负数 / 0 / 极大值 / 浮点越界 / 非数字，早于 set_conf 中断。
-        numeric_error = _validate_wechat_numeric_params(params)
-        if numeric_error is not None:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error=numeric_error,
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            await cm.set_conf("wechat", params)
-            conf = cm.get_conf("wechat")
-            try:
-                update_channel_in_config("wechat", conf)
-                await _clear_agent_config_cache(_resolve(agent_client))
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.wechat.set_conf] 写回 config.yaml 失败: %s", e)
-            await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.wechat.set_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _channel_wechat_get_login_ui(ws, req_id, params, session_id):
@@ -728,19 +493,29 @@ def register_channel_config_handlers(
     channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
     channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)
     channel.register_method("channel.xiaoyi.set_conf", _channel_xiaoyi_set_conf)
-    channel.register_method("channel.telegram.get_conf", _channel_telegram_get_conf)
-    channel.register_method("channel.telegram.set_conf", _channel_telegram_set_conf)
+    _register_standard_channel_conf_handlers(
+        channel,
+        channel_manager,
+        agent_client,
+        _resolve,
+        _clear_agent_config_cache,
+        channel_id=_STANDARD_CHANNEL_IDS[0],
+    )
     channel.register_method("channel.dingtalk.get_conf", _channel_dingtalk_get_conf)
     channel.register_method("channel.dingtalk.set_conf", _channel_dingtalk_set_conf)
-    channel.register_method("channel.whatsapp.get_conf", _channel_whatsapp_get_conf)
-    channel.register_method("channel.whatsapp.set_conf", _channel_whatsapp_set_conf)
-    channel.register_method("channel.discord.get_conf", _channel_discord_get_conf)
-    channel.register_method("channel.discord.set_conf", _channel_discord_set_conf)
-    channel.register_method("channel.slack.get_conf", _channel_slack_get_conf)
-    channel.register_method("channel.slack.set_conf", _channel_slack_set_conf)
-    channel.register_method("channel.wecom.get_conf", _channel_wecom_get_conf)
-    channel.register_method("channel.wecom.set_conf", _channel_wecom_set_conf)
-    channel.register_method("channel.wechat.get_conf", _channel_wechat_get_conf)
-    channel.register_method("channel.wechat.set_conf", _channel_wechat_set_conf)
+    for channel_id in _STANDARD_CHANNEL_IDS[1:]:
+        _register_standard_channel_conf_handlers(
+            channel,
+            channel_manager,
+            agent_client,
+            _resolve,
+            _clear_agent_config_cache,
+            channel_id=channel_id,
+            validate_params=(
+                _validate_wechat_numeric_params
+                if channel_id == "wechat"
+                else None
+            ),
+        )
     channel.register_method("channel.wechat.get_login_ui", _channel_wechat_get_login_ui)
     channel.register_method("channel.wechat.unbind", _channel_wechat_unbind)
