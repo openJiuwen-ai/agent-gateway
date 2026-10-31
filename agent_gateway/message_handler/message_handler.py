@@ -142,8 +142,11 @@ from agent_gateway.message_handler.session_identity import (
     resolve_app_id as _resolve_app_id_impl,
 )
 from agent_gateway.message_handler.session_state import (
-    channel_state_from_config,
-    make_channel_state_key,
+    get_channel_default_state as _get_channel_default_state_impl,
+    get_or_create_channel_state as _get_or_create_channel_state_impl,
+    make_channel_state_key as _make_channel_state_key_impl,
+    remember_alloc_state_key as _remember_alloc_state_key_impl,
+    save_channel_state_to_config as _save_channel_state_to_config_impl,
 )
 from agent_gateway.message_handler.stream_state import (
     active_chat_request_ids as _active_chat_request_ids_impl,
@@ -631,51 +634,22 @@ class MessageHandler(ABC):
 
     def _get_channel_default_state(self, channel_id: str) -> ChannelControlState:
         """从 config.yaml 读取 Channel 的默认 session_id / mode."""
-        try:
-            cfg: Dict[str, Any] = self._get_config_raw()
-        except Exception:  # noqa: BLE001
-            cfg = {}
-        return channel_state_from_config(channel_id, cfg)
+        return _get_channel_default_state_impl(self, channel_id)
 
     def _get_channel_state_key(self, channel_id: str, conversation_id: str | None) -> str:
         """生成 channel 状态的复合键：channel_id:conversation_id."""
-        return make_channel_state_key(channel_id, conversation_id)
+        return _make_channel_state_key_impl(channel_id, conversation_id)
 
     def get_or_create_channel_state(self, msg: "Message") -> ChannelControlState:
         """获取或创建消息对应 channel 状态（使用复合键）。
 
         conversation_id 从 msg.metadata 获取，如 feishu 的 feishu_chat_id。
         """
-        ch = msg.channel_id
-        # 获取 conversation_id：从不同平台的 metadata 中提取会话标识
-        # feishu: feishu_chat_id, xiaoyi: xiaoyi_session_id, 其他用 session_id
-        key = self._get_channel_state_key(ch, msg.session_id)
-
-        # 如果状态已存在，直接返回
-        state = self._channel_states.get(key)
-        if state is not None:
-            return state
-
-        # 否则从 config 加载默认值，并缓存
-        state = self._get_channel_default_state(ch)
-        identity_key = self._extract_identity_tuple(msg)
-        if identity_key and self._channel_id_matches_session_map_types(str(ch or "")):
-            state.session_id = self._session_map.find_session_id(*identity_key)
-        self._channel_states[key] = state
-        return state
+        return _get_or_create_channel_state_impl(self, msg)
 
     def _save_channel_state_to_config(self, channel_id: str) -> None:
         """将指定 Channel 的默认 session_id / mode 写回 config.yaml."""
-        state = self._channel_states.get(channel_id)
-        if not state:
-            return
-        self._update_channel_in_config(
-            channel_id,
-            {
-                "default_session_id": state.session_id or "",
-                "default_mode": state.mode.value if hasattr(state.mode, 'value') else str(state.mode),
-            },
-        )
+        _save_channel_state_to_config_impl(self, channel_id)
 
     async def _allocate_channel_session(
         self,
@@ -732,11 +706,7 @@ class MessageHandler(ABC):
         「channel 级」状态；而下次入站仍按 ``channel:conversation`` 查状态，
         永远命中不到 → 每条 query 都新建 session、丢上下文。
         """
-        if str(channel_id or "") not in self._sticky_channel_state_types:
-            return
-        self._pending_alloc_state_key[msg.id] = self._get_channel_state_key(
-            str(channel_id or ""), msg.session_id
-        )
+        _remember_alloc_state_key_impl(self, msg, channel_id)
 
     async def _ensure_inbound_session(self, msg: "Message") -> None:
         """受控通道入站无 session 时为它分配一个，并写回入站所属的状态。"""
