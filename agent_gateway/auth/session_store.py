@@ -67,10 +67,31 @@ def _parse_install_key(text: str) -> bytes | None:
     return raw if len(raw) == 32 else None
 
 
+def _is_harmony_runtime() -> bool:
+    return os.getenv("JIUWENSWARM_RUNTIME_PLATFORM", "").strip().lower() == "harmony"
+
+
+def _publish_harmony_file(tmp: Path, target: Path) -> None:
+    """Publish a new file on HarmonyOS without relying on hard links."""
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as destination:
+            fd = -1
+            destination.write(tmp.read_bytes())
+    except Exception:
+        if fd >= 0:
+            os.close(fd)
+        target.unlink(missing_ok=True)
+        raise
+    tmp.unlink()
+
+
 def _publish_new_file(tmp: Path, target: Path) -> bool:
     try:
         if os.name == "nt":
             os.rename(tmp, target)  # Windows 上目标已存在就失败，不会覆盖
+        elif _is_harmony_runtime():
+            _publish_harmony_file(tmp, target)
         else:
             os.link(tmp, target)  # 硬链接同样不覆盖已有文件
             tmp.unlink()
@@ -78,6 +99,22 @@ def _publish_new_file(tmp: Path, target: Path) -> bool:
         tmp.unlink(missing_ok=True)
         return False
     return True
+
+
+#: 并发首启时对端可能刚建出密钥文件、尚未写完；读到空/半截内容时短暂重试，
+#: 避免把对方正在写的文件判成损坏并 rename 走，导致两进程各用一把密钥。
+_KEY_READ_ATTEMPTS = 3
+_KEY_READ_RETRY_SECONDS = 0.02
+
+
+def _read_install_key(key_path: Path) -> bytes | None:
+    for attempt in range(_KEY_READ_ATTEMPTS):
+        parsed = _parse_install_key(key_path.read_text(encoding="utf-8"))
+        if parsed is not None:
+            return parsed
+        if attempt + 1 < _KEY_READ_ATTEMPTS:
+            time.sleep(_KEY_READ_RETRY_SECONDS)
+    return None
 
 
 def _install_key(create: bool) -> bytes | None:
@@ -90,7 +127,7 @@ def _install_key(create: bool) -> bytes | None:
     """
     key_path = auth_dir() / _KEY_FILE_NAME
     if key_path.exists():
-        existing = _parse_install_key(key_path.read_text(encoding="utf-8"))
+        existing = _read_install_key(key_path)
         if existing is not None:
             return existing
         if not create:
@@ -110,7 +147,7 @@ def _install_key(create: bool) -> bytes | None:
     _restrict(tmp)
     if _publish_new_file(tmp, key_path):
         return key
-    existing = _parse_install_key(key_path.read_text(encoding="utf-8"))
+    existing = _read_install_key(key_path)
     if existing is None:
         raise ValueError("另一个进程刚写入的本机密钥文件内容无效")
     return existing

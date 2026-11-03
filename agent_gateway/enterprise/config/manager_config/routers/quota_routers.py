@@ -7,9 +7,13 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ..core.quota import WorkspaceQuotaPolicyService, WorkspaceQuotaUsageService
+from ..core.quota import (
+    TeamQuotaPolicyService,
+    WorkspaceQuotaPolicyService,
+    WorkspaceQuotaUsageService,
+)
 from ..schemas.common_schemas import ResponseModel
-from ..schemas.quota_schemas import PolicyUpsertRequest
+from ..schemas.quota_schemas import PolicyUpsertRequest, TeamQuotaPolicyUpsertRequest
 from ..schemas.sync_schemas import make_sync_body
 from .deps import (
     SyncContext,
@@ -64,6 +68,48 @@ async def list_workspace_quota_usage(
             bot_id=bot_id,
             limit=limit,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=data)
+
+
+TeamQuotaSyncBody = make_sync_body("TeamQuotaSyncBody", TeamQuotaPolicyUpsertRequest)
+
+
+@quota_router.put("/team-quota/policies", response_model=ResponseModel)
+async def upsert_team_quota_policy(
+    sync: Annotated[SyncContext, Depends(verify_sync(TeamQuotaSyncBody))],
+):
+    """团队配额策略投影。管理面不直接写 AgentServer。"""
+    try:
+        req = TeamQuotaPolicyUpsertRequest.model_validate(sync.business)
+        row = await TeamQuotaPolicyService().upsert(req.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, row))
+
+
+@quota_router.delete(
+    "/team-quota/policies/{policy_id}", response_model=ResponseModel
+)
+async def delete_team_quota_policy(
+    policy_id: str,
+    sync: VerifySyncEnvelopeOnly,
+):
+    try:
+        await TeamQuotaPolicyService().delete(policy_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@quota_router.get("/team-quota/usage", response_model=ResponseModel)
+async def list_team_quota_usage():
+    """本集群团队占用。含按组织汇总的 ``orgs``。"""
+    try:
+        data = await TeamQuotaPolicyService().list_usage()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
