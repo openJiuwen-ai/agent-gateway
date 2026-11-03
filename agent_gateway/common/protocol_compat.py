@@ -37,6 +37,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_MODELS_LIST", "jiuwenmate.models.list"),
     ("JIUWENMATE_CHAT_SEND", "jiuwenmate.chat.send"),
     ("JIUWENMATE_CHAT_HISTORY", "jiuwenmate.chat.history"),
+    ("JIUWENMATE_ARTIFACT_LIST", "jiuwenmate.artifact.list"),
     ("JIUWENMATE_REQUEST_GET", "jiuwenmate.request.get"),
     ("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort"),
     ("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide"),
