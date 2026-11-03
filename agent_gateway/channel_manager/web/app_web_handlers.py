@@ -413,6 +413,7 @@ _JIUWENMATE_FORWARD_METHODS = frozenset({
     "jiuwenmate.agent_mail.auth.poll",
     "jiuwenmate.agent_mail.disconnect",
     "jiuwenmate.agent_mail.status",
+    "jiuwenmate.artifact.list",
     "jiuwenmate.channel.list",
     "jiuwenmate.channel.messages",
     "jiuwenmate.channel.trace",
