@@ -79,10 +79,12 @@ _initialized: bool = False
 
 
 def _find_package_root() -> Path | None:
-    """向上查找含 ``resources/config.yaml`` 的 jiuwenswarm 包目录。
+    """向上查找含 ``resources/config.yaml`` 的宿主包目录。
 
     源码布局命中 ``<repo>/jiuwenswarm/resources``；wheel 共同安装时命中
-    ``site-packages/jiuwenswarm/resources``。Gateway 自身不带该资源目录。
+    ``site-packages/jiuwenswarm/resources``；Gateway 与宿主仓并排 checkout
+    时（``<parent>/jiuwenswarm/jiuwenswarm/resources``）同样命中。
+    Gateway 自身不带该资源目录。
     """
     for parent in Path(__file__).resolve().parents:
         if (parent / "resources" / "config.yaml").exists():
@@ -90,6 +92,9 @@ def _find_package_root() -> Path | None:
         nested = parent / "jiuwenswarm" / "resources" / "config.yaml"
         if nested.exists():
             return nested.parent.parent
+        sibling = parent / "jiuwenswarm" / "jiuwenswarm" / "resources" / "config.yaml"
+        if sibling.exists():
+            return sibling.parent.parent
     return None
 
 

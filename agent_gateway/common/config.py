@@ -40,6 +40,7 @@ CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
+EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
@@ -1491,6 +1492,61 @@ def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> N
             entry["builtin_models"] = carried
 
 
+def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: list[str]) -> list[str]:
+    """Drop confirmed-missing paths from one kind's persisted history.
+
+    The prune is computed against the on-disk history right before writing,
+    so entries appended by a concurrent save (e.g. a just-replaced cli_path)
+    can never be rolled back by a stale frontend snapshot: only the
+    intersection of the stored history and ``remove_paths`` is removed.
+
+    Args:
+        cli_agent: History kind ("claude" / "codex" / custom agent name).
+        remove_paths: Paths confirmed missing by ``external_cli.validate_paths``.
+
+    Returns:
+        The surviving history for the kind after the prune.
+    """
+    name = str(cli_agent).strip()
+    remove_set = {
+        value
+        for value in (str(path or "").strip() for path in (remove_paths or []))
+        if value
+    }
+    surviving: list[str] = []
+    if not name or not remove_set:
+        return surviving
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
+    histories = current.get(key)
+    if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
+        return surviving
+    seen: set[str] = set()
+    for path in histories[name]:
+        value = str(path or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        if value not in remove_set:
+            surviving.append(value)
+    if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
+        return surviving  # Nothing to drop: leave the file untouched.
+    if surviving:
+        histories[name] = surviving
+    else:
+        histories.pop(name, None)
+    if not histories:
+        current.pop(key, None)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    return surviving
+
+
 def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], publish_url: str | None = None) -> None:
     """Update the external CLI agent switches for the default team."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -1626,8 +1682,13 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     state_mcps: list[dict[str, Any]] = []
     try:
         from agent_gateway.common.external_providers import provider
-        mcp_state = provider("mcp_state")
-        mcp_registry = provider("mcp_registry")
+        from openjiuwen_protocol.provider_domains import (
+            PROVIDER_DOMAIN_MCP_REGISTRY,
+            PROVIDER_DOMAIN_MCP_STATE,
+        )
+
+        mcp_state = provider(PROVIDER_DOMAIN_MCP_STATE)
+        mcp_registry = provider(PROVIDER_DOMAIN_MCP_REGISTRY)
         for rec in mcp_state.list_connected_mcps():
             name = rec.get("name", "")
             if not name or mcp_registry.is_stale_marketplace_record(name, rec):
@@ -2687,3 +2748,81 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged
+
+
+def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
+    saved = _normalize_model_entry(entry)
+    model_config = saved.get("model_config_obj")
+    if isinstance(model_config, dict) and "reasoning_level" in model_config:
+        from agent_gateway.common.reasoning_config import normalize_reasoning_level
+
+        raw_level = model_config["reasoning_level"]
+        level = normalize_reasoning_level(raw_level)
+        if raw_level is not None and str(raw_level).strip() and level is None:
+            raise ValueError("Invalid reasoning_level")
+        # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
+        model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
+    saved.setdefault("model_id", _new_business_id("mdl"))
+
+    def _mutate(data):
+        nonlocal saved
+        candidate = _models_for_write(data)
+        _require_editable_model(candidate, saved["model_id"])
+        defaults = candidate.setdefault("defaults", [])
+        for index, current in enumerate(defaults):
+            if current.get("model_id") == saved["model_id"]:
+                _protect_model_key(saved, current)
+                saved = _merge_model_update(current, saved)
+                defaults[index] = saved
+                break
+        else:
+            _protect_model_key(saved, {})
+            defaults.append(saved)
+        if entry.get("is_default") is True:
+            for current in defaults:
+                current["is_default"] = current["model_id"] == saved["model_id"]
+        _validate_model_candidate(candidate)
+        return data
+
+    update_config(_mutate)
+    return saved
+
+
+def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
+    from agent_gateway.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+
+    saved = deepcopy(group)
+    saved.setdefault("model_group_id", _new_business_id("mgp"))
+    # Keep per-group timeouts; legacy routing strategies remain inactive in model-pool mode.
+    routing = saved.pop("routing", None)
+    if isinstance(routing, dict):
+        timeouts = {
+            key: routing[key]
+            for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout")
+            if key in routing
+        }
+        if timeouts:
+            saved["routing"] = timeouts
+    for route in saved.get("routes") or []:
+        if isinstance(route, dict):
+            route.setdefault("route_id", _new_business_id("rte"))
+
+    def _mutate(data):
+        candidate = _models_for_write(data)
+        groups = candidate.setdefault("groups", [])
+        for index, current in enumerate(groups):
+            if current.get("model_group_id") == saved["model_group_id"]:
+                groups[index] = saved
+                break
+        else:
+            groups.append(saved)
+        if saved.get("is_default"):
+            for current in groups:
+                current["is_default"] = current["model_group_id"] == saved["model_group_id"]
+        _validate_model_candidate(candidate)
+        if saved.get("enabled", True) and not any(route.get("enabled", True) for route in saved["routes"]):
+            raise ModelSelectionError(MODEL_GROUP_INVALID, "enabled model group must contain an enabled route")
+        return data
+
+    update_config(_mutate)
+    return saved
