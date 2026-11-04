@@ -15,6 +15,8 @@ from enum import Enum
 from openjiuwen_protocol.message import ReqMethod
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
+    ("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach"),
+    ("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare"),
     ("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound"),
     ("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound"),
     ("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check"),

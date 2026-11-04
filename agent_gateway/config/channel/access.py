@@ -131,3 +131,28 @@ __all__ = [
     "update_channel_subsection_in_config",
     "update_xiaoyi_runtime_in_config",
 ]
+
+
+async def edit_channel_body(channel_id: str, edit):
+    """Apply a binding edit to the latest stored section and return the saved body."""
+    from agent_gateway.enterprise import is_enterprise
+
+    if is_enterprise():
+        repo = get_channel_config_repository()
+        if repo is None:
+            raise RuntimeError("channel configuration repository is unavailable")
+        return await repo.edit_body(channel_id, edit)
+
+    from agent_gateway.common.config import update_config
+
+    def replace(data):
+        channels = data.setdefault("channels", {})
+        current = channels.get(channel_id) or {}
+        result = edit(dict(current))
+        if current == result:
+            return None
+        channels[channel_id] = result
+        return data
+
+    saved = await asyncio.to_thread(update_config, replace)
+    return dict((saved.get("channels") or {}).get(channel_id) or {})

@@ -129,6 +129,18 @@ class ChannelConfigRepository:
             self._codec.identity(channel_id),
         )
 
+    async def edit_body(self, channel_id: str, edit) -> dict[str, Any]:
+        """Recompute an enterprise JSON body if another writer advances its revision."""
+        async def once():
+            existing = await self.get(channel_id)
+            current = dict(existing.body) if existing else {}
+            result = edit(current)
+            if result == current:
+                return result
+            return (await self.upsert(_with_body(existing, channel_id, result))).body
+
+        return await retry_on_revision_conflict(once)
+
     async def merge_body(
         self, channel_id: str, updates: dict[str, Any]
     ) -> ChannelConfig:

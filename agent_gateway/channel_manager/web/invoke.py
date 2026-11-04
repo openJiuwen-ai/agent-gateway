@@ -139,6 +139,12 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
+    if handler is not None and method in getattr(channel, "_local_only_methods", ()):
+        await _invoke_handler(
+            channel, outbound=outbound, method=method, request_id=request_id,
+            params=params, session_id=session_id, handler=handler,
+        )
+        return
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None

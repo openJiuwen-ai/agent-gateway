@@ -123,3 +123,64 @@ def dingtalk_channel_settings(raw: Any, *, api_base: str, oapi_base: str) -> lis
                 channel_settings[key] = value
         settings.append(channel_settings)
     return settings
+
+
+def dingtalk_section_view(raw: Any) -> dict[str, Any]:
+    """The section as the settings page edits it: shared keys plus the normalized app list."""
+    section = (
+        {key: value for key, value in raw.items() if key not in _APP_KEYS and key != "apps"}
+        if isinstance(raw, Mapping) else {}
+    )
+    section["apps"] = dingtalk_apps(raw)
+    return section
+
+
+def merge_dingtalk_config(current: Any, changes: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply an apps[] edit and return the whole channels.dingtalk section to save.
+
+    Each app is matched by client_id. A secret, binding or robot code the edit does not
+    send is kept. Changing the default app's client_id is a different robot, so the
+    ordinary cron identity is dropped instead of being reused through the new robot.
+    """
+    current = dict(current) if isinstance(current, Mapping) else {}
+    if not isinstance(changes.get("apps"), list):
+        raise ValueError("apps must be a list")
+    previous = {app["client_id"]: app for app in dingtalk_apps(current) if app["client_id"]}
+    old_default = next((app["client_id"] for app in previous.values() if app["is_default"]), None)
+    apps = []
+    for raw in changes["apps"]:
+        if not isinstance(raw, Mapping):
+            raise ValueError("invalid DingTalk app")
+        client_id = _text(raw.get("client_id"))
+        if not client_id:
+            raise ValueError("client_id is required")
+        old = previous.get(client_id, {})
+        # Merge onto the saved app before deriving anything, so an omitted field keeps its value.
+        # The settings form does not send bindings; an empty secret means "unchanged".
+        combined = {**old, **raw}
+        if not _text(raw.get("client_secret")):
+            combined["client_secret"] = old.get("client_secret", "")
+        combined["is_default"] = old.get("is_default", False)
+        if not old and "allow_from" not in raw:
+            # An omitted allowlist means "unchanged"; a new app has nothing to keep, and defaulting
+            # it to empty would admit everyone, for example after a client_id change.
+            raise ValueError("allow_from is required for a new DingTalk app")
+        app = _normalize_app(combined)
+        # Only a submitted allowlist is checked. An untouched malformed one stays as written, so
+        # its app still does not start and an unrelated edit cannot turn it into "everyone".
+        if "allow_from" in raw and not allow_from_valid(app):
+            raise ValueError("allow_from must be a list of staff IDs")
+        apps.append(app)
+    ids = [app["client_id"] for app in apps]
+    if len(ids) != len(set(ids)):
+        raise ValueError("duplicate DingTalk client_id")
+    if sum(not app["persistent_agent_id"] for app in apps) > 1:
+        raise ValueError("only one ordinary DingTalk app is supported; bind other apps to JiuwenMate colleagues")
+    _choose_default(apps)
+    section = {key: value for key, value in current.items() if key not in _APP_KEYS and key != "apps"}
+    section["apps"] = apps
+    new_default = next((app["client_id"] for app in apps if app["is_default"]), None)
+    if new_default is None or new_default != old_default:
+        for key in CRON_IDENTITY_KEYS:
+            section.pop(key, None)
+    return section

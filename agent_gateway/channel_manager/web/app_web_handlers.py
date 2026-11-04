@@ -4415,31 +4415,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            # 多应用模式：params 必须含 apps 键
-            apps = params["apps"]
-            app_names = [a.get("name", "?") for a in apps]
-            logger.debug(
-                "[channel.feishu.set_conf] req_id=%s, apps=%d, names=%s",
-                req_id, len(apps), app_names,
-            )
-            # 先归一化（用 _FEISHU_APP_DEFAULTS 补充前端未发送的字段），再持久化
-            normalized_apps = _normalize_feishu_conf({"apps": apps})["apps"]
-            # 从 cm 读取已有 apps，按 app_id 合并保留未发送的敏感字段
-            existing_feishu = cm.get_conf("feishu")
-            existing_apps = existing_feishu.get("apps", []) if isinstance(existing_feishu, dict) else []
-            merged_apps = _merge_apps_by_id(normalized_apps, existing_apps)
-            await cm.set_conf("feishu", {"apps": merged_apps})
-            should_clear_agent_config_cache = False
-            try:
-                replace_channel_subsection_with_cleanup("feishu", "apps", merged_apps, {"apps", "send_file_allowed"})
-                should_clear_agent_config_cache = True
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.feishu.set_conf] 写回 config.yaml apps 失败: %s", e)
-            try:
-                await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
-            finally:
-                if should_clear_agent_config_cache:
-                    _schedule_clear_agent_config_cache("channel.feishu.set_conf")
+            saved = await save_persistent_apps(cm, "feishu", params)
+            await channel.send_response(ws, req_id, ok=True, payload={"config": saved})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.feishu.set_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -4613,6 +4590,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
+            if "apps" in params:
+                saved = await save_persistent_apps(cm, "dingtalk", params)
+                await channel.send_response(ws, req_id, ok=True, payload={"config": saved})
+                return
             await cm.set_conf("dingtalk", params)
             conf = cm.get_conf("dingtalk")
             should_clear_agent_config_cache = False
@@ -5841,6 +5822,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # Deprecated aliases for clients upgrading from the pre-split probe API.
     channel.register_method("heartbeat.get_conf", _health_check_get_conf)
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
+    from agent_gateway.channel_manager.web.persistent_bindings import register_persistent_bindings
+
+    save_persistent_apps = register_persistent_bindings(
+        channel, lambda: _resolve(channel_manager), lambda: _resolve(agent_client),
+        _normalize_feishu_conf, _schedule_clear_agent_config_cache,
+    )
     channel.register_method("channel.feishu.get_conf", _channel_feishu_get_conf)
     channel.register_method("channel.feishu.set_conf", _channel_feishu_set_conf)
     channel.register_method("channel.xiaoyi.get_conf", _channel_xiaoyi_get_conf)
