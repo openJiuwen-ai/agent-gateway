@@ -119,8 +119,8 @@
    "jiuwenswarm.common",
    "jiuwenswarm.common.utils"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "gateway mask_sensitive + local workspace isolation"
  },
  {
   "source_path": "tests/integration/test_memory_config_processes.py",
@@ -1196,8 +1196,8 @@
    "jiuwenswarm.observability.config",
    "jiuwenswarm.server.trajectory.host"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "mocked AgentServer trajectory fetch"
  },
  {
   "source_path": "tests/unit_tests/channel/test_transport_stall_guard.py",
@@ -2170,7 +2170,7 @@
    "jiuwenswarm.common.schema.agent"
   ],
   "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "reason": "deferred: openjiuwen_protocol lacks EventType.CHAT_CLIENT_TOOL_REQUEST / CLIENT_ATTACHMENTS_CHANGED (added dynamically by jiuwenswarm)"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_config_poll_revision.py",
@@ -2193,8 +2193,8 @@
   "deps": [
    "jiuwenswarm.agents.harness.common.memory"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "negative import sentinel only; no runtime dependency"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_cron_controller_proactive_tick_guard.py",
@@ -2218,8 +2218,8 @@
    "jiuwenswarm.server.runtime.session.project_store",
    "jiuwenswarm.server.runtime.session.project_store.get_project_by_id"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "removed unused server dataclass import and server lookup patch"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_cron_controller_validate_wakeoffset.py",
@@ -2418,8 +2418,8 @@
    "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
    "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "routing assertion via openjiuwen_protocol identity; dropped server lookup patch"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_enterprise_files.py",
@@ -2511,8 +2511,8 @@
   "deps": [
    "jiuwenswarm.server.runtime.attachments"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "trimmed server media persistence tail; gateway file picker assertions kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_gateway_connect_retry.py",
@@ -2735,8 +2735,8 @@
    "jiuwenswarm.server.agent_ws_server",
    "jiuwenswarm.server.runtime.mcp"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "dropped server oauth callback test; remote provider tests kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_cron_push.py",
@@ -2764,8 +2764,8 @@
    "jiuwenswarm.runtime.session.model",
    "jiuwenswarm.common.schema"
   ],
-  "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "status": "migrated",
+  "reason": "replaced jiuwenswarm schema imports with openjiuwen_protocol"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_hook_params_update.py",
@@ -2979,8 +2979,8 @@
   "deps": [
    "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "dropped server adapter assertion; gateway session_owners tests kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_session_map_repository_wiring.py",
