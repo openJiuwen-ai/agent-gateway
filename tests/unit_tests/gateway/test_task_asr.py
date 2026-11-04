@@ -260,3 +260,48 @@ def test_task_asr_decodes_with_bundled_ffmpeg_when_path_is_empty(monkeypatch):
     pcm = b"\x01\x00\xff\xff" * 1600
     recording = base64.b64decode(_wav_params(pcm)["audio_base64"])
     assert asr_client.to_pcm16k(recording, ".wav", 15) == pcm
+
+
+@pytest.mark.asyncio
+async def test_task_asr_reads_request_config_instead_of_process_env(monkeypatch):
+    from agent_gateway.common.local_env_config import bind_task_env_overlay, reset_task_env_overlay
+
+    monkeypatch.setenv("ASR_API_BASE", "https://wrong.invalid/v1")
+    token = bind_task_env_overlay(_HTTP_ENV)
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.host == "example.com"
+        return httpx.Response(200, json={"text": "configured"})
+
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            assert await transcribe_task_audio(_WEBM, client=client) == "configured"
+        assert len(requests) == 1
+    finally:
+        reset_task_env_overlay(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config", [{}, {"ASR_API_BASE": " "}, {"ASR_MODEL_NAME": "model"},
+                                   {"ASR_API_BASE": "https://example.com/v1", "ASR_MODEL_NAME": " "}])
+async def test_task_asr_skips_missing_config_without_request(config):
+    def handler(_request):
+        pytest.fail("Unconfigured ASR must not send an upstream request")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await transcribe_task_audio({}, environ=config, client=client) == ""
+
+
+@pytest.mark.asyncio
+async def test_task_asr_empty_overlay_does_not_use_process_config(monkeypatch):
+    from agent_gateway.common.local_env_config import bind_task_env_overlay, reset_task_env_overlay
+
+    monkeypatch.setenv("ASR_API_BASE", "https://wrong.invalid/v1")
+    monkeypatch.setenv("ASR_MODEL_NAME", "wrong-model")
+    token = bind_task_env_overlay({})
+    try:
+        assert await transcribe_task_audio({}) == ""
+    finally:
+        reset_task_env_overlay(token)

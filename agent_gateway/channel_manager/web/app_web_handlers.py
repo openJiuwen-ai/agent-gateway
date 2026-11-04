@@ -2563,7 +2563,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
             )
             return
-        await channel.send_response(ws, req_id, ok=True, payload={"text": text})
+        payload: dict[str, Any] = {"text": text}
+        if not text:
+            payload.update(skipped=True, reason="ASR_NOT_CONFIGURED")
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     # ── vendors.* handlers ──────────────
 

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import base64
 import binascii
-import os
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +19,7 @@ from agent_gateway.common.asr_client import (
     decrypt_api_key,
     normalize_ws_endpoint,
 )
+from agent_gateway.common.local_env_config import read_env
 
 
 MAX_TASK_ASR_AUDIO_BYTES = 25 * 1024 * 1024
@@ -91,16 +91,15 @@ async def transcribe_task_audio(
     environ: Mapping[str, str] | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> str:
-    """Transcribe one browser recording with the task-chat ASR configuration."""
+    """Transcribe a recording, or return empty text when ASR is not configured."""
 
-    env = environ if environ is not None else os.environ
-    endpoint = task_asr_endpoint(env.get("ASR_API_BASE", ""))
-    api_key = decrypt_api_key(str(env.get("ASR_API_KEY", "") or "").strip())
-    model = str(env.get("ASR_MODEL_NAME", "") or "").strip()
-    if not model:
-        raise TaskAsrError(
-            "请先在设置-实验功能中配置任务对话 ASR 模型", "ASR_NOT_CONFIGURED"
-        )
+    get_config = environ.get if environ is not None else read_env
+    api_base = str(get_config("ASR_API_BASE", "") or "").strip()
+    model = str(get_config("ASR_MODEL_NAME", "") or "").strip()
+    if not api_base or not model:
+        return ""
+    endpoint = task_asr_endpoint(api_base)
+    api_key = decrypt_api_key(str(get_config("ASR_API_KEY", "") or "").strip())
 
     mime_type = (
         str(params.get("mime_type") or "audio/webm").split(";", 1)[0].strip().lower()
