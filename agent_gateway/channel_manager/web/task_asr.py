@@ -34,7 +34,7 @@ class TaskAsrError(RuntimeError):
 
 
 def task_asr_endpoint(api_base: str) -> str:
-    """Resolve a base URL or full transcription URL to the OpenAI route, or a ws(s) URL."""
+    """Preserve explicit OpenAI audio routes or resolve a base URL to transcription."""
 
     value = str(api_base or "").strip().rstrip("/")
     if not value:
@@ -52,7 +52,7 @@ def task_asr_endpoint(api_base: str) -> str:
         return normalize_ws_endpoint(value)
 
     path = parts.path.rstrip("/")
-    if not path.endswith("/audio/transcriptions"):
+    if not path.casefold().endswith(("/audio/transcriptions", "/chat/completions")):
         path = f"{path}/audio/transcriptions"
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 

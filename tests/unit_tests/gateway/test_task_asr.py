@@ -2,12 +2,11 @@ import base64
 import io
 import json
 import wave
+from http import HTTPStatus
 
 import httpx
 import pytest
-import websockets
-from websockets.datastructures import Headers
-from websockets.http11 import Response
+from websockets.legacy.server import serve
 
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
@@ -116,7 +115,7 @@ def _event(name: str, payload: dict | None = None, **header) -> str:
 
 
 async def _transcribe_ws(handler, pcm: bytes, **serve_kwargs) -> str:
-    async with websockets.serve(handler, "127.0.0.1", 0, **serve_kwargs) as server:
+    async with serve(handler, "127.0.0.1", 0, **serve_kwargs) as server:
         port = server.sockets[0].getsockname()[1]
         return await transcribe_task_audio(
             _wav_params(pcm),
@@ -134,8 +133,8 @@ async def test_transcribe_task_audio_websocket_joins_final_sentences():
     seen = {"chunks": []}
 
     async def handler(conn):
-        seen["path"] = conn.request.path
-        seen["auth"] = conn.request.headers.get("Authorization")
+        seen["path"] = conn.path
+        seen["auth"] = conn.request_headers.get("Authorization")
         seen["run_task"] = json.loads(await conn.recv())
         await conn.send(_event("task-started"))
         while isinstance(message := await conn.recv(), bytes):
@@ -177,8 +176,8 @@ async def test_transcribe_task_audio_websocket_surfaces_task_failed():
 
 @pytest.mark.asyncio
 async def test_transcribe_task_audio_websocket_handshake_rejected():
-    def reject(_conn, _request):
-        return Response(401, "Unauthorized", Headers(), b"invalid api key")
+    def reject(_path, _headers):
+        return HTTPStatus.UNAUTHORIZED, [], b"invalid api key"
 
     with pytest.raises(TaskAsrError, match="401") as error:
         await _transcribe_ws(None, b"\x00\x00" * 1600, process_request=reject)
@@ -226,3 +225,38 @@ def test_task_asr_uses_gateway_crypto_provider(monkeypatch):
     provider = SimpleNamespace(decrypt=lambda value: "decoded:" + value)
     monkeypatch.setattr(base_crypto, "get_crypto_provider", lambda: provider)
     assert decrypt_api_key("encrypted") == "decoded:encrypted"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["chat/completions", "chat/completions/"])
+async def test_task_asr_preserves_chat_route_and_query(route):
+    endpoint = f"https://example.com/v1/{route}?api-version=test"
+    assert task_asr_endpoint(endpoint) == "https://example.com/v1/chat/completions?api-version=test"
+
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        assert request.url.params["api-version"] == "test"
+        assert request.headers["authorization"] == "Bearer secret"
+        payload = json.loads(request.content)
+        assert payload["model"] == "chat-asr"
+        content = payload["messages"][0]["content"]
+        assert content[0]["audio_url"]["url"] == "data:audio/webm;base64,YXVkaW8="
+        return httpx.Response(200, json={"choices": [{"message": {"content": " hello "}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await transcribe_task_audio(
+            _WEBM,
+            environ={"ASR_API_BASE": endpoint, "ASR_MODEL_NAME": "chat-asr", "ASR_API_KEY": "secret"},
+            client=client,
+        )
+        assert not client.is_closed
+    assert result == "hello"
+
+
+def test_task_asr_decodes_with_bundled_ffmpeg_when_path_is_empty(monkeypatch):
+    from agent_gateway.common import asr_client
+
+    monkeypatch.setattr(asr_client.shutil, "which", lambda _name: None)
+    pcm = b"\x01\x00\xff\xff" * 1600
+    recording = base64.b64decode(_wav_params(pcm)["audio_base64"])
+    assert asr_client.to_pcm16k(recording, ".wav", 15) == pcm

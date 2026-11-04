@@ -1671,11 +1671,12 @@ class WebChannel(BaseWsChannel):
                 self._session_busy[sid] = bool(payload.get("is_processing", False))
         if event_name in {"chat.processing_status", "chat.ask_user_question"} and payload is not None:
             sid = payload.get("session_id") or msg.session_id
-            for listener in list(self._session_event_listeners):
-                try:
-                    listener(event_name, sid, payload)
-                except Exception:
-                    logger.warning("[WebChannel] session event listener failed", exc_info=True)
+            if sid:
+                for listener in list(self._session_event_listeners):
+                    try:
+                        listener(event_name, sid, payload)
+                    except Exception:
+                        logger.warning("[WebChannel] session event listener failed", exc_info=True)
         if event_name == "chat.interrupt_result":
             intent = payload.get("intent", "cancel") if payload is not None else "cancel"
             if msg.session_id:
