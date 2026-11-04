@@ -123,8 +123,13 @@ def _response_error(response: httpx.Response) -> str:
 
 class _OpenAIAdapter:
     def __init__(self, base_url: str, api_key: str, model: str, **client_kwargs: Any) -> None:
+        from openai import Omit
+
         self._model = model
-        self._client_kwargs = {"api_key": api_key, "base_url": base_url, **client_kwargs}
+        # SDK 2.x requires a non-empty key even for unauthenticated local services.
+        # Omit the request header so the SDK placeholder is never sent upstream.
+        self._request_headers = {} if api_key else {"Authorization": Omit()}
+        self._client_kwargs = {"api_key": api_key or "unused", "base_url": base_url, **client_kwargs}
 
     async def transcribe(self, audio: bytes, mime_type: str, filename: str) -> str:
         import openai
@@ -154,7 +159,8 @@ class _OpenAIAdapter:
 class OpenAITranscriptionAdapter(_OpenAIAdapter):
     async def _request(self, client: Any, audio: bytes, mime_type: str, filename: str) -> Any:
         return await client.audio.transcriptions.create(
-            model=self._model, file=(filename, audio, mime_type)
+            model=self._model, file=(filename, audio, mime_type),
+            extra_headers=self._request_headers,
         )
 
     @staticmethod
@@ -173,6 +179,7 @@ class OpenAIChatAudioAdapter(_OpenAIAdapter):
             ]}],
             max_tokens=160,  # 来源: 沿用 video_voice 原 chat ASR 请求
             temperature=0,
+            extra_headers=self._request_headers,
         )
 
     @staticmethod

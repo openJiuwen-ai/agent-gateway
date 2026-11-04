@@ -253,6 +253,40 @@ async def test_task_asr_preserves_chat_route_and_query(route):
     assert result == "hello"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["audio/transcriptions", "chat/completions"])
+@pytest.mark.parametrize("api_key", ["", " ", "task-secret"])
+async def test_task_asr_sends_only_configured_api_key(monkeypatch, route, api_key):
+    monkeypatch.setenv("OPENAI_API_KEY", "unrelated-openai-key")
+    monkeypatch.setenv("OPENAI_ADMIN_KEY", "unrelated-admin-key")
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.url.path == f"/v1/{route}"
+        if api_key.strip():
+            assert request.headers["authorization"] == f"Bearer {api_key}"
+        else:
+            assert "authorization" not in request.headers
+        if route == "chat/completions":
+            return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+        return httpx.Response(200, json={"text": "ok"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await transcribe_task_audio(
+            _WEBM,
+            environ={
+                "ASR_API_BASE": f"https://example.com/v1/{route}",
+                "ASR_MODEL_NAME": "task-asr-model",
+                "ASR_API_KEY": api_key,
+            },
+            client=client,
+        )
+        assert not client.is_closed
+    assert result == "ok"
+    assert len(requests) == 1
+
+
 def test_task_asr_decodes_with_bundled_ffmpeg_when_path_is_empty(monkeypatch):
     from agent_gateway.common import asr_client
 
