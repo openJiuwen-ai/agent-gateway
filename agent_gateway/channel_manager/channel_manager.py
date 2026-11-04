@@ -884,7 +884,8 @@ class ChannelManager(ABC):
                             "[ChannelManager] 精确路由 ChannelKey(%s, %s) -> %s",
                             msg.channel_id, app_id, getattr(channel, "channel_id", type(channel).__name__),
                         )
-                if channel is None:
+                # Multiple DingTalk apps share the channel ID; only the exact key is safe.
+                if channel is None and msg.channel_id != "dingtalk":
                     channel = self._get_channel_by_id(msg.channel_id)
                 # 出站派发节点：定位"队列堆积/前端无输出"时，开启 DEBUG 可确认 chunk 是否
                 # 被消费、命中哪个 channel 实例（tui 走 GatewayServer、web 走 WebChannel）。
