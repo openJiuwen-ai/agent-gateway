@@ -20,6 +20,11 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("WORKSPACE_PREVIEW", "workspace.preview"),
     ("WORKSPACE_USAGE", "workspace.usage"),
     ("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete"),
+    ("CLIENT_ATTACH", "client.attach"),
+    ("CLIENT_RENEW", "client.renew"),
+    ("CLIENT_LIST", "client.list"),
+    ("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages"),
+    ("CLIENT_CONVERSATIONS", "client.conversations"),
 )
 
 
