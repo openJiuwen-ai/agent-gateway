@@ -51,6 +51,19 @@ def _is_process_alive(pid: int) -> bool:
                 [_system_executable("tasklist"), "/FI", f"PID eq {pid}", "/NH"],
                 capture_output=True,
                 text=True,
+                # Pin the codec: with ``text=True`` alone the child's output is
+                # decoded with ``io.text_encoding(None)`` -- the locale codec
+                # until Python runs in UTF-8 mode, ``utf-8`` after. ``uv run``
+                # sets PYTHONUTF8=1, while ``tasklist`` keeps emitting ANSI/OEM
+                # bytes on a localized console. The decode then failed inside
+                # subprocess' reader thread, the UnicodeDecodeError never
+                # reached this caller, and ``stdout`` came back ``None``. So
+                # ``str(pid) in None`` raised TypeError, the bare ``except``
+                # swallowed it, and a live lock holder was reported as dead.
+                # Only the ASCII pid token and the "INFO:" marker are parsed
+                # below, so a tolerant handler is safe.
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
             )
             return str(pid) in result.stdout and "INFO:" not in result.stdout
