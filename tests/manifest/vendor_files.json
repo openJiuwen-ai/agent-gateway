@@ -1,0 +1,18 @@
+[
+ {
+  "vendor_path": "tests/_support/vendor/generated_artifact_delivery.py",
+  "source_path": "jiuwenswarm/agents/harness/common/rails/permissions/generated_artifact_delivery.py",
+  "source_commit": "f6bea5ab3",
+  "kind": "pure-function copy",
+  "reason": "normalize_send_file_target_channels is a pure normalizer (None/str/JSON/list -> sorted tuple); no I/O or mutable state.",
+  "used_by": ["tests/unit_tests/gateway/test_channel_manager_file_fanout.py"]
+ },
+ {
+  "vendor_path": "tests/_support/vendor/send_file_to_user.py",
+  "source_path": "jiuwenswarm/agents/harness/common/tools/send_file_to_user.py",
+  "source_commit": "f6bea5ab3",
+  "kind": "test-only shim",
+  "reason": "Test needs SendFileToolkit._normalize_target_channels; reimplemented on top of the vendored pure function instead of importing the mother repo.",
+  "used_by": ["tests/unit_tests/gateway/test_channel_manager_file_fanout.py"]
+ }
+]
