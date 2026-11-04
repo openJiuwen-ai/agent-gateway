@@ -1,5 +1,6 @@
 """Exercise owner RPCs against the same saved config and live manager used at startup."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,9 +8,16 @@ import pytest
 import yaml
 
 from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.web import persistent_bindings
 from agent_gateway.channel_manager.web.persistent_bindings import register_persistent_bindings
 from agent_gateway.channel_manager.web.app_web_handlers import _normalize_feishu_conf
 from agent_gateway.common import config
+
+
+BINDING_PLATFORMS = [
+    ("feishu", "app_id", "app_secret"),
+    ("dingtalk", "client_id", "client_secret"),
+]
 
 
 @pytest.fixture
@@ -41,10 +49,27 @@ def owner(tmp_path, monkeypatch):
     return SimpleNamespace(invoke=invoke, rpc=rpc, cm=cm, service=service, settings=settings, path=path)
 
 
+@pytest.fixture
+def colleagues(owner):
+    connections = {}
+
+    async def respond(envelope):
+        config_id = envelope.params.get("config_id")
+        if envelope.method == "jiuwenmate.connection.attach":
+            payload = {"agent_id": config_id}
+        elif envelope.method == "jiuwenmate.colleague.connections":
+            payload = {"connections": connections.get(config_id, [])}
+        else:
+            payload = {}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    owner.service.send_request.side_effect = respond
+    owner.connections = connections
+    return owner
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("platform,id_key,secret_key", [
-    ("feishu", "app_id", "app_secret"), ("dingtalk", "client_id", "client_secret"),
-])
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
 async def test_owner_bind_settings_unbind(owner, platform, id_key, secret_key):
     params = {"config_id": "colleague", id_key: "bot", secret_key: "secret"}
     result = await owner.invoke(platform + ".bind_agent", params)
@@ -96,6 +121,122 @@ async def test_saved_binding_retries_failed_restart(owner):
     owner.cm._on_config_updated = AsyncMock()
     assert (await owner.invoke("dingtalk.bind_agent", params))["ok"]
     owner.cm._on_config_updated.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_unbind_retries_restart_when_the_saved_binding_is_already_gone(owner, platform, id_key, secret_key):
+    bound = await owner.invoke(platform + ".bind_agent", {
+        id_key: "bot", secret_key: "secret", "config_id": "colleague",
+    })
+    assert bound["ok"]
+    owner.cm._on_config_updated = AsyncMock(side_effect=RuntimeError("restart"))
+    result = await owner.invoke(platform + ".unbind_agent", {id_key: "bot"})
+    assert result["code"] == "CHANNEL_APPLY_FAILED"
+    assert not yaml.safe_load(owner.path.read_text())["channels"][platform]["apps"]
+    assert owner.cm.get_conf(platform)["apps"][0][id_key] == "bot"
+
+    owner.cm._on_config_updated = AsyncMock()
+    result = await owner.invoke(platform + ".unbind_agent", {id_key: "bot"})
+    assert result["ok"]
+    assert not owner.cm.get_conf(platform)["apps"]
+    owner.cm._on_config_updated.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_effective_app_id_stays_with_its_owner_until_unbound(colleagues, monkeypatch, platform, id_key, secret_key):
+    monkeypatch.setenv("SWARM_TEST_APP_ID", "bot")
+    monkeypatch.setenv("SWARM_TEST_APP_OWNER", "first")
+    monkeypatch.setenv("SWARM_TEST_ORDINARY_SECRET", "ordinary-secret")
+    monkeypatch.delenv("SWARM_TEST_UNSET_APP_ID", raising=False)
+    apps = [
+        {id_key: "${SWARM_TEST_APP_ID}", secret_key: "original-secret", "allow_from": [],
+         "enabled": False, "persistent_agent_id": "${SWARM_TEST_APP_OWNER}"},
+        {id_key: "ordinary", secret_key: "${SWARM_TEST_ORDINARY_SECRET}", "allow_from": []},
+    ]
+    colleagues.path.write_text(yaml.safe_dump({"channels": {platform: {"apps": apps}}}))
+    initial = colleagues.path.read_bytes()
+    bind = platform + ".bind_agent"
+    params = {id_key: "${SWARM_TEST_APP_ID}", secret_key: "replacement", "config_id": "second"}
+
+    conflict = await colleagues.invoke(bind, params)
+    assert conflict["code"] == "CHANNEL_ALREADY_BOUND"
+    empty = await colleagues.invoke(bind, {**params, id_key: "${SWARM_TEST_UNSET_APP_ID}"})
+    assert empty["code"] == "BAD_REQUEST"
+    assert colleagues.path.read_bytes() == initial
+    assert colleagues.cm.get_conf(platform) == {}
+
+    saved = await colleagues.invoke(bind, {**params, "config_id": "first"})
+    assert saved["payload"]["binding"] == {id_key: "bot", "persistent_agent_id": "first"}
+    runtime = colleagues.cm.get_conf(platform)["apps"]
+    stored = yaml.safe_load(colleagues.path.read_text())["channels"][platform]["apps"]
+    assert [app[id_key] for app in runtime] == ["bot", "ordinary"]
+    assert runtime[1][secret_key] == "ordinary-secret"
+    assert stored[0][id_key] == "${SWARM_TEST_APP_ID}"
+    assert stored[1][secret_key] == "${SWARM_TEST_ORDINARY_SECRET}"
+    assert (await colleagues.invoke(platform + ".unbind_agent", {id_key: "bot"}))["ok"]
+    assert (await colleagues.invoke(bind, params))["payload"]["binding"]["persistent_agent_id"] == "second"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_concurrent_bindings_check_the_saved_owner_with_a_stale_preflight(
+    colleagues, monkeypatch, platform, id_key, secret_key,
+):
+    colleagues.path.write_text("channels: null\n")
+    monkeypatch.setattr(persistent_bindings, "get_config_raw", lambda: {"channels": {}})
+    params = {id_key: "bot", secret_key: "secret"}
+    results = await asyncio.gather(*[
+        colleagues.invoke(platform + ".bind_agent", {**params, "config_id": config_id})
+        for config_id in ("first", "second")
+    ])
+    assert sum(result["ok"] for result in results) == 1
+    rejected = next(result for result in results if not result["ok"])
+    assert rejected["code"] == "CHANNEL_ALREADY_BOUND"
+    apps = yaml.safe_load(colleagues.path.read_text())["channels"][platform]["apps"]
+    assert len(apps) == 1
+    assert apps[0]["persistent_agent_id"] == next(
+        result["payload"]["binding"]["persistent_agent_id"] for result in results if result["ok"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_legacy_app_owner_can_migrate_to_its_canonical_id(colleagues, platform, id_key, secret_key):
+    apps = [{id_key: "bot", secret_key: "secret", "persistent_agent_id": "legacy", "allow_from": []}]
+    colleagues.path.write_text(yaml.safe_dump({"channels": {platform: {"apps": apps}}}))
+    colleagues.connections["first"] = [
+        {"agent_id": "legacy", "channel": platform, "connection_key": "bot"},
+    ]
+    params = {id_key: "bot", secret_key: "secret", "config_id": "first"}
+
+    saved = await colleagues.invoke(platform + ".bind_agent", params)
+    assert saved["payload"]["binding"]["persistent_agent_id"] == "first"
+    assert colleagues.cm.get_conf(platform)["apps"][0]["persistent_agent_id"] == "first"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+@pytest.mark.parametrize("operation", ["disconnect", "unbind", "purge"])
+async def test_removal_releases_the_saved_binding_after_a_failed_bind_reload(
+    colleagues, platform, id_key, secret_key, operation,
+):
+    colleagues.cm._on_config_updated = AsyncMock(side_effect=RuntimeError("restart"))
+    params = {id_key: "bot", secret_key: "secret", "config_id": "first"}
+    result = await colleagues.invoke(platform + ".bind_agent", params)
+    assert result["code"] == "CHANNEL_APPLY_FAILED"
+    assert yaml.safe_load(colleagues.path.read_text())["channels"][platform]["apps"]
+    assert colleagues.cm.get_conf(platform) == {}
+
+    colleagues.cm._on_config_updated = AsyncMock()
+    if operation == "disconnect":
+        result = await colleagues.invoke(platform + ".unbind_agent", {id_key: "bot"})
+    else:
+        result = await colleagues.rpc("jiuwenmate.colleague.delete", {"agent_id": "first", "mode": operation})
+    assert result["ok"]
+    assert not yaml.safe_load(colleagues.path.read_text())["channels"][platform]["apps"]
+    assert (await colleagues.invoke(platform + ".bind_agent", {**params, "config_id": "second"}))["ok"]
 
 
 @pytest.mark.asyncio
