@@ -10,6 +10,7 @@ import logging
 import time
 from abc import ABC
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from agent_gateway.telemetry import (
@@ -25,6 +26,33 @@ if TYPE_CHECKING:
 
     from agent_gateway.channel_manager.base import BaseChannel
     from agent_gateway.message_handler import MessageHandler
+
+
+def _thinking_notice_message(
+    channel_id: str,
+    app_id: str | None,
+    chat_id: str,
+    source_message_id: str | None,
+    text: str,
+    idempotency_key: str,
+):
+    """A completed chat event any channel can send without a persistent-result method."""
+    from openjiuwen_protocol.message import EventType, Message
+
+    return Message(
+        id=idempotency_key,
+        type="event",
+        channel_id=channel_id,
+        session_id=None,
+        params={},
+        timestamp=time.time(),
+        ok=True,
+        payload={"content": text, "is_complete": True},
+        event_type=EventType.CHAT_FINAL,
+        metadata={"chat_id": chat_id, "source_message_id": source_message_id},
+        app_id=app_id,
+        chat_id=chat_id,
+    )
 
 
 @dataclass
@@ -63,6 +91,16 @@ class ChannelManager(ABC):
         on_config_updated: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._message_handler = message_handler
+        set_delivery_handler = getattr(message_handler, "set_result_delivery_handler", None)
+        if callable(set_delivery_handler):
+            set_delivery_handler(self.deliver_persistent_result)
+        set_notice_handler = getattr(message_handler, "set_thinking_notice_handler", None)
+        if callable(set_notice_handler):
+            set_notice_handler(self.deliver_thinking_notice)
+        set_group_handler = getattr(message_handler, "set_feishu_group_handler", None)
+        if callable(set_group_handler):
+            set_group_handler(self.inspect_feishu_group)
+        self._output_file_resolver = None
         self._channels: dict[ChannelKey, "BaseChannel"] = {}
         self._dispatch_task: asyncio.Task | None = None
         self._running = False
@@ -81,6 +119,279 @@ class ChannelManager(ABC):
         self._dispatch_diag_count: int = 0
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
+
+    async def inspect_feishu_group(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Read current membership only through the exact connected, bound Feishu application."""
+        app_id, chat_id = payload.get("app_id"), payload.get("chat_id")
+        if not all(isinstance(value, str) and value.strip() for value in (app_id, chat_id)):
+            return {"status": "unknown"}
+        matches = [channel for key, channel in self._channels.items()
+                   if key.app_id == app_id and callable(getattr(channel, "inspect_persistent_group", None))]
+        if len(matches) != 1:
+            return {"status": "unknown"}
+        try:
+            ids = payload.get("message_ids", ())
+            if not isinstance(ids, (list, tuple)) or len(ids) > 500 or any(
+                    not isinstance(mid, str) or not mid or len(mid) > 512 for mid in ids):
+                return {"status": "unknown"}
+            # A page of message reads can outlast 8s when the Feishu socket reconnects.
+            # The worker wait stays longer so this answer arrives before that wait ends.
+            if ids:
+                return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id, tuple(ids)), timeout=20)
+            return await asyncio.wait_for(matches[0].inspect_persistent_group(chat_id), timeout=20)
+        except Exception:
+            return {"status": "unknown"}
+
+    async def deliver_persistent_result(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Resolve exactly one active app of the stored platform; never fall back to another Bot.
+
+        A file delivery names the Agent's shared output by a logical workspace key;
+        Gateway resolves and verifies that file without receiving an absolute path.
+        """
+        channel_id = payload.get("channel", "feishu")
+        if channel_id not in {"feishu", "dingtalk"}:
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_CHANNEL"}
+        app_id = payload.get("app_id")
+        chat_id = payload.get("chat_id")
+        text = payload.get("text")
+        idempotency_key = payload.get("idempotency_key")
+        file = payload.get("file")
+        # DingTalk file uploads are group-scoped; @ handoffs are still unsupported.
+        if channel_id == "dingtalk" and payload.get("mention_targets"):
+            return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+        if channel_id == "dingtalk" and isinstance(file, dict):
+            if file.get("share_mode") not in {"upload", "attachment"}:
+                return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+            if file.get("share_mode") == "upload" and payload.get("is_direct_message") is True:
+                return {"outcome": "failed", "error_code": "DINGTALK_GROUP_UPLOAD_REQUIRED"}
+        required = (app_id, chat_id, idempotency_key)
+        if not isinstance(file, dict):
+            required = (*required, text)
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
+        file_args: dict[str, Any] = {}
+        if isinstance(file, dict):
+            file_key = file.get("file_key")
+            if isinstance(file_key, str) and file_key.strip():
+                file_args = {"file_path": None, "file_key": file_key}
+            else:
+                resolver = self._output_file_resolver
+                path = resolver(file.get("key"), file.get("file_ref"), file.get("size")) if resolver else None
+                if path is None:
+                    return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
+                file_args = {"file_path": str(path), "file_key": None}
+            if channel_id == "dingtalk":
+                file_args["share_mode"] = file.get("share_mode")
+                file_args["file_name"] = file.get("name")
+            text = text if isinstance(text, str) and text.strip() else None
+
+        if channel_id == "dingtalk":
+            # The default DingTalk app is keyed "default"; match the receiving application itself.
+            matches = [
+                channel
+                for key, channel in self._channels.items()
+                if key.channel_id == "dingtalk" and getattr(channel, "persistent_app_id", None) == app_id
+                and callable(getattr(channel, "send_persistent_result", None))
+            ]
+            if not matches and not self._dingtalk_app_enabled(app_id):
+                # A removed or disabled app will not come back for this delivery; do not retry it.
+                return {"outcome": "failed", "error_code": "DINGTALK_APP_NOT_CONFIGURED"}
+        else:
+            matches = [
+                channel
+                for key, channel in self._channels.items()
+                if (key.channel_id == "feishu" or key.channel_id.startswith("feishu_enterprise:"))
+                and key.app_id == app_id
+                and callable(getattr(channel, "send_persistent_result", None))
+            ]
+        if not matches:
+            return {"outcome": "pending", "error_code": f"{channel_id.upper()}_APP_NOT_CONNECTED"}
+        if len(matches) != 1:
+            return {"outcome": "failed", "error_code": f"{channel_id.upper()}_APP_AMBIGUOUS"}
+
+        try:
+            mention_targets = (
+                await self._feishu_mention_targets(payload.get("mention_targets"), matches[0])
+                if channel_id == "feishu" else []
+            )
+            send_kwargs: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": text,
+                "source_message_id": (
+                    None if payload.get("is_direct_message") is True else payload.get("source_message_id")
+                ),
+                "idempotency_key": idempotency_key,
+                **file_args,
+            }
+            if channel_id == "dingtalk":
+                send_kwargs["is_direct_message"] = payload.get("is_direct_message", True)
+                sender_staff_id = payload.get("sender_staff_id")
+                if isinstance(sender_staff_id, str) and sender_staff_id.strip():
+                    send_kwargs["sender_staff_id"] = sender_staff_id
+            if mention_targets:
+                send_kwargs["mention_targets"] = mention_targets
+            return await matches[0].send_persistent_result(**send_kwargs)
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] JM-09 Feishu send outcome unknown: app_id=%s error_type=%s",
+                app_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": f"{channel_id.upper()}_SEND_ERROR"}
+
+    def _dingtalk_app_enabled(self, app_id: str) -> bool:
+        from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import dingtalk_apps
+
+        return any(
+            app["client_id"] == app_id and app["enabled"] for app in dingtalk_apps(self.get_conf("dingtalk"))
+        )
+
+    async def deliver_thinking_notice(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send one waiting line through the channel named by the request route.
+
+        A channel that already sends persistent results uses that method. Every
+        other connected channel receives the same text through its ordinary send.
+        """
+        channel_id = payload.get("channel")
+        app_id = payload.get("app_id")
+        chat_id = payload.get("chat_id")
+        text = payload.get("text")
+        idempotency_key = payload.get("idempotency_key")
+        required = (channel_id, chat_id, text, idempotency_key)
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        if app_id is not None and not (isinstance(app_id, str) and app_id.strip()):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        # A route names its receiving app; the default DingTalk app is keyed "default" but keeps its client_id.
+        matches = [
+            channel
+            for key, channel in self._channels.items()
+            if key.channel_id == channel_id
+            and (app_id is None or getattr(channel, "persistent_app_id", key.app_id) == app_id)
+        ]
+        if not matches:
+            return {"outcome": "pending", "error_code": "CHANNEL_NOT_CONNECTED"}
+        if len(matches) != 1:
+            return {"outcome": "failed", "error_code": "CHANNEL_AMBIGUOUS"}
+        channel = matches[0]
+        source_message_id = payload.get("source_message_id")
+        if source_message_id is not None and not isinstance(source_message_id, str):
+            return {"outcome": "failed", "error_code": "INVALID_THINKING_NOTICE"}
+        persistent = getattr(channel, "send_persistent_result", None)
+        if callable(persistent):
+            try:
+                send_kwargs = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "source_message_id": source_message_id,
+                    "idempotency_key": idempotency_key,
+                }
+                if channel_id == "dingtalk":
+                    send_kwargs["is_direct_message"] = payload.get("is_direct_message", True)
+                result = await persistent(**send_kwargs)
+            except Exception as exc:
+                logger.warning(
+                    "[ChannelManager] thinking notice outcome unknown: channel=%s error_type=%s",
+                    channel_id,
+                    type(exc).__name__,
+                )
+                return {"outcome": "unknown", "error_code": "THINKING_NOTICE_SEND_ERROR"}
+            return result if isinstance(result, dict) else {
+                "outcome": "delivered",
+                "external_message_id": idempotency_key,
+            }
+        try:
+            await channel.send(_thinking_notice_message(
+                channel_id, app_id if isinstance(app_id, str) else None, chat_id, source_message_id,
+                text, idempotency_key,
+            ))
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] thinking notice outcome unknown: channel=%s error_type=%s",
+                channel_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": "THINKING_NOTICE_SEND_ERROR"}
+        return {"outcome": "delivered", "external_message_id": idempotency_key}
+
+    async def _feishu_mention_targets(self, value: Any, sender_channel: Any) -> list[dict[str, Any]]:
+        """Map validated employee IDs to one connected Bot identity without guessing."""
+        if not isinstance(value, list):
+            return []
+        sender_id = getattr(getattr(sender_channel, "config", None), "agent_id", None)
+        targets: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            agent_id = item.get("agent_id")
+            name = item.get("name")
+            if not isinstance(agent_id, str) or not agent_id.strip() or agent_id == sender_id:
+                continue
+            if not isinstance(name, str) or not name.strip():
+                continue
+            app_ids = item.get("app_ids")
+            if not isinstance(app_ids, list):
+                app_ids = []
+            allowed_app_ids = {value for value in app_ids if isinstance(value, str) and value.strip()}
+            candidates = [
+                (key, channel)
+                for key, channel in self._channels.items()
+                if key.app_id in allowed_app_ids
+                and getattr(getattr(channel, "config", None), "agent_id", None) == agent_id
+            ]
+            target: dict[str, Any] = {"agent_id": agent_id, "name": name, "app_ids": sorted(allowed_app_ids)}
+            if len(candidates) == 1:
+                open_id = await self._feishu_bot_open_id(candidates[0][1])
+                if open_id:
+                    target["open_id"] = open_id
+            targets.append(target)
+        return targets
+
+    async def _feishu_bot_open_id(self, channel: Any) -> str:
+        """Use the connected Bot identity, loading it from Feishu when this process has not stored one."""
+        open_id = self._stored_bot_open_id(channel)
+        if open_id:
+            return open_id
+        fetch = getattr(channel, "_fetch_bot_open_id", None)
+        if not callable(fetch):
+            return ""
+        try:
+            await asyncio.to_thread(fetch)
+        except Exception as exc:
+            logger.warning(
+                "[ChannelManager] Feishu bot identity unavailable: app_id=%s error_type=%s",
+                getattr(getattr(channel, "config", None), "app_id", ""),
+                type(exc).__name__,
+            )
+            return ""
+        return self._stored_bot_open_id(channel)
+
+    @staticmethod
+    def _stored_bot_open_id(channel: Any) -> str:
+        open_id = getattr(getattr(channel, "config", None), "bot_open_id", None)
+        return open_id.strip() if isinstance(open_id, str) else ""
+
+    def _try_wire_persistent_group_fanout(self, channel: Any) -> None:
+        """Wire the platform-specific JM callback only for explicitly bound apps."""
+        if channel.channel_id == "dingtalk":
+            setter = getattr(channel, "set_persistent_inbound_callback", None)
+            callback = getattr(self._message_handler, "handle_persistent_dingtalk_event", None)
+        else:
+            setter = getattr(channel, "set_persistent_group_fanout_callback", None)
+            callback = getattr(self._message_handler, "handle_persistent_feishu_event", None)
+        if not callable(setter):
+            return
+        config = getattr(channel, "config", None)
+        agent_id = getattr(config, "agent_id", "")
+        if callable(callback) and isinstance(agent_id, str) and agent_id.strip():
+            setter(callback)
+        else:
+            # Personal-only Feishu apps never make an E2A hop for every message.
+            setter(None)
+
+    def set_persistent_output_file_resolver(self, resolver: Callable[[str, str, int], Path | None]) -> None:
+        """Resolve a logical output key and verify the archived digest and size."""
+        self._output_file_resolver = resolver
 
     @staticmethod
     def _resolve_app_id(channel: Any) -> str:
@@ -137,6 +448,7 @@ class ChannelManager(ABC):
         key = ChannelKey(cid, self._resolve_app_id(channel))
         self._channels[key] = channel
         channel.on_message(self._on_channel_message)
+        self._try_wire_persistent_group_fanout(channel)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
         logger.info("[ChannelManager] 已注册 Channel: channel_id=%s, 当前共 %d 个", cid, len(self._channels))
@@ -150,6 +462,7 @@ class ChannelManager(ABC):
         key = ChannelKey(channel.channel_id, self._resolve_app_id(channel))
         self._channels[key] = channel
         channel.on_message(on_message)
+        self._try_wire_persistent_group_fanout(channel)
         self._try_set_event_reporter(channel)
         self._try_wire_file_persist_hook(channel)
 
