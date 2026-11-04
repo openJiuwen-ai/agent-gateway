@@ -1,0 +1,4258 @@
+[
+ {
+  "source_path": "tests/agents/swarm/test_swarm_assembly.py",
+  "target_path": "tests/agents/swarm/test_swarm_assembly.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails",
+   "jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail.CodeAgentModeRail",
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.tools",
+   "jiuwenswarm.agents.harness.code.rails.heartbeat_rail",
+   "jiuwenswarm.agents.harness.common.a4p.execution_context",
+   "jiuwenswarm.agents.harness.common.browser_defaults",
+   "jiuwenswarm.agents.harness.common.rails.interrupt",
+   "jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits.is_skill_retrieval_enabled",
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.agents.harness.team.team_manager.get_team_manager",
+   "jiuwenswarm.agents.harness.work.rails.work_agent_mode_rail",
+   "jiuwenswarm.agents.swarm",
+   "jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir",
+   "jiuwenswarm.agents.swarm.assembly.get_config",
+   "jiuwenswarm.agents.swarm.assembly.preflight_mcp_server_reachable",
+   "jiuwenswarm.agents.swarm.config_specs",
+   "jiuwenswarm.agents.swarm.config_specs._retrieval_enabled",
+   "jiuwenswarm.agents.swarm.providers",
+   "jiuwenswarm.agents.swarm.providers.code_rails",
+   "jiuwenswarm.agents.swarm.providers.code_subagents",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_code",
+   "jiuwenswarm.server.runtime.agent_adapter.team_helpers.ensure_team_evolution_watcher",
+   "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
+   "jiuwenswarm.server.runtime.mcp.state_store.set_mcp_state",
+   "jiuwenswarm.common.coding_memory_paths",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.config.get_mcp_servers",
+   "jiuwenswarm.common.mcp_config"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/auth/test_agentos_authenticator.py",
+  "target_path": "tests/auth/test_agentos_authenticator.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/auth/test_common.py",
+  "target_path": "tests/auth/test_common.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/auth/test_credential_authenticator.py",
+  "target_path": "tests/auth/test_credential_authenticator.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/auth/test_ssh_authenticator.py",
+  "target_path": "tests/auth/test_ssh_authenticator.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/integration/gateway/test_gateway_export.py",
+  "target_path": "tests/integration/gateway/test_gateway_export.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/integration/gateway/test_gateway_lifecycle_trace.py",
+  "target_path": "tests/integration/gateway/test_gateway_lifecycle_trace.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/integration/gateway/test_gateway_message_trace.py",
+  "target_path": "tests/integration/gateway/test_gateway_message_trace.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.utils"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/integration/test_memory_config_processes.py",
+  "target_path": "tests/integration/test_memory_config_processes.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/integration/test_session_steering_sdk.py",
+  "target_path": "tests/integration/test_session_steering_sdk.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.agents.harness.common.rails.ask_user_rail",
+   "jiuwenswarm.agents.harness.common.rails.permissions.root_context",
+   "jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.handlers._default",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.session.session_message_service",
+   "jiuwenswarm.server.runtime.session.session_message_store",
+   "jiuwenswarm.runtime.context",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/integration/test_team_organization_history.py",
+  "target_path": "tests/integration/test_team_organization_history.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.expert_org.launcher",
+   "jiuwenswarm.agents.harness.team.get_team_manager",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+   "jiuwenswarm.server.runtime.team_entity_store",
+   "jiuwenswarm.common.e2a.gateway_normalize",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/integration/test_tui_session_ops_no_local_fallback.py",
+  "target_path": "tests/integration/test_tui_session_ops_no_local_fallback.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/system_tests/test_btw_command_st.py",
+  "target_path": "tests/system_tests/test_btw_command_st.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.app_agentserver"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/system_tests/test_cli_channel_ws.py",
+  "target_path": "tests/system_tests/test_cli_channel_ws.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.app_agentserver"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/system_tests/test_team_continuous_dialog.py",
+  "target_path": "tests/system_tests/test_team_continuous_dialog.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.server.app_agentserver"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit/channel/test_acp_channel_envelope_path.py",
+  "target_path": "tests/unit/channel/test_acp_channel_envelope_path.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit/channel/test_dingtalk_file.py",
+  "target_path": "tests/unit/channel/test_dingtalk_file.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit/channel/test_wecom_file.py",
+  "target_path": "tests/unit/channel/test_wecom_file.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/a2ui/test_integration_bridge.py",
+  "target_path": "tests/unit_tests/a2ui/test_integration_bridge.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.get_team_manager",
+   "jiuwenswarm.server.control.a2ui_config",
+   "jiuwenswarm.server.runtime.a2ui",
+   "jiuwenswarm.server.runtime.a2ui.integration",
+   "jiuwenswarm.server.runtime.a2ui.runtime.team_stream",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agents/test_command_safety.py",
+  "target_path": "tests/unit_tests/agents/test_command_safety.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools",
+   "jiuwenswarm.agents.harness.common.tools.command_tools"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/mcp/test_mcp_hub_marketplace.py",
+  "target_path": "tests/unit_tests/agentserver/mcp/test_mcp_hub_marketplace.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.marketplace.hub_asset_port",
+   "jiuwenswarm.server.runtime.mcp"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/permissions/test_client_tool_permissions.py",
+  "target_path": "tests/unit_tests/agentserver/permissions/test_client_tool_permissions.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.agents.harness.common.rails.permissions",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.session.session_manager",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/permissions/test_code_smart_f01.py",
+  "target_path": "tests/unit_tests/agentserver/permissions/test_code_smart_f01.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail",
+   "jiuwenswarm.agents.harness.common.rails.ask_user_rail",
+   "jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.code_tool_bindings",
+   "jiuwenswarm.agents.harness.common.rails.permissions.auto_config",
+   "jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail",
+   "jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery",
+   "jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail",
+   "jiuwenswarm.agents.harness.common.rails.permissions.policy_eval",
+   "jiuwenswarm.agents.harness.common.rails.permissions.root_context",
+   "jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail",
+   "jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.permission_rail_group",
+   "jiuwenswarm.server.runtime.sandbox_no_host_fallback"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_a4p_decoupling_boundaries.py",
+  "target_path": "tests/unit_tests/agentserver/test_a4p_decoupling_boundaries.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.a4p.runtime",
+   "jiuwenswarm.server"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_a4p_split_process.py",
+  "target_path": "tests/unit_tests/agentserver/test_a4p_split_process.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.a4p",
+   "jiuwenswarm.agents.harness.common.tools.cron",
+   "jiuwenswarm.agents.harness.common.tools.cron.cron_runtime",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.gateway_push.wire",
+   "jiuwenswarm.server.handlers.organization",
+   "jiuwenswarm.runtime.host_services",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.gateway_normalize",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_agent_reload_scope.py",
+  "target_path": "tests/unit_tests/agentserver/test_agent_reload_scope.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.agents.harness.common.a4p",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.handlers.ops",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state",
+   "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.server.transports.ws_sink.encode_agent_response_for_wire",
+   "jiuwenswarm.common.config.get_config",
+   "jiuwenswarm.common.model_catalog.get_config",
+   "jiuwenswarm.common.model_errors",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_client_tool_interrupt.py",
+  "target_path": "tests/unit_tests/agentserver/test_client_tool_interrupt.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers",
+   "jiuwenswarm.observability.turn",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.client_tools",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_cron_runtime.py",
+  "target_path": "tests/unit_tests/agentserver/test_cron_runtime.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools.cron",
+   "jiuwenswarm.agents.harness.common.tools.cron.cron_runtime",
+   "jiuwenswarm.agents.harness.common.tools.cron.cron_tools",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.runtime.cron.models.validate_cron_model"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_cron_session_runtime_snapshot.py",
+  "target_path": "tests/unit_tests/agentserver/test_cron_session_runtime_snapshot.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.front",
+   "jiuwenswarm.server.ipc.protocol",
+   "jiuwenswarm.server.worker.dispatcher",
+   "jiuwenswarm.server.worker.gateway_bridge",
+   "jiuwenswarm.runtime.cron.models",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_cross_session_model_input.py",
+  "target_path": "tests/unit_tests/agentserver/test_cross_session_model_input.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.session_input",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_enterprise_file_http.py",
+  "target_path": "tests/unit_tests/agentserver/test_enterprise_file_http.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools",
+   "jiuwenswarm.agents.harness.common.tools.verified_download_assets",
+   "jiuwenswarm.agents.harness.common.tools.web_file_download",
+   "jiuwenswarm.server.agent_http_routes",
+   "jiuwenswarm.server.app_services",
+   "jiuwenswarm.server.runtime.gateway_adapter.base",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.file_download_token",
+   "jiuwenswarm.common.obs_files",
+   "jiuwenswarm.common.utils",
+   "jiuwenswarm.common.verified_download_assets",
+   "jiuwenswarm.enterprise.capabilities.workspace",
+   "jiuwenswarm.enterprise.tenant.tenant_context",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_enterprise_skill_http_route.py",
+  "target_path": "tests/unit_tests/agentserver/test_enterprise_skill_http_route.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.skill.skill_manager",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_execution_import_boundaries.py",
+  "target_path": "tests/unit_tests/agentserver/test_execution_import_boundaries.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.symphony",
+   "jiuwenswarm.agents.harness.team.rails.team_member_skill_toolkit_rail"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_front_phase1.py",
+  "target_path": "tests/unit_tests/agentserver/test_front_phase1.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.control.history_service",
+   "jiuwenswarm.server.front",
+   "jiuwenswarm.server.front.admission",
+   "jiuwenswarm.server.front.admission.send_wire_payload",
+   "jiuwenswarm.server.front.connection",
+   "jiuwenswarm.server.front.connection.send_wire_payload",
+   "jiuwenswarm.server.front.event_forwarder",
+   "jiuwenswarm.server.front.protocol",
+   "jiuwenswarm.server.front.router",
+   "jiuwenswarm.server.front.router._LOAD_HISTORY_QUERY",
+   "jiuwenswarm.server.front.router._LOAD_HISTORY_TODO_SNAPSHOT",
+   "jiuwenswarm.server.front.router._STREAM_HISTORY_RECORDS",
+   "jiuwenswarm.server.front.router.encode_chunk",
+   "jiuwenswarm.server.front.router.encode_response",
+   "jiuwenswarm.server.front.router.send_wire_payload",
+   "jiuwenswarm.server.front.server",
+   "jiuwenswarm.server.lifecycle",
+   "jiuwenswarm.server.runtime.a2ui",
+   "jiuwenswarm.server.runtime.gateway_adapter",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_token_usage",
+   "jiuwenswarm.server.runtime.skill.skills_multipart_http",
+   "jiuwenswarm.server.worker",
+   "jiuwenswarm.server.worker.telemetry",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_heartbeat_history_metadata.py",
+  "target_path": "tests/unit_tests/agentserver/test_heartbeat_history_metadata.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.permissions.root_context",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_moa_runtime.py",
+  "target_path": "tests/unit_tests/agentserver/test_moa_runtime.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_code",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.gateway_adapter.base",
+   "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+   "jiuwenswarm.server.runtime.moa_runtime",
+   "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.browser_config",
+   "jiuwenswarm.common.config.get_config",
+   "jiuwenswarm.common.config.get_crypto_provider",
+   "jiuwenswarm.common.model_catalog",
+   "jiuwenswarm.common.model_catalog.ModelCatalog",
+   "jiuwenswarm.common.model_errors",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_moa_session_lifecycle.py",
+  "target_path": "tests/unit_tests/agentserver/test_moa_session_lifecycle.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.session_ops_service.warmup_session_context",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state",
+   "jiuwenswarm.server.runtime.moa_runtime.resolve_moa_settings",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_info",
+   "jiuwenswarm.common.model_selection_store",
+   "jiuwenswarm.runtime.session_provisioner"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_mode_cross_layer_protocol.py",
+  "target_path": "tests/unit_tests/agentserver/test_mode_cross_layer_protocol.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.plan",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_obs_file_delivery.py",
+  "target_path": "tests/unit_tests/agentserver/test_obs_file_delivery.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery",
+   "jiuwenswarm.agents.harness.common.tools",
+   "jiuwenswarm.agents.harness.common.tools.obs_file_delivery",
+   "jiuwenswarm.agents.harness.common.tools.verified_download_assets",
+   "jiuwenswarm.agents.harness.common.tools.web_file_download",
+   "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+   "jiuwenswarm.common.obs_files",
+   "jiuwenswarm.common.obs_files._obs_http_client",
+   "jiuwenswarm.common.utils",
+   "jiuwenswarm.enterprise.tenant.tenant_context"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_personal_context_websocket_api.py",
+  "target_path": "tests/unit_tests/agentserver/test_personal_context_websocket_api.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.handlers._default.handle_unary",
+   "jiuwenswarm.server.personal_context",
+   "jiuwenswarm.server.personal_context.ws_handler",
+   "jiuwenswarm.server.transports.ws_sink",
+   "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
+   "jiuwenswarm.common.e2a",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_runtime_worker_phase2.py",
+  "target_path": "tests/unit_tests/agentserver/test_runtime_worker_phase2.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.front.admission",
+   "jiuwenswarm.server.ipc.client",
+   "jiuwenswarm.server.ipc.protocol",
+   "jiuwenswarm.server.ipc.server",
+   "jiuwenswarm.server.lifecycle",
+   "jiuwenswarm.server.supervisor.affinity",
+   "jiuwenswarm.server.supervisor.runtime_supervisor",
+   "jiuwenswarm.server.supervisor.runtime_supervisor._HELLO_TIMEOUT",
+   "jiuwenswarm.server.supervisor.runtime_supervisor.try_connect",
+   "jiuwenswarm.server.worker.dispatcher",
+   "jiuwenswarm.server.worker.gateway_bridge",
+   "jiuwenswarm.server.worker.lifecycle",
+   "jiuwenswarm.server.worker.main",
+   "jiuwenswarm.server.worker.runtime_backend",
+   "jiuwenswarm.server.worker.runtime_bootstrap",
+   "jiuwenswarm.server.worker.service",
+   "jiuwenswarm.common.e2a.constants",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_session_input_adapter.py",
+  "target_path": "tests/unit_tests/agentserver/test_session_input_adapter.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.agent_adapter.session_input",
+   "jiuwenswarm.runtime.context",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.runtime.session_input"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_session_input_delivery.py",
+  "target_path": "tests/unit_tests/agentserver/test_session_input_delivery.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.session_input"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_session_message_pause.py",
+  "target_path": "tests/unit_tests/agentserver/test_session_message_pause.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.session.session_message_service",
+   "jiuwenswarm.server.runtime.session.session_message_store",
+   "jiuwenswarm.runtime.client_tools",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.session",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_session_messaging.py",
+  "target_path": "tests/unit_tests/agentserver/test_session_messaging.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.handlers._default",
+   "jiuwenswarm.server.handlers.session",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_code",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.agent_adapter.session_input",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_archive",
+   "jiuwenswarm.server.runtime.session.session_message_service",
+   "jiuwenswarm.server.runtime.session.session_message_store",
+   "jiuwenswarm.runtime.context",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.plan",
+   "jiuwenswarm.runtime.request",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.session",
+   "jiuwenswarm.runtime.session.execution_registry",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.runtime.session_input",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_session_upload_read.py",
+  "target_path": "tests/unit_tests/agentserver/test_session_upload_read.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.attachments.upload_storage",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter",
+   "jiuwenswarm.common",
+   "jiuwenswarm.enterprise.tenant.tenant_context",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_team_config_loader.py",
+  "target_path": "tests/unit_tests/agentserver/test_team_config_loader.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.agents.harness.team.config_loader",
+   "jiuwenswarm.agents.harness.team.config_loader.get_agent_teams_home",
+   "jiuwenswarm.agents.harness.team.config_loader.get_config",
+   "jiuwenswarm.agents.harness.team.config_loader.get_default_models",
+   "jiuwenswarm.agents.harness.team.config_loader.get_zen_free_model_entries",
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.common.auth",
+   "jiuwenswarm.common.auth.login_credentials",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.e2a.constants"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_team_helpers.py",
+  "target_path": "tests/unit_tests/agentserver/test_team_helpers.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler",
+   "jiuwenswarm.agents.harness.team.handlers.workflow_state",
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.team_helpers",
+   "jiuwenswarm.server.runtime.agent_adapter.team_helpers.independent_member_workspace",
+   "jiuwenswarm.server.runtime.agent_adapter.team_helpers.team_home",
+   "jiuwenswarm.server.runtime.agent_adapter.user_turn",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_metadata._enqueue_write",
+   "jiuwenswarm.server.runtime.session.session_metadata._read_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+   "jiuwenswarm.server.runtime.session.session_token_usage",
+   "jiuwenswarm.server.runtime.skill.skill_manager",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.runtime.host_services.RuntimeHostPushTransport",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_team_model_selection.py",
+  "target_path": "tests/unit_tests/agentserver/test_team_model_selection.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+   "jiuwenswarm.server.runtime.model_compiler_adapter",
+   "jiuwenswarm.server.runtime.model_compiler_adapter.compile_model_selection",
+   "jiuwenswarm.server.runtime.model_routing_registry",
+   "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
+   "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+   "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+   "jiuwenswarm.common.model_catalog.ModelCatalog",
+   "jiuwenswarm.common.model_catalog.get_config",
+   "jiuwenswarm.common.model_errors"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_team_organization_routing.py",
+  "target_path": "tests/unit_tests/agentserver/test_team_organization_routing.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.permissions.root_context",
+   "jiuwenswarm.agents.harness.team.expert_org.launcher",
+   "jiuwenswarm.agents.harness.team.get_team_manager",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.team_organization_history.get_config",
+   "jiuwenswarm.server.runtime.team_organization_identity_store",
+   "jiuwenswarm.server.runtime.team_organization_identity_store.load_organization_team_identity",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_worker_required_preparation.py",
+  "target_path": "tests/unit_tests/agentserver/test_worker_required_preparation.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.worker",
+   "jiuwenswarm.server.worker.telemetry",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.team_controller",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/agentserver/test_workflow_schema.py",
+  "target_path": "tests/unit_tests/agentserver/test_workflow_schema.py",
+  "category": "B",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_a2a_channel.py",
+  "target_path": "tests/unit_tests/channel/test_a2a_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_acp_channel.py",
+  "target_path": "tests/unit_tests/channel/test_acp_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_attachment_persist.py",
+  "target_path": "tests/unit_tests/channel/test_attachment_persist.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_base_ws_channel_outbound_queue.py",
+  "target_path": "tests/unit_tests/channel/test_base_ws_channel_outbound_queue.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_feishu_approval_card.py",
+  "target_path": "tests/unit_tests/channel/test_feishu_approval_card.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter.interface"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_feishu_ask_user_answer.py",
+  "target_path": "tests/unit_tests/channel/test_feishu_ask_user_answer.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_feishu_post_inline_image.py",
+  "target_path": "tests/unit_tests/channel/test_feishu_post_inline_image.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_feishu_post_parse.py",
+  "target_path": "tests/unit_tests/channel/test_feishu_post_parse.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_feishu_upload.py",
+  "target_path": "tests/unit_tests/channel/test_feishu_upload.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_im_stream_whitespace.py",
+  "target_path": "tests/unit_tests/channel/test_im_stream_whitespace.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_slack_channel.py",
+  "target_path": "tests/unit_tests/channel/test_slack_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_ssh_channel.py",
+  "target_path": "tests/unit_tests/channel/test_ssh_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_telegram_channel.py",
+  "target_path": "tests/unit_tests/channel/test_telegram_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_trajectory_http.py",
+  "target_path": "tests/unit_tests/channel/test_trajectory_http.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.channels.web.app_web",
+   "jiuwenswarm.observability.config",
+   "jiuwenswarm.observability.config.load_trajectory_store_settings",
+   "jiuwenswarm.observability.models",
+   "jiuwenswarm.observability.retention",
+   "jiuwenswarm.observability.store",
+   "jiuwenswarm.server.trajectory.host",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_trajectory_usage_http.py",
+  "target_path": "tests/unit_tests/channel/test_trajectory_usage_http.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.observability.config",
+   "jiuwenswarm.server.trajectory.host"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_transport_stall_guard.py",
+  "target_path": "tests/unit_tests/channel/test_transport_stall_guard.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_tui_session_message_status.py",
+  "target_path": "tests/unit_tests/channel/test_tui_session_message_status.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_dual_protocol.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_dual_protocol.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.extensions.sdk"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_mode_type_validation.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_mode_type_validation.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_organization_processing.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_organization_processing.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_personal_context_payload.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_personal_context_payload.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_stream_coalescing.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_stream_coalescing.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_symphony_status.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_symphony_status.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_user_id.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_user_id.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_channel_ws_sessions.py",
+  "target_path": "tests/unit_tests/channel/test_web_channel_ws_sessions.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channel/test_web_proxy_channel.py",
+  "target_path": "tests/unit_tests/channel/test_web_proxy_channel.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/channels/web/test_share_image_export.py",
+  "target_path": "tests/unit_tests/channels/web/test_share_image_export.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.channels.web",
+   "jiuwenswarm.channels.web.share_image_export"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/channels/web/test_web_file_download.py",
+  "target_path": "tests/unit_tests/channels/web/test_web_file_download.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools",
+   "jiuwenswarm.agents.harness.common.tools.verified_download_assets",
+   "jiuwenswarm.agents.harness.common.tools.web_file_download",
+   "jiuwenswarm.channels.web",
+   "jiuwenswarm.channels.web.app_web",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.common.utils.get_user_workspace_dir"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_account_kit.py",
+  "target_path": "tests/unit_tests/common/test_auth_account_kit.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_apig.py",
+  "target_path": "tests/unit_tests/common/test_auth_apig.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_campaign_state.py",
+  "target_path": "tests/unit_tests/common/test_auth_campaign_state.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_login_credential_refresh.py",
+  "target_path": "tests/unit_tests/common/test_auth_login_credential_refresh.py",
+  "category": "B",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.e2a.constants"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_login_credentials.py",
+  "target_path": "tests/unit_tests/common/test_auth_login_credentials.py",
+  "category": "B",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.e2a.constants"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_model_catalog.py",
+  "target_path": "tests/unit_tests/common/test_auth_model_catalog.py",
+  "category": "C",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.auth.model_catalog"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_passthrough.py",
+  "target_path": "tests/unit_tests/common/test_auth_passthrough.py",
+  "category": "E",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.auth.model_catalog",
+   "jiuwenswarm.common.e2a.constants"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_refresh_coalescing.py",
+  "target_path": "tests/unit_tests/common/test_auth_refresh_coalescing.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_remote_config.py",
+  "target_path": "tests/unit_tests/common/test_auth_remote_config.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_server_callback.py",
+  "target_path": "tests/unit_tests/common/test_auth_server_callback.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_service_callback.py",
+  "target_path": "tests/unit_tests/common/test_auth_service_callback.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_session_crypto.py",
+  "target_path": "tests/unit_tests/common/test_auth_session_crypto.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_auth_session_store.py",
+  "target_path": "tests/unit_tests/common/test_auth_session_store.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_cleanup.py",
+  "target_path": "tests/unit_tests/common/test_cleanup.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_cron_team_completion.py",
+  "target_path": "tests/unit_tests/common/test_cron_team_completion.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_enterprise_protocol_identity.py",
+  "target_path": "tests/unit_tests/common/test_enterprise_protocol_identity.py",
+  "category": "E",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.extensions.sdk",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_moa_config_panel.py",
+  "target_path": "tests/unit_tests/common/test_moa_config_panel.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_protocol_ids.py",
+  "target_path": "tests/unit_tests/common/test_protocol_ids.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_req_method_contract.py",
+  "target_path": "tests/unit_tests/common/test_req_method_contract.py",
+  "category": "B",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.schema",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_volcengine_endpoints.py",
+  "target_path": "tests/unit_tests/common/test_volcengine_endpoints.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/common/test_ws_diagnostics.py",
+  "target_path": "tests/unit_tests/common/test_ws_diagnostics.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/diagnosis/test_diagnosis_gateway_push.py",
+  "target_path": "tests/unit_tests/diagnosis/test_diagnosis_gateway_push.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.gateway_push.wire"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/diagnosis/test_diagnosis_http.py",
+  "target_path": "tests/unit_tests/diagnosis/test_diagnosis_http.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.diagnosis.model_resolver",
+   "jiuwenswarm.diagnosis.models",
+   "jiuwenswarm.diagnosis.service",
+   "jiuwenswarm.diagnosis.store",
+   "jiuwenswarm.server.diagnosis.host",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/diagnosis/test_diagnosis_model_resolver.py",
+  "target_path": "tests/unit_tests/diagnosis/test_diagnosis_model_resolver.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.diagnosis.model_resolver",
+   "jiuwenswarm.server.runtime.model_routing_registry.ModelSelectionResolver",
+   "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/e2a/test_gateway_normalize.py",
+  "target_path": "tests/unit_tests/e2a/test_gateway_normalize.py",
+  "category": "E",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.e2a",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.constants",
+   "jiuwenswarm.common.e2a.gateway_normalize",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/enterprise/config/test_memory_config_decoupling.py",
+  "target_path": "tests/unit_tests/enterprise/config/test_memory_config_decoupling.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.memory",
+   "jiuwenswarm.enterprise.config",
+   "jiuwenswarm.enterprise.config.config_provider",
+   "jiuwenswarm.enterprise.config.effective"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/enterprise/test_audit_emit_provider.py",
+  "target_path": "tests/unit_tests/enterprise/test_audit_emit_provider.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [],
+  "status": "migrated",
+  "reason": "enterprise gateway candidate (plan 5.1); copied without changes"
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/conftest.py",
+  "target_path": "tests/unit_tests/extensions/conftest.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_adx_control_files.py",
+  "target_path": "tests/unit_tests/extensions/test_adx_control_files.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_adx_environment.py",
+  "target_path": "tests/unit_tests/extensions/test_adx_environment.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_adx_router.py",
+  "target_path": "tests/unit_tests/extensions/test_adx_router.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_adx_router_network.py",
+  "target_path": "tests/unit_tests/extensions/test_adx_router_network.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_adx_ssh_relay.py",
+  "target_path": "tests/unit_tests/extensions/test_adx_ssh_relay.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_agent_manager.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_agent_manager.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_config_updater_applier.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_config_updater_applier.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_config_updater_client.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_config_updater_client.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.etcd.client"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_config_updater_merge.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_config_updater_merge.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_config_updater_service.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_config_updater_service.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_logutil.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_logutil.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.extensions.agentos.test_logutil"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_registry_client.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_registry_client.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_registry_watcher.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_registry_watcher.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.etcd.client"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_router.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_router.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_ssh_relay.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_ssh_relay.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_agentos_stale_cleanup.py",
+  "target_path": "tests/unit_tests/extensions/test_agentos_stale_cleanup.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/extensions/test_yuanrong_frontend_client.py",
+  "target_path": "tests/unit_tests/extensions/test_yuanrong_frontend_client.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/config_routing_harness.py",
+  "target_path": "tests/unit_tests/gateway/config_routing_harness.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.gateway_adapter.config_adapter"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_adx_gateway_identity.py",
+  "target_path": "tests/unit_tests/gateway/test_adx_gateway_identity.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_cleanup_trace.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_cleanup_trace.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_client.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_client.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_client_mode.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_client_mode.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_client_reconnect_headers.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_client_reconnect_headers.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_mentions.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_mentions.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_preparation_trace.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_preparation_trace.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_agent_request_timeout_policy.py",
+  "target_path": "tests/unit_tests/gateway/test_agent_request_timeout_policy.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_app_gateway_acp.py",
+  "target_path": "tests/unit_tests/gateway/test_app_gateway_acp.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_app_web_handlers.py",
+  "target_path": "tests/unit_tests/gateway/test_app_web_handlers.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.a4p",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.a2ui.integration",
+   "jiuwenswarm.server.runtime.mcp",
+   "jiuwenswarm.server.runtime.mcp.credential",
+   "jiuwenswarm.server.runtime.mcp.state_store",
+   "jiuwenswarm.server.runtime.opencode_zen.append_zen_free_models",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.set_session_pinned",
+   "jiuwenswarm.server.runtime.session.session_rename.apply_session_rename",
+   "jiuwenswarm.server.runtime.team_binding_store",
+   "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+   "jiuwenswarm.server.runtime.team_entity_store",
+   "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.browser_settings",
+   "jiuwenswarm.common.config.CONFIG_YAML_PATH",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.common.config_panel.config_set_handlers",
+   "jiuwenswarm.common.config_panel.config_set_handlers.ENV_FILE",
+   "jiuwenswarm.common.config_panel.config_set_handlers.detect_external_cli_agent",
+   "jiuwenswarm.common.config_panel.config_set_handlers.get_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.get_config_raw",
+   "jiuwenswarm.common.config_panel.config_set_handlers.refresh_external_cli_builtin_models",
+   "jiuwenswarm.common.config_panel.config_set_handlers.replace_teams_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_agents_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_external_cli_path_histories_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_permissions_profile_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_skill_evolution_enabled_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_skill_retrieval_in_config",
+   "jiuwenswarm.common.config_panel.config_set_handlers.update_symphony_in_config",
+   "jiuwenswarm.common.config_panel.model_resource_handlers",
+   "jiuwenswarm.common.config_panel.model_resource_handlers.ModelCatalog",
+   "jiuwenswarm.common.config_panel.models_handlers.get_config_raw",
+   "jiuwenswarm.common.config_panel.models_handlers.get_default_models",
+   "jiuwenswarm.common.config_panel.models_handlers.update_default_models_in_config",
+   "jiuwenswarm.common.context_window",
+   "jiuwenswarm.common.external_providers",
+   "jiuwenswarm.extensions.yuanrong.agent_client"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_at_file_references.py",
+  "target_path": "tests/unit_tests/gateway/test_at_file_references.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_btw_tui_forward.py",
+  "target_path": "tests/unit_tests/gateway/test_btw_tui_forward.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_channel_manager_config.py",
+  "target_path": "tests/unit_tests/gateway/test_channel_manager_config.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_channel_manager_file_fanout.py",
+  "target_path": "tests/unit_tests/gateway/test_channel_manager_file_fanout.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cli_channel_handlers.py",
+  "target_path": "tests/unit_tests/gateway/test_cli_channel_handlers.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_all_sessions_metadata",
+   "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.get_session_metadata",
+   "jiuwenswarm.server.runtime.gateway_adapter.session_adapter.load_history_records",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.config.CONFIG_YAML_PATH",
+   "jiuwenswarm.common.config._CONFIG_YAML_PATH",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.common.config_panel.tui_models_handlers.Model"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_client_tool_events.py",
+  "target_path": "tests/unit_tests/gateway/test_client_tool_events.py",
+  "category": "E",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.runtime.client_tools",
+   "jiuwenswarm.common.e2a.wire_codec",
+   "jiuwenswarm.common.schema.agent"
+  ],
+  "status": "deferred",
+  "reason": "mixes gateway and server behavior; needs split"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_config_poll_revision.py",
+  "target_path": "tests/unit_tests/gateway/test_config_poll_revision.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_config_repository_order3.py",
+  "target_path": "tests/unit_tests/gateway/test_config_repository_order3.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.memory"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_controller_proactive_tick_guard.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_controller_proactive_tick_guard.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_controller_project_binding.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_controller_project_binding.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.session.project_store",
+   "jiuwenswarm.server.runtime.session.project_store.get_project_by_id"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_controller_validate_wakeoffset.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_controller_validate_wakeoffset.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_db_store.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_db_store.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_etcd_store.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_etcd_store.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_factory.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_factory.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_job_mode.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_job_mode.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_live_bus.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_live_bus.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_login_model_binding.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_login_model_binding.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_model_validation.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_model_validation.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools.cron.cron_tools",
+   "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
+   "jiuwenswarm.common.config.get_model_names"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_proactive_sync.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_proactive_sync.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_safe_aclose.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_safe_aclose.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_scheduler.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_scheduler.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.runtime.cron"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_snapshot_sync_scope.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_snapshot_sync_scope.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_cron_store_path_resolution.py",
+  "target_path": "tests/unit_tests/gateway/test_cron_store_path_resolution.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.utils"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_diff_watch_session_id_propagation.py",
+  "target_path": "tests/unit_tests/gateway/test_diff_watch_session_id_propagation.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_dingtalk_cron_routing.py",
+  "target_path": "tests/unit_tests/gateway/test_dingtalk_cron_routing.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools.cron.cron_runtime"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_dotenv_early.py",
+  "target_path": "tests/unit_tests/gateway/test_dotenv_early.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_e2a_proxy.py",
+  "target_path": "tests/unit_tests/gateway/test_e2a_proxy.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_enterprise_files.py",
+  "target_path": "tests/unit_tests/gateway/test_enterprise_files.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_evolution_approval.py",
+  "target_path": "tests/unit_tests/gateway/test_evolution_approval.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_expert_http_edition.py",
+  "target_path": "tests/unit_tests/gateway/test_expert_http_edition.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.agent_http_routes",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_federated_user_token.py",
+  "target_path": "tests/unit_tests/gateway/test_federated_user_token.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_feishu_im_adapter.py",
+  "target_path": "tests/unit_tests/gateway/test_feishu_im_adapter.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_feishu_streaming_card.py",
+  "target_path": "tests/unit_tests/gateway/test_feishu_streaming_card.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_fetch_team_human_members.py",
+  "target_path": "tests/unit_tests/gateway/test_fetch_team_human_members.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_file_picker.py",
+  "target_path": "tests/unit_tests/gateway/test_file_picker.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.attachments"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_gateway_connect_retry.py",
+  "target_path": "tests/unit_tests/gateway/test_gateway_connect_retry.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_gateway_lazy_exports.py",
+  "target_path": "tests/unit_tests/gateway/test_gateway_lazy_exports.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_gateway_telemetry.py",
+  "target_path": "tests/unit_tests/gateway/test_gateway_telemetry.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_gateway_transport_trace.py",
+  "target_path": "tests/unit_tests/gateway/test_gateway_transport_trace.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_harmonyos_dev.py",
+  "target_path": "tests/unit_tests/gateway/test_harmonyos_dev.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_heartbeat_contracts.py",
+  "target_path": "tests/unit_tests/gateway/test_heartbeat_contracts.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.tools",
+   "jiuwenswarm.server.agent_ws_server"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_hub_catalog_e2a.py",
+  "target_path": "tests/unit_tests/gateway/test_hub_catalog_e2a.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.agent_http_routes",
+   "jiuwenswarm.server.app_services",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.control.hub_catalog_service.list_hub_equipment_catalog",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_http_client",
+   "jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client",
+   "jiuwenswarm.common.e2a.models"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_im_inbound_identity.py",
+  "target_path": "tests/unit_tests/gateway/test_im_inbound_identity.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_im_outbound_pipeline.py",
+  "target_path": "tests/unit_tests/gateway/test_im_outbound_pipeline.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_im_session_input.py",
+  "target_path": "tests/unit_tests/gateway/test_im_session_input.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_issue_5448_zombie_stream_terminal_frame.py",
+  "target_path": "tests/unit_tests/gateway/test_issue_5448_zombie_stream_terminal_frame.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_join_exit_godview_container.py",
+  "target_path": "tests/unit_tests/gateway/test_join_exit_godview_container.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_join_validation.py",
+  "target_path": "tests/unit_tests/gateway/test_join_validation.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_lifecycle_handlers.py",
+  "target_path": "tests/unit_tests/gateway/test_lifecycle_handlers.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_logging_hotreload.py",
+  "target_path": "tests/unit_tests/gateway/test_logging_hotreload.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_login_credential_push.py",
+  "target_path": "tests/unit_tests/gateway/test_login_credential_push.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.handlers.ops"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_mcp_oauth_http.py",
+  "target_path": "tests/unit_tests/gateway/test_mcp_oauth_http.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.mcp",
+   "jiuwenswarm.server.runtime.mcp.credential",
+   "jiuwenswarm.server.runtime.mcp.oauth_flow"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_mcp_remote.py",
+  "target_path": "tests/unit_tests/gateway/test_mcp_remote.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.mcp"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_cron_push.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_cron_push.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.gateway_push.wire",
+   "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
+   "jiuwenswarm.extensions.agentos.routing"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_evolution.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_evolution.py",
+  "category": "E",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema"
+  ],
+  "status": "deferred",
+  "reason": "mixes gateway and server behavior; needs split"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_hook_params_update.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_hook_params_update.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_mode.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_mode.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_processing_status.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_processing_status.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_review_prompt.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_review_prompt.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_rewind.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_rewind.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_security_review_prompt.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_security_review_prompt.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_handler_stream_cancel.py",
+  "target_path": "tests/unit_tests/gateway/test_message_handler_stream_cancel.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.schema"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_message_trace_pipeline.py",
+  "target_path": "tests/unit_tests/gateway/test_message_trace_pipeline.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_non_stream_team_rejection.py",
+  "target_path": "tests/unit_tests/gateway/test_non_stream_team_rejection.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_package_allowlist_catalog.py",
+  "target_path": "tests/unit_tests/gateway/test_package_allowlist_catalog.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_package_allowlist_forward.py",
+  "target_path": "tests/unit_tests/gateway/test_package_allowlist_forward.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.agent_http_routes",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_http_client",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.message",
+   "jiuwenswarm.common.schema.package_allowlist"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_personal_share_api.py",
+  "target_path": "tests/unit_tests/gateway/test_personal_share_api.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_resolve_model_config_obj.py",
+  "target_path": "tests/unit_tests/gateway/test_resolve_model_config_obj.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_runtime_extension_register.py",
+  "target_path": "tests/unit_tests/gateway/test_runtime_extension_register.py",
+  "category": "E",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.extensions.runtime_management_extension.extension",
+   "jiuwenswarm.extensions.runtime_management_extension.invoke_ids",
+   "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map",
+   "jiuwenswarm.common.e2a.models"
+  ],
+  "status": "deferred",
+  "reason": "mixes gateway and server behavior; needs split"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_secrets_registry.py",
+  "target_path": "tests/unit_tests/gateway/test_secrets_registry.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_send_channel_notice_complete.py",
+  "target_path": "tests/unit_tests/gateway/test_send_channel_notice_complete.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_session_input_forwarding.py",
+  "target_path": "tests/unit_tests/gateway/test_session_input_forwarding.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_session_login_owner.py",
+  "target_path": "tests/unit_tests/gateway/test_session_login_owner.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_session_map_repository_wiring.py",
+  "target_path": "tests/unit_tests/gateway/test_session_map_repository_wiring.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_session_metadata_remote.py",
+  "target_path": "tests/unit_tests/gateway/test_session_metadata_remote.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_skills_detail_http_parity.py",
+  "target_path": "tests/unit_tests/gateway/test_skills_detail_http_parity.py",
+  "category": "E",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map",
+   "jiuwenswarm.common.e2a.models"
+  ],
+  "status": "deferred",
+  "reason": "mixes gateway and server behavior; needs split"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_slash_command.py",
+  "target_path": "tests/unit_tests/gateway/test_slash_command.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_swarmflow_reply_forward.py",
+  "target_path": "tests/unit_tests/gateway/test_swarmflow_reply_forward.py",
+  "category": "B",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common.schema"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_task_asr.py",
+  "target_path": "tests/unit_tests/gateway/test_task_asr.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_tui_harmonyos_project.py",
+  "target_path": "tests/unit_tests/gateway/test_tui_harmonyos_project.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_tui_kv_cache_session_lifecycle.py",
+  "target_path": "tests/unit_tests/gateway/test_tui_kv_cache_session_lifecycle.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
+   "jiuwenswarm.server.runtime.session.project_store.find_or_create_code_project_for_tui_params",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_tui_session_project_path.py",
+  "target_path": "tests/unit_tests/gateway/test_tui_session_project_path.py",
+  "category": "F",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir"
+  ],
+  "status": "deferred",
+  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_unknown_team_mode_rejection.py",
+  "target_path": "tests/unit_tests/gateway/test_unknown_team_mode_rejection.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_channel_orphan_routing.py",
+  "target_path": "tests/unit_tests/gateway/test_web_channel_orphan_routing.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_connect_interrupt_synth.py",
+  "target_path": "tests/unit_tests/gateway/test_web_connect_interrupt_synth.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_http_auth_routes.py",
+  "target_path": "tests/unit_tests/gateway/test_web_http_auth_routes.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_http_edition_mount.py",
+  "target_path": "tests/unit_tests/gateway/test_web_http_edition_mount.py",
+  "category": "C",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": true,
+  "deps": [
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.security",
+   "jiuwenswarm.extensions"
+  ],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_media_normalizer.py",
+  "target_path": "tests/unit_tests/gateway/test_web_media_normalizer.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_web_trace.py",
+  "target_path": "tests/unit_tests/gateway/test_web_trace.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_xiaoyi_push_clip.py",
+  "target_path": "tests/unit_tests/gateway/test_xiaoyi_push_clip.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_xiaoyi_session_reuse.py",
+  "target_path": "tests/unit_tests/gateway/test_xiaoyi_session_reuse.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/gateway/test_xiaoyi_team_delivery.py",
+  "target_path": "tests/unit_tests/gateway/test_xiaoyi_team_delivery.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": false,
+  "tier1": true,
+  "deps": [],
+  "status": "migrated",
+  "reason": ""
+ },
+ {
+  "source_path": "tests/unit_tests/observability/test_trajectory_gateway_hints.py",
+  "target_path": "tests/unit_tests/observability/test_trajectory_gateway_hints.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.observability",
+   "jiuwenswarm.observability.gateway_hints",
+   "jiuwenswarm.observability.models",
+   "jiuwenswarm.server.gateway_push.wire"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/observability/test_trajectory_updates.py",
+  "target_path": "tests/unit_tests/observability/test_trajectory_updates.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.observability.models"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/personal_context/test_mode_search.py",
+  "target_path": "tests/unit_tests/personal_context/test_mode_search.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.swarm",
+   "jiuwenswarm.agents.swarm.config_specs",
+   "jiuwenswarm.agents.swarm.context",
+   "jiuwenswarm.agents.swarm.providers",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_code",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.common"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/process_cli/test_process_cli.py",
+  "target_path": "tests/unit_tests/process_cli/test_process_cli.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.channels.cli",
+   "jiuwenswarm.channels.cli.main",
+   "jiuwenswarm.channels.process_cli",
+   "jiuwenswarm.channels.process_cli.client",
+   "jiuwenswarm.channels.process_cli.main",
+   "jiuwenswarm.channels.tui",
+   "jiuwenswarm.cli",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.request",
+   "jiuwenswarm.runtime.session_provisioner",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/process_cli/test_protocol_model.py",
+  "target_path": "tests/unit_tests/process_cli/test_protocol_model.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.channels.process_cli",
+   "jiuwenswarm.channels.process_cli.protocol",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.runtime.agent_definition",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.service"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_cron_store.py",
+  "target_path": "tests/unit_tests/runtime/test_cron_store.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.model_routing_registry",
+   "jiuwenswarm.common.model_catalog"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_permission_catalog.py",
+  "target_path": "tests/unit_tests/runtime/test_permission_catalog.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.permissions",
+   "jiuwenswarm.agents.harness.common.rails.permissions.permission_compose",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.permission_catalog"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_runtime_architecture.py",
+  "target_path": "tests/unit_tests/runtime/test_runtime_architecture.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.agents.harness.team.remote_member_bootstrap",
+   "jiuwenswarm.observability.session_delete",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.gateway_push",
+   "jiuwenswarm.server.runtime.agent_manager",
+   "jiuwenswarm.server.runtime.team_binding_store",
+   "jiuwenswarm.server.worker.capabilities",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.service"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_runtime_service.py",
+  "target_path": "tests/unit_tests/runtime/test_runtime_service.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness",
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.agent_adapter.team_helpers",
+   "jiuwenswarm.server.runtime.agent_manager",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.kv_cache",
+   "jiuwenswarm.server.runtime.session.project_store.get_project_dir_by_id",
+   "jiuwenswarm.server.runtime.session.session_archive",
+   "jiuwenswarm.server.runtime.session.session_manager",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.common",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.runtime.context",
+   "jiuwenswarm.runtime.events",
+   "jiuwenswarm.runtime.plan",
+   "jiuwenswarm.runtime.request",
+   "jiuwenswarm.runtime.request.cancel_request",
+   "jiuwenswarm.runtime.session",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.runtime.session_lifecycle",
+   "jiuwenswarm.runtime.session_provisioner",
+   "jiuwenswarm.runtime.team_session_lifecycle",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_runtime_xiaoyi_host_provider.py",
+  "target_path": "tests/unit_tests/runtime/test_runtime_xiaoyi_host_provider.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.config.get_config"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_session_input.py",
+  "target_path": "tests/unit_tests/runtime/test_session_input.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.attachments",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.runtime.context",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.runtime.session_input",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/runtime/test_session_provision_contract.py",
+  "target_path": "tests/unit_tests/runtime/test_session_provision_contract.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.runtime.session_provisioner",
+   "jiuwenswarm.common.e2a.wire_codec"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/extensions/test_chat_send_extension_mount.py",
+  "target_path": "tests/unit_tests/server/extensions/test_chat_send_extension_mount.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.marketplace",
+   "jiuwenswarm.server.runtime.marketplace.hub_client",
+   "jiuwenswarm.server.runtime.marketplace.hub_install_state",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.runtime",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.chat_send",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/extensions/test_expert_team_launcher.py",
+  "target_path": "tests/unit_tests/server/extensions/test_expert_team_launcher.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.expert_org",
+   "jiuwenswarm.agents.harness.team.expert_org.launcher",
+   "jiuwenswarm.agents.harness.team.expert_org.launcher.save_organization_team_identity",
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.agents.swarm",
+   "jiuwenswarm.server.gateway_push.wire",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
+   "jiuwenswarm.server.runtime.organization_execution",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.team_organization_identity_store",
+   "jiuwenswarm.server.runtime.team_organization_identity_store.team_home",
+   "jiuwenswarm.server.utils",
+   "jiuwenswarm.common.e2a.wire_codec"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/marketplace/test_asset_publish_wire.py",
+  "target_path": "tests/unit_tests/server/marketplace/test_asset_publish_wire.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_archive_lifecycle.py",
+  "target_path": "tests/unit_tests/server/test_archive_lifecycle.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.code.rails.heartbeat.execution",
+   "jiuwenswarm.agents.harness.team",
+   "jiuwenswarm.agents.harness.team.team_manager",
+   "jiuwenswarm.server",
+   "jiuwenswarm.server.runtime.agent_manager",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.session_archive",
+   "jiuwenswarm.server.runtime.session.session_message_service",
+   "jiuwenswarm.server.runtime.session.session_message_store",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.runtime.service",
+   "jiuwenswarm.runtime.session",
+   "jiuwenswarm.runtime.session.model",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_chat_middleware.py",
+  "target_path": "tests/unit_tests/server/test_chat_middleware.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.recommendation.feedback_collector",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.middleware.chat",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.common.hook_event",
+   "jiuwenswarm.common.hooks_context",
+   "jiuwenswarm.extensions.registry",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_discard_turn_changes.py",
+  "target_path": "tests/unit_tests/server/test_discard_turn_changes.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.session_ops_service",
+   "jiuwenswarm.agents.harness.common.session_ops_service.get_last_modified_turn_info",
+   "jiuwenswarm.agents.harness.common.session_ops_service.history_exists",
+   "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+   "jiuwenswarm.agents.harness.common.session_ops_service.restore_session_files",
+   "jiuwenswarm.server.runtime.gateway_adapter.project_adapter",
+   "jiuwenswarm.server.runtime.session.git_diff_status.get_session_extra_history_roots",
+   "jiuwenswarm.server.runtime.session.project_git.resolve_git_project",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.server.utils.diff_service",
+   "jiuwenswarm.server.utils.diff_service.get_diff_service",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_gateway_adapter.py",
+  "target_path": "tests/unit_tests/server/test_gateway_adapter.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common",
+   "jiuwenswarm.agents.harness.common.tools.verified_download_assets",
+   "jiuwenswarm.agents.harness.common.tools.web_file_download",
+   "jiuwenswarm.server.control",
+   "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
+   "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
+   "jiuwenswarm.server.control.repositories.session_repository.load_history_records",
+   "jiuwenswarm.server.control.repositories.session_repository.set_session_pinned",
+   "jiuwenswarm.server.control.store.project_queries",
+   "jiuwenswarm.server.runtime.a2ui",
+   "jiuwenswarm.server.runtime.attachments.media_attachments",
+   "jiuwenswarm.server.runtime.attachments.media_attachments.get_agent_sessions_dir",
+   "jiuwenswarm.server.runtime.gateway_adapter",
+   "jiuwenswarm.server.runtime.gateway_adapter.base",
+   "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+   "jiuwenswarm.server.runtime.gateway_adapter.harmonyos_adapter.run_harmonyos_project_init",
+   "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter.get_agent_workspace_dir",
+   "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter.handle_memory_edit",
+   "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter.handle_memory_list",
+   "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter.handle_memory_toggle",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter._import_url_file",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.get_agent_workspace_dir",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.normalize_chat_media_attachments",
+   "jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter.persist_and_parse_documents",
+   "jiuwenswarm.server.runtime.harmonyos.harmonyos_project",
+   "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+   "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
+   "jiuwenswarm.server.runtime.session.project_git.get_project_git_service",
+   "jiuwenswarm.server.runtime.session.project_git.resolve_git_project",
+   "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
+   "jiuwenswarm.server.runtime.session.session_message_store",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.browser_config",
+   "jiuwenswarm.common.config.update_permissions_owner_scopes_in_config",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.runtime.session_delete",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_group_requests.py",
+  "target_path": "tests/unit_tests/server/test_group_requests.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.group_requests",
+   "jiuwenswarm.server.runtime.group_service",
+   "jiuwenswarm.runtime.session_provisioner",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_project_handlers.py",
+  "target_path": "tests/unit_tests/server/test_project_handlers.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.gateway_adapter",
+   "jiuwenswarm.server.runtime.gateway_adapter.project_adapter",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.project_store",
+   "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+   "jiuwenswarm.server.runtime.session.work_mode",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_redo_turn_changes.py",
+  "target_path": "tests/unit_tests/server/test_redo_turn_changes.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.session_ops_service.get_last_modified_turn_info",
+   "jiuwenswarm.agents.harness.common.session_ops_service.redo_session_files",
+   "jiuwenswarm.server.runtime.gateway_adapter.project_adapter",
+   "jiuwenswarm.server.runtime.session.git_diff_status.get_session_extra_history_roots",
+   "jiuwenswarm.server.runtime.session.project_git.resolve_git_project",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+   "jiuwenswarm.server.utils.diff_service",
+   "jiuwenswarm.server.utils.diff_service.get_diff_service",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_session_metadata.py",
+  "target_path": "tests/unit_tests/server/test_session_metadata.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+   "jiuwenswarm.server.runtime.gateway_adapter.session_adapter",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
+   "jiuwenswarm.server.runtime.session.session_info",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+   "jiuwenswarm.runtime.request",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_session_plan_status.py",
+  "target_path": "tests/unit_tests/server/test_session_plan_status.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.session_ops_service.resolve_live_agent_session",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.context",
+   "jiuwenswarm.server.handlers.session",
+   "jiuwenswarm.server.handlers.session._try_read_live_plan_mode",
+   "jiuwenswarm.server.handlers.session.get_session_metadata",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/server/test_steer_images.py",
+  "target_path": "tests/unit_tests/server/test_steer_images.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.attachments",
+   "jiuwenswarm.runtime.session_input"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/symphony/test_experience_flow.py",
+  "target_path": "tests/unit_tests/symphony/test_experience_flow.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.team.team_manager.reload_team_skill_views_across_managers",
+   "jiuwenswarm.agents.swarm",
+   "jiuwenswarm.agents.swarm.providers",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.skill.skill_manager",
+   "jiuwenswarm.server.runtime.skill.skillpack",
+   "jiuwenswarm.common.host_services",
+   "jiuwenswarm.common.symphony_config",
+   "jiuwenswarm.runtime.symphony",
+   "jiuwenswarm.runtime.symphony.adapter.model_from_config",
+   "jiuwenswarm.runtime.symphony.experience",
+   "jiuwenswarm.runtime.symphony.llm",
+   "jiuwenswarm.runtime.symphony.llm.LLMConfig.from_default_model",
+   "jiuwenswarm.runtime.symphony.service",
+   "jiuwenswarm.runtime.symphony.service.CapabilityPackager.verify_package_integrity",
+   "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
+   "jiuwenswarm.runtime.symphony.service.LLMPackageReviewAgent",
+   "jiuwenswarm.runtime.symphony.service.PackageReviewGate",
+   "jiuwenswarm.runtime.symphony.service.SymphonyFlowEngine",
+   "jiuwenswarm.runtime.symphony.service.SymphonyRuntime",
+   "jiuwenswarm.runtime.symphony.service.get_config",
+   "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
+   "jiuwenswarm.runtime.symphony.service.load_symphony_config",
+   "jiuwenswarm.runtime.symphony.service.model_from_config",
+   "jiuwenswarm.runtime.symphony.service.model_response_observer_from_config",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agent_written_user_turns.py",
+  "target_path": "tests/unit_tests/test_agent_written_user_turns.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.recommendation",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.session"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agentos_adaptation.py",
+  "target_path": "tests/unit_tests/test_agentos_adaptation.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.control.repositories",
+   "jiuwenswarm.server.handlers.commands",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_code",
+   "jiuwenswarm.server.runtime.gateway_adapter",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.etcd.client",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agentos_file_api_iam.py",
+  "target_path": "tests/unit_tests/test_agentos_file_api_iam.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agentos_file_transfer.py",
+  "target_path": "tests/unit_tests/test_agentos_file_transfer.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agentos_web_compat.py",
+  "target_path": "tests/unit_tests/test_agentos_web_compat.py",
+  "category": "C",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.agentos_runtime"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_agentos_ws_handshake_auth.py",
+  "target_path": "tests/unit_tests/test_agentos_ws_handshake_auth.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_app_cli.py",
+  "target_path": "tests/unit_tests/test_app_cli.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.channels.acp.app_acp",
+   "jiuwenswarm.channels.acp.app_acp.write_json_stdout",
+   "jiuwenswarm.common.e2a.constants",
+   "jiuwenswarm.common.e2a.models"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_application_plugins.py",
+  "target_path": "tests/unit_tests/test_application_plugins.py",
+  "category": "C",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.extensions.sdk"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_desktop_electron_contract.py",
+  "target_path": "tests/unit_tests/test_desktop_electron_contract.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_desktop_local_file_picker.py",
+  "target_path": "tests/unit_tests/test_desktop_local_file_picker.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.channels.desktop"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_extension_manager.py",
+  "target_path": "tests/unit_tests/test_extension_manager.py",
+  "category": "C",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.extensions",
+   "jiuwenswarm.extensions.sdk"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_instance_manager.py",
+  "target_path": "tests/unit_tests/test_instance_manager.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.app",
+   "jiuwenswarm.instance_manager",
+   "jiuwenswarm.instance_manager.collect_all_ports",
+   "jiuwenswarm.instance_manager.config",
+   "jiuwenswarm.instance_manager.config._upsert_env_ports",
+   "jiuwenswarm.instance_manager.config.is_port_available",
+   "jiuwenswarm.instance_manager.yaml.get_instance_workspace_path",
+   "jiuwenswarm.instance_manager.yaml.get_instances_yaml_path",
+   "jiuwenswarm.start_services._build_commands",
+   "jiuwenswarm.start_services._run_processes",
+   "jiuwenswarm.start_services.get_env_file",
+   "jiuwenswarm.start_services.is_port_available"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_layering.py",
+  "target_path": "tests/unit_tests/test_layering.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_mcp_app_sandbox_http.py",
+  "target_path": "tests/unit_tests/test_mcp_app_sandbox_http.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_mode_enum_compat.py",
+  "target_path": "tests/unit_tests/test_mode_enum_compat.py",
+  "category": "B",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_mode_matrix.py",
+  "target_path": "tests/unit_tests/test_mode_matrix.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.utils.utils",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_model_config_null_recovery.py",
+  "target_path": "tests/unit_tests/test_model_config_null_recovery.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.tools.file_delivery_policy",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.common.model_catalog",
+   "jiuwenswarm.common.model_config_validation"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_model_resource_fixes.py",
+  "target_path": "tests/unit_tests/test_model_resource_fixes.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
+   "jiuwenswarm.server.runtime.model_compiler_adapter",
+   "jiuwenswarm.server.runtime.model_compiler_adapter.build_model_from_selection",
+   "jiuwenswarm.server.runtime.model_routing_registry",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.model_selection_store.get_session_model_selection",
+   "jiuwenswarm.server.runtime.session.session_info",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.auth.model_catalog",
+   "jiuwenswarm.common.config_panel",
+   "jiuwenswarm.common.config_panel.model_resource_handlers",
+   "jiuwenswarm.common.config_panel.models_handlers",
+   "jiuwenswarm.common.external_providers",
+   "jiuwenswarm.common.model_catalog",
+   "jiuwenswarm.common.model_catalog.get_config",
+   "jiuwenswarm.common.model_errors",
+   "jiuwenswarm.common.model_migration",
+   "jiuwenswarm.common.model_routing_registry",
+   "jiuwenswarm.common.model_selection_store",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.common.utils.get_cron_jobs_path",
+   "jiuwenswarm.runtime.cron.store",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_model_selection_migration.py",
+  "target_path": "tests/unit_tests/test_model_selection_migration.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.model_compiler_adapter",
+   "jiuwenswarm.server.runtime.model_routing_registry",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.model_catalog",
+   "jiuwenswarm.common.model_config_validation",
+   "jiuwenswarm.common.model_errors",
+   "jiuwenswarm.common.utils.get_agent_sessions_dir",
+   "jiuwenswarm.common.utils.get_cron_jobs_path"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_model_vendor_registry.py",
+  "target_path": "tests/unit_tests/test_model_vendor_registry.py",
+  "category": "A",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_prompt_suggestion.py",
+  "target_path": "tests/unit_tests/test_prompt_suggestion.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.rails.ask_user_rail",
+   "jiuwenswarm.agents.harness.common.recommendation",
+   "jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.gateway_push.transport",
+   "jiuwenswarm.server.gateway_push.wire",
+   "jiuwenswarm.server.runtime.agent_adapter",
+   "jiuwenswarm.server.runtime.agent_adapter.interface",
+   "jiuwenswarm.server.runtime.agent_adapter.interface_deep",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.gateway_normalize",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_protocol_cron_contract.py",
+  "target_path": "tests/unit_tests/test_protocol_cron_contract.py",
+  "category": "C",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.runtime.cron"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_skill_source_ownership.py",
+  "target_path": "tests/unit_tests/test_skill_source_ownership.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.skill.artifact_security",
+   "jiuwenswarm.extensions.sdk.skill_source"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_topic_recommendation.py",
+  "target_path": "tests/unit_tests/test_topic_recommendation.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.recommendation",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_controls",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_history",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_model",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_outcomes",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_pipeline",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_prepare",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_product",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_rid",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_search",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_service",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_short_intent",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_sources",
+   "jiuwenswarm.agents.harness.common.recommendation.topic_starter",
+   "jiuwenswarm.resources",
+   "jiuwenswarm.server.agent_ws_server",
+   "jiuwenswarm.server.agent_ws_server.get_session_metadata",
+   "jiuwenswarm.server.runtime",
+   "jiuwenswarm.server.runtime.recommendation_host",
+   "jiuwenswarm.server.runtime.recommendation_host.active_recommendation_host",
+   "jiuwenswarm.server.runtime.session",
+   "jiuwenswarm.server.runtime.session.project_store.find_or_create_code_project_for_tui_params",
+   "jiuwenswarm.server.runtime.session.session_history",
+   "jiuwenswarm.server.runtime.session.session_metadata.rebind_session_project",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.config_panel.config_set_handlers",
+   "jiuwenswarm.common.e2a.agent_compat",
+   "jiuwenswarm.common.e2a.gateway_normalize",
+   "jiuwenswarm.common.e2a.models",
+   "jiuwenswarm.common.schema.agent",
+   "jiuwenswarm.common.schema.message"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_utils.py",
+  "target_path": "tests/unit_tests/test_utils.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.agents.harness.common.plugins.rail_manager",
+   "jiuwenswarm.agents.harness.common.tools.mcp_toolkits",
+   "jiuwenswarm.agents.harness.common.tools.search_tools",
+   "jiuwenswarm.agents.harness.common.tools.task_tools",
+   "jiuwenswarm.server.worker",
+   "jiuwenswarm.common",
+   "jiuwenswarm.common.config",
+   "jiuwenswarm.common.utils",
+   "jiuwenswarm.common.utils._find_package_root",
+   "jiuwenswarm.common.utils.get_user_workspace_dir"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ },
+ {
+  "source_path": "tests/unit_tests/test_web_http.py",
+  "target_path": "tests/unit_tests/test_web_http.py",
+  "category": "A",
+  "owner": "gateway",
+  "enterprise": true,
+  "tier1": false,
+  "deps": [],
+  "status": "migrated",
+  "reason": "enterprise gateway candidate (plan 5.1); copied without changes"
+ },
+ {
+  "source_path": "tests/unit_tests/test_work_mode.py",
+  "target_path": "tests/unit_tests/test_work_mode.py",
+  "category": "F",
+  "owner": "server",
+  "enterprise": false,
+  "tier1": false,
+  "deps": [
+   "jiuwenswarm.server.runtime.session.project_store",
+   "jiuwenswarm.server.runtime.session.session_metadata",
+   "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+   "jiuwenswarm.server.runtime.session.work_mode"
+  ],
+  "status": "deferred",
+  "reason": "outside gateway-owned test dirs; keep in jiuwenswarm"
+ }
+]
