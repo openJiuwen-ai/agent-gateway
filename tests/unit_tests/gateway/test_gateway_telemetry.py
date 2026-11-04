@@ -581,6 +581,41 @@ async def test_fanout_missing_origin_channel_does_not_silently_succeed(target_ws
 
 
 
+@pytest.mark.asyncio
+async def test_fanout_mismatched_trace_is_detached():
+    from agent_gateway.routing.keys import WebDeliveryTarget
+    from agent_gateway.routing.session_sharing import LogicalTarget, SessionDispatcher
+
+    telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
+    operation = telemetry.start_request_trace("r", "chat.send", channel="web", connection_id="origin")
+    message = SimpleNamespace(
+        id="r", channel_id="web", metadata={"ws_id": "origin"}, type="event",
+        session_id="s",
+    )
+    telemetry.attach_message_trace(message, operation)
+    captured = []
+
+    class Channel:
+        async def send(self, msg, *, routing_target=None):
+            captured.append(msg)
+            assert telemetry.get_message_trace(msg) is None
+            assert telemetry.current_request_trace() is None
+
+    manager = SimpleNamespace(
+        get_channel=lambda key: Channel(), enabled_channels=[],
+    )
+    with telemetry.bind_message_trace(message):
+        await SessionDispatcher._send_to_container(
+            message, LogicalTarget(intent="godview"),
+            [SimpleNamespace(delivery=WebDeliveryTarget(ws_id="observer"), member_name="member", routing_key=None)],
+            SessionDispatcher._ContainerKey("web", "default", "observer"),
+            manager,
+        )
+    assert len(captured) == 1
+    assert captured[0] is not message
+    operation.complete()
+
+
 @pytest.fixture
 def tracing(monkeypatch):
     monkeypatch.setattr(telemetry, "_runtime", None)

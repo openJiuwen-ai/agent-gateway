@@ -20,6 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
+from weakref import WeakKeyDictionary
 
 import aiohttp
 from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
@@ -242,6 +243,7 @@ class WebChannel(BaseWsChannel):
         self._a4p_rebound_ws: dict[str, str] = {}
         # Observers of per-session pushes (card shown, turn started/ended).
         self._session_event_listeners: list[Callable[[str, str, dict], Any]] = []
+        self._queued_moa_notices: WeakKeyDictionary[asyncio.Queue, int] = WeakKeyDictionary()
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -324,6 +326,7 @@ class WebChannel(BaseWsChannel):
         """Merge only contiguous stream frames with identical non-content data."""
         parsed = self._coalescible_stream_frame(first_frame)
         if parsed is None:
+            self._consume_moa_notice(first_frame, queue)
             return [first_frame]
 
         decoded, merged_content = parsed
@@ -346,6 +349,7 @@ class WebChannel(BaseWsChannel):
                 or getattr(candidate, "operation", None) is not traced_operation
                 or not self._same_stream_identity(decoded, candidate_parsed[0])
             ):
+                self._consume_moa_notice(candidate, queue)
                 trailing.append(candidate)
                 break
             merged_content += candidate_parsed[1]
@@ -434,7 +438,41 @@ class WebChannel(BaseWsChannel):
             if callable(accept):
                 accept(frame)
             return
+        ws_id = getattr(ws, "_jiuwen_ws_id", "")
+        queue = self._send_queues.get(ws_id) if ws_id else None
+        if queue is not None and not getattr(ws, "closed", False):
+            if self._is_moa_status_frame(data):
+                if not queue.full():
+                    data, _ = self._trace_outbound_frame(ws, data)
+                    queue.put_nowait(data)
+                    self._queued_moa_notices[queue] = self._queued_moa_notices.get(queue, 0) + 1
+                return
+            # Only trim optional notices under congestion; preserve every other
+            # frame's order and the existing full-queue policy when none exist.
+            if queue.full() and self._queued_moa_notices.get(queue, 0):
+                retained = []
+                while not queue.empty():
+                    frame = queue.get_nowait()
+                    queue.task_done()
+                    if not self._is_moa_status_frame(frame):
+                        retained.append(frame)
+                for frame in retained:
+                    queue.put_nowait(frame)
+                self._queued_moa_notices.pop(queue, None)
         super()._enqueue_send(ws, data)
+
+    def _consume_moa_notice(self, frame: Any, queue: asyncio.Queue) -> None:
+        if not self._is_moa_status_frame(frame):
+            return
+        remaining = self._queued_moa_notices.get(queue, 0) - 1
+        if remaining > 0:
+            self._queued_moa_notices[queue] = remaining
+        else:
+            self._queued_moa_notices.pop(queue, None)
+
+    @staticmethod
+    def _is_moa_status_frame(frame: Any) -> bool:
+        return isinstance(frame, dict) and frame.get("type") == "event" and frame.get("event") == "chat.moa_status"
 
     def register_request_outbound(self, outbound: Any) -> str:
         """Register a request-scoped HTTP Outbound for Agent reply routing."""

@@ -5428,10 +5428,8 @@ class MessageHandler(ABC):
                                 agent_msg.params.get("mode", "")
                                 if isinstance(agent_msg.params, dict) else ""
                             )
-                            asyncio.create_task(
-                                self._send_pause_and_govern_streams(
-                                    env_interrupt, msg, pause_mode,
-                                )
+                            self._start_pause_task(
+                                env_interrupt, msg, pause_mode,
                             )
                         else:
                             self._start_interrupt_task(env_interrupt)
@@ -6239,6 +6237,35 @@ class MessageHandler(ABC):
             task.add_done_callback(lambda done: operation.release_delivery(
                 reason="task_cancelled" if done.cancelled() else "",
             ))
+        return task
+
+    def _start_pause_task(
+        self,
+        env: "E2AEnvelope",
+        msg: "Message",
+        session_mode: str,
+    ) -> asyncio.Task:
+        """Run pause governance under the request's delivery lifetime."""
+        operation = current_request_trace()
+        if operation is not None and not operation.finished and operation.channel == (env.channel or ""):
+            setattr(env, "_gateway_trace_operation", operation)
+            operation.retain_delivery()
+        else:
+            operation = None
+        try:
+            task = asyncio.create_task(
+                self._send_pause_and_govern_streams(env, msg, session_mode),
+            )
+        except BaseException:
+            if operation is not None:
+                operation.release_delivery(reason="task_start_failed")
+            raise
+        if operation is not None:
+            task.add_done_callback(lambda done: operation.release_delivery(
+                reason="task_cancelled" if done.cancelled() else "",
+            ))
+        self._fire_and_forget_tasks.add(task)
+        task.add_done_callback(self._fire_and_forget_tasks.discard)
         return task
 
     async def _send_interrupt_to_agent(
