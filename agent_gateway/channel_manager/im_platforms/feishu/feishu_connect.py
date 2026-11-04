@@ -46,6 +46,34 @@ from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, 
 logger = logging.getLogger(__name__)
 
 
+class _FeishuWebSocketLogHandler(logging.Handler):
+    """Forward this channel's Lark SDK connection state into Gateway logs."""
+
+    def __init__(self, channel: "FeishuChannel", thread_id: int):
+        super().__init__()
+        self._channel = channel
+        self._thread_id = thread_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id:
+            return
+
+        message = record.getMessage()
+        app_id = self._channel.config.app_id
+        if message.startswith("connected to "):
+            if not self._channel._websocket_connected.is_set():
+                self._channel._websocket_connected.set()
+                logger.info("飞书 WebSocket 握手成功 app_id=%s", app_id)
+        elif message.startswith("connect failed, err:"):
+            self._channel._websocket_connected.clear()
+            logger.error("飞书 WebSocket 连接失败 app_id=%s；SDK 错误详情请查看标准输出", app_id)
+        elif message.startswith(("receive message loop exit, err:", "disconnected to ")):
+            self._channel._websocket_connected.clear()
+            logger.warning("飞书 WebSocket 连接已断开 app_id=%s，SDK 将尝试重连", app_id)
+        elif message.startswith("trying to reconnect"):
+            logger.info("飞书 WebSocket 正在重连 app_id=%s", app_id)
+
+
 class FeishuConfig(BaseModel):
     """飞书通道配置模型，使用WebSocket长连接接收消息。"""
 
@@ -370,6 +398,7 @@ class FeishuChannel(BaseChannel):
     """
 
     name = "feishu"
+    WS_CONNECT_WARNING_SECONDS = 15
     _ws_loop_proxy_lock = threading.Lock()
     _ws_loop_proxy_installed = False
 
@@ -392,6 +421,7 @@ class FeishuChannel(BaseChannel):
         self._channel_id = str(getattr(config, "channel_id", "") or self.name).strip() or self.name
         self._api_client: Any = None  # 飞书API客户端（用于发送消息）
         self._websocket_client: Any = None  # WebSocket客户端（用于接收消息）
+        self._websocket_connected = threading.Event()
         self._websocket_thread: threading.Thread | None = None  # WebSocket运行线程
         self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()  # 消息去重缓存
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
@@ -549,14 +579,27 @@ class FeishuChannel(BaseChannel):
 
         self._running = True
         self._main_loop = asyncio.get_running_loop()
+        self._websocket_connected.clear()
         self._initialize_api_client()
+        connect_started_at = time.monotonic()
         self._start_websocket_in_thread()
 
-        logger.info("飞书机器人已启动，使用WebSocket长连接接收消息")
-        logger.info("无需公网IP - 通过WebSocket接收事件")
+        logger.info("飞书 WebSocket 连接尝试已启动 app_id=%s", self.config.app_id)
 
         # 持续运行直到停止
+        initial_handshake_pending = True
         while self._running:
+            if self._websocket_connected.is_set():
+                initial_handshake_pending = False
+            if (
+                initial_handshake_pending
+                and time.monotonic() - connect_started_at >= self.WS_CONNECT_WARNING_SECONDS
+            ):
+                logger.warning(
+                    "飞书 WebSocket 尚未确认握手成功 app_id=%s；请检查网络、应用凭据及飞书长连接事件订阅",
+                    self.config.app_id,
+                )
+                initial_handshake_pending = False
             await asyncio.sleep(1)
 
     def _validate_start_conditions(self) -> bool:
@@ -655,6 +698,27 @@ class FeishuChannel(BaseChannel):
                     "[_fetch_bot_open_id] 成功获取机器人 open_id: %s (app_name=%s)",
                     bot_open_id, bot_info.get("app_name", "")
                 )
+                if self.config.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
+                    async def persist_enterprise_identity():
+                        from agent_gateway.config.channel.access import update_channel_subsection_in_config
+
+                        try:
+                            await update_channel_subsection_in_config(
+                                "feishu_enterprise", self.config.bot_key, {"bot_open_id": bot_open_id},
+                            )
+                        except Exception:
+                            logger.warning("飞书企业机器人身份写回失败 app_id=%s", self.config.app_id)
+
+                    # SDK lookup can run in a worker thread. Keep database writes on the Gateway loop.
+                    if self._main_loop and self._main_loop.is_running():
+                        self._main_loop.call_soon_threadsafe(
+                            lambda: asyncio.create_task(persist_enterprise_identity())
+                        )
+                    else:
+                        from agent_gateway.config.channel.access import schedule_channel_config
+
+                        schedule_channel_config(persist_enterprise_identity())
+                    return
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
                     from agent_gateway.common.config import update_channel_app_field
@@ -691,9 +755,6 @@ class FeishuChannel(BaseChannel):
         )
         self._websocket_thread.start()
 
-        # 等待WebSocket客户端创建完成
-        self._wait_for_websocket_client_ready()
-
     def _run_websocket_client(self, config: dict) -> None:
         """
         在子线程中运行WebSocket客户端。
@@ -709,6 +770,9 @@ class FeishuChannel(BaseChannel):
         self._ensure_thread_local_ws_loop_proxy()
 
         ws_client = None
+        sdk_logger = logging.getLogger("Lark")
+        status_handler = _FeishuWebSocketLogHandler(self, threading.get_ident())
+        sdk_logger.addHandler(status_handler)
         try:
             builder = (
                 lark.EventDispatcherHandler.builder(
@@ -735,13 +799,24 @@ class FeishuChannel(BaseChannel):
             )
             self._patch_ws_client_shutdown(ws_client)
             self._websocket_client = ws_client
-            ws_client.start()
+            if self._running:
+                ws_client.start()
         except Exception as e:
             if self._stopping or not self._running:
-                logger.info("飞书WebSocket线程退出: %s", e)
+                logger.info(
+                    "飞书 WebSocket 线程退出 app_id=%s error_type=%s",
+                    self.config.app_id,
+                    type(e).__name__,
+                )
             else:
-                logger.error("飞书WebSocket连接建立失败: %s", e)
+                logger.error(
+                    "飞书 WebSocket 线程异常 app_id=%s error_type=%s",
+                    self.config.app_id,
+                    type(e).__name__,
+                )
         finally:
+            sdk_logger.removeHandler(status_handler)
+            self._websocket_connected.clear()
             self._cleanup_websocket_thread(ws_client, loop)
 
     @classmethod
@@ -776,17 +851,11 @@ class FeishuChannel(BaseChannel):
 
         self._ws_thread_loop = None
 
-    def _wait_for_websocket_client_ready(self) -> None:
-        """等待WebSocket客户端创建完成。"""
-        for _ in range(50):
-            if self._websocket_client is not None:
-                break
-            time.sleep(0.1)
-
     async def stop(self) -> None:
         """停止飞书机器人。"""
         self._running = False
         self._stopping = True
+        self._websocket_connected.clear()
         self._stream_text_buffers.clear()
         self._errored_stream_keys.clear()
         for session in list(self._cardkit_sessions.values()):
@@ -803,11 +872,15 @@ class FeishuChannel(BaseChannel):
             except Exception as e:
                 logger.warning("停止WebSocket客户端时发生异常: {}", e)
 
-        if self._ws_thread_loop and self._ws_thread_loop.is_running():
-            self._ws_thread_loop.call_soon_threadsafe(self._ws_thread_loop.stop)
+        loop = self._ws_thread_loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass  # The worker already closed its loop.
 
         if self._websocket_thread and self._websocket_thread.is_alive():
-            self._websocket_thread.join(timeout=2.0)
+            await asyncio.to_thread(self._websocket_thread.join, timeout=2.0)
 
         logger.info("飞书机器人已停止")
         self._stopping = False
@@ -3486,8 +3559,21 @@ class FeishuChannel(BaseChannel):
         Args:
             data: 飞书消息事件数据
         """
-        if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_message(data), self._main_loop)
+        if not self._main_loop or not self._main_loop.is_running():
+            logger.warning("收到飞书消息回调，但主事件循环不可用，事件无法调度 app_id=%s", self.config.app_id)
+            return
+
+        logger.info("收到飞书消息事件回调 app_id=%s", self.config.app_id)
+        coroutine = self._on_message(data)
+        try:
+            asyncio.run_coroutine_threadsafe(coroutine, self._main_loop)
+        except RuntimeError as exc:
+            coroutine.close()
+            logger.warning(
+                "飞书消息事件无法调度到主事件循环 app_id=%s error_type=%s",
+                self.config.app_id,
+                type(exc).__name__,
+            )
 
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """
