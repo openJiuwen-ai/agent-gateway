@@ -2297,6 +2297,13 @@ async def _run(
                 },
             )
 
+            def persistent_models_unapplied(response: Any) -> bool:
+                payload = getattr(response, "payload", None)
+                if isinstance(payload, dict) and payload.get("code") == "PERSISTENT_MODELS_NOT_APPLIED":
+                    logger.warning("[App] worker could not apply persistent models: %s", payload.get("error"))
+                    return True
+                return False
+
             reload_ok = False
             last_error: Exception | None = None
             runtime_failed_reject = False
@@ -2307,6 +2314,8 @@ async def _run(
                         reload_ok = True
                         break
                     err_payload = getattr(reload_resp, "payload", None) or {}
+                    if persistent_models_unapplied(reload_resp):
+                        return False
                     err_msg = (
                         err_payload.get("error")
                         if isinstance(err_payload, dict)
@@ -2344,6 +2353,8 @@ async def _run(
                         if getattr(reload_resp, "ok", False):
                             reload_ok = True
                             break
+                        if persistent_models_unapplied(reload_resp):
+                            return False
                     except Exception as e:  # noqa: BLE001
                         last_error = e
                 if reload_ok:
