@@ -48,6 +48,10 @@ class GatewayWsClient:
         frames: list[dict[str, Any]] = []
         while True:
             data = json.loads(self._ws.recv(timeout=timeout))
+            # 同一连接上可能残留上一条请求的 res（流式在终态事件提前返回）或
+            # 服务端主动推送帧；按 id 过滤，避免把别的请求响应当成本次结果。
+            if data.get("id") not in (None, rid):
+                continue
             frames.append(data)
             if not is_stream and data.get("type") == "res":
                 return frames

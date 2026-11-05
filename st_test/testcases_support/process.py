@@ -12,6 +12,7 @@ import importlib.util
 import os
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -83,14 +84,61 @@ def _log_tail(log_path: Path) -> str:
 
 
 def stop_process(proc: subprocess.Popen) -> None:
+    """回收被测进程及其派生进程。
+
+    ``start_process`` 用 ``start_new_session=True`` 启动，因此主进程是独立进程组
+    组长，``killpg`` 能带走同组的 sidecar；但部分子进程（如 jiuwenswarm 的
+    runtime worker）会自己 setsid 到新进程组，必须单独按进程树回收，否则会残留
+    并继续占用端口与工作区。
+    """
+    children = _descendants(proc.pid)
+    _signal_process_group(proc, signal.SIGTERM)
+    _stop_descendants(children)
     if proc.poll() is not None:
         return
-    proc.terminate()
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _signal_process_group(proc, signal.SIGKILL)
         proc.wait(timeout=5)
+
+
+def _signal_process_group(proc: subprocess.Popen, sig: int) -> None:
+    try:
+        os.killpg(proc.pid, sig)
+    except (ProcessLookupError, PermissionError):
+        # 进程组已消失或无权发信号，退回只发给直接子进程。
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            pass
+
+
+def _descendants(pid: int) -> list:
+    try:
+        import psutil
+
+        return psutil.Process(pid).children(recursive=True)
+    except Exception:  # noqa: BLE001 - 进程已退出或 psutil 不可用
+        return []
+
+
+def _stop_descendants(children: list) -> None:
+    if not children:
+        return
+    import psutil
+
+    for child in children:
+        try:
+            child.terminate()
+        except psutil.Error:
+            pass
+    _, alive = psutil.wait_procs(children, timeout=5)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.Error:
+            pass
 
 
 def wait_tcp(port: int, proc: subprocess.Popen, log_path: Path, timeout: float) -> None:

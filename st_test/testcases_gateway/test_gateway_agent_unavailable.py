@@ -13,6 +13,7 @@ import time
 
 from testcases_gateway.gateway_client import GatewayWsClient
 from testcases_gateway.stub_agent_server import StubAgentServer
+from testcases_support.frames import unique_rid
 
 _RETRY_SECONDS = 15.0
 
@@ -26,7 +27,11 @@ def test_agent_server_disconnect_returns_service_unavailable(gateway_factory) ->
     try:
         deadline = time.monotonic() + _RETRY_SECONDS
         while True:
-            frames = client.request("session.list", {}, rid="st-unavailable", timeout=15.0)
+            # 每轮用新 rid：同一 request_id 可能被幂等去重/命中缓存，
+            # 否则重试会一直读到首次成功响应，掩盖降级是否生效。
+            frames = client.request(
+                "session.list", {}, rid=unique_rid("st-unavailable"), timeout=15.0
+            )
             res = [frame for frame in frames if frame.get("type") == "res"][-1]
             if res.get("ok") is False:
                 break
