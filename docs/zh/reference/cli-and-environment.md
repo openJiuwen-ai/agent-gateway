@@ -35,6 +35,7 @@
 | `WEB_HOST` | `127.0.0.1` | WebChannel 绑定地址 |
 | `WEB_PORT` | `19000` | WebChannel 端口 |
 | `WEB_PATH` | `/ws` | WebChannel WebSocket 路径 |
+| `WEB_WS_PERMESSAGE_DEFLATE` | 关闭 | 网关 WebSocket 是否启用 permessage-deflate 帧压缩。压缩需对每帧做 zlib，内网 / 单机部署下 CPU 开销大于带宽收益，因此默认关闭；公网弱网部署可设为 `1` 开启 |
 | `GATEWAY_HOST` | `127.0.0.1` | TUI 路由绑定地址 |
 | `GATEWAY_PORT` | `19001` | TUI 路由端口 |
 | `GATEWAY_URL` | 未设置 | 部分扩展使用的 Gateway 对外地址 |

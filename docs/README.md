@@ -28,6 +28,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [cli-and-environment](zh/reference/cli-and-environment.md) | 命令行参数、环境变量、配置文件、运行时目录与退出行为 |
+| [logging](zh/reference/logging.md) | 日志文件、级别配置与热路径日志契约 |
 | [e2a-protocol](zh/reference/e2a-protocol.md) | Gateway 与 AgentServer 之间的 E2A 请求/响应协议 |
 
 ## Explanation
@@ -44,6 +45,7 @@
 - [Configure channels (EN)](en/how-to/configure-channels.md)
 - [Run multiple instances (EN)](en/how-to/run-multiple-instances.md)
 - [CLI and environment (EN)](en/reference/cli-and-environment.md)
+- [Logging (EN)](en/reference/logging.md)
 - [E2A protocol (EN)](en/reference/e2a-protocol.md)
 - [Architecture (EN)](en/explanation/architecture.md)
 

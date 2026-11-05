@@ -28,6 +28,7 @@ This documentation covers installation, usage, reference, and design for Agent G
 | Document | Description |
 | --- | --- |
 | [cli-and-environment](en/reference/cli-and-environment.md) | CLI options, environment variables, config file, runtime directories, and exit behavior |
+| [logging](en/reference/logging.md) | Log files, level configuration, and the hot-path logging contract |
 | [e2a-protocol](en/reference/e2a-protocol.md) | E2A request/response protocol between the gateway and AgentServer |
 
 ## Explanation
@@ -44,6 +45,7 @@ This documentation covers installation, usage, reference, and design for Agent G
 - [配置渠道](zh/how-to/configure-channels.md)
 - [单机多实例](zh/how-to/run-multiple-instances.md)
 - [命令行与环境变量](zh/reference/cli-and-environment.md)
+- [日志参考](zh/reference/logging.md)
 - [E2A 协议](zh/reference/e2a-protocol.md)
 - [架构说明](zh/explanation/architecture.md)
 

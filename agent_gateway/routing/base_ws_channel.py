@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """BaseWsChannel —— WebSocket 类 Channel 共享基类。
 
@@ -127,9 +127,23 @@ class BaseWsChannel(BaseWebChannel):
         用于显式窗口级切换（``\\new_session`` 控制命令、ACP 单用户通道）——
         旧 session 的延迟 chunk 不应再路由到该 ws。ws_id 映射不受影响，
         断连重连后物理寻址仍可命中。
+
+        Idempotent: re-registering the same ws under the same RoutingKey (the
+        web path re-registers on every request carrying an explicit
+        session_id) is skipped entirely — no state change, no log.
         """
         async with self._lock:
             ws_key = id(ws)
+            # Re-registering the same ws under the same key changes no state, so
+            # return before touching the lock-protected state. First
+            # registration and explicit evict_previous window switches do not
+            # take this branch.
+            if (
+                not evict_previous
+                and ws_key in self._id_by_ws
+                and ws in (self._clients_by_key.get(routing_key) or ())
+            ):
+                return
             ws_id = self._id_by_ws.get(ws_key)
             if ws_id is None:
                 ws_id = uuid.uuid4().hex
@@ -155,7 +169,7 @@ class BaseWsChannel(BaseWebChannel):
             bucket = self._clients_by_key.setdefault(routing_key, [])
             if ws not in bucket:
                 bucket.append(ws)
-        logger.info(
+        logger.debug(
             "[%s] ws registered: user_id=%s session_id=%s agent_ref=%s ws_id=%s evict=%s",
             self.channel_id,
             routing_key.user_id,

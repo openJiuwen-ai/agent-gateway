@@ -35,6 +35,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `WEB_HOST` | `127.0.0.1` | WebChannel bind host |
 | `WEB_PORT` | `19000` | WebChannel port |
 | `WEB_PATH` | `/ws` | WebChannel WebSocket path |
+| `WEB_WS_PERMESSAGE_DEFLATE` | Off | Enable permessage-deflate frame compression on the gateway WebSocket. Compression zlib-compresses every frame; on loopback / LAN deployments the CPU cost outweighs the bandwidth saving, so it is off by default. Public-network deployments can set it to `1` to enable |
 | `GATEWAY_HOST` | `127.0.0.1` | TUI route bind host |
 | `GATEWAY_PORT` | `19001` | TUI route port |
 | `GATEWAY_URL` | unset | Gateway public URL used by some extensions |
