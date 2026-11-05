@@ -73,6 +73,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_DINGTALK_AUTH_POLL", "jiuwenmate.dingtalk_auth.poll"),
     ("JIUWENMATE_DINGTALK_AUTH_CANCEL", "jiuwenmate.dingtalk_auth.cancel"),
     ("JIUWENMATE_DINGTALK_AUTH_DISCONNECT", "jiuwenmate.dingtalk_auth.disconnect"),
+    ("MODELS_REFRESH_STATUS", "models.refresh_status"),
     ("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk"),
     ("WORKSPACE_TREE", "workspace.tree"),
     ("WORKSPACE_PREVIEW", "workspace.preview"),

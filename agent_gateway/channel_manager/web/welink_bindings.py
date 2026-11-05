@@ -8,8 +8,7 @@ from agent_gateway.channel_manager.web.persistent_bindings import BindingError
 logger = logging.getLogger(__name__)
 
 
-def register_welink_bindings(channel, manager, request, operation_lock):
-    welink_authorization_lock = asyncio.Lock()
+def register_welink_bindings(channel, manager, request, colleague_lock, welink_authorization_lock):
 
     async def _connection_request(method, params):
         try:
@@ -111,7 +110,7 @@ def register_welink_bindings(channel, manager, request, operation_lock):
             apply_welink_authorization, load_welink_section, normalize_welink_section,
         )
 
-        async with operation_lock:
+        async with colleague_lock(config_id):
             listed, failure = await _connection_request(
                 ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
             )
@@ -290,7 +289,7 @@ def register_welink_bindings(channel, manager, request, operation_lock):
             )
             return
         try:
-            async with operation_lock, welink_authorization_lock:
+            async with colleague_lock(selected_id), welink_authorization_lock:
                 from agent_gateway.common.config import update_config
                 from agent_gateway.channel_manager.im_platforms.welink.welink_binding import (
                     normalize_welink_section, revoke_welink_authorization,

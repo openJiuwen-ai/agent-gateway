@@ -782,6 +782,7 @@ class ChannelManager(ABC):
                 # sync with the integrations that actually started, so a
                 # later retry is not mistaken for an unchanged no-op.
                 self._config = previous
+                self.mark_channel_restart_pending(channel_id)
                 raise
 
     async def set_config(self, new_conf: dict[str, Any]) -> None:

@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from functools import partial
 import logging
 from uuid import uuid4
+from weakref import WeakValueDictionary
 
 from filelock import Timeout
 from openjiuwen_protocol.e2a.models import E2AEnvelope
@@ -37,6 +38,10 @@ def _required(params, key):
 def register_persistent_bindings(channel, manager, client, normalize_feishu, clear_cache):
     """Register local owner operations. The server resolves the canonical agent ID before each bind."""
     lock = asyncio.Lock()
+    colleague_locks = WeakValueDictionary()
+
+    def colleague_lock(config_id):
+        return colleague_locks.setdefault(config_id, asyncio.Lock())
 
     def feishu_apps(current):
         if not current:
@@ -126,7 +131,6 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                 apps = [app if app[id_key] == app_id else {id_key: app[id_key]} for app in apps]
             return section(platform, current, apps)
 
-        before = cm.get_conf(platform)
         async with im_binding_lock(platform, app_id) if platform == "dingtalk" else nullcontext():
             if op == "bind_agent":
                 secret_key = "app_secret" if platform == "feishu" else "client_secret"
@@ -141,9 +145,11 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                 binding = {id_key: app_id, secret_key: secret, "persistent_agent_id": agent_id, "enabled": True}
                 if platform == "dingtalk" and "robot_code" in params:
                     binding["robot_code"] = str(params.get("robot_code") or "").strip()
-            saved = await edit_channel_body(platform, edit)
-        if before != saved or binding is not None:
-            await apply(cm, platform, saved, method, before)
+            async with lock:
+                before = cm.get_conf(platform)
+                saved = await edit_channel_body(platform, edit)
+                if before != saved or binding is not None:
+                    await apply(cm, platform, saved, method, before)
         if binding is None:
             return {"unbound": True}
         return {"binding": {id_key: app_id, "persistent_agent_id": binding["persistent_agent_id"]}}
@@ -183,7 +189,8 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                 raise BindingError("SERVICE_UNAVAILABLE", "channel manager is unavailable")
             if not isinstance(params, dict):
                 raise ValueError("params must be an object")
-            async with lock:
+            async with (colleague_lock(_required(params, "config_id")) if op == "bind_agent"
+                        else nullcontext() if op == "unbind_agent" else lock):
                 if op == "get_bindings":
                     active = [a for a in feishu_apps(cm.get_conf(platform))
                               if a.get("enabled", True) and a.get("persistent_agent_id") and a.get("app_id")]
@@ -234,7 +241,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
 
     from agent_gateway.channel_manager.web.welink_bindings import register_welink_bindings
 
-    register_welink_bindings(channel, manager, request, lock)
+    register_welink_bindings(channel, manager, request, colleague_lock, lock)
 
     async def delete_colleague(ws, req_id, params, session_id):
         from agent_gateway.enterprise import is_enterprise
@@ -252,32 +259,33 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             mode = params.get("mode")
             if mode not in ("unbind", "purge"):
                 raise ValueError("mode must be unbind or purge")
-            async with lock:
+            async with colleague_lock(config_id):
                 listed = await request(ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id}, 120)
                 agents = {config_id} | {item["agent_id"] for item in listed.get("connections", [])
                                        if isinstance(item, dict) and isinstance(item.get("agent_id"), str)}
-                for platform in ("feishu", "welink", "dingtalk"):
-                    def remove(current):
-                        if platform == "welink":
-                            bindings = normalize_welink_section(current)["bindings"]
-                            if not any(item["persistent_agent_id"] in agents or item.get("config_id") in agents
-                                       for item in bindings):
+                async with lock:
+                    for platform in ("feishu", "welink", "dingtalk"):
+                        def remove(current):
+                            if platform == "welink":
+                                bindings = normalize_welink_section(current)["bindings"]
+                                if not any(item["persistent_agent_id"] in agents or item.get("config_id") in agents
+                                           for item in bindings):
+                                    return current
+                                for agent in agents:
+                                    current = revoke_welink_authorization(current, agent)
                                 return current
-                            for agent in agents:
-                                current = revoke_welink_authorization(current, agent)
-                            return current
-                        previous = apps_for(platform, current)
-                        remaining = [app for app in previous if app.get("persistent_agent_id") not in agents]
-                        if len(previous) == len(remaining):
-                            return current
-                        if platform == "dingtalk":
-                            remaining = [{"client_id": app["client_id"]} for app in remaining]
-                        return section(platform, current, remaining)
+                            previous = apps_for(platform, current)
+                            remaining = [app for app in previous if app.get("persistent_agent_id") not in agents]
+                            if len(previous) == len(remaining):
+                                return current
+                            if platform == "dingtalk":
+                                remaining = [{"client_id": app["client_id"]} for app in remaining]
+                            return section(platform, current, remaining)
 
-                    before = cm.get_conf(platform)
-                    saved = await edit_channel_body(platform, remove)
-                    if saved != before:
-                        await apply(cm, platform, saved, "jiuwenmate.colleague.delete", before)
+                        before = cm.get_conf(platform)
+                        saved = await edit_channel_body(platform, remove)
+                        if saved != before:
+                            await apply(cm, platform, saved, "jiuwenmate.colleague.delete", before)
                 await request(ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE, {"config_id": config_id, "mode": mode}, 120)
         except BindingError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)

@@ -4663,6 +4663,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             finally:
                 if should_clear_agent_config_cache:
                     _schedule_clear_agent_config_cache("channel.dingtalk.set_conf")
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.dingtalk.set_conf] %s", e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -5676,6 +5678,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
+    _register_config_proxy("models.refresh_status", _ConfigReq.MODELS_REFRESH_STATUS)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
     _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
                            lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
