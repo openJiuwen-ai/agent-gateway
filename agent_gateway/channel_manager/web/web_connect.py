@@ -204,6 +204,10 @@ class WebChannelConfig:
     port: int = 19000
     path: str = "/ws"
     allow_from: list[str] = field(default_factory=list)
+    # ws permessage-deflate compresses every frame with zlib; on loopback/LAN
+    # the CPU cost outweighs the bandwidth saving, so it stays off by default.
+    # Public-network deployments can re-enable it with WEB_WS_PERMESSAGE_DEFLATE=1.
+    ws_permessage_deflate: bool = False
 
 
 class WebChannel(BaseWsChannel):
@@ -895,6 +899,7 @@ class WebChannel(BaseWsChannel):
             # 超时后直接 abort，释放 fd 与缓冲。
             http=guarded_http_protocol(),
             ws=guarded_websockets_protocol(),
+            ws_per_message_deflate=self.config.ws_permessage_deflate,
         )
 
         class EmbeddedUvicornServer(uvicorn.Server):
@@ -1273,12 +1278,15 @@ class WebChannel(BaseWsChannel):
         _pl = getattr(msg, "payload", None) or {}
         _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
         _has_fanout = bool((getattr(msg, "metadata", None) or {}).get("fan_out_targets"))
-        logger.debug(
-            "[WebChannel] send() called: id=%s event_type=%s payload_et=%s has_fanout=%s"
-            " has_routing_target=%s client_count=%s",
-            getattr(msg, "id", ""), getattr(msg, "event_type", None), _et,
-            _has_fanout, routing_target is not None, len(self.clients),
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            # self.clients is a derived property that rebuilds the full set
+            # (O(connections)); evaluate it only when DEBUG is enabled.
+            logger.debug(
+                "[WebChannel] send() called: id=%s event_type=%s payload_et=%s has_fanout=%s"
+                " has_routing_target=%s client_count=%s",
+                getattr(msg, "id", ""), getattr(msg, "event_type", None), _et,
+                _has_fanout, routing_target is not None, len(self.clients),
+            )
         # Maintain the session busy state before any routing branch can return.
         self._track_session_busy(msg)
 
@@ -1533,7 +1541,7 @@ class WebChannel(BaseWsChannel):
 
         # ── V2: 诊断日志 ──
         if routing_target is not None:
-            logger.info(
+            logger.debug(
                 "[WebChannel] frame: id=%s event=%s intent=%s",
                 getattr(msg, "id", ""), event_name, routing_target.intent,
             )

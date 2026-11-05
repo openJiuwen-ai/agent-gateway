@@ -159,6 +159,32 @@ _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
 # runtime streams member events as they happen and has no non-streaming entry
 # point, so the request is refused rather than silently downgraded.
 _SESSION_OWNER_AUTH_WAIT_S = 20.0
+# The "session owner not logged in or login expired" hint fires on every
+# chat.send for a free-model session without a login, so it is logged at most
+# once per session per window. Module-level state on purpose: MessageHandler is
+# a singleton and the gate is testable on its own.
+_LOGIN_EXPIRED_LOG_WINDOW_S = 60.0
+_login_expired_log_last: dict[str, float] = {}
+
+
+def _login_expired_log_allowed(session_id: str) -> bool:
+    """Whether the login-expired hint may be logged now for ``session_id``."""
+    key = session_id or ""
+    now = time.monotonic()
+    last = _login_expired_log_last.get(key)
+    if last is not None and now - last < _LOGIN_EXPIRED_LOG_WINDOW_S:
+        return False
+    # Keep the table bounded: prune expired entries once it grows past 256.
+    if len(_login_expired_log_last) > 256:
+        for stale in [
+            k for k, t in _login_expired_log_last.items()
+            if now - t >= _LOGIN_EXPIRED_LOG_WINDOW_S
+        ]:
+            _login_expired_log_last.pop(stale, None)
+    _login_expired_log_last[key] = now
+    return True
+
+
 _LOGIN_HINT_NO_OWNER = (
     "该会话使用的是登录华为账号获得的限时免费模型。"
     "请先在网页端打开这个会话，用该模型发送一条消息，之后即可在这里继续使用。"
@@ -827,7 +853,7 @@ class MessageHandler(ABC):
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
         self._user_messages.put_nowait(msg)
-        logger.info(
+        logger.debug(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
         )
@@ -3112,7 +3138,7 @@ class MessageHandler(ABC):
                 chat_stream_rids = sum(
                     1 for rid in self._stream_modes if self._is_chat_stream(rid)
                 )
-                logger.info(
+                logger.debug(
                     "[task.global_running] broadcast: running=%s non_team_count=%d "
                     "non_team_modes=%s team_modes=%s chat_stream_rids=%d "
                     "stream_rids=%d active_chat_rids=%d",
@@ -3937,7 +3963,7 @@ class MessageHandler(ABC):
             app_id=_push_app_id,
         )
         await self.publish_robot_messages(out)
-        logger.info(
+        logger.debug(
             "[MessageHandler] server_push 已写入 robot_messages: request_id=%s channel_id=%s app_id=%s",
             rid,
             chunk.channel_id,
@@ -5175,7 +5201,8 @@ class MessageHandler(ABC):
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
             return
         if auth is None:
-            logger.info("[MessageHandler] 会话主人未登录或登录已过期，免费模型不可用 session=%s", session_id)
+            if _login_expired_log_allowed(session_id):
+                logger.info("[MessageHandler] 会话主人未登录或登录已过期，免费模型不可用 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_OWNER_LOGGED_OUT
             return
         params[E2A_MODEL_AUTH_PARAM_KEY] = auth
@@ -5245,7 +5272,7 @@ class MessageHandler(ABC):
                 if operation is not None:
                     attach_message_trace(out, operation)
                 await self.publish_robot_messages(out)
-                logger.info(
+                logger.debug(
                     "[MessageHandler] Agent 响应已写入 robot_messages: request_id=%s channel_id=%s",
                     resp.request_id,
                     resp.channel_id,
@@ -5394,7 +5421,7 @@ class MessageHandler(ABC):
                 # Busy-session chat.send is classified later, after the target
                 # Session id is known.
                 if prepare_im_session_input(msg):
-                    logger.info(
+                    logger.debug(
                         "[MessageHandler] IM session input uses public delivery: "
                         "id=%s channel_id=%s session_id=%s",
                         msg.id,
@@ -5417,7 +5444,7 @@ class MessageHandler(ABC):
                 # cancelling it and starting another.
                 session_busy = self._session_has_streams_blocking_processing_false(msg.session_id)
                 if session_busy and steer_busy_im_chat(msg):
-                    logger.info(
+                    logger.debug(
                         "[MessageHandler] IM busy session chat.send uses steer: "
                         "id=%s channel_id=%s session_id=%s",
                         msg.id,
@@ -5510,7 +5537,7 @@ class MessageHandler(ABC):
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         await self._process_non_stream_request(msg, self.message_to_e2a(agent_msg))
                         continue
-                    logger.info(
+                    logger.debug(
                         "[MessageHandler] 收到中断请求: id=%s channel_id=%s",
                         msg.id, msg.channel_id,
                     )
@@ -5767,7 +5794,7 @@ class MessageHandler(ABC):
                                 if "content" in msg.params:
                                     msg.params["content"] = review_prompt
                                 content = review_prompt
-                                logger.info(
+                                logger.debug(
                                     "[MessageHandler] /review prompt injected for chat.send "
                                     "channel=%s pr_arg=%s",
                                     getattr(msg, "channel_id", ""),
@@ -5816,7 +5843,7 @@ class MessageHandler(ABC):
                                 if "content" in msg.params:
                                     msg.params["content"] = security_prompt
                                 content = security_prompt
-                                logger.info(
+                                logger.debug(
                                     "[MessageHandler] /security-review prompt injected "
                                     "for chat.send channel=%s extra_arg=%s",
                                     getattr(msg, "channel_id", ""),
@@ -5852,7 +5879,7 @@ class MessageHandler(ABC):
                                 + agent_hint
                                 + "\n</system-reminder>"
                             )
-                            logger.info(
+                            logger.debug(
                                 "[MessageHandler] Agent mentions detected: %s",
                                 agent_mentions,
                             )
@@ -5862,12 +5889,12 @@ class MessageHandler(ABC):
                             msg.params["query"] = enriched
                             if "content" in msg.params:
                                 msg.params["content"] = enriched
-                            logger.info(
+                            logger.debug(
                                 "[MessageHandler] attachments/agent-mentions resolved in chat.send: id=%s",
                                 msg.id,
                             )
 
-                logger.info(
+                logger.debug(
                     "[MessageHandler] dispatch: request_id=%s channel=%s session_id=%s user_id=%s is_stream=%s",
                     msg.id,
                     msg.channel_id,
@@ -5932,7 +5959,7 @@ class MessageHandler(ABC):
                             queued_msg, reason="task_cancelled" if done.cancelled() else "",
                         ))
                         handed_off = True
-                        logger.info(
+                        logger.debug(
                             "[MessageHandler] 非流式 RPC 已后台执行: id=%s method=%s",
                             msg.id,
                             method_label,
@@ -6043,7 +6070,7 @@ class MessageHandler(ABC):
         track_cron_resume = self._is_permission_resume(env, session_id)
         saw_another_pause = False
         _proc_count = 0
-        logger.info(
+        logger.debug(
             "[MessageHandler] process_stream started: request_id=%s channel=%s session_id=%s",
             rid, channel_id, session_id,
             extra={"session_id": session_id} if session_id else {},
@@ -6061,7 +6088,7 @@ class MessageHandler(ABC):
                 if _proc_count <= 3:
                     _pl = getattr(chunk, "payload", None) or {}
                     _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
-                    logger.info(
+                    logger.debug(
                         "[MessageHandler] process_stream chunk #%s: request_id=%s event_type=%s",
                         _proc_count, rid, _et,
                     )
@@ -6258,7 +6285,7 @@ class MessageHandler(ABC):
                 and not has_processing_status_false
                 and not session_blocks_processing_false
             )
-            logger.info(
+            logger.debug(
                 "[task.global_running] stream 退出: rid=%s cancelled=%s emit=%s "
                 "has_status_false=%s remaining_stream=%d remaining_chat=%d "
                 "will_broadcast_processing_status=%s",
@@ -6290,7 +6317,7 @@ class MessageHandler(ABC):
                             else None
                         ),
                     )
-                    logger.info(
+                    logger.debug(
                         "[MessageHandler] 该 session 流式任务已结束（cancelled=%s），已发送 is_processing=false: session_id=%s",
                         cancelled,
                         session_id,
@@ -6384,7 +6411,7 @@ class MessageHandler(ABC):
             metadata=None,
         )
         await self.publish_robot_messages(cancel_msg)
-        logger.info(
+        logger.debug(
             "[MessageHandler] 已发送流式任务取消通知: request_id=%s",
             request_id,
         )
@@ -6493,7 +6520,7 @@ class MessageHandler(ABC):
             await self._pop_stream_tracking_and_broadcast([stream_rid])
             raise
         ready.set()
-        logger.info(
+        logger.debug(
             "[MessageHandler] Stream 任务已启动（后台运行）: request_id=%s "
             "channel_id=%s 当前并发=%d",
             stream_rid, msg.channel_id, len(self._stream_tasks),
@@ -6597,7 +6624,7 @@ class MessageHandler(ABC):
         """
         try:
             resp = await self._send_non_stream_agent_request(env)
-            logger.info(
+            logger.debug(
                 "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
                 resp.request_id, resp.ok,
             )
@@ -6670,7 +6697,7 @@ class MessageHandler(ABC):
             metadata=notify_meta,
         )
         await self.publish_robot_messages(notify_msg)
-        logger.info(
+        logger.debug(
             "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s "
             "success=%s ws_id=%s",
             intent,
@@ -6724,7 +6751,7 @@ class MessageHandler(ABC):
         # running 取当前活跃任务集合快照（任务结束时该 dict 已 pop 对应 rid），
         # 而非本函数的 is_processing 参数，保证多任务并发时计数准确、幂等。
         await self._broadcast_task_global_running()
-        logger.info(
+        logger.debug(
             "[MessageHandler] processing status sent: request_id=%s session_id=%s is_processing=%s",
             request_id,
             session_id,

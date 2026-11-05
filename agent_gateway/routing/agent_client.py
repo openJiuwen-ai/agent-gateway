@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """AgentServerClient - Gateway 与 AgentServer 的 WebSocket 客户端."""
 
@@ -592,7 +592,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         try:
             await ws.send(json.dumps(payload, ensure_ascii=False))
         except (ConnectionClosed, OSError) as exc:
-            logger.info(
+            logger.warning(
                 "[WebSocketAgentServerClient] AgentServer WebSocket 发送失败，连接将重置: %s",
                 format_ws_diagnostics(
                     self._diagnostic_state(ws),
@@ -629,7 +629,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             float(timeout) if timeout is not None else _UNARY_REQUEST_TIMEOUT_SECONDS
         )
         sid = str(envelope.session_id or "")
-        logger.info(
+        logger.debug(
             "[E2A][out][nostream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
             envelope.channel,
@@ -781,7 +781,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
         sid = str(envelope.session_id or "")
-        logger.info(
+        logger.debug(
             "[E2A][out][stream] request_id=%s channel=%s method=%s session_id=%s is_stream=%s",
             rid,
             envelope.channel,
@@ -869,9 +869,10 @@ class WebSocketAgentServerClient(AgentServerClient):
                 yield chunk
                 if chunk.is_complete:
                     saw_complete = True
-            logger.info("[WebSocketAgentServerClient] 流式响应结束: request_id=%s 共 %s 个 chunk", rid, chunk_count)
+            # The one-per-stream completion/cancellation INFO lives in
+            # MessageHandler.process_stream (with total_chunks); do not print a
+            # duplicate here.
         except asyncio.CancelledError:
-            logger.info("[WebSocketAgentServerClient] 流式接收被取消: request_id=%s", rid)
             if operation is not None:
                 operation.event("response.failed", {"reason": "cancelled"})
                 operation.record_outcome("cancelled", reason="cancelled")

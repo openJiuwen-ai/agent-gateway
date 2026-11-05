@@ -26,16 +26,16 @@ from agent_gateway import app_gateway, telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.common.log_sanitize import mask_sensitive
+from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.e2a_proxy import proxy_unary_request
 from agent_gateway.routing.keys import AgentRef, RoutingKey
-from agent_gateway.common.log_sanitize import mask_sensitive
-from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
 @pytest.fixture(autouse=True)
-def isolated_workspace(tmp_path, monkeypatch):
+def isolated_workspace(monkeypatch, tmp_path):
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / ".jiuwenswarm"))
     yield
 

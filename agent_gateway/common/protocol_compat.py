@@ -1,10 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""补齐 pinned ``openjiuwen-protocol`` 尚未发布的 ``ReqMethod`` 成员。
+"""补齐 pinned ``openjiuwen-protocol`` 尚未发布的协议枚举成员。
 
-拆仓前这些成员由 ``jiuwenswarm.common.schema.message`` 在宿主进程内动态注册；
-Gateway 作为独立进程不再导入宿主，必须自行注册同值成员，否则
-``app_web_handlers`` 注册 workspace 文件接口时会抛 ``AttributeError``。
+拆仓前这些成员由宿主进程动态注册；Gateway 作为独立进程不再导入宿主，
+必须自行注册同值成员，否则消费对应 RPC 或事件时会抛 ``AttributeError``。
 协议包发布同名同值成员后，本模块及其调用应一并删除。
 """
 
@@ -12,7 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from openjiuwen_protocol.message import ReqMethod
+from openjiuwen_protocol.message import EventType, ReqMethod
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound"),
@@ -84,6 +83,16 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("WORKSPACE_PREVIEW", "workspace.preview"),
     ("WORKSPACE_USAGE", "workspace.usage"),
     ("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete"),
+    ("CLIENT_ATTACH", "client.attach"),
+    ("CLIENT_RENEW", "client.renew"),
+    ("CLIENT_LIST", "client.list"),
+    ("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages"),
+    ("CLIENT_CONVERSATIONS", "client.conversations"),
+)
+
+GATEWAY_EVENT_TYPES: tuple[tuple[str, str], ...] = (
+    ("CHAT_CLIENT_TOOL_REQUEST", "chat.client_tool_request"),
+    ("CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed"),
 )
 
 
@@ -113,8 +122,15 @@ def ensure_gateway_req_methods() -> None:
         ensure_protocol_member(ReqMethod, name, value)
 
 
+def ensure_gateway_event_types() -> None:
+    for name, value in GATEWAY_EVENT_TYPES:
+        ensure_protocol_member(EventType, name, value)
+
+
 __all__ = [
+    "GATEWAY_EVENT_TYPES",
     "GATEWAY_REQ_METHODS",
+    "ensure_gateway_event_types",
     "ensure_gateway_req_methods",
     "ensure_protocol_member",
 ]

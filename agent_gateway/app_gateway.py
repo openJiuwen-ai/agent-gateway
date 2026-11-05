@@ -1893,6 +1893,7 @@ async def _run(
         web_port: int,
         web_path: str,
         shutdown_event: asyncio.Event,
+        web_ws_deflate: bool = False,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
@@ -2427,6 +2428,7 @@ async def _run(
         host=web_host,
         port=web_port,
         path=web_path,
+        ws_permessage_deflate=web_ws_deflate,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
     register_3rdagent_web_method(web_channel)
@@ -2530,7 +2532,7 @@ async def _run(
             if method_val == "session.create":
                 _inject_session_work_mode(normalized)
             await channel_manager.deliver_to_message_handler(normalized)
-            logger.info("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
+            logger.debug("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
             if method_val in no_local_methods:
                 return True
             return False
@@ -3903,6 +3905,7 @@ async def _run_with_shutdown_signals(
     web_host: str,
     web_port: int,
     web_path: str,
+    web_ws_deflate: bool = False,
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
@@ -3922,6 +3925,7 @@ async def _run_with_shutdown_signals(
             web_port=web_port,
             web_path=web_path,
             shutdown_event=shutdown_event,
+            web_ws_deflate=web_ws_deflate,
         )
     finally:
         for signum, handler in previous_handlers.items():
@@ -4006,6 +4010,15 @@ def main() -> None:
     web_host = args.host or os.getenv("WEB_HOST", "127.0.0.1")
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
+    # ws permessage-deflate compresses every frame with zlib; on loopback/LAN
+    # the CPU cost outweighs the bandwidth saving, so it stays off by default.
+    # Public-network deployments can re-enable it with WEB_WS_PERMESSAGE_DEFLATE=1.
+    web_ws_deflate = (os.getenv("WEB_WS_PERMESSAGE_DEFLATE") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
     install_crash_exit_handler("gateway")
     install_async_dump_handler("gateway")
@@ -4030,6 +4043,7 @@ def main() -> None:
                 web_host=web_host,
                 web_port=web_port,
                 web_path=web_path,
+                web_ws_deflate=web_ws_deflate,
             )
         )
     finally:

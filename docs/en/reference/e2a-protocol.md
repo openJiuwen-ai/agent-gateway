@@ -419,6 +419,7 @@ Runtime list: **`constants.E2A_RESPONSE_KINDS`**; **`body`** is a **dict**. Norm
 - One line per **`E2AResponse`** JSON; sort/replay by **`sequence`**.
 - Minimum keys: **`request_id`**, **`response_id`**, **`sequence`**, **`is_final`**, **`response_kind`**, **`timestamp`**.
 - Do not log secrets (`bearer_token`, sensitive model output). Large **`body`** may later use **`body_ref`** (not defined in this version).
+- Per-frame direction logs (`[E2A][out]` etc.) are hot-path logs and default to DEBUG; see the [logging reference](logging.md).
 
 ### 12.8 Example: two chunks + final
 

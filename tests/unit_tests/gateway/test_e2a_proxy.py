@@ -72,6 +72,26 @@ class FakeAgentClient:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.SESSION_LIST, ReqMethod.FILE_IMPORT_URL])
+async def test_proxy_preserves_authoritative_routing_metadata(method):
+    from types import SimpleNamespace
+
+    from openjiuwen_protocol.identity import web_routing_identity
+
+    client = FakeAgentClient()
+    await proxy_unary_request(
+        channel=FakeChannel(), agent_client=client,
+        ws=SimpleNamespace(_web_routing={"user_id": "u", "group_id": "g", "bot_id": "b"}),
+        req_id="file-req", params={"files": []}, session_id="s", user_id="u",
+        req_method=method,
+    )
+    routing = web_routing_identity(client.envelopes[0].channel_context)
+    assert routing["group_id"] == "g"
+    assert routing["bot_id"] == "b"
+    assert "group_id" not in client.envelopes[0].params
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("app_id", "expected"),
     [("web-app", "web-app"), ("", "default")],

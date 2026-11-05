@@ -119,8 +119,8 @@
    "jiuwenswarm.common",
    "jiuwenswarm.common.utils"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "gateway mask_sensitive + local workspace isolation"
  },
  {
   "source_path": "tests/integration/test_memory_config_processes.py",
@@ -1074,8 +1074,8 @@
   "deps": [
    "jiuwenswarm.server.runtime.agent_adapter.interface"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: 25 gateway approval-card tests; server InteractiveInput adapter assertions remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/channel/test_feishu_ask_user_answer.py",
@@ -1182,8 +1182,8 @@
    "jiuwenswarm.server.trajectory.host",
    "jiuwenswarm.common.schema.message"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: HTTP contract via fake fetch/blob; SQL retention and desktop SPA tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/channel/test_trajectory_usage_http.py",
@@ -1196,8 +1196,8 @@
    "jiuwenswarm.observability.config",
    "jiuwenswarm.server.trajectory.host"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "mocked AgentServer trajectory fetch"
  },
  {
   "source_path": "tests/unit_tests/channel/test_transport_stall_guard.py",
@@ -1335,8 +1335,8 @@
    "jiuwenswarm.channels.web",
    "jiuwenswarm.channels.web.share_image_export"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: manager/renderer/ASGI share tests; desktop SPA and raw socket tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/channels/web/test_web_file_download.py",
@@ -1354,8 +1354,8 @@
    "jiuwenswarm.server.agent_ws_server",
    "jiuwenswarm.common.utils.get_user_workspace_dir"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: token and HEAD/Range/inline tests; agents assets and legacy server downloads remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/common/test_auth_account_kit.py",
@@ -1935,7 +1935,7 @@
    "jiuwenswarm.server.runtime.gateway_adapter.config_adapter"
   ],
   "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "reason": "server-owned ConfigAdapter harness; keep in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_adx_gateway_identity.py",
@@ -2089,8 +2089,8 @@
    "jiuwenswarm.common.external_providers",
    "jiuwenswarm.extensions.yuanrong.agent_client"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: 104 gateway web-handler tests; 64 ConfigAdapter/server-owned tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_at_file_references.py",
@@ -2154,8 +2154,8 @@
    "jiuwenswarm.common.config_panel",
    "jiuwenswarm.common.config_panel.tui_models_handlers.Model"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: 35 gateway CLI/E2A forwarding tests; server local model/config helpers remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_client_tool_events.py",
@@ -2169,8 +2169,8 @@
    "jiuwenswarm.common.e2a.wire_codec",
    "jiuwenswarm.common.schema.agent"
   ],
-  "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "status": "migrated",
+  "reason": "fully migrated after gateway protocol_compat registers the two EventType members"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_config_poll_revision.py",
@@ -2193,8 +2193,8 @@
   "deps": [
    "jiuwenswarm.agents.harness.common.memory"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "negative import sentinel only; no runtime dependency"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_cron_controller_proactive_tick_guard.py",
@@ -2218,8 +2218,8 @@
    "jiuwenswarm.server.runtime.session.project_store",
    "jiuwenswarm.server.runtime.session.project_store.get_project_by_id"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "removed unused server dataclass import and server lookup patch"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_cron_controller_validate_wakeoffset.py",
@@ -2310,8 +2310,8 @@
    "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
    "jiuwenswarm.common.config.get_model_names"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: 21 gateway cron/model tests; server resolve_agent_cron_model/Zen assertions remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_cron_proactive_sync.py",
@@ -2393,8 +2393,8 @@
   "deps": [
    "jiuwenswarm.agents.harness.common.tools.cron.cron_runtime"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: binding codec and scheduler push; server CronTools backend tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_dotenv_early.py",
@@ -2418,8 +2418,8 @@
    "jiuwenswarm.server.control.repositories.session_repository.get_all_sessions_metadata",
    "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "routing assertion via openjiuwen_protocol identity; dropped server lookup patch"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_enterprise_files.py",
@@ -2455,7 +2455,7 @@
    "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
   ],
   "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "reason": "server-owned enterprise expert routes and dispatch; keep in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_federated_user_token.py",
@@ -2511,8 +2511,8 @@
   "deps": [
    "jiuwenswarm.server.runtime.attachments"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "trimmed server media persistence tail; gateway file picker assertions kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_gateway_connect_retry.py",
@@ -2580,8 +2580,8 @@
    "jiuwenswarm.agents.harness.code.rails.heartbeat.tools",
    "jiuwenswarm.server.agent_ws_server"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: gateway envelope/relay/RPC contracts; runtime tools and real AgentServer WS tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_hub_catalog_e2a.py",
@@ -2599,8 +2599,8 @@
    "jiuwenswarm.extensions.runtime_management_extension.runtime_routed_client",
    "jiuwenswarm.common.e2a.models"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: fake send_request catalog/filter/degradation tests; real ASGI/runtime routing remains in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_im_inbound_identity.py",
@@ -2706,8 +2706,8 @@
    "jiuwenswarm.server.context",
    "jiuwenswarm.server.handlers.ops"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: gateway credential push/logout tests; server credential registry/session tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_mcp_oauth_http.py",
@@ -2721,8 +2721,8 @@
    "jiuwenswarm.server.runtime.mcp.credential",
    "jiuwenswarm.server.runtime.mcp.oauth_flow"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: gateway OAuth HTTP/security tests with fake providers; PKCE/token/CredentialStore flow remains in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_mcp_remote.py",
@@ -2735,8 +2735,8 @@
    "jiuwenswarm.server.agent_ws_server",
    "jiuwenswarm.server.runtime.mcp"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "dropped server oauth callback test; remote provider tests kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_cron_push.py",
@@ -2750,8 +2750,8 @@
    "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries",
    "jiuwenswarm.extensions.agentos.routing"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: owner/tenant/ACK/controller tests with protocol wire fakes; server wire/Zen behavior remains in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_evolution.py",
@@ -2764,8 +2764,8 @@
    "jiuwenswarm.runtime.session.model",
    "jiuwenswarm.common.schema"
   ],
-  "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "status": "migrated",
+  "reason": "replaced jiuwenswarm schema imports with openjiuwen_protocol"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_hook_params_update.py",
@@ -2895,8 +2895,8 @@
    "jiuwenswarm.common.schema.message",
    "jiuwenswarm.common.schema.package_allowlist"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: WS identity and enterprise repository/service tests; pod REST/server identity tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_personal_share_api.py",
@@ -2934,7 +2934,7 @@
    "jiuwenswarm.common.e2a.models"
   ],
   "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "reason": "server-owned runtime extension registration and REST identity; keep in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_secrets_registry.py",
@@ -2979,8 +2979,8 @@
   "deps": [
    "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "dropped server adapter assertion; gateway session_owners tests kept"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_session_map_repository_wiring.py",
@@ -3006,7 +3006,7 @@
  },
  {
   "source_path": "tests/unit_tests/gateway/test_skills_detail_http_parity.py",
-  "target_path": "tests/unit_tests/gateway/test_skills_detail_http_parity.py",
+  "target_path": "tests/unit_tests/gateway/test_skills_detail_http.py",
   "category": "E",
   "owner": "gateway",
   "enterprise": true,
@@ -3015,8 +3015,8 @@
    "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map",
    "jiuwenswarm.common.e2a.models"
   ],
-  "status": "deferred",
-  "reason": "mixes gateway and server behavior; needs split"
+  "status": "migrated",
+  "reason": "split migrated as test_skills_detail_http.py: gateway mapped routes/allowlist; cross-repo parity remains in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_slash_command.py",
@@ -3051,7 +3051,7 @@
   "tier1": true,
   "deps": [],
   "status": "migrated",
-  "reason": ""
+  "reason": "one bundled-ffmpeg decode test temporarily removed (depends on imageio-ffmpeg binary)"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_tui_harmonyos_project.py",
@@ -3077,8 +3077,8 @@
    "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
    "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: session create/switch forwarding; KVC affinity and server metadata/cache tests remain in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_tui_session_project_path.py",
@@ -3091,8 +3091,8 @@
    "jiuwenswarm.server.runtime.session.session_metadata",
    "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir"
   ],
-  "status": "deferred",
-  "reason": "depends on jiuwenswarm server/agents/runtime modules"
+  "status": "migrated",
+  "reason": "split migrated: path/session delete/list tests; server metadata persistence remains in jiuwenswarm"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_unknown_team_mode_rejection.py",

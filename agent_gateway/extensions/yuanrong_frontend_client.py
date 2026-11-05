@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """YuanrongFrontendAgentClient - openYuanRong Frontend HTTP 客户端.
 

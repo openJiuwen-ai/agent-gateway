@@ -37,7 +37,7 @@ def test_http_stream_marks_replay_but_not_new_frames(monkeypatch) -> None:
         monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: None)
         monkeypatch.setattr("agent_gateway.cron.live_bus.cron_live_bus", bus)
         lookup = AsyncMock(return_value=JSONResponse({"ok": True, "data": {"cron_id": "job"}}))
-        monkeypatch.setattr("agent_gateway.channel_manager.web.web_http_routes._unary", lookup)
+        monkeypatch.setitem(register_web_http_api_routes.__globals__, "_unary", lookup)
         app = FastAPI()
         channel = object()
         register_web_http_api_routes(app, channel, enterprise=True)

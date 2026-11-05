@@ -371,6 +371,7 @@ Agent → 网关 → 客户端的**每一条**出站记录（含流式多帧）�
 - **一行一条**完整 **`E2AResponse`** JSON，便于检索与按 **`sequence`** 重放。
 - 每条至少含 **`request_id`**、**`response_id`**、**`sequence`**、**`is_final`**、**`response_kind`**、**`timestamp`**。
 - 勿记录 **`bearer_token`**、完整模型输出中的敏感内容；大 **`body`** 可将来扩展 **`body_ref`**（本版未定义）。
+- 逐帧方向日志（`[E2A][out]` 等）属热路径，默认收敛到 DEBUG；级别约定见 [日志参考](logging.md)。
 
 ### 12.8 示例：流式两帧 + 结束帧
 
