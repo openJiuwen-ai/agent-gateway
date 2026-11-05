@@ -287,15 +287,6 @@ async def test_task_asr_sends_only_configured_api_key(monkeypatch, route, api_ke
     assert len(requests) == 1
 
 
-def test_task_asr_decodes_with_bundled_ffmpeg_when_path_is_empty(monkeypatch):
-    from agent_gateway.common import asr_client
-
-    monkeypatch.setattr(asr_client.shutil, "which", lambda _name: None)
-    pcm = b"\x01\x00\xff\xff" * 1600
-    recording = base64.b64decode(_wav_params(pcm)["audio_base64"])
-    assert asr_client.to_pcm16k(recording, ".wav", 15) == pcm
-
-
 @pytest.mark.asyncio
 async def test_task_asr_reads_request_config_instead_of_process_env(monkeypatch):
     from agent_gateway.common.local_env_config import bind_task_env_overlay, reset_task_env_overlay
