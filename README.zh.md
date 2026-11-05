@@ -214,6 +214,18 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 - `htmlcov/index.html`
 - `coverage.xml`
 
+独立契约 ST（拉起真实 gateway 进程 + 内置 `StubAgentServer`，不依赖 workswarm）：
+
+```bash
+python -m pytest st_test/testcases_gateway --no-cov
+```
+
+与真实 workswarm 结合的兼容 ST（需先安装 workswarm，默认 develop；用例自行拉起 AgentServer + gateway 两个真实进程）：
+
+```bash
+python -m pytest st_test/testcases_integration --no-cov
+```
+
 ## 参与贡献
 
 欢迎开发者参与 Agent Gateway 的建设：

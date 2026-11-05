@@ -140,13 +140,65 @@ Expected: `{"type":"res","id":"req-list","ok":true,"payload":{"sessions":[],"cur
 - Press `Ctrl+C` in both terminals
 - Remove the local workspace: `rm -rf .local-home`
 
-## 7. Troubleshooting
+## 7. Contract ST (automated regression)
+
+### 7.1 Standalone contracts (no workswarm)
+
+`st_test/testcases_gateway/` is the gateway's standalone contract ST: it replaces the real AgentServer with the built-in `StubAgentServer` and does not depend on workswarm, sandboxes, or YuanRong, so it can gate pull requests.
+
+```bash
+uv sync --group dev          # needs pytest / pytest-cov
+uv run python -m pytest st_test/testcases_gateway --no-cov
+```
+
+Covered contracts:
+
+- First `/ws` frame is `connection.ack`; unknown methods are rejected locally and never forwarded downstream
+- Unary proxying: `session.list` is sent as an E2A request and its payload returned unchanged
+- Streaming proxying: `chat.send` downstream chunks become `chat.delta` / `chat.final` event frames
+- Downstream loss: requests return `SERVICE_UNAVAILABLE` instead of hanging
+
+Each case uses its own temporary `JIUWENSWARM_HOME` and random `WEB_PORT` / `GATEWAY_PORT`, so cases can run in parallel. The `agent-gateway` entry on PATH is used by default; you can override it:
+
+```bash
+AGENT_GATEWAY_BIN="python -m agent_gateway.app_gateway" uv run python -m pytest st_test/testcases_gateway --no-cov
+```
+
+### 7.2 workswarm compatibility (real processes)
+
+`st_test/testcases_integration/` validates the gateway against a real jiuwenswarm: each run starts a real `jiuwenswarm-agentserver` plus `agent-gateway` and verifies everything as a black box through `/ws`, without importing workswarm internals.
+
+```bash
+# The environment needs both workswarm (develop by default) and this repository
+pip install -e /path/to/jiuwenswarm
+pip install -e .
+python -m pytest st_test/testcases_integration --no-cov
+```
+
+Covered: `agent_ready` from `connection.status`, config passthrough via `config.get`, the session `create → list → delete` lifecycle, and cron job persistence through `cron.job.create → get → delete`.
+
+Real-model chat is skipped by default (external dependency, keeps the PR gate stable). Enable it when needed:
+
+```bash
+# The temporary workspace copies model config from ~/.jiuwenswarm/config;
+# point ST_WORKSWARM_CONFIG_SRC elsewhere to use a different config directory.
+ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
+```
+
+`ST_WORKSWARM_HOME` reuses an existing workspace; by default each run creates an isolated temporary one.
+
+## 8. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
 | `ModuleNotFoundError: No module named 'agent_gateway'` | Dependencies are incomplete; run `uv sync` again, or check that you are not bypassing the project venv |
 | Startup reports "Another Gateway is already serving this workspace" | Another gateway is running with the same `JIUWENSWARM_HOME` (`.gateway.lock`); use another directory or stop the old process |
 | Log shows `等待 connection.ack 超时` | The mock did not send `connection.ack`, so `server_ready` stays false and some proxy entries are unavailable |
+| `/api/v1/health` returns 404 in the personal edition | The `/api/v1` routes are mounted only in the enterprise edition; the personal edition exposes just `/ws` on the WebChannel port. Probe readiness by connecting to `/ws` and reading the first `connection.ack` |
+| Startup stalls for ~60s then exits when downstream is unreachable | For loopback addresses (`127.0.0.1` / `localhost` / `::1`) retries are forced to at least 240 (about 60s); the process then exits non-zero. To test the degraded path, connect first and then drop the downstream |
+| Port conflicts when running several gateways on one host | `WEB_PORT` (19000) and the `/tui` `GATEWAY_PORT` (19001) are fixed defaults; assign a distinct port per instance |
+| All `st_test/testcases_integration` cases are skipped | `jiuwenswarm-agentserver` is missing; install workswarm develop first (`pip install -e /path/to/jiuwenswarm`) |
+| `st_test/testcases_integration` times out after 180s | The first real AgentServer start initializes the workspace and MCP presets and can be slow; check `agentserver.log` and `gateway-*.log` in the temporary workspace |
 | Port already in use | Change `WEB_PORT` / `GATEWAY_PORT` / the mock port |
 | IM channels not started | Expected: only channels explicitly enabled under `channels` are started |
 | `uv sync` is slow or times out | The first run pulls git sources such as openjiuwen; make sure gitcode is reachable or configure `UV_DEFAULT_INDEX` |

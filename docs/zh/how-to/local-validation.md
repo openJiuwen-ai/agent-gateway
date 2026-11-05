@@ -140,13 +140,65 @@ EOF
 - 两个终端 `Ctrl+C`
 - 清理本地工作区：`rm -rf .local-home`
 
-## 7. 常见问题
+## 7. 契约 ST（自动化回归）
+
+### 7.1 独立契约（不依赖 workswarm）
+
+仓库 `st_test/testcases_gateway/` 是 gateway 独立契约 ST：用内置 `StubAgentServer` 顶替真实 AgentServer，不依赖 workswarm、沙箱、元戎，可用于 PR 门禁。
+
+```bash
+uv sync --group dev          # 需要 pytest / pytest-cov
+uv run python -m pytest st_test/testcases_gateway --no-cov
+```
+
+覆盖的契约：
+
+- `/ws` 首帧 `connection.ack`，未知方法在 gateway 本地被拒绝且不下发南向
+- 非流式转发：`session.list` 经 E2A 下发并按原 payload 回收
+- 流式转发：`chat.send` 的南向分片转成 `chat.delta` / `chat.final` 事件帧
+- 南向掉线：返回 `SERVICE_UNAVAILABLE`，不挂死
+
+每个用例使用独立的临时 `JIUWENSWARM_HOME` 与随机 `WEB_PORT` / `GATEWAY_PORT`，可与其他用例并行。默认使用 PATH 中的 `agent-gateway` 入口，也可显式指定：
+
+```bash
+AGENT_GATEWAY_BIN="python -m agent_gateway.app_gateway" uv run python -m pytest st_test/testcases_gateway --no-cov
+```
+
+### 7.2 workswarm 兼容（真实进程）
+
+`st_test/testcases_integration/` 验证 gateway 与真实 jiuwenswarm 的兼容性：用例自行拉起 `jiuwenswarm-agentserver` 和 `agent-gateway` 两个真实进程，只通过 `/ws` 黑盒验证，不引用 workswarm 内部模块。
+
+```bash
+# 环境里需同时安装 workswarm（默认 develop）与本仓
+pip install -e /path/to/jiuwenswarm
+pip install -e .
+python -m pytest st_test/testcases_integration --no-cov
+```
+
+覆盖：`connection.status` 的 `agent_ready`、`config.get` 配置透传、会话 `create → list → delete` 生命周期、定时任务 `cron.job.create → get → delete` 落库核对。
+
+真实模型对话默认跳过（外部依赖，避免 PR 门禁抖动），需要时开启：
+
+```bash
+# 临时工作区会从 ~/.jiuwenswarm/config 复制模型配置；
+# 可用 ST_WORKSWARM_CONFIG_SRC 指定其他配置目录。
+ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
+```
+
+`ST_WORKSWARM_HOME` 可指定复用已有工作区，默认每轮建临时目录并隔离。
+
+## 8. 常见问题
 
 | 现象 | 原因 / 处理 |
 |---|---|
 | `ModuleNotFoundError: No module named 'agent_gateway'` | 依赖未安装完全，重新 `uv sync`；或检查是否绕过了项目 venv |
 | 启动即报 “Another Gateway is already serving this workspace” | 同一 `JIUWENSWARM_HOME` 已有 Gateway 在跑（`.gateway.lock`），换目录或先停旧进程 |
 | 日志出现 `等待 connection.ack 超时` | Mock 未发送 `connection.ack`，`server_ready` 会一直为 False，部分代理入口返回不可用 |
+| 个人版访问 `/api/v1/health` 返回 404 | `/api/v1` 系列路由只在企业版挂载；个人版仅在 WebChannel 端口暴露 `/ws`。探活请连 `/ws` 并读首帧 `connection.ack` |
+| 下游指向不可达地址时启动卡约 60s 后退出 | 回环地址（`127.0.0.1` / `localhost` / `::1`）会把重试次数强制提升到至少 240 次（约 60s），仍失败则进程非 0 退出。验证“掉线降级”应先连通再断开南向 |
+| 同机并行多个 Gateway 报端口占用 | `WEB_PORT`（19000）与 `/tui` 的 `GATEWAY_PORT`（19001）都是固定默认值，多实例需逐个分配 |
+| `st_test/testcases_integration` 全部 skip | 环境里没有 `jiuwenswarm-agentserver`；先安装 workswarm develop（`pip install -e /path/to/jiuwenswarm`） |
+| `st_test/testcases_integration` 启动 180s 超时 | 真实 AgentServer 首次启动要初始化工作区/MCP 预置包，机器较慢时可能超过默认等待；查看临时工作区下的 `agentserver.log` 与 `gateway-*.log` |
 | 端口占用 | 调整 `WEB_PORT` / `GATEWAY_PORT` / Mock 端口 |
 | IM 频道未启动 | 属于正常行为：仅 `channels` 中显式启用的频道才会拉起 |
 | `uv sync` 很慢或超时 | 首次需拉取 openjiuwen 等 git 源；确认可访问 gitcode，或配置 `UV_DEFAULT_INDEX` 镜像 |

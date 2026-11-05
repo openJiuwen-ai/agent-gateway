@@ -25,8 +25,8 @@
 | `AGENT_SERVER_URL` | 未设置 | 下游 WebSocket URL，优先级最高 |
 | `AGENT_SERVER_HOST` | `127.0.0.1` | 未设置 URL 时用于拼接 `ws://host:port` |
 | `AGENT_SERVER_PORT` / `AGENT_PORT` | `18092` | 下游端口 |
-| `AGENT_CONNECT_RETRY` | `20` | 下游连接重试次数 |
-| `AGENT_CONNECT_RETRY_INTERVAL` | `3` | 重试间隔（秒） |
+| `AGENT_CONNECT_RETRY` | `20` | 下游连接重试次数；目标是回环地址（`127.0.0.1` / `localhost` / `::1`）时强制提升到至少 `240`（约 60s） |
+| `AGENT_CONNECT_RETRY_INTERVAL` | `3` | 重试间隔上限（秒）；回环地址按 0.05s 起指数退避，上限 0.25s |
 
 ### 上游入口
 
@@ -37,7 +37,7 @@
 | `WEB_PATH` | `/ws` | WebChannel WebSocket 路径 |
 | `WEB_WS_PERMESSAGE_DEFLATE` | 关闭 | 网关 WebSocket 是否启用 permessage-deflate 帧压缩。压缩需对每帧做 zlib，内网 / 单机部署下 CPU 开销大于带宽收益，因此默认关闭；公网弱网部署可设为 `1` 开启 |
 | `GATEWAY_HOST` | `127.0.0.1` | TUI 路由绑定地址 |
-| `GATEWAY_PORT` | `19001` | TUI 路由端口 |
+| `GATEWAY_PORT` | `19001` | TUI 路由端口；固定默认值，同机并行多实例时需显式分配 |
 | `GATEWAY_URL` | 未设置 | 部分扩展使用的 Gateway 对外地址 |
 | `A2A_SERVER_ENABLED` | 未启用 | 设为 `1` / `true` 时启用 A2A 入口 |
 | `A2A_SERVER_HOST` | `127.0.0.1` | A2A 监听地址 |

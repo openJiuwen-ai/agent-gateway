@@ -214,6 +214,18 @@ Artifacts are written to `dist/`:
 - `htmlcov/index.html`
 - `coverage.xml`
 
+Standalone contract ST (spawns a real gateway process against the bundled `StubAgentServer`; no workswarm required):
+
+```bash
+python -m pytest st_test/testcases_gateway --no-cov
+```
+
+workswarm compatibility ST (requires workswarm, develop by default; starts a real AgentServer and gateway process per run):
+
+```bash
+python -m pytest st_test/testcases_integration --no-cov
+```
+
 ## Contributing
 
 We welcome developers to contribute to Agent Gateway:

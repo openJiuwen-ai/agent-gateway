@@ -25,8 +25,8 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `AGENT_SERVER_URL` | unset | Downstream WebSocket URL, highest priority |
 | `AGENT_SERVER_HOST` | `127.0.0.1` | Used to build `ws://host:port` when the URL is unset |
 | `AGENT_SERVER_PORT` / `AGENT_PORT` | `18092` | Downstream port |
-| `AGENT_CONNECT_RETRY` | `20` | Downstream connection retries |
-| `AGENT_CONNECT_RETRY_INTERVAL` | `3` | Retry interval in seconds |
+| `AGENT_CONNECT_RETRY` | `20` | Downstream connection retries; forced to at least `240` (about 60s) when targeting a loopback address (`127.0.0.1` / `localhost` / `::1`) |
+| `AGENT_CONNECT_RETRY_INTERVAL` | `3` | Retry interval ceiling in seconds; loopback addresses back off exponentially from 0.05s up to 0.25s |
 
 ### Upstream entry points
 
@@ -37,7 +37,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `WEB_PATH` | `/ws` | WebChannel WebSocket path |
 | `WEB_WS_PERMESSAGE_DEFLATE` | Off | Enable permessage-deflate frame compression on the gateway WebSocket. Compression zlib-compresses every frame; on loopback / LAN deployments the CPU cost outweighs the bandwidth saving, so it is off by default. Public-network deployments can set it to `1` to enable |
 | `GATEWAY_HOST` | `127.0.0.1` | TUI route bind host |
-| `GATEWAY_PORT` | `19001` | TUI route port |
+| `GATEWAY_PORT` | `19001` | TUI route port; a fixed default, assign a distinct port when running several instances on one host |
 | `GATEWAY_URL` | unset | Gateway public URL used by some extensions |
 | `A2A_SERVER_ENABLED` | disabled | Set to `1` / `true` to enable A2A ingress |
 | `A2A_SERVER_HOST` | `127.0.0.1` | A2A bind host |
