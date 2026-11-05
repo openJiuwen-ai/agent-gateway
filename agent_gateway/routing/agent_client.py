@@ -237,6 +237,11 @@ class WebSocketAgentServerClient(AgentServerClient):
         return self._server_ready
 
     @property
+    def can_reconnect(self) -> bool:
+        """Whether a request can restore the configured transport."""
+        return bool(self._uri) and (self._ws is None or self._reconnect_lock.locked())
+
+    @property
     def agent_ready(self) -> bool:
         """Agent Runtime can execute. False while warming or failed."""
         return self._agent_ready
@@ -545,10 +550,9 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._message_queues.clear()
 
         # 关闭 WebSocket
-        if self._ws is None:
-            return
         try:
-            await self._ws.close()
+            if self._ws is not None:
+                await self._ws.close()
         except Exception as e:
             logger.warning(
                 "关闭 AgentServer WebSocket 时异常: %s",
@@ -571,19 +575,31 @@ class WebSocketAgentServerClient(AgentServerClient):
             raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
 
     async def _ensure_connected_for_request(self) -> None:
-        if self._ws is not None:
+        # A reconnect publishes the socket before its acknowledgement arrives.
+        # Other requests must wait until that attempt has finished.
+        if self._ws is not None and not self._reconnect_lock.locked():
             return
-        uri = self._uri
-        if not uri:
-            raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
         async with self._reconnect_lock:
             if self._ws is not None:
                 return
+            uri = self._uri
+            if not uri:
+                raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
+            headers = dict(self._extra_headers)
             logger.info(
                 "[WebSocketAgentServerClient] WebSocket 已断开，准备按需重连: %s",
                 format_ws_diagnostics(self._diagnostic_state(), uri=uri),
             )
-            await self.connect(uri, extra_headers=dict(self._extra_headers))
+            try:
+                await self.connect(uri, extra_headers=headers)
+            except (Exception, asyncio.CancelledError):
+                # A request timeout can interrupt the acknowledgement handshake.
+                # Close any partial socket and retain configuration for the next
+                # request; never replay a business request already sent.
+                await self.disconnect()
+                self._uri = uri
+                self._extra_headers = headers
+                raise
 
     async def _send_wire_payload(self, payload: dict[str, Any]) -> None:
         ws = self._ws

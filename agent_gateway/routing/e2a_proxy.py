@@ -52,6 +52,19 @@ SERVICE_UNAVAILABLE_CODE = "SERVICE_UNAVAILABLE"
 DEFAULT_PROXY_LABEL = "agent-proxy"
 
 
+def _agent_unavailable(agent_client: Any) -> bool:
+    """Do not block the WebSocket client's request-driven reconnect path."""
+    if agent_client is None:
+        return True
+    # Compatible clients without readiness keep their existing send behavior.
+    if getattr(agent_client, "server_ready", True) is not False:
+        return False
+    return not (
+        isinstance(agent_client, WebSocketAgentServerClient)
+        and agent_client.can_reconnect
+    )
+
+
 def _new_fetch_request_id() -> str:
     """生成 Gateway 侧主动发起的 E2A request_id（``fetch-`` 前缀）。
 
@@ -186,10 +199,7 @@ async def proxy_unary_request(
     with _bind_proxy_request_trace(
         channel, ws, req_id, req_method.value, session_id, user_id,
     ) as operation:
-        # Some compatible/extension clients do not expose ``server_ready``.  They
-        # remain callable (and may apply their own timeout), so only an explicit
-        # False denotes an unavailable transport here.
-        if agent_client is None or getattr(agent_client, "server_ready", True) is False:
+        if _agent_unavailable(agent_client):
             if operation is not None:
                 operation.record_outcome("failed", reason="agent_unavailable")
             await channel.send_response(
@@ -312,7 +322,7 @@ async def fetch_agent_unary(
     使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``；
     失败 payload 自带整数 ``status`` 时一并转发。
     """
-    if agent_client is None or getattr(agent_client, "server_ready", True) is False:
+    if _agent_unavailable(agent_client):
         return False, {
             "error": "AgentServer is unavailable",
             "code": SERVICE_UNAVAILABLE_CODE,
