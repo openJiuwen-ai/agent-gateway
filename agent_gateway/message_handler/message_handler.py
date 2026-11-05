@@ -573,6 +573,36 @@ class MessageHandler(ABC):
         except (TypeError, ValueError):
             return InboundDisposition.REJECTED
 
+    async def handle_persistent_welink_event(self, event: dict[str, Any]) -> InboundDisposition:
+        """Hand one polled WeLink group message to the bound colleague."""
+        from uuid import uuid4
+
+        from openjiuwen_protocol.e2a.models import E2AEnvelope
+        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.channel_manager.im_platforms.welink.facts import WelinkInboundEvent
+
+        try:
+            parsed = event if isinstance(event, WelinkInboundEvent) else WelinkInboundEvent.from_payload(event)
+        except (TypeError, ValueError):
+            return InboundDisposition.REJECTED
+        response = await self.agent_client.send_request(
+            E2AEnvelope(
+                request_id=f"welink_{uuid4().hex}",
+                channel="welink",
+                user_id=parsed.sender_id,
+                chat_id=parsed.chat_id,
+                method=ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
+                params={"event": parsed.to_payload()},
+            )
+        )
+        payload = getattr(response, "payload", None)
+        if not getattr(response, "ok", False) or not isinstance(payload, dict):
+            return InboundDisposition.RETRYABLE
+        try:
+            return InboundDisposition(payload.get("disposition"))
+        except (TypeError, ValueError):
+            return InboundDisposition.RETRYABLE
+
     async def _handle_feishu_group_push(self, payload: dict[str, Any]) -> None:
         from openjiuwen_protocol.e2a.models import E2AEnvelope
         from openjiuwen_protocol.message import ReqMethod

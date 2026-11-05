@@ -2870,6 +2870,7 @@ async def _run(
             "feishu_enterprise",
             "xiaoyi",
             "dingtalk",
+            "welink",
             "telegram",
             "whatsapp",
             "discord",
@@ -3115,6 +3116,19 @@ async def _run(
                     task = asyncio.create_task(channel.start(), name=f"xiaoyi-{api_id or 'default'}")
                     channel.start_task = task  # 挂到 channel 对象上，不另存 dict
                     logger.info("[App] XiaoyiChannel(api_id=%s) from channels.xiaoyi.apps", api_id or "default")
+
+        if "welink" in changed_channels:
+            from agent_gateway.channel_manager.im_platforms.welink.welink_runtime import WelinkRuntime
+
+            runtime = getattr(channel_manager, "_welink_runtime", None)
+            if runtime is None:
+                runtime = WelinkRuntime(channel_manager, _DummyBus(), message_handler.handle_persistent_welink_event)
+                channel_manager._welink_runtime = runtime
+            try:
+                await runtime.apply(conf.get("welink") or {})
+            except Exception:
+                channel_manager.mark_channel_restart_pending("welink")
+                raise
 
         if "dingtalk" in changed_channels:
             # Restarts are serialized and always read the latest DingTalk settings.
@@ -3789,6 +3803,9 @@ async def _run(
                 pass
             await xiaoyi_channel.stop()
         # ---- 从 channel_manager 清理所有动态注册的 channel 实例 ----
+        runtime = getattr(channel_manager, "_welink_runtime", None)
+        if runtime is not None:
+            await runtime.stop()
         for _cid in ("feishu", "xiaoyi", "dingtalk"):
             for ch in channel_manager.pop_channels_by_id(_cid):
                 task = getattr(ch, "start_task", None)

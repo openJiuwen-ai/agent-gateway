@@ -403,8 +403,60 @@ class _DummyBus:
         pass
 
 
+# Public JiuwenMate operations handled by AgentServer. Credential binding and
+# colleague deletion have local Gateway handlers. Internal IM methods stay private.
+_JIUWENMATE_FORWARD_METHODS = frozenset({
+    "jiuwenmate.activity.get",
+    "jiuwenmate.agent_mail.auth.begin",
+    "jiuwenmate.agent_mail.auth.cancel",
+    "jiuwenmate.agent_mail.auth.poll",
+    "jiuwenmate.agent_mail.disconnect",
+    "jiuwenmate.agent_mail.status",
+    "jiuwenmate.channel.list",
+    "jiuwenmate.channel.messages",
+    "jiuwenmate.channel.trace",
+    "jiuwenmate.chat.history",
+    "jiuwenmate.chat.send",
+    "jiuwenmate.colleague.create",
+    "jiuwenmate.colleague.ensure_default",
+    "jiuwenmate.colleague.get",
+    "jiuwenmate.colleague.list",
+    "jiuwenmate.colleague.publish",
+    "jiuwenmate.colleague.set_enabled",
+    "jiuwenmate.colleague.settings.get",
+    "jiuwenmate.colleague.settings.update",
+    "jiuwenmate.conversation.delete",
+    "jiuwenmate.conversation.list",
+    "jiuwenmate.conversation.pin",
+    "jiuwenmate.conversation.rename",
+    "jiuwenmate.dingtalk_auth.begin",
+    "jiuwenmate.dingtalk_auth.cancel",
+    "jiuwenmate.dingtalk_auth.disconnect",
+    "jiuwenmate.dingtalk_auth.poll",
+    "jiuwenmate.dingtalk_auth.status",
+    "jiuwenmate.knowledge.list",
+    "jiuwenmate.models.list",
+    "jiuwenmate.permission.decide",
+    "jiuwenmate.request.abort",
+    "jiuwenmate.request.get",
+    "jiuwenmate.schedule.create",
+    "jiuwenmate.schedule.delete",
+    "jiuwenmate.schedule.history",
+    "jiuwenmate.schedule.list",
+    "jiuwenmate.schedule.run",
+    "jiuwenmate.schedule.set_enabled",
+    "jiuwenmate.schedule.update",
+    "jiuwenmate.sharing.decide",
+    "jiuwenmate.sharing.list",
+    "jiuwenmate.sharing.revoke",
+    "jiuwenmate.welink_office.connect",
+    "jiuwenmate.welink_office.disconnect",
+    "jiuwenmate.welink_office.status",
+})
+
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
+    *_JIUWENMATE_FORWARD_METHODS,
     'group.create',
     'group.delete',
     'group.get',
@@ -630,6 +682,7 @@ _FORWARD_REQ_METHODS = frozenset({
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
+    *_JIUWENMATE_FORWARD_METHODS,
     'group.create',
     'group.delete',
     'group.get',

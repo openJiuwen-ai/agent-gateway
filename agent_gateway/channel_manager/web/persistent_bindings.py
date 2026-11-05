@@ -232,4 +232,63 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
     for op in ("get_bindings", "revoke"):
         channel.register_method(f"channel.feishu.{op}", partial(handle, "feishu", op), local_only=True)
 
+    from agent_gateway.channel_manager.web.welink_bindings import register_welink_bindings
+
+    register_welink_bindings(channel, manager, request, lock)
+
+    async def delete_colleague(ws, req_id, params, session_id):
+        from agent_gateway.enterprise import is_enterprise
+        from agent_gateway.channel_manager.im_platforms.welink.welink_binding import (
+            normalize_welink_section, revoke_welink_authorization,
+        )
+
+        try:
+            if is_enterprise():
+                raise BindingError("FORBIDDEN", "企业版配置由管理面统一下发")
+            cm = manager()
+            if cm is None:
+                raise BindingError("SERVICE_UNAVAILABLE", "channel manager is unavailable")
+            config_id = _required(params or {}, "agent_id")
+            mode = params.get("mode")
+            if mode not in ("unbind", "purge"):
+                raise ValueError("mode must be unbind or purge")
+            async with lock:
+                listed = await request(ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id}, 120)
+                agents = {config_id} | {item["agent_id"] for item in listed.get("connections", [])
+                                       if isinstance(item, dict) and isinstance(item.get("agent_id"), str)}
+                for platform in ("feishu", "welink", "dingtalk"):
+                    def remove(current):
+                        if platform == "welink":
+                            bindings = normalize_welink_section(current)["bindings"]
+                            if not any(item["persistent_agent_id"] in agents or item.get("config_id") in agents
+                                       for item in bindings):
+                                return current
+                            for agent in agents:
+                                current = revoke_welink_authorization(current, agent)
+                            return current
+                        previous = apps_for(platform, current)
+                        remaining = [app for app in previous if app.get("persistent_agent_id") not in agents]
+                        if len(previous) == len(remaining):
+                            return current
+                        if platform == "dingtalk":
+                            remaining = [{"client_id": app["client_id"]} for app in remaining]
+                        return section(platform, current, remaining)
+
+                    before = cm.get_conf(platform)
+                    saved = await edit_channel_body(platform, remove)
+                    if saved != before:
+                        await apply(cm, platform, saved, "jiuwenmate.colleague.delete", before)
+                await request(ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE, {"config_id": config_id, "mode": mode}, 120)
+        except BindingError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+        except Exception:
+            logger.exception("Unable to remove colleague bindings")
+            await channel.send_response(ws, req_id, ok=False, error="binding removal failed", code="INTERNAL_ERROR")
+        else:
+            await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
+
+    channel.register_method("jiuwenmate.colleague.delete", delete_colleague, local_only=True)
+
     return save_apps
