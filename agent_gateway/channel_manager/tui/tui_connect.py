@@ -2079,7 +2079,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=True, payload={"deleted": True})
         except Exception as exc:
             from agent_gateway.lifecycle_errors import LifecycleError
-            code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "INTERNAL_ERROR")
+            if isinstance(exc, LifecycleError):
+                code = exc.code
+            elif isinstance(exc, ValueError):
+                # proactive.tick 守卫等服务端拒绝属于请求语义错误，不是内部错误。
+                code = "BAD_REQUEST"
+            else:
+                code = getattr(exc, "code", None) or "INTERNAL_ERROR"
             logger.warning("[cron.job.delete] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
@@ -2113,7 +2119,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except Exception as exc:
             logger.warning("[cron.job.toggle] %s", exc)
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            # proactive.tick 守卫等服务端拒绝属于请求语义错误，不是内部错误。
+            code = "BAD_REQUEST" if isinstance(exc, ValueError) else "INTERNAL_ERROR"
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
 
     async def _cron_job_preview(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
