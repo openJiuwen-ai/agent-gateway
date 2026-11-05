@@ -89,13 +89,14 @@ async def test_shared_reader_retries_each_colleague_and_catches_up_new_binding(t
     reader._poller = SimpleNamespace(poll=Mock(return_value=[message]), _snapshot=('g',), last_page=('g', [message]), _membership=members,
                                     _is_shared=lambda group: True, commit=Mock())
     await reader.scan()
+    a._deliver.assert_awaited_once()
+    reader._poller.commit.assert_called_once_with('g', '10')
     assert a._deliver.call_args_list[0].kwargs['first_observation']
     assert a._deliver.call_args_list[0].kwargs['visible_from'] == message.received_at
     b = channel('dig_1_b')
     b._deliver.side_effect = [False, True]
     channels['ak-b'] = b
     reader._subscriptions.register('ak-b', b.config.agent_id, 'g')
-    reader._poller.poll.return_value = []
     await reader.scan()
     assert reader._pending
     await reader.scan()
@@ -103,6 +104,9 @@ async def test_shared_reader_retries_each_colleague_and_catches_up_new_binding(t
     assert b._history.call_count == 0
     assert a._history.call_count == 0
     assert b._deliver.call_count == 2
+    assert a._deliver.await_count == 2
+    assert not a._deliver.await_args.kwargs['first_observation']
+    assert reader._poller.commit.call_count == 2
 
 
 @pytest.mark.asyncio

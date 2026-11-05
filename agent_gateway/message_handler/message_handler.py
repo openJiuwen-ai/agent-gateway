@@ -573,7 +573,9 @@ class MessageHandler(ABC):
             )
         )
         payload = getattr(response, "payload", None)
-        if not getattr(response, "ok", False) or not isinstance(payload, dict):
+        if not getattr(response, "ok", False):
+            raise ConnectionError("Feishu inbound acceptance was not confirmed")
+        if not isinstance(payload, dict):
             return InboundDisposition.REJECTED
         try:
             return InboundDisposition(payload.get("disposition"))
