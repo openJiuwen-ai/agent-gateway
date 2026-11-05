@@ -180,8 +180,17 @@ async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
         await router.shutdown()
 
 @pytest.mark.parametrize('remote_deleted', [False, True])
-async def test_unknown_delete_retains_operation_until_lookup_confirms_result(monkeypatch, remote_deleted):
-    router, clients = _router(_config(monkeypatch))
+async def test_unknown_delete_fences_retired_instance_until_absence_confirmed(monkeypatch, remote_deleted):
+    config = _config(monkeypatch)
+    config = replace(config, router=replace(
+        config.router,
+        probes=replace(
+            config.router.probes,
+            wait_running_interval_seconds=0.01,
+            wait_running_timeout_seconds=0.2,
+        ),
+    ))
+    router, clients = _router(config)
     await router.connect('')
     try:
         await router.send_request(_request())
@@ -192,35 +201,31 @@ async def test_unknown_delete_retains_operation_until_lookup_confirms_result(mon
         router.test_api.delete_committed = remote_deleted
         assert await router.delete_agent('alice', 'jiuwenswarm')
         instance = next(iter(router._control._deletes))
-        create_operation = router._control._creates[instance][0]
-        delete_operation = router._control._deletes[instance]
         clients[0].disconnect.assert_awaited_once()
         assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         router._registry.unregister_agent.assert_awaited_once()
-        # The delete may not have reached ADX. Stable-ID lookup reuses that instance.
-        assert (await router.send_request(_request(rid='next'))).ok
-        assert clients[-1].uri == first_url
-        expected_creates = 2 if remote_deleted else 1
-        assert len(router.test_api.creates) == expected_creates
-        create_ids = [request.headers['x-request-id'] for request in router.test_api.requests
-                      if request.method == 'POST']
-        assert len(set(create_ids)) == expected_creates
+
+        response = await router.send_request(_request(rid='next'))
         if remote_deleted:
+            # Absence was confirmed, so the retired ID is never reused.
+            assert response.ok
+            assert clients[-1].uri != first_url
+            assert len(router.test_api.creates) == 2
             assert instance not in router._control._deletes
-            assert router._control._creates[instance][0] != create_operation
         else:
-            assert router._control._deletes[instance] == delete_operation
-        router.test_api.delete_error = False
-        assert await router.delete_agent('alice', 'jiuwenswarm')
-        delete_ids = [request.headers['x-request-id'] for request in router.test_api.requests
-                      if request.method == 'DELETE']
-        if remote_deleted:
-            assert delete_ids[-1] != delete_operation
-        else:
-            assert delete_ids[-1] == delete_operation
-        assert instance not in router._control._deletes
-        assert (await router.send_request(_request(rid='after-delete'))).ok
-        assert len(router.test_api.creates) == expected_creates + 1
+            # The old instance is still visible: never publish a replacement.
+            assert not response.ok
+            assert 'AGENT_REBUILD_PENDING' in response.payload['error']
+            assert len(router.test_api.creates) == 1
+            assert instance in router._control._deletes
+
+            router.test_api.delete_error = False
+            lifecycle = router._sandbox_lifecycles['alice+jiuwenswarm']
+            await router._delete_retired_sandbox(lifecycle)
+            assert instance not in router._control._deletes
+            assert (await router.send_request(_request(rid='after-delete'))).ok
+            assert len(router.test_api.creates) == 2
+            assert clients[-1].uri != first_url
     finally:
         await router.shutdown()
 
@@ -271,13 +276,16 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
     await router.connect('')
     try:
         runtime = await router._agent_manager.get_or_create_agent('alice', 'third', creator=router._create_agent)
-        assert runtime.info.sandbox_id == 'test-alice+third'
         body = router.test_api.creates[0]
+        assert runtime.info.sandbox_id == f"{body['namespace']}-{body['name']}"
         assert body['rootfs']['imageurl'] == 'registry.example/third:2'
         assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001', 'cwd': '/work'}
         assert body['cpu'] == 500 and body['memory'] == 1024
-        assert body['env'] == {'MODEL_ENDPOINT': 'http://model/v1'}
-        assert body['mounts'][0]['host_path'].endswith('/alice')
+        env = dict(body['env'])
+        generation = env.pop('JIUWEN_GATEWAY_SANDBOX_GENERATION')
+        assert body['name'] == f'gateway-{generation}'
+        assert env == {'MODEL_ENDPOINT': 'http://model/v1'}
+        assert Path(body['mounts'][0]['host_path']).name == 'alice'
         assert body['readinessProbe']['tcpSocket']['port'] == 8080
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
     finally:
