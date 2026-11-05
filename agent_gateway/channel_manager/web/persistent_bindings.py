@@ -99,8 +99,9 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
         return owners
 
     async def apply(cm, platform, saved, method, before):
+        runtime_conf = resolve_env_vars(saved)
         try:
-            await cm.set_conf(platform, saved)
+            await cm.set_conf(platform, runtime_conf)
         except Exception as exc:
             raise BindingError("CHANNEL_APPLY_FAILED", "configuration saved but the channel could not restart") from exc
         clear_cache(method)
@@ -113,7 +114,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                         result.setdefault(app["persistent_agent_id"], []).append(app)
                 return result
 
-            old, new = groups(before), groups(saved)
+            old, new = groups(before), groups(runtime_conf)
             for agent_id in old.keys() | new.keys():
                 if old.get(agent_id) != new.get(agent_id):
                     try:
@@ -121,7 +122,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                     except BindingError:
                         logger.warning("Feishu CLI preparation deferred after binding change")
 
-    async def remove_bindings(cm, platform, selected, method):
+    async def remove_config(cm, platform, selected):
         """Remove saved bindings and reconcile a stale channel after a failed restart."""
         before = cm.get_conf(platform)
         removed = []
@@ -143,8 +144,31 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
         if removed or any(selected(app) for app in apps_for(platform, before)):
             if platform == "feishu":
                 # The previous restart may have failed before the persisted app reached memory.
-                before = {"apps": [*feishu_apps(before), *removed]}
-            await apply(cm, platform, resolve_env_vars(saved), method, resolve_env_vars(before))
+                before = {"apps": [*feishu_apps(before), *resolve_env_vars(removed)]}
+            return saved, before
+        return None
+
+    async def remove_bindings(cm, platform, selected, method):
+        change = await remove_config(cm, platform, selected)
+        if change is not None:
+            saved, before = change
+            await apply(cm, platform, saved, method, before)
+
+    async def clear_dingtalk_authorization(app_id, selected):
+        """Revoke the saved owner's user login while the application binding still exists."""
+        config = await asyncio.to_thread(get_config_raw)
+        current = ((config or {}).get("channels") or {}).get("dingtalk")
+        owners = {_binding_identity(app, "persistent_agent_id") for app in dingtalk_apps(current) if selected(app)}
+        for agent_id in sorted(owners):
+            cleared = await request(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT, {
+                "agent_id": agent_id, "connection_key": app_id,
+            }, 30)
+            status = cleared.get("dingtalk_auth")
+            if not isinstance(status, dict) or status.get("status") != "not_connected":
+                raise BindingError(
+                    "DINGTALK_CLI_AUTH_CLEANUP_FAILED",
+                    "DingTalk user authorization was not cleared; try again",
+                )
 
     async def modify(cm, platform, op, params):
         id_key = "app_id" if platform == "feishu" else "client_id"
@@ -182,12 +206,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                     apps.append({**binding, "allow_from": []})
             return section(platform, current, apps)
 
-        async with im_binding_lock(platform, app_id) if platform == "dingtalk" else nullcontext():
-            if op == "unbind_agent":
-                async with lock:
-                    await remove_bindings(cm, platform, unbind, method)
-                return {"unbound": True}
-
+        async def prepare_binding():
             secret_key = "app_secret" if platform == "feishu" else "client_secret"
             secret = _required(params, secret_key)
             config_id = _required(params, "config_id")
@@ -201,10 +220,35 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             if platform == "dingtalk" and "robot_code" in params:
                 binding["robot_code"] = str(params.get("robot_code") or "").strip()
             owners = await binding_owners(platform, id_key, app_id, config_id, agent_id)
+            return binding, agent_id, owners
+
+        if platform == "feishu":
+            if op == "unbind_agent":
+                async with lock:
+                    await remove_bindings(cm, platform, unbind, method)
+                return {"unbound": True}
+            binding, agent_id, owners = await prepare_binding()
             async with lock:
                 before = cm.get_conf(platform)
                 saved = await edit_channel_body(platform, edit)
-                await apply(cm, platform, resolve_env_vars(saved), method, resolve_env_vars(before))
+                await apply(cm, platform, saved, method, before)
+        else:
+            async with im_binding_lock(platform, app_id):
+                if op == "unbind_agent":
+                    await clear_dingtalk_authorization(app_id, unbind)
+                    changed = await remove_config(cm, platform, unbind) is not None
+                else:
+                    binding, agent_id, owners = await prepare_binding()
+                    await edit_channel_body(platform, edit)
+                    changed = True
+            if changed:
+                # Stream shutdown can wait for callbacks that need the application lock.
+                # Apply the latest saved config in case a different app changed in the meantime.
+                async with lock:
+                    saved = await edit_channel_body(platform, lambda current: current)
+                    await apply(cm, platform, saved, method, cm.get_conf(platform))
+        if op == "unbind_agent":
+            return {"unbound": True}
         return {"binding": {id_key: app_id, "persistent_agent_id": agent_id}}
 
     async def revoke(cm, params):

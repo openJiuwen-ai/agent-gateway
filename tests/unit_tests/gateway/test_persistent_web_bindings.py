@@ -1,6 +1,7 @@
 """Exercise owner RPCs against the same saved config and live manager used at startup."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,9 +35,13 @@ def owner(tmp_path, monkeypatch):
 
     channel = SimpleNamespace(register_method=register, send_response=AsyncMock())
     cm = ChannelManager(SimpleNamespace())
-    service = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
-        ok=True, payload={"agent_id": "mate"},
-    )))
+    async def respond(envelope):
+        payload = {"agent_id": "mate"}
+        if envelope.method == "jiuwenmate.dingtalk_auth.disconnect":
+            payload = {"dingtalk_auth": {"status": "not_connected"}}
+        return SimpleNamespace(ok=True, payload=payload)
+
+    service = SimpleNamespace(send_request=AsyncMock(side_effect=respond))
     settings = register_persistent_bindings(channel, lambda: cm, lambda: service, _normalize_feishu_conf, MagicMock())
 
     async def rpc(method, params):
@@ -59,6 +64,8 @@ def colleagues(owner):
             payload = {"agent_id": config_id}
         elif envelope.method == "jiuwenmate.colleague.connections":
             payload = {"connections": connections.get(config_id, [])}
+        elif envelope.method == "jiuwenmate.dingtalk_auth.disconnect":
+            payload = {"dingtalk_auth": {"status": "not_connected"}}
         else:
             payload = {}
         return SimpleNamespace(ok=True, payload=payload)
@@ -97,11 +104,52 @@ async def test_owner_bind_settings_unbind(owner, platform, id_key, secret_key):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["revoke", "save_apps"])
+async def test_feishu_settings_reload_resolves_saved_app_credentials(owner, monkeypatch, operation):
+    monkeypatch.setenv("SWARM_TEST_FEISHU_SECRET", "resolved-secret")
+    monkeypatch.setenv("SWARM_TEST_OTHER_FEISHU_ID", "other-bot")
+    monkeypatch.setenv("SWARM_TEST_OTHER_FEISHU_SECRET", "other-secret")
+    apps = [
+        {"app_id": "bot", "app_secret": "${SWARM_TEST_FEISHU_SECRET}", "persistent_agent_id": "mate"},
+        {
+            "app_id": "${SWARM_TEST_OTHER_FEISHU_ID}",
+            "app_secret": "${SWARM_TEST_OTHER_FEISHU_SECRET}",
+            "persistent_agent_id": "other-mate",
+        },
+    ]
+    owner.path.write_text(yaml.safe_dump({"channels": {"feishu": {"apps": apps}}}))
+    await owner.cm.set_conf("feishu", config.resolve_env_vars({"apps": apps}))
+    owner.cm._on_config_updated = AsyncMock()
+
+    if operation == "revoke":
+        result = await owner.invoke("feishu.revoke", {"persistent_agent_id": "mate"})
+        assert result == {"ok": True, "payload": {"revoked": True}}
+    else:
+        await owner.settings(owner.cm, "feishu", {
+            "apps": [{"app_id": apps[0]["app_id"], "name": "renamed"}, {"app_id": apps[1]["app_id"]}],
+        })
+
+    owner.cm._on_config_updated.assert_awaited_once()
+    runtime = owner.cm._on_config_updated.await_args.args[0]["feishu"]["apps"]
+    assert [app["app_id"] for app in runtime] == ["bot", "other-bot"]
+    assert [app["app_secret"] for app in runtime] == ["resolved-secret", "other-secret"]
+    if operation == "revoke":
+        assert runtime[0]["enabled"] is False
+    else:
+        assert runtime[0]["name"] == "renamed"
+    stored = yaml.safe_load(owner.path.read_text())["channels"]["feishu"]["apps"]
+    assert [app["app_id"] for app in stored] == [app["app_id"] for app in apps]
+    assert [app["app_secret"] for app in stored] == [app["app_secret"] for app in apps]
+    assert [call.args[0].params for call in owner.service.send_request.await_args_list] == [{"agent_id": "mate"}]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("response,code", [
     (SimpleNamespace(ok=False, payload={"code": "CONFLICT", "error": "busy"}), "CONFLICT"),
     (SimpleNamespace(ok=True, payload={}), "SERVICE_UNAVAILABLE"),
 ])
 async def test_attach_failure_never_writes_or_restarts(owner, response, code):
+    owner.service.send_request.side_effect = None
     owner.service.send_request.return_value = response
     result = await owner.invoke("dingtalk.bind_agent", {
         "client_id": "bot", "client_secret": "secret", "config_id": "mate",
@@ -140,6 +188,43 @@ async def test_unbind_retries_restart_when_the_saved_binding_is_already_gone(own
     result = await owner.invoke(platform + ".unbind_agent", {id_key: "bot"})
     assert result["ok"]
     assert not owner.cm.get_conf(platform)["apps"]
+    owner.cm._on_config_updated.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_unbind_revokes_disabled_owner_before_reloading_without_the_app_lock(owner, monkeypatch):
+    apps = [{"client_id": "${SWARM_TEST_BOT}", "persistent_agent_id": "mate", "enabled": False, "allow_from": []}]
+    owner.path.write_text(yaml.safe_dump({"channels": {"dingtalk": {"apps": apps}}}))
+    monkeypatch.setenv("SWARM_TEST_BOT", "bot")
+    held = False
+
+    @asynccontextmanager
+    async def binding_lock(platform, app_id):
+        nonlocal held
+        assert (platform, app_id) == ("dingtalk", "bot")
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    async def disconnect(envelope):
+        assert held
+        assert envelope.method == "jiuwenmate.dingtalk_auth.disconnect"
+        assert envelope.params == {"agent_id": "mate", "connection_key": "bot"}
+        assert yaml.safe_load(owner.path.read_text())["channels"]["dingtalk"]["apps"] == apps
+        return SimpleNamespace(ok=True, payload={"dingtalk_auth": {"status": "not_connected"}})
+
+    async def reload(config):
+        assert not held
+        assert config["dingtalk"]["apps"] == []
+
+    monkeypatch.setattr(persistent_bindings, "im_binding_lock", binding_lock)
+    owner.service.send_request.side_effect = disconnect
+    owner.cm._on_config_updated = AsyncMock(side_effect=reload)
+    result = await owner.invoke("dingtalk.unbind_agent", {"client_id": "bot"})
+    assert result["ok"]
+    owner.service.send_request.assert_awaited_once()
     owner.cm._on_config_updated.assert_awaited_once()
 
 
