@@ -19,6 +19,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
+from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
@@ -123,6 +124,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.tool_result",
         "client.attachments_changed",
         "chat.processing_status",
+        "chat.moa_status",
         "chat.llm_call_start",
         "chat.llm_call_end",
         "chat.interrupt_result",
@@ -234,6 +236,8 @@ class WebChannel(BaseWsChannel):
         # 供 /ws/git 写操作(如 discard_turn_changes)查询 agent 是否正在执行。
         # 未跟踪的 session 默认返回 False(不忙碌)。
         self._session_busy: dict[str, bool] = {}
+        self._session_event_listeners: list[Callable[[str, str, dict], Any]] = []
+        self._queued_moa_notices: WeakKeyDictionary[asyncio.Queue, int] = WeakKeyDictionary()
         self._expert_processing_requests: dict[str, set[tuple[str, str]]] = {}
         # session_id -> 重新绑定的 ws_id: 刷新后经新连接完成 A4P 授权
         # (complete/reject) 时登记，把该恢复 turn 的迟到事件只投给这个 ws。
@@ -322,6 +326,7 @@ class WebChannel(BaseWsChannel):
         """Merge only contiguous stream frames with identical non-content data."""
         parsed = self._coalescible_stream_frame(first_frame)
         if parsed is None:
+            self._consume_moa_notice(first_frame, queue)
             return [first_frame]
 
         decoded, merged_content = parsed
@@ -344,6 +349,7 @@ class WebChannel(BaseWsChannel):
                 or getattr(candidate, "operation", None) is not traced_operation
                 or not self._same_stream_identity(decoded, candidate_parsed[0])
             ):
+                self._consume_moa_notice(candidate, queue)
                 trailing.append(candidate)
                 break
             merged_content += candidate_parsed[1]
@@ -432,7 +438,45 @@ class WebChannel(BaseWsChannel):
             if callable(accept):
                 accept(frame)
             return
+        ws_id = getattr(ws, "_jiuwen_ws_id", "")
+        queue = self._send_queues.get(ws_id) if ws_id else None
+        if queue is not None and not getattr(ws, "closed", False):
+            if self._is_moa_status_frame(data):
+                if not queue.full():
+                    before = queue.qsize()
+                    super()._enqueue_send(ws, data)
+                    if queue.qsize() == before:
+                        return
+                    self._queued_moa_notices[queue] = self._queued_moa_notices.get(queue, 0) + 1
+                return
+            # Only trim optional notices under congestion; preserve every other
+            # frame's order and the existing full-queue policy when none exist.
+            if queue.full() and self._queued_moa_notices.get(queue, 0):
+                retained = []
+                while not queue.empty():
+                    frame = queue.get_nowait()
+                    queue.task_done()
+                    if not self._is_moa_status_frame(frame):
+                        retained.append(frame)
+                    elif getattr(frame, "operation", None) is not None:
+                        frame.operation.release_delivery(reason="queue_full", count=frame.pending_count)
+                for frame in retained:
+                    queue.put_nowait(frame)
+                self._queued_moa_notices.pop(queue, None)
         super()._enqueue_send(ws, data)
+
+    def _consume_moa_notice(self, frame: Any, queue: asyncio.Queue) -> None:
+        if not self._is_moa_status_frame(frame):
+            return
+        remaining = self._queued_moa_notices.get(queue, 0) - 1
+        if remaining > 0:
+            self._queued_moa_notices[queue] = remaining
+        else:
+            self._queued_moa_notices.pop(queue, None)
+
+    @staticmethod
+    def _is_moa_status_frame(frame: Any) -> bool:
+        return isinstance(frame, dict) and frame.get("type") == "event" and frame.get("event") == "chat.moa_status"
 
     def register_request_outbound(self, outbound: Any) -> str:
         """Register a request-scoped HTTP Outbound for Agent reply routing."""
@@ -1671,6 +1715,26 @@ class WebChannel(BaseWsChannel):
             intent = payload.get("intent", "cancel") if payload is not None else "cancel"
             if msg.session_id:
                 self._session_busy[msg.session_id] = intent in ("pause", "supplement", "resume")
+
+        if event_name in {"chat.processing_status", "chat.ask_user_question"} and payload is not None:
+            sid = payload.get("session_id") or msg.session_id
+            for listener in list(getattr(self, "_session_event_listeners", ())):
+                try:
+                    listener(event_name, sid, payload)
+                except Exception:
+                    logger.warning("[WebChannel] session event listener failed", exc_info=True)
+
+    def add_session_event_listener(self, listener: Callable[[str, str, dict], Any]) -> None:
+        """Observe ``chat.processing_status`` / ``chat.ask_user_question`` pushes per session."""
+        self._session_event_listeners.append(listener)
+
+    async def dispatch_client_request(self, ws: Any, method: str, params: dict) -> None:
+        """Run a request as if *ws* had sent it, through the same routing a click uses."""
+        frame = {
+            "type": "req", "id": f"server-{method}-{time.time_ns()}",
+            "method": method, "params": params,
+        }
+        await self._handle_raw_message(ws, json.dumps(frame), getattr(ws, "_jiuwen_query", {}) or {})
 
     def is_session_busy(self, session_id: str) -> bool:
         """查询 session 是否正在执行(agent 处理中)。

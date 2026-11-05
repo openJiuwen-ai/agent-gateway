@@ -617,6 +617,7 @@ class CronController:
         # work_mode 解析(严格校验:非法值由 resolve_request_work_mode 返回 BAD_REQUEST);
         # 默认值按 controller 目标通道推断(tui→code,web/未设置→work)
         from agent_gateway.runtime.work_mode import (
+            resolve_default_project_id,
             resolve_request_work_mode,
         )
 
@@ -649,12 +650,12 @@ class CronController:
             raise ValueError(
                 "cron project binding must be resolved by the target AgentServer"
             )
-        resolved_project_id = raw_project_id
         caller_work_mode = str(params.get("work_mode") or "").strip()
         if caller_work_mode in ("code", "work"):
             work_mode = caller_work_mode
         if work_mode not in EXECUTION_WORK_MODES:
             raise ValueError(f"cron is not supported for work_mode: {work_mode!r}")
+        resolved_project_id = raw_project_id or resolve_default_project_id(work_mode)
         app_id = str(params.get("app_id") or "").strip()
         if not await self._scheduler.project_execution_allowed(
             resolved_project_id, user_id, group_id, bot_id

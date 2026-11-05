@@ -1830,7 +1830,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             uid = str(user_id or getattr(ws, "_gateway_user_id", None) or "").strip()
             jobs = await cc.list_jobs(
                 project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-                user_id=str(raw.get("user_id") or uid or ""),
+                user_id=uid or str(raw.get("user_id") or ""),
                 group_id=str(raw.get("group_id") or ""),
                 bot_id=str(raw.get("bot_id") or ""),
             )
