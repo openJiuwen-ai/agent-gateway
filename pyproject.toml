@@ -20,7 +20,7 @@ dependencies = [
     # Web / HTTP / WebSocket 服务面
     "fastapi>=0.115,<1.0",
     "starlette>=0.49.1,<1",
-    "uvicorn[standard]>=0.30,<1.0",
+    "uvicorn[standard]>=0.52.1,<1.0",  # 0.50.0-0.52.0 websockets-sansio sends duplicate Content-Length in WS denial responses
     "websockets>=12.0,<16",
     "httpx[http2,socks]>=0.27,<1.0",
     "openai>=1.0,<3",
