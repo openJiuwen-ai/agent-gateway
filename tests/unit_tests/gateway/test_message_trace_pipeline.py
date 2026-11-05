@@ -196,6 +196,32 @@ async def test_background_interrupt_retains_parent_until_task_exits(monkeypatch,
 
 
 @pytest.mark.asyncio
+async def test_pause_background_task_retains_parent_until_task_exits(monkeypatch):
+    op = operation(monkeypatch)
+    handler = object.__new__(MessageHandler)
+    handler._fire_and_forget_tasks = set()
+    gate = asyncio.Event()
+
+    async def govern(*args, **kwargs):
+        await gate.wait()
+
+    handler._send_pause_and_govern_streams = govern
+    env = SimpleNamespace(channel="web", request_id="pause", method="chat.pause")
+    msg = message()
+    with telemetry.bind_request_trace(op):
+        task = handler._start_pause_task(env, msg, "agent")
+    assert task in handler._fire_and_forget_tasks
+    op.complete("success")
+    assert not op.finished
+    gate.set()
+    await task
+    await asyncio.sleep(0)
+    assert op.finished
+    assert op.outcome == "success"
+    assert task not in handler._fire_and_forget_tasks
+
+
+@pytest.mark.asyncio
 async def test_stream_cleanup_failure_overrides_earlier_cancellation(monkeypatch):
     op = operation(monkeypatch)
     handler = object.__new__(MessageHandler)

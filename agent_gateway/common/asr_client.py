@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Speech-to-text client shared by task chat and video duplex.
+"""Gateway ASR adapter; keep transport behavior in sync with Swarm common.asr_client.
 
 ``AsrClient`` picks an adapter from the endpoint scheme and path:
 ws(s) -> Alibaba Cloud Model Studio ``run-task`` streaming recognition;
@@ -66,9 +66,9 @@ def decrypt_api_key(value: str) -> str:
     if not value:
         return ""
     try:
-        from agent_gateway.extensions.registry import ExtensionRegistry
+        from agent_gateway.extensions.base_crypto import get_crypto_provider
 
-        crypto = ExtensionRegistry.get_instance().get_crypto_provider()
+        crypto = get_crypto_provider()
         return str(crypto.decrypt(value)) if crypto else value
     except Exception:  # noqa: BLE001
         return value
@@ -123,8 +123,13 @@ def _response_error(response: httpx.Response) -> str:
 
 class _OpenAIAdapter:
     def __init__(self, base_url: str, api_key: str, model: str, **client_kwargs: Any) -> None:
+        from openai import Omit
+
         self._model = model
-        self._client_kwargs = {"api_key": api_key, "base_url": base_url, **client_kwargs}
+        # SDK 2.x requires a non-empty key even for unauthenticated local services.
+        # Omit the request header so the SDK placeholder is never sent upstream.
+        self._request_headers = {} if api_key else {"Authorization": Omit()}
+        self._client_kwargs = {"api_key": api_key or "unused", "base_url": base_url, **client_kwargs}
 
     async def transcribe(self, audio: bytes, mime_type: str, filename: str) -> str:
         import openai
@@ -154,7 +159,8 @@ class _OpenAIAdapter:
 class OpenAITranscriptionAdapter(_OpenAIAdapter):
     async def _request(self, client: Any, audio: bytes, mime_type: str, filename: str) -> Any:
         return await client.audio.transcriptions.create(
-            model=self._model, file=(filename, audio, mime_type)
+            model=self._model, file=(filename, audio, mime_type),
+            extra_headers=self._request_headers,
         )
 
     @staticmethod
@@ -173,6 +179,7 @@ class OpenAIChatAudioAdapter(_OpenAIAdapter):
             ]}],
             max_tokens=160,  # 来源: 沿用 video_voice 原 chat ASR 请求
             temperature=0,
+            extra_headers=self._request_headers,
         )
 
     @staticmethod
@@ -274,7 +281,10 @@ class DashScopeRunTaskAdapter:
                 "header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"},
                 "payload": {"input": {}},
             }))
-            while (event := await _next_event(conn))[0] != "task-finished":
+            while True:
+                event = await _next_event(conn)
+                if event[0] == "task-finished":
+                    break
                 sentence = ((event[1].get("payload") or {}).get("output") or {}).get("sentence") or {}
                 if event[0] == "result-generated" and sentence.get("sentence_end") and not sentence.get("heartbeat"):
                     sentences.append(str(sentence.get("text") or "").strip())

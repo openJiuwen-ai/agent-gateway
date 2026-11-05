@@ -326,13 +326,8 @@ class BaseWsChannel(BaseWebChannel):
             return False
         return op.connection_id == str(id(ws))
 
-    def _enqueue_send(self, ws: Any, data: Any) -> None:
-        """非阻塞入队一帧到 ws 的出站队列，立即返回。
-
-        ``data`` 可为 dict（由 writer 统一序列化一次，省去入队前预 dumps
-        与 ``_coalesce`` 解析回 dict 的往返）、str/bytes（原样发送）或 None
-        哨兵。ws 已关闭或队列缺失时静默丢弃（与旧 _safe_send 语义一致）。
-        """
+    def _trace_outbound_frame(self, ws: Any, data: Any) -> tuple[Any, Any]:
+        """Wrap a frame in the current request trace when it belongs to it."""
         from agent_gateway.telemetry import current_request_trace, current_response_trace
 
         op = current_request_trace()
@@ -349,6 +344,16 @@ class BaseWsChannel(BaseWebChannel):
             op.retain_delivery()
         else:
             op = None
+        return data, op
+
+    def _enqueue_send(self, ws: Any, data: Any) -> None:
+        """非阻塞入队一帧到 ws 的出站队列，立即返回。
+
+        ``data`` 可为 dict（由 writer 统一序列化一次，省去入队前预 dumps
+        与 ``_coalesce`` 解析回 dict 的往返）、str/bytes（原样发送）或 None
+        哨兵。ws 已关闭或队列缺失时静默丢弃（与旧 _safe_send 语义一致）。
+        """
+        data, op = self._trace_outbound_frame(ws, data)
         ws_id = getattr(ws, "_jiuwen_ws_id", "")
         q = self._send_queues.get(ws_id)
         writer = self._writers.get(ws_id)

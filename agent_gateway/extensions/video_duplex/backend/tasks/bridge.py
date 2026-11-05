@@ -38,13 +38,35 @@ class GatewayTaskEndpoint:
                 raise ValueError("TASK_EXECUTION_BINDING_STALE")
             if action == "status":
                 return {"status": task["status"]}
-            if action not in {"bind", "claim", "context_written", "observed", "close", "settle"}:
+            if action not in {
+                "bind",
+                "claim",
+                "context_written",
+                "observed",
+                "close",
+                "settle",
+            }:
                 raise ValueError("Unknown task checkpoint command")
             replay, fingerprint = self.store.replay(
                 db, task["owner"], task["session"], command.get("command_id"), command
             )
             if replay is not None:
                 return replay
+            if action == "bind" and not task.get("execution_bound") and (
+                task.get("execution_cancelled") or task["status"] == "cancelling"
+            ):
+                # A delayed request may arrive after its admission was revoked.
+                # Return a normal ACK so the remote owner can exit before Core
+                # starts, rather than failing the checkpoint transport.
+                task.update(
+                    checkpoint_open=False, execution_settled=True,
+                    execution_cancelled=True, output_closed=True,
+                    sequence=task["sequence"] + 1,
+                )
+                self.store.put(db, task)
+                result = {"cancelled": True}
+                self.store.command(db, task, command["command_id"], fingerprint, result)
+                return result
             if action in {"bind", "claim", "context_written", "observed"}:
                 if task["status"] not in {"running", "waiting_user"}:
                     raise RuntimeError("TASK_EXECUTION_NOT_RUNNING")
@@ -74,7 +96,10 @@ class GatewayTaskEndpoint:
             elif action == "close":
                 task["checkpoint_open"] = False
             elif action == "settle":
-                if task.get("checkpoint_open"):
+                if command.get("cancelled"):
+                    # Close and settle in one transaction so a second cancel cannot split them.
+                    task["checkpoint_open"] = False
+                elif task.get("checkpoint_open"):
                     raise RuntimeError("Task invocation is still open")
                 task["execution_settled"] = True
                 task["execution_cancelled"] = bool(command.get("cancelled"))
