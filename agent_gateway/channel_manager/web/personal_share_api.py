@@ -77,7 +77,9 @@ async def _read_upload(request: Request, stream: Any, size: int) -> None:
     async with asyncio.timeout(_UPLOAD_TIMEOUT_SECONDS):
         while True:
             try:
-                chunk = await asyncio.wait_for(anext(iterator), timeout=_UPLOAD_IDLE_SECONDS)
+                # Keep both deadlines in this task; older wait_for can swallow cancellation.
+                async with asyncio.timeout(_UPLOAD_IDLE_SECONDS):
+                    chunk = await anext(iterator)
             except StopAsyncIteration:
                 break
             received += len(chunk)
