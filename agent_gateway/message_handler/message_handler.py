@@ -362,6 +362,7 @@ class MessageHandler(ABC):
         self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._running = False
         self._forward_task: asyncio.Task | None = None
+        self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
         self._stream_sessions: dict[str, str | None] = {}  # request_id -> session_id
@@ -1408,6 +1409,7 @@ class MessageHandler(ABC):
 
     def _pop_stream_tracking(self, rid: str) -> None:
         """Remove all per-request stream tracking entries for *rid*."""
+        self._scheduler_stream_ids.discard(rid)
         self._stream_tasks.pop(rid, None)
         self._stream_channels.pop(rid, None)
         self._stream_sessions.pop(rid, None)
@@ -1725,6 +1727,9 @@ class MessageHandler(ABC):
                 continue
             if channel_id is not None and self._stream_channels.get(rid) != channel_id:
                 continue
+            # The scheduler settles its own consumer after the matching backend ACK.
+            if rid in self._scheduler_stream_ids:
+                continue
             if not task.done():
                 rids_cancelled.append(rid)
                 tasks_to_cancel.append(task)
@@ -1856,6 +1861,7 @@ class MessageHandler(ABC):
             await _cancel_tasks(tasks_to_cancel)
             await self._pop_stream_tracking_and_broadcast(rids_cancelled)
 
+        await self._finish_cancelled_cron_session_runs(env_interrupt, resp)
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
             if not publish_interrupt_result:
@@ -6411,6 +6417,7 @@ class MessageHandler(ABC):
         self._register_stream_consumer(
             env, session_id, task, metadata=metadata, app_id=app_id, emit_processing_status=True,
         )
+        self._scheduler_stream_ids.add(env.request_id)
         try:
             await self._send_processing_status(
                 env.request_id, session_id, env.channel, is_processing=True, app_id=app_id, metadata=metadata,
@@ -6546,6 +6553,31 @@ class MessageHandler(ABC):
         task.add_done_callback(self._fire_and_forget_tasks.discard)
         return task
 
+    async def _finish_cancelled_cron_session_runs(
+        self, env: "E2AEnvelope", response: "AgentResponse",
+    ) -> None:
+        """Settle cron waiters only after a successful, session-wide cancel ACK."""
+        params = env.params if isinstance(env.params, dict) else {}
+        if str(params.get("intent", "cancel")).strip().lower() != "cancel":
+            return
+        if any(params.get(key) for key in ("target_request_id", "target_team_id", "organization_owner_stop", "organization_stop")):
+            return
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if not response.ok or payload.get("success") is not True:
+            return
+        controller = getattr(self, "_cron_controller", None)
+        finish_runs = getattr(controller, "finish_cancelled_session_runs", None)
+        session_id = str(getattr(env, "session_id", None) or "").strip()
+        if not callable(finish_runs) or not session_id:
+            return
+        try:
+            await finish_runs(session_id, user_id=getattr(env, "user_id", None))
+        except Exception:
+            logger.warning(
+                "[MessageHandler] cancelled cron waiter cleanup failed: session_id=%s",
+                session_id, exc_info=True,
+            )
+
     async def _send_interrupt_to_agent(
         self,
         env: "E2AEnvelope",
@@ -6569,6 +6601,7 @@ class MessageHandler(ABC):
                 "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
                 resp.request_id, resp.ok,
             )
+            await self._finish_cancelled_cron_session_runs(env, resp)
             payload = resp.payload if isinstance(resp.payload, dict) else {}
             ch = (channel_id or getattr(env, "channel", None) or "").strip()
             sid = (session_id or getattr(env, "session_id", None) or "").strip()

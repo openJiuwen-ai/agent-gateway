@@ -461,6 +461,11 @@ _FORWARD_REQ_METHODS = frozenset({
     'group.delete',
     'group.get',
     'group.history.get',
+    "group.execution.list",
+    "group.execution.get",
+    "group.file.rename",
+    "group.file.delete",
+    "group.history.clear",
     'group.list',
     'group.member.add',
     'group.update',
@@ -687,6 +692,11 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     'group.delete',
     'group.get',
     'group.history.get',
+    "group.execution.list",
+    "group.execution.get",
+    "group.file.rename",
+    "group.file.delete",
+    "group.history.clear",
     'group.list',
     'group.member.add',
     'group.update',
@@ -3079,6 +3089,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
+        target = str((params or {}).get("session_id") or session_id or "").strip()
+
+        def project_activity(ok, payload):
+            if not ok or not isinstance(payload, dict):
+                return
+            busy = payload.get("is_processing")
+            if not isinstance(busy, bool):
+                busy = channel.is_session_busy(target)
+            cron_activity = getattr(_get_cron(), "is_session_processing", None)
+            if callable(cron_activity):
+                busy = busy or cron_activity(target, user_id=user_id)
+            if payload.get("organization_owner_stopped") is True:
+                busy = False
+            payload["is_processing"] = busy
+            payload["status"] = "processing" if busy else "idle"
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
@@ -3089,6 +3115,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
+            on_done=project_activity,
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
