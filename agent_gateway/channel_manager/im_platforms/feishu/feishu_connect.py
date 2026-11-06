@@ -2374,6 +2374,23 @@ class FeishuChannel(BaseChannel):
             streaming_enabled = bool(_msg_streaming if _msg_streaming is not None else self.config.enable_streaming)
 
             meta = dict(getattr(msg, "metadata", None) or {})
+            # P1 守卫二（前移）：出站正文与本会话最近入站用户输入全同则拦截（复读纵深防护）。
+            # 位于 cardkit 流式早退之前，保证默认流式配置下守卫在流式/非流式两条路径都生效；
+            # 比对用 _extract_message_content 的原始正文（早于 _filter_user_info_for_group 的
+            # [已过滤] 改写，避免改写后与入站录制的原文比对失败）；只比对不记账，无重复记账副作用。
+            # 会话键与入站录制统一：feishu_chat_id 优先，回退 session_id
+            # （/new_session 或 origin_session_id 改写 session_id 后仍与入站 chat_id 对齐）。
+            if event_name == "chat.final" and self._recent_user_inputs:
+                cid = str(meta.get("feishu_chat_id") or "").strip() or str(getattr(msg, "session_id", "") or "")
+                raw_content = self._extract_message_content(msg).strip()
+                hist = self._recent_user_inputs.get(cid)
+                if hist and raw_content and raw_content in hist:
+                    self._echo_blocked_total += 1
+                    logger.warning(
+                        "[FeishuChannel][P1-guard] echo suppressed: chat=%s req=%s",
+                        cid[:16], str(getattr(msg, "id", "") or ""),
+                    )
+                    return
 
             # ── V2: routing_target 覆盖投递地址 ──
             route_delivery: DeliveryTarget | None = None
@@ -2541,18 +2558,6 @@ class FeishuChannel(BaseChannel):
 
             # 过滤群聊消息中的用户敏感信息
             content_str = self._filter_user_info_for_group(content_str, meta)
-            # P1 守卫二：出站内容与本会话最近入站用户输入全同则拦截（复读纵深防护）。
-            if event_name == "chat.final" and self._recent_user_inputs:
-                cid = str(getattr(msg, "session_id", "") or "")
-                hist = self._recent_user_inputs.get(cid)
-                if hist and content_str.strip() and content_str.strip() in hist:
-                    self._echo_blocked_total += 1
-                    logger.warning(
-                        "[FeishuChannel][P1-guard] echo suppressed: chat=%s req=%s",
-                        cid[:16], str(getattr(msg, "id", "") or ""),
-                    )
-                    return
-
             # 兜底：chat.final 中提到了 workspace 文件但 LLM 未调用 send_file_to_user 时，
             # 自动提取文件路径并发送，避免用户收不到文件。
             if (
