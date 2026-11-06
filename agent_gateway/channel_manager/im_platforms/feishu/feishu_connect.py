@@ -31,6 +31,7 @@ from agent_gateway.channel_manager.im_platforms.feishu.feishu_file_service impor
     is_image_file,
     is_video_file,
 )
+from agent_gateway.common.delivery_dedup import DeliveryDedup
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     CardKitError,
     FeishuCardKitClient,
@@ -443,6 +444,8 @@ class FeishuChannel(BaseChannel):
         # P1 回显防护：每会话最近入站用户输入环形缓存（防复读出站护栏）。
         self._recent_user_inputs: "OrderedDict[str, deque]" = OrderedDict()
         self._echo_blocked_total = 0
+        # P2 投递端精确重复兜底（同会话 final 全同内容 TTL 内只发一次）。
+        self._delivery_dedup = DeliveryDedup()
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
@@ -2370,6 +2373,13 @@ class FeishuChannel(BaseChannel):
                     event_name, str(getattr(msg, "id", "") or ""),
                 )
                 return
+            # P2 守卫：被运行时抑制的帧（steering 期间）不得投递（对齐 web 通道）。
+            if isinstance(payload, dict) and payload.get("output_suppressed") is True:
+                logger.info(
+                    "[FeishuChannel][P2-guard] suppressed frame not delivered: event=%s req=%s",
+                    event_name, str(getattr(msg, "id", "") or ""),
+                    )
+                return
             _msg_streaming = getattr(msg, "enable_streaming", None)
             streaming_enabled = bool(_msg_streaming if _msg_streaming is not None else self.config.enable_streaming)
 
@@ -2550,6 +2560,19 @@ class FeishuChannel(BaseChannel):
                     logger.warning(
                         "[FeishuChannel][P1-guard] echo suppressed: chat=%s req=%s",
                         cid[:16], str(getattr(msg, "id", "") or ""),
+                    )
+                    return
+            # P2 去重兜底：同会话 final 全同内容 TTL 内只发一次（合法短重复豁免）。
+            if event_name == "chat.final":
+                dup = self._delivery_dedup.check_and_record(
+                    str(getattr(msg, "session_id", "") or ""),
+                    str(getattr(msg, "id", "") or ""),
+                    content_str,
+                )
+                if dup:
+                    logger.warning(
+                        "[FeishuChannel][P2-dedup] duplicate final dropped: chat=%s reason=%s",
+                        str(getattr(msg, "session_id", "") or "")[:16], dup,
                     )
                     return
 
