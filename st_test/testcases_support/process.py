@@ -200,12 +200,42 @@ class GatewayProcess:
         stop_process(self.proc)
 
 
+def _config_candidates():
+    """gateway 所需 config.yaml 的候选来源，按优先级排列。"""
+    override = os.environ.get("ST_GATEWAY_CONFIG_SRC", "").strip()
+    if override:
+        yield Path(override).expanduser()
+    yield Path.home() / ".jiuwenswarm" / "config" / "config.yaml"
+    spec = importlib.util.find_spec("jiuwenswarm")
+    if spec is None or not spec.origin:
+        return
+    yield Path(spec.origin).resolve().parent / "resources" / "config.yaml"
+
+
+def _seed_gateway_config(home: Path) -> None:
+    """workswarm 模板补一份 config.yaml 到隔离工作区。
+
+    gateway 启动必须读取 config.yaml；隔离工作区里没有时，它回退到宿主包
+    ``resources`` 或仓库根目录 ``config/``，而流水线把 workswarm 装在
+    ``.st-src`` 下，两条回退都找不到，进程会以 exit 70 退出。
+    """
+    target = home / ".jiuwenswarm" / "config" / "config.yaml"
+    if target.exists():
+        return
+    for source in _config_candidates():
+        if source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            return
+
+
 def start_gateway(
     home: Path,
     agent_server_url: str,
     *,
     timeout: float = START_TIMEOUT,
 ) -> GatewayProcess:
+    _seed_gateway_config(home)
     port = free_port()
     log_path = home / f"gateway-{port}.log"
     env = service_env(home)
