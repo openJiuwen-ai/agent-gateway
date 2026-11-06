@@ -13,7 +13,9 @@ from openjiuwen_protocol.e2a.models import E2AEnvelope
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import (
+    AdxControlClient, AdxControlError, AdxCreateTimeout, AdxEnvironmentNotFoundError,
+)
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
@@ -28,7 +30,9 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     ws_connect_retry_interval_seconds,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
-from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
+from agent_gateway.extensions.yuanrong_frontend_client import (
+    SandboxInfo, YuanrongAgentNotVisibleError, apply_trace_header,
+)
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
 
 
@@ -89,6 +93,43 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     def _tool_sandbox_env(self) -> dict[str, str]:
         return super()._tool_sandbox_env()
+
+    def _sandbox_instance_id(self, namespace: str, physical_name: str) -> str:
+        return f'{namespace}-{physical_name}'
+
+    def _forget_abandoned_create(self, instance_id: str) -> None:
+        self._control.forget_abandoned_create(instance_id)
+
+    def _owns_late_sandbox(
+        self, instance_id: str, expected_id: str, generation: str, info: Mapping[str, Any],
+    ) -> bool:
+        if instance_id != expected_id:
+            return super()._owns_late_sandbox(instance_id, expected_id, generation, info)
+        # The ADX lookup verifies both the Environment ID and its tenant.
+        return info.get('id') == expected_id and info.get('tenant_id') == self._config.tenant
+
+    async def _wait_for_sandbox_attempt(
+        self, instance_id: str, generation: str, deadline: float,
+    ) -> SandboxInfo:
+        del generation  # ADX identities are the namespace and physical name.
+        try:
+            async with asyncio.timeout_at(deadline):
+                try:
+                    view = await self._control.get_agent_info(instance_id)
+                except AdxEnvironmentNotFoundError as exc:
+                    # A replay uses the same operation ID and performs another lookup.
+                    raise YuanrongAgentNotVisibleError('ADX Environment not visible') from exc
+                if view.get('status') not in ('running', 'paused', 'pausing', 'resuming'):
+                    try:
+                        view = await self._control.wait_until_running(instance_id, deadline=deadline)
+                    except AdxEnvironmentNotFoundError as exc:
+                        # A previously visible Environment is not an absence-only observation.
+                        raise AdxControlError('ADX Environment disappeared during readiness') from exc
+                metadata = {**view, 'node': view.get('node_ip') or '',
+                            'address': view.get('sandbox_ip') or ''}
+                return SandboxInfo(instance_id, metadata=metadata)
+        except TimeoutError as exc:
+            raise AdxCreateTimeout('Timed out waiting for the ADX Environment to become available') from exc
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)
