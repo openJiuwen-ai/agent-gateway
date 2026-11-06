@@ -247,9 +247,9 @@ async def test_locale_rpc_uses_agent_server_for_all_client_types(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("client_state", ["missing", "not-ready", "disconnected"])
+@pytest.mark.parametrize("client_state", ["missing", "not-ready", "disconnected", "legacy"])
 async def test_locale_rpc_unavailable_does_not_fall_back_to_gateway(
-    forbid_gateway_locale_config, method, client_state
+    forbid_gateway_locale_config, monkeypatch, method, client_state
 ):
     requests = []
 
@@ -257,9 +257,16 @@ async def test_locale_rpc_unavailable_does_not_fall_back_to_gateway(
         requests.append(envelope)
         raise ConnectionError("AgentServer disconnected")
 
-    client = None if client_state == "missing" else SimpleNamespace(
-        server_ready=client_state != "not-ready", send_request=send_request
-    )
+    if client_state == "legacy":
+        client = WebSocketAgentServerClient()
+        assert client.server_ready is False
+        assert client.can_reconnect is False
+        send_request_spy = AsyncMock(side_effect=send_request)
+        monkeypatch.setattr(client, "send_request", send_request_spy)
+    else:
+        client = None if client_state == "missing" else SimpleNamespace(
+            server_ready=client_state != "not-ready", send_request=send_request
+        )
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     await channel.methods[method](
@@ -267,6 +274,8 @@ async def test_locale_rpc_unavailable_does_not_fall_back_to_gateway(
     )
 
     assert len(requests) == (1 if client_state == "disconnected" else 0)
+    if client_state == "legacy":
+        send_request_spy.assert_not_awaited()
     assert len(channel.responses) == 1
     assert channel.responses[0]["ok"] is False
     assert channel.responses[0]["code"] == "SERVICE_UNAVAILABLE"
