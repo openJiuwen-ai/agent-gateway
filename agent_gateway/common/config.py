@@ -27,6 +27,7 @@ from agent_gateway.common.kv_cache_affinity_config import (
     validate_affinity_invariant,
 )
 from agent_gateway.common.paths import (
+    get_bundled_resources_dir,
     get_config_dir,
     get_config_file,
 )
@@ -35,7 +36,7 @@ from agent_gateway.extensions.base_crypto import get_crypto_provider
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_MODULE_DIR = Path(__file__).parent
+_CONFIG_MODULE_DIR = get_config_dir()
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
@@ -214,6 +215,8 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     Returns:
         解析后的字典；文件为空时返回空字典。
     """
+    if filepath == get_config_file() and not filepath.exists():
+        filepath = get_bundled_resources_dir() / "config.yaml"
     stamp = _yaml_file_stamp(filepath)
     cache_key = str(filepath)
     if stamp is not None:
@@ -2477,50 +2480,11 @@ def _looks_like_bare_filename(value: str) -> bool:
     return "/" not in value and "\\" not in value and not Path(value).is_absolute()
 
 
-def _jiuwenbox_configs_dir() -> Path | None:
-    """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
-
-    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
-    """
-    here = Path(__file__).resolve()
-
-    for ancestor in here.parents[1:7]:
-        for candidate in (
-            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
-            ancestor / "jiuwenbox" / "configs",
-        ):
-            if candidate.is_dir():
-                return candidate
-    try:
-        import jiuwenbox  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    try:
-        pkg_dir = Path(jiuwenbox.__file__).resolve().parent
-    except Exception:  # noqa: BLE001
-        return None
-    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
-    direct = pkg_dir / "configs"
-    if direct.is_dir():
-        return direct
-
-    for steps_up in (2, 3):
-        candidate = pkg_dir
-        for _ in range(steps_up):
-            candidate = candidate.parent
-        candidate = candidate / "configs"
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
 def resolve_sandbox_policy_path(value: str | None) -> Path | None:
     r"""把 ``sandbox.policy_file`` 的取值解析为宿主机绝对路径。
 
     - ``None`` / 空字符串 → 返回 None, 由调用方决定是否落到 jiuwenbox 自身默认 policy;
-    - 仅文件名 (不含路径分隔符) → 在 ``jiuwenbox/configs/`` 下拼接;
-      ``configs/`` 探测不到时返回 None (调用方应当报错并提示给绝对路径);
+    - 仅文件名 (不含路径分隔符) → 在 Gateway 内置策略目录下拼接;
     - 含 ``/`` ``\\`` 或绝对路径 → 展开 ``~`` / ``$VAR`` 后按整路径返回 (不强校验是否存在,
       留给上游 ``_load_policy_file`` / jiuwenbox 自己做存在性检查并给出明确错误)。
     """
@@ -2531,10 +2495,7 @@ def resolve_sandbox_policy_path(value: str | None) -> Path | None:
         return None
     expanded = os.path.expandvars(os.path.expanduser(text))
     if _looks_like_bare_filename(expanded):
-        configs_dir = _jiuwenbox_configs_dir()
-        if configs_dir is None:
-            return None
-        return (configs_dir / expanded).resolve()
+        return (get_bundled_resources_dir() / "sandbox-policies" / expanded).resolve()
     return Path(expanded).resolve()
 
 

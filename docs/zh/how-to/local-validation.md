@@ -39,7 +39,7 @@ export JIUWENSWARM_HOME="$PWD/.local-home"
 ```
 
 - 工作区为 `$JIUWENSWARM_HOME/.jiuwenswarm`，首次启动会自动初始化（默认技能、cron 任务文件等），无需手工创建。
-- 配置文件默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。
+- 配置文件默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`。
 - 多实例隔离可用 `JIUWENSWARM_DATA_DIR`（部署侧 `--name` 用的就是这个）。
 
 ### 2.2 端口与下游地址
@@ -180,7 +180,7 @@ python -m pytest st_test/testcases_integration --no-cov
 真实模型对话默认跳过（外部依赖，避免 PR 门禁抖动），需要时开启：
 
 ```bash
-# 临时工作区会从 ~/.jiuwenswarm/config 复制模型配置；
+# 临时工作区会从 ~/.jiuwenswarm/infra/config 复制模型配置；
 # 可用 ST_WORKSWARM_CONFIG_SRC 指定其他配置目录。
 ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 ```

@@ -22,7 +22,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 
 from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,

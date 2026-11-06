@@ -41,6 +41,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -658,6 +659,13 @@ _FORWARD_REQ_METHODS = frozenset({
     "team.history.get",
     "team.mq.publish",
     "team.list",
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
     "org.snapshot",
     # Agent configuration
     "agents.list",
@@ -685,6 +693,17 @@ _FORWARD_REQ_METHODS = frozenset({
     # 主动推荐反馈（点赞/点踩）：经 E2A 转发到 AgentServer 的
     # _handle_proactive_feedback，写入 recommendation.json 的 feedback_buffer。
     "proactive.feedback",
+})
+
+# 企业团队控制面方法。个人版进程不把它们放进转发名单。
+_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
@@ -732,6 +751,13 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "swarmflow.resume",
     "swarmflow.stop",
     "team.list",
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
     "org.snapshot",
     "skills.marketplace.list",
     "skills.list",
@@ -896,6 +922,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "external_cli.codex_install_status",
     "proactive.feedback",
 })
+
+if not _is_enterprise_edition():
+    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    _FORWARD_NO_LOCAL_HANDLER_METHODS = (
+        _FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    )
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
 # 用于 channel.wechat.set_conf 写盘前校验，拒绝负数 / 0 / 极大值 / 浮点越界 / 非数字，
@@ -5485,7 +5517,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
         """Send a recommendation panel call to AgentServer and return its payload."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.protocol_methods import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5870,7 +5902,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
-    from openjiuwen_protocol.message import ReqMethod as _FileReq
+    from agent_gateway.common.protocol_methods import ReqMethod as _FileReq
 
     for file_method in (
         _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,

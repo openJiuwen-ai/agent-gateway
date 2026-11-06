@@ -4,7 +4,7 @@ The gateway is the single entry point for IM platforms, the Web UI, the TUI, and
 
 ## Configuration file
 
-Default path: `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`. When the file is missing, the gateway warns and uses defaults (no IM channel enabled). Changed channel entries are reloaded automatically after the file is saved.
+Default path: `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`. On a first standalone start, Gateway installs its bundled template when this file is missing and preserves existing user configuration. Changed channel entries are reloaded automatically after the file is saved.
 
 Minimal configuration — explicitly disable all IM channels:
 

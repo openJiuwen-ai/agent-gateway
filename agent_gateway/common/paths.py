@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -71,31 +72,34 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-# --- 包内资源与配置目录 ---
+# --- 数据根分区（domain/infra 两区，与 jiuwenswarm.common.utils 同契约）---
+# gateway 包自包含：分区根由本模块手工推导（同 get_user_workspace_dir 的
+# env/home 语义），不 import jiuwenswarm。
+_DOMAIN_DIR_NAME = "domain"
+_INFRA_DIR_NAME = "infra"
 _config_dir: Path | None = None
 _workspace_dir: Path | None = None
 _root_dir: Path | None = None
 _initialized: bool = False
 
 
-def _find_package_root() -> Path | None:
-    """向上查找含 ``resources/config.yaml`` 的宿主包目录。
-
-    源码布局命中 ``<repo>/jiuwenswarm/resources``；wheel 共同安装时命中
-    ``site-packages/jiuwenswarm/resources``；Gateway 与宿主仓并排 checkout
-    时（``<parent>/jiuwenswarm/jiuwenswarm/resources``）同样命中。
-    Gateway 自身不带该资源目录。
+def get_domain_data_dir() -> Path:
+    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
+    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
     """
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "resources" / "config.yaml").exists():
-            return parent
-        nested = parent / "jiuwenswarm" / "resources" / "config.yaml"
-        if nested.exists():
-            return nested.parent.parent
-        sibling = parent / "jiuwenswarm" / "jiuwenswarm" / "resources" / "config.yaml"
-        if sibling.exists():
-            return sibling.parent.parent
-    return None
+    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
+
+
+def get_infra_data_dir() -> Path:
+    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
+    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
+    周期），个人版为普通子目录。
+    """
+    return get_user_workspace_dir() / _INFRA_DIR_NAME
+
+
+def get_bundled_resources_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "resources"
 
 
 def _resolve_paths() -> None:
@@ -105,26 +109,9 @@ def _resolve_paths() -> None:
     if _initialized:
         return
 
-    workspace_dir = get_user_workspace_dir()
-    user_config_dir = workspace_dir / "config"
-    user_workspace_dir = workspace_dir / "agent" / "workspace"
-    if user_config_dir.exists():
-        # 已初始化的用户工作区优先，保证源码运行与安装包运行路径一致
-        _root_dir = workspace_dir
-        _config_dir = user_config_dir
-        _workspace_dir = user_workspace_dir
-    else:
-        package_root = _find_package_root()
-        if package_root is not None:
-            res = package_root / "resources"
-            _root_dir = package_root.parent
-            _config_dir = res
-            _workspace_dir = res / "agent" / "workspace"
-        else:
-            _root_dir = Path(__file__).resolve().parents[2]
-            _config_dir = _root_dir / "config"
-            _workspace_dir = _root_dir / "jiuwenswarm" / "resources" / "agent" / "workspace"
-        _workspace_dir.mkdir(parents=True, exist_ok=True)
+    _root_dir = get_user_workspace_dir()
+    _config_dir = get_infra_data_dir() / "config"
+    _workspace_dir = get_domain_data_dir() / "agent" / "workspace"
 
     _initialized = True
 
@@ -164,7 +151,7 @@ def env_url(name: str, default: str) -> str:
 
 # --- agent 工作区子目录 ---
 def get_agent_root_dir() -> Path:
-    return get_user_workspace_dir() / "agent"
+    return get_domain_data_dir() / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -202,7 +189,7 @@ def get_cron_jobs_path() -> Path:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_user_workspace_dir() / "tmp" / "xiaoyi"
+    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -211,32 +198,41 @@ def get_xy_tmp_dir() -> Path:
 _legacy_migration_done: bool = False
 
 
+def _move_if_absent(old: Path, new: Path) -> None:
+    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
+
+    并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
+    if not old.exists() or new.exists():
+        return
+    new.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(old), str(new))
+    except FileNotFoundError:
+        pass
+
+
 def _migrate_legacy_checkpoint_and_logs() -> None:
-    """一次性迁移 ``.checkpoint`` / ``.logs`` 到 ``agent/`` 下。"""
+    """数据根旧平铺路径一次性搬迁。
+
+    - ``.checkpoint``（业务态）→ ``domain/agent/``
+    - ``.logs``（系统日志）→ ``infra/logs/agent/``
+    """
     global _legacy_migration_done
     if _legacy_migration_done:
         return
     _legacy_migration_done = True
 
     workspace = get_user_workspace_dir()
-    agent_root = workspace / "agent"
-
-    for name in (".checkpoint", ".logs"):
-        legacy = workspace / name
-        new_path = agent_root / name
-        if legacy.exists() and not new_path.exists():
-            agent_root.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(legacy), str(new_path))
+    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
+    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
 
 
 def get_checkpoint_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".checkpoint"
 
 
 def get_logs_dir() -> Path:
-    _migrate_legacy_checkpoint_and_logs()
-    return get_agent_root_dir() / ".logs"
+    return get_infra_data_dir() / "logs"
 
 
 def get_gateway_log_dir() -> Optional[Path]:
@@ -350,15 +346,25 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
 
     完整初始化（配置模板迁移、内置 skills、MCP 种子）由母仓 supervisor /
     ``jiuwenswarm-init`` 完成；Gateway 作为子进程启动时带
-    ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``，不会走到这里。本函数只保证
-    运行期必需的目录存在，不修改共享配置。
+    ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``，不会走到这里。本函数创建必需目录，
+    并在配置缺失时安装 Gateway 的默认模板。
     """
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
-    workspace_dir = get_user_workspace_dir()
-    for path in (workspace_dir / "agent" / "workspace", workspace_dir / "agent" / "home"):
+    for path in (get_agent_workspace_dir(), get_agent_home_dir()):
         path.mkdir(parents=True, exist_ok=True)
+
+    config_file = get_config_file()
+    if not config_file.exists():
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=config_file.parent) as temp_dir:
+            staged = Path(temp_dir) / config_file.name
+            shutil.copyfile(get_bundled_resources_dir() / config_file.name, staged)
+            try:
+                os.link(staged, config_file)
+            except FileExistsError:
+                pass
 
 
 __all__ = [
@@ -371,13 +377,16 @@ __all__ = [
     "get_agent_sessions_dir",
     "get_agent_skills_dir",
     "get_agent_workspace_dir",
+    "get_bundled_resources_dir",
     "get_checkpoint_dir",
     "get_config_dir",
     "get_config_file",
     "get_cron_jobs_path",
     "get_deepagent_user_md_path",
+    "get_domain_data_dir",
     "get_env_file",
     "get_gateway_log_dir",
+    "get_infra_data_dir",
     "get_interactions_dir",
     "get_logs_dir",
     "get_root_dir",
@@ -390,3 +399,14 @@ __all__ = [
     "resolve_git_branch",
     "set_user_home",
 ]
+
+# 旧平铺 checkpoint/logs 迁移在导入期执行一次：先于本包任何目录创建
+# 行为（_resolve_paths 的 mkdir、prepare_runtime_workspace），保证迁移
+# 目标位不被抢占。失败仅降级告警：迁移幂等，下次启动重试。
+try:
+    _migrate_legacy_checkpoint_and_logs()
+except Exception:  # noqa: BLE001
+    logger.warning(
+        "legacy checkpoint/logs migration failed; retried on next start",
+        exc_info=True,
+    )

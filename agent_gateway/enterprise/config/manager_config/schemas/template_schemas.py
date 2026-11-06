@@ -514,3 +514,28 @@ class A2AAccessPolicyTemplateCreateRequest(A2AAccessPolicyTemplateUpdateRequest)
     enabled: bool
     revision: int = Field(..., ge=1)
     updated_at: datetime
+
+
+class ExpertPackageItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    kind: Literal["agent_template", "agent_group"]
+    asset_id: str = Field(..., min_length=1, max_length=128)
+    version: str = Field(default="", max_length=64)
+
+
+class ExpertPackageTemplateUpdateRequest(SafeTextMixin):
+    """对齐 expert_package_template。packages 可以整表替换。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    packages: list[ExpertPackageItem] | None = Field(default=None, min_length=1)
+    enabled: bool = Field(default=None)
+
+
+class ExpertPackageTemplateCreateRequest(ExpertPackageTemplateUpdateRequest):
+    template_id: str = Field(..., min_length=1, max_length=100)
+    template_name: str = Field(..., min_length=1, max_length=128)
+    packages: list[ExpertPackageItem] = Field(..., min_length=1)

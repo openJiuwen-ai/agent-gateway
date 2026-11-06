@@ -808,13 +808,10 @@ def _parse_node_major(version: Any) -> int | None:
 
 
 def _builtin_harmonyos_dev_suite_dir() -> Path:
-    # Migrated from the AgentServer original (A5: embedded 目录已消亡).
-    # M0-c：包根少一层 jiuwenswarm/，原 parents[4]（repo 根）现为 parents[3]；
-    # 资源目录在 jiuwenswarm/resources/（随包资源，非 repo 根 resources/）
-    package_root = Path(__file__).resolve().parents[4] / "jiuwenswarm"
+    from agent_gateway.common.paths import get_bundled_resources_dir
+
     return (
-        package_root
-        / "resources"
+        get_bundled_resources_dir()
         / "agent"
         / "workspace"
         / "skills"

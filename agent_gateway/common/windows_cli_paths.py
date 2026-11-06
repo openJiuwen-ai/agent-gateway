@@ -12,9 +12,9 @@ from pathlib import Path
 
 def windows_npm_root() -> Path:
     """Share the user data path contract with the pre-install PowerShell helper."""
-    from agent_gateway.common.paths import get_user_workspace_dir
+    from agent_gateway.common.paths import get_infra_data_dir
 
-    return get_user_workspace_dir() / "runtime" / "npm"
+    return get_infra_data_dir() / "runtime" / "npm"
 
 
 def _preserved_prefixes(*, sdk: bool = False) -> list[tuple[Path, Path]]:

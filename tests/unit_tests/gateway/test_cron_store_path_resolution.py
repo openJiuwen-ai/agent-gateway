@@ -30,12 +30,12 @@ def test_cron_always_reads_home_even_when_gateway_file_exists(workspace):
     gateway_dir = workspace / "gateway"
     gateway_dir.mkdir(parents=True)
     (gateway_dir / "cron_jobs.json").write_text("{}", encoding="utf-8")
-    assert get_cron_jobs_path() == workspace / "agent" / "home" / "cron_jobs.json"
+    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
 
 
 def test_fresh_workspace_uses_home(workspace):
     """No files on disk: still agent/home, never agent_gateway."""
-    assert get_cron_jobs_path() == workspace / "agent" / "home" / "cron_jobs.json"
+    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
 
 
 _JOB = {
@@ -99,7 +99,7 @@ async def test_reload_reports_how_many_jobs_it_loaded(workspace):
     same with one job or none."""
     from agent_gateway.cron.store import CronJobStore
 
-    path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
+    path = _write_job(workspace / "domain" / "agent" / "home" / "cron_jobs.json")
     with _scheduler_logs() as records:
         await _scheduler(CronJobStore(path=path)).reload()
 
@@ -112,7 +112,7 @@ async def test_reload_warns_when_it_loads_nothing(workspace):
     """Zero jobs is a warning, not silence: it is the symptom of the bug."""
     from agent_gateway.cron.store import CronJobStore
 
-    missing = workspace / "agent" / "home" / "cron_jobs.json"
+    missing = workspace / "domain" / "agent" / "home" / "cron_jobs.json"
     with _scheduler_logs(logging.DEBUG) as records:
         await _scheduler(CronJobStore(path=missing)).reload()
 
@@ -126,7 +126,7 @@ async def test_a_store_vanishing_under_us_warns_by_name(workspace):
     read the same whether the file was edited or had vanished with the schedules."""
     from agent_gateway.cron.store import CronJobStore
 
-    path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
+    path = _write_job(workspace / "domain" / "agent" / "home" / "cron_jobs.json")
     scheduler = _scheduler(CronJobStore(path=path))
     await scheduler.reload()
     await scheduler._sync_store_revision()

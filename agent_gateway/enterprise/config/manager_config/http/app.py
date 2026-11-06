@@ -39,6 +39,7 @@ _MANAGER_PATH_PREFIXES = (
     "/api/v1/mcp-templates",
     "/api/v1/permissions-templates",
     "/api/v1/skill-prebuilt-templates",
+    "/api/v1/expert-package-templates",
     "/api/v1/extension-config-templates",
     "/api/v1/a2a-outbound-templates",
     "/api/v1/a2a-access-policies",
@@ -50,7 +51,6 @@ _MANAGER_PATH_PREFIXES = (
     "/api/v1/task-memory",
     "/api/v1/memory",
     "/api/v1/cron-policy",
-    "/api/v1/package-allowlists",
     "/api/v1/audit-log",
     "/api/v1/log-masking-rules",
 )

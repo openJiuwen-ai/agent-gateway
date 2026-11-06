@@ -39,7 +39,7 @@ export JIUWENSWARM_HOME="$PWD/.local-home"
 ```
 
 - The workspace is `$JIUWENSWARM_HOME/.jiuwenswarm` and is initialized on first start (default skills, cron files, and so on); no manual setup is required.
-- Default config path: `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`.
+- Default config path: `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`.
 - Use `JIUWENSWARM_DATA_DIR` for data isolation between instances (this is what `--name` uses on the deployment side).
 
 ### 2.2 Ports and downstream address
@@ -180,7 +180,7 @@ Covered: `agent_ready` from `connection.status`, config passthrough via `config.
 Real-model chat is skipped by default (external dependency, keeps the PR gate stable). Enable it when needed:
 
 ```bash
-# The temporary workspace copies model config from ~/.jiuwenswarm/config;
+# The temporary workspace copies model config from ~/.jiuwenswarm/infra/config;
 # point ST_WORKSWARM_CONFIG_SRC elsewhere to use a different config directory.
 ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 ```

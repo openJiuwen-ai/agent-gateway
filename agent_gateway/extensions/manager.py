@@ -51,9 +51,8 @@ def _extension_dir_paths_from_config(cfg: dict) -> list[str]:
 
     - ``extensions.extension_dirs``：额外搜索目录，';' 分割（支持绝对路径）；
     - ``extensions.include_package_extensions``：是否包含包内默认目录
-      ``gateway/extensions``（默认 true）。gateway 独立部署形态下置 false，
-      仅经显式目录加载所需扩展；过渡期仍会兼容发现母仓 ``jiuwenswarm/extensions``
-      下尚未迁移的扩展（如 video_duplex）。
+      ``agent_gateway/extensions``（默认 true）。独立部署可置 false，
+      仅经显式目录加载所需扩展。
     """
     ext = cfg.get("extensions")
     dirs = ext.get("extension_dirs") if isinstance(ext, dict) else None
@@ -85,7 +84,7 @@ class ExtensionManager:
 
     def _setup_search_paths(self) -> None:
         seen: set[str] = set()
-        user_plugin_dir = get_root_dir() / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir = get_root_dir() / "domain" / _USER_APPLICATION_PLUGIN_DIR
         user_plugin_dir.mkdir(parents=True, exist_ok=True)
         extension_dirs = _extension_dir_paths_from_config(get_config())
         for path in [str(user_plugin_dir), *extension_dirs]:

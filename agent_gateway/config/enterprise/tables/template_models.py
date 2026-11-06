@@ -2,7 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
 """模板表：model_template、embedding_template、extension_config_template、
-skill_prebuilt_template、mcp_template、permissions_template（与企业级数据模型对齐）。
+skill_prebuilt_template、expert_package_template、mcp_template、permissions_template
+（与企业级数据模型对齐）。
 """
 
 from __future__ import annotations
@@ -124,6 +125,29 @@ SKILL_PREBUILT_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("version_id", "string", length=128, nullable=True),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["template_id"], unique=True),
+    ],
+)
+
+EXPERT_PACKAGE_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="expert_package_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("packages", "json", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],

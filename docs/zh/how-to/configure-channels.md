@@ -4,7 +4,7 @@ Gateway 是 IM 平台、Web UI、TUI 与 ACP 客户端的统一接入层。频�
 
 ## 配置文件
 
-默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。文件不存在时 Gateway 告警并使用默认值（不启用任何 IM 频道）。修改保存后，Gateway 会自动重载发生变化的频道配置。
+默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`。首次独立启动时，Gateway 会在文件缺失时安装自带模板，并保留已有用户配置。修改保存后，Gateway 会自动重载发生变化的频道配置。
 
 最小配置——显式关闭所有 IM 频道：
 

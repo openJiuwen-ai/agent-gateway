@@ -142,18 +142,18 @@ def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
     return envelope.to_dict()
 
 
-async def _stamp_package_allowlist(envelope: E2AEnvelope) -> None:
-    """企业版用库里的名单覆盖 channel_context。个人版不读库。"""
+async def _stamp_expert_packages(envelope: E2AEnvelope) -> None:
+    """企业版按这只 bot 的 Agent 模板槽覆盖 channel_context。个人版不读库。"""
     from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return
     from agent_gateway.enterprise.capabilities.experts.allowlist import apply_allowlist_to_envelope
-    from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-        read_package_allowlist_packages,
-    )
+    from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
+    from agent_gateway.common.request_identity import web_routing_identity
 
-    apply_allowlist_to_envelope(envelope, await read_package_allowlist_packages())
+    bot_id = web_routing_identity(envelope.channel_context).get("bot_id", "")
+    apply_allowlist_to_envelope(envelope, await packages_for_bot(bot_id))
 
 
 class WebSocketAgentServerClient(AgentServerClient):
@@ -649,7 +649,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         timeout: float | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
-        await _stamp_package_allowlist(envelope)
+        await _stamp_expert_packages(envelope)
         # 非流式 API 必须与 AgentServer 的 unary 路径一致；忽略信封上误带的 is_stream=True。
         envelope.is_stream = False
         rid = _wire_request_id_key(envelope.request_id)
@@ -808,7 +808,7 @@ class WebSocketAgentServerClient(AgentServerClient):
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         await self._ensure_connected_for_request()
-        await _stamp_package_allowlist(envelope)
+        await _stamp_expert_packages(envelope)
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
         sid = str(envelope.session_id or "")

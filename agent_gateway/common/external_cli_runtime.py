@@ -754,9 +754,9 @@ def _declares_provider_entry_point(site_packages: Path, name: str) -> bool:
 
 
 def _manifest_path() -> Path:
-    return (
-        Path(__file__).resolve().parents[1] / "resources" / "external_cli_runtime.json"
-    )
+    from agent_gateway.common.paths import get_bundled_resources_dir
+
+    return get_bundled_resources_dir() / "external_cli_runtime.json"
 
 
 def _load_manifest() -> dict[str, Any]:

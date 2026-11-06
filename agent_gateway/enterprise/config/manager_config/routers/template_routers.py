@@ -15,6 +15,7 @@ from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateSe
 from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
 from ..core.template.embedding_template import EmbeddingTemplateService
+from ..core.template.expert_package_template import ExpertPackageTemplateService
 from ..core.template.extension_config_template import ExtensionConfigTemplateService
 from ..core.template.mcp_template import McpTemplateService
 from ..core.template.model_template import ModelTemplateService
@@ -31,6 +32,8 @@ from ..schemas.template_schemas import (
     AgentTemplateUpdateRequest,
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
+    ExpertPackageTemplateCreateRequest,
+    ExpertPackageTemplateUpdateRequest,
     ExtensionConfigTemplateCreateRequest,
     ExtensionConfigTemplateUpdateRequest,
     McpTemplateCreateRequest,
@@ -198,6 +201,13 @@ _add_template_crud(
     "extension_config",
     ExtensionConfigTemplateCreateRequest,
     ExtensionConfigTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/expert-package-templates",
+    ExpertPackageTemplateService,
+    "expert_package",
+    ExpertPackageTemplateCreateRequest,
+    ExpertPackageTemplateUpdateRequest,
 )
 _add_template_crud(
     "/skill-prebuilt-templates",

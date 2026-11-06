@@ -27,6 +27,7 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "embedding_template",
     "extension_config_template",
     "skill_prebuilt_template",
+    "expert_package_template",
     "mcp_template",
     "permissions_template",
     "a2a_outbound_template",
@@ -43,7 +44,6 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "task_memory_config",
     "audit_log_config",
     "cron_policy",
-    "package_allowlist",
     "memory_config",
     "cron_job",
 )

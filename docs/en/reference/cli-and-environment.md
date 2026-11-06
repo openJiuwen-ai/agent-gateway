@@ -66,9 +66,9 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 
 ## Configuration file
 
-Default path: `$JIUWENSWARM_DATA_DIR/config/config.yaml`; when `JIUWENSWARM_DATA_DIR` is unset, `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`.
+Default path: `$JIUWENSWARM_DATA_DIR/infra/config/config.yaml`; when `JIUWENSWARM_DATA_DIR` is unset, `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`.
 
-If the file is missing or cannot be read, the gateway warns and uses defaults. Common settings:
+If the file is missing, configuration reads fall back to Gateway’s bundled template. A standalone start installs that template without overwriting existing configuration. Common settings:
 
 ```yaml
 channels: {}          # Only IM channels present here are initialized
@@ -81,11 +81,11 @@ health_check:
 
 | Path | Content |
 | --- | --- |
-| `<root>/config/config.yaml` | Gateway / channel configuration |
-| `<root>/agent/sessions/` | Session data (written by the AgentServer) |
-| `<root>/agent/.logs/` | Gateway, AgentServer, and combined logs |
-| `<root>/.gateway.lock` | Workspace singleton lock |
-| `<root>/agent/home/cron_jobs.json` | Cron job store (maintained by the gateway) |
+| `<root>/infra/config/config.yaml` | Gateway / channel configuration |
+| `<root>/domain/agent/sessions/` | Session data (written by the AgentServer) |
+| `<root>/infra/logs/agent/` | Gateway, AgentServer, and combined logs |
+| `<root>/infra/.gateway.lock` | Workspace singleton lock |
+| `<root>/domain/agent/home/cron_jobs.json` | Cron job store (maintained by the gateway) |
 
 `<root>` is `JIUWENSWARM_DATA_DIR` when set, otherwise `JIUWENSWARM_HOME/.jiuwenswarm`.
 
