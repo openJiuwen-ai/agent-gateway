@@ -19,7 +19,9 @@ class _FakeWebChannel:
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
 
-    def register_method(self, name, handler):
+    def register_method(self, name, handler, *, local_only: bool = False):
+        # production channel.register_method 现支持 local_only；假对象需吞掉以免注册阶段炸。
+        _ = local_only
         self.methods[name] = handler
 
     def on_connect(self, handler):
