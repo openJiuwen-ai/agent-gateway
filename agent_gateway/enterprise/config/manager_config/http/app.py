@@ -40,6 +40,7 @@ _MANAGER_PATH_PREFIXES = (
     "/api/v1/permissions-templates",
     "/api/v1/skill-prebuilt-templates",
     "/api/v1/expert-package-templates",
+    "/api/v1/package-allowlists/catalog",
     "/api/v1/extension-config-templates",
     "/api/v1/a2a-outbound-templates",
     "/api/v1/a2a-access-policies",

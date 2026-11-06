@@ -201,7 +201,7 @@ class _CompositeFilter(logging.Filter):
 
 
 def _load_logging_config_from_yaml() -> dict[str, Any]:
-    """读取 ~/.jiuwenswarm/config/config.yaml 中的 logging 段（无则空）。"""
+    """读取 infra/config/config.yaml 中的 logging 段（无则空）。"""
     try:
         cf = get_config_file()
         if not cf.exists():

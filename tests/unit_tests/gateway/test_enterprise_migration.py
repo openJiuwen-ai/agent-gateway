@@ -6,6 +6,7 @@ import subprocess
 import sys
 
 import yaml
+import pytest
 
 from agent_gateway.auth.session_store import auth_dir
 from agent_gateway.common import paths
@@ -111,3 +112,39 @@ assert ReqMethod.VIDEO_CONVERSATION_APPEND.value == "video.conversation.append"
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("edition", ["personal", "enterprise"])
+def test_shared_domain_keeps_each_pods_context_usage_and_logs_private(tmp_path, edition):
+    import os
+
+    shared_domain = tmp_path / "shared-domain"
+    shared_domain.mkdir()
+    roots = [tmp_path / "pod-a", tmp_path / "pod-b"]
+    script = '''
+import sys
+from agent_gateway.common import paths
+from agent_gateway.channel_manager.web.web_connect import WebChannel
+from agent_gateway.common.logging_setup import setup_gateway_logger
+workspace = paths.get_agent_workspace_dir()
+workspace.mkdir(parents=True, exist_ok=True)
+(workspace / sys.argv[1]).write_text("shared business data")
+WebChannel._write_frontend_context_usage(sys.argv[1])
+setup_gateway_logger().warning(sys.argv[1])
+'''
+    for index, root in enumerate(roots):
+        root.mkdir()
+        (root / "domain").symlink_to(shared_domain, target_is_directory=True)
+        env = dict(os.environ, JIUWENSWARM_DATA_DIR=str(root), JIUWENSWARM_EDITION=edition)
+        env.pop("AGENTOS_GATEWAY_LOG_DIR", None)
+        result = subprocess.run([sys.executable, "-c", script, f"pod-{index}"], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    for index, root in enumerate(roots):
+        assert {entry.name for entry in root.iterdir()} == {"domain", "infra"}
+        assert (root / "infra/logs/agent/context_usage.jsonl").read_text() == f"pod-{index}\n"
+        log = (root / "infra/logs/agent/gateway.log").read_text()
+        assert f"pod-{index}" in log
+        assert f"pod-{1 - index}" not in log
+        assert (root / "domain/agent/workspace/pod-0").is_file()
+        assert (root / "domain/agent/workspace/pod-1").is_file()
+    assert not (shared_domain / "logs").exists()

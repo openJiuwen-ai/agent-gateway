@@ -6,6 +6,7 @@ import json
 import pytest
 
 from openjiuwen_protocol.message import EventType, Message
+from agent_gateway.common import paths
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
@@ -20,11 +21,11 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 
 
 @pytest.mark.asyncio
-async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
-        lambda: tmp_path,
-    )
+@pytest.mark.parametrize("edition", ["personal", "enterprise"])
+async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch, edition):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
+    logs = tmp_path / "infra" / "logs" / "agent"
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     frame = {
         "event": "context.usage",
@@ -33,15 +34,15 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 
     await channel._persist_frontend_context_usage(frame)
 
-    records = (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
+    records = (logs / "context_usage.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(record) for record in records] == [frame]
 
 
-def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "agent_gateway.channel_manager.web.web_connect.get_logs_dir",
-        lambda: tmp_path,
-    )
+@pytest.mark.parametrize("edition", ["personal", "enterprise"])
+def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch, edition):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+    monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
+    logs = tmp_path / "infra" / "logs" / "agent"
     monkeypatch.setattr(
         "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
         12,
@@ -54,9 +55,9 @@ def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch):
     WebChannel._write_frontend_context_usage("first")
     WebChannel._write_frontend_context_usage("second")
 
-    assert (tmp_path / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
-    assert (tmp_path / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
-    assert not (tmp_path / "context_usage.jsonl.2").exists()
+    assert (logs / "context_usage.jsonl").read_text(encoding="utf-8") == "second\n"
+    assert (logs / "context_usage.jsonl.1").read_text(encoding="utf-8") == "first\n"
+    assert not (logs / "context_usage.jsonl.2").exists()
 
 
 class _FakeClient:

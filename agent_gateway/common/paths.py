@@ -159,7 +159,7 @@ def get_agent_home_dir() -> Path:
 
 
 def get_agent_workspace_dir() -> Path:
-    """DeepAgent 标准工作区：``~/.jiuwenswarm/agent/workspace``。"""
+    """DeepAgent 标准工作区：``~/.jiuwenswarm/domain/agent/workspace``。"""
     return get_agent_root_dir() / "workspace"
 
 
@@ -232,6 +232,7 @@ def get_checkpoint_dir() -> Path:
 
 
 def get_logs_dir() -> Path:
+    """Return the Pod-local log root; component logs use subdirectories here."""
     return get_infra_data_dir() / "logs"
 
 

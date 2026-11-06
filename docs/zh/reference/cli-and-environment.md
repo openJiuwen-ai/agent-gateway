@@ -89,6 +89,11 @@ health_check:
 
 其中 `<root>` = `JIUWENSWARM_DATA_DIR`（若设置），否则为 `JIUWENSWARM_HOME/.jiuwenswarm`。
 
+企业版只将 `<root>/domain/` 挂到共享 PVC/NFS，`<root>/infra/` 为各 Pod 的私有目录，
+不挂载整个数据根。个人版使用相同路径，两区均为普通子目录。运行日志即使包含业务事件
+也属于系统区；例如 `context_usage.jsonl` 写入 `infra/logs/agent/`，企业版通过 stdout
+采集留存。
+
 ## 退出行为
 
 | 场景 | 行为 |

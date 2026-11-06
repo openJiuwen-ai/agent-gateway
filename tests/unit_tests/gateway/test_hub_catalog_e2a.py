@@ -94,3 +94,31 @@ def test_hub_catalog_method_available_without_application_imports():
         "for name in sys.modules)"
     )
     subprocess.run([sys.executable, "-I", "-c", script], check=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorized", [False, True])
+async def test_catalog_keeps_manager_link_authorization(monkeypatch, authorized):
+    from unittest.mock import Mock
+    from agent_gateway.enterprise.config.manager_config.http import app as manager_app
+
+    def authorize_request(request):
+        if not authorized:
+            raise manager_app.LinkMTLSError("authenticated TLS peer certificate is missing")
+
+    link = SimpleNamespace(authorize_request=Mock(side_effect=authorize_request))
+    monkeypatch.setattr(manager_app, "is_enterprise", lambda: True)
+    monkeypatch.setattr(manager_app.LinkMTLSConfig, "from_env", lambda: link)
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload={"items": [], "error": ""}))
+    gateway = FastAPI()
+    gateway.state.manager_agent_channel = SimpleNamespace(agent_client=SimpleNamespace(send_request=send_request))
+    assert manager_app.register_manager_config_routes(gateway)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=gateway), base_url="http://gateway") as web:
+        response = await web.get("/api/v1/package-allowlists/catalog")
+        assert response.status_code == (200 if authorized else 403)
+        if authorized:
+            # The compatibility catalogue does not restore the removed cluster allowlist writes.
+            assert (await web.put("/api/v1/package-allowlists", json={})).status_code == 404
+            assert (await web.delete("/api/v1/package-allowlists")).status_code == 404
+    assert link.authorize_request.call_count == 1
+    assert send_request.await_count == (1 if authorized else 0)

@@ -1229,7 +1229,8 @@ def _fill_mapped_path(path: str) -> str:
     )
 
 
-def test_mapped_routes_dispatch_rpc_method(app_with_mock):
+@pytest.mark.parametrize("enterprise", [False, True])
+def test_mapped_routes_dispatch_rpc_method(app_with_mock, enterprise, monkeypatch):
     """Every table-driven HTTP surface reaches dispatch with the declared rpc_method."""
     app, dispatch = app_with_mock
 
@@ -1239,9 +1240,14 @@ def test_mapped_routes_dispatch_rpc_method(app_with_mock):
         return peer, rid, "s"
 
     dispatch.side_effect = _disp
+    # Register and inspect the same edition-specific surface, including expert routes.
+    http_module = sys.modules["jw_web_http_api_routes_under_test"]
+    monkeypatch.setattr(http_module, "is_enterprise", lambda: enterprise)
+    app = FastAPI()
+    http_module.register_web_http_api_routes(app, object(), enterprise=enterprise)
     client = TestClient(app)
     failures: list[str] = []
-    for route in web_http_routes.MAPPED_ROUTES:
+    for route in web_http_routes.mapped_routes_for_edition(enterprise=enterprise):
         url = "/api/v1" + _fill_mapped_path(route.path)
         req_kwargs: dict[str, Any] = {}
         if route.accept_body:

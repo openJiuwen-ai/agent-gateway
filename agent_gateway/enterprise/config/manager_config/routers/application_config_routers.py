@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
@@ -117,6 +117,47 @@ async def delete_memory(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
+async def list_package_allowlist_catalog(request: Request):
+    """Query the Server via E2A, preserving the management response contract."""
+    from openjiuwen_protocol.message import ReqMethod
+    from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+    channel = getattr(request.app.state, "manager_agent_channel", None)
+    client = getattr(channel, "agent_client", None)
+    if callable(client):
+        client = client()
+    ok, payload = await fetch_agent_unary(
+        agent_client=client,
+        req_method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG,
+        params={},
+        session_id=None,
+        user_id=None,
+        channel_id="gateway",
+        label="package-allowlists.catalog",
+        timeout_seconds=120.0,
+    )
+    if not ok:
+        payload = {"items": [], "error": str(payload.get("error") or "AgentServer is unavailable")}
+    payload = _without_hidden_hub_items(payload)
+    return ResponseModel(code=200, message="success", data=payload)
+
+
+def _without_hidden_hub_items(payload: dict[str, Any]) -> dict[str, Any]:
+    """管理端目录去掉企业版不提供的 Hub 包。本路由只在企业版注册。"""
+    from agent_gateway.common.expert_packages import HIDDEN_HUB_ASSET_IDS
+
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return payload
+    kept = [
+        row
+        for row in items
+        if str((row or {}).get("id") or "").strip() not in HIDDEN_HUB_ASSET_IDS
+    ]
+    return {**payload, "items": kept}
 
 
 @application_config_router.put("/cron-policy", response_model=ResponseModel)

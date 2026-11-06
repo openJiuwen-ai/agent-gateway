@@ -89,6 +89,12 @@ health_check:
 
 `<root>` is `JIUWENSWARM_DATA_DIR` when set, otherwise `JIUWENSWARM_HOME/.jiuwenswarm`.
 
+Enterprise deployments mount only `<root>/domain/` on shared PVC/NFS storage and keep
+`<root>/infra/` private to each Pod; do not mount the entire data root. Personal
+deployments use the same paths as ordinary directories. Runtime logs, including
+`context_usage.jsonl`, belong in `infra/logs/agent/` and are collected through stdout
+in enterprise deployments.
+
 ## Exit behavior
 
 | Scenario | Behavior |
