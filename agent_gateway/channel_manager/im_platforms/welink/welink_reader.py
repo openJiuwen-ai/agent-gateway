@@ -138,6 +138,14 @@ class WelinkReader:
                 if not prepared:
                     self._seen.add(job['seen_key'])
                     self._save(self._seen_path, sorted(self._seen))
+                # The same poll also queued live deliveries. Keep the cursor jobs and
+                # other recipients, but deliver overlapping messages here only once.
+                covered = {item.message_id for item in catchup}
+                for live in self._pending[1:]:
+                    if (live.get('commit') and live['message']['group_id'] == group
+                            and live['message']['message_id'] in covered and credential in live['targets']
+                            and live['target_agents'].get(credential) == channel.config.agent_id):
+                        live['targets'].remove(credential)
                 self._pending = prepared + self._pending[1:]
                 self._save(self._pending_path, self._pending)
                 continue

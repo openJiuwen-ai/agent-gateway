@@ -268,7 +268,8 @@ class ChannelManager(ABC):
         matches = [
             channel
             for key, channel in self._channels.items()
-            if key.channel_id == channel_id
+            if (key.channel_id == channel_id
+                or (app_id is not None and channel_id == "feishu" and key.channel_id.startswith("feishu_enterprise:")))
             and (app_id is None or getattr(channel, "persistent_app_id", key.app_id) == app_id)
         ]
         if not matches:

@@ -245,6 +245,25 @@ async def test_persistent_route_resolves_bot_open_id_before_normalizing_mention(
 
 
 @pytest.mark.asyncio
+async def test_persistent_mention_recovers_after_identity_lookup_miss(monkeypatch):
+    channel = _feishu_channel(agent_id="mate_dev")
+    callback = AsyncMock(return_value=InboundDisposition.HANDLED)
+    channel.set_persistent_group_fanout_callback(callback)
+    fetch = MagicMock()
+
+    def lookup():
+        fetch()
+        if fetch.call_count == 2:
+            channel.config.bot_open_id = "ou_dev"
+
+    monkeypatch.setattr(channel, "_fetch_bot_open_id", lookup)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    await channel._on_message(_raw_feishu_event())
+    callback.assert_awaited_once()
+    assert callback.await_args.args[0].receiver_bot_mentioned
+
+
+@pytest.mark.asyncio
 async def test_mention_of_another_bot_does_not_mark_receiving_bot_mentioned():
     channel = _feishu_channel(agent_id="mate_dev")
     channel.config.bot_open_id = "ou_dev"
@@ -391,6 +410,38 @@ async def test_unclaimed_bot_stays_ignored_and_rejected_or_failed_routes_never_f
     await failed_channel._on_message(_raw_feishu_event())
     failed_channel._parse_message_content_with_file.assert_not_awaited()
     failed_channel._process_batched_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second", [InboundDisposition.HANDLED, InboundDisposition.RETRYABLE, InboundDisposition.UNCLAIMED])
+async def test_bound_feishu_retries_only_explicit_retryable(second, monkeypatch):
+    channel = _feishu_channel(agent_id="mate_dev")
+    channel.config.bot_open_id = "ou_dev"
+    callback = AsyncMock(side_effect=[InboundDisposition.RETRYABLE, second])
+    channel.set_persistent_group_fanout_callback(callback)
+    channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    await channel._on_message(_raw_feishu_event())
+    assert callback.await_args_list[0] == callback.await_args_list[1]
+    assert callback.await_count == 2
+    assert channel.send_persistent_result.await_count == int(second is InboundDisposition.RETRYABLE)
+    channel._process_batched_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mentioned", [True, False])
+async def test_bound_feishu_uncertain_ack_does_not_replay_or_notify_unrelated_group(mentioned):
+    channel = _feishu_channel(agent_id="mate_dev")
+    channel.config.bot_open_id = "ou_dev"
+    handler = object.__new__(MessageHandler)
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=False, payload=None))
+    handler.agent_client = SimpleNamespace(send_request=send_request)
+    channel.set_persistent_group_fanout_callback(handler.handle_persistent_feishu_event)
+    channel.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+    await channel._on_message(_raw_feishu_event(mention_ids=("ou_dev" if mentioned else "ou_other",)))
+    send_request.assert_awaited_once()
+    assert channel.send_persistent_result.await_count == int(mentioned)
+    channel._process_batched_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -561,6 +612,26 @@ async def test_unbound_feishu_event_does_not_make_an_e2a_request():
 
     assert result is InboundDisposition.UNCLAIMED
     client.send_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thinking_notice_routes_to_bound_enterprise_feishu_app():
+    manager = ChannelManager(object.__new__(MessageHandler))
+    bots = []
+    for app_id in ("cli_other", "cli_bound"):
+        config = FeishuConfig(enabled=True, app_id=app_id, channel_id=f"feishu_enterprise:{app_id}")
+        bot = FeishuChannel(config, MagicMock())
+        bot.send_persistent_result = AsyncMock(return_value={"outcome": "delivered"})
+        manager.register_channel(bot)
+        bots.append(bot)
+
+    route = dict(channel="feishu", chat_id="oc_group", text="请稍候", idempotency_key="notice")
+    result = await manager.deliver_thinking_notice({**route, "app_id": "cli_bound"})
+    assert result == {"outcome": "delivered"}
+    bots[0].send_persistent_result.assert_not_awaited()
+    bots[1].send_persistent_result.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_channel_manager_routes_result_delivery_only_to_exact_feishu_app():
     handler = object.__new__(MessageHandler)

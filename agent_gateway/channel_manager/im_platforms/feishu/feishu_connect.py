@@ -3575,6 +3575,36 @@ class FeishuChannel(BaseChannel):
                 type(exc).__name__,
             )
 
+    async def _route_persistent_message(self, event: FeishuInboundEvent) -> InboundDisposition:
+        callback = self._persistent_group_fanout_callback
+        try:
+            disposition = await callback(event)
+            if disposition is InboundDisposition.RETRYABLE:
+                await asyncio.sleep(1)
+                disposition = await callback(event)
+                # A binding may disappear during backoff. Keep the original claimed route.
+                if disposition is InboundDisposition.UNCLAIMED:
+                    return InboundDisposition.REJECTED
+            if disposition is not InboundDisposition.RETRYABLE:
+                return disposition
+        except Exception as exc:
+            # A lost response does not establish whether the server accepted the message.
+            logger.warning("[FeishuChannel] Persistent inbound unconfirmed: message_id=%s error_type=%s",
+                           event.message_id, type(exc).__name__)
+
+        if (event.expected_agent_id and event.chat_id and event.message_id
+                and event.sender_type in {"human", "user"}
+                and (event.chat_type == "p2p" or event.receiver_bot_mentioned)):
+            result = await self.send_persistent_result(
+                chat_id=event.chat_id, source_message_id=event.message_id,
+                text="暂时无法确认这条消息的处理状态，请稍后查看任务进展。",
+                idempotency_key=f"inbound-unconfirmed:{event.receiving_app_id}:{event.message_id}",
+            )
+            if result.get("outcome") != "delivered":
+                logger.warning("[FeishuChannel] Could not confirm inbound notice delivery: message_id=%s",
+                               event.message_id)
+        return InboundDisposition.REJECTED
+
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """
         处理来自飞书的传入消息。
@@ -3600,7 +3630,10 @@ class FeishuChannel(BaseChannel):
                         and self._persistent_event_value(message, "mentions", None)
                     ):
                         await asyncio.to_thread(self._fetch_bot_open_id)
-                    disposition = await self._persistent_group_fanout_callback(
+                        if not self.config.bot_open_id:
+                            await asyncio.sleep(1)
+                            await asyncio.to_thread(self._fetch_bot_open_id)
+                    disposition = await self._route_persistent_message(
                         self._normalize_persistent_event(data)
                     )
                 except Exception as exc:
