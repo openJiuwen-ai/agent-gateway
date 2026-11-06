@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,12 @@ def _extension_search_path_candidates(path_value: str) -> list[Path]:
     candidates = [path.resolve()]
     if _is_default_package_extension_dir(path):
         candidates.append(Path(__file__).resolve().parent)
+    elif path.parts == ("jiuwenswarm", "extensions"):
+        # Resolve the explicitly configured Swarm package without importing it.
+        # Standalone Gateway deployments need not install Swarm.
+        spec = importlib.util.find_spec("jiuwenswarm")
+        if spec is not None and spec.submodule_search_locations:
+            candidates.extend(Path(root) / "extensions" for root in spec.submodule_search_locations)
     return candidates
 
 
