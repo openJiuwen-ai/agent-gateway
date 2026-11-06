@@ -419,6 +419,14 @@ class YuanrongAgentCreateUncertainError(YuanrongAgentApiError):
     """A create response does not establish whether an instance was created."""
 
 
+class UnexpectedSandboxIdError(YuanrongAgentCreateUncertainError):
+    """A create response identified an instance other than the requested one."""
+
+    def __init__(self, instance_id: str) -> None:
+        super().__init__("create returned an unexpected sandbox ID")
+        self.instance_id = instance_id
+
+
 class YuanrongAgentTimeoutError(YuanrongAgentApiError):
     """YuanRong did not respond in time. A write may already have taken effect."""
 
@@ -686,6 +694,9 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 raise YuanrongAgentCreateUncertainError(
                     f"create agent returned an invalid instance_id: http_status={status}"
                 )
+            if (AGENT_GENERATION_ENV in payload.get("env_vars", {})
+                    and instance_id != deterministic_agent_instance_id(normalized_namespace, normalized_name)):
+                raise UnexpectedSandboxIdError(instance_id)
 
         info = SandboxInfo(
             sandbox_id=instance_id,
@@ -789,9 +800,15 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             )
             if current_request_trace() is not None else nullcontext(None)
         ) as operation:
-            status, body = await asyncio.to_thread(
-                self._do_agent_get, normalized_id, trace_id
-            )
+            try:
+                status, body = await asyncio.to_thread(
+                    self._do_agent_get, normalized_id, trace_id
+                )
+            except (OSError, http.client.HTTPException) as exc:
+                # A truncated response cannot establish instance absence.
+                raise YuanrongAgentApiError(
+                    f"could not read agent info: instance_id={normalized_id}"
+                ) from exc
             if operation is not None:
                 operation.set_attribute("http.response.status_code", status)
             if self._agent_instance_not_found(status, body, normalized_id):

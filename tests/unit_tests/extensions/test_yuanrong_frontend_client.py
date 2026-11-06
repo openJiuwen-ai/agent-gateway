@@ -1219,6 +1219,22 @@ async def test_get_only_classifies_explicit_instance_absence(monkeypatch):
         assert not isinstance(exc.value, YuanrongAgentNotFoundError)
 
 
+async def test_get_with_unreadable_404_body_does_not_confirm_absence(monkeypatch):
+    c = _generation_client()
+
+    class BrokenBody(io.BytesIO):
+        def read(self, *args):
+            raise TimeoutError("reading the error body timed out")
+
+    def fail(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, BrokenBody())
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(YuanrongAgentApiError) as exc:
+        await c.get_agent_info("instance")
+    assert not isinstance(exc.value, YuanrongAgentNotFoundError)
+
+
 async def test_wait_rejects_stale_generation_and_accepts_matching(monkeypatch):
     c = _generation_client()
     async def get(*args, **kwargs):
@@ -1336,6 +1352,28 @@ async def test_create_response_uncertain_without_leaking_body(monkeypatch, statu
         await c.create_sandbox(namespace="default", name="agent", workspace="/tmp",
                                runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}})
     assert "sensitive" not in "".join(traceback.format_exception(exc.value))
+
+
+@pytest.mark.parametrize("marked,actual,raises", [
+    (True, "unexpected", True),
+    (False, "unexpected", False),
+    (True, deterministic_agent_instance_id("default", "agent"), False),
+])
+async def test_create_validates_identity_for_managed_requests(monkeypatch, marked, actual, raises):
+    from agent_gateway.extensions.yuanrong_frontend_client import UnexpectedSandboxIdError
+
+    c = _generation_client()
+    monkeypatch.setattr(c, "_do_agent_create", lambda *args: (200, json.dumps({"code": 200, "instance_id": actual})))
+    args = dict(namespace="default", name="agent", workspace="/tmp",
+                runtime_spec={"runtime": "docker", "rootfs": {"imageurl": "image"}},
+                env_vars={AGENT_GENERATION_ENV: "generation"} if marked else {})
+    if raises:
+        with pytest.raises(UnexpectedSandboxIdError) as exc:
+            await c.create_sandbox(**args)
+        assert exc.value.instance_id == actual
+        assert isinstance(exc.value, YuanrongAgentCreateUncertainError)
+    else:
+        assert (await c.create_sandbox(**args)).sandbox_id == actual
 
 
 async def test_create_client_error_remains_definitive(monkeypatch):

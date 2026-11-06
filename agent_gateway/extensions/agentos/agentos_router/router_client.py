@@ -29,6 +29,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreateFailed,
     AgentCreatingTimeout,
     AgentDeleted,
+    AgentKey,
     AgentManager,
     AgentPreCreateError,
     AgentRebuildPending,
@@ -100,6 +101,7 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
     AgentRuntimeSpec,
     RuntimeProbeSettings,
     SandboxInfo,
+    UnexpectedSandboxIdError,
     YuanrongAgentApiError,
     YuanrongAgentCreateUncertainError,
     YuanrongAgentDeleteRejectedError,
@@ -190,21 +192,53 @@ class _SandboxAttempt:
     generation: str
     deterministic_id: str
     create: Callable[[], Awaitable[SandboxInfo]]
+    owner_key: AgentKey = ()
     sandbox: SandboxInfo | None = None
     post_uncertain: bool = False
+    replay_used: bool = False
+    unexpected_id: str = ""
+
+
+@dataclass
+class _SandboxRetirement:
+    instance_id: str
+    generation: str = ""
+    expected_id: str = ""
+    delete_retry_at: float = 0.0
+    absent: bool = False
+    confirm_after: float = 0.0
+    expires_at: float = 0.0
+    delete_accepted: bool = False
+    absent_observations: int = 0
+
+    @property
+    def late_create(self) -> bool:
+        return bool(self.generation)
 
 
 @dataclass
 class _SandboxLifecycle:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     users: int = 0
-    retired_instance: str = ""
-    delete_retry_at: float | None = None
+    retirements: dict[tuple[str, str], _SandboxRetirement] = field(default_factory=dict)
     retirement_task: asyncio.Task[None] | None = None
     attempt: _SandboxAttempt | None = None
     provisioned_instance: str = ""
     shared_sandbox: SandboxInfo | None = None
     shared_sandbox_owner: str = ""
+
+    def known_retirements(self) -> list[_SandboxRetirement]:
+        return [record for record in self.retirements.values() if not record.late_create]
+
+    def tracks_retired_id(self, instance_id: str) -> bool:
+        return any(record.instance_id == instance_id for record in self.retirements.values())
+
+    def clear_attempt(self) -> None:
+        self.attempt = None
+        # A confirmed old deletion only needs to fence the current replacement.
+        for record in self.known_retirements():
+            if record.absent:
+                self.retirements.pop((record.instance_id, ""))
 
 
 def _sandbox_name(user_id: str, agent_type: str) -> str:
@@ -227,6 +261,12 @@ _CONNECT_WARMUP_CHANNELS = frozenset(
 _WS_CONNECT_READY_TIMEOUT_SECONDS = 60.0
 _WS_CONNECT_RETRY_INTERVAL_SECONDS = 1.0
 _WS_CONNECT_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+_CREATE_RECOVERY_PROBE_SECONDS = 5.0
+# An unresolved POST can finish after a 404 or even an acknowledged DELETE.
+# Keep observing for a grace period, but do not track unresolved IDs forever.
+_LATE_CREATE_MIN_OBSERVATION_SECONDS = 300.0
+_LATE_CREATE_MAX_OBSERVATION_SECONDS = 600.0
+_LATE_CREATE_ABSENT_OBSERVATIONS = 3
 
 
 def _consume_inflight_exception(fut: asyncio.Future[Any]) -> None:
@@ -3063,14 +3103,14 @@ class AgentOSRouterClient(AgentServerClient):
                 yield lifecycle
         finally:
             lifecycle.users -= 1
-            if not (lifecycle.users or lifecycle.retired_instance or lifecycle.attempt or lifecycle.provisioned_instance):
+            if not (lifecycle.users or lifecycle.retirements or lifecycle.attempt or lifecycle.provisioned_instance):
                 del self._sandbox_lifecycles[name]
             else:
                 self._schedule_retired_sandbox_cleanup(name, lifecycle)
 
     def _schedule_retired_sandbox_cleanup(self, name: str, lifecycle: _SandboxLifecycle) -> None:
         if (
-            self._closed or not lifecycle.retired_instance or lifecycle.delete_retry_at is None
+            self._closed or not any(not record.absent for record in lifecycle.retirements.values())
             or (lifecycle.retirement_task is not None and not lifecycle.retirement_task.done())
         ):
             return
@@ -3085,24 +3125,61 @@ class AgentOSRouterClient(AgentServerClient):
 
     async def _retry_retired_sandbox_cleanup(self, name: str, lifecycle: _SandboxLifecycle) -> None:
         delay = max(1.0, self._probe_settings.wait_running_interval_seconds)
+        loop = asyncio.get_running_loop()
         while not self._closed:
-            await asyncio.sleep(delay)
+            wake_at = min(
+                (record.expires_at for record in lifecycle.retirements.values() if record.late_create),
+                default=loop.time() + delay,
+            )
+            await asyncio.sleep(min(delay, max(0.0, wake_at - loop.time())))
             if self._sandbox_lifecycles.get(name) is not lifecycle:
                 return
-            async with self._sandbox_lifecycle(name):
-                if not lifecycle.retired_instance or lifecycle.delete_retry_at is None:
+            records = [(key, record) for key, record in lifecycle.retirements.items() if not record.absent]
+            if not records:
+                return
+            for key, record in records:
+                async with self._sandbox_lifecycle(name):
+                    if lifecycle.retirements.get(key) is not record or record.absent:
+                        continue
+                    probe_until = loop.time() + _CREATE_RECOVERY_PROBE_SECONDS
+                    if record.late_create:
+                        probe_until = min(probe_until, record.expires_at)
+                    confirmed = False
+                    if loop.time() < probe_until:
+                        try:
+                            async with asyncio.timeout_at(probe_until):
+                                confirmed = await self._observe_retired_sandbox(lifecycle, record)
+                        except (AgentRebuildPending, TimeoutError):
+                            pass
+                        except Exception:  # noqa: BLE001 - keep the retirement for the next pass
+                            logger.exception("Retired sandbox cleanup failed: instance_id=%s", record.instance_id)
+                    if confirmed:
+                        if record.late_create:
+                            self._finish_late_retirement(lifecycle, record)
+                        elif lifecycle.attempt is None:
+                            lifecycle.retirements.pop(key)
+                        else:
+                            record.absent = True
+                    elif record.late_create and loop.time() >= record.expires_at:
+                        logger.warning(
+                            "Late sandbox cleanup tracking expired without confirmation: instance_id=%s generation=%s",
+                            record.instance_id, record.generation,
+                        )
+                        self._finish_late_retirement(lifecycle, record)
+                if self._sandbox_lifecycles.get(name) is not lifecycle:
                     return
-                try:
-                    async with asyncio.timeout(self._probe_settings.wait_running_timeout_seconds):
-                        if await self._observe_retired_sandbox(lifecycle):
-                            if lifecycle.attempt is None:
-                                lifecycle.retired_instance = ""
-                            return
-                except (AgentRebuildPending, TimeoutError):
-                    pass
-                except Exception:  # noqa: BLE001 - keep the retirement for the next pass
-                    logger.exception("Retired sandbox cleanup failed: instance_id=%s", lifecycle.retired_instance)
+            if not any(not record.absent for record in lifecycle.retirements.values()):
+                return
             delay = max(delay, min(30.0, delay * 2))
+
+    def _finish_late_retirement(self, lifecycle: _SandboxLifecycle, record: _SandboxRetirement) -> None:
+        lifecycle.retirements.pop((record.instance_id, record.generation))
+        known = lifecycle.retirements.get((record.instance_id, ""))
+        if record.instance_id == record.expected_id and (known is None or known.absent):
+            self._forget_abandoned_create(record.instance_id)
+
+    def _forget_abandoned_create(self, instance_id: str) -> None:
+        """Release any backend-specific recovery state for a retired creation."""
 
     @asynccontextmanager
     async def _startup_sandbox_guard(
@@ -3115,27 +3192,35 @@ class AgentOSRouterClient(AgentServerClient):
         async with self._sandbox_lifecycle(_sandbox_name(record.user, record.framework)) as lifecycle:
             async def retire() -> bool:
                 if (
-                    lifecycle.attempt is not None or lifecycle.retired_instance
+                    lifecycle.attempt is not None or lifecycle.known_retirements()
+                    or lifecycle.tracks_retired_id(instance_id)
                     or lifecycle.provisioned_instance == instance_id
                 ):
                     return False
-                lifecycle.retired_instance = instance_id
-                await self._delete_retired_sandbox(lifecycle)
+                record = lifecycle.retirements.setdefault((instance_id, ""), _SandboxRetirement(instance_id))
+                await self._delete_retired_sandbox(record)
                 return True
 
             yield retire
 
     async def _wait_for_retired_sandbox(self, lifecycle: _SandboxLifecycle, deadline: float) -> None:
         loop = asyncio.get_running_loop()
-        retries = 0
+        retries: dict[str, int] = {}
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
-                    retry_at = lifecycle.delete_retry_at
-                    if await self._observe_retired_sandbox(lifecycle, allow_retry=retries < 3):
+                    pending = [record for record in lifecycle.known_retirements() if not record.absent]
+                    if not pending:
                         return
-                    if lifecycle.delete_retry_at != retry_at:
-                        retries += 1
+                    for record in pending:
+                        retry_at = record.delete_retry_at
+                        count = retries.get(record.instance_id, 0)
+                        if await self._observe_retired_sandbox(lifecycle, record, allow_retry=count < 3):
+                            record.absent = True
+                        if record.delete_retry_at != retry_at:
+                            retries[record.instance_id] = count + 1
+                    if all(record.absent for record in pending):
+                        return
                     await asyncio.sleep(min(
                         max(0.1, self._probe_settings.wait_running_interval_seconds),
                         max(0.0, deadline - loop.time()),
@@ -3144,44 +3229,114 @@ class AgentOSRouterClient(AgentServerClient):
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: waiting for the old sandbox") from exc
 
     async def _observe_retired_sandbox(
-        self, lifecycle: _SandboxLifecycle, *, allow_retry: bool = True,
+        self, lifecycle: _SandboxLifecycle, record: _SandboxRetirement, *, allow_retry: bool = True,
     ) -> bool:
-        """Return true only for an explicit absence; retry only after a positive observation."""
+        """Confirm known retirement or clean up an owned late candidate."""
+        previous_absences = record.absent_observations
+        record.absent_observations = 0
+        if record.instance_id == lifecycle.provisioned_instance:
+            return False
+        known = lifecycle.retirements.get((record.instance_id, ""))
+        if record.late_create and known is not None and not known.absent:
+            return False  # The known retirement owns deletion of this ID for now.
         try:
-            await self._yuanrong.get_agent_info(lifecycle.retired_instance)
+            info = await self._yuanrong.get_agent_info(record.instance_id)
         except YuanrongAgentNotFoundError:
-            lifecycle.delete_retry_at = None
-            return True
+            # An unresolved POST can still make the ID reappear, including
+            # after a different request for that same ID was deleted.
+            if not record.late_create:
+                return True
+            if record.delete_accepted and asyncio.get_running_loop().time() >= record.confirm_after:
+                record.absent_observations = previous_absences + 1
+            return record.absent_observations >= _LATE_CREATE_ABSENT_OBSERVATIONS
         except YuanrongAgentApiError:
             return False
-        retry_at = lifecycle.delete_retry_at
-        if allow_retry and retry_at is not None and asyncio.get_running_loop().time() >= retry_at:
-            if await self._request_sandbox_delete(lifecycle):
+        if record.late_create and not self._owns_late_sandbox(
+            record.instance_id, record.expected_id, record.generation, info,
+        ):
+            return False
+        if allow_retry and asyncio.get_running_loop().time() >= record.delete_retry_at:
+            if await self._request_sandbox_delete(record):
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: old sandbox deletion was rejected")
         return False
 
+    def _owns_late_sandbox(
+        self, instance_id: str, expected_id: str, generation: str, info: Mapping[str, Any],
+    ) -> bool:
+        env = info.get("env_vars")
+        return isinstance(env, Mapping) and env.get(AGENT_GENERATION_ENV) == generation
+
     async def _post_sandbox_attempt(self, attempt: _SandboxAttempt, deadline: float) -> None:
+        was_uncertain = attempt.post_uncertain
         attempt.post_uncertain = True
         try:
             async with asyncio.timeout_at(deadline):
-                attempt.sandbox = await attempt.create()
+                sandbox = await attempt.create()
+        except UnexpectedSandboxIdError as exc:
+            attempt.unexpected_id = exc.instance_id
+            raise AgentRebuildPending(
+                f"AGENT_CREATE_RECOVERY_FAILED: create returned unexpected sandbox ID {exc.instance_id}"
+            ) from exc
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
-            attempt.post_uncertain = False
+            # A rejected replay does not tell us whether the earlier POST ran.
+            attempt.post_uncertain = was_uncertain
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement creation was rejected") from exc
+        if attempt.replay_used and sandbox.sandbox_id != attempt.deterministic_id:
+            attempt.unexpected_id = sandbox.sandbox_id
+            raise AgentRebuildPending(
+                f"AGENT_CREATE_RECOVERY_FAILED: replay returned unexpected sandbox ID {sandbox.sandbox_id}"
+            )
+        attempt.sandbox = sandbox
         attempt.post_uncertain = False
+
+    def _sandbox_instance_id(self, namespace: str, physical_name: str) -> str:
+        return deterministic_agent_instance_id(namespace, physical_name)
+
+    async def _wait_for_sandbox_attempt(
+        self, instance_id: str, generation: str, deadline: float,
+    ) -> SandboxInfo:
+        await self._yuanrong.wait_until_running(
+            instance_id, expected_generation=generation, deadline=deadline,
+        )
+        return SandboxInfo(instance_id, metadata={"instance_id": instance_id})
+
+    def _abandon_sandbox_attempt(self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt) -> None:
+        """Move possible results out of the foreground creation slot."""
+        if attempt.sandbox or attempt.post_uncertain or attempt.replay_used or attempt.unexpected_id:
+            now = asyncio.get_running_loop().time()
+            candidates = {
+                attempt.deterministic_id, attempt.unexpected_id,
+                attempt.sandbox.sandbox_id if attempt.sandbox else "",
+            }
+            for instance_id in candidates - {""}:
+                lifecycle.retirements.setdefault(
+                    (instance_id, attempt.generation),
+                    _SandboxRetirement(
+                        instance_id, attempt.generation, attempt.deterministic_id,
+                        confirm_after=now + _LATE_CREATE_MIN_OBSERVATION_SECONDS,
+                        expires_at=now + _LATE_CREATE_MAX_OBSERVATION_SECONDS,
+                    ),
+                )
+        lifecycle.clear_attempt()
 
     async def _provision_sandbox(
         self,
         lifecycle: _SandboxLifecycle,
         attempt: _SandboxAttempt,
     ) -> SandboxInfo:
-        if not lifecycle.retired_instance and lifecycle.attempt is None:
+        if not lifecycle.known_retirements() and lifecycle.attempt is None:
             try:
-                return await attempt.create()
+                attempt.sandbox = await attempt.create()
             except YuanrongAgentRequestNotSentError as exc:
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: create request was not sent") from exc
+            except UnexpectedSandboxIdError as exc:
+                attempt.unexpected_id = exc.instance_id
+                self._abandon_sandbox_attempt(lifecycle, attempt)
+                raise AgentRebuildPending(
+                    f"AGENT_CREATE_RECOVERY_FAILED: create returned unexpected sandbox ID {exc.instance_id}"
+                ) from exc
             except (YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
                 attempt.post_uncertain = True
                 lifecycle.attempt = attempt
@@ -3190,49 +3345,92 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt.post_uncertain = True
                 lifecycle.attempt = attempt
                 raise
+            if lifecycle.tracks_retired_id(attempt.sandbox.sandbox_id):
+                self._abandon_sandbox_attempt(lifecycle, attempt)
+                raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement reused a retired sandbox ID")
+            return attempt.sandbox
 
-        deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
+        loop = asyncio.get_running_loop()
+        timeout = self._probe_settings.wait_running_timeout_seconds
+        deadline = loop.time() + timeout
         lifecycle.attempt = attempt
-        if attempt.post_uncertain:
-            # Recover an unknown create by looking up its original generation.
-            instance_id = attempt.deterministic_id
-            sandbox = SandboxInfo(instance_id, metadata={"instance_id": instance_id})
-        else:
-            if attempt.sandbox is None:
-                if lifecycle.retired_instance:
-                    await self._wait_for_retired_sandbox(lifecycle, deadline)
+        if lifecycle.known_retirements():
+            await self._wait_for_retired_sandbox(lifecycle, deadline)
+        if not attempt.post_uncertain and attempt.sandbox is None:
+            try:
                 await self._post_sandbox_attempt(attempt, deadline)
-            sandbox = attempt.sandbox
-        if sandbox.sandbox_id == lifecycle.retired_instance:
+            except AgentRebuildPending:
+                if attempt.unexpected_id:
+                    self._abandon_sandbox_attempt(lifecycle, attempt)
+                raise
+
+        sandbox = attempt.sandbox
+        instance_id = sandbox.sandbox_id if sandbox is not None else attempt.deterministic_id
+        if lifecycle.tracks_retired_id(instance_id):
             # A delayed DELETE still targets this ID even if its marker
             # changed. Never publish it as a replacement.
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement reused the retired sandbox ID")
         try:
-            await self._yuanrong.wait_until_running(
-                sandbox.sandbox_id, expected_generation=attempt.generation, deadline=deadline,
-            )
+            probe_deadline = deadline
+            if instance_id == attempt.deterministic_id:
+                # Reserve part of the request budget for the replay and its readiness check.
+                probe_deadline = min(deadline, loop.time() + min(_CREATE_RECOVERY_PROBE_SECONDS, timeout / 2))
+            try:
+                observed = await self._wait_for_sandbox_attempt(instance_id, attempt.generation, probe_deadline)
+            except YuanrongAgentNotVisibleError:
+                if attempt.replay_used or instance_id != attempt.deterministic_id or loop.time() >= deadline:
+                    raise
+                # Absence is only a timing signal. Reusing this attempt's exact
+                # physical name and payload is what makes the replay idempotent.
+                attempt.replay_used = True
+                try:
+                    await self._post_sandbox_attempt(attempt, deadline)
+                except AgentRebuildPending as exc:
+                    self._abandon_sandbox_attempt(lifecycle, attempt)
+                    if attempt.unexpected_id:
+                        raise
+                    raise AgentRebuildPending(
+                        f"AGENT_CREATE_RECOVERY_FAILED: replay budget exhausted for sandbox {instance_id}"
+                    ) from exc
+                sandbox = attempt.sandbox
+                observed = await self._wait_for_sandbox_attempt(instance_id, attempt.generation, deadline)
+            except YuanrongAgentTimeoutError:
+                if probe_deadline == deadline:
+                    raise
+                # A visible but unready instance keeps its normal startup budget.
+                # The first observation was inconclusive, so this wait cannot authorize a replay.
+                observed = await self._wait_for_sandbox_attempt(instance_id, attempt.generation, deadline)
         except YuanrongAgentGenerationMismatchError as exc:
             # Each generation has its own name. A mismatch cannot establish
             # ownership of the instance or justify deleting it.
+            if attempt.replay_used:
+                self._abandon_sandbox_attempt(lifecycle, attempt)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
         except YuanrongAgentFailedError as exc:
-            lifecycle.retired_instance = sandbox.sandbox_id
-            lifecycle.attempt = None
-            await self._request_sandbox_delete(lifecycle)
+            if attempt.post_uncertain or attempt.replay_used:
+                self._abandon_sandbox_attempt(lifecycle, attempt)
+            else:
+                lifecycle.clear_attempt()
+            record = lifecycle.retirements.setdefault((instance_id, ""), _SandboxRetirement(instance_id))
+            await self._request_sandbox_delete(record)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox failed to start") from exc
         except YuanrongAgentNotVisibleError as exc:
-            if not attempt.post_uncertain and sandbox.sandbox_id == attempt.deterministic_id:
-                # A later caller can retry this same physical name after
-                # the acknowledged instance remains invisible.
-                attempt.sandbox = None
+            if attempt.replay_used:
+                self._abandon_sandbox_attempt(lifecycle, attempt)
+                raise AgentRebuildPending(
+                    f"AGENT_CREATE_RECOVERY_FAILED: replay budget exhausted for sandbox {instance_id}"
+                ) from exc
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not visible yet") from exc
         except YuanrongAgentApiError as exc:
+            if attempt.replay_used:
+                self._abandon_sandbox_attempt(lifecycle, attempt)
+                raise AgentRebuildPending(
+                    f"AGENT_CREATE_RECOVERY_FAILED: replacement was not verified for sandbox {instance_id}"
+                ) from exc
             # Keep the candidate so the next caller can resume polling it.
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement sandbox is not verified yet") from exc
-        lifecycle.retired_instance = ""
-        lifecycle.delete_retry_at = None
-        lifecycle.attempt = None
-        return sandbox
+        lifecycle.clear_attempt()
+        return sandbox if sandbox is not None else observed
 
     async def _create_agent(self, agent_info: AgentInfo) -> AgentInfo:
         operation = start_gateway_trace(
@@ -3377,7 +3575,7 @@ class AgentOSRouterClient(AgentServerClient):
                 reusable = False
                 if (candidate is not None
                         and lifecycle.provisioned_instance == candidate.sandbox_id
-                        and not lifecycle.retired_instance and lifecycle.attempt is None):
+                        and not lifecycle.known_retirements() and lifecycle.attempt is None):
                     runtimes = await self._agent_manager.list_user_agents(agent_info.user_id)
                     reusable = any(
                         _sandbox_name(runtime.info.user_id, runtime.info.agent_type) == logical_name
@@ -3391,9 +3589,20 @@ class AgentOSRouterClient(AgentServerClient):
                 if reusable:
                     sandbox = candidate
                 else:
-                    attempt = lifecycle.attempt or _SandboxAttempt(
-                        generation, deterministic_agent_instance_id(namespace, physical_name), _create_sandbox_once,
-                    )
+                    attempt = lifecycle.attempt
+                    if attempt is None:
+                        key_fields = self._agent_manager.key_fields
+                        if "session_id" in key_fields:
+                            runtimes = await self._agent_manager.list_user_agents(agent_info.user_id)
+                            owner_key = next((runtime.key for runtime in runtimes if runtime.info.agent_id == generation), ())
+                        else:
+                            owner_key = AgentRuntime.build_key(
+                                key_fields, user_id=agent_info.user_id, agent_type=agent_info.agent_type,
+                            )
+                        attempt = _SandboxAttempt(
+                            generation, self._sandbox_instance_id(namespace, physical_name), _create_sandbox_once,
+                            owner_key=owner_key,
+                        )
                     sandbox = await self._provision_sandbox(lifecycle, attempt)
                     lifecycle.shared_sandbox = sandbox if sandbox.sandbox_id == attempt.deterministic_id else None
                     lifecycle.shared_sandbox_owner = agent_info.agent_id if lifecycle.shared_sandbox else ""
@@ -3492,7 +3701,7 @@ class AgentOSRouterClient(AgentServerClient):
 
         When ``idle_timeout_seconds`` is set, only delete a READY agent that is
         unheld (``task_count == 0``) and idle beyond the timeout. Returns whether
-        an agent was deleted.
+        a runtime was removed or a pending creation was cancelled.
         """
         resolved_key_values = dict(key_values or {})
         if idle_timeout_seconds is not None:
@@ -3504,11 +3713,24 @@ class AgentOSRouterClient(AgentServerClient):
             )
 
         target_agent_id = expected_agent_id
+        target_attempt = None
         while True:
             async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
                 current = await self._agent_manager.get_agent(
                     user_id, agent_type, key_values=resolved_key_values or None,
                 )
+                if current is None and expected_agent_id is None and lifecycle.attempt is not None:
+                    key = AgentRuntime.build_key(
+                        self._agent_manager.key_fields, user_id=user_id, agent_type=agent_type,
+                        key_values=resolved_key_values or None,
+                    )
+                    if lifecycle.attempt.owner_key == key and (
+                        target_agent_id is None or lifecycle.attempt is target_attempt
+                        or lifecycle.attempt.generation == target_agent_id
+                    ):
+                        self._abandon_sandbox_attempt(lifecycle, lifecycle.attempt)
+                        _cleanup_step("runtime", "success", "creation_cancelled")
+                        return True
                 if current is None or (target_agent_id and current.info.agent_id != target_agent_id):
                     _cleanup_step("runtime", "skipped", "no_runtime" if current is None else "replaced")
                     return False
@@ -3526,6 +3748,7 @@ class AgentOSRouterClient(AgentServerClient):
                     _cleanup_step("runtime", "success", "removed")
                     await self._retire_sandbox(lifecycle, runtime.info)
                     return True
+                target_attempt = lifecycle.attempt
             # The creator may need this lifecycle lock to finish. Never wait for
             # its settled signal while holding that lock.
             if not await self._agent_manager.wait_for_creation(
@@ -3768,29 +3991,31 @@ class AgentOSRouterClient(AgentServerClient):
             runtime, reason=f"instance_unavailable:{type(exc).__name__}"
         )
 
-    async def _delete_retired_sandbox(self, lifecycle: _SandboxLifecycle) -> None:
+    async def _delete_retired_sandbox(self, record: _SandboxRetirement) -> None:
         # The frontend may ACK before its background kill runs, or lose its
         # response after accepting the request. In both cases give that kill
         # time to complete before a positive observation can trigger a retry.
         retry_delay = max(1.0, self._probe_settings.wait_running_interval_seconds)
         try:
             async with asyncio.timeout(self._probe_settings.wait_running_timeout_seconds):
-                await self._yuanrong.delete_sandbox(lifecycle.retired_instance)
+                await self._yuanrong.delete_sandbox(record.instance_id)
+            # The backend also returns normally when it confirms the ID is already gone.
+            record.delete_accepted = True
         except (YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError):
             retry_delay = max(0.01, self._probe_settings.wait_running_interval_seconds)
             raise
         finally:
-            lifecycle.delete_retry_at = asyncio.get_running_loop().time() + retry_delay
+            record.delete_retry_at = asyncio.get_running_loop().time() + retry_delay
 
-    async def _request_sandbox_delete(self, lifecycle: _SandboxLifecycle) -> bool:
+    async def _request_sandbox_delete(self, record: _SandboxRetirement) -> bool:
         """Request deletion and return whether the frontend definitely rejected it."""
         try:
-            await self._delete_retired_sandbox(lifecycle)
+            await self._delete_retired_sandbox(record)
             if get_cleanup_result("frontend.delete") is None:
                 _cleanup_step("frontend", "incomplete", "result_unconfirmed")
         except Exception as exc:
             _cleanup_step("frontend", "failed", type(exc).__name__)
-            logger.exception("YuanRong sandbox delete failed: instance_id=%s", lifecycle.retired_instance)
+            logger.exception("Sandbox delete failed: instance_id=%s", record.instance_id)
             return isinstance(exc, (YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError))
         return False
 
@@ -3798,15 +4023,15 @@ class AgentOSRouterClient(AgentServerClient):
         self, lifecycle: _SandboxLifecycle, agent_info: AgentInfo, *, best_effort_registry: bool = False,
     ) -> None:
         """Fence the old runtime until a replacement can be verified."""
+        # Published runtimes have already left the creation slot. A pending
+        # attempt here belongs to a separate creation and must survive retirement.
         instance_id = str(agent_info.sandbox_id or "")
         if instance_id:
             if lifecycle.provisioned_instance == instance_id:
                 lifecycle.provisioned_instance = ""
                 lifecycle.shared_sandbox = None
                 lifecycle.shared_sandbox_owner = ""
-            lifecycle.retired_instance = instance_id
-            lifecycle.delete_retry_at = None
-            lifecycle.attempt = None
+            lifecycle.retirements.setdefault((instance_id, ""), _SandboxRetirement(instance_id))
         # A reconnect may cancel delayed cleanup after the runtime was popped.
         # Finish the retirement before releasing the per-name lock.
         cleanup = asyncio.create_task(self._finish_sandbox_retirement(lifecycle, agent_info, best_effort_registry))
@@ -3825,7 +4050,7 @@ class AgentOSRouterClient(AgentServerClient):
         }
         await self._close_ws_client(agent_info.sandbox_id)
         if instance_id:
-            await self._request_sandbox_delete(lifecycle)
+            await self._request_sandbox_delete(lifecycle.retirements[(instance_id, "")])
         else:
             _cleanup_step("frontend", "skipped", "no_instance")
         try:

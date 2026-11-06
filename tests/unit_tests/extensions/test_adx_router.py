@@ -221,9 +221,9 @@ async def test_unknown_delete_fences_retired_instance_until_absence_confirmed(mo
 
             router.test_api.delete_error = False
             lifecycle = router._sandbox_lifecycles['alice+jiuwenswarm']
-            await router._delete_retired_sandbox(lifecycle)
-            assert instance not in router._control._deletes
+            lifecycle.retirements[(instance, '')].delete_retry_at = 0
             assert (await router.send_request(_request(rid='after-delete'))).ok
+            assert instance not in router._control._deletes
             assert len(router.test_api.creates) == 2
             assert clients[-1].uri != first_url
     finally:

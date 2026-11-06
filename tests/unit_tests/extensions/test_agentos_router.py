@@ -47,6 +47,9 @@ from agent_gateway.extensions.agentos.agentos_router.registry_client import (
 from agent_gateway.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
+    _SandboxAttempt,
+    _SandboxLifecycle,
+    _SandboxRetirement,
     _extract_placement_ips,
     _is_agent_network_error,
     _is_ws_connect_retryable,
@@ -62,6 +65,7 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     RuntimeProbeSettings,
     SandboxInfo,
+    UnexpectedSandboxIdError,
     YuanrongAgentApiError,
     YuanrongAgentDeleteRejectedError,
     YuanrongAgentGenerationMismatchError,
@@ -4321,47 +4325,6 @@ async def test_mismatched_replacement_generation_stays_pending(monkeypatch, tmp_
         await router.shutdown()
 
 
-@pytest.mark.parametrize("recovered", [False, True])
-async def test_ambiguous_create_timeout_never_blindly_reposts(tmp_path, recovered):
-    (tmp_path / 'u1').mkdir()
-    posts = []
-
-    class Frontend:
-        agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
-
-        async def create_sandbox(self, **kwargs):
-            posts.append(kwargs)
-            raise YuanrongAgentTimeoutError('response lost')
-
-        async def wait_until_running(self, candidate, *, expected_generation, deadline):
-            assert candidate == deterministic_agent_instance_id('default', posts[0]['name'])
-            assert expected_generation == posts[0]['env_vars'][AGENT_GENERATION_ENV]
-            if not recovered:
-                raise YuanrongAgentNotVisibleError('not visible')
-            return {'status': 'running'}
-
-        async def disconnect(self):
-            pass
-
-    manager = AgentManager()
-    registry = SimpleNamespace(close=AsyncMock())
-    router = AgentOSRouterClient(Frontend(), registry, manager, workspace_root=str(tmp_path))
-    router._register_agent_traced = AsyncMock()
-    try:
-        with pytest.raises(AgentRebuildPending):
-            await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=router._create_agent)
-        if recovered:
-            result = await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=router._create_agent)
-            assert result.info.sandbox_id == deterministic_agent_instance_id('default', posts[0]['name'])
-        else:
-            with pytest.raises(AgentRebuildPending):
-                await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=router._create_agent)
-        assert len(posts) == 1
-    finally:
-        await router.shutdown()
-
-
 async def test_delete_joins_inflight_creation_before_reclaim(monkeypatch, tmp_path):
     (tmp_path / 'u1').mkdir()
     entered, release = asyncio.Event(), asyncio.Event()
@@ -4404,57 +4367,6 @@ async def test_delete_joins_inflight_creation_before_reclaim(monkeypatch, tmp_pa
             if task and not task.done():
                 task.cancel()
         await asyncio.gather(*(t for t in (creation, deletion) if t), return_exceptions=True)
-        await router.shutdown()
-
-
-@pytest.mark.parametrize("all_absent", [False, True])
-async def test_pending_candidate_recovery(monkeypatch, tmp_path, all_absent):
-    (tmp_path / 'u1').mkdir()
-    posts, expected = [], []
-
-    class Frontend:
-        agent_namespace = 'default'
-        frontend_endpoint = 'http://frontend.test'
-
-        async def create_sandbox(self, **kwargs):
-            posts.append(kwargs)
-            return SandboxInfo(sandbox_id=deterministic_agent_instance_id('default', kwargs['name']), metadata={})
-
-        async def get_agent_info(self, _):
-            raise YuanrongAgentNotFoundError('gone')
-
-        async def wait_until_running(self, _, *, expected_generation=None, **kwargs):
-            expected.append(expected_generation)
-            if len(expected) == 1:
-                if all_absent:
-                    raise YuanrongAgentNotVisibleError('only observed explicit absence')
-                raise YuanrongAgentTimeoutError('still starting')
-            return {'status': 'running', 'env_vars': {AGENT_GENERATION_ENV: expected_generation}}
-
-        async def delete_sandbox(self, _):
-            pass
-
-        async def disconnect(self):
-            pass
-
-    manager = AgentManager()
-    registry = SimpleNamespace(unregister_agent=AsyncMock(), close=AsyncMock())
-    router = AgentOSRouterClient(Frontend(), registry, manager, workspace_root=str(tmp_path))
-    monkeypatch.setattr(router, '_register_agent_traced', AsyncMock())
-
-    async def create():
-        return await manager.get_or_create_agent('u1', 'jiuwenswarm', creator=router._create_agent)
-
-    try:
-        await create()
-        assert await router.delete_agent('u1', 'jiuwenswarm')
-        with pytest.raises(AgentRebuildPending):
-            await create()
-        assert len(posts) == 2
-        assert (await create()).info.sandbox_id == deterministic_agent_instance_id('default', posts[-1]['name'])
-        assert len(posts) == (3 if all_absent else 2)
-        assert expected == [posts[-1]['env_vars'][AGENT_GENERATION_ENV]] * 2
-    finally:
         await router.shutdown()
 
 
@@ -4543,6 +4455,108 @@ async def _create_recovery_runtime(router):
     return await router._agent_manager.get_or_create_agent(
         "user", "jiuwenswarm", creator=router._create_agent,
     )
+
+
+async def _abandoned_recovery_attempt(router, frontend):
+    frontend.create_sandbox.side_effect = YuanrongAgentTimeoutError("response lost")
+    with pytest.raises(AgentRebuildPending):
+        await _create_recovery_runtime(router)
+    lifecycle = router._sandbox_lifecycles["user+jiuwenswarm"]
+    attempt = lifecycle.attempt
+    before = asyncio.get_running_loop().time()
+    assert await router.delete_agent("user", "jiuwenswarm")
+    after = asyncio.get_running_loop().time()
+    key = (attempt.deterministic_id, attempt.generation)
+    record = lifecycle.retirements[key]
+    assert before + 300 <= record.confirm_after <= after + 300
+    assert before + 600 <= record.expires_at <= after + 600
+    return lifecycle, key, record
+
+
+async def test_late_retirement_requires_delete_ack_and_consecutive_absences(recovery_router):
+    router, frontend, _ = recovery_router()
+    try:
+        lifecycle, key, record = await _abandoned_recovery_attempt(router, frontend)
+        # A missing sandbox alone cannot prove that an outstanding POST is finished.
+        for _ in range(4):
+            assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert record.absent_observations == 0
+        frontend.delete_sandbox.assert_not_awaited()
+
+        frontend.get_agent_info.return_value = {"env_vars": {AGENT_GENERATION_ENV: record.generation}}
+        frontend.get_agent_info.side_effect = None
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        frontend.delete_sandbox.assert_awaited_once_with(record.instance_id)
+        assert record.delete_accepted
+
+        frontend.get_agent_info.side_effect = YuanrongAgentNotFoundError("gone")
+        for _ in range(3):
+            assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert record.absent_observations == 0  # The five-minute minimum has not elapsed.
+        record.confirm_after = asyncio.get_running_loop().time() - 1
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert record.absent_observations == 2
+
+        # A foreign observation breaks the consecutive 404 streak and is never deleted.
+        frontend.get_agent_info.side_effect = None
+        frontend.get_agent_info.return_value = {"env_vars": {AGENT_GENERATION_ENV: "foreign"}}
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert record.absent_observations == 0
+        frontend.delete_sandbox.assert_awaited_once()
+        frontend.get_agent_info.side_effect = YuanrongAgentNotFoundError("gone")
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        task = lifecycle.retirement_task
+        assert task is not None
+        await asyncio.wait_for(asyncio.shield(task), 5)
+        assert key not in lifecycle.retirements
+        assert "user+jiuwenswarm" not in router._sandbox_lifecycles
+        assert task.done()
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("observation", ["missing", "foreign"])
+async def test_late_retirement_hard_expiry_stops_worker(recovery_router, observation, caplog):
+    router, frontend, _ = recovery_router()
+    try:
+        lifecycle, key, record = await _abandoned_recovery_attempt(router, frontend)
+        if observation == "foreign":
+            frontend.get_agent_info.side_effect = None
+            frontend.get_agent_info.return_value = {"env_vars": {AGENT_GENERATION_ENV: "foreign"}}
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        frontend.delete_sandbox.assert_not_awaited()
+        # Advance the deadline after checking that abandonment set the full 600 seconds.
+        record.expires_at = asyncio.get_running_loop().time() - 1
+        task = lifecycle.retirement_task
+        assert task is not None
+        await asyncio.wait_for(asyncio.shield(task), 5)
+        assert key not in lifecycle.retirements
+        assert "user+jiuwenswarm" not in router._sandbox_lifecycles
+        assert task.done()
+        assert "Late sandbox cleanup tracking expired without confirmation" in caplog.text
+        frontend.delete_sandbox.assert_not_awaited()
+    finally:
+        await router.shutdown()
+
+
+async def test_abandon_attempt_releases_confirmed_known_absence_fence(recovery_router):
+    router, _, _ = recovery_router()
+    try:
+        known = _SandboxRetirement("old", absent=True)
+        pending = _SandboxRetirement("still-pending")
+        attempt = _SandboxAttempt("generation", "candidate", AsyncMock(), post_uncertain=True)
+        lifecycle = _SandboxLifecycle(
+            attempt=attempt, retirements={("old", ""): known, ("still-pending", ""): pending},
+        )
+        router._abandon_sandbox_attempt(lifecycle, attempt)
+        assert lifecycle.attempt is None
+        assert ("old", "") not in lifecycle.retirements
+        assert lifecycle.retirements[("still-pending", "")] is pending
+        assert ("candidate", "generation") in lifecycle.retirements
+    finally:
+        await router.shutdown()
 
 
 @pytest.mark.parametrize("startup", [False, True])
@@ -4646,7 +4660,6 @@ async def test_background_retirement_retries_without_new_create(recovery_router)
         await asyncio.wait_for(asyncio.shield(task), 5)
         assert frontend.delete_sandbox.await_count == 2
         frontend.delete_sandbox.assert_awaited_with(old.info.sandbox_id)
-        assert not lifecycle.retired_instance
         frontend.create_sandbox.assert_awaited_once()
     finally:
         await router.shutdown()
@@ -4666,24 +4679,362 @@ async def test_create_that_was_not_sent_can_be_retried(recovery_router):
         await router.shutdown()
 
 
-async def test_uncertain_create_remains_pending_until_visible_without_reposting(recovery_router):
+async def test_uncertain_create_adopts_original_when_visible(recovery_router):
     router, frontend, _ = recovery_router()
     frontend.create_sandbox.side_effect = YuanrongAgentTimeoutError("response lost")
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await _create_recovery_runtime(router)
+        instance_id = deterministic_agent_instance_id("default", frontend.create_sandbox.await_args.kwargs["name"])
+        assert (await _create_recovery_runtime(router)).info.sandbox_id == instance_id
+        frontend.create_sandbox.assert_awaited_once()
+        assert frontend.wait_until_running.await_args.args == (instance_id,)
+    finally:
+        await router.shutdown()
+
+
+async def test_uncertain_create_replays_same_payload_and_recovers(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("response lost")
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    frontend.create_sandbox.side_effect = create
     frontend.wait_until_running.side_effect = [
-        YuanrongAgentNotVisibleError("not visible"),
-        YuanrongAgentNotVisibleError("still not visible"),
+        YuanrongAgentNotVisibleError("only observed explicit absence"),
         {"status": "running"},
     ]
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await _create_recovery_runtime(router)
+        result = None
+        for _ in range(3):
+            try:
+                result = await _create_recovery_runtime(router)
+                break
+            except AgentRebuildPending:
+                pass
+        assert result is not None
+        assert len(posts) == 2
+        assert posts[1] == posts[0]
+        instance_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        assert result.info.sandbox_id == instance_id
+        assert all(call.args == (instance_id,) for call in frontend.wait_until_running.await_args_list)
+        assert all(call.kwargs["expected_generation"] == posts[0]["env_vars"][AGENT_GENERATION_ENV]
+                   for call in frontend.wait_until_running.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("observation", [
+    YuanrongAgentTimeoutError("mixed observations or transport failure"),
+    YuanrongAgentGenerationMismatchError("wrong generation"),
+])
+async def test_uncertain_create_does_not_replay_without_explicit_absence(recovery_router, observation):
+    router, frontend, _ = recovery_router()
+    frontend.create_sandbox.side_effect = YuanrongAgentTimeoutError("response lost")
+    frontend.wait_until_running.side_effect = observation
     try:
         for _ in range(3):
             with pytest.raises(AgentRebuildPending):
                 await _create_recovery_runtime(router)
-            frontend.create_sandbox.assert_awaited_once()
-
-        instance_id = deterministic_agent_instance_id("default", frontend.create_sandbox.await_args.kwargs["name"])
-        assert (await _create_recovery_runtime(router)).info.sandbox_id == instance_id
         frontend.create_sandbox.assert_awaited_once()
-        assert [call.args for call in frontend.wait_until_running.await_args_list] == [(instance_id,)] * 3
+        instance_id = deterministic_agent_instance_id("default", frontend.create_sandbox.await_args.kwargs["name"])
+        assert all(call.args == (instance_id,) for call in frontend.wait_until_running.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("replay_result", [
+    YuanrongAgentTimeoutError("replay response lost"),
+    YuanrongAgentRequestNotSentError("replay was not sent"),
+    None,  # Replay was acknowledged but the candidate remains invisible.
+])
+async def test_replay_exhaustion_allows_new_generation(recovery_router, replay_result):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("original response lost")
+        if len(posts) == 2 and replay_result is not None:
+            raise replay_result
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    async def wait(instance_id, **kwargs):
+        old_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        if instance_id == old_id:
+            raise YuanrongAgentNotVisibleError("only observed explicit absence")
+        return {"status": "running"}
+
+    frontend.create_sandbox.side_effect = create
+    frontend.wait_until_running.side_effect = wait
+    try:
+        terminal = None
+        for _ in range(4):
+            with pytest.raises(AgentRebuildPending) as exc:
+                await _create_recovery_runtime(router)
+            if "AGENT_CREATE_RECOVERY_FAILED" in str(exc.value):
+                terminal = exc.value
+                break
+        assert terminal is not None
+        assert len(posts) == 2
+        assert posts[1] == posts[0]
+        old_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        result = await _create_recovery_runtime(router)
+        assert len(posts) == 3
+        assert posts[2]["name"] != posts[0]["name"]
+        assert posts[2]["env_vars"][AGENT_GENERATION_ENV] != posts[0]["env_vars"][AGENT_GENERATION_ENV]
+        assert result.info.sandbox_id != old_id
+    finally:
+        await router.shutdown()
+
+
+async def test_acknowledged_replacement_replay_keeps_old_retirement(recovery_router):
+    router, frontend, _ = recovery_router()
+    try:
+        old = await _create_recovery_runtime(router)
+        assert await router.delete_agent("user", "jiuwenswarm")
+        frontend.wait_until_running.side_effect = [
+            YuanrongAgentNotVisibleError("only observed explicit absence"),
+            {"status": "running"},
+        ]
+        result = None
+        for _ in range(4):
+            try:
+                result = await _create_recovery_runtime(router)
+                break
+            except AgentRebuildPending:
+                pass
+        assert result is not None
+        calls = frontend.create_sandbox.await_args_list
+        assert len(calls) == 3
+        assert calls[1].kwargs == calls[2].kwargs
+        assert calls[1].kwargs["name"] != calls[0].kwargs["name"]
+        assert result.info.sandbox_id != old.info.sandbox_id
+        frontend.delete_sandbox.assert_awaited_once_with(old.info.sandbox_id)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("after_retirement", [False, True])
+async def test_initial_create_unexpected_id_retires_candidates_and_allows_new_generation(
+    recovery_router, after_retirement,
+):
+    router, frontend, _ = recovery_router()
+    create = frontend.create_sandbox.side_effect
+    try:
+        if after_retirement:
+            old = await _create_recovery_runtime(router)
+            assert await router.delete_agent("user", "jiuwenswarm")
+        frontend.create_sandbox.side_effect = UnexpectedSandboxIdError("unexpected-id")
+        with pytest.raises(AgentRebuildPending, match="unexpected sandbox ID"):
+            await _create_recovery_runtime(router)
+        failed = frontend.create_sandbox.await_args.kwargs
+        generation = failed["env_vars"][AGENT_GENERATION_ENV]
+        expected_id = deterministic_agent_instance_id("default", failed["name"])
+        lifecycle = router._sandbox_lifecycles["user+jiuwenswarm"]
+        assert lifecycle.attempt is None
+        assert set(lifecycle.retirements) == {(expected_id, generation), ("unexpected-id", generation)}
+        frontend.wait_until_running.assert_not_awaited()
+        if after_retirement:
+            frontend.delete_sandbox.assert_awaited_once_with(old.info.sandbox_id)
+        else:
+            frontend.delete_sandbox.assert_not_awaited()
+
+        frontend.create_sandbox.side_effect = create
+        result = await _create_recovery_runtime(router)
+        assert result.info.sandbox_id not in {expected_id, "unexpected-id"}
+        assert frontend.create_sandbox.await_args.kwargs["name"] != failed["name"]
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("observation", ["missing", "foreign", "owned"])
+async def test_unexpected_replay_id_does_not_block_new_generation(recovery_router, observation):
+    router, frontend, _ = recovery_router()
+    posts = []
+    checked = asyncio.Event()
+    deleted = asyncio.Event()
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("original response lost")
+        if len(posts) == 2:
+            return SandboxInfo("unexpected-id")
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    async def get(instance_id):
+        if instance_id == "unexpected-id":
+            checked.set()
+            if observation == "foreign":
+                return {"env_vars": {AGENT_GENERATION_ENV: "other-generation"}}
+            if observation == "owned":
+                return {"env_vars": posts[0]["env_vars"]}
+        raise YuanrongAgentNotFoundError("gone")
+
+    async def wait(instance_id, **kwargs):
+        if instance_id == deterministic_agent_instance_id("default", posts[0]["name"]):
+            raise YuanrongAgentNotVisibleError("explicit absence")
+        return {"status": "running"}
+
+    async def delete(instance_id):
+        assert instance_id == "unexpected-id"
+        deleted.set()
+
+    frontend.create_sandbox.side_effect = create
+    frontend.get_agent_info.side_effect = get
+    frontend.wait_until_running.side_effect = wait
+    frontend.delete_sandbox.side_effect = delete
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await _create_recovery_runtime(router)
+        with pytest.raises(AgentRebuildPending, match="unexpected"):
+            await _create_recovery_runtime(router)
+        assert len(posts) == 2 and posts[0] == posts[1]
+        result = await _create_recovery_runtime(router)
+        assert result.info.sandbox_id == deterministic_agent_instance_id("default", posts[2]["name"])
+        assert posts[2]["name"] != posts[0]["name"]
+        await asyncio.wait_for(checked.wait(), 5)
+        if observation != "owned":
+            frontend.delete_sandbox.assert_not_awaited()
+        if observation == "foreign":
+            observation = "owned"  # The pending POST can still become visible later.
+        if observation == "owned":
+            await asyncio.wait_for(deleted.wait(), 5)
+            frontend.delete_sandbox.assert_awaited_once_with("unexpected-id")
+    finally:
+        await router.shutdown()
+
+
+async def test_cancel_after_absence_allows_new_generation_and_cleans_late_old_candidate(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+    old_visible = False
+    old_absent = asyncio.Event()
+    old_deleted = asyncio.Event()
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("original response lost")
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    async def get(instance_id):
+        old_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        if instance_id == old_id:
+            if old_visible:
+                return {"env_vars": {AGENT_GENERATION_ENV: posts[0]["env_vars"][AGENT_GENERATION_ENV]}}
+            old_absent.set()
+        raise YuanrongAgentNotFoundError("gone")
+
+    async def delete(instance_id):
+        nonlocal old_visible
+        assert instance_id == deterministic_agent_instance_id("default", posts[0]["name"])
+        old_visible = False
+        old_deleted.set()
+
+    frontend.create_sandbox.side_effect = create
+    frontend.get_agent_info.side_effect = get
+    frontend.delete_sandbox.side_effect = delete
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await _create_recovery_runtime(router)
+        old_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        assert await router.delete_agent("user", "jiuwenswarm")
+        replacement = await _create_recovery_runtime(router)
+        assert replacement.info.sandbox_id != old_id
+        assert len(posts) == 2 and posts[1]["name"] != posts[0]["name"]
+        await asyncio.wait_for(old_absent.wait(), 5)
+        frontend.delete_sandbox.assert_not_awaited()
+        old_visible = True
+        await asyncio.wait_for(old_deleted.wait(), 5)
+        frontend.delete_sandbox.assert_awaited_once_with(old_id)
+        assert (await _create_recovery_runtime(router)).info.sandbox_id == replacement.info.sandbox_id
+    finally:
+        await router.shutdown()
+
+
+async def test_multiple_cancelled_candidates_are_cleaned_after_replacement(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+    visible = set()
+    deleted = set()
+    all_deleted = asyncio.Event()
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) <= 2:
+            raise YuanrongAgentTimeoutError("original response lost")
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    async def get(instance_id):
+        for post in posts[:2]:
+            if instance_id == deterministic_agent_instance_id("default", post["name"]) and instance_id in visible:
+                return {"env_vars": {AGENT_GENERATION_ENV: post["env_vars"][AGENT_GENERATION_ENV]}}
+        raise YuanrongAgentNotFoundError("gone")
+
+    async def delete(instance_id):
+        assert instance_id in visible
+        visible.remove(instance_id)
+        deleted.add(instance_id)
+        if len(deleted) == 2:
+            all_deleted.set()
+
+    frontend.create_sandbox.side_effect = create
+    frontend.get_agent_info.side_effect = get
+    frontend.delete_sandbox.side_effect = delete
+    try:
+        for _ in range(2):
+            with pytest.raises(AgentRebuildPending):
+                await _create_recovery_runtime(router)
+            assert await router.delete_agent("user", "jiuwenswarm")
+        replacement = await _create_recovery_runtime(router)
+        retired_ids = {deterministic_agent_instance_id("default", post["name"]) for post in posts[:2]}
+        assert len(retired_ids) == 2
+        assert replacement.info.sandbox_id not in retired_ids
+        visible.update(retired_ids)
+        await asyncio.wait_for(all_deleted.wait(), 5)
+        assert deleted == retired_ids
+        assert (await _create_recovery_runtime(router)).info.sandbox_id == replacement.info.sandbox_id
+    finally:
+        await router.shutdown()
+
+
+async def test_only_owning_session_can_cancel_ambiguous_create(recovery_router):
+    router, frontend, _ = recovery_router()
+    manager = AgentManager(key_fields=["user_id", "agent_type", "session_id"])
+    router._agent_manager = manager
+    frontend.create_sandbox.side_effect = YuanrongAgentTimeoutError("response lost")
+
+    async def create_a():
+        return await manager.get_or_create_agent(
+            "user", "jiuwenswarm", key_values={"session_id": "A"}, creator=router._create_agent,
+        )
+
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await create_a()
+        lifecycle = router._sandbox_lifecycles["user+jiuwenswarm"]
+        attempt = lifecycle.attempt
+        assert not await router.delete_agent("user", "jiuwenswarm", key_values={"session_id": "B"})
+        assert lifecycle.attempt is attempt
+        frontend.get_agent_info.assert_not_awaited()
+        assert await router.delete_agent("user", "jiuwenswarm", key_values={"session_id": "A"})
+        assert lifecycle.attempt is None
+        assert (attempt.deterministic_id, attempt.generation) in lifecycle.retirements
+        frontend.create_sandbox.side_effect = lambda **kwargs: SandboxInfo(
+            deterministic_agent_instance_id("default", kwargs["name"])
+        )
+        replacement = await create_a()
+        assert replacement.info.sandbox_id != attempt.deterministic_id
+        assert frontend.create_sandbox.await_count == 2
     finally:
         await router.shutdown()
 
