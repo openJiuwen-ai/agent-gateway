@@ -88,6 +88,9 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("CLIENT_LIST", "client.list"),
     ("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages"),
     ("CLIENT_CONVERSATIONS", "client.conversations"),
+    ("MCP_APP_LIST_TOOLS", "mcp_app.list_tools"),
+    ("MCP_APP_READ_RESOURCE", "mcp_app.read_resource"),
+    ("MCP_APP_CALL_TOOL", "mcp_app.call_tool"),
 )
 
 GATEWAY_EVENT_TYPES: tuple[tuple[str, str], ...] = (
