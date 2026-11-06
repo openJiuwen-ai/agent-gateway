@@ -63,6 +63,11 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
     return credential_ref_for_user(session.user_id)
 
 
+def _is_proactive_tick(job: Any) -> bool:
+    """proactive.tick 是由设置开关自动维护的内部模式。"""
+    return str(getattr(job, "mode", "") or "").strip().lower() == "proactive.tick"
+
+
 def _required_enterprise_tenant_id(raw: Any) -> str:
     """企业版创建时三个身份必须都有内容，空白不补成 default。"""
     if isinstance(raw, str):
@@ -725,6 +730,17 @@ class CronController:
             existing, user_id=user_id, group_id=group_id, bot_id=bot_id
         ):
             raise KeyError("job not found")
+        if (
+            _is_proactive_tick(existing)
+            and "enabled" in patch
+            and bool(patch["enabled"]) != bool(existing.enabled)
+        ):
+            # enabled 由 config 的 proactive_recommendation.enabled 驱动；仅拒绝
+            # 实际改变开关状态的 patch。全量回显（值与当前一致）放行，由 store
+            # 白名单静默丢弃 enabled，只应用 cron_expr/timezone 等调度字段。
+            raise ValueError(
+                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
+            )
         enterprise = is_enterprise()
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
@@ -864,11 +880,12 @@ class CronController:
         ):
             return False
         if not is_enterprise():
-            if (
-                not force
-                and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick"
-            ):
-                return await self._store.delete_job(job_id)
+            # proactive.tick 由设置开关自动创建/删除；手动删除在 controller 显式
+            # 拒绝，force=True 仅保留给 proactive_cron_sync 的自动同步路径。
+            if not force and _is_proactive_tick(existing):
+                raise ValueError(
+                    "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
+                )
             if delete_sessions:
                 if existing.enabled:
                     await self._store.update_job(job_id, {"enabled": False})
