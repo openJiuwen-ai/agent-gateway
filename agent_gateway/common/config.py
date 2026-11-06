@@ -240,7 +240,12 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
 
 def get_config():
     """读取并解析 config.yaml（锁保护 + 跨进程降级重试）。"""
-    config_base = _read_with_retry(get_config_file())
+    config_path = get_config_file()
+    try:
+        config_base = _read_with_retry(config_path)
+    except FileNotFoundError:
+        logger.warning("Gateway config file missing; using defaults: %s", config_path)
+        config_base = {}
     # resolve_env_vars 和 _normalize_config 只操作内存数据，在锁外执行以缩短锁持有时间
     config_base = resolve_env_vars(config_base)
     _normalize_config(config_base)
