@@ -43,9 +43,9 @@ Use the catalog when the suite needs a more specific specialist. Install only wh
 Example local install:
 
 ```bash
-python jiuwenswarm/resources/agent/workspace/skills/harmonyos-dev-suite/scripts/install_atomic_skill.py \
+python agent_gateway/resources/agent/workspace/skills/harmonyos-dev-suite/scripts/install_atomic_skill.py \
   --source /path/to/harmonyos-agent-skills \
-  --target ~/.jiuwenswarm/agent/workspace/skills \
+  --target ~/.jiuwenswarm/domain/agent/workspace/skills \
   --skill hmos-arkui-develop-skill
 ```
 
