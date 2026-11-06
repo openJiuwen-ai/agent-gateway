@@ -61,16 +61,6 @@ _IM_DELIVERABLE = frozenset({
 
 # P1 回显防护（2026-11-06 判例：steering 输入原文被当机器人回复复读）。
 # IM 非可视控制事件与未识别事件不得投递；已知可投递事件走白名单。
-_IM_UNDELIVERABLE = frozenset({"chat.input_received", "chat.output_phase"})
-_IM_DELIVERABLE = frozenset({
-    "chat.delta", "chat.final", "chat.error", "chat.interrupt_result",
-    "chat.processing_status", "chat.tool_call", "chat.tool_result",
-    "chat.tool_update", "chat.subtask_update", "chat.subagent_activity",
-    "chat.message_updated", "chat.retract", "chat.symphony_status",
-    "todo.updated", "goal.snapshot", "goal.updated", "runtime.accepted",
-    "execution.error", "chat.ask_user_question", "plan.approval_required",
-    "chat.session_result", "cron.response", "health_check.relay",
-})
 
 
 class _FeishuWebSocketLogHandler(logging.Handler):
