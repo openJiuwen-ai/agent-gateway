@@ -12,8 +12,26 @@ from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 from agent_gateway.common.request_identity import apply_routing_metadata
 
 
-def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
+def register_lifecycle_handlers(
+    channel,
+    resolve_client,
+    resolve_cron,
+    on_session_deleted=None,
+    *,
+    register_method=None,
+    clients_for_user=None,
+    session_event_clients=None,
+):
     watchers = {}
+
+    def connected_clients(user_id):
+        if clients_for_user is not None:
+            return clients_for_user(user_id)
+        return [
+            ws
+            for ws in getattr(channel, "clients", ())
+            if str(channel.connection_user_id(ws) or "") == str(user_id or "")
+        ]
 
     async def call(method, params, session_id, user_id, ws=None):
         routing = getattr(ws, "_web_routing", None)
@@ -43,9 +61,9 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         first = True
         while True:
             clients = [
-                ws
-                for ws in getattr(channel, "clients", ())
-                if scope_key(channel.connection_user_id(ws), ws) == scope
+                client_ws
+                for client_ws in connected_clients(user_id)
+                if scope_key(user_id, client_ws) == scope
             ]
             if not clients:
                 return
@@ -65,9 +83,22 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                             if entry["event"].startswith("session."):
                                 mark_sessions_idle([payload["resource_id"]])
                         if first:
-                            continue
-                        for ws in clients:
-                            await channel.send_event(ws, entry["event"], payload)
+                            replay_blocked_session_event = (
+                                session_event_clients is not None
+                                and entry["event"].startswith("session.")
+                                and payload.get("execution_blocked")
+                            )
+                            if not replay_blocked_session_event:
+                                continue
+                        event_clients = (
+                            session_event_clients(user_id, payload["resource_id"])
+                            if session_event_clients is not None and entry["event"].startswith("session.")
+                            else clients
+                        )
+                        for client_ws in event_clients:
+                            if scope_key(user_id, client_ws) != scope:
+                                continue
+                            await channel.send_event(client_ws, entry["event"], payload)
                             if entry["completed"] and not (
                                 entry["kind"] == "delete"
                                 and entry["event"].startswith("project.")
@@ -79,7 +110,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                                     "delete": "deleted",
                                 }[entry["kind"]]
                                 await channel.send_event(
-                                    ws,
+                                    client_ws,
                                     entry["event"].split(".")[0] + "." + suffix,
                                     {
                                         **entry["result"],
@@ -111,6 +142,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
 
     channel.ensure_lifecycle_watch = ensure_watch
 
+    def _lifecycle_item_pending(item: dict) -> bool:
+        return bool(
+            item.get("finalizing")
+            or item.get("stop_pending")
+            or (item.get("accepted") and item.get("finalizing") is not False)
+        )
+
     def _completed_session_ids(payload: dict) -> list[str]:
         results = payload.get("results")
         items = results if isinstance(results, list) else [payload]
@@ -118,9 +156,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         for item in items:
             if not isinstance(item, dict) or not item.get("ok", True):
                 continue
-            if item.get("finalizing") or item.get("stop_pending"):
-                continue
-            if item.get("accepted") and item.get("finalizing") is not False:
+            if _lifecycle_item_pending(item):
                 continue
             session_id = item.get("session_id")
             if session_id:
@@ -153,6 +189,32 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     code="BAD_REQUEST",
                 )
                 return
+            if method in {"session.archive", "session.unarchive", "session.delete"}:
+                ids = params.get("session_ids")
+                single = params.get("session_id")
+                if method == "session.delete" and "session_id" not in params:
+                    single = session_id
+                has_single = "session_id" in params or (
+                    method == "session.delete" and session_id is not None
+                )
+                invalid_single_id = (
+                    has_single and (not isinstance(single, str) or not single.strip())
+                )
+                if "session_ids" in params and (
+                    not isinstance(ids, list) or not 1 <= len(ids) <= 100
+                ):
+                    error = "session_ids must contain 1 to 100 IDs"
+                elif invalid_single_id:
+                    error = "session_id is required"
+                elif ids is None and single is None:
+                    error = "session_id is required" if method == "session.delete" else "session_ids is required"
+                elif ids is not None and any(not isinstance(sid, str) or not sid.strip() for sid in ids):
+                    error = "invalid resource ID"
+                else:
+                    error = None
+                if error is not None:
+                    await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
+                    return
             # Browser callers cannot inject internal stage acknowledgements.
             public = {}
             for k, v in params.items():
@@ -201,8 +263,8 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     item.get("project_id") for item in payload.get("results", [payload])
                     if item.get("ok", True) and item.get("restored") and item.get("project_id")
                 }
-                for client_ws in list(getattr(channel, "clients", ()) or ()):
-                    if scope_key(channel.connection_user_id(client_ws), client_ws) != scope_key(user_id, ws):
+                for client_ws in connected_clients(user_id):
+                    if scope_key(user_id, client_ws) != scope_key(user_id, ws):
                         continue
                     for project_id in project_ids:
                         try:
@@ -222,6 +284,11 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
+                            if (
+                                event in {"session.archived", "session.deleted"}
+                                and _lifecycle_item_pending(item)
+                            ):
+                                continue
                             clear_expert = getattr(channel, "clear_expert_processing", None)
                             session_closed = (
                                 event in {"session.archived", "session.deleted"}
@@ -231,7 +298,16 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                                 clear_expert(item["session_id"])
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
-                                await send_event(ws, event, item)
+                                targets = (
+                                    session_event_clients(user_id, item["session_id"])
+                                    if session_event_clients is not None else [ws]
+                                )
+                                if not any(client_ws is ws for client_ws in targets):
+                                    targets = [*targets, ws]
+                                for client_ws in targets:
+                                    if scope_key(user_id, client_ws) != scope_key(user_id, ws):
+                                        continue
+                                    await send_event(client_ws, event, item)
                 elif "operation_id" not in payload and (method != "project.delete" or payload.get("deleted")):
                     send_event = getattr(channel, "send_event", None)
                     if callable(send_event):
@@ -247,4 +323,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         "project.sessions.archive",
         "project.sessions.delete_archived",
     ):
-        channel.register_method(method, handler(method))
+        if register_method is None:
+            channel.register_method(method, handler(method))
+        else:
+            register_method(method, handler(method))

@@ -115,6 +115,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "swarmflow.stop",
         "command.status",
         "command.goal",
+        "mode.set",
+        "mode.get",
         "chat.send",
         "chat.interrupt",
         "chat.resume",
@@ -242,6 +244,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
 
 CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     {
+        "mode.set",
+        "mode.get",
         "command.add_dir",
         "command.btw",
         "command.chrome",
@@ -542,7 +546,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     cron_controller_ref = bind.cron_controller
     heartbeat_controller_ref = bind.heartbeat_controller
     force_local_config = bind.force_local_config
-    on_session_left_project = bind.on_session_left_project
     from agent_gateway.routing.third_agent import get_unsupported_third_agent
 
     third_agent = bind.third_agent if bind.third_agent is not None else get_unsupported_third_agent()
@@ -591,6 +594,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(payload, dict)
             else []
         )
+        # Count upstream rows before local channel/project filtering. The TUI
+        # uses this to detect a full source page, not a number of pages.
+        page_count = len(all_sessions)
         # 过滤掉 None/非 dict/无效 session_id，防止前端 SelectList.render() 崩溃
         normalized_sessions = []
         for s in all_sessions:
@@ -614,6 +620,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             bool(params.get("all_projects"))
             if isinstance(params, dict) else False
         )
+        include_current = (
+            bool(params.get("include_current"))
+            if isinstance(params, dict) else False
+        )
         project_dir = (
             str(params.get("project_dir", "")).strip()
             if isinstance(params, dict) else ""
@@ -628,13 +638,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         cli_sessions = []
         for s in all_sessions:
-            if s.get("channel_id", "") != "tui":
+            is_current_session = s.get("session_id", "") == current_sid
+            if s.get("channel_id", "") != "tui" and not (include_current and is_current_session):
                 continue
             if not tui_session_matches_project_dir(
                 s, project_dir, show_all_projects=show_all_projects
             ):
                 continue
-            if s.get("session_id", "") == current_sid:
+            if not include_current and is_current_session:
                 continue
             cli_sessions.append(s)
         # 按 last_message_at 降序排序（最近活跃优先）
@@ -678,7 +689,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             ws,
             req_id,
             ok=True,
-            payload={"sessions": cli_sessions, "current_branch": current_branch},
+            payload={
+                "sessions": cli_sessions,
+                "current_branch": current_branch,
+                "total": payload.get("total") if isinstance(payload, dict) else None,
+                "page_count": page_count,
+            },
         )
 
     async def _session_create(ws, req_id, params, session_id, user_id=None):
@@ -796,45 +812,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             ws, req_id, ok=False, error=str(err), code=code,
         )
 
-
-    async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发）。
-
-        AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
-        SessionAdapter 删除路径。
-        """
-        from openjiuwen_protocol.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
-
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        target = str(params.get("session_id") or "").strip()
-        if not target:
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
-            )
-            return
-
-        async def _left_project(ok: bool, payload: dict[str, Any]) -> None:
-            if ok and on_session_left_project is not None:
-                await on_session_left_project(str(payload.get("project_id") or ""), target)
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve_agent_client(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
-            label="session.delete",
-            on_done=_left_project,
-        )
 
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
         """Forward a rewind request to AgentServer via E2A.
@@ -1730,13 +1707,58 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "session.list", _session_list)
     channel.register_local_handler(path, "session.create", _session_create)
     channel.register_local_handler(path, "session.rebind_project", _session_rebind_project)
-    channel.register_local_handler(path, "session.delete", _session_delete)
     channel.register_local_handler(path, "session.rename", _session_rename)
     channel.register_local_handler(path, "session.color_set", _session_color_set)
     channel.register_local_handler(path, "session.preview", _session_preview)
     channel.register_local_handler(path, "session.rewind", _session_rewind)
     channel.register_local_handler(path, "session.rewind_and_restore", _session_rewind_and_restore)
     channel.register_local_handler(path, "session.restore_files", _session_restore_files)
+    from agent_gateway.channel_manager.web.lifecycle_handlers import (
+        register_lifecycle_handlers,
+    )
+
+    def _tui_clients_for_user(user_id: str | None) -> list[Any]:
+        find_clients = getattr(channel, "_find_channel_clients", None)
+        connection_user_id = getattr(channel, "_connection_user_id", None)
+        if not callable(find_clients) or not callable(connection_user_id):
+            return []
+        clients = []
+        seen = set()
+        for client_ws in find_clients("tui"):
+            if id(client_ws) in seen:
+                continue
+            seen.add(id(client_ws))
+            if str(connection_user_id(client_ws) or "") == str(user_id or ""):
+                clients.append(client_ws)
+        return clients
+
+    def _tui_session_event_clients(user_id: str | None, target_session_id: str) -> list[Any]:
+        connection_user_id = getattr(channel, "_connection_user_id", None)
+        if not callable(connection_user_id):
+            return []
+        clients = []
+        seen = set()
+        for key, client_ws in getattr(channel, "_session_to_client", {}).items():
+            if not isinstance(key, tuple) or len(key) < 2 or key[:2] != ("tui", target_session_id):
+                continue
+            if id(client_ws) in seen or getattr(client_ws, "closed", False):
+                continue
+            seen.add(id(client_ws))
+            if str(connection_user_id(client_ws) or "") == str(user_id or ""):
+                clients.append(client_ws)
+        return clients
+
+    register_lifecycle_handlers(
+        channel,
+        lambda: _resolve_agent_client(agent_client),
+        lambda: cron_controller_ref,
+        on_session_deleted=bind.on_session_left_project,
+        register_method=lambda method, handler: channel.register_local_handler(
+            path, method, handler
+        ),
+        clients_for_user=_tui_clients_for_user,
+        session_event_clients=_tui_session_event_clients,
+    )
     channel.register_local_handler(path, "command.rewind_compact", _command_rewind_compact)
     channel.register_local_handler(path, "history.list_turns", _history_list_turns)
     channel.register_local_handler(path, "chat.send", _chat_send)
@@ -2564,7 +2586,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
 
 def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
+    gateway_server = None
+
     def _install(channel: Any) -> None:
+        nonlocal gateway_server
+        gateway_server = channel
         # ``GatewayServer`` multiplexes ACP and TUI routes and therefore does
         # not have a class-level channel_id like ``TuiChannel``.  The CLI
         # handlers below use the value when building E2A envelopes; install a
@@ -2621,6 +2647,13 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
         )
 
     def _tui_session_bound(channel_id: str, session_id: str) -> None:
+        if gateway_server is not None and channel_id == "tui":
+            ensure_watch = getattr(gateway_server, "ensure_lifecycle_watch", None)
+            find_clients = getattr(gateway_server, "_find_channel_clients", None)
+            connection_user_id = getattr(gateway_server, "_connection_user_id", None)
+            if callable(ensure_watch) and callable(find_clients) and callable(connection_user_id):
+                for client_ws in find_clients(channel_id):
+                    ensure_watch(connection_user_id(client_ws), client_ws)
         mh = bind.message_handler
         if mh is None or not hasattr(mh, "cancel_scheduled_disconnect_cancel"):
             return
