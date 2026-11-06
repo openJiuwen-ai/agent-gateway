@@ -178,6 +178,132 @@ class _DictOwnedCronController:
         return {"run_id": "run-1", "session_id": "sess-1"}
 
 
+@pytest.fixture
+def forbid_gateway_locale_config(monkeypatch):
+    """Locale RPCs must never read or write the Gateway's own config."""
+    def unexpected_access(*args, **kwargs):
+        pytest.fail("Locale RPC accessed Gateway-local config")
+
+    monkeypatch.setattr(app_web_handlers, "get_config", unexpected_access)
+    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", unexpected_access)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True], ids=["remote", "legacy"])
+@pytest.mark.parametrize("server_ok", [True, False], ids=["success", "server-error"])
+@pytest.mark.parametrize(
+    ("method", "params", "expected_params"),
+    [
+        ("locale.get_conf", {"preferred_language": "zh"}, {}),
+        ("locale.set_conf", {"preferred_language": "zh"}, {"preferred_language": "zh"}),
+        ("locale.set_conf", {"preferred_language": " EN "}, {"preferred_language": "en"}),
+    ],
+)
+async def test_locale_rpc_uses_agent_server_for_all_client_types(
+    forbid_gateway_locale_config, legacy, server_ok, method, params, expected_params
+):
+    requests = []
+    payload = (
+        {"preferred_language": "en"}
+        if server_ok else {"error": "tenant access denied", "code": "FORBIDDEN"}
+    )
+
+    async def send_request(envelope):
+        requests.append(envelope)
+        return SimpleNamespace(ok=server_ok, payload=payload)
+
+    class LegacyClient(WebSocketAgentServerClient):
+        def __init__(self):
+            pass
+
+        @property
+        def server_ready(self):
+            return True
+
+        async def send_request(self, envelope):
+            return await send_request(envelope)
+
+    client = LegacyClient() if legacy else SimpleNamespace(server_ready=True, send_request=send_request)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    await channel.methods[method](object(), "locale-1", params, "session-1", "user-1")
+
+    assert len(requests) == 1
+    envelope = requests[0]
+    assert envelope.method == method
+    assert envelope.params == expected_params
+    assert envelope.request_id == "locale-1"
+    assert envelope.session_id == "session-1"
+    assert envelope.user_id == "user-1"
+    assert envelope.channel == "web"
+    assert channel.responses == [{
+        "id": "locale-1",
+        "ok": server_ok,
+        "payload": payload if server_ok else None,
+        "error": None if server_ok else "tenant access denied",
+        "code": None if server_ok else "FORBIDDEN",
+    }]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
+@pytest.mark.parametrize("client_state", ["missing", "not-ready", "disconnected", "legacy"])
+async def test_locale_rpc_unavailable_does_not_fall_back_to_gateway(
+    forbid_gateway_locale_config, monkeypatch, method, client_state
+):
+    requests = []
+
+    async def send_request(envelope):
+        requests.append(envelope)
+        raise ConnectionError("AgentServer disconnected")
+
+    if client_state == "legacy":
+        client = WebSocketAgentServerClient()
+        assert client.server_ready is False
+        assert client.can_reconnect is False
+        send_request_spy = AsyncMock(side_effect=send_request)
+        monkeypatch.setattr(client, "send_request", send_request_spy)
+    else:
+        client = None if client_state == "missing" else SimpleNamespace(
+            server_ready=client_state != "not-ready", send_request=send_request
+        )
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    await channel.methods[method](
+        object(), "locale-1", {"preferred_language": "en"}, "session-1", "user-1"
+    )
+
+    assert len(requests) == (1 if client_state == "disconnected" else 0)
+    if client_state == "legacy":
+        send_request_spy.assert_not_awaited()
+    assert len(channel.responses) == 1
+    assert channel.responses[0]["ok"] is False
+    assert channel.responses[0]["code"] == "SERVICE_UNAVAILABLE"
+    assert channel.responses[0]["payload"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [None, [], "en", {}, {"preferred_language": None}, {"preferred_language": 1},
+     {"preferred_language": ""}, {"preferred_language": "cn"}, {"preferred_language": "fr"}],
+)
+async def test_locale_set_conf_rejects_invalid_input_without_forwarding(
+    forbid_gateway_locale_config, params
+):
+    async def send_request(envelope):
+        pytest.fail("Invalid locale input was forwarded to AgentServer")
+
+    channel = FakeWebChannel()
+    client = SimpleNamespace(server_ready=True, send_request=send_request)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    await channel.methods["locale.set_conf"](object(), "locale-1", params, "session-1", "user-1")
+
+    assert len(channel.responses) == 1
+    assert channel.responses[0]["ok"] is False
+    assert channel.responses[0]["code"] == "BAD_REQUEST"
+
+
 class FakeMessageHandler:
     def __init__(self):
         self.disconnected_websockets: list[tuple[str, str]] = []
