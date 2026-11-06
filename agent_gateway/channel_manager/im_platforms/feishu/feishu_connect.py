@@ -12,7 +12,7 @@ import threading
 import time
 import types
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -44,6 +44,22 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, InboundDisposition
 
 logger = logging.getLogger(__name__)
+
+# P1 回显防护（2026-11-06 判例：steering 输入原文被当机器人回复复读）。
+# IM 非可视控制事件与未识别事件不得投递；已知可投递事件走白名单。
+_IM_UNDELIVERABLE = frozenset({"chat.input_received", "chat.output_phase"})
+_IM_DELIVERABLE = frozenset({
+    "chat.delta", "chat.final", "chat.error", "chat.interrupt_result",
+    "chat.processing_status", "chat.tool_call", "chat.tool_result",
+    "chat.tool_update", "chat.subtask_update", "chat.subagent_activity",
+    "chat.message_updated", "chat.retract", "chat.symphony_status",
+    "todo.updated", "goal.snapshot", "goal.updated", "runtime.accepted",
+    "execution.error", "chat.ask_user_question", "plan.approval_required",
+    "chat.session_result", "cron.response", "health_check.relay",
+})
+
+# P1 回显防护（2026-11-06 判例：steering 输入原文被当机器人回复复读）。
+# IM 非可视控制事件与未识别事件不得投递；已知可投递事件走白名单。
 
 
 class _FeishuWebSocketLogHandler(logging.Handler):
@@ -424,6 +440,9 @@ class FeishuChannel(BaseChannel):
         self._websocket_connected = threading.Event()
         self._websocket_thread: threading.Thread | None = None  # WebSocket运行线程
         self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()  # 消息去重缓存
+        # P1 回显防护：每会话最近入站用户输入环形缓存（防复读出站护栏）。
+        self._recent_user_inputs: "OrderedDict[str, deque]" = OrderedDict()
+        self._echo_blocked_total = 0
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
@@ -2342,10 +2361,36 @@ class FeishuChannel(BaseChannel):
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             event_name = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
             stream_key = str(getattr(msg, "id", "") or "")
+            # P1 守卫一：IM 非可视控制事件与未识别事件不得投递（复读判例防护）。
+            if msg.event_type is None and (event_name in _IM_UNDELIVERABLE or (
+                    event_name and event_name not in _IM_DELIVERABLE)):
+                self._echo_blocked_total += 1
+                logger.warning(
+                    "[FeishuChannel][P1-guard] suppress non-deliverable event: event=%s req=%s",
+                    event_name, str(getattr(msg, "id", "") or ""),
+                )
+                return
             _msg_streaming = getattr(msg, "enable_streaming", None)
             streaming_enabled = bool(_msg_streaming if _msg_streaming is not None else self.config.enable_streaming)
 
             meta = dict(getattr(msg, "metadata", None) or {})
+            # P1 守卫二（前移）：出站正文与本会话最近入站用户输入全同则拦截（复读纵深防护）。
+            # 位于 cardkit 流式早退之前，保证默认流式配置下守卫在流式/非流式两条路径都生效；
+            # 比对用 _extract_message_content 的原始正文（早于 _filter_user_info_for_group 的
+            # [已过滤] 改写，避免改写后与入站录制的原文比对失败）；只比对不记账，无重复记账副作用。
+            # 会话键与入站录制统一：feishu_chat_id 优先，回退 session_id
+            # （/new_session 或 origin_session_id 改写 session_id 后仍与入站 chat_id 对齐）。
+            if event_name == "chat.final" and self._recent_user_inputs:
+                cid = str(meta.get("feishu_chat_id") or "").strip() or str(getattr(msg, "session_id", "") or "")
+                raw_content = self._extract_message_content(msg).strip()
+                hist = self._recent_user_inputs.get(cid)
+                if hist and raw_content and raw_content in hist:
+                    self._echo_blocked_total += 1
+                    logger.warning(
+                        "[FeishuChannel][P1-guard] echo suppressed: chat=%s req=%s",
+                        cid[:16], str(getattr(msg, "id", "") or ""),
+                    )
+                    return
 
             # ── V2: routing_target 覆盖投递地址 ──
             route_delivery: DeliveryTarget | None = None
@@ -2513,7 +2558,6 @@ class FeishuChannel(BaseChannel):
 
             # 过滤群聊消息中的用户敏感信息
             content_str = self._filter_user_info_for_group(content_str, meta)
-
             # 兜底：chat.final 中提到了 workspace 文件但 LLM 未调用 send_file_to_user 时，
             # 自动提取文件路径并发送，避免用户收不到文件。
             if (
@@ -3619,6 +3663,18 @@ class FeishuChannel(BaseChannel):
             # 跳过机器人发送的消息
             if sender.sender_type == "bot":
                 return
+            # P1 回显防护入站录制：记录入站用户原文供出站回声比对。
+            try:
+                u = self._parse_message_content(message)
+                if u and u.strip():
+                    cid = str(getattr(message, "chat_id", "") or "")
+                    dq = self._recent_user_inputs.setdefault(cid, deque((), 8))
+                    if u.strip() not in dq:
+                        dq.append(u.strip())
+                        while len(self._recent_user_inputs) > 200:
+                            self._recent_user_inputs.popitem(last=False)
+            except Exception:
+                logger.debug("[FeishuChannel][P1-guard] inbound record failed", exc_info=True)
 
             # 群聊数字分身模式下不自动点赞
             if not self.config.group_digital_avatar:
