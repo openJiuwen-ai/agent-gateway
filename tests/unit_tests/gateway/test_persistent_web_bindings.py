@@ -344,6 +344,56 @@ async def test_http_binding_never_forwards_owner_credentials_to_chat(owner):
 
 
 @pytest.mark.asyncio
+async def test_registered_nonlocal_web_handler_runs_after_unclaimed_callback():
+    from agent_gateway.channel_manager.web.invoke import dispatch_web_request
+
+    handler = AsyncMock()
+    callback = AsyncMock(return_value=False)
+    channel = SimpleNamespace(
+        _method_handlers={"commands.list": handler},
+        _local_only_methods=set(),
+        invoke_method_handler=AsyncMock(),
+        _on_message_cb=callback,
+    )
+    await dispatch_web_request(
+        channel,
+        method="commands.list",
+        request_id="req",
+        params={},
+        session_id="session",
+        user_message=SimpleNamespace(metadata={}),
+        outbound=None,
+    )
+    callback.assert_awaited_once()
+    channel.invoke_method_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_unregistered_web_method_is_forwarded_by_callback():
+    from agent_gateway.channel_manager.web.invoke import dispatch_web_request
+
+    callback = AsyncMock(return_value=True)
+    channel = SimpleNamespace(
+        _method_handlers={},
+        _local_only_methods=set(),
+        invoke_method_handler=AsyncMock(),
+        _on_message_cb=callback,
+        send_response=AsyncMock(),
+    )
+    await dispatch_web_request(
+        channel,
+        method="future.extension",
+        request_id="req",
+        params={},
+        session_id="session",
+        user_message=SimpleNamespace(metadata={}),
+        outbound=None,
+    )
+    callback.assert_awaited_once()
+    channel.send_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_enterprise_owner_web_cannot_change_centrally_managed_config(owner, monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     result = await owner.invoke("dingtalk.bind_agent", {
