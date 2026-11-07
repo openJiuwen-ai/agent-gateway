@@ -1908,9 +1908,16 @@ async def test_gateway_server_forwards_tui_client_timeout_as_metadata_only():
 
 
 @pytest.mark.asyncio
-async def test_gateway_server_handle_raw_message_rejects_unknown_method():
+@pytest.mark.parametrize("path,channel_id", [("/acp", "acp"), ("/tui", "tui")])
+async def test_gateway_server_handle_raw_message_forwards_unknown_method(path, channel_id):
     server = build_server()
     ws = FakeWebSocket()
+    forwarded = []
+
+    async def on_message(msg):
+        forwarded.append(msg)
+
+    server.on_message(on_message)
 
     await server.handle_raw_message_public(
         ws,
@@ -1923,14 +1930,14 @@ async def test_gateway_server_handle_raw_message_rejects_unknown_method():
             },
             ensure_ascii=False,
         ),
+        path=path,
     )
 
-    assert len(ws.sent_frames) == 1
-    frame = ws.sent_frames[0]
-    assert frame["type"] == "res"
-    assert frame["id"] == "req-4"
-    assert frame["ok"] is False
-    assert frame["error"] == "unknown method: unknown.method"
+    assert ws.sent_frames == []
+    assert len(forwarded) == 1
+    assert forwarded[0].req_method == "unknown.method"
+    assert forwarded[0].session_id == "sess-4"
+    assert forwarded[0].channel_id == channel_id
 
 
 @pytest.mark.asyncio

@@ -4150,7 +4150,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await proxy_unary_request(
                 channel=channel, agent_client=_resolve(agent_client), ws=ws,
                 req_id=req_id, params=params, session_id=session_id, user_id=user_id,
-                req_method=req_method, label=req_method.value,
+                req_method=req_method, label=getattr(req_method, "value", req_method),
             )
         return handler
 

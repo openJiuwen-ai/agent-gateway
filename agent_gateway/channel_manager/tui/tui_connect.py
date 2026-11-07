@@ -1818,7 +1818,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 session_id=session_id,
                 user_id=user_id,
                 req_method=req_method,
-                label=req_method.value,
+                label=getattr(req_method, "value", req_method),
             )
         channel.register_local_handler(path, method_name, _handler)
 

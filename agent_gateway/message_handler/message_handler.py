@@ -4813,7 +4813,10 @@ class MessageHandler(ABC):
             request_id=msg.id,
             channel_id=msg.channel_id,
             session_id=msg.session_id,
-            req_method=msg.req_method.value if msg.req_method is not None else None,
+            req_method=(
+                getattr(msg.req_method, "value", msg.req_method)
+                if msg.req_method is not None else None
+            ),
             params=params,
         )
         from agent_gateway.extensions.registry import ExtensionRegistry

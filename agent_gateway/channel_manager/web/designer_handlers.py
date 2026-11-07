@@ -35,11 +35,11 @@ def register_designer_handlers(channel, resolve_client):
                 session_id=session_id,
                 user_id=user_id,
                 req_method=req_method,
-                label=req_method.value,
+                label=getattr(req_method, "value", req_method),
                 timeout_seconds=timeout_seconds,
             )
 
         return handler
 
     for req_method, timeout_seconds in _DESIGNER_METHODS:
-        channel.register_method(req_method.value, proxy(req_method, timeout_seconds))
+        channel.register_method(getattr(req_method, "value", req_method), proxy(req_method, timeout_seconds))

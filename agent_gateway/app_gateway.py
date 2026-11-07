@@ -38,7 +38,7 @@ _STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
 def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields, method_value
 from openjiuwen_protocol.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
@@ -320,7 +320,7 @@ def _normalize_gateway_message(msg):
         req_method = ReqMethod.CHAT_CANCEL
         params.setdefault("intent", "resume")
 
-    method_val = req_method.value
+    method_val = method_value(req_method)
     is_stream = bool(
         msg.is_stream
         or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
@@ -358,7 +358,7 @@ async def _normalize_and_forward_message(msg, channel_manager) -> bool:
     # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
     # 调用方传真实 project_id + 合法但不匹配的 work_mode 时,AgentServer 侧
     # _work_mode_explicit marker 缺失,不会返回设计要求的 BAD_REQUEST。
-    method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
+    method_val = method_value(getattr(msg, "req_method", None))
     if method_val == "session.create":
         _inject_session_work_mode(normalized)
     await channel_manager.deliver_to_message_handler(normalized)
@@ -1596,22 +1596,17 @@ class GatewayServer(BaseWebChannel):
 
         req_user_id = self._connection_user_id(ws)
 
-        # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
-        if method in route.forward_methods:
-            req_method = None
-            for item in ReqMethod:
-                if item.value == method:
-                    req_method = item
-                    break
-
-            if req_method is None:
-                await ws.send(
-                    json.dumps(
-                        {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                        ensure_ascii=False,
-                    )
-                )
-                return
+        # Forward by default.  The route sets are compatibility tables for
+        # special methods, not the complete AgentServer method registry.
+        should_forward = (
+            method in route.forward_methods
+            or method not in route.local_handlers
+        )
+        if should_forward:
+            req_method = next(
+                (item for item in ReqMethod if item.value == method),
+                method,
+            )
 
             # V2: 提取 agent_ref 用于路由键（支撑场景 2 同 session 切 mode 不串窗）。
             # 客户端未发送 agent_ref 时不合成——保持 2 元组注册，与响应查找侧
@@ -1759,7 +1754,7 @@ class GatewayServer(BaseWebChannel):
                 return
 
             # 如果在 forward_no_local_handler_methods 中，不需要本地 ack
-            if method in route.forward_no_local_handler_methods:
+            if method in route.forward_no_local_handler_methods or method not in route.local_handlers:
                 return
 
         # 2. 本地 handler：发 ack 或纯本地处理
@@ -2523,10 +2518,17 @@ async def _run(
             forward_methods: set[str] | frozenset[str],
             no_local_methods: set[str] | frozenset[str],
             source_label: str,
+            local_methods: set[str] | frozenset[str] = frozenset(),
+            local_only_methods: set[str] | frozenset[str] = frozenset(),
     ):
         async def _norm_and_forward(msg: Message) -> bool:
-            method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
-            if method_val not in forward_methods:
+            method_val = method_value(getattr(msg, "req_method", None))
+            # Local handlers outside the forwarding contract stay in Gateway.
+            # Unknown methods are forwarded even when this Gateway does not
+            # know their names; local-only handlers remain authoritative.
+            if method_val in local_only_methods or (
+                method_val in local_methods and method_val not in forward_methods
+            ):
                 return False
             with trace_stage("preprocess.credentials"):
                 await _refresh_expired_login_credential(msg)
@@ -2541,7 +2543,7 @@ async def _run(
                 _inject_session_work_mode(normalized)
             await channel_manager.deliver_to_message_handler(normalized)
             logger.debug("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
-            if method_val in no_local_methods:
+            if method_val in no_local_methods or method_val not in local_methods:
                 return True
             return False
 
@@ -2552,6 +2554,8 @@ async def _run(
         _FORWARD_REQ_METHODS,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         "Web",
+        local_methods=frozenset(web_channel._method_handlers),
+        local_only_methods=frozenset(web_channel._local_only_methods),
     )
     channel_manager.register_channel_with_inbound(web_channel, web_norm_and_forward)
 
