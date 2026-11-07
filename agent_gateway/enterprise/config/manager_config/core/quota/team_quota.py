@@ -22,6 +22,7 @@ from agent_gateway.enterprise.db.team_mysql_actor import (
     list_record_dicts,
     run_team_store,
     run_tx,
+    upsert_team_quota_policy_sql,
     use_team_mysql,
 )
 
@@ -38,25 +39,6 @@ DEFAULT_LEADER_MEMBER_NAME = "team-leader"
 _POLICY_TABLE = "team_quota_policy"
 _LEASE_TABLE = "team_quota_lease"
 
-_UPSERT_POLICY_SQL = text(
-    "INSERT INTO team_quota_policy ("
-    "policy_id, policy_name, policy_desc, match_expr, priority, "
-    "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
-    "created_at, created_by, updated_at, updated_by"
-    ") VALUES ("
-    ":policy_id, :policy_name, :policy_desc, :match_expr, :priority, "
-    ":max_teams_per_user, :max_teammates_per_team, "
-    ":max_teams_per_org, :enabled, :source, :data, "
-    ":created_at, :created_by, :updated_at, :updated_by"
-    ") ON DUPLICATE KEY UPDATE "
-    "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
-    "match_expr=VALUES(match_expr), priority=VALUES(priority), "
-    "max_teams_per_user=VALUES(max_teams_per_user), "
-    "max_teammates_per_team=VALUES(max_teammates_per_team), "
-    "max_teams_per_org=VALUES(max_teams_per_org), "
-    "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
-    "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
-)
 _DELETE_POLICY_SQL = text("DELETE FROM team_quota_policy WHERE policy_id = :pid")
 
 
@@ -261,7 +243,7 @@ class TeamQuotaPolicyService:
 
         async def _op() -> None:
             async def _tx(conn: Any) -> None:
-                await conn.execute(_UPSERT_POLICY_SQL, row)
+                await conn.execute(text(upsert_team_quota_policy_sql()), row)
 
             await run_tx(actor.handler, _tx)
 

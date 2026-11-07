@@ -448,7 +448,10 @@ class TeamQuotaPolicyStore:
         if self._use_mysql():
             from sqlalchemy import text
 
-            from agent_gateway.enterprise.db.team_mysql_actor import run_tx
+            from agent_gateway.enterprise.db.team_mysql_actor import (
+                run_tx,
+                upsert_team_quota_policy_sql,
+            )
 
             actor = self._mysql()
 
@@ -462,28 +465,7 @@ class TeamQuotaPolicyStore:
                 payload["updated_at"] = now_mysql
 
                 async def _tx(conn: Any) -> None:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO team_quota_policy ("
-                            "policy_id, policy_name, policy_desc, match_expr, priority, "
-                            "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
-                            "created_at, created_by, updated_at, updated_by"
-                            ") VALUES ("
-                            ":policy_id, :policy_name, :policy_desc, :match_expr, :priority, "
-                            ":max_teams_per_user, :max_teammates_per_team, "
-                            ":max_teams_per_org, :enabled, :source, :data, "
-                            ":created_at, :created_by, :updated_at, :updated_by"
-                            ") ON DUPLICATE KEY UPDATE "
-                            "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
-                            "match_expr=VALUES(match_expr), priority=VALUES(priority), "
-                            "max_teams_per_user=VALUES(max_teams_per_user), "
-                            "max_teammates_per_team=VALUES(max_teammates_per_team), "
-                            "max_teams_per_org=VALUES(max_teams_per_org), "
-                            "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
-                            "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
-                        ),
-                        payload,
-                    )
+                    await conn.execute(text(upsert_team_quota_policy_sql()), payload)
 
                 await run_tx(actor.handler, _tx)
 

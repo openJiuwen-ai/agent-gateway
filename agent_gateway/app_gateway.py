@@ -1920,6 +1920,9 @@ async def _run(
         WebChannelConfig,
     )
     from agent_gateway.cleanup import start_background_cleanup
+    from agent_gateway.enterprise.team.abandoned_hold import (
+        run_abandoned_hold_release_loop,
+    )
     from agent_gateway.common.config import get_config
     from agent_gateway.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from agent_gateway.common.updater import UpdaterService
@@ -2158,6 +2161,10 @@ async def _run(
     await heartbeat_service.start()
     log_startup_stage("heartbeat_started")
 
+    _hold_release_task = asyncio.create_task(
+        run_abandoned_hold_release_loop(),
+        name="abandoned-hold-release",
+    )
     _cleanup_task = start_background_cleanup()
 
     initial_channels_conf: dict = channels_cfg if isinstance(channels_cfg, dict) else {}
@@ -3899,6 +3906,11 @@ async def _run(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[App] gateway storage teardown failed: %s", exc)
 
+        _hold_release_task.cancel()
+        try:
+            await _hold_release_task
+        except (asyncio.CancelledError, Exception):
+            pass
         _cleanup_task.cancel()
         try:
             await _cleanup_task

@@ -46,6 +46,7 @@ from .template_models import (
 )
 
 # Team control and quota tables are created by TeamMysqlActor.start().
+# MariaDB uses the MySQL handler. PostgreSQL uses its own handler.
 # Initializing them here as well takes a metadata lock while a chat
 # pre-reserve transaction is open on the same tables.
 ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
