@@ -3957,6 +3957,57 @@ def test_message_handler_mirrors_cron_chat_file_push(tmp_path):
     assert "chat.file" in events
 
 
+def test_message_handler_mirrors_web_uuid_exec_session_chat_file(tmp_path):
+    """web 立即执行：AgentServer 返回的 UUID session_id 也要能抄进 live。"""
+    from agent_gateway.cron.live_bus import cron_live_bus
+    from openjiuwen_protocol.message import Message
+
+    session_id = "550e8400-e29b-41d4-a716-446655440000"
+    cron_live_bus.clear_session(session_id)
+    store = CronJobStore(path=tmp_path / "cron_jobs_mh_uuid.json")
+    svc = _make_scheduler(store)
+    state = CronRunState(
+        run_id="run-mh-uuid",
+        job_id="job-mh-uuid",
+        wake_at_iso="2026-11-08T00:00:00+08:00",
+        push_at_iso="2026-11-08T00:00:00+08:00",
+        exec_session_id=session_id,
+        exec_channel_id="web",
+    )
+    state.status = "running"
+    svc._runs[state.run_id] = state
+
+    handler = SimpleNamespace(
+        _cron_controller=SimpleNamespace(scheduler=svc),
+    )
+    MessageHandler._mirror_cron_live_file_push(
+        handler,
+        Message(
+            id="push-file-uuid",
+            type="event",
+            channel_id="web",
+            session_id=session_id,
+            params={},
+            timestamp=time.time(),
+            ok=True,
+            payload={
+                "event_type": "chat.file",
+                "files": [{"name": "uuid.txt", "path": "/tmp/uuid.txt"}],
+            },
+            event_type=EventType.CHAT_FILE,
+        ),
+    )
+
+    queue = cron_live_bus.subscribe(session_id, replay=True)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait().get("event"))
+    cron_live_bus.unsubscribe(session_id, queue)
+    cron_live_bus.clear_session(session_id)
+
+    assert "chat.file" in events
+
+
 class _AskingStreamClient:
     """发出一道提问后就停住，模拟智能体在等人点。"""
 

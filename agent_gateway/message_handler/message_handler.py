@@ -4065,7 +4065,10 @@ class MessageHandler(ABC):
         sid = str(
             getattr(msg, "session_id", None) or payload.get("session_id") or ""
         ).strip()
-        if not sid.startswith("cron_") and not sid.startswith("__cron__"):
+        # 不在这里用 cron_/__cron__ 前缀过滤：web「立即执行」的 exec_session_id
+        # 可能是 AgentServer 返回的任意 id；是否属于活跃 cron 跑次由
+        # scheduler.mirror_exec_session_live_event → exec_session_id 精确匹配判定。
+        if not sid:
             return
         controller = getattr(self, "_cron_controller", None)
         scheduler = getattr(controller, "scheduler", None) if controller is not None else None
