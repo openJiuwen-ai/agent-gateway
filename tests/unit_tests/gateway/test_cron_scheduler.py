@@ -3865,6 +3865,98 @@ async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_pat
     assert events[-1] == "chat.processing_status"
 
 
+def test_mirror_exec_session_live_event_forwards_chat_file(tmp_path):
+    """server_push 的 chat.file 经 mirror API 进入执行会话 live（企业版无会话 WS）。"""
+    from agent_gateway.cron.live_bus import cron_live_bus
+
+    session_id = "__cron___live_file"
+    cron_live_bus.clear_session(session_id)
+    store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    svc = _make_scheduler(store)
+    state = CronRunState(
+        run_id="run-file",
+        job_id="job-file",
+        wake_at_iso="2026-11-08T00:00:00+08:00",
+        push_at_iso="2026-11-08T00:00:00+08:00",
+        exec_session_id=session_id,
+    )
+    state.status = "running"
+    svc._runs[state.run_id] = state
+
+    svc.mirror_exec_session_live_event(
+        session_id,
+        "chat.file",
+        {
+            "event_type": "chat.file",
+            "files": [{"name": "111.txt", "path": "/tmp/111.txt"}],
+        },
+    )
+
+    queue = cron_live_bus.subscribe(session_id, replay=True)
+    frames = []
+    while not queue.empty():
+        frames.append(queue.get_nowait())
+    cron_live_bus.unsubscribe(session_id, queue)
+    cron_live_bus.clear_session(session_id)
+
+    assert any(frame.get("event") == "chat.file" for frame in frames)
+    file_frame = next(frame for frame in frames if frame.get("event") == "chat.file")
+    payload = file_frame.get("payload") or {}
+    assert payload.get("session_id") == session_id
+    assert payload.get("live_seq") == 1
+    assert payload.get("files")[0]["name"] == "111.txt"
+
+
+def test_message_handler_mirrors_cron_chat_file_push(tmp_path):
+    """MessageHandler 收到 cron 会话上的 chat.file push 时抄进 live。"""
+    from agent_gateway.cron.live_bus import cron_live_bus
+    from openjiuwen_protocol.message import Message
+
+    session_id = "__cron___mh_file"
+    cron_live_bus.clear_session(session_id)
+    store = CronJobStore(path=tmp_path / "cron_jobs_mh.json")
+    svc = _make_scheduler(store)
+    state = CronRunState(
+        run_id="run-mh-file",
+        job_id="job-mh-file",
+        wake_at_iso="2026-11-08T00:00:00+08:00",
+        push_at_iso="2026-11-08T00:00:00+08:00",
+        exec_session_id=session_id,
+    )
+    state.status = "running"
+    svc._runs[state.run_id] = state
+
+    handler = SimpleNamespace(
+        _cron_controller=SimpleNamespace(scheduler=svc),
+    )
+    MessageHandler._mirror_cron_live_file_push(
+        handler,
+        Message(
+            id="push-file-1",
+            type="event",
+            channel_id="web",
+            session_id=session_id,
+            params={},
+            timestamp=time.time(),
+            ok=True,
+            payload={
+                "event_type": "chat.file",
+                "files": [{"name": "a.txt", "path": "/tmp/a.txt"}],
+            },
+            event_type=EventType.CHAT_FILE,
+        ),
+    )
+
+    queue = cron_live_bus.subscribe(session_id, replay=True)
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait().get("event"))
+    cron_live_bus.unsubscribe(session_id, queue)
+    cron_live_bus.clear_session(session_id)
+
+    assert "chat.file" in events
+
+
 class _AskingStreamClient:
     """发出一道提问后就停住，模拟智能体在等人点。"""
 

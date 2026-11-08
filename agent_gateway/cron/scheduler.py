@@ -105,6 +105,8 @@ CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回�
 
 # 调度器自己收智能体的流时，这些帧要进正在看的执行会话直播。
 # 终稿单独放：直播里先有终稿，页面再用它盖住逐字拼出来的正文。
+# chat.file / chat.media：send_file_to_user 走 server_push，不在读流里；
+# 仍列入白名单，由 MessageHandler 旁路抄进同一条 live（见 mirror_exec_session_live_event）。
 _CRON_LIVE_FORWARD_EVENTS = frozenset({
     "chat.reasoning",
     "chat.delta",
@@ -114,6 +116,8 @@ _CRON_LIVE_FORWARD_EVENTS = frozenset({
     "chat.processing_status",
     "chat.ask_user_question",
     "chat.usage_summary",
+    "chat.file",
+    "chat.media",
 })
 _CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
     "chat.final", "chat.error", CRON_RUN_UPDATED_EVENT,
@@ -3692,6 +3696,43 @@ class CronSchedulerService:
         self._mirror_cron_live(state, payload_extra)
         await self._message_handler.publish_robot_messages(msg)
 
+    def _find_active_run_by_exec_session(self, session_id: str) -> CronRunState | None:
+        """按执行会话找回还在跑（或刚发文件）的 CronRunState。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        running: CronRunState | None = None
+        awaiting: CronRunState | None = None
+        fallback: CronRunState | None = None
+        for state in self._runs.values():
+            if str(getattr(state, "exec_session_id", "") or "").strip() != sid:
+                continue
+            status = str(getattr(state, "status", "") or "").strip()
+            if status == "running":
+                running = state
+            elif status == "awaiting_approval":
+                awaiting = state
+            else:
+                fallback = state
+        return running or awaiting or fallback
+
+    def mirror_exec_session_live_event(
+        self,
+        session_id: str,
+        event_name: str,
+        payload: dict | None,
+    ) -> None:
+        """把执行会话上的旁路事件（如 server_push 的 chat.file）抄进 live。
+
+        企业版「立即执行」页只订 ``/sessions/{id}/live``，没有挂在该会话上的
+        WebSocket；``chat.file`` 若只走 WebChannel 会被 ``has no connected ws``
+        丢掉。调度器读流看不到 send_file 的 push，所以由 MessageHandler 回调这里。
+        """
+        state = self._find_active_run_by_exec_session(session_id)
+        if state is None:
+            return
+        self._publish_cron_execution_live(state, event_name, payload)
+
     @staticmethod
     def _publish_cron_execution_live(
         state: CronRunState,
@@ -3700,9 +3741,9 @@ class CronSchedulerService:
     ) -> None:
         """把执行过程中的一帧放进这条会话已经有的直播。
 
-        浏览器只连 ``/sessions/{执行会话}/live``。思考、逐字正文、工具调用
-        和终稿都进同一个盒子。占位句不放：页面用「正在写」和逐字正文表示过程。
-        终稿已经放过时，后面的推送不再放第二遍。
+        浏览器只连 ``/sessions/{执行会话}/live``。思考、逐字正文、工具调用、
+        发文件卡片和终稿都进同一个盒子。占位句不放：页面用「正在写」和逐字
+        正文表示过程。终稿已经放过时，后面的推送不再放第二遍。
         """
         name = str(event_name or "").strip()
         if not isinstance(payload, dict) or (
