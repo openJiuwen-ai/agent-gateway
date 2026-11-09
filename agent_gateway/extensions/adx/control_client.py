@@ -16,7 +16,8 @@ import httpx
 
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.extensions.yuanrong_frontend_client import (
-    SandboxInfo, YuanrongAgentApiError, YuanrongAgentTimeoutError,
+    SandboxInfo, UnexpectedSandboxIdError, YuanrongAgentApiError, YuanrongAgentNotFoundError,
+    YuanrongAgentTimeoutError,
 )
 
 
@@ -32,6 +33,10 @@ class AdxControlError(YuanrongAgentApiError):
 
 class AdxCreateTimeout(AdxControlError, YuanrongAgentTimeoutError):
     """An unknown create outcome must retain its instance and request identities."""
+
+
+class AdxEnvironmentNotFoundError(AdxControlError, YuanrongAgentNotFoundError):
+    """The Environment API explicitly reports that the instance is absent."""
 
 
 class AdxControlClient:
@@ -111,13 +116,26 @@ class AdxControlClient:
         del trace_id
         value = await self._lookup(instance_id)
         if value is None:
-            raise AdxControlError('ADX Environment not found', code='NOT_FOUND')
+            self._deletes.pop(instance_id, None)
+            raise AdxEnvironmentNotFoundError('ADX Environment not found', code='NOT_FOUND')
         return value
 
-    async def wait_until_running(self, instance_id: str, *, trace_id: str | None = None) -> dict:
-        del trace_id
+    async def wait_until_running(
+        self,
+        instance_id: str,
+        *,
+        trace_id: str | None = None,
+        expected_generation: str | None = None,
+        deadline: float | None = None,
+    ) -> dict:
+        del trace_id, expected_generation
         try:
-            async with asyncio.timeout(self.config.connect_timeout_seconds):
+            timeout = (
+                asyncio.timeout_at(deadline)
+                if deadline is not None
+                else asyncio.timeout(self.config.connect_timeout_seconds)
+            )
+            async with timeout:
                 while True:
                     value = await self.get_agent_info(instance_id)
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
@@ -133,7 +151,10 @@ class AdxControlClient:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
         image = rootfs.get('imageurl') or rootfs.get('image_url')
-        builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
+        builtin = (
+            spec.get('sandbox_type') == 'supervisor'
+            or name.endswith('+jiuwenswarm')
+        ) and image == 'jiuwenswarm-agent-runtime:latest'
         if builtin:
             image = self.config.builtin_image
         if not image:
@@ -207,6 +228,10 @@ class AdxControlClient:
             raise AdxControlError('Create specification changed while its outcome is unknown', code='CONFLICT')
         result = await self._request('POST', '/api/environment/v1/environments', body=body, request_id=operation)
         if not isinstance(result, dict) or result.get('environmentId') != instance:
+            actual = result.get('environmentId') if isinstance(result, dict) else None
+            actual = actual.strip() if isinstance(actual, str) else ''
+            if actual and actual != instance:
+                raise UnexpectedSandboxIdError(actual)
             raise AdxControlError('ADX create returned an unexpected Environment ID')
         return await self._ready_sandbox_info(instance)
 
@@ -217,6 +242,11 @@ class AdxControlClient:
         metadata = {**view, 'node': view.get('node_ip') or '',
                     'address': view.get('sandbox_ip') or ''}
         return SandboxInfo(instance, metadata=metadata)
+
+    def forget_abandoned_create(self, instance_id: str) -> None:
+        """Release request identities after the router retires an abandoned create."""
+        self._creates.pop(instance_id, None)
+        self._deletes.pop(instance_id, None)
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         del trace_id

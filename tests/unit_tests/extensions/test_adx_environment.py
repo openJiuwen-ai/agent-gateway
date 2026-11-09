@@ -1,6 +1,7 @@
 """Environment-backed routing retains Gateway-owned launch specifications."""
 import base64
 import json
+from ipaddress import IPv4Address
 
 import httpx
 import pytest
@@ -120,6 +121,46 @@ async def test_create_timeout_retries_same_operation_and_never_changes_instance(
     await client.close()
 
 
+@pytest.mark.parametrize('result,expected_error', [
+    ({'environmentId': 'test-other'}, 'unexpected'),
+    ({'environmentId': ''}, 'control'),
+    ({'environmentId': 123}, 'control'),
+    ({}, 'control'),
+    (None, 'control'),
+])
+async def test_create_response_identity_mismatch(monkeypatch, tmp_path, result, expected_error):
+    from agent_gateway.extensions.yuanrong_frontend_client import UnexpectedSandboxIdError
+
+    calls = []
+    def handle(request):
+        calls.append(request.method)
+        return httpx.Response(404) if request.method == 'GET' else httpx.Response(200, json=envelope(result))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    try:
+        error = UnexpectedSandboxIdError if expected_error == 'unexpected' else AdxControlError
+        with pytest.raises(error) as exc:
+            await client.create_sandbox(namespace='test', name='alice', workspace='/mnt/alice',
+                                        runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+        if expected_error == 'unexpected':
+            assert exc.value.instance_id == 'test-other'
+        assert calls == ['GET', 'POST']
+    finally:
+        await client.close()
+
+
+async def test_forget_abandoned_create_releases_only_its_request_tokens(monkeypatch, tmp_path):
+    client = AdxControlClient(config(monkeypatch, tmp_path))
+    try:
+        client._creates.update({'test-alice': ('create-a', 'digest'), 'test-bob': ('create-b', 'digest')})
+        client._deletes.update({'test-alice': 'delete-a', 'test-bob': 'delete-b'})
+        client.forget_abandoned_create('test-alice')
+        assert client._creates == {'test-bob': ('create-b', 'digest')}
+        assert client._deletes == {'test-bob': 'delete-b'}
+    finally:
+        await client.close()
+
+
 async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypatch, tmp_path):
     cfg = config(monkeypatch, tmp_path)
     for view in [
@@ -156,3 +197,196 @@ async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatc
         assert calls and all(request.method == 'GET' for request in calls)
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize('committed', [True, False])
+async def test_router_recovers_unknown_adx_create_with_original_identity(monkeypatch, tmp_path, committed):
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+        AgentRebuildPending, _SandboxAttempt, _SandboxLifecycle,
+    )
+
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-alice+agent-gen1'
+    # Use two distinct addresses from TEST-NET-1 for the mocked placement.
+    node_ip = str(IPv4Address(bytes((192, 0, 2, 1))))
+    sandbox_ip = str(IPv4Address(bytes((192, 0, 2, 2))))
+    exists = False
+    posts = []
+    queries = []
+
+    def handle(request):
+        nonlocal exists
+        if request.method == 'GET':
+            queries.append(request.url.params['instance_id'])
+            if not exists:
+                return httpx.Response(404)
+            return httpx.Response(200, json=[{'id': instance, 'tenant_id': cfg.tenant,
+                'status': 'running', 'node_ip': node_ip, 'sandbox_ip': sandbox_ip}])
+        posts.append(request)
+        if len(posts) == 1:
+            exists = committed
+            raise httpx.ReadTimeout('response lost', request=request)
+        exists = True
+        return httpx.Response(200, json=envelope({'environmentId': instance}))
+
+    control = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    router = AdxRouterClient(cfg, control_client=control)
+    args = dict(namespace='test', name='alice+agent-gen1', workspace='/mnt/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+    attempt = _SandboxAttempt('gen1', router._sandbox_instance_id('test', args['name']),
+                              lambda: control.create_sandbox(**args))
+    lifecycle = _SandboxLifecycle()
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await router._provision_sandbox(lifecycle, attempt)
+        recovered = await router._provision_sandbox(lifecycle, attempt)
+        assert recovered.sandbox_id == instance
+        assert recovered.metadata['node'] == node_ip
+        assert recovered.metadata['address'] == sandbox_ip
+        assert set(queries) == {instance}
+        assert len(posts) == (1 if committed else 2)
+        if not committed:
+            assert posts[0].headers['x-request-id'] == posts[1].headers['x-request-id']
+            assert posts[0].content == posts[1].content
+    finally:
+        await control.close()
+
+
+@pytest.mark.parametrize('response', ['server_error', 'failed', 'pending_then_absent'])
+async def test_router_never_replays_after_uncertain_adx_observation(monkeypatch, tmp_path, response):
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+        AgentRebuildPending, _SandboxAttempt, _SandboxLifecycle,
+    )
+
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-alice+agent-gen1'
+    posts = []
+    gets = 0
+
+    def handle(request):
+        nonlocal gets
+        if request.method == 'POST':
+            posts.append(request)
+            if len(posts) > 1:
+                return httpx.Response(200, json=envelope({'environmentId': instance}))
+            raise httpx.ReadTimeout('response lost', request=request)
+        gets += 1
+        if gets == 1:
+            return httpx.Response(404)
+        if response == 'server_error':
+            if gets == 2:
+                return httpx.Response(503, json={'error': {'code': 'SERVICE_UNAVAILABLE'}})
+            if len(posts) == 1:
+                return httpx.Response(404)
+            return httpx.Response(200, json=[{'id': instance, 'tenant_id': cfg.tenant, 'status': 'running'}])
+        if response == 'pending_then_absent' and gets >= 3:
+            return httpx.Response(404)
+        status = 'failed' if response == 'failed' else 'creating'
+        return httpx.Response(200, json=[{'id': instance, 'tenant_id': cfg.tenant, 'status': status}])
+
+    control = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    router = AdxRouterClient(cfg, control_client=control)
+    args = dict(namespace='test', name='alice+agent-gen1', workspace='/mnt/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+    attempt = _SandboxAttempt('gen1', router._sandbox_instance_id('test', args['name']),
+                              lambda: control.create_sandbox(**args))
+    lifecycle = _SandboxLifecycle()
+    try:
+        # The initial POST and the following observation each remain pending.
+        for _ in range(2):
+            with pytest.raises(AgentRebuildPending):
+                await router._provision_sandbox(lifecycle, attempt)
+        assert len(posts) == 1
+        if response == 'server_error':
+            recovered = await router._provision_sandbox(lifecycle, attempt)
+            assert recovered.sandbox_id == instance
+            assert len(posts) == 2
+            assert posts[0].headers['x-request-id'] == posts[1].headers['x-request-id']
+    finally:
+        await control.close()
+
+
+async def test_late_adx_create_cleanup_requires_exact_id_and_tenant(monkeypatch, tmp_path):
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+        AgentRebuildPending, _SandboxAttempt, _SandboxLifecycle,
+    )
+
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-gateway-gen1'
+    visible_tenant = None
+    deleted = []
+
+    def handle(request):
+        if request.method == 'POST':
+            raise httpx.ReadTimeout('response lost', request=request)
+        if request.method == 'DELETE':
+            deleted.append(request.url.path.rsplit('/', 1)[-1])
+            return httpx.Response(200, json={'code': 200, 'data': None})
+        assert request.url.params['instance_id'] == instance
+        if visible_tenant is None:
+            return httpx.Response(404)
+        return httpx.Response(200, json=[{'id': instance, 'tenant_id': visible_tenant, 'status': 'running'}])
+
+    control = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    router = AdxRouterClient(cfg, control_client=control)
+    args = dict(namespace='test', name='gateway-gen1', workspace='/mnt/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+    attempt = _SandboxAttempt('gen1', instance, lambda: control.create_sandbox(**args))
+    lifecycle = _SandboxLifecycle()
+    try:
+        with pytest.raises(AgentRebuildPending):
+            await router._provision_sandbox(lifecycle, attempt)
+        with pytest.raises(AgentRebuildPending, match='replay budget exhausted'):
+            await router._provision_sandbox(lifecycle, attempt)
+        assert lifecycle.attempt is None
+        record = lifecycle.retirements[(instance, 'gen1')]
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        visible_tenant = 'foreign'
+        assert not await router._observe_retired_sandbox(lifecycle, record)
+        assert not deleted
+        visible_tenant = cfg.tenant
+        await router._observe_retired_sandbox(lifecycle, record)
+        assert deleted == [instance]
+    finally:
+        await control.close()
+
+
+async def test_expired_adx_create_retirement_releases_request_tokens(monkeypatch, tmp_path):
+    import asyncio
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+        AgentRebuildPending, _SandboxAttempt, _SandboxLifecycle,
+    )
+
+    calls = []
+    def handle(request):
+        calls.append(request.method)
+        if request.method == 'POST':
+            raise httpx.ReadTimeout('response lost', request=request)
+        return httpx.Response(404)
+
+    cfg = config(monkeypatch, tmp_path)
+    control = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    router = AdxRouterClient(cfg, control_client=control)
+    instance = 'test-gateway-gen1'
+    args = dict(namespace='test', name='gateway-gen1', workspace='/mnt/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+    attempt = _SandboxAttempt('gen1', instance, lambda: control.create_sandbox(**args))
+    lifecycle = _SandboxLifecycle()
+    try:
+        for _ in range(2):
+            with pytest.raises(AgentRebuildPending):
+                await router._provision_sandbox(lifecycle, attempt)
+        assert instance in control._creates
+        lifecycle.retirements[(instance, 'gen1')].expires_at = asyncio.get_running_loop().time()
+        router._sandbox_lifecycles['gateway'] = lifecycle
+        router._closed = False
+        await router._retry_retired_sandbox_cleanup('gateway', lifecycle)
+        assert instance not in control._creates
+        assert instance not in control._deletes
+        assert 'DELETE' not in calls
+    finally:
+        await control.close()
