@@ -5,6 +5,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
@@ -12,12 +13,12 @@ import pytest
 from opentelemetry import context
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
 
 from agent_gateway import telemetry
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from agent_gateway.extensions.agentos.agentos_router import router_client
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig, RegistryValidationError
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
@@ -83,6 +84,7 @@ async def test_disabled_gateway_tracing_preserves_external_context(monkeypatch):
 
 async def test_disabled_gateway_tracing_preserves_external_context_during_ws(monkeypatch):
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
     client._ws_clients = {}
     client._ws_connecting = {}
     client._ws_connect_traces = {}
@@ -125,6 +127,7 @@ async def test_shared_trace_non_owner_ws_links_creation(monkeypatch):
     with telemetry.bind_request_trace(first):
         creation = telemetry.start_gateway_trace("gw.agent.create")
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
     client._ws_clients = {}
     client._ws_connecting = {}
     client._ws_connect_traces = {}
@@ -170,6 +173,7 @@ async def test_unconfirmed_ws_is_incomplete_after_successful_registration(monkey
     telemetry_runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
     operation = telemetry.start_gateway_trace("gw.agent.create", root=True)
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
     client._ws_clients = {}
     client._ws_connecting = {}
     client._ws_connect_traces = {}
@@ -208,6 +212,7 @@ async def test_foreign_ws_leader_cancel_does_not_cancel_preparation(monkeypatch)
     with telemetry.bind_request_trace(first):
         creation = telemetry.start_gateway_trace("gw.agent.create")
     client = object.__new__(router_client.AgentOSRouterClient)
+    client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
     client._ws_clients = {}
     client._ws_connecting = {}
     client._ws_connect_traces = {}
@@ -269,12 +274,13 @@ async def test_registry_skipped_deleted_is_incomplete(monkeypatch, skip_at):
     telemetry.configure_gateway_telemetry({"telemetry": {"enabled": True, "exporter": "none"}})
     operation = telemetry.start_gateway_trace("gw.agent.create", root=True)
     client = object.__new__(router_client.AgentOSRouterClient)
-    info = SimpleNamespace(user_id="user", agent_type="test", sandbox_id="sandbox", metadata={})
+    client._sandbox_lifecycles = {}
+    info = SimpleNamespace(user_id="user", agent_type="test", sandbox_id="sandbox", agent_id="agent", metadata={})
     calls = []
 
     async def get_agent(*args, **kwargs):
         calls.append(True)
-        return None if skip_at == "post" or len(calls) == 2 else object()
+        return None if skip_at == "post" or len(calls) == 2 else SimpleNamespace(info=info)
 
     async def register(*args, **kwargs):
         pass
@@ -302,12 +308,12 @@ async def test_warmup_with_unconfirmed_ws_is_incomplete(monkeypatch):
     telemetry_runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
     client = object.__new__(router_client.AgentOSRouterClient)
     client._closed = False
-    runtime = SimpleNamespace(key="key", info=SimpleNamespace(sandbox_id="sandbox"))
+    runtime = SimpleNamespace(key="key", info=SimpleNamespace(sandbox_id="sandbox", agent_id="agent"))
 
     async def get_or_create(*args, **kwargs):
         return runtime
 
-    async def release(*args):
+    async def release(*args, **kwargs):
         pass
 
     async def get_ws(self, agent_runtime):
