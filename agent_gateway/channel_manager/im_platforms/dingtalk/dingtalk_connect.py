@@ -15,6 +15,7 @@ from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from agent_gateway.channel_manager.persistent_events import InboundDisposition
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import (
     DingTalkFileService,
 )
@@ -29,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 _TOKEN_RETRY_SECONDS = 30.0
+# Swarm membership checks can run three CLI calls, each with a 30-second limit.
+_LIFECYCLE_ACK_TIMEOUT_SECONDS = 120.0
 
 
 class DingTalkConfig(BaseModel):
@@ -116,6 +119,7 @@ try:
         AckMessage,
         CallbackHandler,
         CallbackMessage,
+        EventHandler,
         Credential,
         DingTalkStreamClient,
     )
@@ -125,6 +129,7 @@ try:
 except ImportError:
     DINGTALK_AVAILABLE = False
     CallbackHandler = object
+    EventHandler = object
     CallbackMessage = None
     AckMessage = None
     ChatbotMessage = None
@@ -257,6 +262,51 @@ class DingTalkHandler(CallbackHandler):
             return AckMessage.STATUS_OK, "Error"
 
 
+class DingTalkGroupEventHandler(EventHandler):
+    """Confirm subscribed EVENTs within a bound; host effects must tolerate redelivery."""
+
+    def __init__(self, channel):
+        super().__init__()
+        self.channel = channel
+
+    async def process(self, message):
+        from agent_gateway.channel_manager.im_platforms.dingtalk.group_events import GROUP_EVENT_TYPES, DingTalkGroupEvent
+
+        raw = message.data
+        headers = getattr(message, "headers", None)
+        kind = raw.get("eventType") if isinstance(raw, dict) else None
+        kind = kind or getattr(headers, "event_type", None)
+        event_id = raw.get("eventId") if isinstance(raw, dict) else None
+        event_id = event_id or getattr(headers, "event_id", None)
+        app_id = self.channel.persistent_app_id
+        if kind not in GROUP_EVENT_TYPES or not self.channel.config.agent_id:
+            logger.debug("[DingTalk] ignore stream event: kind=%s event_id=%s app_id=%s", kind, event_id, app_id)
+            return AckMessage.STATUS_OK, "ignored"
+        try:
+            event = DingTalkGroupEvent.from_stream(
+                raw, app_id=self.channel.persistent_app_id, agent_id=self.channel.config.agent_id, headers=headers,
+            )
+        except (TypeError, ValueError):
+            logger.warning("[DingTalk] invalid group lifecycle event rejected: kind=%s event_id=%s app_id=%s",
+                           kind, event_id, app_id)
+            return AckMessage.STATUS_BAD_REQUEST, "invalid lifecycle event"
+        callback = self.channel._persistent_inbound_callback
+        if callback is None:
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle route unavailable"
+        try:
+            result = await asyncio.wait_for(callback(event), timeout=_LIFECYCLE_ACK_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("[DingTalk] group lifecycle delivery timed out: kind=%s event_id=%s app_id=%s timeout=%ss",
+                           kind, event_id, app_id, _LIFECYCLE_ACK_TIMEOUT_SECONDS)
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle delivery timed out"
+        except Exception as exc:
+            logger.warning("[DingTalk] group lifecycle delivery failed (%s)", type(exc).__name__)
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle delivery failed"
+        if getattr(result, "value", result) != InboundDisposition.HANDLED.value:
+            return AckMessage.STATUS_SYSTEM_EXCEPTION, "group lifecycle event not accepted"
+        return AckMessage.STATUS_OK, "OK"
+
+
 class DingTalkChannel(BaseChannel):
     """
     使用Stream模式的钉钉通道。
@@ -305,6 +355,7 @@ class DingTalkChannel(BaseChannel):
         return self.config.client_id
 
     def set_persistent_inbound_callback(self, callback) -> None:
+        """Install an async host callback returning an InboundDisposition."""
         self._persistent_inbound_callback = callback
 
     def enqueue_persistent_event(self, raw_data: dict) -> None:
@@ -633,6 +684,8 @@ class DingTalkChannel(BaseChannel):
         # 注册标准处理器
         handler = DingTalkHandler(self)
         self._client.register_callback_handler(ChatbotMessage.TOPIC, handler)
+        if self.config.agent_id:
+            self._client.register_all_event_handler(DingTalkGroupEventHandler(self))
 
         logger.info("钉钉机器人已启动（Stream模式）")
 
