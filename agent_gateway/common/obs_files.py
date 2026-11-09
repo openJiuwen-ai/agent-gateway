@@ -86,6 +86,7 @@ class AttachmentStore:
     client: Minio
     bucket: str
     origin: str
+    virtual_origin: str | None = None
 
     @classmethod
     def from_env(cls) -> "AttachmentStore":
@@ -109,16 +110,34 @@ class AttachmentStore:
             or parsed.path not in {"", "/"}
         ):
             raise ValueError("OBS_URL must be an HTTP(S) origin")
-        origin = f"{parsed.scheme}://{parsed.netloc}"
+        authority = parsed.netloc
+        virtual_origin = None
+        # A bucket-prefixed OBS setting still uses the regional endpoint in
+        # MinIO so it adds the bucket exactly once when signing requests.
+        regional_host = (parsed.hostname or "").rstrip(".")
+        if regional_host.startswith(f"{bucket}.obs."):
+            regional_host = regional_host.removeprefix(f"{bucket}.")
+        if regional_host.startswith("obs.") and ".myhuaweicloud." in regional_host:
+            if parsed.username is not None:
+                raise ValueError("OBS_URL must not contain user information")
+            default_port = 443 if parsed.scheme == "https" else 80
+            port = parsed.port
+            authority = regional_host
+            if port not in (None, default_port):
+                authority = f"{authority}:{port}"
+            virtual_origin = f"{parsed.scheme}://{bucket}.{authority}"
+        origin = f"{parsed.scheme}://{authority}"
         client = Minio(
-            parsed.netloc,
+            authority,
             access_key=access,
             secret_key=secret,
             secure=parsed.scheme == "https",
             region=os.getenv("OBS_REGION", "default"),
             http_client=_obs_http_client(),
         )
-        return cls(client, bucket, origin)
+        if virtual_origin:
+            client.enable_virtual_style_endpoint()
+        return cls(client, bucket, origin, virtual_origin)
 
     def _ensure_bucket(self) -> None:
         if self.client.bucket_exists(self.bucket):
@@ -189,29 +208,29 @@ class AttachmentStore:
             self.bucket, key, expires=timedelta(seconds=DOWNLOAD_TTL_SECONDS)
         )
 
+    def _object_key(self, url: str) -> str:
+        """Extract an object key only from this bucket's configured origins."""
+        parsed = urlsplit(url)
+        if parsed.fragment or parsed.username is not None:
+            raise ValueError("URL must use the configured object store")
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin == self.virtual_origin:
+            return unquote(parsed.path.removeprefix("/"))
+        prefix = f"/{self.bucket}/"
+        if origin == self.origin and parsed.path.startswith(prefix):
+            return unquote(parsed.path[len(prefix):])
+        raise ValueError("URL must use the configured object store and bucket")
+
     def download_key(self, url: str, tenant_key: str) -> str:
         """Restrict proxy URLs to this store and the selected tenant's deliveries."""
-        parsed = urlsplit(url)
-        prefix = f"/{self.bucket}/"
-        origin_ok = f"{parsed.scheme}://{parsed.netloc}" == self.origin
-        path_ok = parsed.path.startswith(prefix)
-        identity_ok = not parsed.fragment and parsed.username is None
-        if not origin_ok or not path_ok or not identity_ok:
-            raise ValueError("download must use the configured object store")
-        key = unquote(parsed.path[len(prefix):])
+        key = self._object_key(url)
         parts = key.split("/")
         if len(parts) != 4 or key != download_object_key(tenant_key, parts[2], parts[3]):
             raise ValueError("download does not belong to the current tenant")
         return key
 
     def _upload_key(self, url: str, prefix: str) -> str:
-        parsed = urlsplit(url)
-        if f"{parsed.scheme}://{parsed.netloc}" != self.origin or parsed.fragment:
-            raise ValueError("attachment URL must use the configured OBS origin")
-        path_prefix = f"/{self.bucket}/"
-        if not parsed.path.startswith(path_prefix):
-            raise ValueError("attachment URL must use the configured bucket")
-        key = unquote(parsed.path[len(path_prefix):])
+        key = self._object_key(url)
         suffix = key.removeprefix(prefix).split("/")
         name = suffix[1] if len(suffix) == 2 else ""
         uuid_ok = bool(re.fullmatch(r"[0-9a-f]{32}", suffix[0])) if len(suffix) == 2 else False
