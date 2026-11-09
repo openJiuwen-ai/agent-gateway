@@ -619,6 +619,18 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-stage", "skills.upload.stage",
+        "skills", "企业版：暂存上传包并返回签名描述符",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-finalize", "skills.upload.finalize",
+        "skills", "企业版：按审批结果安装暂存包",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/{name}/files", "skills.files.list",
         "skills", "技能文件列表（工作副本）",
         path_to_param={"name": "name"},

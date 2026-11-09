@@ -11,7 +11,7 @@ import re
 import stat
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -48,6 +48,17 @@ class _DigestReader:
         data = self.source.read(size)
         self.digest.update(data)
         return data
+
+
+def skill_approvals_object_key(tenant_key: str, upload_id: str, filename: str) -> str:
+    """Object key for the administrator-downloadable copy of a staged Skill."""
+    bad_scope = not tenant_key or not re.fullmatch(r"[0-9a-f]{32}", upload_id)
+    bad_name = not filename or filename in {".", ".."}
+    bad_char = any(char in filename for char in "/\\\0")
+    if bad_scope or bad_name or bad_char:
+        raise ValueError("invalid skill approval object scope")
+    scope = hashlib.sha256(tenant_key.encode()).hexdigest()
+    return f"skill-approvals/{scope}/{upload_id}/{filename}"
 
 
 def object_prefix(group_id: str, bot_id: str, user_id: str) -> str:
@@ -220,6 +231,27 @@ class AttachmentStore:
         if origin == self.origin and parsed.path.startswith(prefix):
             return unquote(parsed.path[len(prefix):])
         raise ValueError("URL must use the configured object store and bucket")
+
+    def remove_key(self, key: str) -> None:
+        """Delete one object by its canonical key (best-effort lifecycle cleanup)."""
+        text = key or ""
+        parts = text.split("/")
+        bad_layout = text.startswith("/") or "\\" in text
+        bad_segment = any(part in {"", ".", ".."} for part in parts)
+        if not text or bad_layout or bad_segment:
+            raise ValueError("invalid object key")
+        self.client.remove_object(self.bucket, key)
+
+    def list_keys(self, prefix: str) -> list[tuple[str, datetime]]:
+        """List ``(key, last_modified)`` under a directory-like prefix."""
+        text = (prefix or "").rstrip("/")
+        parts = text.split("/")
+        bad_layout = text.startswith("/") or "\\" in text
+        bad_segment = any(part in {"", ".", ".."} for part in parts)
+        if not text or bad_layout or bad_segment:
+            raise ValueError("invalid object prefix")
+        objects = self.client.list_objects(self.bucket, prefix=prefix, recursive=True)
+        return [(obj.object_name, obj.last_modified) for obj in objects]
 
     def download_key(self, url: str, tenant_key: str) -> str:
         """Restrict proxy URLs to this store and the selected tenant's deliveries."""

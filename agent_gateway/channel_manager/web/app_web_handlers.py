@@ -72,6 +72,10 @@ from agent_gateway.common.paths import (
     get_env_file,
     get_root_dir,
 )
+from agent_gateway.common.protocol_methods import (
+    SKILL_UPLOAD_FINALIZE,
+    SKILL_UPLOAD_STAGE,
+)
 from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
@@ -513,6 +517,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.pack_member.install",
     "skills.import_local",
     "skills.import_upload",
+    SKILL_UPLOAD_STAGE,
+    SKILL_UPLOAD_FINALIZE,
     "skills.create_from_knowledge",
     "skills.marketplace.add",
     "skills.marketplace.remove",
@@ -772,6 +778,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.pack_member.install",
     "skills.import_local",
     "skills.import_upload",
+    SKILL_UPLOAD_STAGE,
+    SKILL_UPLOAD_FINALIZE,
     "skills.create_from_knowledge",
     "skills.marketplace.add",
     "skills.marketplace.remove",

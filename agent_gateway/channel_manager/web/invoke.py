@@ -10,6 +10,10 @@ from typing import Any
 
 from openjiuwen_protocol.message import Message
 
+from agent_gateway.common.protocol_methods import (
+    SKILL_UPLOAD_FINALIZE,
+    SKILL_UPLOAD_STAGE,
+)
 from agent_gateway.common.request_identity import (
     merge_routing_into_params,
     web_routing_identity,
@@ -51,6 +55,9 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.update",
     # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
     "skills.import_local",
+    # 按包上传审批：stage 暂存、finalize 安装（finalize 另有 manager 复核）。
+    SKILL_UPLOAD_STAGE,
+    SKILL_UPLOAD_FINALIZE,
     "skills.enterprise.list",
     "skills.enterprise.install",
     "skills.enterprise.uninstall",
@@ -111,6 +118,12 @@ async def _invoke_handler(
     return await channel.invoke_method_handler(invocation)
 
 
+# 门禁实现放在企业版能力包内；HTTP 与 WS 共用同一个入口。
+from agent_gateway.enterprise.capabilities.skill_upload.guard import (  # noqa: E402
+    enterprise_skill_upload_denial,
+)
+
+
 async def dispatch_web_request(
     channel: Any,
     *,
@@ -120,16 +133,43 @@ async def dispatch_web_request(
     outbound: Any,
     session_id: str,
     user_message: Message,
+    authorization: str | None = None,
+    jiuwenclaw_id: str | None = None,
 ) -> None:
     """Run HANDLER_BEFORE → on_message (or bus) → local handler / METHOD_NOT_FOUND.
 
     ``outbound`` is the reply target: a real WebSocket peer or request-scoped
     HTTP Outbound (``HttpJsonOutbound`` / ``HttpSseOutbound``).
+
+    ``authorization`` / ``jiuwenclaw_id`` 只用于企业版上传资格校验，不写入
+    params 或 metadata，因此不会被转发到 AgentServer。
     """
+    # 安装结果回写不在这里：finalize 的 res 无论是走 WS 还是 HTTP，都由
+    # WebChannel.send() 的 res 分支统一调度 schedule_pending_install_result。
     # Lazy import: avoid import cycle with web_connect.
     from agent_gateway.channel_manager.web.web_connect import (
         _HANDLER_BEFORE_CALLBACK_METHODS,
     )
+
+    denial = await enterprise_skill_upload_denial(
+        method=method,
+        params=params,
+        request_id=request_id,
+        authorization=authorization,
+        jiuwenclaw_id=jiuwenclaw_id,
+    )
+    if denial is not None:
+        error, code = denial
+        logger.warning(
+            "[WebChannel] skill upload denied method=%s request_id=%s code=%s",
+            method,
+            request_id,
+            code,
+        )
+        await channel.send_response(
+            outbound, request_id, ok=False, error=error, code=code,
+        )
+        return
 
     if is_enterprise_write_forbidden(method):
         await channel.send_response(
