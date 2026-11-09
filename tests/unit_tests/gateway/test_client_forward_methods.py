@@ -25,6 +25,7 @@ def test_client_methods_are_plain_forwards():
 
 
 def test_client_methods_resolve_to_a_request_method():
-    # The forward path looks a method up in ReqMethod by value and answers "unknown method" when it is missing.
+    # These built-in methods are supported by the pinned AgentServer protocol.
+    # Gateway also forwards names absent from its enum; AgentServer validates them.
     known = {item.value for item in ReqMethod}
     assert CLIENT_METHODS <= known
