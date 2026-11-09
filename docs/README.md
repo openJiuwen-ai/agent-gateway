@@ -36,6 +36,7 @@
 | 文档 | 说明 |
 | --- | --- |
 | [architecture](zh/explanation/architecture.md) | Gateway 的定位、数据流、模块划分、启动顺序与关键设计决策 |
+| [authentication](zh/explanation/authentication.md) | 认证与鉴权体系：登录会话、模型凭据链路、渠道接入鉴权与安全边界 |
 
 ## 英文文档
 
@@ -48,6 +49,7 @@
 - [Logging (EN)](en/reference/logging.md)
 - [E2A protocol (EN)](en/reference/e2a-protocol.md)
 - [Architecture (EN)](en/explanation/architecture.md)
+- [Authentication (EN)](en/explanation/authentication.md)
 
 ## 其他资料
 
