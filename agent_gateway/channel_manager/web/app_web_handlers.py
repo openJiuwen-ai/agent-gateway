@@ -2357,10 +2357,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         register_disconnect(_on_disconnect)
 
     async def _config_get(ws, req_id, params, session_id):
-        """config.get 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_get_handler(
-            channel, ws, req_id, params, session_id
-        )
+        """Serve the local enterprise config view through the Gateway."""
+        await config_set_handlers.config_get_handler(channel, ws, req_id)
 
     async def _external_cli_detect(ws, req_id, params, session_id):
         if not isinstance(params, dict):

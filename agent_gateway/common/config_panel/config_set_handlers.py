@@ -33,15 +33,15 @@ from pathlib import Path
 from typing import Any
 
 
-from agent_gateway.common.config import (
-    get_config,
-)
+from agent_gateway.common.config import get_config, get_config_raw
 from agent_gateway.common.config_panel.external_cli_read import (
     EXTERNAL_CLI_AGENT_KINDS,
     _uploaded_cli_path,
     external_cli_agent_kinds,
 )
+from agent_gateway.common.moa_config import flatten_moa_for_config_panel
 from agent_gateway.common.paths import get_env_file
+from agent_gateway.common.version import get_runtime_version
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,41 @@ def get_nested_config_value(source: dict[str, Any], path: tuple[str, ...], defau
             return default
         current = current.get(segment)
     return default if current is None else current
+
+
+async def config_get_handler(channel: Any, ws: Any, req_id: str) -> None:
+    """Return the public Web configuration for the local enterprise route."""
+    raw = get_config_raw()
+    flags = {
+        "a2ui_enabled": (("a2ui", "enabled"), False),
+        "rsi_enabled": (("rsi", "enabled"), True),
+        "trajectory_ui_diagnosis_enabled": (("trajectory_ui", "diagnosis_enabled"), False),
+        "team_organization_ui_enabled": (("experimental", "team_organization_ui_enabled"), False),
+        "comfyui_workflow_enabled": (("experimental", "comfyui_workflow_enabled"), False),
+        "task_full_duplex_enabled": (("experimental", "task_full_duplex_enabled"), False),
+        "task_asr_enabled": (("experimental", "task_asr_enabled"), False),
+        "permissions_enabled": (("permissions", "enabled"), False),
+        "prompt_suggestion_enabled": (("recommendation", "prompt_enabled"), True),
+        "symphony_enabled": (("symphony", "enabled"), False),
+    }
+    panel = {}
+    for key, (path, default) in flags.items():
+        value = str(get_nested_config_value(raw, path, default)).strip().lower()
+        if value in {"true", "1", "yes", "on"}:
+            panel[key] = "true"
+        elif value in {"false", "0", "no", "off"}:
+            panel[key] = "false"
+        else:
+            panel[key] = "true" if default else "false"
+    dispatch_mode = get_nested_config_value(
+        raw, ("modes", "team", "jiuwen_team", "dispatch_mode"), "autonomous",
+    )
+    panel.update(flatten_moa_for_config_panel(raw))
+    panel["team_scheduled_dispatch_enabled"] = "true" if dispatch_mode == "scheduled" else "false"
+    panel["app_version"] = get_runtime_version()
+    panel["runtime_platform"] = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
+    panel["setup_guide_enabled"] = "false"
+    await channel.send_response(ws, req_id, ok=True, payload=panel)
 
 
 def flatten_modes_team_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
