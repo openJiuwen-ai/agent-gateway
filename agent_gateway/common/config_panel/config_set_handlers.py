@@ -58,7 +58,8 @@ ENV_FILE = get_env_file()
 # --------------------------------------------------------------------------- #
 # 配置键映射（前端 param 名 -> 环境变量名 / config.yaml 路径）
 # --------------------------------------------------------------------------- #
-# 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
+# Configuration keys for runtime synchronization and settings writes.
+# The enterprise Web config.get response is defined separately below.
 # default 模型 + video/audio/vision 多模型
 CONFIG_SET_ENV_MAP = {
     # default 模型（主对话）
@@ -204,8 +205,15 @@ def get_nested_config_value(source: dict[str, Any], path: tuple[str, ...], defau
 
 
 async def config_get_handler(channel: Any, ws: Any, req_id: str) -> None:
-    """Return the public Web configuration for the local enterprise route."""
+    """Return startup switches and version info for the enterprise Web client.
+
+    Enterprise settings use separate APIs for language and archived tasks.
+    Model selection and team management also have their own APIs, so this
+    response does not include the legacy model or team settings fields.
+    """
     raw = get_config_raw()
+    if not isinstance(raw, dict):
+        raw = {}
     flags = {
         "a2ui_enabled": (("a2ui", "enabled"), False),
         "rsi_enabled": (("rsi", "enabled"), True),
@@ -230,8 +238,9 @@ async def config_get_handler(channel: Any, ws: Any, req_id: str) -> None:
     dispatch_mode = get_nested_config_value(
         raw, ("modes", "team", "jiuwen_team", "dispatch_mode"), "autonomous",
     )
+    scheduled_dispatch = isinstance(dispatch_mode, str) and dispatch_mode.strip().lower() == "scheduled"
     panel.update(flatten_moa_for_config_panel(raw))
-    panel["team_scheduled_dispatch_enabled"] = "true" if dispatch_mode == "scheduled" else "false"
+    panel["team_scheduled_dispatch_enabled"] = "true" if scheduled_dispatch else "false"
     panel["app_version"] = get_runtime_version()
     panel["runtime_platform"] = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     panel["setup_guide_enabled"] = "false"
