@@ -45,6 +45,11 @@ Gateway 的 WebSocket 客户端在异常断线后保留目标 URI 与鉴权头�
 
 ## 2. 易混点：`method` 的两种含义（必读）
 
+Gateway 执行自身注册的本地方法，其余方法默认透传给 AgentServer，不以
+Gateway 的 `ReqMethod` 枚举或转发名单判断服务端是否支持。AgentServer 在
+请求入口将方法名转为自身的 `ReqMethod`，未定义的方法返回 `METHOD_NOT_FOUND`；
+Gateway 保留该错误码和错误信息返回调用方。生命周期代理也直接传递方法名字符串。
+
 同一字段 **`method`** 在不同来源下含义不同，**不是**两套字段，也**不要**与 `request_id` / `message_id` 混用。
 
 | 来源 | `method` 典型取值 | 说明 |

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from openjiuwen_protocol.message import ReqMethod
-
 from agent_gateway.routing.agent_client import DuplicateRequestIdError
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 from agent_gateway.common.request_identity import apply_routing_metadata
@@ -20,7 +18,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         metadata = apply_routing_metadata(None, routing) if isinstance(routing, dict) else None
         return await fetch_agent_unary(
             agent_client=resolve_client(),
-            req_method=ReqMethod(method),
+            req_method=method,
             params=params,
             session_id=session_id,
             user_id=user_id,

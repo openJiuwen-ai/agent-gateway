@@ -51,6 +51,13 @@ it changes neither the E2A wire protocol nor Agent Runtime readiness semantics.
 
 ## 2. Pitfall: two meanings of `method` (required reading)
 
+Gateway runs its registered local handlers and forwards other methods to
+AgentServer by default. Its `ReqMethod` enum and forwarding tables do not decide
+whether AgentServer supports a method. AgentServer converts method names to its
+own `ReqMethod` at ingress and returns `METHOD_NOT_FOUND` for undefined names.
+Gateway preserves that error code and message for the caller. Lifecycle proxies
+also pass method names directly as strings.
+
 The same field **`method`** means different things by origin. It is **not** two different fields; do not confuse it with `request_id` / `message_id`.
 
 | Origin | Typical `method` values | Notes |

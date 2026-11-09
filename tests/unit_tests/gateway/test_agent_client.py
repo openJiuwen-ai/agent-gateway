@@ -136,6 +136,48 @@ def test_agent_client_uses_shared_websocket_limit():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_stream", [False, True])
+async def test_unknown_method_response_completes_request_without_retry(monkeypatch, is_stream):
+    client = AgentClientHarness()
+    sent_methods = []
+
+    class MethodErrorWebSocket:
+        async def send(self, raw):
+            request = json.loads(raw)
+            sent_methods.append(request["method"])
+            request_id = request["request_id"]
+            response = AgentResponse(
+                request_id=request_id, channel_id="web", ok=False,
+                payload={"code": "METHOD_NOT_FOUND", "error": f"unknown method: {request['method']}"},
+            )
+            await client.get_message_queue_for_test(request_id).put(
+                encode_agent_response_for_wire(response, response_id=request_id),
+            )
+
+    client.set_ws_for_test(MethodErrorWebSocket())
+    monkeypatch.setattr(agent_client, "_STREAM_TRAILING_MESSAGE_GRACE_SECONDS", 0.01)
+    envelope = e2a_from_agent_fields(
+        request_id="unknown-1", channel_id="web", req_method="future.extension",
+        params={}, is_stream=is_stream,
+    )
+    if is_stream:
+        async def collect():
+            return [chunk async for chunk in client.send_request_stream(envelope)]
+
+        chunks = await asyncio.wait_for(collect(), 1)
+        assert len(chunks) == 1
+        response = chunks[0]
+        assert response.is_complete
+    else:
+        response = await client.send_request(envelope, timeout=1)
+        assert not response.ok
+    assert response.request_id == "unknown-1"
+    assert response.payload["code"] == "METHOD_NOT_FOUND"
+    assert sent_methods == ["future.extension"]
+    assert not client.has_message_queue_for_test("unknown-1")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("second_request_id", "final_is_complete", "second_event_type"),
     [
