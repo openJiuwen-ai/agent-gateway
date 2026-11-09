@@ -30,6 +30,7 @@
 | [cli-and-environment](zh/reference/cli-and-environment.md) | 命令行参数、环境变量、配置文件、运行时目录与退出行为 |
 | [logging](zh/reference/logging.md) | 日志文件、级别配置与热路径日志契约 |
 | [e2a-protocol](zh/reference/e2a-protocol.md) | Gateway 与 AgentServer 之间的 E2A 请求/响应协议 |
+| [gateway-web-api](zh/reference/gateway-web-api.md) | Web 前端 ⇄ Gateway 的 WS JSON-RPC 与 HTTP 接口契约（方法、事件、错误码与流式语义） |
 
 ## Explanation
 
