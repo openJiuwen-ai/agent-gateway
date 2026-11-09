@@ -3387,10 +3387,19 @@ class CronSchedulerService:
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
         if _is_web_cron_job(job):
-            if not is_placeholder:
-                await self._notify_web_run(job, state, phase="reminder", notify=True)
-            return
-        if not is_scheduled_task_supported(job.targets):
+            if is_placeholder:
+                # Web placeholders stay silent: the execution session and the
+                # sidebar already show progress, and "running" hints spam
+                # frequent jobs (one of the reasons web pushes were cut).
+                return
+            # Web final results keep the pre-unification delivery: fall
+            # through to the shared push below and broadcast chat.final with
+            # payload.cron and an empty session_id, which WebChannel fans out
+            # to browser clients. The replacement path built on 11-03
+            # (active-session discovery + live stream) only covers the
+            # enterprise HTTP edition; the personal WS edition still receives
+            # results solely through this broadcast.
+        elif not is_scheduled_task_supported(job.targets):
             logger.info(
                 "[Cron] push skipped: unsupported target job=%s target=%s",
                 job.id,
