@@ -29,7 +29,9 @@ _LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
 })
 
 _ENTERPRISE_BLOCKED_EXACT = frozenset({
-    "config.set", "config.save_all", "models.replace_all", "models.save",
+    # config.get 一并拦截：gateway 副本不携带 config 面板 handler（见
+    # config_set_handlers.py 尾注），企业版读配置同样由管理面统一下发。
+    "config.get", "config.set", "config.save_all", "models.replace_all", "models.save",
     "models.remove", "models.set_active", "path.set", "updater.download",
     "updater.upgrade", "updater.reset_source", "updater.set_conf",
 })
