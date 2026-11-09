@@ -1389,7 +1389,116 @@ def _install_optional_dependency(
     # queue this install behind any other in-flight pip-based install. The
     # frozen managed-runtime path is per-agent and stays concurrent.
     with _OPTIONAL_DEPENDENCY_PIP_INSTALL_LOCK:
-        _run_optional_dependency_pip_install(cli_agent, package, required_module, force_reinstall)
+        # A local-project requirement installs the working tree at its own
+        # pyproject version: the host version may legitimately change, so the
+        # downgrade guard must stay off for that requirement shape.
+        _run_optional_dependency_pip_install(
+            cli_agent,
+            package,
+            required_module,
+            force_reinstall,
+            openjiuwen_guard=not _is_local_project_requirement(package),
+        )
+
+
+def _installed_openjiuwen_version() -> str | None:
+    """Return the installed openjiuwen version, or None when it is absent."""
+    try:
+        return importlib.metadata.version("openjiuwen")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _restore_openjiuwen_version(version: str) -> str:
+    """Best-effort reinstall of an openjiuwen version pip replaced.
+
+    Restores the package itself only (``--no-deps``): the surrounding
+    dependencies of the pre-install environment are still present, and a
+    restore that must re-resolve them — including openjiuwen's URL-pinned
+    dependencies — fails as a whole whenever git or the network is the reason
+    the install is already failing. The command goes through the same
+    installer selection as the original install so an uv-managed venv without
+    a pip module can still be restored.
+
+    Returns a human-readable outcome for the caller to log; failures only
+    downgrade to a warning because the primary error still needs to reach
+    the user.
+    """
+    args = _pip_like_install_command(
+        [f"openjiuwen=={version}"],
+        flags=["--no-deps"],
+    )
+    try:
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[external-cli] openjiuwen restore (%s) failed to run: %s", version, exc)
+        return f"restore failed to run: {exc}"
+    importlib.invalidate_caches()
+    restored = _installed_openjiuwen_version()
+    if completed.returncode == 0 and restored == version:
+        logger.info("[external-cli] openjiuwen restored to %s after an installer replaced it", version)
+        return "restored"
+    logger.warning(
+        "[external-cli] openjiuwen restore to %s failed (rc=%s, now=%s); output tail:\n%s",
+        version,
+        completed.returncode,
+        restored,
+        completed.stdout[-2000:] if completed.stdout else "",
+    )
+    return f"restore failed (rc={completed.returncode}, openjiuwen now {restored})"
+
+
+def _is_local_project_requirement(package: str) -> bool:
+    """True when ``package`` targets a local project instead of an index name.
+
+    ``_resolve_openjiuwen_extra_package`` returns either an index requirement
+    ("openjiuwen[extra]==<version>" / "openjiuwen[extra]") or a source-checkout
+    path ("<project-root>[extra]"). A local install builds the working tree at
+    its own pyproject version, which may legitimately differ from the
+    installed metadata — the downgrade guard must not fire for it.
+    """
+    return not package.strip().startswith("openjiuwen")
+
+
+def _ensure_openjiuwen_not_replaced(
+    cli_agent: str,
+    host_openjiuwen_version: str | None,
+    *,
+    openjiuwen_guard: bool = True,
+) -> str | None:
+    """Detect and reverse a pip run that replaced the host openjiuwen.
+
+    The resolver swaps openjiuwen during the "Installing collected packages"
+    phase, which precedes most failures and timeouts: the check must run on
+    every exit path, or a failed install leaves the deployment on the
+    unvetted release with no mention of it in the error.
+
+    Returns:
+        None when the guard is off or the host version is unchanged; otherwise
+        the replacement has already been reversed (best-effort) and a
+        diagnostic sentence for the caller to attach to its error is returned.
+    """
+    if not openjiuwen_guard or host_openjiuwen_version is None:
+        return None
+    importlib.invalidate_caches()
+    current_openjiuwen_version = _installed_openjiuwen_version()
+    if current_openjiuwen_version == host_openjiuwen_version:
+        return None
+    outcome = _restore_openjiuwen_version(host_openjiuwen_version)
+    return (
+        f"pip replaced openjiuwen {host_openjiuwen_version} with "
+        f"{current_openjiuwen_version} while resolving the {cli_agent} install "
+        f"(the {cli_agent} extra dependencies are probably unavailable on "
+        f"{_OPTIONAL_DEPENDENCY_INDEX_URL}); openjiuwen {host_openjiuwen_version}: {outcome}"
+    )
 
 
 def _run_optional_dependency_pip_install(
@@ -1397,9 +1506,15 @@ def _run_optional_dependency_pip_install(
     package: str,
     required_module: str,
     force_reinstall: bool,
+    openjiuwen_guard: bool = True,
 ) -> None:
     args = _build_optional_dependency_install_args(package, cli_agent, force_reinstall=force_reinstall)
     output_lines: list[str] = []
+    # The pip resolver may "satisfy" the command by replacing the running
+    # openjiuwen with another release (e.g. an index without the extra's SDK
+    # makes it backtrack to a release whose extra is empty). Record the host
+    # version so the damage is detected, reversed and reported below.
+    host_openjiuwen_version = _installed_openjiuwen_version()
     logger.info(
         "[external-cli] installing %s dependency: interpreter=%s command=%s",
         cli_agent,
@@ -1463,17 +1578,35 @@ def _run_optional_dependency_pip_install(
             process.kill()
             process.wait()
             reader.join(timeout=1)
+            # The killed installer may already have swapped the host
+            # openjiuwen — reverse it before surfacing the timeout.
+            replaced_note = _ensure_openjiuwen_not_replaced(
+                cli_agent,
+                host_openjiuwen_version,
+                openjiuwen_guard=openjiuwen_guard,
+            )
             logger.error(
                 "[external-cli] %s dependency install timed out after %ss; output tail:\n%s",
                 cli_agent,
                 _OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
                 "\n".join(output_lines[-20:]),
             )
-            raise RuntimeError(f"failed to install {cli_agent} dependency: timed out")
+            message = f"failed to install {cli_agent} dependency: timed out"
+            if replaced_note:
+                message = f"{message}; {replaced_note}"
+            raise RuntimeError(message)
 
     reader.join(timeout=1)
     returncode = process.wait()
     if returncode != 0:
+        # The failed installer may already have swapped the host openjiuwen
+        # (the swap happens before most install failures) — reverse it before
+        # surfacing the original failure, then report both.
+        replaced_note = _ensure_openjiuwen_not_replaced(
+            cli_agent,
+            host_openjiuwen_version,
+            openjiuwen_guard=openjiuwen_guard,
+        )
         output = "\n".join(output_lines[-20:])
         logger.error(
             "[external-cli] %s dependency install exited with code %s; output tail:\n%s",
@@ -1481,14 +1614,24 @@ def _run_optional_dependency_pip_install(
             returncode,
             output,
         )
-        raise RuntimeError(f"failed to install {cli_agent} dependency: {output}")
+        message = f"failed to install {cli_agent} dependency: {output}"
+        if replaced_note:
+            message = f"{message}; {replaced_note}"
+        raise RuntimeError(message)
     _update_external_cli_dependency_install_status(
         cli_agent,
         {
             "phase": "verifying",
         },
     )
+    replaced_note = _ensure_openjiuwen_not_replaced(
+        cli_agent,
+        host_openjiuwen_version,
+        openjiuwen_guard=openjiuwen_guard,
+    )
     importlib.invalidate_caches()
+    if replaced_note:
+        raise RuntimeError(f"failed to install {cli_agent} dependency: {replaced_note}")
     if importlib.util.find_spec(required_module) is None:
         # The installer reported success but the module is not importable from
         # the running interpreter — it almost certainly landed in a different
@@ -1511,6 +1654,23 @@ def _resolve_openjiuwen_codex_package() -> str:
 
 
 def _resolve_openjiuwen_extra_package(extra: str) -> str:
+    """Resolve the openjiuwen requirement that carries ``extra``.
+
+    Source checkout: return the local project path so the extra's
+    dependencies target the same tree the process runs from.
+
+    Installed distribution: lock the requirement to what is actually
+    installed. A bare ``openjiuwen[extra]`` lets pip backtrack across index
+    releases whenever the extra's dependencies are unavailable on the
+    configured index — it silently downgrades the running openjiuwen to a
+    release whose extra happens to be empty (observed: 0.1.20 -> 0.1.16 via
+    a mirror that does not host openai-codex). A git-sourced install is
+    pinned by URL + commit (the index may never publish that exact version,
+    so a version pin would be unsatisfiable during backtracking); an
+    index/wheel install falls back to pinning the installed version. Either
+    way the downgrade turns into a loud resolution error and the host stays
+    untouched.
+    """
     spec = importlib.util.find_spec("openjiuwen")
     if spec is None:
         return f"openjiuwen[{extra}]"
@@ -1527,7 +1687,39 @@ def _resolve_openjiuwen_extra_package(extra: str) -> str:
         if (project_root / "pyproject.toml").is_file() and (project_root / "openjiuwen").is_dir():
             return f"{project_root}[{extra}]"
 
-    return f"openjiuwen[{extra}]"
+    try:
+        dist = importlib.metadata.distribution("openjiuwen")
+    except importlib.metadata.PackageNotFoundError:
+        # openjiuwen is importable but has no distribution metadata (e.g. a
+        # non-standard source layout or a broken dist-info). No pin is
+        # available, so the requirement stays bare and the downgrade
+        # guard is off. Warn so this degraded mode shows up in deploy logs.
+        logger.warning(
+            "[external-cli] openjiuwen is importable but has no distribution metadata; "
+            "installing %s without a version pin",
+            extra,
+        )
+        return f"openjiuwen[{extra}]"
+
+    direct_url = None
+    try:
+        direct_url = json.loads(dist.read_text("direct_url.json") or "null")
+    except (OSError, TypeError, json.JSONDecodeError):
+        direct_url = None
+    if isinstance(direct_url, dict):
+        vcs_info = direct_url.get("vcs_info")
+        url = str(direct_url.get("url") or "")
+        if (
+            isinstance(vcs_info, dict)
+            and vcs_info.get("vcs") == "git"
+            and vcs_info.get("commit_id")
+            and url
+        ):
+            subdirectory = direct_url.get("subdirectory")
+            fragment = f"#subdirectory={subdirectory}" if subdirectory else ""
+            return f"openjiuwen[{extra}] @ git+{url}@{vcs_info['commit_id']}{fragment}"
+
+    return f"openjiuwen[{extra}]=={dist.version}"
 
 
 # Mirror for optional CLI SDK installs. The managed runtime installer (frozen
@@ -1538,6 +1730,39 @@ def _resolve_openjiuwen_extra_package(extra: str) -> str:
 _OPTIONAL_DEPENDENCY_INDEX_URL = os.getenv("PIP_INDEX_URL") or os.getenv("UV_INDEX_URL") or (
     "https://mirrors.aliyun.com/pypi/simple/"
 )
+
+
+def _pip_like_install_command(
+    requirements: list[str],
+    *,
+    flags: list[str] | None = None,
+) -> list[str]:
+    """Build a pip-compatible install command for the running interpreter.
+
+    Prefers ``uv pip`` bound to ``sys.executable`` when uv is on PATH: the
+    running environment may be an uv-managed venv without a pip module, in
+    which case ``python -m pip`` cannot work at all. Falls back to
+    ``python -m pip`` elsewhere. Both the SDK install and the openjiuwen
+    restore must go through this single choice so a restore never fails only
+    because it picked a different installer than the one that succeeded.
+    """
+    args_prefix: list[str]
+    uv_cmd = shutil.which("uv")
+    if uv_cmd and sys.prefix != sys.base_prefix:
+        # Pin the target interpreter: without --python, uv resolves its own
+        # environment (VIRTUAL_ENV / auto-discovery) which may differ from the
+        # running interpreter — the install then "succeeds" into the wrong
+        # venv and the follow-up find_spec check reports the SDK as missing.
+        args_prefix = [uv_cmd, "pip", "install", "--python", sys.executable]
+    else:
+        args_prefix = [sys.executable, "-m", "pip", "install"]
+    return [
+        *args_prefix,
+        "--index-url",
+        _OPTIONAL_DEPENDENCY_INDEX_URL,
+        *(flags or []),
+        *requirements,
+    ]
 
 
 def _openjiuwen_url_requirements(extra: str) -> list[str]:
@@ -1589,33 +1814,7 @@ def _build_optional_dependency_install_args(
     else:
         requirements = [package, *_openjiuwen_url_requirements(cli_agent), *pinned]
     reinstall_flags = ["--force-reinstall", "--no-deps"] if force_reinstall else []
-    uv_cmd = shutil.which("uv")
-    if uv_cmd and sys.prefix != sys.base_prefix:
-        # Pin the target interpreter: without --python, uv resolves its own
-        # environment (VIRTUAL_ENV / auto-discovery) which may differ from the
-        # running interpreter — the install then "succeeds" into the wrong
-        # venv and the follow-up find_spec check reports the SDK as missing.
-        return [
-            uv_cmd,
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--index-url",
-            _OPTIONAL_DEPENDENCY_INDEX_URL,
-            *reinstall_flags,
-            *requirements,
-        ]
-    return [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--index-url",
-        _OPTIONAL_DEPENDENCY_INDEX_URL,
-        *reinstall_flags,
-        *requirements,
-    ]
+    return _pip_like_install_command(requirements, flags=reinstall_flags)
 
 
 async def _clear_agent_config_cache(agent_client=None) -> None:

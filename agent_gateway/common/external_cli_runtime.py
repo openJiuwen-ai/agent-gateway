@@ -692,10 +692,13 @@ def pinned_sdk_requirements(cli_agent: str) -> list[str]:
     """
     try:
         manifest = _load_manifest()
-    except RuntimeError:
+    except RuntimeError as exc:
         # An unreadable manifest should not break source installs; fall back
-        # to the unpinned extra.
-        logger.debug("Falling back to unpinned %s SDK requirements", cli_agent)
+        # to the unpinned extra. Warn, not debug: the manifest is shipped with
+        # the package, so a miss means the deployment lost the SDK version
+        # pinning (e.g. a wheel built without the resources directory) and the
+        # install will resolve whatever the index lists as latest.
+        logger.warning("Falling back to unpinned %s SDK requirements: %s", cli_agent, exc)
         return []
     entry = _runtime_entries(manifest).get(cli_agent)
     if entry is None:

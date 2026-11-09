@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import json
 import importlib
 import os
 import sys
@@ -1875,6 +1876,343 @@ def test_optional_dependency_install_times_out_after_one_hour(
         app_web_handlers._install_optional_dependency("codex", "package", "openai_codex")
     assert process.killed is True
     assert process.waited is True
+
+
+def test_resolve_openjiuwen_extra_package_pins_git_install_by_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A git-installed openjiuwen must resolve to a URL+commit-pinned requirement.
+
+    A bare ``openjiuwen[extra]`` lets pip backtrack across index releases when
+    the extra's dependencies are unavailable, silently downgrading the running
+    openjiuwen (the 0.1.20 -> 0.1.16 downgrade incident). Git installs are
+    pinned by their source URL and commit: the index may never publish that
+    exact version, so a version pin would be unsatisfiable during
+    backtracking.
+    """
+    spec = SimpleNamespace(
+        origin="/venv/lib/site-packages/openjiuwen/__init__.py",
+        submodule_search_locations=["/venv/lib/site-packages/openjiuwen"],
+    )
+
+    class _Dist:
+        version = "0.1.20"
+
+        @staticmethod
+        def read_text(name):
+            if name == "direct_url.json":
+                return json.dumps({
+                    "url": "https://gitcode.com/openJiuwen/agent-core.git",
+                    "vcs_info": {"vcs": "git", "commit_id": "2f4bedb9c5d85ab70d7c79d36183e6a98799e94e"},
+                })
+            return None
+
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: spec)
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: _Dist())
+    assert (
+        app_web_handlers._resolve_openjiuwen_extra_package("codex")
+        == "openjiuwen[codex] @ git+https://gitcode.com/openJiuwen/agent-core.git"
+        "@2f4bedb9c5d85ab70d7c79d36183e6a98799e94e"
+    )
+
+
+def test_resolve_openjiuwen_extra_package_pins_index_install_by_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An index-installed openjiuwen (no direct_url) falls back to a version pin."""
+    spec = SimpleNamespace(
+        origin="/venv/lib/site-packages/openjiuwen/__init__.py",
+        submodule_search_locations=["/venv/lib/site-packages/openjiuwen"],
+    )
+
+    class _Dist:
+        version = "0.1.20"
+
+        @staticmethod
+        def read_text(_name):
+            return None
+
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: spec)
+    monkeypatch.setattr("importlib.metadata.distribution", lambda _name: _Dist())
+    assert app_web_handlers._resolve_openjiuwen_extra_package("codex") == "openjiuwen[codex]==0.1.20"
+
+
+def test_resolve_openjiuwen_extra_package_prefers_source_checkout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A source checkout keeps installing the local project, not an index release."""
+    repo = tmp_path / "agent-core"
+    (repo / "openjiuwen").mkdir(parents=True)
+    (repo / "pyproject.toml").write_text("[project]\nname = 'openjiuwen'\n", encoding="utf-8")
+    spec = SimpleNamespace(
+        origin=str(repo / "openjiuwen" / "__init__.py"),
+        submodule_search_locations=[str(repo / "openjiuwen")],
+    )
+    monkeypatch.setattr("importlib.util.find_spec", lambda _name: spec)
+    assert app_web_handlers._resolve_openjiuwen_extra_package("codex") == f"{repo}[codex]"
+
+
+def test_optional_dependency_install_restores_replaced_openjiuwen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pip run that swaps the host openjiuwen must fail loudly and restore it."""
+    stage = {"version": "0.1.20"}
+    restores: list[str] = []
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = iter([])
+            # Simulate the resolver replacing the host while "succeeding".
+            stage["version"] = "0.1.16"
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_build_optional_dependency_install_args",
+        lambda _package, _cli_agent, **_kwargs: ["installer"],
+    )
+    monkeypatch.setattr(app_web_handlers.subprocess, "Popen", lambda *_args, **_kwargs: _Process())
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_installed_openjiuwen_version",
+        lambda: stage["version"],
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_restore_openjiuwen_version",
+        lambda version: (restores.append(version), "restored")[1],
+    )
+    with pytest.raises(RuntimeError, match="pip replaced openjiuwen 0.1.20 with 0.1.16"):
+        app_web_handlers._run_optional_dependency_pip_install(
+            "codex",
+            "openjiuwen[codex]==0.1.20",
+            "openai_codex",
+            False,
+        )
+    assert restores == ["0.1.20"]
+
+
+def test_optional_dependency_install_failed_run_restores_replaced_openjiuwen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-zero pip exit must also reverse an already-applied replacement.
+
+    pip swaps openjiuwen during the install phase, before most failures: the
+    guard has to run on the failure path too, or the deployment stays on the
+    unvetted release and the error never mentions it.
+    """
+    stage = {"version": "0.1.20"}
+    restores: list[str] = []
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = iter(["some pip error\n"])
+            stage["version"] = "0.1.16"
+
+        def poll(self) -> int:
+            return 1
+
+        def wait(self) -> int:
+            return 1
+
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_build_optional_dependency_install_args",
+        lambda _package, _cli_agent, **_kwargs: ["installer"],
+    )
+    monkeypatch.setattr(app_web_handlers.subprocess, "Popen", lambda *_args, **_kwargs: _Process())
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_installed_openjiuwen_version",
+        lambda: stage["version"],
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_restore_openjiuwen_version",
+        lambda version: (restores.append(version), "restored")[1],
+    )
+    with pytest.raises(RuntimeError, match=r"some pip error.*pip replaced openjiuwen 0\.1\.20"):
+        app_web_handlers._run_optional_dependency_pip_install(
+            "codex",
+            "openjiuwen[codex]==0.1.20",
+            "openai_codex",
+            False,
+        )
+    assert restores == ["0.1.20"]
+
+
+def test_optional_dependency_install_timeout_restores_replaced_openjiuwen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out installer must also reverse an already-applied replacement.
+
+    The kill happens mid-install, after the resolver has already swapped the
+    host openjiuwen; the timeout raise must surface both the timeout and the
+    replacement, with the restore performed first.
+    """
+    stage = {"version": "0.1.20"}
+    restores: list[str] = []
+
+    process_holder: dict = {}
+
+    class _Process:
+        stdout = None
+
+        def __init__(self) -> None:
+            self.killed = False
+            # The resolver swaps the host before the watchdog fires. The
+            # instance is created at Popen time, i.e. after the host version
+            # was recorded, so the swap is visible to the guard.
+            stage["version"] = "0.1.16"
+
+        def poll(self) -> int | None:
+            return None
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self) -> int:
+            return 1
+
+    def fake_popen(*_args, **_kwargs):
+        process_holder["p"] = _Process()
+        return process_holder["p"]
+
+    class _Thread:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            return None
+
+        def join(self, *, timeout: float) -> None:
+            return None
+
+    monotonic_values = iter([10.0, 10.0 + app_web_handlers._OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS])
+    calling_thread = threading.current_thread()
+    real_monotonic = time.monotonic
+
+    def fake_monotonic() -> float:
+        if threading.current_thread() is calling_thread:
+            return next(monotonic_values)
+        return real_monotonic()
+
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_build_optional_dependency_install_args",
+        lambda _package, _cli_agent, **_kwargs: ["installer"],
+    )
+    monkeypatch.setattr(app_web_handlers.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(app_web_handlers.threading, "Thread", _Thread)
+    monkeypatch.setattr(app_web_handlers.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_installed_openjiuwen_version",
+        lambda: stage["version"],
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_restore_openjiuwen_version",
+        lambda version: (restores.append(version), "restored")[1],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"timed out; pip replaced openjiuwen 0\.1\.20 with 0\.1\.16",
+    ):
+        app_web_handlers._run_optional_dependency_pip_install(
+            "codex",
+            "openjiuwen[codex]==0.1.20",
+            "openai_codex",
+            False,
+        )
+    assert process_holder["p"].killed is True
+    assert restores == ["0.1.20"]
+
+
+def test_optional_dependency_install_local_project_skips_version_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source-checkout requirement may legitimately change the host version.
+
+    The local install builds the working tree at its own pyproject version;
+    treating that change as a replacement would roll the freshly installed
+    working tree back to an index release and fail a successful install.
+    """
+    stage = {"version": "0.1.20"}
+    restores: list[str] = []
+
+    class _Process:
+        def __init__(self) -> None:
+            self.stdout = iter([])
+            # The local build installs the working tree version, which differs
+            # from the previously installed metadata.
+            stage["version"] = "0.1.21"
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_find_spec(name: str):
+        if name == "openai_codex":
+            return object()
+        return None
+
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_build_optional_dependency_install_args",
+        lambda _package, _cli_agent, **_kwargs: ["installer"],
+    )
+    monkeypatch.setattr(app_web_handlers.subprocess, "Popen", lambda *_args, **_kwargs: _Process())
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_installed_openjiuwen_version",
+        lambda: stage["version"],
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "_restore_openjiuwen_version",
+        lambda version: (restores.append(version), "restored")[1],
+    )
+    monkeypatch.setattr("importlib.util.find_spec", fake_find_spec)
+    # The host version "changed" (0.1.20 -> 0.1.21), but the local-project
+    # requirement keeps the guard off: no restore, no error.
+    app_web_handlers._install_optional_dependency(
+        "codex",
+        "D:/agent-core[codex]",
+        "openai_codex",
+        False,
+    )
+    assert restores == []
+
+
+def test_managed_runtime_manifest_is_loadable() -> None:
+    """The shipped manifest must load so SDK installs keep their version pins.
+
+    Guards against a wheel built without the resources directory: the
+    manifest used to be silently missing from published packages, which
+    degraded every optional CLI install to unpinned resolution.
+    """
+    from agent_gateway.common.external_cli_runtime import _load_manifest
+
+    manifest = _load_manifest()
+    entries = {
+        **manifest.get("agents", {}),
+        **manifest.get("providers", {}),
+    }
+    assert "codex" in entries
+    assert "claude" in entries
 
 
 @pytest.mark.asyncio
