@@ -103,12 +103,7 @@ def _lease_still_held(status: Any, expires_at: Any, now: float) -> bool:
     return float(expires_at) > now
 
 def _row_occupies(row: dict[str, Any], now: float) -> bool:
-    if row.get("status") == STATUS_COMMITTED:
-        return True
-    expires_at = row.get("expires_at")
-    if expires_at is None:
-        return True
-    return float(expires_at) > now
+    return _lease_still_held(row.get("status"), row.get("expires_at"), now)
 
 DEFAULT_LEADER_MEMBER_NAME = "team-leader"
 
@@ -460,7 +455,7 @@ class TeamQuotaPolicyStore:
                 payload["match_expr"] = json.dumps(expr, ensure_ascii=False)
                 data = payload["data"]
                 payload["data"] = None if data is None else json.dumps(data, ensure_ascii=False)
-                payload["enabled"] = 1 if enabled else 0
+                payload["enabled"] = bool(enabled)
                 payload["created_at"] = now_mysql
                 payload["updated_at"] = now_mysql
 

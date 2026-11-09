@@ -198,8 +198,12 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
 
 
 def _row_occupies(row: dict[str, Any], now: float) -> bool:
-    if row.get("status") == STATUS_COMMITTED:
+    """Committed, or reserved and not yet expired."""
+    status = row.get("status")
+    if status == STATUS_COMMITTED:
         return True
+    if status != STATUS_RESERVED:
+        return False
     expires_at = row.get("expires_at")
     if expires_at is None:
         return True
@@ -232,7 +236,7 @@ class TeamQuotaPolicyService:
             "max_teams_per_user": int(req.max_teams_per_user),
             "max_teammates_per_team": int(req.max_teammates_per_team),
             "max_teams_per_org": int(req.max_teams_per_org),
-            "enabled": 1 if req.enabled else 0,
+            "enabled": bool(req.enabled),
             "source": req.source,
             "data": None,
             "created_at": now_mysql,
