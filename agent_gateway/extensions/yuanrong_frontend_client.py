@@ -840,6 +840,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             last_status = ""
             not_found_count = 0
             all_observations_not_found = True
+            marker_missing_logged = False
             # Only GET poll retries share one id; every other YuanRong call mints.
             poll_trace_id = bind_southbound_trace_id(
                 inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id
@@ -876,10 +877,6 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                     last_error = None
                     all_observations_not_found = False
                 except YuanrongAgentApiError as exc:
-                    if expected_generation is not None and not isinstance(
-                        exc, YuanrongAgentNotFoundError
-                    ):
-                        raise
                     last_error = exc
                     if isinstance(exc, YuanrongAgentNotFoundError):
                         not_found_count += 1
@@ -897,24 +894,31 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                         status if status in _AGENT_FAILED_STATUSES
                         or status == _AGENT_RUNNING_STATUS else "other",
                     )
-                generation_matches = True
                 if expected_generation is not None:
                     env_vars = instance.get("env_vars")
                     actual = (
                         env_vars.get(AGENT_GENERATION_ENV)
                         if isinstance(env_vars, Mapping) else None
                     )
-                    generation_matches = actual == expected_generation
-                    if actual is not None and not generation_matches:
+                    if actual is None:
+                        # The ID comes from a per-generation name, so status alone is still safe.
+                        if instance and not marker_missing_logged:
+                            logger.warning(
+                                "[YuanrongFrontendAgentClient] generation marker missing, "
+                                "falling back to status: instance_id=%s",
+                                normalized_id,
+                            )
+                            marker_missing_logged = True
+                    elif actual != expected_generation:
                         raise YuanrongAgentGenerationMismatchError(
                             f"agent instance generation mismatch: instance_id={normalized_id}"
                         )
-                if generation_matches and status in _AGENT_FAILED_STATUSES:
+                if status in _AGENT_FAILED_STATUSES:
                     raise YuanrongAgentFailedError(
                         f"agent instance failed: instance_id={normalized_id}, "
                         f"status={status}"
                     )
-                if generation_matches and _is_agent_running(instance):
+                if _is_agent_running(instance):
                     logger.info(
                         "[YuanrongFrontendAgentClient] instance running after GET poll: "
                         "instance_id=%s attempt=%s status=%s trace_id=%s",
@@ -1627,10 +1631,11 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         if not isinstance(parsed, dict) or parsed.get("code") not in (404, "404"):
             return False
         message = str(parsed.get("message") or "").strip().casefold()
-        return message in (
-            f"instance not found: {instance_id}".strip().casefold(),
-            "instance not found or not running",
-        )
+        if not message.startswith("instance not found"):
+            return False
+        # A message that names an instance must name this one.
+        named = message.partition(":")[2].strip()
+        return not named or named == instance_id.strip().casefold()
 
     def _urlopen_request(
         self,

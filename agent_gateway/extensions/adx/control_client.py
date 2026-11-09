@@ -127,6 +127,7 @@ class AdxControlClient:
         expected_generation: str | None = None,
         deadline: float | None = None,
     ) -> dict:
+        # The Environment ID embeds the generation in its name, so it cannot belong to another one.
         del trace_id, expected_generation
         try:
             timeout = (

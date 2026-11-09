@@ -1235,19 +1235,33 @@ async def test_wait_rejects_stale_generation_and_accepts_matching(monkeypatch):
     assert (await c.wait_until_running("instance", expected_generation="new"))["status"] == "running"
 
 
-async def test_wait_missing_marker_does_not_accept_running_or_fail_old_instance(monkeypatch):
+async def test_wait_missing_marker_falls_back_to_status(monkeypatch):
     c = _generation_client()
-    for status in ("running", "failed"):
-        async def get(*args, **kwargs):
-            return {"status": status}
-        monkeypatch.setattr(c, "get_agent_info", get)
-        with pytest.raises(YuanrongAgentTimeoutError):
+    async def running(*args, **kwargs):
+        return {"status": "running"}
+    monkeypatch.setattr(c, "get_agent_info", running)
+    assert (await c.wait_until_running("instance", expected_generation="new"))["status"] == "running"
+    for env_vars in (None, {AGENT_GENERATION_ENV: "new"}):
+        async def failed(*args, env_vars=env_vars, **kwargs):
+            return {"status": "failed", "env_vars": env_vars}
+        monkeypatch.setattr(c, "get_agent_info", failed)
+        with pytest.raises(YuanrongAgentFailedError):
             await c.wait_until_running("instance", expected_generation="new")
-    async def failed(*args, **kwargs):
-        return {"status": "failed", "env_vars": {AGENT_GENERATION_ENV: "new"}}
-    monkeypatch.setattr(c, "get_agent_info", failed)
-    with pytest.raises(YuanrongAgentFailedError):
-        await c.wait_until_running("instance", expected_generation="new")
+
+
+async def test_wait_with_generation_keeps_polling_after_query_error(monkeypatch):
+    c = _generation_client()
+    replies = iter([
+        YuanrongAgentApiError("agent API failed: http_status=503"),
+        {"status": "running", "env_vars": {AGENT_GENERATION_ENV: "new"}},
+    ])
+    async def get(*args, **kwargs):
+        reply = next(replies)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+    monkeypatch.setattr(c, "get_agent_info", get)
+    assert (await c.wait_until_running("instance", expected_generation="new"))["status"] == "running"
 
 
 async def test_wait_polls_absence_and_limits_slow_get(monkeypatch):
@@ -1426,16 +1440,18 @@ async def test_get_and_delete_share_case_insensitive_absence_handling(monkeypatc
     for message in (
         "instance not found: instance",
         "Instance not found or not running",
+        "instance not found",
+        "Instance not found.",
     ):
         monkeypatch.setattr(c, "_do_agent_get", lambda *args, m=message: (
             404, json.dumps({"code": 404, "message": m}),
         ))
         with pytest.raises(YuanrongAgentNotFoundError):
             await c.get_agent_info("instance")
-    monkeypatch.setattr(c, "_do_agent_delete", lambda *args: (
-        404, '{"code":404,"message":"Instance not found or not running"}'
-    ))
-    await c.delete_sandbox("instance")
+        monkeypatch.setattr(c, "_do_agent_delete", lambda *args, m=message: (
+            404, json.dumps({"code": 404, "message": m}),
+        ))
+        await c.delete_sandbox("instance")
 
 
 async def test_top_level_env_vars_are_promoted_for_generation_wait(monkeypatch):
