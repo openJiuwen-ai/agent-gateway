@@ -280,7 +280,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 3.5 身份、鉴权与多用户隔离
 
-- **单用户部署**：无握手鉴权、无 user_id 隔离；Gateway 与 AgentServer 共享 `~/.jiuwenswarm/` 数据目录，部分接口有本地 fallback（如 `session.list` 在 AgentServer 离线时直读本地目录，`app_web_handlers.py:2779-2802`）。
+- **单用户部署**：无握手鉴权、无 user_id 隔离；Gateway 与 AgentServer 共享 `~/.jiuwenswarm/` 数据目录（旧基线 `session.list` 等接口在 AgentServer 离线时读本地目录的 fallback 已删除，现统一 E2A，见 §6.1）。
 - **AgentOS 多用户部署**：`AgentOSRouterClient` 按连接 user_id（username）把 E2A 请求路由到每用户独立的 AgentServer 运行时（工作区 `/home/agentos/users/<username>`，`extensions/agentos/agentos_router/router_client.py:450-462`）。**数据隔离靠"每用户一个注入目录的 AgentServer"实现**，session/project/team 数据天然只落在该用户目录。
 - **越权表现**：跨用户访问通常表现为 `NOT_FOUND`（查不到）；明确拒绝的：cron/heartbeat 归属校验 `FORBIDDEN`/`NOT_FOUND`、`/file-api` 的 `USER_MISMATCH`(403)、group 的 ownership 校验（以 `NOT_FOUND` 隐藏存在性）。
 - **登录模型凭据**：`credential_ref` 与路由 user_id 是两套体系；凭据只能来自服务端登录会话（`_auth_session` 无条件覆盖客户端传值，`app_web_handlers.py:4883`）。登出时经 `auth.credentials.update` 撤销 AgentServer 侧凭据（`web_http_auth.py:140-152`）。
