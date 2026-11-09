@@ -29,6 +29,10 @@ _LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
 })
 
 _ENTERPRISE_BLOCKED_EXACT = frozenset({
+    # config.get 不拦截：企业版（RuntimeRouted/无 client/legacy 共享目录）由
+    # app_web_handlers._register_config_proxy 注册的本地 handler
+    # （config_set_handlers.config_get_handler）直接读 gateway 配置下发开关；
+    # 只拦写操作——config.set/save_all 仍由管理面统一下发。
     "config.set", "config.save_all", "models.replace_all", "models.save",
     "models.remove", "models.set_active", "path.set", "updater.download",
     "updater.upgrade", "updater.reset_source", "updater.set_conf",

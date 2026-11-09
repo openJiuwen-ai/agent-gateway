@@ -89,10 +89,18 @@ def _require_redis_client() -> Any:
 
 
 def _create_ephemeral_factory():
-    if not is_enterprise():
+    # 个人版、以及轻量单机形态（jiuwenswarm-ee-light，显式
+    # GATEWAY_EPHEMERAL_BACKEND=memory）都走内存后端（无 Redis 依赖；
+    # 单机单进程语义等价：session_sharing/cron 瞬态本就进程内可见）；
+    # 企业版默认仍走 Redis。
+    if not is_enterprise() or (
+        (os.getenv("GATEWAY_EPHEMERAL_BACKEND") or "").strip().lower() == "memory"
+    ):
         def memory_factory(namespace: str) -> EphemeralStore:
             return MemoryEphemeralBackend(namespace)
 
+        logger.info("[StorageAssembly] ephemeral: in-memory backend "
+                    "(personal edition or GATEWAY_EPHEMERAL_BACKEND=memory)")
         return memory_factory
 
     from agent_gateway.storage.backends.redis_ephemeral import RedisEphemeralBackend
