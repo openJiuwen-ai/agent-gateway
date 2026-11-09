@@ -17,12 +17,12 @@ from typing import Any
 from sqlalchemy import text
 
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
-from agent_gateway.enterprise.db.team_mysql_actor import (
-    get_team_mysql_actor,
+from agent_gateway.enterprise.db.team_store_actor import (
+    get_team_store_actor,
     list_record_dicts,
     run_team_store,
     run_tx,
-    use_team_mysql,
+    use_shared_team_store,
 )
 
 from ...schemas.quota_schemas import TeamQuotaPolicyUpsertRequest
@@ -225,9 +225,9 @@ def _row_occupies(row: dict[str, Any], now: float) -> bool:
 
 
 def _require_mysql() -> Any:
-    if not use_team_mysql():
+    if not use_shared_team_store():
         raise RuntimeError("team quota management requires the enterprise database")
-    return get_team_mysql_actor()
+    return get_team_store_actor()
 
 
 class TeamQuotaPolicyService:

@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""同步 Store 与 Gateway MySQL 之间的单线程连接。
+"""同步 Store 与 Gateway 主库之间的单线程连接。
 
-aiomysql 连接绑在创建它的 event loop 上。控制面和路由 Store 的方法仍是同步的，
+连接绑在创建它的 event loop 上。控制面和路由 Store 的方法仍是同步的，
 所以每个进程只开一条后台线程，所有 SQL 都投到这条线程上执行。
 不复用 Gateway 主 loop 上的 ``Database.current()``，避免跨 loop 用同一条连接。
+MySQL 族（含 MariaDB）和 PostgreSQL 都走这条连接，数据库类型由 ``team_store_db_type`` 决定。
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 _START_TIMEOUT_SEC = 30.0
 _CANCEL_GRACE_SEC = 1.0
 
-_actor: "TeamMysqlActor | None" = None
+_actor: "TeamStoreActor | None" = None
 _actor_lock = threading.Lock()
 
 
@@ -38,17 +39,55 @@ def _gateway_db_kind() -> str:
     return str(get_settings().gateway_db_type or "").strip().lower()
 
 
-def use_team_mysql() -> bool:
-    """三张控制面表是否走 Gateway MySQL。
+def team_store_db_type() -> str:
+    """已支持的团队数据库类型：``mysql``（含 MariaDB）或 ``postgres``。
 
-    ``postgresql``、``postgres``、``pg`` 与 ``sqlite`` 一样返回 False，不抛错。
-    团队表只在类型为 ``mysql`` 时使用 ``MySQLHandler``。
+    不是这两种数据库类型时直接失败，并写明当前 ``GATEWAY_DB_TYPE``。
     """
-    return _gateway_db_kind() == "mysql"
+    from openjiuwen_runtime.foundation.db.utils import is_mysql, is_postgresql
+
+    kind = _gateway_db_kind()
+    if is_mysql(kind):
+        return "mysql"
+    if is_postgresql(kind):
+        return "postgres"
+    shown = kind or "(empty)"
+    raise RuntimeError(f"unsupported team store GATEWAY_DB_TYPE={shown}")
 
 
-class TeamMysqlActor:
-    """进程内唯一的 MySQL 连接线程。"""
+def json_value_expr(param: str) -> str:
+    """SQL for a JSON text parameter.
+
+    PostgreSQL json columns need a cast. MariaDB rejects ``CAST(... AS json)``
+    and stores these columns as text, so the MySQL family binds the text as-is.
+    """
+    name = str(param or "").strip().lstrip(":")
+    if not name:
+        raise ValueError("json parameter name is required")
+    if team_store_db_type() == "postgres":
+        return f"CAST(:{name} AS json)"
+    return f":{name}"
+
+
+def use_shared_team_store() -> bool:
+    """企业版团队表是否跟 Gateway 主库走同一份库。
+
+    数据库类型支持主库就走主库。个人版和单测里未登记的类型仍走 SQLite。
+    企业版遇到未登记类型时失败，不再退回各进程自己的 SQLite。
+    """
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    try:
+        team_store_db_type()
+    except RuntimeError:
+        if is_enterprise():
+            raise
+        return False
+    return True
+
+
+class TeamStoreActor:
+    """进程内唯一的主库连接线程。"""
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -60,8 +99,8 @@ class TeamMysqlActor:
 
     def start(self) -> None:
         """连上库并建好三张控制面表。失败时异常直接抛出。"""
-        if not use_team_mysql():
-            raise RuntimeError("team control actor requires GATEWAY_DB_TYPE=mysql")
+        if not use_shared_team_store():
+            raise RuntimeError("team control actor requires a shared team store")
         if self._ready:
             return
         with self._start_lock:
@@ -71,7 +110,7 @@ class TeamMysqlActor:
             thread = threading.Thread(
                 target=self._run_loop,
                 args=(loop,),
-                name="team-mysql",
+                name="team-store",
                 daemon=True,
             )
             self._loop = loop
@@ -84,10 +123,10 @@ class TeamMysqlActor:
     def call(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
         """在连接线程上执行协程并等结果。"""
         if not self._ready or self._loop is None or self._thread is None:
-            raise RuntimeError("Team MySQL actor is not started")
+            raise RuntimeError("Team store actor is not started")
         if threading.current_thread() is self._thread:
             raise RuntimeError(
-                "TeamMysqlActor.call cannot be reentered from the MySQL thread"
+                "TeamStoreActor.call cannot be reentered from the store thread"
             )
         task_box: dict[str, asyncio.Task[Any]] = {}
 
@@ -101,7 +140,7 @@ class TeamMysqlActor:
         except TimeoutError as exc:
             self._abandon_timed_out_call(fut, task_box.get("task"))
             raise TimeoutError(
-                f"TeamMysqlActor.call timed out after {self._call_timeout:.0f}s"
+                f"TeamStoreActor.call timed out after {self._call_timeout:.0f}s"
             ) from exc
 
     def _abandon_timed_out_call(self, fut: Any, task: asyncio.Task[Any] | None) -> None:
@@ -113,14 +152,14 @@ class TeamMysqlActor:
         try:
             fut.result(timeout=_CANCEL_GRACE_SEC)
         except TimeoutError:
-            logger.warning("[TeamMysql] timed out call did not cancel; reconnecting")
+            logger.warning("[TeamStore] timed out call did not cancel; reconnecting")
             self._reconnect()
         except (asyncio.CancelledError, Exception):
             if task is not None and not task.done():
-                logger.warning("[TeamMysql] timed out call still running; reconnecting")
+                logger.warning("[TeamStore] timed out call still running; reconnecting")
                 self._reconnect()
             else:
-                logger.debug("[TeamMysql] timed out call cancelled", exc_info=True)
+                logger.debug("[TeamStore] timed out call cancelled", exc_info=True)
 
     def _reconnect(self) -> None:
         if self._loop is None:
@@ -129,7 +168,7 @@ class TeamMysqlActor:
         try:
             reset.result(timeout=_START_TIMEOUT_SEC)
         except Exception:
-            logger.exception("[TeamMysql] reconnect after abandoned call failed")
+            logger.exception("[TeamStore] reconnect after abandoned call failed")
 
     async def _replace_handler(self) -> None:
         """Drop the connection a cancelled query may still hold, then connect again."""
@@ -139,23 +178,21 @@ class TeamMysqlActor:
             try:
                 await old.disconnect()
             except Exception:
-                logger.exception("[TeamMysql] disconnect abandoned handler failed")
+                logger.exception("[TeamStore] disconnect abandoned handler failed")
                 engine = getattr(old, "engine", None)
                 if engine is not None:
                     try:
                         await engine.dispose()
                     except Exception:
-                        logger.exception("[TeamMysql] dispose abandoned engine failed")
+                        logger.exception("[TeamStore] dispose abandoned engine failed")
         await self._init()
 
-    @staticmethod
-    def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
+    def _run_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
     async def _init(self) -> None:
         from openjiuwen_runtime.foundation.db.engine_options import get_command_timeout
-        from openjiuwen_runtime.foundation.db.mysql_handler import MySQLHandler
 
         from agent_gateway.config.enterprise.tables.team_control_models import (
             TEAM_CONTROL_TABLES,
@@ -168,13 +205,30 @@ class TeamMysqlActor:
 
         cfg = get_settings()
         self._call_timeout = float(get_command_timeout()) + 5.0
-        handler = MySQLHandler(
-            host=str(cfg.gateway_db_host).strip(),
-            port=int(cfg.gateway_db_port),
-            user=str(cfg.gateway_db_user).strip(),
-            password=str(cfg.gateway_db_password),
-            database=str(cfg.gateway_db_name).strip(),
-        )
+        db_type = team_store_db_type()
+        if db_type == "postgres":
+            from openjiuwen_runtime.foundation.db.postgresql_handler import (
+                PostgreSQLHandler,
+            )
+
+            handler = PostgreSQLHandler(
+                host=str(cfg.gateway_db_host).strip(),
+                port=int(cfg.gateway_db_port),
+                database=str(cfg.gateway_db_name).strip(),
+                schema=str(cfg.gateway_pg_schema).strip(),
+                user=str(cfg.gateway_db_user).strip(),
+                password=str(cfg.gateway_db_password),
+            )
+        else:
+            from openjiuwen_runtime.foundation.db.mysql_handler import MySQLHandler
+
+            handler = MySQLHandler(
+                host=str(cfg.gateway_db_host).strip(),
+                port=int(cfg.gateway_db_port),
+                user=str(cfg.gateway_db_user).strip(),
+                password=str(cfg.gateway_db_password),
+                database=str(cfg.gateway_db_name).strip(),
+            )
         await handler.init_database()
         await handler.connect()
         for table_def in (*TEAM_CONTROL_TABLES, *TEAM_QUOTA_TABLES):
@@ -182,20 +236,16 @@ class TeamMysqlActor:
         await ensure_team_quota_org_column(handler.get_engine())
         self._handler = handler
         logger.info(
-            "[TeamMysql] connected %s:%s/%s",
+            "[TeamStore] connected %s:%s/%s",
             cfg.gateway_db_host,
             cfg.gateway_db_port,
             cfg.gateway_db_name,
         )
 
     @property
-    def ready(self) -> bool:
-        return self._ready
-
-    @property
     def handler(self) -> Any:
         if self._handler is None:
-            raise RuntimeError("Team MySQL handler is not connected")
+            raise RuntimeError("Team store handler is not connected")
         return self._handler
 
 
@@ -206,7 +256,7 @@ async def run_team_store(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -
     that wait is moved to a worker thread so ``/health`` can still be served.
     Personal SQLite and callers without a running loop stay on this thread.
     """
-    if not use_team_mysql():
+    if not use_shared_team_store():
         return fn(*args, **kwargs)
     try:
         asyncio.get_running_loop()
@@ -215,22 +265,22 @@ async def run_team_store(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -
     return await asyncio.to_thread(fn, *args, **kwargs)
 
 
-def get_team_mysql_actor() -> TeamMysqlActor:
+def get_team_store_actor() -> TeamStoreActor:
     """返回已连上库的 actor。第一次调用会阻塞到建表完成。"""
     global _actor
-    if _actor is not None and _actor.ready:
+    if _actor is not None and _actor._ready:
         return _actor
     with _actor_lock:
-        if _actor is not None and _actor.ready:
+        if _actor is not None and _actor._ready:
             return _actor
-        actor = TeamMysqlActor()
+        actor = TeamStoreActor()
         actor.start()
         _actor = actor
         return actor
 
 
-def reset_team_mysql_actor() -> None:
-    """测试用：丢掉进程内 actor，下次 ``get_team_mysql_actor`` 重新连接。"""
+def reset_team_store_actor() -> None:
+    """测试用：丢掉进程内 actor，下次 ``get_team_store_actor`` 重新连接。"""
     global _actor
     with _actor_lock:
         _actor = None
@@ -241,17 +291,22 @@ def is_unique_violation(exc: BaseException) -> bool:
     args = getattr(orig, "args", ())
     if args and args[0] in (1062, "1062"):
         return True
-    return "Duplicate entry" in str(orig)
+    if "Duplicate entry" in str(orig):
+        return True
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate is None:
+        sqlstate = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+    return str(sqlstate or "") == "23505"
 
 
 _LIST_PAGE = 500
 
 
 def record_to_dict(record: Any) -> dict[str, Any]:
-    """Turn one ``MySQLHandler`` row into the dict shape raw SQL used to return."""
+    """Turn one handler row into the dict shape raw SQL used to return."""
     table = getattr(record, "__table__", None)
     if table is None:
-        raise TypeError("MySQL handler record has no table")
+        raise TypeError("handler record has no table")
     return {column.name: getattr(record, column.name) for column in table.columns}
 
 

@@ -347,9 +347,9 @@ class TeamQuotaPolicyStore:
     def _use_mysql(self) -> bool:
         if self._sqlite_path is not None:
             return False
-        from agent_gateway.enterprise.db.team_mysql_actor import use_team_mysql
+        from agent_gateway.enterprise.db.team_store_actor import use_shared_team_store
 
-        return use_team_mysql()
+        return use_shared_team_store()
 
     def use_mysql(self) -> bool:
         return self._use_mysql()
@@ -374,9 +374,9 @@ class TeamQuotaPolicyStore:
 
     @staticmethod
     def _mysql():
-        from agent_gateway.enterprise.db.team_mysql_actor import get_team_mysql_actor
+        from agent_gateway.enterprise.db.team_store_actor import get_team_store_actor
 
-        return get_team_mysql_actor()
+        return get_team_store_actor()
 
     def resolve_limits(self, identity: OwnerIdentity) -> QuotaLimits:
         return self._limits_for_rows(self.list_policies(), identity)
@@ -403,7 +403,7 @@ class TeamQuotaPolicyStore:
 
     def list_policies(self) -> list[dict[str, Any]]:
         if self._use_mysql():
-            from agent_gateway.enterprise.db.team_mysql_actor import list_record_dicts
+            from agent_gateway.enterprise.db.team_store_actor import list_record_dicts
 
             actor = self._mysql()
             return actor.call(
@@ -448,7 +448,7 @@ class TeamQuotaPolicyStore:
         if self._use_mysql():
             from sqlalchemy import text
 
-            from agent_gateway.enterprise.db.team_mysql_actor import run_tx
+            from agent_gateway.enterprise.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -521,7 +521,7 @@ class TeamQuotaPolicyStore:
         if self._use_mysql():
             from sqlalchemy import text
 
-            from agent_gateway.enterprise.db.team_mysql_actor import run_tx
+            from agent_gateway.enterprise.db.team_store_actor import run_tx
 
             actor = self._mysql()
 
@@ -606,7 +606,7 @@ class TeamQuotaPolicyStore:
     def _list_occupying(self, kind: str, team_id: str = "") -> list[dict[str, Any]]:
         now = _now()
         if self._use_mysql():
-            from agent_gateway.enterprise.db.team_mysql_actor import list_record_dicts
+            from agent_gateway.enterprise.db.team_store_actor import list_record_dicts
 
             actor = self._mysql()
             filters: dict[str, Any] = {

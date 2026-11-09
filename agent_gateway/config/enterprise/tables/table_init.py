@@ -45,7 +45,7 @@ from .template_models import (
     EXPERT_PACKAGE_TEMPLATE_TABLE_DEF,
 )
 
-# Team control and quota tables are created by TeamMysqlActor.start().
+# Team control and quota tables are created by TeamStoreActor.start().
 # Initializing them here as well takes a metadata lock while a chat
 # pre-reserve transaction is open on the same tables.
 ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (

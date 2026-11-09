@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""MySQL 上的团队路由绑定。upsert 在一条事务里完成，代替进程锁。"""
+"""主库上的团队路由绑定。upsert 在一条事务里完成，代替进程锁。"""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
+from agent_gateway.enterprise.db.team_store_actor import (
+    fetch_all,
+    fetch_one,
+    get_team_store_actor,
+    is_unique_violation,
+    run_tx,
+)
 from agent_gateway.enterprise.team.route_binding_store import (
     ROUTE_STATUS_ACTIVE,
     TeamRouteBinding,
-)
-from agent_gateway.enterprise.db.team_mysql_actor import (
-    get_team_mysql_actor,
-    is_unique_violation,
-    list_record_dicts,
-    record_to_dict,
-    run_tx,
 )
 
 
@@ -87,19 +87,17 @@ def _params(binding: TeamRouteBinding) -> dict[str, Any]:
     }
 
 
-class MysqlTeamRouteBindingStore:
-    """``TeamRouteBindingStore`` backed by the shared MySQL actor."""
+class SharedTeamRouteBindingStore:
+    """``TeamRouteBindingStore`` backed by the shared team store."""
 
     def __init__(self) -> None:
-        get_team_mysql_actor()
+        get_team_store_actor()
 
-    @staticmethod
-    def _handler() -> Any:
-        return get_team_mysql_actor().handler
+    def _handler(self) -> Any:
+        return get_team_store_actor().handler
 
-    @staticmethod
-    def _run(coro_fn: Any) -> Any:
-        return get_team_mysql_actor().call(coro_fn)
+    def _run(self, coro_fn: Any) -> Any:
+        return get_team_store_actor().call(coro_fn)
 
     def get_by_session(self, team_session_id: str) -> TeamRouteBinding | None:
         sid = _clean(team_session_id)
@@ -107,11 +105,11 @@ class MysqlTeamRouteBindingStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            record = await self._handler().get(
-                "team_route_binding",
-                {"team_session_id": sid},
+            return await fetch_one(
+                self._handler(),
+                "SELECT * FROM team_route_binding WHERE team_session_id = :sid",
+                {"sid": sid},
             )
-            return record_to_dict(record) if record is not None else None
 
         row = self._run(_op)
         return _binding_from_row(row) if row else None
@@ -122,14 +120,12 @@ class MysqlTeamRouteBindingStore:
             return None
 
         async def _op() -> dict[str, Any] | None:
-            rows = await list_record_dicts(
+            return await fetch_one(
                 self._handler(),
-                "team_route_binding",
-                filters={"team_id": tid},
-                order_by=[("updated_at", True)],
-                limit=1,
+                "SELECT * FROM team_route_binding WHERE team_id = :tid "
+                "ORDER BY updated_at DESC LIMIT 1",
+                {"tid": tid},
             )
-            return rows[0] if rows else None
 
         row = self._run(_op)
         return _binding_from_row(row) if row else None
@@ -252,10 +248,15 @@ class MysqlTeamRouteBindingStore:
         now = time.time()
 
         async def _op() -> None:
-            await self._handler().update(
-                "team_route_binding",
-                {"team_session_id": sid},
-                {"last_heartbeat_at": now},
+            await run_tx(
+                self._handler(),
+                lambda conn: conn.execute(
+                    text(
+                        "UPDATE team_route_binding SET last_heartbeat_at = :now "
+                        "WHERE team_session_id = :sid"
+                    ),
+                    {"now": now, "sid": sid},
+                ),
             )
 
         self._run(_op)
@@ -266,16 +267,22 @@ class MysqlTeamRouteBindingStore:
             return None
         now = time.time()
 
-        async def _op() -> dict[str, Any] | None:
-            updated = await self._handler().update(
-                "team_route_binding",
-                {"team_session_id": sid},
-                {"status": status, "updated_at": now},
+        async def _op() -> int:
+            result = await run_tx(
+                self._handler(),
+                lambda conn: conn.execute(
+                    text(
+                        "UPDATE team_route_binding SET status = :status, updated_at = :now "
+                        "WHERE team_session_id = :sid"
+                    ),
+                    {"status": status, "now": now, "sid": sid},
+                ),
             )
-            return record_to_dict(updated) if updated is not None else None
+            return int(result.rowcount or 0)
 
-        row = self._run(_op)
-        return _binding_from_row(row) if row else None
+        if self._run(_op) == 0:
+            return None
+        return self.get_by_session(sid)
 
     def delete(self, team_session_id: str) -> bool:
         sid = _clean(team_session_id)
@@ -283,21 +290,23 @@ class MysqlTeamRouteBindingStore:
             return False
 
         async def _op() -> bool:
-            return bool(
-                await self._handler().delete(
-                    "team_route_binding",
-                    {"team_session_id": sid},
-                )
+            result = await run_tx(
+                self._handler(),
+                lambda conn: conn.execute(
+                    text("DELETE FROM team_route_binding WHERE team_session_id = :sid"),
+                    {"sid": sid},
+                ),
             )
+            return int(result.rowcount or 0) > 0
 
         return bool(self._run(_op))
 
     def list_all(self) -> list[TeamRouteBinding]:
         async def _op() -> list[dict[str, Any]]:
-            return await list_record_dicts(
+            return await fetch_all(
                 self._handler(),
-                "team_route_binding",
-                order_by=[("updated_at", True)],
+                "SELECT * FROM team_route_binding ORDER BY updated_at DESC",
+                {},
             )
 
         return [_binding_from_row(row) for row in self._run(_op)]
