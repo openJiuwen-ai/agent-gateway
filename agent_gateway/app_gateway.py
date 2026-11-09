@@ -358,7 +358,8 @@ async def _normalize_and_forward_message(msg, channel_manager) -> bool:
     # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
     # 调用方传真实 project_id + 合法但不匹配的 work_mode 时,AgentServer 侧
     # _work_mode_explicit marker 缺失,不会返回设计要求的 BAD_REQUEST。
-    method_val = method_value(getattr(msg, "req_method", None))
+    req_method = getattr(msg, "req_method", None)
+    method_val = method_value(req_method) if req_method is not None else ""
     if method_val == "session.create":
         _inject_session_work_mode(normalized)
     await channel_manager.deliver_to_message_handler(normalized)
@@ -2522,7 +2523,8 @@ async def _run(
             local_only_methods: set[str] | frozenset[str] = frozenset(),
     ):
         async def _norm_and_forward(msg: Message) -> bool:
-            method_val = method_value(getattr(msg, "req_method", None))
+            req_method = getattr(msg, "req_method", None)
+            method_val = method_value(req_method) if req_method is not None else ""
             # Local handlers outside the forwarding contract stay in Gateway.
             # Unknown methods are forwarded even when this Gateway does not
             # know their names; local-only handlers remain authoritative.
