@@ -23,10 +23,12 @@ ABANDONED_HOLD_RELEASE_INTERVAL_SEC = 60.0
 def release_abandoned_holds() -> None:
     """Release held team-create reservations left by a dead process.
 
-    ``hold_reserved_create`` clears ``expires_at`` on a ``team_create`` row.
-    A process that exits before ``team.runtime_ready`` leaves that row
-    occupying. Team-create rows still reserved 30 minutes after the last hold
-    are released. Personal edition returns before the shared-store check.
+    ``hold_reserved_create`` clears ``expires_at`` and stamps ``updated_at``.
+    The resident stream refreshes that stamp every five minutes, so a live
+    hold stays inside this window. A process that exits before
+    ``team.runtime_ready`` leaves the row reserved with an empty expiry.
+    Rows still reserved 30 minutes after the last stamp are released.
+    Personal edition returns before the shared-store check.
     """
     from agent_gateway.enterprise.db.team_store_actor import (
         get_team_store_actor,
@@ -67,7 +69,9 @@ def release_abandoned_holds() -> None:
 async def run_abandoned_hold_release_loop() -> None:
     """Release crash-left holds immediately, then every 60 seconds.
 
-    Personal edition returns before any database type check.
+    Personal edition returns before any database type check. An unsupported
+    enterprise database type is logged once and the loop exits. A later
+    database error is logged and the loop retries.
     """
     from agent_gateway.enterprise.db.team_store_actor import (
         run_team_store,
@@ -75,9 +79,13 @@ async def run_abandoned_hold_release_loop() -> None:
     )
     from agent_gateway.enterprise.edition import is_enterprise
 
-    if not is_enterprise():
-        return
-    if not use_shared_team_store():
+    try:
+        if not is_enterprise():
+            return
+        if not use_shared_team_store():
+            return
+    except Exception:
+        logger.exception("[TeamQuota] abandoned hold release disabled")
         return
     while True:
         try:

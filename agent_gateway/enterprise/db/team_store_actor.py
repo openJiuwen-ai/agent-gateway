@@ -69,6 +69,55 @@ def json_value_expr(param: str) -> str:
     return f":{name}"
 
 
+def policy_enabled_value(enabled: bool) -> bool | int:
+    """Bind ``enabled`` the way the shared team database stores booleans."""
+    if team_store_db_type() == "postgres":
+        return bool(enabled)
+    return 1 if enabled else 0
+
+
+def upsert_policy_sql() -> str:
+    """Insert or replace one ``team_quota_policy`` row for the shared database.
+
+    PostgreSQL rejects ``ON DUPLICATE KEY UPDATE`` and needs JSON casts.
+    MariaDB rejects ``CAST(... AS json)``, so the MySQL family keeps its upsert.
+    """
+    columns = (
+        "policy_id, policy_name, policy_desc, match_expr, priority, "
+        "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
+        "created_at, created_by, updated_at, updated_by"
+    )
+    values = (
+        ":policy_id, :policy_name, :policy_desc, "
+        f"{json_value_expr('match_expr')}, :priority, "
+        ":max_teams_per_user, :max_teammates_per_team, :max_teams_per_org, :enabled, :source, "
+        f"{json_value_expr('data')}, "
+        ":created_at, :created_by, :updated_at, :updated_by"
+    )
+    insert = f"INSERT INTO team_quota_policy ({columns}) VALUES ({values}) "
+    if team_store_db_type() == "postgres":
+        return insert + (
+            "ON CONFLICT (policy_id) DO UPDATE SET "
+            "policy_name=EXCLUDED.policy_name, policy_desc=EXCLUDED.policy_desc, "
+            "match_expr=EXCLUDED.match_expr, priority=EXCLUDED.priority, "
+            "max_teams_per_user=EXCLUDED.max_teams_per_user, "
+            "max_teammates_per_team=EXCLUDED.max_teammates_per_team, "
+            "max_teams_per_org=EXCLUDED.max_teams_per_org, "
+            "enabled=EXCLUDED.enabled, source=EXCLUDED.source, data=EXCLUDED.data, "
+            "updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by"
+        )
+    return insert + (
+        "ON DUPLICATE KEY UPDATE "
+        "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
+        "match_expr=VALUES(match_expr), priority=VALUES(priority), "
+        "max_teams_per_user=VALUES(max_teams_per_user), "
+        "max_teammates_per_team=VALUES(max_teammates_per_team), "
+        "max_teams_per_org=VALUES(max_teams_per_org), "
+        "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
+        "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
+    )
+
+
 def use_shared_team_store() -> bool:
     """企业版团队表是否跟 Gateway 主库走同一份库。
 

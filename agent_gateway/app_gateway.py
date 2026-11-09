@@ -3910,8 +3910,10 @@ async def _run(
         _hold_release_task.cancel()
         try:
             await _hold_release_task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("[App] abandoned hold release task failed")
         _cleanup_task.cancel()
         try:
             await _cleanup_task

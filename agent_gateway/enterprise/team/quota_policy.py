@@ -103,12 +103,7 @@ def _lease_still_held(status: Any, expires_at: Any, now: float) -> bool:
     return float(expires_at) > now
 
 def _row_occupies(row: dict[str, Any], now: float) -> bool:
-    if row.get("status") == STATUS_COMMITTED:
-        return True
-    expires_at = row.get("expires_at")
-    if expires_at is None:
-        return True
-    return float(expires_at) > now
+    return _lease_still_held(row.get("status"), row.get("expires_at"), now)
 
 DEFAULT_LEADER_MEMBER_NAME = "team-leader"
 
@@ -448,7 +443,11 @@ class TeamQuotaPolicyStore:
         if self._use_mysql():
             from sqlalchemy import text
 
-            from agent_gateway.enterprise.db.team_store_actor import run_tx
+            from agent_gateway.enterprise.db.team_store_actor import (
+                policy_enabled_value,
+                run_tx,
+                upsert_policy_sql,
+            )
 
             actor = self._mysql()
 
@@ -457,33 +456,12 @@ class TeamQuotaPolicyStore:
                 payload["match_expr"] = json.dumps(expr, ensure_ascii=False)
                 data = payload["data"]
                 payload["data"] = None if data is None else json.dumps(data, ensure_ascii=False)
-                payload["enabled"] = 1 if enabled else 0
+                payload["enabled"] = policy_enabled_value(enabled)
                 payload["created_at"] = now_mysql
                 payload["updated_at"] = now_mysql
 
                 async def _tx(conn: Any) -> None:
-                    await conn.execute(
-                        text(
-                            "INSERT INTO team_quota_policy ("
-                            "policy_id, policy_name, policy_desc, match_expr, priority, "
-                            "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
-                            "created_at, created_by, updated_at, updated_by"
-                            ") VALUES ("
-                            ":policy_id, :policy_name, :policy_desc, :match_expr, :priority, "
-                            ":max_teams_per_user, :max_teammates_per_team, "
-                            ":max_teams_per_org, :enabled, :source, :data, "
-                            ":created_at, :created_by, :updated_at, :updated_by"
-                            ") ON DUPLICATE KEY UPDATE "
-                            "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
-                            "match_expr=VALUES(match_expr), priority=VALUES(priority), "
-                            "max_teams_per_user=VALUES(max_teams_per_user), "
-                            "max_teammates_per_team=VALUES(max_teammates_per_team), "
-                            "max_teams_per_org=VALUES(max_teams_per_org), "
-                            "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
-                            "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
-                        ),
-                        payload,
-                    )
+                    await conn.execute(text(upsert_policy_sql()), payload)
 
                 await run_tx(actor.handler, _tx)
 

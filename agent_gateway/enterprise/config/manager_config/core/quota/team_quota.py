@@ -20,8 +20,10 @@ from agent_gateway.config.enterprise.expressions import matches, validate_match_
 from agent_gateway.enterprise.db.team_store_actor import (
     get_team_store_actor,
     list_record_dicts,
+    policy_enabled_value,
     run_team_store,
     run_tx,
+    upsert_policy_sql,
     use_shared_team_store,
 )
 
@@ -38,25 +40,6 @@ DEFAULT_LEADER_MEMBER_NAME = "team-leader"
 _POLICY_TABLE = "team_quota_policy"
 _LEASE_TABLE = "team_quota_lease"
 
-_UPSERT_POLICY_SQL = text(
-    "INSERT INTO team_quota_policy ("
-    "policy_id, policy_name, policy_desc, match_expr, priority, "
-    "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
-    "created_at, created_by, updated_at, updated_by"
-    ") VALUES ("
-    ":policy_id, :policy_name, :policy_desc, :match_expr, :priority, "
-    ":max_teams_per_user, :max_teammates_per_team, "
-    ":max_teams_per_org, :enabled, :source, :data, "
-    ":created_at, :created_by, :updated_at, :updated_by"
-    ") ON DUPLICATE KEY UPDATE "
-    "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
-    "match_expr=VALUES(match_expr), priority=VALUES(priority), "
-    "max_teams_per_user=VALUES(max_teams_per_user), "
-    "max_teammates_per_team=VALUES(max_teammates_per_team), "
-    "max_teams_per_org=VALUES(max_teams_per_org), "
-    "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
-    "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
-)
 _DELETE_POLICY_SQL = text("DELETE FROM team_quota_policy WHERE policy_id = :pid")
 
 
@@ -216,8 +199,16 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
 
 
 def _row_occupies(row: dict[str, Any], now: float) -> bool:
-    if row.get("status") == STATUS_COMMITTED:
+    """Committed rows occupy. A reserved row occupies until its expiry.
+
+    ``released`` does not occupy, even when ``expires_at`` was cleared by a hold.
+    A still-reserved hold keeps ``expires_at`` empty and continues to occupy.
+    """
+    status = row.get("status")
+    if status == STATUS_COMMITTED:
         return True
+    if status != STATUS_RESERVED:
+        return False
     expires_at = row.get("expires_at")
     if expires_at is None:
         return True
@@ -250,7 +241,7 @@ class TeamQuotaPolicyService:
             "max_teams_per_user": int(req.max_teams_per_user),
             "max_teammates_per_team": int(req.max_teammates_per_team),
             "max_teams_per_org": int(req.max_teams_per_org),
-            "enabled": 1 if req.enabled else 0,
+            "enabled": policy_enabled_value(req.enabled),
             "source": req.source,
             "data": None,
             "created_at": now_mysql,
@@ -261,7 +252,7 @@ class TeamQuotaPolicyService:
 
         async def _op() -> None:
             async def _tx(conn: Any) -> None:
-                await conn.execute(_UPSERT_POLICY_SQL, row)
+                await conn.execute(text(upsert_policy_sql()), row)
 
             await run_tx(actor.handler, _tx)
 
