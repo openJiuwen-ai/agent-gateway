@@ -98,6 +98,8 @@ namespaces = false
 
 [tool.setuptools.package-data]
 agent_gateway = [
+    "resources/**/*",
+    "resources/*",
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",
