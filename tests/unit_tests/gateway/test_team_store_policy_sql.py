@@ -37,6 +37,20 @@ def test_upsert_policy_sql_keeps_mysql_upsert(monkeypatch: pytest.MonkeyPatch) -
     assert actor.policy_enabled_value(False) == 0
 
 
+def test_develop_mysql_names_stay_importable(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent_gateway.enterprise.db.team_mysql_actor as old
+    from agent_gateway.enterprise.team.route_binding_mysql import MysqlTeamRouteBindingStore
+    from agent_gateway.enterprise.team.route_binding_shared import SharedTeamRouteBindingStore
+
+    monkeypatch.setattr(old, "_gateway_db_kind", lambda: "mysql")
+    assert old.use_team_mysql() is True
+    monkeypatch.setattr(old, "_gateway_db_kind", lambda: "postgresql")
+    assert old.use_team_mysql() is False
+    assert old.get_team_mysql_actor is old.get_team_store_actor
+    assert old.TeamMysqlActor is old.TeamStoreActor
+    assert MysqlTeamRouteBindingStore is SharedTeamRouteBindingStore
+
+
 @pytest.mark.parametrize("occupies", [manager_row_occupies, policy_row_occupies])
 def test_released_hold_does_not_occupy(occupies) -> None:
     now = 1_000.0
