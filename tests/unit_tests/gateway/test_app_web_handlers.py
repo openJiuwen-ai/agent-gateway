@@ -15,6 +15,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
+from openjiuwen_protocol.message import ReqMethod
 
 from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
 from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -2012,6 +2013,16 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
 ])
 def test_web_retains_mainline_group_and_session_asset_forwarding(method):
     channel = _bind()
+    assert method not in channel.methods
+    assert method in app_web_handlers._FORWARD_REQ_METHODS
+    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
+def test_employee_artifact_list_is_forwarded_to_agent_server():
+    method = "jiuwenmate.artifact.list"
+    channel = _bind()
+
+    assert ReqMethod(method) is ReqMethod.JIUWENMATE_ARTIFACT_LIST
     assert method not in channel.methods
     assert method in app_web_handlers._FORWARD_REQ_METHODS
     assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
