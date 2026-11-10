@@ -1,6 +1,7 @@
 """Behavior at the independent Gateway's resource and storage boundaries."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -115,8 +116,6 @@ assert ReqMethod.VIDEO_CONVERSATION_APPEND.value == "video.conversation.append"
 
 @pytest.mark.parametrize("edition", ["personal", "enterprise"])
 def test_shared_domain_keeps_each_pods_context_usage_and_logs_private(tmp_path, edition):
-    import os
-
     shared_domain = tmp_path / "shared-domain"
     shared_domain.mkdir()
     roots = [tmp_path / "pod-a", tmp_path / "pod-b"]
@@ -189,12 +188,14 @@ def test_workspace_migration_keeps_existing_config_and_legacy_copy():
     assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == snapshot
 
 
+@pytest.mark.parametrize("workspace_ready", ["0", "1"])
+@pytest.mark.parametrize("explicit_backend", ["", "file", "etcd"])
+def test_gateway_startup_restores_only_unconfigured_cron_etcd(
+    tmp_path, workspace_ready, explicit_backend,
+):
+    from agent_gateway.common.cron_settings import load_cron_store_settings, restore_migrated_cron_etcd_settings
 
-@pytest.mark.parametrize("active_backend", ["file", "etcd"])
-def test_standalone_workspace_upgrade_restores_only_unconfigured_cron_etcd(active_backend):
-    from agent_gateway.common.cron_settings import load_cron_store_settings
-
-    root = paths.get_user_workspace_dir()
+    root = tmp_path / "upgrade"
     old = root / "config/config.yaml"
     current = root / "infra/config/config.yaml"
     old.parent.mkdir(parents=True)
@@ -204,29 +205,100 @@ def test_standalone_workspace_upgrade_restores_only_unconfigured_cron_etcd(activ
         "    etcd_endpoints: [http://old-etcd:2379]\n    etcd_prefix: /old/cron/\n",
         encoding="utf-8",
     )
-    active_endpoints = ["http://current-etcd:2379"] if active_backend == "etcd" else []
-    current.write_text(yaml.safe_dump({
-        "preferred_language": "zh",
-        "gateway": {"cron": {"store_backend": active_backend, "etcd_endpoints": active_endpoints}},
-    }), encoding="utf-8")
-
-    paths.prepare_runtime_workspace(cleanup_stale_descs=False)
+    template = paths.get_bundled_resources_dir() / "config.yaml"
+    current.write_bytes(template.read_bytes())
+    if explicit_backend:
+        (current.parent / ".env").write_text(f"CRON_STORE_BACKEND={explicit_backend}\n", encoding="utf-8")
+    env = dict(
+        os.environ, JIUWENSWARM_DATA_DIR=str(root), JIUWENSWARM_HOME=str(tmp_path),
+        JIUWENSWARM_RUNTIME_WORKSPACE_READY=workspace_ready,
+    )
+    env.pop("CRON_STORE_BACKEND", None)
+    result = subprocess.run(
+        [sys.executable, "-c", "import agent_gateway.app_gateway"],
+        env=env, capture_output=True, text=True, timeout=45,
+    )
+    assert result.returncode == 0, result.stderr
 
     raw = yaml.safe_load(current.read_text(encoding="utf-8"))
-    settings = load_cron_store_settings(raw)
-    assert raw["preferred_language"] == "zh"
-    assert settings.backend == "etcd"
-    if active_backend == "etcd":
-        assert settings.endpoints == ("http://current-etcd:2379",)
-        assert current.with_suffix(".yaml.migrated").is_file()
+    if explicit_backend:
+        assert current.read_bytes() == template.read_bytes()
+        assert current.with_suffix(".yaml.migrated.skipped").is_file()
     else:
+        settings = load_cron_store_settings(raw)
+        assert settings.backend == "etcd"
         assert settings.endpoints == ("http://old-etcd:2379",)
         assert settings.prefix == "/old/cron/"
         assert current.with_suffix(".yaml.migrated.restored").is_file()
-        raw["gateway"]["cron"] = {"store_backend": "file"}
-        current.write_text(yaml.safe_dump(raw), encoding="utf-8")
-        paths.prepare_runtime_workspace(cleanup_stale_descs=False)
-        assert load_cron_store_settings(yaml.safe_load(current.read_text(encoding="utf-8"))).backend == "file"
+
+    raw["gateway"]["cron"] = {"store_backend": "file"}
+    current.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    restore_migrated_cron_etcd_settings(current)
+    assert load_cron_store_settings(yaml.safe_load(current.read_text(encoding="utf-8"))).backend == "file"
+
+
+def test_migration_does_not_consume_unreadable_cron_backup(tmp_path):
+    from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
+
+    current = tmp_path / "config.yaml"
+    current.write_text("gateway: {}\n", encoding="utf-8")
+    backup = current.with_suffix(".yaml.migrated")
+    backup.write_bytes(bytes([0xff]))
+    restore_migrated_cron_etcd_settings(current)
+    assert backup.read_bytes() == bytes([0xff])
+    assert current.read_text(encoding="utf-8") == "gateway: {}\n"
+
+
+@pytest.mark.parametrize("moved", [True, False])
+def test_migration_only_accepts_confirmed_concurrent_move(tmp_path, monkeypatch, moved):
+    source = tmp_path / "legacy"
+    target = tmp_path / "new"
+    source.write_text("old data", encoding="utf-8")
+
+    def concurrent_move(_source, _target):
+        if moved:
+            source.rename(target)
+        else:
+            source.unlink()
+        raise FileNotFoundError(source)
+
+    monkeypatch.setattr(paths.shutil, "move", concurrent_move)
+    if moved:
+        paths._move_legacy_entry(source, target)
+        assert target.read_text(encoding="utf-8") == "old data"
+    else:
+        with pytest.raises(FileNotFoundError):
+            paths._move_legacy_entry(source, target)
+
+
+def test_cleanup_finds_orphan_file_ops_in_migrated_history(monkeypatch):
+    from agent_gateway import cleanup
+
+    root = paths.get_user_workspace_dir()
+    history = root / ".agent_history"
+    history.mkdir(parents=True)
+    for sid in ("missing", "live"):
+        (history / f"file_ops_jiuwenswarm_{sid}.json").write_text("{}", encoding="utf-8")
+    (root / "agent/sessions/live").mkdir(parents=True)
+    paths.migrate_partitioned_data_root_layout()
+
+    monkeypatch.setattr(cleanup, "_get_cleanup_period_days", lambda: 30)
+    assert cleanup.cleanup_orphan_file_ops() == {"removed": 1, "errors": 0}
+    assert (root / "domain/.agent_history/file_ops_jiuwenswarm_live.json").is_file()
+
+
+def test_frozen_windows_cli_finds_migrated_site_packages(monkeypatch):
+    from agent_gateway.common import external_cli_runtime
+
+    root = paths.get_user_workspace_dir()
+    legacy_site = root / "runtime/external-cli/codex/site-packages"
+    legacy_site.mkdir(parents=True)
+    paths.migrate_partitioned_data_root_layout()
+
+    monkeypatch.setattr(external_cli_runtime, "_is_frozen_windows", lambda: True)
+    site = external_cli_runtime._runtime_site_packages("codex")
+    assert site == root / "infra" / legacy_site.relative_to(root)
+    assert site.is_dir()
 
 
 def test_workspace_migration_leaves_new_layout_alone():

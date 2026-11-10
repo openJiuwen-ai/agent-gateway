@@ -6,7 +6,7 @@ import re
 import stat
 from pathlib import Path
 
-from agent_gateway.common.paths import get_user_workspace_dir
+from agent_gateway.common.paths import get_domain_data_dir, get_user_workspace_dir
 
 
 def resolve_output_file(key: object, file_ref: object, size: object) -> Path | None:
@@ -20,7 +20,14 @@ def resolve_output_file(key: object, file_ref: object, size: object) -> Path | N
         or not isinstance(file_ref, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", file_ref)
     ):
         return None
-    path = get_user_workspace_dir()
+    for root in (get_domain_data_dir(), get_user_workspace_dir()):
+        verified = _resolve_in_root(root, parts, file_ref, size)
+        if verified is not None:
+            return verified
+    return None
+
+
+def _resolve_in_root(path: Path, parts: list[str], file_ref: str, size: int) -> Path | None:
     try:
         for part in ("jiuwenmate", "workspaces", *parts[:-1]):
             path = path / part

@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import portalocker
+
 logger = logging.getLogger(__name__)
 
 # gateway.log 独立目录开关（与母仓同名的环境变量）
@@ -213,7 +215,11 @@ def _move_legacy_entry(source: Path, target: Path) -> None:
             target = original.with_name(original.name + suffix)
             index += 1
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source), str(target))
+    try:
+        shutil.move(str(source), str(target))
+    except FileNotFoundError:
+        if source.exists() or not target.exists():
+            raise
 
 
 def _move_legacy_sqlite(source: Path, target: Path) -> None:
@@ -263,18 +269,21 @@ def migrate_partitioned_data_root_layout() -> None:
         ".gateway.lock",
         "last_file_picker_dir.txt",
     )
-    has_legacy_data = any(
-        (root / name).exists() and not (root / name).is_symlink()
-        for name in (*domain_entries, *infra_entries, ".checkpoint", ".logs")
-    )
-    lock_path = infra / ".workspace-layout.lock"
-    if not lock_path.is_file() and not has_legacy_data:
-        return
 
-    import portalocker
+    def has_legacy_data() -> bool:
+        return any(
+            (root / name).exists() and not (root / name).is_symlink()
+            for name in (*domain_entries, *infra_entries, ".checkpoint", ".logs")
+        )
+
+    lock_path = infra / ".workspace-layout.lock"
+    if not lock_path.is_file() and not has_legacy_data():
+        return
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with portalocker.Lock(lock_path, mode="a+b", timeout=60):
+        if not has_legacy_data():
+            return
         move = _move_legacy_entry
         if not (root / "config").is_symlink():
             _move_legacy_entry(root / "config/runtime_state", domain / "runtime_state")
@@ -414,7 +423,7 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     完整初始化（配置模板迁移、内置 skills、MCP 种子）由母仓 supervisor /
     ``jiuwenswarm-init`` 完成；Gateway 作为子进程启动时带
     ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``，不会走到这里。本函数创建必需目录，
-    并在配置缺失时安装 Gateway 的默认模板，必要时恢复旧定时任务配置。
+    并在配置缺失时安装 Gateway 的默认模板。
     """
     migrate_partitioned_data_root_layout()
     if cleanup_stale_descs:
@@ -433,10 +442,6 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
                 os.link(staged, config_file)
             except FileExistsError:
                 pass
-
-    from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
-
-    restore_migrated_cron_etcd_settings(config_file)
 
 
 __all__ = [
@@ -473,4 +478,7 @@ __all__ = [
 ]
 
 # Startup imports paths before opening configuration or creating log directories.
-migrate_partitioned_data_root_layout()
+try:
+    migrate_partitioned_data_root_layout()
+except (OSError, portalocker.exceptions.LockException) as exc:
+    raise RuntimeError(f"Workspace migration failed for {get_user_workspace_dir()}: {exc}") from exc

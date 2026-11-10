@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,49 +55,65 @@ def load_cron_store_settings(config: dict[str, Any] | None = None) -> CronStoreS
 
 
 def restore_migrated_cron_etcd_settings(config_path: Path) -> None:
-    """Recover etcd settings from the first partition-migration conflict backup.
-
-    Keep the backup after recovery and mark it consumed so a later switch to
-    local file storage does not reapply the old settings.
-    """
+    """Evaluate the first legacy config backup once, retaining its contents."""
     backup = config_path.with_name(f"{config_path.name}.migrated")
     restored = backup.with_name(f"{backup.name}.restored")
-    if not backup.is_file() or restored.exists():
+    skipped = backup.with_name(f"{backup.name}.skipped")
+    if not backup.is_file() or restored.exists() or skipped.exists():
         return
 
-    from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
+    from agent_gateway.common.config import (
+        config_write_lock,
+        dump_yaml_round_trip,
+        load_yaml_round_trip,
+        resolve_env_vars,
+    )
 
     try:
         with config_write_lock(config_path=config_path):
-            if not backup.is_file() or restored.exists():
+            if not backup.is_file() or restored.exists() or skipped.exists():
                 return
+
             legacy = load_yaml_round_trip(backup)
-            legacy_store = load_cron_store_settings(legacy)
-            if legacy_store.backend != "etcd" or not legacy_store.endpoints:
-                return
-
             current = load_yaml_round_trip(config_path)
-            if not isinstance(current, dict):
-                return
-            current_store = load_cron_store_settings(current)
-            if (current_store.backend, current_store.endpoints, current_store.prefix) != (
-                "file", (), _DEFAULT_PREFIX,
-            ):
-                return
-            gateway = current.setdefault("gateway", {})
-            if not isinstance(gateway, dict):
-                return
-            cron = gateway.setdefault("cron", {})
-            if not isinstance(cron, dict):
+            legacy_cron = _migration_cron_section(legacy)
+            current_cron = _migration_cron_section(current)
+            if legacy_cron is None or current_cron is None:
+                logger.warning("Skipping cron etcd recovery because a config document is not a mapping")
                 return
 
-            legacy_cron = legacy["gateway"]["cron"]
-            cron.update(
-                store_backend="etcd",
+            legacy_store = load_cron_store_settings({"gateway": {"cron": resolve_env_vars(legacy_cron)}})
+            current_store = load_cron_store_settings({"gateway": {"cron": resolve_env_vars(current_cron)}})
+
+            explicit_backend = (
+                current_cron.get("store_backend") == "${CRON_STORE_BACKEND:-file}"
+                and bool(os.environ.get("CRON_STORE_BACKEND"))
+            )
+            if legacy_store.backend != "etcd" or explicit_backend or (
+                current_store.backend, current_store.endpoints, current_store.prefix
+            ) != ("file", (), _DEFAULT_PREFIX):
+                backup.rename(skipped)
+                return
+            if not legacy_store.endpoints:
+                # An endpoint may be supplied by a deployment environment on a later boot.
+                return
+
+            current.setdefault("gateway", {}).setdefault("cron", {}).update(
+                store_backend=legacy_cron["store_backend"],
                 etcd_endpoints=legacy_cron["etcd_endpoints"],
                 etcd_prefix=legacy_cron.get("etcd_prefix") or _DEFAULT_PREFIX,
             )
             dump_yaml_round_trip(config_path, current)
             backup.rename(restored)
-    except (OSError, LockException, YAMLError):
-        logger.warning("Could not restore migrated cron etcd settings", exc_info=True)
+    except (OSError, LockException, UnicodeError, YAMLError):
+        logger.warning("Could not restore migrated cron etcd settings from %s", backup, exc_info=True)
+
+
+def _migration_cron_section(config: Any) -> dict[str, Any] | None:
+    if not isinstance(config, dict):
+        return None
+    gateway = config.get("gateway", {})
+    if not isinstance(gateway, dict):
+        return None
+    cron = gateway.get("cron", {})
+    return cron if isinstance(cron, dict) else None
