@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 CAPABILITY_TABLES: dict[str, str] = {
     "a2ui": "a2ui_config",
+    "a4p": "a4p_config",
 }
 
 

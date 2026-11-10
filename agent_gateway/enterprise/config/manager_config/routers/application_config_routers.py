@@ -24,6 +24,7 @@ from ..schemas.application_config_schemas import (
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
     A2uiCapabilityUpsertRequest,
+    A4pCapabilityUpsertRequest,
     AgentTemplateCapabilityDeleteRequest,
     MemoryConfigUpsertRequest,
     TaskMemoryUpsertRequest,
@@ -52,6 +53,7 @@ LogMaskingUpdateSyncBody = make_sync_body(
     "LogMaskingUpdateSyncBody", LogMaskingRuleUpdateRequest
 )
 A2uiSyncBody = make_sync_body("A2uiSyncBody", A2uiCapabilityUpsertRequest)
+A4pSyncBody = make_sync_body("A4pSyncBody", A4pCapabilityUpsertRequest)
 CapabilityDeleteSyncBody = make_sync_body(
     "CapabilityDeleteSyncBody", AgentTemplateCapabilityDeleteRequest
 )
@@ -297,3 +299,17 @@ async def delete_a2ui(
     sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
 ):
     return await _delete_agent_capability("a2ui", sync)
+
+
+@application_config_router.put("/a4p", response_model=ResponseModel)
+async def upsert_a4p(
+    sync: Annotated[SyncContext, Depends(verify_sync(A4pSyncBody))],
+):
+    return await _upsert_agent_capability("a4p", sync)
+
+
+@application_config_router.delete("/a4p", response_model=ResponseModel)
+async def delete_a4p(
+    sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
+):
+    return await _delete_agent_capability("a4p", sync)

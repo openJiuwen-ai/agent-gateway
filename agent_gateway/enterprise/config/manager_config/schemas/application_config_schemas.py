@@ -101,6 +101,12 @@ class A2uiCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
     dev_smoke_tools_enabled: bool | None = None
 
 
+class A4pCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
+    """这个 Agent 执行工具前要不要用户确认。"""
+
+    enabled: bool
+
+
 class InstanceDataLifecycleRequest(BaseModel):
     """实例数据生命周期（默认 purge）。
 
