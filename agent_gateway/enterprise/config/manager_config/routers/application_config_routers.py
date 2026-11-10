@@ -26,6 +26,7 @@ from ..schemas.application_config_schemas import (
     A2uiCapabilityUpsertRequest,
     A4pCapabilityUpsertRequest,
     AgentTemplateCapabilityDeleteRequest,
+    AutoMemoryCapabilityUpsertRequest,
     SymphonyCapabilityUpsertRequest,
     MemoryConfigUpsertRequest,
     TaskMemoryUpsertRequest,
@@ -56,6 +57,9 @@ LogMaskingUpdateSyncBody = make_sync_body(
 A2uiSyncBody = make_sync_body("A2uiSyncBody", A2uiCapabilityUpsertRequest)
 A4pSyncBody = make_sync_body("A4pSyncBody", A4pCapabilityUpsertRequest)
 SymphonySyncBody = make_sync_body("SymphonySyncBody", SymphonyCapabilityUpsertRequest)
+AutoMemorySyncBody = make_sync_body(
+    "AutoMemorySyncBody", AutoMemoryCapabilityUpsertRequest
+)
 CapabilityDeleteSyncBody = make_sync_body(
     "CapabilityDeleteSyncBody", AgentTemplateCapabilityDeleteRequest
 )
@@ -329,3 +333,17 @@ async def delete_symphony(
     sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
 ):
     return await _delete_agent_capability("symphony", sync)
+
+
+@application_config_router.put("/auto-memory", response_model=ResponseModel)
+async def upsert_auto_memory(
+    sync: Annotated[SyncContext, Depends(verify_sync(AutoMemorySyncBody))],
+):
+    return await _upsert_agent_capability("auto_memory", sync)
+
+
+@application_config_router.delete("/auto-memory", response_model=ResponseModel)
+async def delete_auto_memory(
+    sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
+):
+    return await _delete_agent_capability("auto_memory", sync)

@@ -16,6 +16,7 @@ CAPABILITY_TABLES: dict[str, str] = {
     "a2ui": "a2ui_config",
     "a4p": "a4p_config",
     "symphony": "symphony_config",
+    "auto_memory": "auto_memory_config",
 }
 
 

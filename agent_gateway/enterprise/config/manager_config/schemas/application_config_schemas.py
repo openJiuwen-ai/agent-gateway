@@ -107,6 +107,12 @@ class A4pCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
     enabled: bool
 
 
+class AutoMemoryCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
+    """这个 Agent 聊完要不要自动抽出记忆。"""
+
+    enabled: bool
+
+
 class SymphonyFlowCapability(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
