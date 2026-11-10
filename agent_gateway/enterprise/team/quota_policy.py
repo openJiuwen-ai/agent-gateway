@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -16,6 +17,8 @@ from typing import Any
 
 from agent_gateway.common.paths import get_infra_data_dir
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class OwnerIdentity:
