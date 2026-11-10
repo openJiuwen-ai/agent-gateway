@@ -244,10 +244,12 @@ def _agent_capability_table(table_name: str) -> TableDefinition:
 
 A2UI_CONFIG_TABLE_DEF = _agent_capability_table("a2ui_config")
 A4P_CONFIG_TABLE_DEF = _agent_capability_table("a4p_config")
+SYMPHONY_CONFIG_TABLE_DEF = _agent_capability_table("symphony_config")
 
 AGENT_CAPABILITY_TABLE_DEFS: tuple[TableDefinition, ...] = (
     A2UI_CONFIG_TABLE_DEF,
     A4P_CONFIG_TABLE_DEF,
+    SYMPHONY_CONFIG_TABLE_DEF,
 )
 
 # config_poll 用 revision 发现变更。更新由数据库执行 revision = revision + 1。

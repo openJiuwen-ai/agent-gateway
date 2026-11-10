@@ -107,6 +107,39 @@ class A4pCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
     enabled: bool
 
 
+class SymphonyFlowCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+    min_successes: int | None = Field(default=None, ge=1)
+    min_pack_success_rate: float | None = Field(default=None, ge=0, le=1)
+
+
+class SymphonyEvolutionCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    flow: SymphonyFlowCapability | None = None
+
+
+class SymphonyRetrievalCapability(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool | None = None
+
+
+class SymphonyCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
+    """Symphony 只下发开关和演进、检索策略。技能目录、图目录留在每台机器上。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool | None = None
+    evolution: SymphonyEvolutionCapability | None = None
+    skill_retrieval: SymphonyRetrievalCapability | None = None
+
+
+SymphonyCapabilityUpsertRequest.model_rebuild()
+
+
 class InstanceDataLifecycleRequest(BaseModel):
     """实例数据生命周期（默认 purge）。
 

@@ -26,6 +26,7 @@ from ..schemas.application_config_schemas import (
     A2uiCapabilityUpsertRequest,
     A4pCapabilityUpsertRequest,
     AgentTemplateCapabilityDeleteRequest,
+    SymphonyCapabilityUpsertRequest,
     MemoryConfigUpsertRequest,
     TaskMemoryUpsertRequest,
 )
@@ -54,6 +55,7 @@ LogMaskingUpdateSyncBody = make_sync_body(
 )
 A2uiSyncBody = make_sync_body("A2uiSyncBody", A2uiCapabilityUpsertRequest)
 A4pSyncBody = make_sync_body("A4pSyncBody", A4pCapabilityUpsertRequest)
+SymphonySyncBody = make_sync_body("SymphonySyncBody", SymphonyCapabilityUpsertRequest)
 CapabilityDeleteSyncBody = make_sync_body(
     "CapabilityDeleteSyncBody", AgentTemplateCapabilityDeleteRequest
 )
@@ -313,3 +315,17 @@ async def delete_a4p(
     sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
 ):
     return await _delete_agent_capability("a4p", sync)
+
+
+@application_config_router.put("/symphony", response_model=ResponseModel)
+async def upsert_symphony(
+    sync: Annotated[SyncContext, Depends(verify_sync(SymphonySyncBody))],
+):
+    return await _upsert_agent_capability("symphony", sync)
+
+
+@application_config_router.delete("/symphony", response_model=ResponseModel)
+async def delete_symphony(
+    sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
+):
+    return await _delete_agent_capability("symphony", sync)

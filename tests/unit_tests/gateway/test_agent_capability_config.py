@@ -5,12 +5,16 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from agent_gateway.config.enterprise.catalog import ENTERPRISE_RECORD_SPECS
 from agent_gateway.config.enterprise.tables.table_init import ALL_TABLE_DEFINITIONS
 from agent_gateway.enterprise.config.manager_config.core.application_config.agent_capability_config import (
     CAPABILITY_TABLES,
     capability_body,
+)
+from agent_gateway.enterprise.config.manager_config.schemas.application_config_schemas import (
+    SymphonyCapabilityUpsertRequest,
 )
 
 
@@ -31,3 +35,14 @@ def test_capability_body_keeps_switches_only() -> None:
 def test_capability_body_rejects_template_id_alone() -> None:
     with pytest.raises(ValueError, match="at least one field"):
         capability_body({"agent_template_id": "tpl-1"})
+
+
+def test_symphony_request_rejects_local_paths() -> None:
+    with pytest.raises(ValidationError):
+        SymphonyCapabilityUpsertRequest.model_validate(
+            {
+                "agent_template_id": "tpl-1",
+                "enabled": True,
+                "paths": {"skills_root": "/tmp/skills"},
+            }
+        )

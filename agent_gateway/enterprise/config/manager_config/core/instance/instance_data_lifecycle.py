@@ -47,6 +47,7 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "memory_config",
     "a2ui_config",
     "a4p_config",
+    "symphony_config",
     "cron_job",
 )
 
