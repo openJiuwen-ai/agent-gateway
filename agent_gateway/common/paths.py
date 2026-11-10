@@ -414,7 +414,7 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     完整初始化（配置模板迁移、内置 skills、MCP 种子）由母仓 supervisor /
     ``jiuwenswarm-init`` 完成；Gateway 作为子进程启动时带
     ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``，不会走到这里。本函数创建必需目录，
-    并在配置缺失时安装 Gateway 的默认模板。
+    并在配置缺失时安装 Gateway 的默认模板，必要时恢复旧定时任务配置。
     """
     migrate_partitioned_data_root_layout()
     if cleanup_stale_descs:
@@ -433,6 +433,10 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
                 os.link(staged, config_file)
             except FileExistsError:
                 pass
+
+    from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
+
+    restore_migrated_cron_etcd_settings(config_file)
 
 
 __all__ = [

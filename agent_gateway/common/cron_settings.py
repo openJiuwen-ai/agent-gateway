@@ -1,16 +1,21 @@
-# Gateway 侧副本，源文件 jiuwenswarm/common/cron_settings.py；改动请同步两侧。
+# Keep the cron settings and upgrade rules aligned with the JiuwenSwarm host.
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Cron 存储后端配置解析（纯配置读取，gateway/runtime/server 三方共用）。"""
+"""Resolve and migrate Gateway cron storage configuration."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from portalocker.exceptions import LockException
+from ruamel.yaml.error import YAMLError
+
 from agent_gateway.common.paths import get_cron_jobs_path
 
+logger = logging.getLogger(__name__)
 _DEFAULT_PREFIX = "/jiuwenswarm/cron/jobs/"
 
 
@@ -46,3 +51,52 @@ def load_cron_store_settings(config: dict[str, Any] | None = None) -> CronStoreS
         prefix=prefix,
         file_path=get_cron_jobs_path(),
     )
+
+
+def restore_migrated_cron_etcd_settings(config_path: Path) -> None:
+    """Recover etcd settings from the first partition-migration conflict backup.
+
+    Keep the backup after recovery and mark it consumed so a later switch to
+    local file storage does not reapply the old settings.
+    """
+    backup = config_path.with_name(f"{config_path.name}.migrated")
+    restored = backup.with_name(f"{backup.name}.restored")
+    if not backup.is_file() or restored.exists():
+        return
+
+    from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
+
+    try:
+        with config_write_lock(config_path=config_path):
+            if not backup.is_file() or restored.exists():
+                return
+            legacy = load_yaml_round_trip(backup)
+            legacy_store = load_cron_store_settings(legacy)
+            if legacy_store.backend != "etcd" or not legacy_store.endpoints:
+                return
+
+            current = load_yaml_round_trip(config_path)
+            if not isinstance(current, dict):
+                return
+            current_store = load_cron_store_settings(current)
+            if (current_store.backend, current_store.endpoints, current_store.prefix) != (
+                "file", (), _DEFAULT_PREFIX,
+            ):
+                return
+            gateway = current.setdefault("gateway", {})
+            if not isinstance(gateway, dict):
+                return
+            cron = gateway.setdefault("cron", {})
+            if not isinstance(cron, dict):
+                return
+
+            legacy_cron = legacy["gateway"]["cron"]
+            cron.update(
+                store_backend="etcd",
+                etcd_endpoints=legacy_cron["etcd_endpoints"],
+                etcd_prefix=legacy_cron.get("etcd_prefix") or _DEFAULT_PREFIX,
+            )
+            dump_yaml_round_trip(config_path, current)
+            backup.rename(restored)
+    except (OSError, LockException, YAMLError):
+        logger.warning("Could not restore migrated cron etcd settings", exc_info=True)

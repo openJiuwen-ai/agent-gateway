@@ -189,6 +189,46 @@ def test_workspace_migration_keeps_existing_config_and_legacy_copy():
     assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == snapshot
 
 
+
+@pytest.mark.parametrize("active_backend", ["file", "etcd"])
+def test_standalone_workspace_upgrade_restores_only_unconfigured_cron_etcd(active_backend):
+    from agent_gateway.common.cron_settings import load_cron_store_settings
+
+    root = paths.get_user_workspace_dir()
+    old = root / "config/config.yaml"
+    current = root / "infra/config/config.yaml"
+    old.parent.mkdir(parents=True)
+    current.parent.mkdir(parents=True)
+    old.write_text(
+        "gateway:\n  cron:\n    store_backend: etcd\n"
+        "    etcd_endpoints: [http://old-etcd:2379]\n    etcd_prefix: /old/cron/\n",
+        encoding="utf-8",
+    )
+    active_endpoints = ["http://current-etcd:2379"] if active_backend == "etcd" else []
+    current.write_text(yaml.safe_dump({
+        "preferred_language": "zh",
+        "gateway": {"cron": {"store_backend": active_backend, "etcd_endpoints": active_endpoints}},
+    }), encoding="utf-8")
+
+    paths.prepare_runtime_workspace(cleanup_stale_descs=False)
+
+    raw = yaml.safe_load(current.read_text(encoding="utf-8"))
+    settings = load_cron_store_settings(raw)
+    assert raw["preferred_language"] == "zh"
+    assert settings.backend == "etcd"
+    if active_backend == "etcd":
+        assert settings.endpoints == ("http://current-etcd:2379",)
+        assert current.with_suffix(".yaml.migrated").is_file()
+    else:
+        assert settings.endpoints == ("http://old-etcd:2379",)
+        assert settings.prefix == "/old/cron/"
+        assert current.with_suffix(".yaml.migrated.restored").is_file()
+        raw["gateway"]["cron"] = {"store_backend": "file"}
+        current.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        paths.prepare_runtime_workspace(cleanup_stale_descs=False)
+        assert load_cron_store_settings(yaml.safe_load(current.read_text(encoding="utf-8"))).backend == "file"
+
+
 def test_workspace_migration_leaves_new_layout_alone():
     root = paths.get_user_workspace_dir()
     config = root / "infra/config/config.yaml"
