@@ -15,9 +15,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+
 from agent_gateway.common.request_identity import web_routing_identity
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from agent_gateway.extensions.runtime_management_extension.agent_authorization import (
     authorize_agent,
 )
@@ -246,7 +247,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._on_server_push = handler
 
     async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
-        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+        from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
 
         handler = self._on_server_push
         if handler is None:
@@ -256,7 +257,12 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         rpc = payload.get("jsonrpc", payload)
         key = None
         if isinstance(rpc, dict) and rpc.get("id") is not None and rpc.get("method"):
-            key = (str(wire.get("session_id") or ""), str(rpc["id"]))
+            # session_id 与读取侧（acp.tool_response 分支）同口径：先取推送
+            # wire 顶层，缺失时回退 payload（部分 Pod 推送帧不带顶层键）。
+            key = (
+                str(wire.get("session_id") or payload.get("session_id") or ""),
+                str(rpc["id"]),
+            )
             self._rpc_origins[key] = base_url
         try:
             await handler(wire)
@@ -407,7 +413,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             payload={},
         )
 
-    async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
+    async def send_request(
+        self, envelope: E2AEnvelope, *, timeout: float | None = None,
+    ) -> AgentResponse:
         self._ensure_connected()
         authorized_identity = await authorize_agent(envelope)
         if envelope.method == "acp.tool_response":
@@ -418,15 +426,46 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             )
             base_url = self._rpc_origins.pop(key, None)
             if base_url is None:
+                # 推送 wire 与响应信封的 session_id 口径可能漂移（推送帧无
+                # 顶层 session_id 或用合成 key）：退化为仅按 jsonrpc_id 命中。
+                jsonrpc_id = str(params.get("jsonrpc_id") or "")
+                if jsonrpc_id:
+                    matches = [
+                        k for k in self._rpc_origins if k[1] == jsonrpc_id
+                    ]
+                    if matches:
+                        for stale in matches[1:]:
+                            self._rpc_origins.pop(stale, None)
+                        base_url = self._rpc_origins.pop(matches[0])
+            if base_url is None:
                 raise RuntimeError("Reverse RPC origin Pod is unavailable")
-            return await self._http.send_request(envelope, base_url=base_url)
+            return await self._http.send_request(
+                envelope, base_url=base_url, timeout=timeout,
+            )
         if _is_heartbeat_envelope(envelope):
             return self._heartbeat_response(envelope)
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
         apply_invoke_ids_to_envelope(envelope)
         if _is_routeless_envelope(envelope):
-            result = await self._http.send_request(envelope, base_url=_default_http_base())
-            return result
+            try:
+                return await self._http.send_request(
+                    envelope, base_url=_default_http_base(), timeout=timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # routeless 管理请求没有重路由兜底：5xx/429 原始 httpx 异常
+                # 不穿透到 web 层，转成 ok=False 信封（与开源 base_url=None
+                # 路径的 _response_json 行为一致）。
+                logger.warning(
+                    "[RuntimeRouted] routeless request failed: method=%s err=%s",
+                    envelope.method,
+                    exc,
+                )
+                return AgentResponse(
+                    request_id=str(envelope.request_id or ""),
+                    channel_id=str(envelope.channel or "web"),
+                    ok=False,
+                    payload={"error": str(exc), "code": "ROUTELESS_HTTP_ERROR"},
+                )
         session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
             envelope, authorized_identity=authorized_identity,
         )
@@ -438,6 +477,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 bot_id=bot_id,
                 request_id=request_id,
                 user_id=user_id,
+                timeout=timeout,
             )
         base_url, route_id = await self._route_with_retry(
             session_id=session_id,
@@ -448,7 +488,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         )
         try:
             await self._ensure_pod_push(base_url)
-            result = await self._http.send_request(envelope, base_url=base_url)
+            result = await self._http.send_request(
+                envelope, base_url=base_url, timeout=timeout,
+            )
         except Exception as exc:
             if not _is_http_retryable(exc):
                 raise
@@ -465,7 +507,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 user_id=user_id,
             )
             await self._ensure_pod_push(base_url)
-            result = await self._http.send_request(envelope, base_url=base_url)
+            result = await self._http.send_request(
+                envelope, base_url=base_url, timeout=timeout,
+            )
         await self._touch_quiet(session_id, route_id)
         await self._rebind_after_create(envelope, result, session_id)
         return result
@@ -481,7 +525,11 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         返回前 await——**时序保证**：客户端拿到真实 id 时改绑已完成，chat.send
         不可能抢先。
 
-        - 响应 ok：rebind(临时 key → 真实 id)，亲和钉在 create 实际服务的 Pod；
+        - 响应 ok 且带真实 id：rebind(临时 key → 真实 id)，亲和钉在 create
+          实际服务的 Pod；
+        - 响应 ok 但解析不到真实 id：不改绑也不驱逐（字段名/嵌套漂移≠创建
+          失败）——驱逐会把刚创建成功的会话当失败逐出，下一条 chat.send
+          重新占槽、亲和断裂；临时 key 留给 session_ttl 过期；
         - 响应失败：rebind(临时 key → 空) 驱逐，立即释放槽位（不等 session_ttl）；
         - 失败/超时一律降级（warning 节流 + 照常返回响应）＝旧行为；旧 runtime
           （无 /api/session/rebind 端点）同走降级，滚动期不阻塞 create。
@@ -491,6 +539,15 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         payload = result.payload if isinstance(result.payload, dict) else {}
         if result.ok:
             real = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+            if not real:
+                logger.warning(
+                    "[RuntimeRouted] session.create ok but no session_id in payload, "
+                    "skip rebind (keep temp key until session_ttl): session=%s "
+                    "payload_keys=%s",
+                    session_id,
+                    sorted(payload.keys()),
+                )
+                return
         else:
             real = ""
         if real and real == session_id:
@@ -576,6 +633,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 session_id,
                 exc,
             )
+            # 重试复用同一 envelope/request_id：上一次尝试的生成器 finally 已把
+            # 该 rid 标记「已取消」（TTL 2s），不清掉的话重试流的全部 chunk 会
+            # 被 _should_drop_stream_chunk 当残余帧丢弃——前端只看到空完成。
+            await self._http.clear_stream_cancelled(str(envelope.request_id or ""))
             base_url, route_id = await self._route_with_retry(
                 session_id=session_id,
                 group_id=group_id,
@@ -769,6 +830,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         bot_id: str,
         request_id: str,
         user_id: str | None,
+        timeout: float | None = None,
     ) -> AgentResponse:
         """先按 session route 打一枪，再对其它已连接 AgentServer 多播（幂等 no-op）。"""
         base_url, route_id = await self._route_with_retry(
@@ -790,7 +852,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         for target in targets:
             try:
                 await self._ensure_pod_push(target)
-                result = await self._http.send_request(envelope, base_url=target)
+                result = await self._http.send_request(
+                    envelope, base_url=target, timeout=timeout,
+                )
             except Exception as exc:  # noqa: BLE001 - 单 Pod 失败继续打其它
                 last_error = exc
                 logger.warning(

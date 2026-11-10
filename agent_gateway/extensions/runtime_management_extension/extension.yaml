@@ -3,7 +3,7 @@ name: OpenJiuwen Runtime Management
 version: 0.1.0
 description: OpenJiuwen Runtime
 author: openjiuwen
-min_jiuwenclaw_version: "0.1.0"
+min_jiuwenswarm_version: "0.1.0"
 dependencies: {}
 config_schema:
   type: object

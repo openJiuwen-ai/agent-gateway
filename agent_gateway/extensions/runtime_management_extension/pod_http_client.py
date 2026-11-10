@@ -14,13 +14,14 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from jiuwenswarm.common.e2a.constants import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
+
 from agent_gateway.common.security.link_mtls import LinkMTLSConfig
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
@@ -203,6 +204,9 @@ class HttpSseAgentServerClient(AgentServerClient):
         # chat.send shares the parent session and delivers chat.input_received
         # on the parent SSE (personal-edition WS multiplexes the same way).
         self._cancelled_request_ids: set[str] = set()
+        # 事件循环只持 task 弱引用：清理任务必须在此留引用，否则 GC 提前回收
+        # 后 rid 永不 discard，同名 request_id 的后续帧会被永久丢弃。
+        self._cleanup_tasks: set[asyncio.Task[None]] = set()
         self._link_mtls = link_mtls_config
         # False：连续 TCP 失败后停（企业按 Pod IP）。True：继续重连（开源固定 URL）。
         self._retry_push_connect = retry_push_connect
@@ -345,6 +349,12 @@ class HttpSseAgentServerClient(AgentServerClient):
             handler_task.cancel()
         await asyncio.gather(*handlers, return_exceptions=True)
         self._push_handlers.clear()
+        cleanup_tasks = list(self._cleanup_tasks)
+        for cleanup_task in cleanup_tasks:
+            cleanup_task.cancel()
+        if cleanup_tasks:
+            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        self._cleanup_tasks.clear()
         if self._owns_http and self._http is not None:
             await self._http.aclose()
             self._http = None
@@ -354,7 +364,11 @@ class HttpSseAgentServerClient(AgentServerClient):
         logger.info("[HttpSseAgentServerClient] 已断开")
 
     async def send_request(
-        self, envelope: E2AEnvelope, *, base_url: str | None = None
+        self,
+        envelope: E2AEnvelope,
+        *,
+        base_url: str | None = None,
+        timeout: float | None = None,
     ) -> AgentResponse:
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = False
@@ -384,6 +398,11 @@ class HttpSseAgentServerClient(AgentServerClient):
             headers=self._request_headers(assembled.headers),
             json=assembled.json_body,
             params=assembled.query,
+            **(
+                {"timeout": httpx.Timeout(timeout, connect=_CONNECT_TIMEOUT_SECONDS)}
+                if timeout is not None
+                else {}
+            ),
         )
         _raise_for_pod_http_error(response, base_url=base_url)
         payload = _response_json(response, request_id=rid)
@@ -402,7 +421,22 @@ class HttpSseAgentServerClient(AgentServerClient):
             already = rid in self._cancelled_request_ids
             self._cancelled_request_ids.add(rid)
         if not already:
-            asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
+            task = asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
+            # 留住引用防 GC 提前回收（完成回调里自行移除）。
+            self._cleanup_tasks.add(task)
+            task.add_done_callback(self._cleanup_tasks.discard)
+
+    async def clear_stream_cancelled(self, rid: str) -> None:
+        """清掉该 rid 的取消标记。
+
+        首帧前失败的重试复用同一 envelope/request_id：上一次尝试结束时
+        ``finally`` 打的标记会让重试流的所有 chunk 被
+        ``_should_drop_stream_chunk`` 当残余帧丢弃，重开流前必须先清。
+        """
+        if not rid:
+            return
+        async with self._stream_lock:
+            self._cancelled_request_ids.discard(rid)
 
     async def _delayed_cleanup_cancelled_request_id(self, rid: str) -> None:
         try:

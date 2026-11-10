@@ -12,10 +12,17 @@ logger = logging.getLogger(__name__)
 
 
 def _default_invoke_ids(group_id: str, bot_id: str, user_id: str) -> tuple[str, str]:
-    """企业策略未配置 service_id/agent_id 时的默认拼接。"""
+    """企业策略未配置 service_id/agent_id 时的默认拼接。
+
+    无分隔符拼接与旧 RuntimeManagement 路由策略逐字一致（parity 是本仓
+    拆分原则）：已知 (group=a, bot=bc) 与 (group=ab, bot=c) 会拼出相同
+    service_id——改用分隔符会变更 MD5 后的存量逻辑 ID、老 Agent 工作区
+    失联，故保留现状；新部署请在企业策略里显式配置 service_id/agent_id。
+    """
     default_service_id = f"{group_id}{bot_id}"
     default_agent_id = f"{group_id}{bot_id}{user_id}"
-    logger.info(
+    # 每请求都走这里：租户三元组与逻辑 ID 属高频调试信息，INFO 级噪声过大。
+    logger.debug(
         "user_id=%s, group_id=%s, bot_id=%s, default_service_id=%s, default_agent_id=%s",
         user_id,
         group_id,
@@ -27,7 +34,11 @@ def _default_invoke_ids(group_id: str, bot_id: str, user_id: str) -> tuple[str, 
 
 
 def _default_workspace_key(group_id: str, bot_id: str, user_id: str) -> str:
-    """未配置 workspace_key 时默认 ``{group}{bot}{user}``。"""
+    """未配置 workspace_key 时默认 ``{group}{bot}{user}``。
+
+    与 :func:`_default_invoke_ids` 同样无分隔符（碰撞风险与兼容约束见彼处
+    注释）；仅 strip 边缘空白，不重排。
+    """
     return f"{group_id}{bot_id}{user_id}".strip()
 
 
@@ -62,6 +73,15 @@ def coalesce_invoke_ids(
                 agent_id = default_agent_id
         if not workspace_key:
             workspace_key = _default_workspace_key(group_id, bot_id, user_id)
+    else:
+        logger.warning(
+            "[invoke_ids] routing triple incomplete (group=%r bot=%r user=%r): "
+            "falling back to shared default ids — requests without identity will "
+            "share the same default workspace on the Agent side",
+            group_id,
+            bot_id,
+            user_id,
+        )
 
     return (
         service_id or "default_service_id",
@@ -111,7 +131,7 @@ def apply_invoke_ids_to_envelope(envelope: Any) -> Any:
     hashed_agent_id = _md5_invoke_id(agent_id)
     hashed_workspace_key = _md5_invoke_id(workspace_key)
 
-    logger.info(
+    logger.debug(
         "[invoke_ids] envelope tenant ids: "
         "group=%s bot=%s user=%s logical=(%s,%s,%s) hashed=(%s,%s,%s)",
         group_id,

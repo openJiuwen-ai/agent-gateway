@@ -37,7 +37,12 @@ class RuntimeManagementExtension(AgentServerClientExtension):
             logger.warning("[RuntimeManagement] shutdown error: %s", exc)
 
     def setup_gateway_shutdown_signals(self, shutdown_requested: asyncio.Event) -> None:
-        """Gateway 调用：注册 SIGINT/SIGTERM；退出路径由 Gateway ``finally`` 里 ``await client.disconnect()``。"""
+        """预留接口（仓库内暂无调用点，网关停机信号由 app_gateway 自行处理）。
+
+        供企业打包管线/宿主进程按需调用：注册 SIGINT/SIGTERM/SIGBREAK，
+        收到信号置位 ``shutdown_requested``；退出路径由调用方在 ``finally``
+        里 ``await client.disconnect()``。
+        """
         import signal
         import sys
 

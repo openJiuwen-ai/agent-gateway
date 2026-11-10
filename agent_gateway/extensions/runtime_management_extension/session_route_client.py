@@ -261,8 +261,15 @@ class RuntimeSessionRouteClient:
 
     def _validate_route_binding(self, result: RouteResult) -> None:
         identity = self._link_mtls.identity
-        if not self._link_mtls.enforced or identity is None:
+        if not self._link_mtls.enforced:
             return
+        if identity is None:
+            # enforced 为真却拿不到本端绑定身份：配置损坏而非"无绑定"，静默
+            # 跳过会让 mTLS 校验形同虚设，直接拒绝。
+            raise FatalRouteError(
+                "link enforced but identity is missing",
+                code="LINK_BINDING_MISMATCH",
+            )
         if (
             result.mtls_deployment_id != identity.mtls_deployment_id
             or result.mtls_binding_id != identity.mtls_binding_id
