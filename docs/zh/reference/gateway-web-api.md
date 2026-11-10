@@ -12,7 +12,7 @@
 
 **明确不在范围内**（避免误判为遗漏）：
 
-- TUI 专属方法（`session.rewind*`、`session.color_set`、`history.list_turns` 等，注册于 `tui/tui_connect.py`）与 ACP 通道方法（`acp.tool_response` 等）；
+- TUI 专属方法（`session.rewind*`、`session.color_set`、`history.list_turns` 等，注册于 `tui/tui_connect.py`）与 ACP 通道方法（`acp.tool_response` 等，均为透传）；
 - Gateway ⇄ AgentServer 的 E2A 内部方法（`file.upload_chunk`、`voice.task.*`、`cron.jobs.sync` 等，见 `docs/zh/reference/e2a-protocol.md`）；
 - §10.6 纯转发域（skills/mcp/agents/装备包/plugins/personal_context/a4p/rsi/harness/issue 等 150+ 个方法）已给出逐域逐方法契约（参数/响应/错误码/特殊机制）；`harness.import/export` 为已知未接线方法（§10.6.16 标注）。
 
@@ -28,7 +28,7 @@
 8. 定时任务接口（cron.job.\* / heartbeat.job.\* / schedule.\*）
 9. HTTP 接口（auth / file-api / trajectory）
 10. 其它 WS 方法族（配置 / 媒体 / 渠道 / 更新 / 权限 / Designer / **纯转发域逐方法契约**）
-- 附录 A 方法分发总表 · 附录 B 事件总表 · 附录 C 错误码总表 · 附录 D 限制常量 · **附录 E 端到端样例（新手从这里入手）**
+- 附录 A 方法分发总表 · 附录 B 事件总表 · 附录 C 错误码总表 · 附录 D 限制常量 · **附录 E 端到端样例（新手从这里入手）** · 附录 F 方法级网关处理标注总表（透传 vs 网关处理 + 自动化透传验证）
 
 ---
 
@@ -166,7 +166,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 | 强度 | 行为 | 典型参数 |
 |------|------|---------|
 | 严格拒绝 | 回 `BAD_REQUEST`（或专用错误码） | 帧级 `mode`/`agent_id` 非 string；`session_id`/`run_id` 类型与格式；**严格布尔**参数（`session.pin.pinned`、`project.git.*` 布尔旗标、`heartbeat` 的 `enabled`、`session.create` 的 `moa_enabled`/`persist_session`）；`model_selection`（pydantic `extra="forbid"`）；team plan 审批的 `plan_language` ∉{cn,en} |
-| 宽松容错 | 不报错，静默兜底/丢弃/钳制 | `params` 非对象→置 `{}`；列表非 dict 项静默跳过（`attachments`/`answers`）；`trusted_dirs` 非字符串项丢弃；`token_budget`/`max_attempts` 类型不合法（如 float）**静默丢弃**（`interface_deep.py:14690-14698`）；分页越界钳制；布尔强转参数（`enable_swarmflow`/`overwrite_confirmed`/`team`——传 `"yes"`/`1` 会被当真值）；cron `id` 经 `str()` 强转 |
+| 宽松容错 | 不报错，静默兜底/丢弃/钳制 | `params` 非对象→置 `{}`；列表非 dict 项静默跳过（`attachments`/`answers`）；`trusted_dirs` 非字符串项丢弃；分页越界钳制（⚠️ 旧基线的 token_budget 静默丢弃行为在结构化端点已改为原样透传，见 §4.6）；布尔强转参数（`enable_swarmflow`/`overwrite_confirmed`/`team`——传 `"yes"`/`1` 会被当真值）；cron `id` 经 `str()` 强转 |
 | 类型严、值宽 | 类型拒绝但值兜底 | `mode`：非 string 帧级拒绝，未知串兜底 `agent.work.normal`（仅 `team` 前缀未知值拒）；`history.get` 的 `cursor` 类型非法走事件流错误 `INVALID_HISTORY_CURSOR` 而非 res |
 
 > ⚠️ **客户端实践**：容错行为是防御性兜底而非契约（静默丢弃比报错更难排查），请严格按本文档参数表的类型传值；各参数的校验强度已逐行标注在"默认/校验"列（"严格布尔""容忍数字字符串""越界钳制"等）。
@@ -302,6 +302,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.1 chat.send
 
+> **网关处理**：**网关处理**——归一化 content→query、强制流式、先回 ack + processing_status(true)。
 发送一条用户消息，启动一轮 agent 执行。**网关只回受理 ack，全部对话内容经事件流推送**。
 
 **完整请求帧**（外层信封见 §2.2；`is_stream` 可省略——chat.send 恒按流式处理）：
@@ -409,6 +410,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.2 chat.interrupt
 
+> **网关处理**：**网关处理**——cancel 重构信封 {intent:'cancel', session_id}+定位参数，agent_notify='await'。
 中断/暂停/恢复/补充当前轮次。
 
 **请求参数**：
@@ -441,6 +443,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.3 chat.resume
 
+> **网关处理**：**网关处理**——改写为 chat.interrupt + intent:'resume'（setdefault）。
 恢复暂停中的轮次（不新建轮）。**网关归一化将其改写为 `chat.interrupt` + `intent:"resume"`**（`app_gateway.py:295-297`），行为同 §4.2 的 resume 分支。
 
 **同步 res**：`{accepted:true, session_id}`（`app_web_handlers.py:3948-3954`）。
@@ -449,6 +452,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.4 chat.user_answer
 
+> **网关处理**：**网关处理**——本地 handler 回 ack 后转发原 params。
 回答服务端下发的选择题/确认题（对应 `chat.ask_user_question` 事件，§4.9.2）。
 
 **请求参数**：
@@ -475,6 +479,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.5 chat.swarmflow_reply
 
+> **网关处理**：**网关处理**——本地 handler 回 ack 后非流式转发原 params。
 回答 SwarmFlow 工作流中的人机交互节点（对应 `chat.ask_user_question` 事件且 `source:"swarmflow_human"`，payload 带 `swarmflowMeta`）。
 
 **请求参数**：
@@ -492,6 +497,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 ### 4.6 command.goal（目标模式）
 
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
 Goal 是**自驱长目标**：set 后服务端自行循环执行（attempt 轮）直至评估完成/受阻/被控制，宿主只需一条附着流持续接收事件。Web 前端用目标栏（GoalBar）承载，TUI 可用 `/goal` 斜杠（Web 不解析斜杠，必须走结构化方法，`interface_deep.py:14512-14525`）。
 
 **入口分流**（`runtime/service.py:3226-3236`）：
@@ -509,8 +515,8 @@ Goal 是**自驱长目标**：set 后服务端自行循环执行（attempt 轮�
 | `action` | string | 否（默认 `get`） | 枚举：`get` / `set` / `pause` / `resume` / `clear`（**`stop` 未实现**——落到 `invalid_action`，`interface_deep.py:16585-16591`） |
 | `objective` | string | set 用（缺省空串——set 得到空目标，set 场景应携带；空/仅空白 → `invalid_objective`） | 目标文本；仅 set 成功写 user 历史（pause/resume/clear/get 均 control-only） |
 | `overwrite_confirmed` | bool | 否（默认 false） | 已有 goal 时 set 须 true，否则产出 `goal.confirm_required`；**Web 前端恒带 true**（本地弹窗确认，`webClient.ts:906`——该事件实际只对不带确认位的客户端出现） |
-| `token_budget` | int | 否（缺省 null=不设预算上限） | token 预算；容忍数字字符串、bool 拒绝（`interface_deep.py:14690-14698`）；≤0 → `invalid_objective` |
-| `max_attempts` | int | 否（缺省 null=不设次数上限） | attempt 次数上限；解析同上 |
+| `token_budget` | int \| null | 否（缺省 null=不设预算） |≤0 → `invalid_objective`"token_budget must be positive" | **结构化端点原样透传**（无字符串/bool 软化：传字符串以 "Goal command error" 失败；bool 因 int 子类被当数值接受） |
+| `max_attempts` | int \| null | 否（缺省 null=不设上限） |≤0 → `invalid_objective`"max_attempts must be positive" | 同上，原样透传 |
 
 **Goal 状态机**（4 态，无 failed——失败终态是 blocked；`openjiuwen:harness/goal/manager.py`）：
 
@@ -563,8 +569,8 @@ COMPLETED ──resume──► invalid_state（终态不可恢复）；ACTIVE �
 | action | 语义 | 关键行为 | 失败码 |
 |--------|------|---------|--------|
 | `get` | 只读快照 | **lock-free peek**——goal 轮持锁时也不阻塞（`manager.py:89-97`） | `goal_manager_not_started` |
-| `pause` | 暂停续跑，**不打断在跑 attempt** | 丢排队续跑 work、结算计时；在跑 attempt 的评估仍可提交 | `no_goal` / `invalid_state`（非 active） |
-| `resume` | 恢复续跑 | 折叠计时、revision+1（无在跑时）、入队新 attempt；**不重置计数** | `no_goal` / `invalid_state`（completed）；已 active 幂等成功 |
+| `pause` | 暂停续跑，**不打断在跑 attempt** | 丢排队续跑 work、结算计时；在跑 attempt 的评估仍可提交；非 active 时**先执行 pause 再报 `invalid_state`** 并带回 paused 快照 | `no_goal` / `invalid_state`（非 active） |
+| `resume` | 恢复续跑 | 折叠计时、revision+1（无在跑时）、入队新 attempt；**不重置计数** | `no_goal` / `invalid_state`（**仅 PAUSED/BLOCKED 可 resume**；completed 等终态拒绝；已 active 幂等 "Goal already active."） |
 | `clear` | **删除记录**（区别于 pause：之后 set 是全新 goal） | settle 计时 → 删 store → cancel 在跑轮 → `goal.updated(goal=null)` | `no_goal` |
 
 **事件 payload**：
@@ -593,17 +599,56 @@ COMPLETED ──resume──► invalid_state（终态不可恢复）；ACTIVE �
 
 ### 4.7 command.btw / command.compact / command.mcp / command.workflows
 
-均为白名单转发、非流式 res（除非显式 `is_stream`）：
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+均为白名单转发、非流式 res（除非显式 `is_stream`）。以下契约依据 AgentServer 仓 develop@475e3a3b64 核对。
 
-| 方法 | 关键参数 | 响应要点 |
-|------|---------|---------|
-| `command.btw` | `session_id`（必填）、`question`（必填非空）、`mode`（缺省 `"agent"`） | 独立单轮 LLM 侧问答，不改历史。`{status:"ok", answer}`；空 question 回 `{status:"failed", error:"Question is required"}` |
-| `command.compact` | `session_id`（必填）、`mode`（缺省 `"agent"`） | 手动上下文压缩。res `{result:"compressed"\|"noop", stats, summary?, compact_summary?}`；过程中推 `context.compression_state` 与 `context.usage` 事件（`agent_ws_server.py:7798-8003`） |
-| `command.mcp` | `action`（缺省 `"list"`：`list`/`show`/`add`…）、`name`（仅 show 读取，缺省不携带） | MCP 服务器管理；list/show 响应敏感字段一律脱敏；add 先预检再落 config.yaml |
-| `command.workflows` | `action`（`list`（默认）/`get_workflow`/`get_phase`/`get_agent`）、`workflow_id`、`session_id`、四组分页参数（run limit 默认 50 上限 200；phase 默认 20 上限 100；agent 默认 50 上限 200） | SwarmFlow run 快照；无 live 时从 checkpoint 恢复（遗留 `running` 归一为 `paused`+`recovered`）；超长字段切分为 `_{field}_parts`（`server/wire_truncate.py:12-18`） |
+#### command.btw
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `question` | string | 是 | strip 非空；空 → `ok:true {status:"failed", error:"Question is required"}` | 独立单轮 LLM 侧问答，不改历史、无工具 |
+| `mode` | string | 否 | 缺省 "agent"，归一 | — |
+
+- **响应**：`{status:"ok", answer}` / `{status:"no_context"}` / `{status:"failed", error}`；异常 `ok:false {status:"failed", error}` **无 code**。
+
+#### command.compact
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：`mode`（缺省 "agent"）。**响应**：`{result:"compressed"|"noop"|…, stats, summary?, compact_summary?}`；成功压缩时推 `context.compression_state` 与 `context.usage` 事件并写历史；异常 `ok:false {error}` 无 code。
+
+#### command.mcp
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `action` | string | 否 | 缺省 "list"；枚举 list/show/add/update/enable/disable/remove(=delete)/list_tools/oauth_callback，非法 → `MCP_BAD_REQUEST` | — |
+| `name` | string | 条件 | **show 缺省=列 enabled 项**；enable/disable/remove/delete/list_tools **必填**（缺失 → `MCP_BAD_REQUEST`）；add/update 亦必填 | — |
+| `transport` | string | add/update 必填 | stdio/sse/http/streamable-http/streamable_http | — |
+| `command` | string | stdio 必填 | 非空；args/cwd/env 可选 | — |
+| `url` | string | http 族必填 | 非空；headers/timeout_s 可选 | — |
+| `enabled` | bool | 否 | 缺省 true | — |
+
+- **响应**：list `{type:"list", items, cache?}`；show `{type:"detail", item, tool_count}`（两级探测）；add/update 预检+落 config.yaml → `{type:"added"/"updated"}` 或失败 `{type:"add_failed"/"update_failed", name, error}`；enable/disable/remove `{type:..., name, applied, item, error?}`；list_tools `{type:"tools", tools, server_name}`。卡片敏感字段一律脱敏。错误：`MCP_NOT_FOUND`/`MCP_BAD_REQUEST`/`MCP_INTERNAL`。
+
+#### command.workflows
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `action` | string | 否 | 缺省 "list"；枚举 list/get_workflow/get_phase/get_agent | 非法 → `ok:false "unknown action: ..."`（无 code） |
+| `workflow_id`（别名 `workflow_run_id`） | string | get_* 必填 | 缺失/不存在 → `ok:false`（无 code） | — |
+| `offset` / `limit` | int | 否（list） | offset 缺省 0（0–10,000,000）；limit 缺省 50、**1–200** | run 分页 |
+| `phase_offset` / `phase_limit` | int | 否（get_workflow） | 缺省 0 / 20；limit **1–100** | phase 摘要分页 |
+| `phase_id` | string | get_phase/get_agent 必填 | 缺失 → `ok:false` | — |
+| `agent_offset` / `agent_limit` | int | 否（get_phase） | 缺省 0 / 50；limit **1–200** | — |
+| `agent_id` | string | get_agent 必填 | 缺失 → `ok:false` | — |
+
+- **响应**：list `{type:"workflow_run_snapshot", action:"list", session_id, workflows[], total, has_more}`；get_workflow 为 run meta + 分页 phase 摘要；数据源 live → checkpoint 恢复（遗留 `running` 归一 `paused`+`recovered`）；超长字段切分 `_{field}_parts`。
 
 ### 4.8 history.get
 
+> **网关处理**：**网关处理**——强制流式、ack 参数回显、不抬升/清 busy。
 拉取会话历史。**网关只回受理 ack，数据经 `history.message` 事件流推送**（归一化强制 `is_stream=true`；该流不抬升/不清空会话 busy）。
 
 **请求参数**：
@@ -702,98 +747,157 @@ team 模式由 `chat.send` / `session.create` 的 `mode` 参数进入。`Mode` �
 
 ### 5.2 team.* 方法
 
-均为白名单纯转发（`_FORWARD_NO_LOCAL_HANDLER_METHODS`），由 AgentServer 处理；错误码遵循 §3.2（AgentServer code 透传，缺省 BAD_REQUEST）。**企业版另有 team 控制面 7 方法**（`team.create` / `team.get` / `team.stop` / `team.member.join` / `team.member.leave` / `team.members.list` / `team.quota.get`，`app_web_handlers.py:699-707`）：仅企业版注册并转发；个人版从转发白名单剔除，WS 调用回 `METHOD_NOT_FOUND`，HTTP 路由同样按版本过滤（`http_routes/mapped.py:946-973`）。
+均为白名单纯转发（`_FORWARD_NO_LOCAL_HANDLER_METHODS`），由 AgentServer 处理；错误码遵循 §3.2（AgentServer code 透传，缺省 BAD_REQUEST）。**企业版另有 team 控制面 7 方法**（team.create / get / stop / member.join / leave / members.list / quota.get，`app_web_handlers.py:699-707`）：仅企业版注册并转发；个人版从转发白名单剔除，WS 调用回 `METHOD_NOT_FOUND`，HTTP 路由同样按版本过滤（`http_routes/mapped.py:946-973`）。以下参数契约依据 AgentServer 仓 develop@475e3a3b64 核对。
 
 #### team.templates.list
 
-- **用途**：列出 `config.yaml` `modes.team.*` 配置的团队模板。
-- **参数**：无。
-- **响应**：`{templates: [{template_id, display_name, available:true, source, team_name}]}`（`common/team_template_config.py:83-128`）。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无。**响应**：`{templates:[{template_id, display_name, available:true, source:"modes.team.<id>", team_name}]}`（读 config.yaml `modes.team.*`；无配置回退 legacy 单模板）。恒 ok=true。
 
 #### team.bindings.list
 
-- **用途**：列出所有 Team 实体（binding store + entity store + 遗留 session 扫描合并），供前端 team 选择器。
-- **参数**：无必填。
-- **响应**：`{teams: [...]}`，按 `updated_at` 降序。每项：`team_name / template_id / created_at / updated_at / session_ids / last_session_id / legacy / model_selection` + 增强字段 `template_available / source_template_available / team_config_available / team_config_path / session_count / active_session_id / selectable / disabled_reason`（`"active"|"legacy"|"team_config_missing"|""`）（`agent_ws_server.py:5233-5305`）。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无。**响应**：`{teams:[<TeamBinding> + 增强字段]}`，按 `updated_at` 降序。TeamBinding：`team_name/template_id/created_at/updated_at/session_ids/last_session_id/legacy/model_selection?`；增强：`template_available/source_template_available/team_config_available/team_config_path/session_count/active_session_id/selectable/disabled_reason("active"|"legacy"|"team_config_missing"|"")`。读取异常按 legacy/缺失降级，不报错。
 
 #### team.binding.create
 
-- **参数**：`team_name`（string，必填；1-64 字符、禁路径分隔符/控制字符）、`template_id`（string，必填）。
-- **响应**：`{team: <TeamBinding>}`。
-- **错误**：模板不存在 `NOT_FOUND`；entity/binding 已存在 `CONFLICT`。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `team_name` | string | 是 | 1-64 字符；禁路径分隔符/控制字符；非 `.`/`..` | 超规 → `BAD_REQUEST` |
+| `template_id` | string | 是 | 必须在已配置模板集合内 | 未命中 → `NOT_FOUND` |
+
+- **响应**：`{team: <TeamBinding>}`。**错误**：`CONFLICT`"team_name already exists"；删除竞态 → `TEAM_DELETING`。
 
 #### team.binding.generate
 
-- **用途**：按自然语言描述生成 team 名并创建（默认第一个模板）。
-- **参数**：`description`（string，必填；或别名 `prompt`）。
-- **响应**：`{team, template}`。重名自动加 `_2.._100` 后缀重试，仍失败 `CONFLICT "unable to allocate a unique team_name"`。
-- **错误**：`GENERATION_FAILED`（名称生成失败）、`NOT_FOUND`（无模板）、`CONFLICT`。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `description` | string | 是 | strip 非空；别名 `prompt` | 用第一个模板生成名 |
+
+- **响应**：`{team, template}`。**错误**：`BAD_REQUEST`（空描述）、`NOT_FOUND`"no team template configured"、`GENERATION_FAILED`、`CONFLICT`"unable to allocate a unique team_name"（`_2.._101` 后缀重试 100 次后）。
 
 #### team.session.bind
 
-- **用途**：把已存在 session 绑定到某 Team（会从其它 team 绑定中移出）。
-- **参数**：`session_id`（string，必填）、`team_name`（string，必填）、`mode`（string，可选，默认 `"team"`，经 `resolve_agent_request_mode` 归一）。
-- **响应**：`{session_id, team_name, team_template_id, mode, team, team_config_path}`。
-- **错误**：缺 session/team `BAD_REQUEST`；session、binding、entity 配置缺失 `NOT_FOUND`；team 删除进行中拒绝。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 回退 envelope；session 目录须存在 | 缺失 → `BAD_REQUEST`；不存在 → `NOT_FOUND` |
+| `team_name` | string | 是 | binding 与 entity 配置须存在 | entity 缺失 → `NOT_FOUND`"team entity config missing" |
+| `mode` | string | 否 | 缺省 "team"，经 resolve 归一 | — |
+
+- **响应**：`{session_id, team_name, team_template_id, mode, team, team_config_path}`。从其它 team 绑定中移出。
 
 #### team.delete
 
-- **用途**：删除 Team 及其全部持久化 session。
-- **参数**：`team_name`（string，必填）；且 params 须表明 team 语境（`team: bool` 为真或 `mode` 为 team 模式），否则 `UNSUPPORTED_MODE`。
-- **响应**：`{team_name, session_ids, failed_session_ids, deleted, recovery_required}`。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `team_name` | string | 是 | strip 非空 | 空缺 → `BAD_REQUEST "team_name is required"` |
+| `team` | bool | 条件必填 | 与 mode 为 team 模式二选一（任一为真即入 team 语境），否则 `UNSUPPORTED_MODE "team.delete is only supported for team mode"` | 团队语境标志 |
+| `mode` | string | 条件必填 | 为 team 模式变体时入 team 语境 | 团队模式 |
+- **响应**：`{team_name, session_ids, failed_session_ids, deleted, recovery_required}`；失败附 `error`/`code`。
 - **错误**：`NOT_FOUND`（team 不存在）、`STOP_TIMEOUT`/`DELETE_FAILED`（运行时错误）。
 
 #### team.snapshot（团队看板）
 
-- **用途**：拉取成员列表 + 任务看板快照（刷新恢复、team 切换时）。
-- **参数**：`session_id`（string，必填；缺省回退请求 envelope 的 session_id，`agent_ws_server.py:6495`）、`team_name`（string，可选，缺省取会话活跃 team；多 team 并发时才需显式指定）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 缺省回退请求 envelope 的 session_id | 关联会话 |
+| `team_name` | string | 否 | 缺省取会话活跃 team | 点名团队（多 team 并发时才需显式） |
 - **数据源三级回退**：live（session 级 monitor）→ live-scoped（指定 team 的只读 monitor）→ db（TeamDB）；响应含 `members_source: "live"|"live-scoped"|"db"|"empty"`。
-- **响应**：`{members: [{member_id, name, status, execution_status, mode, role, cli_agent}], tasks: [{task_id, team_name, title, content, status, assignee, updated_at}], team_id, members_source}`。title/content 超 4096 字符截断并附 `*_truncated`/`*_original_size`（`team_monitor_handler.py:60,119-133`）。
+- **响应**：`{members:[{member_id, name, status, execution_status, mode, role, cli_agent}], tasks:[{task_id, team_name, title, content, status, assignee, updated_at}], team_id, members_source}`；title/content 超 4096 字符截断并附 `*_truncated`/`*_original_size`。
 - **恒 ok=true**（读失败降级空快照）。
 
 #### team.history.get
 
-- **用途**：team 会话历史分页（避免与 history.get 并发竞争）。
-- **参数**：`session_id`（string，必填）、`member_name`（string，可选，仅该成员相关记录）、`cursor`/`offset`（int，默认 0）、`limit`（int，默认 500，1–1000）、`max_bytes`（int，默认 2MB，2048–6MB）。
-- **响应**：`{records, session_id, cursor, next_cursor, has_more, total}`；records 消毒并按 max_bytes 分页。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 非空 | 缺失 → `ok:false {error:"session_id is required"}`（无 code） |
+| `member_name` | string | 否 | 非空时仅返回该成员相关记录 | — |
+| `cursor` / `offset` | int | 否 | 缺省 0；0 ≤ v ≤ total（互为别名） | — |
+| `limit` | int | 否 | 缺省 500；**1–1000** | — |
+| `max_bytes` | int | 否 | 缺省 2MB；**2048–6MB** | records 消毒并按 max_bytes 分页 |
+
+- **响应**：`{records, session_id, cursor, next_cursor, has_more, total}`；读异常降级空列表。
 
 #### team.mq.publish
 
-- **用途**：向活跃 team runtime 注入外部事件（绕过 chat.send）。
-- **参数**：`session_id`（string，取自请求 envelope，无需在 params 重复携带）、`payload`（dict，必填，且 `payload.type` **必须**为 `"team.external_event"`）。
-- **响应**：成功 `{published:true}`；失败 `{error:<reason>}`。
-- 该方法的连接**不注册 GodView**（短生命周期发布连接不是观察者）。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是（envelope） | 取 request.session_id，params 内同名键无效 | — |
+| `payload` | dict | 是 | `payload.type` **必须** `"team.external_event"` | 注入活跃 team runtime |
+
+- **响应**：成功 `{published:true}`；失败 `ok:false {error}`（reason：session_id/payload 缺失、invalid_external_event、interact() 返回值），**无 code**。该连接不注册 GodView。
 
 #### team.list
 
-- **用途**：列出**一个 session** 当前归属的全部 team（team 选择器）。
-- **参数**：`session_id`（string，必填；缺省回退请求 envelope 的 session_id，`agent_ws_server.py:6785`）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 软必填 | 缺省回退请求 envelope 的 session_id；两者皆空 → 返回空列表**不报错** | 关联会话 |
 - **响应**：`{session_id, teams: [{team_id, team_name, display_name, state(running|pending|configured), leader_id, organization_id, is_leader, capabilities, agent_group_name, source, is_owner}], default_team_id}`。恒 ok=true（异常降级空列表）。
 
 ### 5.3 group.* 方法（群聊组）
 
-**语义区别**：`team.*` 面向 Team 实体/运行时（模板、绑定、看板）；`group.*` 面向**持久化群聊组**——group 的 `group_id` 本身是一个 team 模式的 session，成员是预编译的 teammate 规格（`server/runtime/group_service.py`）。**有 ownership 校验**：`group.json` 的 `user_id`+`channel_id` 必须与请求一致，否则 `NOT_FOUND`（隐藏存在性）。
+**语义区别**：`team.*` 面向 Team 实体/运行时（模板、绑定、看板）；`group.*` 面向**持久化群聊组**——group 的 `group_id` 本身是一个 team 模式的 session，成员是预编译的 teammate 规格。**有 ownership 校验**：`group.json` 的 `user_id`+`channel_id` 必须与请求一致，否则 `NOT_FOUND`（隐藏存在性）；持久化损坏 → `GROUP_CORRUPT`；`status=="deleting"` 时除 delete 外 → `GROUP_BUSY`。
 
-| 方法 | 关键参数 | 响应 / 错误 |
-|------|---------|------------|
-| `group.create` | `name`（≤200）、`description`（≤2000）、`members`（≤100 项，每项仅允许 `{kind, definition_id, member_name, display_name}`）、`create_token`（幂等键，默认 request_id）、`project_id/project_dir/model_name` | `{group_id, session_id, team_name, name, description, members, created_at, updated_at, status}`；同 token 内容不一致 `CONFLICT` |
-| `group.list` / `group.get` | `limit`（默认 50，1–200）/`offset` | `{groups, total, limit, offset}`，按 updated_at 降序 |
-| `group.update` | `name`/`description`（**仅接受这两个字段**，其他字段 `BAD_REQUEST`） | 更新后的 group |
-| `group.member.add` | `member`（dict，必填）、`client_request_id`（string，≤256，缺省不携带——无幂等收据） | `{group_id, member, status:"registered", event_type:"group.member.added"}`；错误：`GROUP_FULL`/`ALREADY_EXISTS`/`CONFLICT`/`GROUP_RESTART_REQUIRED`/`MEMBER_REGISTRATION_FAILED` |
-| `group.history.get` | `limit`/`offset` | `{group_id, messages, total, limit, offset, next_offset}`；数据损坏 `GROUP_CORRUPT` |
-| `group.delete` | `group_id` | `{group_id, deleted:true}`；删除中再操作 `GROUP_BUSY`；停 team 失败 `DELETE_FAILED` |
+#### group.create
 
-**group 内 chat.send 约束**：`group_id` 必须等于 `session_id`——该校验已上移到**网关帧级**（`web_connect.py:2247-2252`，含 `validate_session_id(group_id)`，否则 `BAD_REQUEST`）；`params.mode` 必须为 team 模式（否则 `MODE_MISMATCH "group chat requires team mode"`）；`params.type` 必须为 `"group_chat"`（后两者在 AgentServer 侧，`server/runtime/group_requests.py:88-108`）。另新增转发方法：`group.execution.list/get`、`group.file.rename/delete`、`group.history.clear`。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空；≤200 | 群名 |
+| `description` | string | 否 | 缺省 `""`；可空；≤2000 | 描述 |
+| `create_token` | string | 否 | 缺省 request_id；≤256；幂等键——同 token 内容不一致 → `CONFLICT` | 幂等令牌 |
+| `members` | list[dict] | 否 | 缺省 `[]`；**≤100 项**；每项 key ⊆ {kind, definition_id, member_name, display_name}，多余键 → `BAD_REQUEST` | 成员规格 |
+| `project_id` / `project_dir` / `model_name` | string | 否 | 缺省 `""`，透传 session 创建 | 项目/模型 |
+| `view_id` | string | 否 | — | commit 上下文 scope |
+- **响应**：`{group_id, session_id, team_name, name, description, members, created_at, updated_at, status:"ready"}`；响应投递失败 → `RESPONSE_TOO_LARGE`。
+- **错误**：`BAD_REQUEST` / `CONFLICT` / `NOT_FOUND` / `GROUP_BUSY`（deleting 态）。
+
+#### group.get / group.list / group.update / group.delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `group_id` | string | 是（get/update/delete） | = `params.group_id or request.session_id`，经 `validate_session_id`，非法 → `BAD_REQUEST` | 群 id |
+| `limit` | int | 否（list） | 缺省 50；**严格 int**（bool 拒）；1–200 | 分页 |
+| `offset` | int | 否（list） | 缺省 0；**严格 int**；≥0 | 偏移 |
+| `name` | string | 条件（update） | 出现即校验：非空 ≤200 | 新名（update 仅接受 name/description，其它键 → `BAD_REQUEST`） |
+| `description` | string | 条件（update） | 出现即校验：可空 ≤2000 | 新描述 |
+- **响应**：get/update → 组公开字段；list → `{groups, total, limit, offset}`（按 updated_at 降序）；delete → `{group_id, deleted:true}`（deleting 态下 delete 可执行、其余方法 `GROUP_BUSY`；删除失败回滚 status="ready"）。
+
+#### group.member.add
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `group_id` | string | 是 | 同上 | 群 id |
+| `member` | dict | 是 | 须含 member_name；按成员字段白名单校验 | 成员规格 |
+| `client_request_id` | string | 否 | 缺省 request_id；≤256 | 幂等收据（⚠️ 缺省失去幂等，重试仅靠 `ALREADY_EXISTS` 拦截） |
+- **响应**：`{group_id, member, status:"registered", event_type:"group.member.added"}`。
+- **错误**：`CONFLICT`（同收据不同成员）/ `ALREADY_EXISTS`（重名）/ `GROUP_FULL`（≥100）/ `GROUP_RESTART_REQUIRED`（运行中组需冷恢复）/ `MEMBER_REGISTRATION_FAILED` / `MODE_MISMATCH`（roster 遇非 group_chat 后端）。
+
+#### group.history.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `group_id` | string | 是 | 同上 | 群 id |
+| `limit` / `offset` | int | 否 | 同 group.list | 分页 |
+- **响应**：`{group_id, messages, total, limit, offset, next_offset}`（末页 null）；scope 不匹配 → `GROUP_CORRUPT`。
+
+**group 内 chat.send 约束**（服务端 `group_requests.py:88-109`）：`group_id` 必须等于 `session_id`——该前半校验已上移到**网关帧级**（`web_connect.py:2247-2252`）；`params.mode` 若携带必须为 team 模式（否则 `MODE_MISMATCH "group chat requires team mode"`）；`params.type` 仅允许缺省或 `"group_chat"`（否则 `MODE_MISMATCH "group chat requires group_chat input"`）；chat.send 进组后服务端强制补 `type="group_chat"`。
+
+> ⚠️ **另 5 个方法（group.execution.list/get、group.file.rename/delete、group.history.clear）仅网关侧注册**：网关经 `common/protocol_compat.py:75-79` 注入 ReqMethod 成员，帧级可解析、正常转发（网关侧透传已由 ST 验证）；但 **AgentServer 当前版本无枚举成员、无 handler**（全仓 grep 无对应字符串），南向落入通用 fall-through——**业务契约当前未定义**，待 AgentServer 实现后补全。
 
 ### 5.4 org.snapshot
 
-- **用途**：右侧信息框——组织（organization）+ 任务池状态。组织由 session 绑定的 Team backend 唯一决定。
-- **参数**：`session_id`（string，缺省回退请求 envelope 的 session_id）、`team_id`（string，缺省空串——按会话解析 team backend）、`organization_id`（string，缺省空串，仅一致性校验）。
-- **响应**：`{organization: {organization_id, display_name, description, owner_team_id, owner_leader_id, leaders, metadata, unclaimed_task_policy}, tasks(≤200), unclaimed_tasks, pending_reviews(≤50), stats: {total, open, unclaimed, pending_reviews, by_status}}`。
-- backend 缺失或 organization_id 不匹配 → 空 payload `{organization: null, tasks: [], ...}`；恒 ok=true（`agent_ws_server.py:6817-6971`）。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：`session_id`（缺省回退 envelope）、`team_id`（缺省 ""——按会话解析 team backend）、`organization_id`（缺省 ""，**仅一致性校验**，不匹配 → 空 payload）。
+- **响应**（恒 ok=true）：`{organization:{organization_id, display_name, description, owner_team_id, owner_leader_id, leaders[{..., capabilities, team_package_availability}], metadata, unclaimed_task_policy}, tasks(≤200, description 截 280 字符), unclaimed_tasks, pending_reviews(team_id 时 ≤50), stats:{total, open, unclaimed, pending_reviews, by_status}}`；backend 缺失/组织号不匹配/开关关闭 → 空态 `{organization:null, tasks:[], unclaimed_tasks:[], pending_reviews:[], stats:{}}`。WS 实现另有 `organization_enabled()` 开关与历史持久化组织回退。
 
 ### 5.5 swarmflow.pause / resume / stop
 
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
 - **用途**：对一条 SwarmFlow run 执行暂停/恢复/停止。
 - **网关前置校验**（§2.3）：`run_id` 与 `workflow_run_id` 同传必须相等且各自合法，否则 `BAD_REQUEST`。
 - **AgentServer 侧**：`run_id` 缺失/非字符串 → `ok:false "run_id is required"`；session 无 RUNNING 状态 team runtime → `ok:false "工作流控制不可用，发送一条消息唤醒团队后即可使用。"`（团队休眠时按钮置灰）；执行成功 → `{run_id, status: "paused"|"resumed"|"stopped"}`；run 已终态/进程重启 → 结构化 miss payload（含权威 status）或 `"workflow run not found"`（`agent_ws_server.py:7339-7450`）。
@@ -838,13 +942,18 @@ chat.send / session.create 可携带（`common/schema/chat_send.py:219-240`）�
 
 #### session.list
 
-- **参数**：`limit`（int，默认 20，1–200 钳制，AgentServer 侧执行）、`offset`（int，默认 0，≥0）。不支持 project 过滤（项目内会话用 `project.get_sessions`）。
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_LIST)；params 原样透传，无额外改动。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `limit` | int | 否 | 缺省 20；1–200 钳制（AgentServer 侧执行） | 分页大小 |
+| `offset` | int | 否 | 缺省 0；≥0 | 偏移 |
 - **响应**：`{sessions: [SessionInfo], total, limit, offset}`。SessionInfo 字段（`server/runtime/session/session_info.py:19-52`）：`session_id, title, created_at, last_message_at, message_count, mode, team_name, agent_group_name, pinned, pin_order, project_dir, project_id, cron_id, last_user_message_at, model, model_selection, moa_enabled, work_mode, lifecycle_operation, execution_blocked, stop_pending`。
-- 归档/临时探针/ephemeral 会话不返回；按 `last_message_at` 倒序。网关为纯 E2A 薄代理（`app_web_handlers.py:3093-3113`）——**旧基线的"AgentServer 离线读本地目录 fallback"已删除**，不可达时回 `SERVICE_UNAVAILABLE`；limit/offset 钳制随 fallback 移到 AgentServer 侧。
+- 归档/临时探针/ephemeral 会话不返回；按 `last_message_at` 倒序。网关为纯 E2A 薄代理（`app_web_handlers.py:3093-3113`）——**旧基线的"AgentServer 离线读本地目录 fallback"已删除**，不可达时回 `SERVICE_UNAVAILABLE`；limit/offset 钳制随 fallback 移到 AgentServer 侧。不支持 project 过滤（项目内会话用 `project.get_sessions`）。
 - **错误**：元数据读失败 `INTERNAL_ERROR`；代理层 `SERVICE_UNAVAILABLE`/`AGENT_SERVER_TIMEOUT`。
 
 #### session.create
 
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_CREATE, 缺省码 SESSION_CREATE_FAILED)；**drop 客户端 session_id**；注入 create_token（缺省 request_id）；经 _inject_session_work_mode 注入归一化后的 project_id/project_dir/work_mode + _work_mode_explicit 传输标记。
 - **参数**：
 
 | 参数 | 类型 | 必填 | 默认/校验 |
@@ -864,30 +973,47 @@ chat.send / session.create 可携带（`common/schema/chat_send.py:219-240`）�
 
 #### session.get_metadata
 
-- **参数**：`session_id`（string，必填，缺省回退帧级）。
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_GET_METADATA)；params 原样；网关收到响应后**注入 is_processing**（busy 映射）+ cron 活动叠加。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空；缺省回退帧级 session_id | 目标会话 |
 - **响应**：metadata.json 全量字段（`session_id, channel_id, user_id, created_at, last_message_at, title, message_count, mode, team_name, team_template_id, project_dir, project_id, persist_session, model, moa_enabled, cron_id, pinned, pin_order, status, work_mode` 等）+ 网关注入的 `is_processing`（busy 映射）+ AgentServer 注入的 `queued_session_messages` / `can_continue_queued_session_messages`（跨会话信箱，§4.10）。
 - **错误**：`BAD_REQUEST`（无 session_id）、`NOT_FOUND`、归档会话 `SESSION_ARCHIVED`。
 
 #### session.rename
 
-- **参数**：`session_id`（string，必填；缺省回退帧级 session_id）、`title`（string \| null，缺省不携带）。**三语义**：`title` 不传 → 查询；空串/纯空白 → 清除；非空 → 设置（strip 后截断 200 字符）。
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_RENAME)；params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空；缺省回退帧级 session_id | 目标会话 |
+| `title` | string \| null | 否 | 缺省不携带=查询；空串/纯空白=清除；非空=设置（strip 后截断 200 字符） | 三语义标题 |
 - **响应**：`{session_id, title, previous_title}`。会话不存在时**不报错**（自动补建 metadata）；归档会话 `SESSION_ARCHIVED`。
 
 #### session.pin
 
-- **参数**：`session_id`（string，必填）、`pinned`（bool，必填，严格布尔）。幂等；操作后全部置顶会话紧凑重编号 1..N。
-- **响应**：`{pinned, pin_order}`（非置顶恒 0）。
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_PIN)；params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空 | 目标会话 |
+| `pinned` | bool | 是 | **严格布尔**（isinstance bool，字符串拒绝） | 置顶/取消 |
+- **响应**：`{pinned, pin_order}`（非置顶恒 0）。幂等；操作后全部置顶会话紧凑重编号 1..N。
 - **错误**：`BAD_REQUEST`、`NOT_FOUND`。
 
 #### session.plan_status
 
-- **参数**：`session_id`（string，必填）。
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_PLAN_STATUS)；params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空 | 目标会话 |
 - **响应**：`{session_id, in_plan: bool}`（只读；团队会话看 metadata.mode + 进程内状态，单 agent 读 live 实例）。
 
 #### session.message.continue_queued
 
+> **网关处理**：**E2A 代理**——proxy_unary_request(SESSION_MESSAGE_CONTINUE_QUEUED)；params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空 | 要恢复排队消息的会话 |
 - **用途**：用户确认后恢复投递到该会话的排队跨会话消息（信箱）。
-- **参数**：`session_id`（string，必填）。
 - **响应**：`{target_session_id, released_unknown_count, accepted: true}`。
 - **错误**：`INVALID_ARGUMENT` / `HOST_CAPABILITY_UNAVAILABLE` / `NOT_FOUND` 等（SessionMessagingError code）。
 
@@ -895,20 +1021,35 @@ chat.send / session.create 可携带（`common/schema/chat_send.py:219-240`）�
 
 #### session.switch
 
-- **用途**：切换/恢复会话（前台目标切换 + Runtime 恢复）。
-- **参数**：`session_id`（string，必填）、`previous_session_id`（string，缺省不携带——不上报前一前台会话信号，不影响切换本身）、`mode`（string，默认 `"agent.plan"`）、`previous_mode`（string，缺省不携带——同前，不上报）、`team`（bool，缺省 false——不作为团队提示）、`view_id`（string，缺省不携带——不上报前台视图 scope）。
+> **网关处理**：**透传**——白名单转发，params 原样（仅 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | strip 非空 | 切换目标 |
+| `previous_session_id` | string | 否 | 缺省不携带——不上报信号，不影响切换 | 前一前台会话信号 |
+| `mode` | string | 否 | 缺省 `"agent.plan"`，归一化 | 会话模式 |
+| `previous_mode` | string | 否 | 缺省不携带——不上报 | 前一模式信号 |
+| `team` | bool | 否 | 缺省 false | 团队提示标志 |
+| `view_id` | string | 否 | 缺省不携带——不上报 | 前台视图 scope |
 - **响应**：`{session_id, mode, switched: bool, moa_enabled}`（先 commit 再回响应）。
 - **错误**：`BAD_REQUEST`；目标归档 `SESSION_ARCHIVED` 等 SessionProvisionError code。
 
 #### session.fork
 
-- **用途**：**复制（分叉）一个已持久化会话**——新 session_id，可选在某 fork_point 截断；支持装备覆盖。
-- **参数**：`source_session_id`（string，必填）、`target_session_id`（string，缺省由服务端生成新 id，已存在 → `ALREADY_EXISTS`）、`title`（string，**缺省继承源会话标题**，`session_ops_service.py:391-394`）、`fork_point`（dict，`{message_id|role|content|timestamp}` 可选，**缺省不截断**——全量复制历史）、`session_equipment_override`（dict，缺省沿用源会话装备）；`side_conversation` 已废弃，出现即 `BAD_REQUEST`。
+> **网关处理**：**透传**——白名单转发，params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `source_session_id` | string | 是 | strip 非空 | 源会话 |
+| `target_session_id` | string | 否 | 缺省服务端生成；已存在 → `ALREADY_EXISTS` | 新会话 id |
+| `title` | string | 否 | **缺省继承源会话标题** | 新标题 |
+| `fork_point` | dict | 否 | `{message_id\|role\|content\|timestamp}` 可选；**缺省不截断**（全量复制） | 截断点 |
+| `session_equipment_override` | dict | 否 | 缺省沿用源会话装备 | 装备覆盖 |
+| `side_conversation` | — | — | 出现即 `BAD_REQUEST` | 已废弃 |
 - **响应**：`{session_id(新), source_session_id, title, moa_enabled}`。
 - **错误**：`BAD_REQUEST` / `NOT_FOUND` / `ALREADY_EXISTS`。
 
 #### session.assets.list / register / rename
 
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
 - **用途**：会话级命名素材表（`@name` 引用），落盘 `<sessions>/<session_id>/session_assets.json`。
 - **list**：`{assets: [{asset_id, name, kind(image|video|audio|document), path, source(upload|generated), created_at}]}`。
 - **register**：`items`（必填，每项 `{path, name?, source?}`）；按 path 去重、文件必须存在、名称自动清洗（`@`/换行/tab）与去重（`" 2"`/`" 3"` 后缀，≤60 字符）。
@@ -917,6 +1058,7 @@ chat.send / session.create 可携带（`common/schema/chat_send.py:219-240`）�
 
 ### 6.3 session.selection.set（模型选择持久化）
 
+> **网关处理**：**E2A 代理**——_register_config_proxy(SESSION_SELECTION_SET)；**A4g 统一 E2A**（企业版也走）。
 - **参数**：`session_id`（string，缺省回退帧级）、`model_selection`（dict，必填）。
 - **ModelSelection schema**（`common/model_selection.py:10-38`，pydantic `extra="forbid"`）：
 
@@ -926,18 +1068,54 @@ chat.send / session.create 可携带（`common/schema/chat_send.py:219-240`）�
 | `id` | string | 是 | strip 后非空 |
 | `route_id` | string \| null | 否 | 仅 `model_group` 时允许；指定组内路由；`type:"model"` 时携带报错；缺省 null（解析模型组默认路由） |
 
-- **响应**：`{model_selection: {...}}`；校验/解析失败 `error + code`（缺省 `BAD_REQUEST`）。统一经 E2A 转发目标 AgentServer（A4g 起个人版不再回落网关本地 handler）。
+- **响应**：`{model_selection: {type, id, route_id}}`。统一经 E2A 转发目标 AgentServer（A4g 起个人版不再回落网关本地 handler）。
+- **错误**：目标为 **cron 会话时拒绝 `model_group`** 选择（"Scheduled task sessions only support a single model"，`BAD_REQUEST`）；解析失败返回**模型域错误码**（`MODEL_SELECTION_NOT_FOUND` 等，经 ModelSelectionError 透传），非通用 BAD_REQUEST；schema 校验失败 → pydantic 异常文本 + `BAD_REQUEST`。
 
 ### 6.4 生命周期方法与事件（lifecycle）
 
 Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `session.unarchive` / `session.archived.list` / `session.delete` / `project.sessions.archive` / `project.sessions.delete_archived`。
 
-| 方法 | 参数 | 响应 |
-|------|------|------|
-| `session.archive` / `session.unarchive` | `session_id` 或 `session_ids`（数组 1–100） | `{session_id, ok:true, archived:true, archived_at, project_id}` / `{session_id, ok:true, restored:true, project_id}`；批量为 `{succeeded_count, failed_count, results[]}` |
-| `session.delete` | `session_id`（单条）或 `session_ids` | `{session_id, ok:true, project_id}`；停止运行 → fence 写入 → 物理删除目录 |
-| `session.archived.list` | `limit`(1–200)/`offset`/`work_mode`/`keyword`/`project_id` | 归档会话分页 |
-| `project.sessions.archive` / `project.sessions.delete_archived` | `project_id` | `{project_id, succeeded_count, failed_count, results[]}` |
+#### session.archive / session.unarchive
+
+> **网关处理**：**E2A 代理**——lifecycle_handlers 代理转发（session_id/session_ids 透传）；单条/批量分支在 AgentServer 侧，网关响应壳仅透传。
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 与 session_ids 二选一 | strip 非空 | 单会话目标 |
+| `session_ids` | list[string] | 与 session_id 二选一 | 数组 **1–100** | 批量目标 |
+- **响应**：单条 `{session_id, ok:true, archived:true, archived_at, project_id}` / `{session_id, ok:true, restored:true, project_id}`；批量 `{succeeded_count, failed_count, results[]}`。
+
+#### session.delete
+
+> **网关处理**：**E2A 代理**——lifecycle_handlers 代理转发；AgentServer 侧执行停止运行→fence 写入→物理删除目录。
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 与 session_ids 二选一 | strip 非空 | 单条 |
+| `session_ids` | list[string] | 与 session_id 二选一 | 1–100 | 批量 |
+- **响应**：`{session_id, ok:true, project_id}`；停止运行 → fence 写入 → 物理删除目录。
+
+#### session.archived.list
+
+> **网关处理**：**E2A 代理**——lifecycle_handlers 代理转发；limit 1–200 / offset 钳制在 AgentServer 侧执行。
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `limit` | int | 否 | 缺省 20；**1–200** | 分页 |
+| `offset` | int | 否 | 缺省 0；≥0 | 偏移 |
+| `work_mode` | string | 否 | 枚举 work\|code | 形态过滤 |
+| `keyword` | string | 否 | 缺省不过滤 | 关键词 |
+| `project_id` | string | 否 | 缺省不过滤 | 项目过滤 |
+- **响应**：归档会话分页。
+
+#### project.sessions.archive / project.sessions.delete_archived
+
+> **网关处理**：**E2A 代理**——lifecycle_handlers 代理转发；批量归档在 AgentServer 侧执行，网关 watcher 轮询完成态并广播事件。
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目目标 |
+- **响应**：`{project_id, succeeded_count, failed_count, results[]}`。
 
 - 归档目录为 `agent/sessions_archived/`；unarchive 时所属项目被移除则连带恢复项目。
 - **错误**：cron/heartbeat 会话禁止单独归档（`FORBIDDEN`）；忙碌 `SESSION_BUSY`（附 finishing 详情）；归档幂等。
@@ -946,9 +1124,15 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 6.5 initialize
 
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
 前端连接后可选的首个握手请求（无本地 handler，纯转发）。
 
-- **参数**：`protocolVersion`（string，默认 `"0.1.0"`）、`clientCapabilities`（dict，默认 `{}`）。
+- **参数**：
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `protocolVersion` | string | 否 | 缺省 `"0.1.0"` | 协议版本（extra_config） |
+| `clientCapabilities` | dict | 否 | 缺省 `{}` | 客户端能力声明 |
 - **响应**：`{protocolVersion: 1, agentInfo: {name:"jiuwenswarm", title:"JiuwenSwarm", version}, agentCapabilities: {loadSession:false, promptCapabilities, sessionCapabilities, mcpCapabilities}, authMethods: []}`（`common/e2a/acp/protocol.py:8-32`）。
 
 ---
@@ -959,49 +1143,232 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 项目记录（projects.json）：`project_id`(32hex)、`name`、`project_dir`、`pinned`、`pin_order`、`hidden`、`work_mode`、`git`。除 `project.remove` 为 Gateway 编排外均 E2A 直转；`project.list/info/get_sessions/get_cron_sessions/pinned_sessions` 免 lifecycle guard。
 
-| 方法 | 关键参数 | 响应 / 说明 |
-|------|---------|------------|
-| `project.list` | `filter`（`all`（默认）/`pinned`/`unpinned`）、`work_mode`（缺省不过滤；非法 `BAD_REQUEST`）、`include_hidden`（默认 false） | `{projects: [ProjectInfo]}`；默认项目按 work_mode 拆为虚拟项 `default`/`default_code`；置顶区在前，非置顶按最近消息倒序。ProjectInfo 含 `session_count`（仅计非置顶普通 web 会话）、`git{...}`、`execution_blocked`、`stop_pending` 等 |
-| `project.info` | `project_id`（必填）、`include_hidden` | `{project: ProjectInfo, **ProjectInfo}`（双写）；不存在/隐藏 `NOT_FOUND` |
-| `project.get_sessions` | `project_id`（必填）、`work_mode`（缺省不过滤）、`limit`（缺省返回全部）、`offset`（默认 0） | `{sessions, total}`；排除置顶与 cron 会话，按最近用户消息倒序 |
-| `project.get_cron_sessions` | `project_id`、`cron_id`（可选过滤）、`limit`/`offset` | `{sessions, total}`；返回 cron 执行会话（带 `cron_id` 或 `channel_id=="__cron__"`） |
-| `project.pinned_sessions` | 无参数 | `{sessions}`；全部置顶会话（跨项目），按 pin_order 升序 |
-| `project.create` | `name`（必填，校验：非空、无控制字符、无 `<>:"/\|?*`、非 Windows 保留名、非全点/空格、≤200 字符）、`project_dir`（可选，须绝对路径；目录不存在 `PROJECT_DIR_MISSING`）、`work_mode` | `{project_id, project_dir, restored, work_mode, git, project}`；**冲突语义**：目录命中隐藏项目 → 恢复（`restored:true`）；命中可见项目 `CONFLICT`；同名冲突 `CONFLICT`。默认目录 `~/.jiuwenswarm/agent/workspace/{work\|code}/<name>` |
-| `project.rename` | `project_id`、`name` | `{project_id, name, work_mode}`；默认项目 `FORBIDDEN` |
-| `project.pin` | `project_id`、`pinned`（严格布尔） | `{pinned, pin_order}`；默认项目 `FORBIDDEN`；置顶区紧凑重编号 |
-| `project.remove` | `project_id`（默认项目 `FORBIDDEN`） | **软删除**（Gateway 编排）：**立即受理，不再预检运行中会话**（AgentServer 隐藏项目并后台停会话，`app_web_handlers.py:3479-3501`）→ 停该项目 cron（失败 `CRON_STOP_FAILED`）→ `{project_id, hidden:true, affected_sessions, stopped_cron_jobs}`；幂等；广播 `project.removed` 事件（按 user_id 收窄） |
-| `project.restore` | `project_id` | `{project_id, restored:true, work_mode, affected_sessions}`；未隐藏 `CONFLICT`；同名被占 `PROJECT_NAME_CONFLICT`；广播 `project.restored` |
+以下均为 **E2A 代理**（网关构造请求转发；`project.remove` 为网关编排）。逐方法参数表：
+
+#### project.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `filter` | string | 否 | 缺省 `all`；枚举 all\|pinned\|unpinned | 置顶过滤 |
+| `work_mode` | string | 否 | 缺省不过滤；非法 `BAD_REQUEST` | 形态过滤 |
+| `include_hidden` | bool | 否 | 缺省 false | 含隐藏项目 |
+- **响应**：`{projects:[ProjectInfo]}`——默认项目按 work_mode 拆为虚拟项 `default`/`default_code`；置顶区在前，非置顶按最近消息倒序；ProjectInfo 含 `session_count`（仅计非置顶普通 web 会话）、`git{...}`、`execution_blocked`、`stop_pending` 等。
+
+#### project.info
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目 id |
+| `include_hidden` | bool | 否 | 缺省 false | 允许命中隐藏项目 |
+- **响应**：`{project: ProjectInfo, **ProjectInfo}`（双写）；不存在/隐藏 `NOT_FOUND`。
+
+#### project.get_sessions
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目 id |
+| `work_mode` | string | 否 | 缺省不过滤 | 形态过滤 |
+| `limit` | int | 否 | 缺省返回全部 | 分页 |
+| `offset` | int | 否 | 缺省 0 | 偏移 |
+- **响应**：`{sessions, total}`；排除置顶与 cron 会话，按最近用户消息倒序。
+
+#### project.get_cron_sessions
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目 id |
+| `cron_id` | string | 否 | 缺省不过滤 | 按任务过滤 |
+| `limit` / `offset` | int | 否 | 缺省全部 / 0 | 分页 |
+- **响应**：`{sessions, total}`；返回 cron 执行会话（带 `cron_id` 或 `channel_id=="__cron__"`）。
+
+#### project.pinned_sessions
+
+- **参数**：无。**响应**：`{sessions}`；全部置顶会话（跨项目），按 pin_order 升序。
+
+#### project.create
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 非空、无控制字符、无 `<>:"/\\|?*`、非 Windows 保留名、非全点/空格、≤200 字符 | 项目名 |
+| `project_dir` | string | 否 | 须**绝对路径**；目录不存在 `PROJECT_DIR_MISSING` | 自定义目录（缺省 `~/.jiuwenswarm/agent/workspace/{work\\|code}/<name>`） |
+| `work_mode` | string | 否 | 枚举 work\|code | 形态 |
+- **响应**：`{project_id, project_dir, restored, work_mode, git, project}`；目录命中隐藏项目 → 恢复（restored:true）；命中可见项目/同名冲突 `CONFLICT`。
+
+#### project.rename
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 默认项目 `FORBIDDEN` | 目标 |
+| `name` | string | 是 | 同 create 的 name 校验 | 新名 |
+- **响应**：`{project_id, name, work_mode}`。
+
+#### project.pin
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 默认项目 `FORBIDDEN` | 目标 |
+| `pinned` | bool | 是 | **严格布尔** | 置顶/取消 |
+- **响应**：`{pinned, pin_order}`；置顶区紧凑重编号。
+
+#### project.remove
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 默认项目 `FORBIDDEN` | 软删除目标 |
+- **行为**：立即受理（不再预检运行中会话，AgentServer 隐藏项目并后台停会话，`app_web_handlers.py:3479-3501`）→ 停该项目 cron（失败 `CRON_STOP_FAILED`）→ `{project_id, hidden:true, affected_sessions, stopped_cron_jobs}`；幂等；广播 `project.removed`（按 user_id 收窄）。
+
+#### project.restore
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 恢复目标 |
+- **响应**：`{project_id, restored:true, work_mode, affected_sessions}`；未隐藏 `CONFLICT`；同名被占 `PROJECT_NAME_CONFLICT`；广播 `project.restored`。
 
 ### 7.2 project.git.*（主 WS 上的 Git 操作）
 
-均为 E2A 直转 + `preserve_error_payload=True`（失败 payload 含结构化 `detail`）；写操作成功后唤醒 `/ws/git` watcher（`mark_dirty`）。**前置校验**（所有方法）：`project_id` 必填；默认项目 `FORBIDDEN`；work 模式项目 `FORBIDDEN`；不存在 `NOT_FOUND`/`PROJECT_NOT_FOUND`（`server/runtime/session/project_git.py:187-216`）。
+均为 E2A 直转 + `preserve_error_payload=True`（失败 payload 含结构化 `detail`）；写操作成功后唤醒 `/ws/git` watcher（`mark_dirty`）。**前置校验**（所有方法，AgentServer 侧）：`project_id` 必填；默认项目 `FORBIDDEN`；work 模式项目 `FORBIDDEN`；不存在 `NOT_FOUND`/`PROJECT_NOT_FOUND`（`server/runtime/session/project_git.py:187-216`）。
 
-| 方法 | 关键参数 | 响应 |
-|------|---------|------|
-| `project.git.status` / `probe` | `project_id` | GitStatus 快照：`{project_id, project_name, project_dir, work_mode, repo{is_git, repo_root, branch, head, detached, transient, upstream}, working_tree{is_dirty, staged, unstaged, untracked, conflicted}, branches{current, locals, remotes}, generated_at}` |
-| `project.git.init` | `project_id`、`initial_branch`（默认 `"main"`） | 同 status |
-| `project.git.switch_branch` | `branch`（必填）、`require_clean`（默认 false） | `{switched:true, previous_branch, current_branch, status}` |
-| `project.git.create_branch` | `branch`（必填）、`checkout`（默认 true）、`start_point`（可选） | `{created:true, checked_out, branch, status}` |
-| `project.git.commit` | `message`（必填非空）、`paths`（与 stage_all 互斥）、`stage_all`（严格布尔）、`amend`、`no_verify` | `{committed:true, commit_hash, amended, status}` |
-| `project.git.push` | `remote`（默认 `"origin"`）、`branch`（detached HEAD 必传）、`set_upstream`/`force`/`delete`（严格布尔，delete 与前两者互斥） | `{pushed:true, remote, branch, deleted, upstream_set, status}`；force 用 `--force-with-lease`；push 超时独立配置（默认 60s） |
-| `project.git.diff_status` | `session_id`、`include_files`、`include_hunks`（隐含 files）、`hunk_paths` | diff 状态快照；transient 仓库时 `current:null, repo.transient:true` 仍成功 |
-| `project.git.turn_diff_list` | `session_id`（必填）、`limit`（默认 50）、`cursor` | 历史 diff 摘要列表；会话须属于该项目（`SESSION_NOT_FOUND`/`SESSION_NOT_BOUND`/`PROJECT_SESSION_MISMATCH`） |
-| `project.git.turn_diff` | `session_id`（必填）、`change_set_id` 或 `turn_index`（二选一）、`include_files`/`include_hunks` | 指定轮次 diff 详情；未命中 `CHANGE_SET_NOT_FOUND`/`TURN_DIFF_NOT_FOUND`；历史过期 `DIFF_HISTORY_EXPIRED` |
+#### project.git.status / probe
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+- **响应**：GitStatus 快照 `{project_id, project_name, project_dir, work_mode, repo{is_git, repo_root, branch, head, detached, transient, upstream}, working_tree{is_dirty, staged, unstaged, untracked, conflicted}, branches{current, locals, remotes}, generated_at}`。
+
+#### project.git.init
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `initial_branch` | string | 否 | 缺省 `"main"` | 初始分支名 |
+- **响应**：同 status。
+
+#### project.git.switch_branch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `branch` | string | 是 | strip 非空 | 目标分支 |
+| `require_clean` | bool | 否 | 缺省 false | true 时工作区不干净拒绝切换 |
+- **响应**：`{switched:true, previous_branch, current_branch, status}`。
+
+#### project.git.create_branch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `branch` | string | 是 | strip 非空；分支名须合法 | 新分支名 |
+| `checkout` | bool | 否 | 缺省 true | 创建后切换 |
+| `start_point` | string | 否 | 缺省 HEAD | 起点 |
+- **响应**：`{created:true, checked_out, branch, status}`。
+
+#### project.git.commit
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `message` | string | 是 | 非空 | 提交信息 |
+| `paths` | list[string] | 与 stage_all 二选一 | — | 指定路径 |
+| `stage_all` | bool | 与 paths 二选一 | **严格布尔** | 全量暂存 |
+| `amend` | bool | 否 | 缺省 false | 修正上一提交 |
+| `no_verify` | bool | 否 | 缺省 false | 跳过钩子 |
+- **响应**：`{committed:true, commit_hash, amended, status}`。
+
+#### project.git.push
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `remote` | string | 否 | 缺省 `"origin"` | 远程名 |
+| `branch` | string | 条件必填 | detached HEAD 必传 | 分支 |
+| `set_upstream` | bool | 否 | 缺省 false；**严格布尔** | 建立上游 |
+| `force` | bool | 否 | 缺省 false；**严格布尔**；用 `--force-with-lease` | 强推 |
+| `delete` | bool | 否 | 缺省 false；**严格布尔**；与 set_upstream/force 互斥 | 删远程分支 |
+- **响应**：`{pushed:true, remote, branch, deleted, upstream_set, status}`；push 超时独立配置（默认 60s，env `GIT_PUSH_TIMEOUT_SEC`）。
+
+#### project.git.diff_status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `session_id` | string | 否 | — | 关联会话（last_turn 定位） |
+| `include_files` | bool | 否 | 缺省 false | 附文件列表 |
+| `include_hunks` | bool | 否 | 缺省 false（隐含 include_files） | 附 hunk |
+| `hunk_paths` | list[string] | 否 | — | 指定路径 |
+- **响应**：diff 状态快照；transient 仓库时 `current:null, repo.transient:true` 仍成功。
+
+#### project.git.turn_diff_list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `session_id` | string | 是 | 会话须属于该项目（`SESSION_NOT_FOUND`/`SESSION_NOT_BOUND`/`PROJECT_SESSION_MISMATCH`） | 关联会话 |
+| `limit` | int | 否 | 缺省 50 | 条数 |
+| `cursor` | string | 否 | — | 分页游标 |
+- **响应**：历史 diff 摘要列表。
+
+#### project.git.turn_diff
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | 前置校验见上 | 项目目标 |
+| `session_id` | string | 是 | 同上 | 关联会话 |
+| `change_set_id` | string | 与 turn_index 二选一 | 未命中 `CHANGE_SET_NOT_FOUND` | 变更集 id |
+| `turn_index` | int | 与 change_set_id 二选一 | 未命中 `TURN_DIFF_NOT_FOUND` | 轮次序号 |
+| `include_files` / `include_hunks` | bool | 否 | 缺省 false | 附件/hunk |
+- **响应**：指定轮次 diff 详情；历史过期 `DIFF_HISTORY_EXPIRED`。
 
 ### 7.3 /ws/git 独立协议
 
-`ws://<host>:<port>/ws/git`，与主 WS 同握手鉴权链路，但 **method 集合封闭为 6 个**，未知方法回 `BAD_REQUEST`（而非 METHOD_NOT_FOUND）。事件推送 `seq`/`stream_id` 恒 null。
+`ws://<host>:<port>/ws/git`，与主 WS 同握手鉴权链路，但 **method 集合封闭为 6 个**，未知方法回 `BAD_REQUEST`（而非 METHOD_NOT_FOUND）。事件推送 `seq`/`stream_id` 恒 null。所有写方法带 `preserve_error_payload=True`；**前置 busy 检查**在网关（§4.9.7 busy 映射）。
 
-| method | params | 首次响应 / 后续事件 |
-|--------|--------|--------------------|
-| `project.git.diff_watch` | `project_id`、`session_id`、`scope`（仅 `"summary"`）、`include_last_turn`（默认 true） | 快照 `{watch_id, scope:"summary", snapshot:{repo, current, last_turn, revision}}`；变化推 `project.git.diff_changed` |
-| `project.git.diff_files_watch` | `watch_id`（必填）、`source`（`current`\|`last_turn`） | `{watch_id, files_scope, revision, files}`（无 hunk）；推 `project.git.diff_files_changed` |
-| `project.git.diff_detail_watch` | `watch_id`、`source`、`files`（非空字符串数组） | `{watch_id, detail_scope, revision, files}`（含 hunk，未订阅路径为 null）；推 `project.git.diff_detail_changed` |
-| `project.git.diff_unwatch` | `watch_id`、`scope`（`all`\|`files`\|`detail`） | `{watch_id, cancelled:true, scope}`（幂等） |
-| `project.git.discard_turn_changes` | `project_id`、`session_id` | 撤销本轮代码修改。**前置 busy 检查**：会话忙碌 → `SESSION_BUSY "session is busy; stop the current run before discarding/redoing changes"`。成功 `{session_id, turn_index, change_set_id, restored_files[], deleted_files[], errors[], partial}`；错误码 `NO_TURN_TO_DISCARD`/`NOTHING_TO_DISCARD`/`TURN_TARGET_CHANGED`/`DIFF_HISTORY_EXPIRED`/`PARTIAL_RESTORE_FAILED` |
-| `project.git.redo_turn_changes` | 同上 | 重做；错误码 `NO_TURN_TO_REDO`/`NOTHING_TO_REDO`/`REDO_HISTORY_MISSING`/`PARTIAL_REDO_FAILED` |
+#### project.git.diff_watch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目目标 |
+| `session_id` | string | 是 | strip 非空 | 关联会话（last_turn） |
+| `scope` | string | 否 | 仅 `"summary"` | 快照范围 |
+| `include_last_turn` | bool | 否 | 缺省 true | 附上一轮 |
+- **首响**：`{watch_id, scope:"summary", snapshot:{repo, current, last_turn, revision}}`；变化推 `project.git.diff_changed`。
+
+#### project.git.diff_files_watch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `watch_id` | string | 是 | diff_watch 返回的 id | 订阅 id |
+| `source` | string | 是 | 枚举 `current`\|`last_turn` | 数据源 |
+- **首响**：`{watch_id, files_scope, revision, files}`（无 hunk）；推 `project.git.diff_files_changed`。
+
+#### project.git.diff_detail_watch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `watch_id` | string | 是 | — | 订阅 id |
+| `source` | string | 是 | 枚举 `current`\|`last_turn` | 数据源 |
+| `files` | list[string] | 是 | 非空字符串数组 | 订阅文件 |
+- **首响**：`{watch_id, detail_scope, revision, files}`（含 hunk，未订阅路径为 null）；推 `project.git.diff_detail_changed`。
+
+#### project.git.diff_unwatch
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `watch_id` | string | 是 | — | 订阅 id |
+| `scope` | string | 是 | 枚举 `all`\|`files`\|`detail` | 取消范围 |
+- **响应**：`{watch_id, cancelled:true, scope}`（幂等）。
+
+#### project.git.discard_turn_changes / redo_turn_changes
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 是 | strip 非空 | 项目目标 |
+| `session_id` | string | 是 | strip 非空 | 关联会话 |
+- **前置 busy 检查**：会话忙碌 → `SESSION_BUSY "session is busy; stop the current run before discarding/redoing changes"`。
+- **响应（discard）**：`{session_id, turn_index, change_set_id, restored_files[], deleted_files[], errors[], partial}`；错误码 `NO_TURN_TO_DISCARD`/`NOTHING_TO_DISCARD`/`TURN_TARGET_CHANGED`/`DIFF_HISTORY_EXPIRED`/`PARTIAL_RESTORE_FAILED`。
+- **响应（redo）**：同构；错误码 `NO_TURN_TO_REDO`/`NOTHING_TO_REDO`/`REDO_HISTORY_MISSING`/`PARTIAL_REDO_FAILED`。
 
 监控过程 Git 命令失败推 `project.git.error` 事件；首次快照失败保留 AgentServer 结构化 code（如 `NOT_GIT_REPOSITORY`）。
+
 
 ---
 
@@ -1015,18 +1382,62 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 #### 8.1.1 cron.job.list
 
-- **参数**：`project_id`（string，缺省不过滤——返回当前用户全部可见任务；支持虚拟项目 `default`/`default_code`——精确匹配，或空 project_id 的 job 按 `work_mode` 消歧，老 job 在 `default` 下兜底可见）。
-- **响应**：`{jobs: [CronJob]}`。**按连接 user_id 过滤**：带 user_id 的连接只见 `job.user_id` 精确相等的任务；user_id 为空（单用户）返回全部。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.list", "params": {"project_id": "default"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"jobs": []}}
+```
+
+
+- **参数**：
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `project_id` | string | 否 | 缺省不过滤——返回当前用户全部可见任务；支持虚拟项目 `default`/`default_code`（精确匹配），或空 project_id 的 job 按 work_mode 消歧 | 项目过滤 |
+- **响应**：`{jobs: [CronJob]}`。**按连接 user_id 过滤**：带 user_id 的连接只见 `job.user_id` 精确相等的任务；user_id 为空（单用户）返回全部；隐藏项目任务不出现在列表；企业版每个 job 附 `active_session_id`。
 
 #### 8.1.2 cron.job.meta
 
-- **参数**：无。**响应**：`{modes: [...CRON_JOB_MODES 排序], default_mode: "agent", default_timeout_seconds: 3600, default_team_timeout_seconds: 3600, max_timeout_seconds: 259200(72h)}`（`runtime/cron/models.py:175-188`）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.meta", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"modes": ["agent", "team"], "default_mode": "agent", "default_timeout_seconds": 3600, "default_team_timeout_seconds": 3600, "max_timeout_seconds": 259200}}
+```
+
+
+- **参数**：无。
+- **响应**：`{modes: [...CRON_JOB_MODES 排序], default_mode: "agent", default_timeout_seconds: 3600, default_team_timeout_seconds: 3600, max_timeout_seconds: 259200(72h)}`（`runtime/cron/models.py:172-185`）。
 
 #### 8.1.3 cron.job.get
 
-- **参数**：`id`（string，必填）。**响应**：`{job: CronJob}`。**错误**：`NOT_FOUND "job not found"`（不存在或**不属于当前用户**——不泄露存在性）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.get", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "name": "每日日报", "enabled": true, "cron_expr": "0 9 * * *", "mode": "agent"}}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | 经 `str()` 强转 | 任务 id |
+- **响应**：`{job: CronJob}`。**错误**：`NOT_FOUND "job not found"`（不存在或**不属于当前用户**——不泄露存在性）。
 
 #### 8.1.4 cron.job.create
+
+> **网关处理**：**纯本地**——controller.create_job（校验 + 项目绑定经 AgentServer 解析 + 落 store）；返回 {job:CronJob}；session_id 被覆盖为当前 web 会话。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.create", "params": {"name": "每日日报", "cron_expr": "0 9 * * *", "description": "总结今天的工作", "targets": "web", "mode": "agent"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<hex32>", "name": "每日日报", "enabled": true}}}
+```
 
 - **参数**（CronJob 字段，`runtime/cron/models.py:385-439`）：
 
@@ -1069,27 +1480,87 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 #### 8.1.5 cron.job.update
 
-- **参数**：`id`（string，必填）+ `patch`（dict，必填）。可更新：name/cron_expr/timezone/description/enabled/wake_offset_seconds/targets/mode/model_name/model_selection/mcp/session_id/project 字段。cron 变更时重新试算；model 变更时重算凭据绑定。
-- **响应**：`{job}`。**错误**：`NOT_FOUND`/`BAD_REQUEST`/`SERVICE_UNAVAILABLE`。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.update", "params": {"id": "<job_id>", "patch": {"enabled": false}}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "enabled": false}}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转；不存在/非本人 → `NOT_FOUND` | 任务 id |
+| `patch` | dict | 是 | 可改字段：name/cron_expr/timezone/description/enabled/wake_offset_seconds/targets/mode/model_name/model_selection/mcp/session_id/project 字段（身份字段不可改——sticky 剥离）；work_mode 单独 patch / 无 marker 的项目字段 patch 被拒 | 补丁 |
+- **响应**：`{job}`。cron 变更时重新试算；model 变更时重算凭据绑定。**错误**：`NOT_FOUND`/`BAD_REQUEST`/`SERVICE_UNAVAILABLE`。
 
 #### 8.1.6 cron.job.delete
 
-- **参数**：`id`（string，必填）。**行为**：停用 → 取消在途执行（并向 AgentServer 发 CHAT_CANCEL）→ 经 E2A 删除该 job 的执行会话（失败抛带 code 的 RuntimeError，如 `SESSION_BUSY`）→ 删 store。`proactive.tick` 内置任务拒绝面板删除（`BAD_REQUEST`）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.delete", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"deleted": true}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转 | 任务 id |
+- **行为**：停用 → 取消在途执行（并发 CHAT_CANCEL）→ 经 E2A 删除该 job 的执行会话（失败抛带 code 的 RuntimeError，如 `SESSION_BUSY`；**企业版跳过会话级联**只删 store 记录）→ 删 store。`proactive.tick` 内置任务拒绝面板删除（`BAD_REQUEST`）。
 - **响应**：`{deleted: true}`。
 
 #### 8.1.7 cron.job.toggle
 
-- **参数**：`id`（string，必填）、`enabled`（bool，必填，None 拒绝）。enable 时复查项目闸门。`proactive.tick` 拒绝。
-- **响应**：`{job}`。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.toggle", "params": {"id": "<job_id>", "enabled": false}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "enabled": false}}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转；`proactive.tick` 拒绝 | 任务 id |
+| `enabled` | bool | 是 | **严格布尔**（None 拒绝） | 目标状态 |
+- **响应**：`{job}`（内部即 update enabled）。enable 时复查项目闸门。
 
 #### 8.1.8 cron.job.preview
 
-- **参数**：`id`（string，必填）、`count`（int，默认 5，夹取 1–50）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.preview", "params": {"id": "<job_id>", "count": 5}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"next": [{"wake_at": "2026-11-11T09:00:00+08:00", "push_at": "2026-11-11T09:00:00+08:00"}]}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转 | 任务 id |
+| `count` | int | 否 | 缺省 5；夹取 **1–50** | 预览条数 |
 - **响应**：`{next: [{wake_at, push_at}, ...]}`（ISO 时间，以 job 时区计算；一次性任务无下次触发时提前截断）。
 
 #### 8.1.9 cron.job.run_now
 
-- **参数**：`id`（string，必填）。**行为**：**拒绝停用与过期任务**（`enabled=false` → "任务已暂停，无法执行"、`expired` → "任务已过期，无法执行"，`BAD_REQUEST`；`proactive.tick` 例外，`cron/scheduler.py:1519-1533`）；立即预分配**真实执行会话**（复用 wake 阶段，非 proactive 模式响应即带真实 session_id）；`run_id = "<job_id>:<unix秒>"`。企业版手动触发遇审批提问先挂起（复用 pending 会话）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.run_now", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"accepted": true, "run_id": "<job_id>:1760600100", "session_id": "sess_cron_01"}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转 | 任务 id |
+- **行为**：**拒绝停用与过期任务**（`enabled=false` → "任务已暂停，无法执行"、`expired` → "任务已过期，无法执行"，`BAD_REQUEST`；`proactive.tick` 例外，`cron/scheduler.py:1519-1533`）；立即预分配**真实执行会话**（复用 wake 阶段，非 proactive 模式响应即带真实 session_id）；`run_id = "<job_id>:<unix秒>"`。企业版手动触发遇审批提问先挂起（复用 pending 会话）。
 - **响应**（对齐 chat.send 语义）：`{accepted: true, run_id, session_id}`；企业审批挂起复用时另带 `awaiting_approval: true, reused_pending_session: true`。
 
 #### 8.1.10 cron 权限与内部行为
@@ -1123,38 +1594,121 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 #### 方法明细
 
-| 方法 | 参数 | 响应 / 特殊行为 |
-|------|------|----------------|
-| `heartbeat.job.list` | `status?`（string）、`scope?`（string，仅 `current`/`all_visible`） | `{jobs}`。**Web 代理固定 `allow_all_visible=False`，`scope=all_visible` 必然 `FORBIDDEN "heartbeat.jobs.all permission required"`**；默认只返回当前会话的任务 |
-| `heartbeat.job.meta` | 无 | `{limits(8 项资源限制), schedule_types, concurrency_policies, session_deleted_policies, statuses, sources, run_count_semantics, deprecated_fields}` |
-| `heartbeat.job.get` | `id`（string，必填） | `{job}`；session 不匹配 `FORBIDDEN "job belongs to another session"`；不存在 `NOT_FOUND` |
-| `heartbeat.job.create` | job 字段（dict，不允许未知字段，结构见上方字段表） | `{job}`；资源限制：每 session 活跃 ≤5、全局 ≤100、interval ≥60s |
-| `heartbeat.job.update` | `id`（string，必填）+ `patch`（dict，必填，仅 name/prompt/schedule/timezone/enabled/concurrency_policy/session_deleted_policy/max_runs） | `{job}`；enable 时 run_count≥max_runs 拒绝；调度变更无未来触发点 `BAD_REQUEST`；冲突 `CONFLICT` |
-| `heartbeat.job.delete` | `id`（string，必填） | `{deleted: bool}`；活跃 run 先 cancel，cancel 失败 `CONFLICT` |
-| `heartbeat.job.toggle` | `id`（string，必填）+ `enabled`（bool，必填，严格布尔） | `{job}`（内部即 update enabled） |
-| `heartbeat.job.preview` | `id`（string，必填）+ `count`（int，默认 5） | `{next: [{run_at(unix秒), iso}, ...]}` |
-| `heartbeat.job.run_now` | `id`（string，必填）+ `reschedule`（bool，默认 false） | **可被拒绝**：`{accepted: bool, run_id, session_id, reason?}`；accepted=false 的 reason：`session_deleting/job_completed/session_missing/session_busy/previous_run_active/already_queued/replacement_pending/job_disabled_during_replace` 等；终态任务不能被 run_now 绕过 |
-| `heartbeat.job.cancel` | `id`（string，必填）+ `pause_schedule`（bool，默认 false） | **只中断当前这一次运行**（区别于 delete）；`pause_schedule=true` 时同时停用后续调度。`{job_id, cancelled_run_id, cancel_status: cancelled\|not_found\|failed\|idle, paused, reason?}` |
+#### heartbeat.job.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `status` | string | 否 | 过滤状态 | 状态过滤 |
+| `scope` | string | 否 | 仅 `current`/`all_visible`；**Web 代理固定 allow_all_visible=False，`all_visible` 必然 `FORBIDDEN "heartbeat.jobs.all permission required"`** | 范围 |
+- **响应**：`{jobs}`（默认只返回当前会话的任务）。
+
+#### heartbeat.job.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转；`hb_` 前缀 | 任务 id |
+- **响应**：`{job}`；session 不匹配 `FORBIDDEN "job belongs to another session"`；不存在 `NOT_FOUND`。
+
+#### heartbeat.job.create
+
+- **参数**：job 字段表（见上方 HeartbeatJob 字段表）——**禁止字段**（`mode/model/model_name/approval/sandbox/worktree/work_mode`）传入即 `BAD_REQUEST`。
+- **响应**：`{job}`；资源限制：每 session 活跃 ≤5、全局 ≤100、interval ≥60s。
+
+#### heartbeat.job.update
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转 | 任务 id |
+| `patch` | dict | 是 | 仅 name/prompt/schedule/timezone/enabled/concurrency_policy/session_deleted_policy/max_runs | 补丁 |
+- **响应**：`{job}`；enable 时 run_count≥max_runs 拒绝；调度变更无未来触发点 `BAD_REQUEST`；冲突 `CONFLICT`。
+
+#### heartbeat.job.delete / toggle / preview / run_now / cancel
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `str()` 强转 | 任务 id |
+| `enabled` | bool | toggle 必填 | **严格布尔**（缺/None 拒绝） | toggle 目标状态 |
+| `reschedule` | bool | run_now 可选 | 缺省 false | run_now 重排 |
+| `pause_schedule` | bool | cancel 可选 | 缺省 false | cancel 时同时停后续调度 |
+- **响应**：delete → `{deleted: bool}`（活跃 run 先 cancel，失败 `CONFLICT`）；toggle → `{job}`；preview → `{next: [{run_at(unix秒), iso}, ...]}`；run_now → **可被拒绝** `{accepted: bool, run_id, session_id, reason?}`（reason：session_deleting/job_completed/session_missing/session_busy/previous_run_active/already_queued 等）；cancel → `{job_id, cancelled_run_id, cancel_status: cancelled|not_found|failed|idle, paused, reason?}`（**只中断当次运行**）。
 
 执行语义：`prompt` 在**原 session 现场**以 background 流继续上下文执行（默认超时 300s）；执行结果以普通 chat 事件回流原会话。权限双因子：`(session_id, user_id)`——调用者 user_id 须与会话属主一致，且 job 须属于当前 session。
 
 ### 8.3 schedule.*（AutoHarness 演化管线，转发 AgentServer）
 
-首个请求惰性初始化 AutoHarnessService。与 cron.job.* 无共享存储或调度器。**响应无 code 字段**（失败仅 `{error}`）。
+首个请求惰性初始化 AutoHarnessService。与 cron.job.* 无共享存储或调度器。**信封规则**：业务错误恒 `ok:true` + payload `{error}`（无 code）；仅异常才 `ok:false {error}`（`server/handlers/schedule.py:152-169`）。以下均为**透传**。
 
-| 方法 | 关键参数 | 响应 |
-|------|---------|------|
-| `schedule.check_config` | 无 | `{valid, missing_fields, config_path}` |
-| `schedule.update_config` | `fields: {"git.user_name": ...}` | `{success, updated_fields}` |
-| `schedule.create` | `query`、`interval_hours`（默认 4）、`run_immediately`（默认 false）、`model_name`（缺省用服务端默认模型）、`pipeline`（缺省用默认管线） | `{task_id: "sch_<hex8>", next_run_time, message}` |
-| `schedule.run` | `query`、`model_name?`、`pipeline?` | `{task_id, status:"running", message}`（一次性任务） |
-| `schedule.list` / `status` | 无 / `task_id` | `{tasks}` / 任务 dict（不存在 `{error:"任务不存在"}`） |
-| `schedule.logs` | `task_id`、`log_type`（current/history）、`history_index`、`offset`、`limit`（默认 500） | 日志 dict |
-| `schedule.cancel` / `delete` | `task_id` | `{task_id, status:"cancelled"}` / `{task_id}` |
+#### schedule.check_config
 
-另有 `issue.watch_once` / `issue.state.list` / `issue.matrix` / `issue.delete` 走同一 handler。
+- **参数**：无。**响应**：`{valid, missing_fields(含 id/key/prompt/section/optional/env_var 元数据), config_path}`；必填 git.user_name（兼作 fork_owner/gitcode.username）/git.user_email；access_token 可由 env 替代；校验器未初始化 → `{valid:false, error}`。
+
+#### schedule.update_config
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `fields` | dict | 是 | 键须为已知 field id；**未知键静默忽略**，success 恒 true | 写入字段 |
+- **响应**：`{success:true, updated_fields}`；写 YAML 后重载 base config。
+
+#### schedule.create
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `query` | string | 否 | 缺省 `""`；无空校验 | 查询 |
+| `interval_hours` | int | 否 | 缺省 **4**；无类型校验——非数字 → TypeError → ok:false | 间隔 |
+| `run_immediately` | bool | 否 | 缺省 false；true 立即触发但 next_run_time 仍 now+interval | 立即执行 |
+| `model_name` | string | 否 | 经 resolve_model | 模型 |
+| `pipeline` | string | 否 | 缺省 None | 管线 |
+- **响应**：`{task_id:"sch_<hex8>", next_run_time(ISO), message:"定时任务已创建"}`。
+
+#### schedule.run
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `query` | string | 否 | 缺省 `""` | 查询 |
+| `model_name` | string | 否 | 同 create | 模型 |
+| `pipeline` | string | 否 | 同 create | 管线 |
+- **响应**：`{task_id, status:"running", message:"一次性任务已创建并开始执行"}`（is_one_time=true、interval_hours=0、立即触发）。
+
+#### schedule.list / status
+
+- **list 参数**：无。**status 参数**：
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `task_id` | string | 否 | 缺省 `""` | 任务 id |
+- **响应**：任务 dict + `progress:{summary, stages[], completed_stages, current_stage, failed_stage, log_path}`；不存在 → **ok:true** + `{error:"任务不存在", task_id}`。
+
+#### schedule.logs
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `task_id` | string | 否 | 缺省 `""` | 任务 id |
+| `log_type` | string | 否 | 缺省 `"current"`；仅 current/history，其他报错 | 日志类型 |
+| `history_index` | int | 否 | 缺省 -1；history 模式 0=最近完成，越界报错 | 历史序号 |
+| `offset` | int | 否 | 缺省 0，行偏移续读 | 偏移 |
+| `limit` | int | 否 | 缺省 500，最大行数 | 行数 |
+- **响应**：current → `{logs, execution_id, type:"current", total_lines, is_running, has_more}`；history → `{logs, execution_id, type:"history", completed_at, status, total_lines, has_more}`；无执行/无历史/任务不存在 → `{error:...}`。
+
+#### schedule.cancel / delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `task_id` | string | 否 | 缺省 `""` | 任务 id |
+- **cancel 响应**：`{task_id, status:"cancelled"}`；调度器未初始化 → `{error}`。
+- **delete 行为**：running 先 cancel 再连日志删除。**响应**：`{task_id}`；不存在/失败 → `{error, task_id}`。
+
+另有 `issue.watch_once` / `issue.state.list` / `issue.matrix` / `issue.delete` 走同一 handler（§10.6.17）。
 
 ### 8.4 health_check.get_conf / set_conf（探活配置）
+
+> **网关处理**：**纯本地**——读探活配置；返回 {every, target, active_hours}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "health_check.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"every": 60, "target": "", "active_hours": null}}
+```
 
 `heartbeat.get_conf`/`set_conf` 为**废弃别名**，行为等同 health_check.*。
 
@@ -1222,353 +1776,1873 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.1 配置与模型
 
-| 方法 | 说明 |
-|------|------|
-| `config.get` / `config.set` / `config.save_all` / `config.validate_model` / `config.moa_status` | 配置面板读写（A4g：个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler）；`config.set` 变更环境变量后可能安排进程重启（响应说明是否热更新）；moa_status 经 E2A 在目标 AgentServer 检查，不可用回 `SERVICE_UNAVAILABLE`。新增本地/代理方法：`models.refresh_status`、`connection.status`、`workspace.tree/preview/usage/entries.delete` |
-| `models.list/get/replace_all/validate/upsert/delete/references`、`model_groups.list/upsert/delete` | 模型与模型组管理（配置代理，经 `_ConfigReq` 转发） |
-| `session.selection.set` | 见 §6.3 |
-| `vendors.list` / `vendors.fetch_models` | 模型厂商列表 / 拉取厂商模型目录 |
-| `openai_account.auth.*`（status/start_login/pending_login/poll_login/logout）、`openai_account.models.list` | OpenAI 账号登录态管理 |
-| `locale.get_conf` / `locale.set_conf` | 语言配置 |
-| `channel.get` | 渠道配置概览 |
+**分发契约（A4g/A5）**：`config.get/set/save_all/validate_model`、`models.*`、`model_groups.*`、`session.selection.set` 经 `_register_config_proxy` 注册——**个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地**；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler（`app_web_handlers.py:5714-5759`）。`config.moa_status` 与 `models.refresh_status` **恒 E2A**（无本地 handler）。`vendors.*`、`openai_account.*`、`connection.status`、`locale.*` 为网关本地 handler。转发前删客户端传入的 `_auth_session` 键、改注入连接登录会话（`:5735-5746`）。企业版写保护（仅 HTTP 入口）：`config.set/save_all`、`models.replace_all/save/remove/set_active` 等 → `FORBIDDEN "企业版配置由管理面统一下发"`。
+
+#### config.get
+
+> **网关处理**：**E2A 代理**——_register_config_proxy(CONFIG_GET)；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
+- **参数**：无。**响应**：一次性扁平面板快照（全 string 化）：`CONFIG_SET_ENV_MAP` 全键的当前值（默认模型五键 `model_provider/model/api_base/api_key/endpoint_profile`、多模态/搜索/agents/team 扁平键等）+ 元信息 `app_version/runtime_platform/external_cli_agents_supported/cua_backend_available` + YAML 开关族（`setup_guide_enabled`、`rsi_enabled`、MoA 键、`trajectory_ui_*`、实验开关、`enable_free_models` 等）；api_key/token 类经解密；YAML 读失败逐键回默认且**仍 ok=true**。
+
+#### config.set
+
+> **网关处理**：**E2A 代理**——_register_config_proxy(CONFIG_SET)；A4g 同上；legacy 共享目录的外部 CLI 依赖安装门控短路。
+- **参数**：扁平键值对象，四族键：env 族（同步 `os.environ` + 持久化 `.env`；`*_provider` 须在枚举、`*_context_window_tokens` 正整数或 256K/1M）、YAML 开关族（`cua_agent_enabled` 须 true/false/null、`permissions_profile` 与 `permissions_enabled` 互斥）、`agents`/`team`（整体替换 `modes.team`）、MoA 键族。
+- **响应**：`{updated:[键], applied_without_restart: bool}`——**该布尔表示是否已在 AgentServer 进程内热重载**（`reload_agents_config` 按 scopes={model, multimodal, search, team, permissions, agent_runtime, proactive} 生效），非"安排进程重启"；另可附 `codex_dependency_install`/`external_cli_dependency_installs`/`canonical_config`。
+- **错误**：`BAD_REQUEST`（键校验）/ `INTERNAL_ERROR`（team 写回失败、KV cache fail-closed、MoA 保存失败）。
+
+#### config.save_all
+
+> **网关处理**：**E2A 代理**——_register_config_proxy(CONFIG_SAVE_ALL)；A4g 同上。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `config` | object | 否 | 同 config.set 全键 | — |
+| `models` | list | 否 | 同 models.replace_all 的条目规则 | 整体替换 models.defaults |
+| `login_model_settings` | object | 否 | `{模型名:{context_window: 正整数}}` | 登录模型窗口设置 |
+| `agents` / `team` | 顶层 | 否 | 并入 config | — |
+
+- **响应**：`{updated, applied_without_restart, models_count?}` + 可选 install/canonical_config；**单次热更新**；affinity 与新模型不匹配时自动关闭 KV cache affinity。
+
+#### config.validate_model / models.validate（同一实现）
+
+> **网关处理**：**E2A 代理**——_register_config_proxy(CONFIG_VALIDATE_MODEL)；A4g 同上。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `api_base` / `model` | string | 是 | api_base strip 去尾 `/` | — |
+| `model_provider` | string | 是 | ProviderType 枚举（大小写归一） | — |
+| `api_key` | string | 非 OAuth 厂商必填 | OpenAIAccount provider 免 | — |
+| `verify_ssl` | bool | 否 | 缺省保留持久值再 false | — |
+| `endpoint_profile` / `reasoning_level` / `vendor_key` | — | 否 | 草稿→host 推断→持久兜底 | — |
+
+- **行为**：发最小 chat completion 探测（timeout 25s、不重试；先 max_tokens=3 失败再 ≤16）。**响应**：`{ok:true, model_provider}`；探测失败 → `LLM_ERROR` + 原始异常文本。
+
+#### config.moa_status
+
+> **网关处理**：**E2A 代理**——_proxy_config_request(CONFIG_MOA_STATUS)；恒 E2A、无本地 handler。
+- **参数**：`model_selection`（可选）。**响应**：已配置 `{configured:true, aggregator_model_name, aggregator_alias}`；任何异常（未配置组/成员缺凭据等）→ `{configured:false}`——**服务端实现永不回错误**；`SERVICE_UNAVAILABLE` 仅指 AgentServer 断链（E2A 外壳）。
+
+#### models.list
+
+> **网关处理**：**E2A 代理**——_register_config_proxy / _model_resource_rpc；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
+- **参数**：无。**响应**：`{models:[{model_id, model_name, api_base, api_key(登录模型恒空), has_api_key, model_provider, temperature, reasoning_level(on/off), is_default, is_agentos, is_free, alias, origin_index, vendor_key, plan, endpoint_profile, context_window_tokens, ...}], model_groups:[公开组], active_model}`；E2A 成功后 AgentServer 追加 Zen 免费模型行（按连接登录会话合并）。企业 legacy 本地分支另返回 `model_source:"enterprise"` 且**无 model_groups**。
+
+#### models.replace_all
+
+> **网关处理**：**E2A 代理**——_register_config_proxy / _model_resource_rpc；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
+- **参数**：`models`（list 必填；登录模型与 `is_agentos:true` 条目被剔除且剔后须非空）。条目字段：`model_name`（strip 非空）、`api_key`（新条目必填；OpenAIAccount 例外；带 `origin_index` 的旧条目缺省视为"未改"）、`model_provider`（枚举）、`temperature`（空串→null）、`timeout`（缺省 1800）、`verify_ssl`（缺省 false）、`is_default`、`alias`（列表内唯一且不与 model_name 冲突）、`reasoning_level`（枚举 off/on/minimal/low/medium/high/xhigh/max 且按模型能力校验）、`context_window_tokens`（正整数或 256K/1M）、`vendor_key`/`plan`（plan 枚举 token_plan/coding_plan/custom_api 且必须带 vendor_key）、`endpoint_profile`、`origin_index`（命中原位置时 diff 合并保留 `${VAR}` 占位符）、`model_id`（提供时须已存在）。
+- **响应**：`{count, applied_without_restart}`。**错误**：`BAD_REQUEST` / `ModelSelectionError`（code+payload）/ `INTERNAL_ERROR`。
+
+#### models.get / upsert / delete / references
+
+> **网关处理**：**E2A 代理**——_register_config_proxy / _model_resource_rpc；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `models.get` **E2A 代理** | `model_id`（必填） | 完整条目 + `source/is_agentos/read_only/write_only_fields`；服务端分支 defaults 源非登录模型时**下发明文 api_key**；agentos 源不出 key 且 read_only；`MODEL_SELECTION_NOT_FOUND` |
+| `models.upsert` **E2A 代理** | `model`（dict 必填；扁平或嵌套 model_client_config/model_config_obj 均可） | 合并语义（未提交字段保留；api_key 空或未变保留原值、变更则加密）；`model_id` 缺省生成 `mdl_`；`is_default:true` 独占；agentos 模型 → `MODEL_SELECTION_FORBIDDEN`"AgentOS models are read-only" |
+| `models.delete` **E2A 代理** | `model_id`（必填） | 先查引用（组路由/session/agents/team/cron）→ 有引用 `MODEL_SELECTION_REFERENCED`（payload 带 references）；agentos → FORBIDDEN；删除时级联剪路由、空组移除 |
+| `models.references` **E2A 代理** | `ModelSelection` 本体（整个 params 作 schema） | `{references:[{scope, scope_id}]}`，scope ∈ model_group/session/cron/agent/team；元数据不可读 → `MODEL_RUNTIME_UNAVAILABLE` |
+
+#### model_groups.list / upsert / delete
+
+> **网关处理**：**E2A 代理**——_register_config_proxy / _model_resource_rpc；**A4g 个人版恒 E2A**；转发前删客户端 _auth_session 键、注入连接登录会话。
+- **list**：无参数；组公开键 `model_group_id/display_name/enabled/is_default/routes/request_config` + 可选 `routing`（仅三个超时键，其余剥离）。
+- **upsert**：`group`（dict；`model_group_id` 缺省生成 `mgp_`、route_id 缺省 `rte_`）；**enabled 组须含至少一条 enabled 路由**否则 `MODEL_GROUP_INVALID`；候选整体校验。
+- **delete**：`model_group_id` 必填；引用检查同 models.delete。
+- 错误外壳：`ModelSelectionError` → `error+code+payload`；其余 `BAD_REQUEST`。
+
+#### vendors.list / vendors.fetch_models（网关本地）
+
+> **网关处理**：**纯本地**——读静态厂商注册表；返回 {vendors:{token_plan:[...], coding_plan:[...], custom_api:[...], reasoning:{...}}}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "vendors.list", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"vendors": {"token_plan": [], "coding_plan": [], "custom_api": []}}}
+```
+
+- **list**：无参数。`{vendors:{token_plan:[...], coding_plan:[...], custom_api:[...], reasoning:{...}}}`——厂商卡片 17 字段（vendor_key/display_name/plan/client_provider/api_base/endpoint_profile/default_model/model_options/...）。
+- **fetch_models**：`vendor_key`+`plan`（必填，须命中预设枚举）、`api_key`（需 key 的预设必填，未给走回退）、`modality`（仅 volcengine+custom_api 支持 `image`|`video`，须配 `api_base`）。远端成功 `{models, source:"remote"}`；回退仍 `ok:true`（`source:"preset"|"unavailable"` + reason）；拉取超时 12s。
+
+#### locale.get_conf / set_conf
+
+> **网关处理**：**分流**——legacy 本地 / AgentOS E2A；返回 {preferred_language:'zh'|'en'}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "locale.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"preferred_language": "zh"}}
+```
+
+- **get_conf**：无参数 → `{preferred_language:"zh"|"en"}`（缺省/非法归一 zh）。
+- **set_conf**：`preferred_language`（必填，strip.lower ∈ {zh, en}）；写回 config.yaml → `{preferred_language}`；非法 → `BAD_REQUEST`。
+
+#### openai_account.auth.* / openai_account.models.list（网关本地）
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `auth.status` **纯本地** | 无 | `{authenticated, auth_path, has_refresh_token, expires_at, needs_refresh, error, base_url}` |
+| `auth.start_login` **纯本地** | 无 | 幂等复用未过期 job；`{status:"pending", login_id, user_code, verification_uri, interval, expires_in, expires_at, auth}`（TTL ≤300s） |
+| `auth.pending_login` **纯本地** | 无 | 最新 job（同上形状）；无 job → `{status:"none"}` |
+| `auth.poll_login` **纯本地** | `login_id`（必填非空） | 状态机：不存在/过期 `{status:"expired"}` → 未批准 `{status:"pending"}` → 成功 `{status:"authenticated", authenticated:true, auth}`（job 移除） |
+| `auth.logout` **纯本地** | 无 | 清空 login job 后登出；`{logged_out, auth}` |
+| `models.list` **纯本地** | 无 | `{models:[id...], base_url, auth}`；失败 `MODEL_LIST_ERROR` |
+
+- 错误 payload 三段：`{status:"error", error, code, status_code, relogin_required}`（code 枚举：`openai_account_auth_missing/_refresh_failed/_store_read_failed`、`device_code_*`、`token_exchange_*` 等）。
+
+| `session.selection.set` **E2A 代理** | 见 §6.3 |
+| `models.refresh_status` **未实现** | 无本地 handler，恒 E2A；刷新模型状态 |
+| `connection.status` **纯本地** | 网关本地；`{agent_ready/连接状态, protocol_version}` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "connection.status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"agent_ready": true, "protocol_version": "1.0"}}
+```
+
 
 ### 10.2 媒体与附件
 
 #### media.persist（媒体落盘）
 
-- **请求参数**：`media_items`（list；仅处理 `type=="image"` 的项，**最多前 8 项**，单项 base64 解码后 **≤10MB**——超限项静默丢弃不报错）。项字段：
+> **网关处理**：**E2A 代理**——proxy_unary_request(MEDIA_PERSIST)；**网关预上传**：>4MB base64 解码后经 E2A FILE_UPLOAD_CHUNK 分块（2MB/块）→ 以 _persisted:true+path 替代原 base64 项；上传失败保留原值。
+- **请求参数**：`media_items`（list；仅处理 `type=="image"` 的项，**≤8 张**——AgentServer 落盘在存满 8 张后停止（跳过非图片项继续计数）；chat.send 网关路径为"取前 8 项再过滤"，两处口径有细微差异）。项字段：
 
-| 字段 | 说明 |
-|------|------|
-| `type` | 须为 `"image"`，其它值跳过 |
-| `mimeType` / `mime_type` | 须在支持表内（常见 image/png、image/jpeg 等），否则丢弃 |
-| `base64Data` / `base64_data` | base64 正文，可带 `data:...;base64,` 前缀（自动剥离） |
-| `_persisted` + `path` | 大图专用：HTTP bridge 已落盘的记录直接透传（网关不重复解码），path 不存在则丢弃 |
+| 字段 | 类型 | 必填 | 校验 | 说明 |
+|------|------|------|------|------|
+| `type` | string | 是 | 须为 `"image"`，其余跳过 | 仅图片落盘 |
+| `mimeType` / `mime_type` | string | 是 | lower+strip；表：image/png→.png、image/jpeg→.jpg、image/webp→.webp、image/gif→.gif；表外丢弃 | MIME |
+| `base64Data` / `base64_data` | string | 与 path 二选一 | 解码后 ≤10MB；`data:...;base64,` 前缀自动剥离 | 上传正文 |
+| `_persisted` + `path` | bool+string | 否 | path 须存在否则丢弃 | 网关预上传大图直接透传 |
 
-- **处理**：图片落盘到 `<sessions>/<session_id>/uploads/`；**超过 E2A 4MB 限制的**在网关侧解码后经 E2A 分块上传（§2.4），避免压内部 WS 帧。
-- **响应 payload**：回传 normalize 后的 `{content?, query?, media_items?, files?}`——`media_items` 每项变为 `{type:"image", filename, mime_type, path, size_bytes}`，并同步生成 `files.uploaded_images: [{filename, path, mime_type, size_bytes}]`（注意此时 `files` 为 **dict** 而非 chat.send 的 list）。失败 `INTERNAL_ERROR`。
-- **归属**：media.persist 现为网关薄 E2A 代理（超 4MB 预算的 base64 先经 E2A 分块上传再转发，不再是独立 HTTP bridge）；项级归一化（仅 image、前 8 项、单项 ≤10MB、mime 表）在 AgentServer 侧落盘时执行，同规则在 chat.send 路径保留于 `channel_manager/web/media/normalizer.py`。
+- **处理**：图片落盘 `agent/sessions/<sid>/uploads/<安全文件名>`（同名原子去重）；**超过 4MB E2A 预算的**在网关解码后经 E2A 分块上传（2MB/块）替换为 `_persisted:true` 落盘记录；上传失败**保留原 base64** 由下游报可重试错误（网关不重复解码）。
+- **响应**：`{content?, query?, media_items, files}`——`media_items` 每项 `{type:"image", filename, mime_type, path, size_bytes}`；`files` 为 **dict**：`{uploaded_images:[{filename, path, mime_type, size_bytes}]}`。
+- **错误**：归一化异常 `INTERNAL_ERROR`；企业版项越出租户根 `FORBIDDEN`；超限/非法项**静默丢弃不报错**。
 
 #### media.discard（丢弃未发送副本）
 
-- **请求参数**：`path`（string 必填，缺失 `BAD_REQUEST "path is required"`）。只删**当前会话 uploads 目录内**的普通文件。
-- **响应 payload**：删除结果（`{ok/deleted}` 形态以 `discard_session_upload` 实现为准）；路径非法 `BAD_REQUEST`、IO 异常 `INTERNAL_ERROR`。
+> **网关处理**：**E2A 代理**——proxy_unary_request(MEDIA_DISCARD)；params 原样。
+| 参数 | 类型 | 必填 | 校验 | 说明 |
+|------|------|------|------|------|
+| `path` | string | 是 | 须为**当前会话 uploads 目录直接子文件**：绝对路径、拒 symlink/目录/其他会话/用户原图 | 只删会话上传副本 |
+
+- **响应**：`{deleted: true|false}`（文件已不存在返回 deleted:false——重复删除是成功）。**错误**：`BAD_REQUEST`（path required/must be absolute/outside session uploads/refusing symlink/not a file）/ `INTERNAL_ERROR`（OSError）。
 
 #### document.persist / document.formats
 
-- `document.persist`：文档附件落盘，请求/响应与 media.persist 同构（`persist_and_parse_documents` normalize 后回传 `content/query/files` 等关心的键）；受上传格式黑名单约束。大文档同样走 HTTP bridge 分块。
-- `document.formats`：返回文档上传黑名单格式列表。
+> **网关处理**：**E2A 代理**——proxy_unary_request(DOCUMENT_PERSIST)；同 media.persist 预上传逻辑（_pre_persist_large_documents）。
+- **document.persist**：参数 `documents` 与/或 `media_items` 中 `type=="document"`（或 type 缺省且文件名过黑名单）的项——**与 media.persist 差异显著**：单项解码后 ≤**100MB**（media 10MB）、数量上限 **8 条（企业版 20）**、支持本地 `path/original_path` 引用、超限项进 `document_errors:[{index, filename, error}]` **不静默丢**、回显剥离 base64 防超帧、响应恒含 `forbidden_formats`；`files.uploaded_documents:[{filename, path, original_path, mime_type, size_bytes}]`。
+- **document.formats**：无参数 → `{forbidden_formats:[29 个后缀]}`（.exe/.dll/.msi/.bat/.ps1/.jar/.app/.dmg/.so/.dylib 等，排序）。
 
 #### task.asr.transcribe（语音转写）
 
-- **请求参数**：`audio_base64`（必填）、`mime_type`（默认 `audio/webm`；枚举 flac/m4a/mp4/mpeg/mp3/ogg/wav/wave/webm/x-m4a）；解码后 **≤25MB**。
-- **响应 payload**：`{"text": "<转写文本>"}`。
-- **错误码族**：`ASR_NOT_CONFIGURED` / `ASR_BAD_CONFIG` / `ASR_UNSUPPORTED_FORMAT` / `ASR_AUDIO_TOO_LARGE` / `ASR_AUDIO_DECODE_FAILED` / `ASR_TIMEOUT` / `ASR_CONNECTION_ERROR` / `ASR_UPSTREAM_ERROR` / `ASR_INVALID_RESPONSE` / `ASR_EMPTY_TRANSCRIPT`；意外异常 `INTERNAL_ERROR`。**未配置 ASR 时返回 `ok:true + {text:"", skipped:true, reason:"ASR_NOT_CONFIGURED"}`**（不报错）。
+> **网关处理**：**纯本地**——base64 解码 + mime 校验 + ASR API 调用（120s 超时）；返回 {text}；未配置→ok+{text:'',skipped:true}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "task.asr.transcribe", "params": {"audio_base64": "<base64...>", "mime_type": "audio/webm"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"text": "转写文本"}}
+```
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `audio_base64` | string | 是 | 空/非 Base64 → `BAD_REQUEST`（"录音内容为空"/"不是有效的 Base64"）；解码后 **≤25MB** → `ASR_AUDIO_TOO_LARGE` | 录音内容 |
+| `mime_type` | string | 否 | 缺省 "audio/webm"；剥 `;charset` 后缀、lower；枚举 flac/m4a/mp4/mpeg/mp3/ogg/wav/wave/webm/x-m4a → 表外 `ASR_UNSUPPORTED_FORMAT` | 录音格式 |
+
+- **响应**：`{text}`；**未配置 ASR** → `ok:true + {text:"", skipped:true, reason:"ASR_NOT_CONFIGURED"}`；mime 校验先于解码；超时 120s/连接 15s 不重试。
+- **错误码族**：`ASR_NOT_CONFIGURED`(经 skipped 形态)/`ASR_BAD_CONFIG`/`ASR_UNSUPPORTED_FORMAT`/`ASR_AUDIO_TOO_LARGE`/`ASR_TIMEOUT`/`ASR_CONNECTION_ERROR`/`ASR_UPSTREAM_ERROR`/`ASR_INVALID_RESPONSE`/`ASR_AUDIO_DECODE_FAILED`/`ASR_EMPTY_TRANSCRIPT`；意外 `INTERNAL_ERROR`。
+
+#### workspace.*（工作区只读/管理，E2A 代理）
+
+路径规范（全部 `relative_path`）：strip、`\\`→`/`、拒绝 `..`/NUL/绝对路径、`.` 段折叠、空=根。
+
+#### workspace.tree
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `relative_path` | string | 否 | 路径规范见上；空=根 | 相对租户根的目录 |
+- **响应**：`{relative_path, entries:[{name, relative_path, is_dir, size_bytes, mtime_ms, ctime_ms, zone, deletable, mime_hint}]}`；不存在 `NOT_FOUND`；路径逃逸 `FORBIDDEN 'path escapes tenant root'`。
+
+#### workspace.preview
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `relative_path` | string | 是 | 空 → `BAD_REQUEST` | 相对租户根文件路径 |
+| `max_bytes` | int | 否 | 缺省 512KiB；**硬顶 1MiB**（`min(int(...), 1MiB)`） | 只读前 limit+1 字节判定截断 |
+- **响应**：`{relative_path, truncated, content}`——二进制（含 NUL 或可打印占比 <85%）或不可解码 → `content:null`；目录 `BAD_REQUEST`。
+
+#### workspace.usage
+
+- **参数**：无（身份取自请求三元组）。**响应**：`{user_id, group_id, bot_id, used_bytes, limit_bytes, percent, status(ok\|warn\|block), source_policy_id, unlimited}`。
+
+#### workspace.entries.delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `relative_paths` | list[string] | 是 | 非 list → `BAD_REQUEST 'invalid workspace request'` | 逐条独立删除 |
+- **响应**：`{results:[{relative_path, ok, error?, freed_bytes?}]}`——可删 zone 仅 session_workspace/session_todo/artifact；错误枚举 forbidden_zone/bad_path/not_found/io_error/delete_too_deep(≥32)/delete_too_many(>5000)；symlink 只删链接不跟随。
+
+#### file.import_url / file.upload_chunk（附件外链导入与分块上传）
+
+> **网关处理**：**E2A 代理**——_file_proxy(FILE_IMPORT_URL)；params 原样。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `file.import_url` **E2A 代理** | `files`（list[dict] 必填；项含 `url`/`uri`、可选 `name/filename` 缺省取 URL basename 再缺省 "download"）、`overwrite`（bool 缺省 false——false 落盘 stem-N 去重；网关内部调用时 overwrite=非 AgentOS 客户端） | 下载落 `get_agent_workspace_dir()`（UA jiuwenswarm-agent、60s 超时）；响应 `{files:[原项 ∪ {path, filename, size, mime_type}]}`，失败项 `{**原项, error}` 整体仍 ok=true；企业 OBS 分支：1..20 项、图片 ≤10MiB、配额超 `WORKSPACE_QUOTA_EXCEEDED` |
+| `file.upload_chunk` **E2A 代理** | `upload_id`（必填）、`target_rel_path`（必填，`\`→`/`、禁前导 `/` 与 `..`）、`resolved_path`（续传锚点，首块响应返回）、`data`（base64 必填，空报错）、`final`（bool 缺省 false） | 首块 O_EXCL 原子创建（stem-1..999 去重）、续块 append；越出用户目录 `BAD_REQUEST "path_outside_workspace"`；响应 `{path(绝对), size(累计), upload_id, final}`。**浏览器 WS 通道 512KiB/块**（画布素材）；网关侧 >4MB 经 E2A 以 2MB/块顺序上传 |
+
+> `file.read_upload_chunk` 为**纯内部方法**（仅 `/file-api/raw-file` 读取 uploads 目录使用，非对外 WS 方法）：参数 `path`（绝对、parent 须为 `agent/sessions/<sid>/uploads`）、`offset`、`limit`（≤512KiB）；响应 `{data_base64, offset, chunk_size, size, eof, name, mime_type}`。
 
 ### 10.3 IM 渠道配置
 
-`channel.{feishu,xiaoyi,telegram,dingtalk,whatsapp,discord,slack,wecom,wechat}.get_conf/set_conf`；`channel.wechat.get_login_ui/unbind`。各渠道配置结构 normalization 在网关侧完成后写回。
+**公共契约**：`channel.*` 配置族均为**网关本地 handler**（不经转发）；set_conf 链路 = `cm.set_conf`（内存整体替换 + 热重建 Channel 实例，失败回滚并标记重启待定）→ 合并写 config.yaml → 清 Agent 配置缓存；**写盘失败仅告警、响应仍成功**。企业版写保护：`channel.*.set_conf`/`unbind` 在 **HTTP 入口**经 invoke 拦截；绑定方法另有 **handler 内自检**（WS/HTTP 均拦）：feishu/dingtalk 的 bind/unbind/revoke 与 **welink 全部 7 个方法（含 get_bindings）** → `FORBIDDEN "企业版配置由管理面统一下发"`；`channel.feishu.get_bindings` 企业版放行。
+
+#### channel.get
+
+> **网关处理**：**纯本地**——读 cm.enabled_channels；返回 {channels:[{channel_id}]}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.get", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"channels": [{"channel_id": "feishu"}, {"channel_id": "web"}]}}
+```
+
+- **参数**：无。**响应**：`{channels:[{channel_id}]}`（当前已注册 Channel 实例 id）。
+
+#### get_conf / set_conf（18 个）
+
+- **get_conf**：无参数 → `{config: <渠道配置体>}`。feishu/xiaoyi 返回前归一化为 `{apps:[...]}` 并补默认值（旧平铺格式转单 app）；其余七渠道原样返回。⚠️ **读路径不脱敏**（`_mask_sensitive` 无调用点）——app_secret/sk 原样返回。
+- **set_conf**：params 即渠道配置体（dict 必填）。**telegram/whatsapp/discord/slack/wecom/wechat 为整体替换**（无 schema 校验，wechat 另有数值边界）；**feishu/dingtalk 为按 app 合并保留**（未发送的 secret 不被默认空值覆盖；dingtalk 新 app 强制 `allow_from`、client_id 重复拒绝、空 client_secret 视为不变；dingtalk 缺 `apps` 键时退回整体替换）。响应 `{config: <写后读回>}`。
+- **各渠道配置体关键字段**（核心 5-10 个）：
+
+| 渠道 | 关键字段（默认） |
+|------|----------------|
+| feishu | `app_id/app_secret`、`encrypt_key/verification_token`、`allow_from(["0.0.0.0/0"])`、`enabled(true)/is_default`、`name`、`enable_streaming(true)`、`my_user_id/bot_name`、`group_digital_avatar/enable_memory(false)` |
+| xiaoyi | `ak/sk`、`agent_id/api_id/app_id/uid/api_key/push_id`、`ws_url1/ws_url2`（华为 HAG）、`push_url/file_upload_url`、`enable_streaming(true)`、`phone_tools_enabled(false)` |
+| telegram | `enabled(false)`、`bot_token`、`allow_from`、`parse_mode("Markdown")`、`group_chat_mode("mention")` |
+| dingtalk | app 级 `client_id/client_secret/persistent_agent_id/robot_code/allow_from`（空列表=放行所有）/`enabled`（缺省"有凭证即启用"）；共享段 `api_base/oapi_base` + 文件族 `max_download_size/download_timeout/send_file_allowed/enable_file_download/workspace_dir` |
+| whatsapp | `enabled(false)`、`bridge_ws_url("ws://127.0.0.1:19600/ws")`、`allow_from/default_jid`、`auto_start_bridge(false)`、`bridge_command/bridge_workdir/bridge_env` |
+| discord | `enabled(false)`、`bot_token/application_id/guild_id/channel_id`、`block_dm(false)`、`allow_from` |
+| slack | `enabled(false)`、`bot_token/app_token`（Socket Mode）、`allow_from/allowed_channel_ids/default_channel_id`、`reply_in_thread(true)` |
+| wecom | `enabled(false)`、`bot_id/secret`、`ws_url`、`enable_streaming/send_thinking_message(true)`、`message_merge_window_ms(15000)`、文件族 `max_download_size(100MB)` 等 |
+| wechat | `enabled(false)`、`base_url`、`bot_token/ilink_bot_id/ilink_user_id`、`auto_login(true)`、`qrcode_poll_interval_sec(2.0)`、`long_poll_timeout_sec(45)`、`backoff_base_sec(1.0)/backoff_max_sec(30.0)`、`credential_file` |
+
+- **channel.wechat.set_conf 数值边界**（写盘前校验，`BAD_REQUEST`）：`qrcode_poll_interval_sec` 0.1–3600、`long_poll_timeout_sec` 1–600（**必须整数**）、`backoff_base_sec/backoff_max_sec` 0.1–3600 + 跨字段 **max ≥ base**（两者同时出现才校验）；bool 显式排除、NaN/inf 拒绝。
+
+#### channel.wechat.get_login_ui / unbind
+
+> **网关处理**：**纯本地**——读微信登录 UI 状态；返回 {phase, message, qr, credentials, ...}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wechat.get_login_ui", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"phase": "idle", "message": "", "qr": null}}
+```
+
+- **get_login_ui**：无参数 → `{phase, message, qr, credentials, credentials_source, error, updated_at}`（qr 为二维码结构或 null）。
+- **unbind**：无参数 → 删本地凭据文件 + 置空 bot_token/ilink_bot_id/ilink_user_id → `{config}`；企业版 HTTP 入口 FORBIDDEN。
+
+#### 绑定方法（local_only，不经转发）
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `channel.feishu/dingtalk.bind_agent` **本地**（local_only） | `app_id`/`client_id` + `app_secret`/`client_secret` + `config_id`（均必填 strip 非空）；dingtalk 另可 `robot_code` | 经同事服务 CONNECTION_ATTACH（120s 超时）取 agent_id → 合并写盘热生效；响应 `{binding:{app_id\|client_id, persistent_agent_id}}`；锁忙 `CONFLICT "application binding is busy"` |
+| `channel.feishu/dingtalk.unbind_agent` **本地**（local_only） | `app_id`/`client_id`（必填） | 移除该 app 的 persistent_agent_id 绑定；`{unbound:true}`（**目标不存在也返回 unbound:true**） |
+| `channel.feishu.get_bindings` **本地** | 无 | `{agent_ids:[...]}`（启用且带绑定的去重列表；企业版放行） |
+| `channel.feishu.revoke` **本地** | `persistent_agent_id`（必填） | 匹配绑定的 app 置 `enabled:false`（不删条目）；未命中 `NOT_FOUND "colleague is not bound to Feishu"` |
+| `channel.welink.get_bindings` **本地** | `config_id` 或 `persistent_agent_id`（可选过滤） | `{cli_ready, assistant_ready, channel_enabled, persistent_agent_id, assistant_credential_id, assistant_account, account, bindings[], agent_ids[]}`；⚠️ 企业版也拦截 |
+| `channel.welink.login_start` **本地** | `config_id` 或 `persistent_agent_id`（二选一必填）、`account("")`、`cli_path("welink-cli")`、`env("pro")` | `{session_id, status:"pending", qr_url, qr_text, output, error, account}`；同 agent 同账号幂等复用 |
+| `channel.welink.login_status` **本地** | `session_id`（必填；`NOT_FOUND "login session not found"`） | 刷新后 success 且未保存 → **自动落盘**共享 reader 登录并热生效；失败 `{status:"failed", error}` |
+| `channel.welink.assistant_login_start` **本地** | `account` + `config_id`/`persistent_agent_id`（均必填） | `{session_id, status, qr_payload, error, account, kind:"assistant"}` |
+| `channel.welink.assistant_login_status` **本地** | `session_id`（必填） | 扫码成功 → 落盘 assistant 凭据并**仅本次响应回显 AK/SK 一次**；失败 `{status:"failed"}` |
+| `channel.welink.assistant_credential_save` **本地** | `config_id`/`persistent_agent_id` + `account` + `assistant_credential_id` + `assistant_secret`（均必填 strip） | 保存后响应**不回显 secret**；`{status:"success", kind:"assistant", ...}` |
+| `channel.welink.revoke` **本地** | `config_id`/`persistent_agent_id`（必填） | 按 bindings 匹配删除（**保留共享 reader 与其他助手**）；`{revoked:true}`；未命中 `NOT_FOUND "colleague is not bound to WeLink"` |
 
 ### 10.4 更新与维护
 
-| 方法 | 说明 |
-|------|------|
-| `updater.get_status` / `check` / `download` / `upgrade` | 更新状态机操作，响应均为下方 **UpdateStatus** 快照 |
-| `updater.get_conf` / `reset_source` / `set_conf` | 更新源配置读写；响应为 `{enabled, desktop_release_api_type, release_api_type, install_mode, repo_owner, repo_name, release_api_url, asset_name_pattern(含 _windows/_macos/_linux), timeout_seconds, pypi_mirror, access_token(掩码 ****)}`（`common/updater.py:131-154`） |
-| `health_check.get_conf` / `set_conf`（+`heartbeat.*` 废弃别名） | 见 §8.4 |
-| `memory.compute` | **响应 payload**：`{rss_mb, total_mb, available_mb}`（本地执行，兼作连接 keepalive，不更新路由注册） |
-| `memory.forbidden.get` / `memory.forbidden.set` | 禁止记忆（记忆黑名单）定义读写，**分流**：AgentOS 部署走 E2A 代理（get 无参数、set 透传 params）；legacy 单用户本地执行——get 返回 config `memory.forbidden_memory_definition` 段，set 写回后响应 `{ok:true}`（params 非对象 `BAD_REQUEST`）（`app_web_handlers.py:5909-5948`） |
-| `hooks.list` / `commands.list` | 钩子 / 斜杠命令清单 |
-| `path.get` / `set` / `select_directory` / `select_files` / `select_file` | 本机路径选择（原生选择器不可用回 `UNSUPPORTED`） |
-| `external_cli.detect` / `install` / `install_status` 等 | 外部 CLI（Claude/Codex 等）依赖安装状态机（`install` 返回后台安装任务句柄，`install_status` 轮询进度与日志） |
+**公共**：`path.set` 与 `updater.download/upgrade/reset_source/set_conf` 命中企业版写保护（HTTP 入口 invoke 拦截 → `FORBIDDEN "企业版配置由管理面统一下发"`）。
 
-**UpdateStatus 响应字段**（`common/updater.py:93-129`，四个状态方法共用）：
+**UpdateStatus 字段**（`common/updater.py:97-135`，四个状态方法共用）：`current_version`、`current_build_date`、`latest_version`、`state`、`has_update`、`install_mode`、`release_notes`、`published_at`、`source_type`、`asset_name`、`matched_asset`、`download_url`、`downloaded_path`、`downloaded_bytes/total_bytes`、`error`、`checked_at`、`installing`、`restart_command`；`get_status` 附加 `platform`/`platform_supported`。**state 十值枚举**：`idle / checking / downloading / upgrading / error / disabled / up_to_date / update_available / downloaded / restarting`。
 
-| 字段 | 类型 | 说明 |
+#### updater.get_status / check / download / upgrade
+
+> **网关处理**：**纯本地**——读 Updater 状态快照；返回 UpdateStatus（含 platform）。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.get_status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"current_version": "0.1.0", "latest_version": "", "state": "idle", "has_update": false, "platform": "darwin", "platform_supported": true}}
+```
+
+| 方法 | 参数 | 说明 |
 |------|------|------|
-| `current_version` / `latest_version` | string | 当前 / 最新版本 |
-| `state` | string | `idle` / `checking` / `downloading` / `upgrading` / `error` / `disabled` |
-| `has_update` | bool | 是否有可用更新 |
-| `install_mode` | string | `pip` / `desktop` |
-| `release_notes` / `published_at` | string | 发行说明 / 发布时间 |
-| `source_type` / `asset_name` / `matched_asset` | string | 更新源类型 / 资产名模式 / 命中的资产 |
-| `download_url` / `downloaded_path` | string | 下载地址 / 已下载文件路径 |
-| `downloaded_bytes` / `total_bytes` | int | 下载进度 |
-| `error` / `checked_at` | string / float | 错误信息 / 最近检查时间 |
-| `installing` | bool | 安装中 |
-| `restart_command` | string | 升级后重启命令 |
-| `platform` / `platform_supported` | string / bool | 平台 / 是否支持自动更新（`get_status` 附加） |
+| `get_status` | 无 | UpdateStatus 快照（含 platform 两字段） |
+| `check` | `manual`（bool 可选缺省 false） | 触发检查；无更新 → `up_to_date`（附 latest_version/release_notes）；有更新 → `update_available`（desktop 已有安装包则 `downloaded`）；**异常不报错**——state=error + error 文案 |
+| `download` | 无 | 幂等（已在 downloading/upgrading 直接返回）；无可用更新 → state=error "No update available..."；desktop 模式置 downloading、pip 直接置 upgrading 后台执行 |
+| `upgrade` | 无 | **仅 pip 模式**：置 restarting+installing=true，成功后 3s SIGTERM 自杀重启；desktop → state=error "Desktop upgrades are handled by the desktop app" |
 
-`check` 的 `manual:true` 触发手动检查；`download` 无可用更新时 `state:"error"` + "No update available..."；`upgrade` 非 pip 安装时由桌面端接管（`state:"error"` 说明文案）。
+#### updater.get_conf / reset_source / set_conf
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip", "repo_owner": "openJiuwen", "repo_name": "agent-gateway", "access_token": "****"}}
+```
+
+
+#### updater.get_conf / reset_source
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip", "repo_owner": "openJiuwen", "repo_name": "agent-gateway", "access_token": "****"}}
+```
+
+
+- **参数**：均无。get_conf → `{enabled, desktop_release_api_type, release_api_type, install_mode, repo_owner, repo_name, release_api_url, asset_name_pattern(=windows 模式), asset_name_pattern_windows/_macos/_linux, timeout_seconds, pypi_mirror, access_token(掩码)}`；reset_source 重置为默认源后返回同结构。
+
+#### updater.set_conf
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.set_conf", "params": {"enabled": true, "timeout_seconds": 30}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip", "timeout_seconds": 30}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `enabled` | bool | 否 | 缺省不改 | 更新开关 |
+| `repo_owner` / `repo_name` / `release_api_url` / `asset_name_pattern` / `asset_name_pattern_windows` / `_macos` / `_linux` / `release_api_type` / `pypi_mirror` | string | 否 | strip；缺省不改 | 更新源配置 |
+| `timeout_seconds` | int | 否 | `max(5, int(v))`；非整数 → `BAD_REQUEST` | 请求超时 |
+- **响应**：写回后的 get_conf。⚠️ `release_api_type` 不做枚举校验，非法值下次 check 才报 `Unsupported release_api_type`。
+
+#### memory.compute / memory.forbidden.get/set / hooks.list / commands.list
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "memory.compute", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"rss_mb": 256.0, "total_mb": 16384.0, "available_mb": 8192.0}}
+```
+
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `memory.compute` **纯本地** | 无 | `{rss_mb, total_mb, available_mb}`（psutil 缺失回退 /proc/meminfo）；兼作连接 keepalive（不更新路由注册） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "memory.compute", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"rss_mb": 256.0, "total_mb": 16384.0, "available_mb": 8192.0}}
+```
+
+| `memory.forbidden.get/set` **E2A 代理** | get 无参；set 透传 params（非对象 `BAD_REQUEST`） | 分流：AgentOS → E2A；legacy/无 client → 本地读写 config `memory.forbidden_memory_definition` 段 |
+| `hooks.list` **纯本地** | 无（E2A 分支固定发 `{}`） | 分流：legacy/无 client → 本地读 config.yaml；其余 → E2A。本地响应 `{events:[{name, total_hooks, matchers:[...]}], disable_all_hooks, source:"config.yaml"}`（覆盖全部 17 个 HookEvent） |
+| `commands.list` **纯本地** | `work_mode`（string 可选——按命令 `available_modes` 过滤） | 纯本地静态元数据（刻意不转发）：`{commands:[{name, usage, example, kind:"built-in", takesArgs, scope, execution, requires_session, available_modes, description(中文), description_i18n:{zh,en}}]}` |
+
+#### path.get / set / select_directory / select_files / select_file
+
+> **网关处理**：**分流**——legacy 本地读 browser 配置 / AgentOS E2A；返回 {chrome_path, headless, decision_*...}。
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.get", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"chrome_path": "/usr/bin/google-chrome", "headless": true, "decision_mode": "llm"}}
+```
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `path.get` **纯本地** | 无 | 分流：非 legacy → E2A；legacy → 本地读 browser 配置 → `{chrome_path, headless(true), decision_mode(llm\|shadow\|hybrid), decision_provider, decision_model, decision_display_name, decision_api_base, jev_key_configured}` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.get", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"chrome_path": "/usr/bin/google-chrome", "headless": true, "decision_mode": "llm"}}
+```
+
+| `path.set` **纯本地** | `chrome_path`（必填 string）、`headless`（缺省 true，非 bool 回退 true）、`decision_mode/provider/model/api_base/display_name`（仅非 None 时写） | 分流同上；成功后清 Agent 配置缓存并重启浏览器运行时；decision_mode/provider 非法 `BAD_REQUEST` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.set", "params": {"chrome_path": "/usr/bin/google-chrome", "headless": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"chrome_path": "/usr/bin/google-chrome", "headless": true}}
+```
+
+| `path.select_directory` **纯本地** | `initial_dir`（可选 string） | **legacy → 网关进程原生目录选择器**（异常 `UNSUPPORTED`）；**AgentOS → E2A 在注入 workspace 内解析**：空 initial_dir → `UNSUPPORTED "...enter the project name and absolute path manually"`（前端回落手动输入）；越界 `BAD_REQUEST`；不存在 → `{path:null, cancelled:true}` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_directory", "params": {"initial_dir": "/Users/me/project"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"path": "/Users/me/project/src", "cancelled": false}}
+```
+
+| `path.select_files` **纯本地** | `initial_dir`（可选）、`allow_multiple`（bool 缺省 true，仅影响前端） | legacy → 原生选择器；AgentOS → E2A 枚举注入目录：排序跳过 `.`/`_` 前缀、仅普通文件、**上限 200 条**；图片（png/jpg/jpeg/webp/gif/jfif）≤4MB 附 base64 预览 → `{files:[{path, filename, size, mime_type, kind:image\|document, base64?}], cancelled:false}` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_files", "params": {"initial_dir": "/Users/me/project", "allow_multiple": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"files": [{"path": "/Users/me/project/a.py", "kind": "document"}], "cancelled": false}}
+```
+
+| `path.select_file` **纯本地** | `initial_dir`/`initial_path`/`title`（均可选 string） | **纯本地**原生选择器（无 E2A 分支）；不可用 `UNSUPPORTED`；`{path, cancelled}` |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_file", "params": {"initial_dir": "/Users/me/project"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"path": "/Users/me/project/main.py", "cancelled": false}}
+```
+
+
+#### external_cli.*（8 个，全部本地）
+
+#### external_cli.detect
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.detect", "params": {"cli_agent": "claude"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "claude", "status": "ok", "path": "/usr/local/bin/claude", "version": "1.0.0"}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `cli_agent` | string | 是 | strip+lower | 目标 agent（claude/codex/自定义） |
+| `cli_path` | string | 否 | strip | 显式 CLI 路径 |
+| `use_builtin` | bool | 否 | `is True` 或字符串 `'true'` | 优先内置托管 CLI |
+- **响应**：`{cli_agent, status: ok\|warning\|unavailable\|missing\|unsupported, path, version, reference_version, message, reason?}`。
+
+#### external_cli.validate_paths
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.validate_paths", "params": {"paths": ["/usr/local/bin/claude", "/usr/local/bin/codex"]}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"results": {"/usr/local/bin/claude": true, "/usr/local/bin/codex": false}}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `paths` | array | 是 | 非 array → `BAD_REQUEST`；**截取前 50 条** | 待验证路径列表 |
+- **响应**：`{results: {<path>: true\|false\|null}}`——true=存在，false=确认缺失，null=不可判定。
+
+#### external_cli.prune_path_histories
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.prune_path_histories", "params": {"cli_agent": "claude", "remove_paths": ["/old/path"]}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"histories": ["/usr/local/bin/claude"]}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `cli_agent` | string | 是 | 空 → `BAD_REQUEST 'cli_agent is required'` | 目标 agent |
+| `remove_paths` | array | 是 | 非 array → `BAD_REQUEST`；**截取前 50 条** | 待剪枝路径 |
+- **响应**：`{histories: [<剩余路径>]}`——服务端与磁盘历史求交集删除。
+
+#### external_cli.install / install_status / codex_install_status / custom_agent.remove
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.install", "params": {"cli_agent": "claude"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "claude", "status": "running", "phase": "preparing"}}
+```
+
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `cli_agent` | string | 是（install/status/remove） | install/status 须在已知清单（claude/codex+托管运行时）内，否则 `BAD_REQUEST 'unsupported external cli agent'` | 目标 agent |
+- **响应**：install → 19 字段安装快照 + `runtime`（**仅桌面冻结运行时可装**：pip 运行时 → `UNSUPPORTED`）；install_status → 同快照；codex_install_status → codex 快照（无 runtime 键）；custom_agent.remove → `{cli_agent}`（未安装 `BAD_REQUEST 'custom agent not found'`）。
 
 ### 10.5 权限接口
 
-`permissions.tools.get/set/update/update_user/delete`、`permissions.rules.get/create/update/delete`、`permissions.approval_overrides.get/delete`：**纯 E2A 转发**（权限状态唯一权威在目标 AgentServer 用户目录，Gateway 无本地 fallback）。`permissions.owner_scopes.get/set`：数字分身 owner 范围声明（A5 起同样统一经 E2A，`app_web_handlers.py:6346-6374`）。
+> **网关处理**：**E2A 代理**——本节全部 11 个方法均纯 E2A 转发（网关构造请求，params 透传；权限权威在目标 AgentServer 用户目录，Gateway 无本地 fallback）。
+
+#### permissions.tools.get / set / update / update_user / delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 缺省回退帧级 | 关联会话 |
+| `tool` / `tools` | string \| list[string] | get/set/update 是 | 工具名或列表 | 目标工具 |
+| `enabled` | bool | set 是 | — | 启停 |
+| `config` | dict | update 是 | — | 工具配置 |
+| `user_id` | string | update_user/delete 是 | — | 目标用户 |
+- **响应**：get → `{tools:[{name, enabled, config, ...}]}`；set/update/delete → `{ok:true}`；错误 `BAD_REQUEST`/`NOT_FOUND`。
+
+#### permissions.rules.get / create / update / delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 缺省回退帧级 | 关联会话 |
+| `rule_id` | string | update/delete 是 | — | 规则 id |
+| `rule` | dict | create/update 是 | 规则结构（pattern/action/permissions 等） | 规则定义 |
+- **响应**：get → `{rules:[...]}`；create/update → `{rule}`；delete → `{deleted:true}`。
+
+#### permissions.approval_overrides.get / delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 缺省回退帧级 | 关联会话 |
+| `tool` | string | 是 | — | 目标工具 |
+| `user_id` | string | 否 | — | 目标用户 |
+- **响应**：get → `{overrides:[...]}`；delete → `{deleted:true}`。
+
+#### permissions.owner_scopes.get / set
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 缺省回退帧级 | 关联会话 |
+| `scopes` | dict | set 是 | 数字分身 owner 范围声明结构 | 范围定义 |
+- **响应**：get → `{scopes}`；set → `{ok:true}`。A5 起统一经 E2A（`app_web_handlers.py:6346-6374`）。
 
 ### 10.6 纯转发域逐方法契约
 
-以下方法在 `_FORWARD_REQ_METHODS` 白名单中、无本地 handler，经 E2A 转发 AgentServer（`app_web_handlers.py:408-599`），传输层契约同 §3.2（成功透传、失败透传 payload.code 缺省 BAD_REQUEST）。**注意两域特例**：a4p 转发带网关前置检查（`AGENT_NOT_READY` / `A4P_WEB_SESSION_REQUIRED`，`app_web_handlers.py:5826-5859`）；rsi.\* 一律由网关注入 `session_id`（`rsi.artifact.download` 另注入 `_download_user_id`）。
+以下方法在 `_FORWARD_REQ_METHODS` 白名单中、无本地 handler，经 E2A 转发 AgentServer（`app_web_handlers.py:459-696`），传输层契约同 §3.2（成功透传、失败透传 payload.code 缺省 BAD_REQUEST）。**注意两域特例**：a4p 转发带网关前置检查（`AGENT_NOT_READY` / `A4P_WEB_SESSION_REQUIRED`，`app_web_handlers.py:5826-5859`）；rsi.\* 一律由网关注入 `session_id`（`rsi.artifact.download` 另注入 `_download_user_id`）。
+
+其中 §10.6.1-§10.6.5（skills）与 §10.6.9（专家团/装备包）为**逐参数契约**（参数表含类型/必填/默认与校验/说明 + 响应字段 + 错误码），依据 AgentServer 仓 develop `475e3a3b64` 的 handler 实现逐行核对——这些小节内的行号引用相对该仓 `server/` 目录。布尔参数普遍为 Python 真值判断（`bool(params.get(...))`）：WS 路径无字符串布尔强转，**传字符串 "false" 会被当作 true**；严格布尔与宽松字符串解析的例外已在参数行逐处标注。另有 11 个白名单在册方法（`session.assets.remove`、`skills.enterprise/source` 系列、`skills.update/updates.check`）因钉定协议包缺枚举成员**当前不可达**（帧级 METHOD_NOT_FOUND，附录 F.1），无接口章节。
 
 #### 10.6.1 skills 基础
 
-公共机制：zip 安全限额——上传包 ≤50MB、解压总量 ≤100MB、文件数 ≤5000、单文件 ≤32MB、路径深度 ≤20（`skill_manager.py:138-142`）；多数 handler 业务失败不占错误码通道，返回 `ok:true` + `{success:false, detail, detail_key?}`；安装/导入/切换类方法成功后服务端**重建 agent 实例**（`interface.py:2158-2187`）。公共错误码：`SKILL_NOT_FOUND / SKILL_INVALID_PACKAGE / SKILL_INVALID_METADATA / SKILL_RESERVED_PATH / SKILL_IMPORT_OVERWRITE_REQUIRED / SKILL_BUILTIN_READ_ONLY / SKILL_ALREADY_EXISTS / SKILL_NAME_CONFLICT / SKILL_UNSAFE_PATH / SKILL_FILE_TOO_LARGE / SKILL_OPERATION_UNSUPPORTED / SKILL_VERSION_NOT_FOUND / SKILL_VERSION_CONTENT_INVALID / SKILL_DOWNLOAD_TOKEN_INVALID / SKILL_KNOWLEDGE_INPUT_CONFLICT / SKILL_REBUILD_FAILED`。
+**公共契约**（本小节全部方法）：
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `skills.list` | `refresh_marketplaces`（bool，默认 false）、`with_installed`（bool，默认 false） | `{skills:[卡片], plugins?}`；卡片含 name/description/version/tags/allowed_tools/source/installed/enabled/is_builtin/has_evolutions/skill_type 等 | refresh 时先 clone/pull 市场源 |
-| `skills.installed` | 无 | `{plugins:[{plugin_name, marketplace, spec, installed_at, git_commit, enabled, skills:[{name,version}]}]}` | — |
-| `skills.get` | `name`（必填）、`version`（缺省 null 读 workspace 副本） | 详情：frontmatter 全字段 + `content`（正文，图片改写为受控预览 URL）+ file_path/enabled/config；SkillPack 追加 skillpack 结构 | 版本相关错误码显式拒绝 `version` 回退 |
-| `skills.versions.list` | `name`（必填） | `{success, name, default_version, versions:[{version, is_default, available, created_at, updated_at}]}`（只读 `.archive`） | — |
-| `skills.files.list` | `name`（必填）；**显式拒绝 `version`** | `{name, files:[{path, type, size, mime_type}]}`（隐藏 `.archive/`） | `SKILL_UNSAFE_PATH` |
-| `skills.files.get` | `name`、`path`（必填，拒绝绝对路径/`..`/symlink）；拒绝 `version` | 文本（白名单后缀 ≤512KB）→ `{content, encoding:"utf-8"}`；二进制 → `{download_url}`（600s 有效） | `SKILL_UNSAFE_PATH` |
-| `skills.rebuild` | `name`（必填）、`version`（**键必填**，null=workspace / 非空=版本副本）、`user_intent`（缺省 null）、`language`（默认 "cn"） | 两阶段：返回 followup 载荷后服务端静默执行 Agent 改写，最终 `{success:true}` | `SKILL_REBUILD_FAILED`；经验消费后清 evolutions.json |
-| `skills.toggle` | `name`、`enabled`（必填）、`dry_run`（默认 false） | `{success, name, enabled, config}`；dry_run 返回 parent_skillpacks | SkillPack 含损坏成员时拒绝启用 |
-| `skills.install` | `spec`（必填，`plugin_name@marketplace`；裸名匹配内置转内置安装）、`force`（默认 false） | `{success:true}`；失败 `{success:false, detail}` | — |
-| `skills.uninstall` | `name`（必填） | `{success, restorable}`；内置技能拒绝删除 | 成员备份到包内 `_/` 目录供 pack_member.install 恢复 |
+- 分发：WS/HTTP 均经 `_SKILL_ROUTES`（`interface.py:1279-1320`）路由到 SkillManager，`params` 原样透传（`dict(request.params)`，`interface.py:2542`）；HTTP 南向仅对 `with_installed`/`refresh_marketplaces` 做查询串字符串布尔强转（`handlers/skills.py:18-31`），**WS 路径无任何字符串布尔强转**。
+- 错误返回双形态：handler 抛 `SkillRpcError(code, msg)` → `ok:false + {error, message, code}`（`interface.py:2648-2659`）；抛普通 `ValueError`（缺参/非法参数）→ `ok:false` **无 code**（`interface.py:2650-2652`）；大量业务失败不占错误码通道：`ok:true + {success:false, detail, detail_key?}`。
+- `name` 通用校验 `_safe_path_name`（`skill_manager.py:675-689`）：strip 非空；拒绝 `.`/`..`、含 `/`、含 `\`、绝对路径（含 Windows 形式）；**无长度上限**。
+- 布尔陷阱：除标注"严格布尔"外，布尔参数一律 `bool(params.get(...))` Python 真值判断——**传字符串 "false" 会被当作 true**。
+
+#### skills.list
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `refresh_marketplaces` | bool（真值） | 否 | 缺省 false；WS 无字符串强转 | 为真时先对已启用 marketplace 执行 git clone/pull（单源失败仅告警不中断，`skill_manager.py:9191-9220`）；企业版跳过同步 |
+| `with_installed` | bool（真值） | 否 | 缺省 false | 为真时在同一响应内联附带 `plugins`（即 skills.installed 结果），避免二次请求（`skill_manager.py:1113-1115`） |
+
+- **响应**：`{skills:[卡片], plugins?}`。卡片字段（`skill_manager.py:6889-7004`）：frontmatter 全字段 + `name/description/version/tags/allowed_tools/source/display_name/installed/enabled/is_builtin/is_builtin_source/proprietary/has_evolutions/skill_type/display_name_zh|en/description_zh|en` + 安装账本身份键（`installation_id/source_type/source_id/origin/installed_at/removable/sync_status/consistency` 等）；SkillPack 卡另含 `member_count/requested_enabled/config/blocked_members`（`skillpack.py:312-333`）。
+- **特殊**：每次列举自动补登记手动拷入 skills 目录的本地技能（`skill_manager.py:1100-1106`）；企业版 builtin/marketplace 扫描为空（`:1110-1111`）。
+
+#### skills.installed
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无（传入被忽略）。
+- **响应**：`{plugins:[...], skills:[...]}`——**含两个数组**。`plugins[]`（`skill_manager.py:1176-1184`）：`{plugin_name, marketplace, spec, installed_at, git_commit, enabled, skills:[{name, version}]}`（version 读 `.archive` current_version，损坏为 null；仅含 marketplace 来源，历史字符串 spec 回 null）；`skills[]`（`:1186-1190`）为 prebuilt/user/builtin 的安装账本 DTO（`_skill_installation_dto`，`:12111-12125`）。
+
+#### skills.get
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 缺失 → 无 code 错误"缺少参数: name"；`_safe_path_name` | 技能名。定位顺序：workspace 精确名 → frontmatter 规范名 → 容器包成员 → 市场未装副本 → 白名单内置（`skill_manager.py:7567-7670`） |
+| `version` | string \| null | 否 | 缺省/None/**空串**均视同 null → 读 workspace 副本；非空 strip 后只读 `.archive` 版本副本，**不回退** | 找不到 → `SKILL_VERSION_NOT_FOUND` |
+
+- **响应**（`skill_manager.py:1289-1343`）：frontmatter 全字段 + `content`（正文，本地相对图片改写为受控预览 URL，`skill_content_images.py:170-228`）+ `file_path/source/display_name/enabled/config{enabled}/version/skill_type` 等；`skill_type=="skillpack"` 时追加投影 `member_count/requested_enabled/config/blocked_members` + `skillpack{workflow_graph, members}`。
+- **错误**：`SKILL_NOT_FOUND` / `SKILL_VERSION_NOT_FOUND` / `SKILL_VERSION_CONTENT_INVALID` / `SKILL_INVALID_METADATA`（SkillPack 校验失败）。
+
+#### skills.versions.list
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 + `_safe_path_name` | 仅解析本地 skills 目录（`skill_manager.py:1357`） |
+
+- **响应**（`archive_store.py:162-228`）：`{success, name, default_version, versions:[{version, is_default, source(缺省 "skillhub"), available, created_at, updated_at}]}`；`available` = 版本目录含 SKILL.md 或任一 `*.md`；按 `created_at` 降序；默认版本不在列表中时（索引损坏）报 `SKILL_VERSION_CONTENT_INVALID`。只读 `.archive`。
+
+#### skills.files.list
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 + `_safe_path_name` | 技能名（仅 workspace 副本） |
+| `version` | 任意 | 条件拒绝 | **键存在且值非 None（含空串）即拒绝**："skills.files.list 不接受 version 参数"（`skill_manager.py:1369-1370`） | 显式不支持版本查询 |
+
+- **响应**（`skill_files.py:101-148`）：`{name, files:[{path(POSIX 相对), type:"file"|"directory", size, mime_type}]}`；隐藏 `.archive/`、跳过 symlink 与越根条目，按路径小写排序。
+- **错误**：仅 `SKILL_NOT_FOUND`（不安全 name 走无 code 的 ValueError——**本方法不会触发 SKILL_UNSAFE_PATH**）。
+
+#### skills.files.get
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 + `_safe_path_name` | 技能名（仅 workspace 副本） |
+| `path` | string | 是 | strip 非空；安全校验（`skill_files.py:158-203`）：拒绝空、绝对路径、`..`、首段 `.archive`、越根、symlink（文件或任一父目录）、目录、硬链接（nlink>1） | 文件相对路径 |
+| `version` | 任意 | 条件拒绝 | 同 files.list | — |
+
+- **响应**（`skill_manager.py:1421-1452`）：`{name, path, type:"file", mime_type, size}` + 二选一——文本（mime `text/*` 或后缀白名单 ≤512KB 且 utf-8 可解码）→ `{encoding:"utf-8", content}`；否则 → `download_url`（600s 有效，绑定会话）。
+- **错误**：`SKILL_UNSAFE_PATH` / `SKILL_NOT_FOUND`（超 512KB 不报错，静默走 download_url）。
+
+#### skills.rebuild
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 + `_safe_path_name` | 技能名 |
+| `version` | string \| null | **键必填** | 键缺失 → "缺少参数: version（本地无版本 Skill 请显式传 null）"；None=workspace 重建；**空串报错**"version 为空时请传 null"；非空=指定 `.archive` 版本副本（必须已存在） | 重建目标 |
+| `user_intent` | string \| null | 否 | 缺省 null；strip | 用户重建意图，拼入 Agent prompt |
+| `language` | string | 否 | 缺省 "cn"；**空串也回 "cn"**；无枚举校验 | 重建指令语言 |
+
+- **两阶段**：handler 返回 followup 载荷后，分发层在 RPC 内**同步静默执行 Agent 改写**（临时会话 `skills-rebuild-*`、非用户历史；非默认版本先备份再切换，`interface.py:2715-2813`），最终响应替换为 **`{success:true}`**（`interface.py:2633`）。
+- **错误**：SkillPack → `SKILL_OPERATION_UNSUPPORTED`；内置 → `SKILL_BUILTIN_READ_ONLY`；无/无效 evolutions.json 或无可应用经验 → `SKILL_REBUILD_FAILED`；version=null 但已有产品版本 → `SKILL_REBUILD_FAILED`"该 Skill 已有产品版本，请传入 version"。
+- **副作用**：归档旧版本；**经验消费后清空 evolutions.json**（workspace 与版本副本双侧，`skill_manager.py:7380,7423-7432`）；默认版本同步回 workspace；完成后刷新 skill rails。
+
+#### skills.toggle
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 空 → `{success:false, detail:"缺少参数: name"}`；`_safe_path_name` | 技能名 |
+| `enabled` | **bool（严格）** | 是 | `isinstance(enabled, bool)` 不满足即拒（HTTP 也不强转）——**字符串 "true" 被拒** | 目标启停状态 |
+| `dry_run` | bool（真值） | 否 | 缺省 false；**字符串 "false" 为真 → 进入探测模式** | 不落任何状态，仅返回关联技能包 |
+| `origin` | string | 否 | 缺省 null；strip | 精确匹配安装账本（单机版 prebuilt 拦截定位；企业版写 plugin enabled）——文档早期版本漏列 |
+
+- **响应**：dry_run → `{success, name, enabled, parent_skillpacks:[包名]}`；正常 → `{success, name, enabled, config{enabled}, detail:"配置已更新；下次 reload / rebuild / 新会话后执行面生效。"}`；SkillPack 另附投影。
+- **错误/特殊**：单机版 prebuilt → `{success:false, error_code:"prebuilt_not_toggleable"}`（`skill_manager.py:1532-1552`）；**含缺失/损坏成员的技能包拒绝启用**（disabled 成员不阻塞，`:1594-1602`）；SkillPack 元数据损坏 → `SKILL_INVALID_METADATA`；清单锁忙 → `code:"SKILL_INVENTORY_BUSY"`（`:308-313`）。成功后**重建 agent 实例**（`interface.py:2578-2592`）。
+
+#### skills.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `spec` | string | 是 | 含 `@` 时 `rsplit("@",1)` 两侧均须过 `_safe_path_name`（`skill_manager.py:2602-2626`） | `plugin_name@marketplace`；**裸名命中内置目录或 `<name>@builtin` → 转内置安装**（`:2605-2615, 2628-2629`） |
+| `force` | bool（真值） | 否 | 缺省 false；**字符串 "false" 为真 → 覆盖重装** | 目标目录已存在时：false → `{success:false, detail:"skill X 已存在"}`；true → 删除重装 |
+
+- **响应**：`{success:true}` 或 `{success:false, detail}`（spec 格式错/名称空/市场未找到/clone 失败/缺 SKILL.md 等，均无独立错误码）。
+- **副作用**：clone/pull 市场仓、登记 installed_plugins（name/marketplace/version/commit/source/installed_at）、刷新索引；成功后**重建 agent 实例**。
+
+#### skills.uninstall
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 空 → `{success:false, detail:"缺少参数: name"}`；`_safe_path_name` 失败时回退从 origin 尾段提取再校验 | 技能名 |
+| `origin` | string | 否 | 缺省 null；strip | 企业版按 origin 精确删除同名多条中的指定一条——文档早期版本漏列 |
+
+- **响应**：普通路径 `{success:true, restorable:bool}`；企业 entity 路径 `{success:true, name}`——**两种形态字段不一致**（`skill_manager.py:4971,5069`）。
+- **错误/特殊**：prebuilt（及企业版 builtin）→ `{success:false, error_code:"prebuilt_not_removable"}`；源码内置 → `{success:false, detail:"内置技能不允许删除"}`（无码）；被有效 SkillPack 引用 → `code:"SKILL_REFERENCED_BY_PACK"` + `referencing_skillpacks[]`（`:4974-4985`）；锁忙 → `SKILL_INVENTORY_BUSY`。
+- **副作用**：内置校验通过后先做**成员备份**到包内 `_member_backup/`（`_` 前缀使扫描跳过；失败仅告警，restorable=false，`skillpack.py:505-523`）；成功后仅轻量刷新 skill rails、**不重建实例**（`interface.py:2609-2615`）。
 
 #### 10.6.2 skills 导入 / 知识转技能 / 市场源
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `skills.pack_member.install` | `pack`、`name`（均必填） | `{success, name, pack}` | 从包内备份恢复已卸载成员 |
-| `skills.import_local` | `download_token` / `path`（**二选一**，同传报错；path 支持本地绝对路径或 http(s) 归档 URL）、`force`（默认 false）、`checksum_sha256`（仅 URL 导入时校验，缺省不校验） | `{success, skill:{name, description, version, skill_type, source, workspace_path}}` | `SKILL_DOWNLOAD_TOKEN_INVALID`；文件传输不经 WS（先 HTTP 上传拿 path） |
-| `skills.import_upload` | `path`（必填，HTTP 上传产物的临时路径）、`overwrite`（默认 false，容忍 "1/true/yes/on"） | 同 import_local | `SKILL_FILE_TOO_LARGE`（>50MB）/ `SKILL_ALREADY_EXISTS` |
-| `skills.create_from_knowledge` | `link` / `file_path`（**二选一**，同传/全空报错；file ≤50MB）、`skill_description`（缺省 ""）、`skill_name`（缺省 ""，未被占用时必须采用） | 两阶段：followup 后服务端静默跑 Agent 生成并安装 | `SKILL_KNOWLEDGE_INPUT_CONFLICT` / `SKILL_ALREADY_EXISTS` |
-| `skills.marketplace.list` | 无 | `{marketplaces:[{name, url, enabled, install_location?, last_updated?}]}` | — |
-| `skills.marketplace.add` | `name`、`url`（必填） | `{success}` | **新增源默认禁用** |
-| `skills.marketplace.remove` | `name`（必填）、`remove_cache`（默认 true） | `{success, name, cache_removed}` | — |
-| `skills.marketplace.toggle` | `name`、`enabled`（必填） | 启用时同步 clone/pull；禁用**删缓存但不卸载已装技能** | — |
+#### skills.pack_member.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `pack` | string | 是 | strip 非空 + `_safe_path_name`（`skill_manager.py:675-689`） | 技能包名，须为已存在的 skillpack/容器包（`:5144-5145`） |
+| `name` | string | 是 | 同上 | 成员技能名；其卸载备份须在 `<pack>/_member_backup/`（容器包 `<pack>/skills/_member_backup/`，`:5147-5149`） |
+
+- **响应**：成功 `{success:true, name, pack}`（`:5173`）；失败一律 `{success:false, detail}`（缺参/非法名/包不存在/无备份/恢复失败），**无 SKILL_* 码**。
+- **特殊**：恢复是**无条件覆盖**——目标已存在直接 rmtree 再 copytree，无 force/确认参数（`:5151-5155`）；成功后补登记本地技能并刷新索引。
+
+#### skills.import_local
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `download_token` | string | 与 `path` **二选一** | 同传或全空 → `SKILL_INVALID_PACKAGE`"download_token 与 path 必须且只能提供一个"（`:5190-5196`）；token 经校验+过期检查+会话绑定（`_session_id` 由分发层注入）；指向文件须为 `.zip`/`.skill`/`.skill.zip` | `send_file_to_user` 签发的短期令牌导入 |
+| `path` | string | 与 `download_token` 二选一 | 本地分支须**绝对路径**（支持 `~` 展开、拒 symlink 与黑名单根）；URL 分支**仅 HTTPS + host 白名单**（默认 `*.obs.*.myhuaweicloud.com`，env `IMPORT_LOCAL_ALLOWED_DOWNLOAD_HOSTS` 覆盖，`:8347-8361`）、`allow_redirects=False`、超时默认 60s（env `IMPORT_LOCAL_REMOTE_TIMEOUT`） | 本地绝对路径（zip/skill 包、单 SKILL.md、含 SKILL.md 目录）或 https 归档 URL |
+| `force` | bool（真值） | 否 | 缺省 false；**字符串 "false" 为真 → 覆盖**（⚠️ 与 import_upload 的宽松解析不同） | 同名已存在时是否覆盖；不覆盖 → `SKILL_IMPORT_OVERWRITE_REQUIRED` |
+| `checksum_sha256` | string | 否 | 缺省 ""；仅 URL 分支校验（小写 hex 比对，`:6443-6447`） | 不匹配 → `{success:false, detail:"下载文件校验失败（SHA256 不匹配）"}`（**无 code**） |
+
+- **响应**：成功 `{success:true, skill:{name, description, version, skill_type, source, workspace_path}}`（version 新装为 None）。
+- **错误**：`SKILL_DOWNLOAD_TOKEN_INVALID` / `SKILL_INVALID_PACKAGE`（坏 zip/无 SKILL.md）/ `SKILL_UNSAFE_PATH`（zip slip/symlink）/ `SKILL_FILE_TOO_LARGE`（解包配额：总 100MB、5000 文件、单文件 32MB）/ `SKILL_IMPORT_OVERWRITE_REQUIRED` / `SKILL_BUILTIN_READ_ONLY` / `SKILL_NAME_CONFLICT`（企业版覆盖 prebuilt）。成功后**重建 agent 实例**（`interface.py:2577-2608`）。
+
+#### skills.import_upload
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `path` | string | 是 | strip 非空（缺 → `SKILL_INVALID_PACKAGE`）；`resolve(strict=True)` 须存在且为普通文件；扩展名**仅 `.zip`**（`.skill`/`.skill.zip` 显式拒绝）；**>50MB → `SKILL_FILE_TOO_LARGE`** | HTTP 上传产物临时路径（`/file-api/skills/upload-temp` 保留待后续 RPC） |
+| `overwrite` | bool | 否 | 缺省 false；**宽松字符串解析**："1"/"true"/"yes"/"on" 小写后才为真（`:5564-5570`）——"false" 为假（与 force 不同） | 同名已存在且 false → `SKILL_ALREADY_EXISTS`（注意：本方法冲突码是 ALREADY_EXISTS，区别于 import_local 的 OVERWRITE_REQUIRED） |
+
+- **响应**：同 import_local；origin 固定 `"file-api:upload"`。
+
+#### skills.create_from_knowledge
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `link` | string | 与 `file_path` **二选一** | 同传或全空 → `SKILL_KNOWLEDGE_INPUT_CONFLICT`（`:5405-5416`）；无格式校验 | 知识来源链接（阶段二走 `skill-omni-creation`） |
+| `file_path` | string | 与 `link` 二选一 | 须存在且为文件（否则 `SKILL_INVALID_PACKAGE`）；**>50MB → `SKILL_FILE_TOO_LARGE`** | 本地知识文档绝对路径（阶段二走 `skill-creator-router`） |
+| `skill_description` | string | 否 | 缺省 "" | 注入 prompt 的补充约束（不得当作 Skill 名称使用） |
+| `skill_name` | string | 否 | 缺省 "" | 注入 prompt 的期望名称（未被占用则必须采用）——**软约束**；硬约束是下方早检 |
+
+- **两阶段**：阶段一 followup 载荷对客户端不可见——分发层同步静默跑 Agent（临时会话 `skills-knowledge-*`、`log_as_user=False`）后以 finalize 结果替换响应。最终成功：`{success:true, skill:{name, description, version(None), skill_type, source("local"), workspace_path, content(SKILL.md 全文)}}`。
+- **错误**：`SKILL_KNOWLEDGE_INPUT_CONFLICT`；**同名早检**（候选 = skill_name → 文件名 stem → URL 末段，`:5582-5619`）命中 → `{success:false, code:"SKILL_ALREADY_EXISTS", skill_name}`，**不提供覆盖路径**；产物无 SKILL.md → `SKILL_INVALID_PACKAGE`；元数据非法 → `SKILL_INVALID_METADATA`。
+
+#### skills.marketplace.list
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无。
+- **响应**：`{marketplaces:[{name, url, enabled(记录缺省 true), install_location, last_updated}]}`。⚠️ `install_location` 服务端只读不写（除非 state.json 手工携带，恒为 null）；`last_updated` 仅由 toggle 写入（UTC ISO）。
+
+#### skills.marketplace.add
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | falsy 检查（不预 strip）+ `_safe_path_name`；重名 → `{success:false, detail:"marketplace 已存在"}` | 源名称 |
+| `url` | string | 是 | falsy 检查后**原样存储，无格式/协议校验**（仅启用时经 git clone 实际验证） | git 仓库 URL |
+
+- **响应**：`{success:true}`；**新增源默认 `enabled=false`**（"避免未经确认就触发远程同步"）。
+
+#### skills.marketplace.remove
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | falsy + `_safe_path_name`；不存在 → `{success:false, detail}` | 源名称 |
+| `remove_cache` | bool（真值） | 否 | 缺省 true；**字符串 "false" 为真 → 删缓存** | 删除 `<marketplace_dir>/<name>` 本地缓存（失败仅告警，cache_removed=false） |
+
+- **响应**：`{success:true, name, cache_removed:bool}`。**只删源记录与缓存，不卸载从该源安装的技能**。
+
+#### skills.marketplace.toggle
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | falsy + `_safe_path_name`；不存在 → `{success:false, detail}` | 源名称 |
+| `enabled` | **bool（严格）** | 是 | `isinstance(bool)` 否则报"缺少参数: enabled (bool)"——**字符串被拒** | 目标状态 |
+
+- **响应**：启用 → `{success, name, enabled:true, detail:"已启用并执行 git pull|clone"}`（失败则 success:false）；禁用 → `{success, name, enabled:false, cache_removed, detail}`。
+- **特殊**：启用时缓存已存在则 pull、否则按 url clone，成功才置 enabled 并刷新 `last_updated`；禁用**删缓存但不卸载已安装 skill**。
 
 #### 10.6.3 skills 在线源（online_search / skillnet / clawhub）
 
-公共：无 RPC code，失败均为 `ok:true` + `{success:false, detail, detail_key}`；clawhub 需先 `set_token`。
+#### skills.online_search.search
 
-| 方法 | 关键参数 | 响应要点 | 特殊 |
-|------|---------|---------|------|
-| `skills.online_search.search` | `query`（必填）、`limit`（默认 20，夹取 1–50）、`cache_mode`（缺省直连，仅 "prefer_cache" 走目录缓存）、`refresh`（默认 false，刷新缓存） | `{success, partial?, query, items:[归一化卡片], sources:[{source,status,count}], cache?}` | 多源并发（单源超时 30s）+ RRF 融合去重 |
-| `skills.online_search.install` | `source`（默认 "teamskillshub"：teamskillshub\|swarmskillshub\|clawhub\|skillnet）、`identifier`（必填）、`force`（默认 false）、`version`/`market_url`/`display_name`/`owner_handle`/`tag`/`url`/`mirror_url`（缺省按目标源透传规则） | 即目标源安装方法的响应 | 转发壳 |
-| `skills.skillnet.search` | `q`（必填）、`mode`（默认 "keyword"：keyword\|vector）、`limit`/`page`/`min_stars`（缺省不携带——用源默认）、`threshold`（缺省不过滤）、`sort_by`（缺省不传）、`category`（缺省不传） | `{success, query, count, skills:[{skill_name, ...}]}` | — |
-| `skills.skillnet.install` | `url`（必填）、`force`（默认 false）、`mirror_url`（缺省 null，须 http(s)） | **异步**：`{success, pending:true, install_id}` | 轮询 install_status；任务表在内存，进程重启丢失 |
-| `skills.skillnet.install_status` | `install_id`（必填） | `{success, status: pending\|done\|failed, skill?}` | — |
-| `skills.skillnet.evaluate` | `url`（必填） | `{success, evaluation}` | 同步执行 |
-| `skills.clawhub.get_token` | 无 | `{success, token(掩码), has_token}` | 永不回传明文 |
-| `skills.clawhub.set_token` | `token`（缺省 ""，空串即清除） | `{success, token(掩码)}` | — |
-| `skills.clawhub.search` | `q`（必填）、`limit`（缺省用源默认；非整数报错） | `{success, query, count, skills:[{slug, display_name, ...}]}` | detail_key 区分 tokenNotConfigured/httpError/searchFailed |
-| `skills.clawhub.download` | `slug`（必填，兼作本地登记名）、`owner_handle`（缺省 ""，slug 多发布者时必需）、`version`（缺省 latest）、`tag`（缺省不传）、`force`（默认 false） | `{success, skill:{name, display_name, source:"clawhub"}}` | 120s 超时 |
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `query` | string | 是 | strip 非空；**缺省回退读 `q` 别名**（`skill_manager.py:2963`） | 搜索词；空 → `{success:false, partial:false, items:[], sources:[], detail:"缺少参数: query"}` |
+| `limit` | int（`int()` 强转，容忍数字串） | 否 | 缺省 20；非整数报错；**夹取 1–50** | 聚合后截断条数，同时作各子源 limit |
+| `cache_mode` | 任意 | 否 | 缺省=直连；**仅精确 "prefer_cache" 生效且只透传给 teamskillshub 子调用**，其他值静默忽略 | 走目录缓存 |
+| `refresh` | bool（真值） | 否 | 缺省 false；**字符串 "false" 为真** | 强制刷新缓存（仅 teamskillshub） |
+
+- **响应**：`{success, partial(恒存在), query, items:[归一化卡片], sources:[{source, status:success|error|skipped, count, detail_key?, detail?}], cache?}`。归一化卡片（`:2786-2814`）：`source, name, display_name, description, identifier, version, author, is_team_skill, native_score, category, updated_at, source_rank, fusion_score(RRF K=60), matched_sources[], exact_match, matched_source_count`；clawhub 卡另含 `owner_handle`。
+- **重要**：聚合源恒定为 **teamskillshub（必参与）+ clawhub（配置了 token 才参与，否则 sources 记 `status:"skipped"` + `tokenNotConfigured`）——skillnet 不在聚合搜索内**（`:2983-3012`）。单源超时 30s（超时 → `detail_key:"skills.onlineSearch.sourceTimeout"`）。
+
+#### skills.online_search.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `source` | string | 否 | 缺省 "teamskillshub"；枚举 `teamskillshub \| swarmskillshub \| clawhub \| skillnet`（casefold），其余 → `detail_key:"unsupportedSource"`；swarmskillshub 与 teamskillshub 走同一安装 | 目标源 |
+| `identifier` | string | 是 | strip；**回退链 `identifier → asset_id → slug → url`** | 语义随 source：hub asset_id / clawhub slug / skillnet url |
+| `force` | bool（真值） | 否 | 缺省 false | 透传目标源 |
+| `version` / `market_url` / `tag` / `mirror_url` | 任意 | 否 | **仅 `is not None` 时透传**；`market_url` 仅 teamskillshub、`tag` 仅 clawhub、`mirror_url` 仅 skillnet | market_url 覆盖 hub base_url（缺省取 env `TEAM_SKILLS_HUB_BASE_URL`/内置默认） |
+| `display_name` / `owner_handle` | string | 否 | strip 后**非空才透传**；`owner_handle` 仅 clawhub | 展示名/发布者 |
+| `url` | string | 否 | **缺省用 identifier**；仅 skillnet | 技能地址 |
+| `plan_id` / `confirmed` / `expected_skill_type` | 任意 | 否 | 仅键存在时透传（teamskillshub 的 SkillPack 事务/守卫）——文档早期版本漏列 | 事务提交分支 |
+
+- **响应**：即目标源安装方法响应原样。⚠️ **teamskillshub 路径抛出的 SkillRpcError（如 `SKILL_NAME_CONFLICT`）会以 `ok:false + {error, message, code}` 穿透**——本方法并非严格"无 RPC code"。
+
+#### skills.skillnet.search
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `q` | string | 是 | strip 非空 | 搜索词 |
+| `mode` | string | 否 | **非法值（含缺省）静默回 "keyword"，不报错**（`:3136-3140`） | `keyword \| vector` |
+| `limit` / `page` / `min_stars` | int（`int()` 强转） | 否 | 缺省不携带；转整数失败报错；**无钳制**（区别于 online_search 的 1–50） | 透传 skillnet-ai |
+| `threshold` | float（`float()` 强转） | 否 | 缺省不携带 | vector 模式相似度阈值 |
+| `sort_by` / `category` | string | 否 | 仅真值（非空串）才携带 | 排序字段/分类 |
+
+- **响应**：`{success, query, count, skills:[{skill_name, skill_description, author, stars, skill_url, category}]}`。异常 → `detail=str(exc)`（空则 `detail_key:"skills.skillNet.errors.searchFailedFallback"`）。
+
+#### skills.skillnet.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `url` | string | 是 | strip 非空 | 技能地址（通常 GitHub） |
+| `force` | bool（真值） | 否 | 缺省 false | 覆盖安装 |
+| `mirror_url` | string \| null | 否 | 缺省 null；**空串视为未提供**；非空须 http(s) + netloc + 长度 ≤2048，否则 `detail_key:"invalidMirrorUrl"` | 镜像下载基址 |
+
+- **响应**：`{success:true, pending:true, install_id}`（uuid hex）——**异步**；任务表为模块级共享 dict（跨 SkillManager 实例可见，**进程重启即丢**）；完成 hook 重载 Agent，hook 失败 → `detail_key:"reloadRequired"`（"技能已安装，请手动刷新页面生效"——实际已落盘）。
+
+#### skills.skillnet.install_status
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `install_id` | string | 是 | strip 非空 | install 返回的 id |
+
+- **响应四形态**：过期 → `{success:false, detail:"安装会话已过期…", detail_key:"sessionExpired"}`；pending → `{success:true, status:"pending"}`（**无 skill 字段**）；failed → `{success:false, status:"failed", detail, detail_key?, detail_params?, code?}`；done → `{success:true, status:"done", skill:{name, source:"skillnet"}}`。
+
+#### skills.skillnet.evaluate
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `url` | string | 是 | strip 非空 | 评估目标 |
+
+- **响应**：`{success:true, evaluation:<skillnet-ai 结果原样>}`。**同步执行**（线程）；LLM 配置复用 `react.model_client_config`（缺 api_key → `detail_key:"evaluateNoApiKey"`；skillnet-ai 未装 → `skillnetAiMissing`）。
+
+#### skills.clawhub.get_token
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无。**响应**：`{success:true, token:<掩码>, has_token}`——掩码规则：长度 ≤8 全 `*`，否则前4+`*`+后4（`:9914-9921`）；**响应永不回传明文**。
+
+#### skills.clawhub.set_token
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `token` | string | 否 | 缺省 ""；strip；**空串/纯空白 = 清除** | ⚠️ 持久化为 state 明文（掩码仅用于响应，`:9909-9912`） |
+
+- **响应**：`{success:true, token:<掩码>}`。
+
+#### skills.clawhub.search
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `q` | string | 是 | strip 非空 | 搜索词 |
+| `limit` | int（`int()` 强转） | 否 | **缺省不发送**（用服务端默认）；非整数报错；无钳制 | 透传 query param |
+
+- **前置**：须先 set_token，否则 `detail_key:"tokenNotConfigured"`。**响应**：`{success, query, count, skills:[{slug, display_name, summary, version, updated_at, owner_handle}]}`（HTTP 超时 30s；错误 `detail_key`：`httpError`/`searchFailed`）。
+
+#### skills.clawhub.download
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `slug` | string | 是 | strip 非空 + `_safe_path_name`（失败仅 detail，**无 detail_key**） | **兼作本地目录名与登记名**（`skill.name == slug`） |
+| `owner_handle` | string | 条件 | 缺省 ""；非空才发送 | slug 多发布者时服务端要求（本地不校验） |
+| `display_name` | string | 否 | 缺省 ""；非空生效 | 目录展示名（解析顺序：参数 > SKILL.md name > slug） |
+| `version` / `tag` | 任意 | 否 | 真值才作为 query param 发送（version 缺省=服务端 latest） | 版本/标签 |
+| `force` | bool（真值） | 否 | 缺省 false | 覆盖本地与镜像目录 |
+
+- **响应**：`{success:true, skill:{name(=slug), display_name, source:"clawhub"}}`；**HTTP 超时 120s**。预检已安装（非 force）→ `detail_key:"skillAlreadyInstalled"`；其余 `skillMdNotFound`/`parseSkillFailed`/`httpError`/`downloadFailed`。
 
 #### 10.6.4 skills Hub（teamskillshub / swarmskillshub）
 
-公共：市场超时默认 60s（env `TEAM_SKILLS_HUB_TIMEOUT`）；`token`/`system_token` 二选一（publish/delete 不走环境变量回落）。
+**公共契约**：市场 HTTP 超时默认 60s（env `TEAM_SKILLS_HUB_TIMEOUT`；publish 上传固定 120s、delete 60s）；base_url 解析 `market_url → env TEAM_SKILLS_HUB_BASE_URL → 内置默认`；`raise SkillRpcError` 的 `SKILLHUB_*/SKILL_*` 码出现在 `ok:false` 响应顶层 `payload.code`（`interface.py:2647-2660`），其余失败为 `{success:false, detail, detail_key?}`；`cache_mode="prefer_cache"` 命中时响应附 `cache` sidecar（`{state: fresh|stale|miss|error, refreshing, updated_at, complete, has_more}`）。
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `skills.teamskillshub.info` | `asset_id`、`version`（必填）、`market_url`（缺省用配置 base_url） | `{success, asset_id, version, data}` | data 结构由 Hub 决定 |
-| `skills.teamskillshub.init` | `name`（必填）、`path`（默认 "."，仅 skills 目录内相对路径）、`skill_type`（默认 "teamskills"）、`force`（默认 false，目标非空时清空重建） | `{success, path}` | 脚手架模板 |
-| `skills.teamskillshub.validate` | `path`（必填）、`skill_type`（缺省按 frontmatter 推断） | `{success, path, skill_file, skill_type, name, warnings}` 或 `{success:false, errors}` | roles 校验明细 |
-| `skills.teamskillshub.pack` | `path`（必填）、`skill_name`（缺省取 SKILL.md name）、`version`（默认 "1.0.0"）、`display_name`（缺省 SKILL.md display_name → skill_name）、`output`（默认 "out"） | `{success, path, checksum_sha256}` | `SKILL_INVALID_METADATA` |
-| `skills.teamskillshub.search` | `q`（缺省 ""=全量）、`page_size`（默认 20，夹取 1–100）、`page`（默认 1）、`skill_type`（缺省不过滤）、`author`（缺省 ""）、`order_by`（默认 install_count）、`desc`（默认 true）、`cache_mode`（缺省直连）、`refresh`（默认 false） | `{success, query, count, skills:[{asset_id, name, ...}]}` | — |
-| `skills.teamskillshub.install` | `asset_id`（必填）、`version`（缺省取远端最新）、`force`（默认 false，**仅兼容保留，本期禁止覆盖**）、`display_name`（缺省取 skill_name）、`output`（缺省 ""=默认 skills 目录） | `{success, skill:{name, source:"teamskillshub", asset_id, path}}`；同 asset 幂等成功 | `SKILLHUB_INSTALL_FAILED` / `SKILL_NAME_CONFLICT`（同名不同 asset 即使 force 也拒绝） |
-| `skills.teamskillshub.publish` | `token`/`system_token`（二选一）、`version`（必填）、`path`/`file`（二选一）、`skill_id`（缺省 null，更新场景传已有资产 ID）、`version_desc`（缺省 ""）、`force`（默认 false，跳过同版本冲突） | `{success, skill_id, name, version}` | `SKILL_PUBLISH_VERSION_CONFLICT`（同版本未 force） |
-| `skills.teamskillshub.delete` | `skill_id`（必填）、`token`/`system_token`、`version`（默认 **"all"**） | `{success, skill_id, version}` | — |
-| `skills.swarmskillshub.recommend` | `top_k`（默认 10，夹取 1–500）、`user_id`/`request_id`/`category_id`（缺省 ""——匿名推荐上下文，Hub 走冷启动）、`plugin_type`（缺省不传，可逗号分隔多值）、`cache_mode`（缺省直连）、`refresh`（默认 false） | `{success, request_id, count, skills, items}` | 缺凭证匿名 POST |
-| `skills.swarmskillshub.detail` | `asset_id`（必填；**market_url/token 不可覆盖**） | `{success, asset_id, version, data}`（正文回填上限 200KB） | `SKILLHUB_DETAIL_NOT_FOUND/FAILED` |
+#### skills.teamskillshub.info
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `asset_id` | string | 是 | strip 非空 | Hub 资产 ID |
+| `version` | string | 是 | strip 非空 | 查询参数 |
+| `market_url` | string | 否 | 缺省回落 env/内置默认 | 覆盖本次请求的 base_url |
+
+- **响应**：`{success, asset_id, version, data}`——`data` 为 Hub `/artifacts/{asset_id}` 返回**原样透传**（无白名单，"data 结构由 Hub 决定"仅对本方法成立）。
+
+#### skills.teamskillshub.init
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | `_safe_path_name` | 新技能目录名 |
+| `path` | string | 否 | 缺省 "."；禁 `~`、禁绝对路径；resolve 后必须仍在 skills 根内且为已存在目录 | 父目录（仅 skills 目录内相对路径） |
+| `skill_type` | string | 否 | 缺省 "teamskills"；别名 `plugin_type`/`type`；枚举 `teamskills \| skill` | teamskills 模板含 `kind: team-skill` 与 roles(role_01/02) |
+| `force` | bool（真值） | 否 | 缺省 false；**字符串 "false" 为真 → 清空重建** | 目标目录非空时：false 拒绝；true 先 rmtree 再重建 |
+
+- **响应**：`{success:true, path}`（目标目录绝对路径）。失败一律 `{success:false, detail}` 无码。
+
+#### skills.teamskillshub.validate
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `path` | string | 是 | **必须绝对本地路径**；禁 URL 协议、禁 symlink（含目录内遍历）、禁黑名单根；须存在且为目录；须含 SKILL.md 且 frontmatter 有非空 name+description（name 另过 `_validate_skill_name` ≤128 等） | 待校验的技能根目录 |
+| `skill_type` | string | 否 | 别名 `plugin_type`/`type`；枚举 `teamskills \| skill`；缺省按 frontmatter `kind=="team-skill"` 推断 | teamskills 时执行 roles 契约校验：roles 非空 list、每项含非空字符串 id、有效 id ≥2、不重复 |
+
+- **响应**：成功 `{success, path, skill_file, skill_type, name, warnings}`（**warnings 恒为 []**）；roles 失败 `{success:false, detail, errors:[逐条明细]}`。
+
+#### skills.teamskillshub.pack
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `path` | string | 是 | 同 validate 的绝对路径安全校验 | 技能根目录（zip 名 = 目录名） |
+| `skill_name` | string | 否 | 缺省取 SKILL.md frontmatter name；**name/description 任一为空 → `code:"SKILL_INVALID_METADATA"`** | 打包标识 |
+| `version` | string | 否 | 缺省 "1.0.0" | 写入 plugin.yaml |
+| `display_name` | string | 否 | 缺省 SKILL.md display_name → skill_name | 市场展示名 |
+| `output` | string | 否 | 缺省 "out"；相对路径落在 skill_root/output，绝对路径直接 resolve（自动创建） | 输出目录 |
+
+- **响应**：`{success:true, path(zip 绝对路径), checksum_sha256}`。
+
+#### skills.teamskillshub.search
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `q` | string | 否 | 缺省 ""（全量）；非空才上送 | 关键词 |
+| `page_size` | int（`int()` 强转，别名 `limit`） | 否 | 缺省 20；**夹取 1–100**；非整数报错 | 每页条数 |
+| `page` | int | 否 | 缺省 1；≥1 | 页码 |
+| `skill_type` | string | 否 | 别名 `plugin_type`；**本地无枚举校验**（Hub 侧定义；team={swarmskill,teamskills,…}、single={skill,skillpack}，未知类型项被丢弃） | 类型过滤 |
+| `author` | string | 否 | 缺省 ""；非空作 `publisher_name` | 按发布者过滤 |
+| `order_by` | string | 否 | 缺省 install_count；**本地无枚举校验**（透传，Hub 侧校验） | 排序字段 |
+| `desc` | 任意 → bool | 否 | 缺省 true；**唯一做字符串布尔解析**："1"/"true"/"yes"/"on" 才为真 | 降序开关 |
+| `cache_mode` / `refresh` | — | 否 | 仅 "prefer_cache" 生效（`search_publisher_id` 非空时禁用）；refresh 仅 prefer_cache 下有意义 | 目录缓存 |
+| `search_asset_id` / `search_asset_type` / `search_publisher_id` | string | 否 | 缺省 ""；非空作查询参数——文档早期版本漏列 | 精确过滤 |
+| `market_url` | string | 否 | 同 info | 覆盖 base_url |
+
+- **响应**：`{success, query, count, skills:[{asset_id, name, display_name, summary, version, author, category, native_score, updated_at, plugin_type, is_team_skill, skill_type}]}` + 可选 `cache`。失败 `detail_key:"skills.teamskillshub.errors.searchFailed"`（无 code）。
+
+#### skills.teamskillshub.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `asset_id` | string | 是 | strip 非空 | Hub 资产 ID |
+| `version` | string | 否 | 缺省（None/空）不带 version → 取远端最新 | 指定版本；产物身份不符 → `SKILL_INVALID_PACKAGE` |
+| `force` | bool（真值） | 否 | 缺省 false；**本期无效**（`_ = force`，"仅保留兼容字段，本期禁止用于删除覆盖"，`:4271-4272`） | 即使 true 也不得覆盖同名本地 Skill |
+| `display_name` | string | 否 | 缺省取 skill_name | 仅新安装写入登记 |
+| `output` | string | 否 | 缺省 ""=默认 skills 目录；非空 resolve（**相对路径按进程 CWD 解析**）；命中时跳过登记与镜像复制 | 自定义安装根 |
+| `market_url` | string | 否 | 同上 | 覆盖 base_url |
+| `plan_id` | string | 否 | 需 `confirmed:true` 且 `SKILLPACK_PRODUCTIZATION_ENABLED=true`，否则拒绝 | SkillPack 事务提交分支 |
+| `expected_skill_type` | string | 否 | `=="skillpack"` 时对非 pack 包拒绝 | 内部守卫 |
+
+- **响应**：新装 `{success:true, skill:{name, display_name, source:"teamskillshub", asset_id, path}}`；**幂等命中（同 asset 重复安装）返回的 skill 无 `display_name`**。
+- **幂等/冲突**：同 asset 已装 → 直接成功；dest 存在但 asset 不同 → `SKILL_NAME_CONFLICT`"本地已存在同名 Skill"。
+- **错误**：`SKILLHUB_INSTALL_FAILED`（download_url 缺失/格式错/无版本号）、`SKILL_INVALID_PACKAGE`（无 SKILL.md/身份不一致）、`SKILL_OPERATION_UNSUPPORTED`（skillpack 未启用/output 冲突）、`SKILL_INVALID_METADATA`、下载 host 白名单（env `TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS`，默认 OBS 域）、锁忙 `skills.inventoryBusy`。
+
+#### skills.teamskillshub.publish
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `token` / `system_token` | string | **二选一（XOR）** | 同传或全不给 → "请且仅请提供一种鉴权"；**不回落环境变量**（区别于 recommend）；system_token → `X-System-Token`，否则 `Authorization: Bearer` | Hub 凭证 |
+| `version` | string | 是 | strip 非空 | 发布版本号 |
+| `path` / `file` | string | **二选一** | file 须为存在的 `.zip`；path 须为含 SKILL.md 的目录；上传前统一经 build_asset_package 规范化 | 目录或 zip 包 |
+| `skill_id` | string | 否 | 缺省不带上送 | 更新场景传已有资产 ID |
+| `version_desc` | string | 否 | 缺省 "" | 版本描述 |
+| `force` | bool（真值） | 否 | 缺省 false | **双重语义**：跳过本地"与 last_published_version 同版本"冲突（否则 `SKILL_PUBLISH_VERSION_CONFLICT`）；并以 force 字段上送 Hub |
+| `market_url` | string | 否 | 同上 | 覆盖 base_url |
+
+- **响应**：`{success:true, skill_id, name, version}`（skill_id 取 Hub 返回 asset_id/plugin_id 或回落入参）；成功后本地写 `remote_asset_id`/`last_published_version`。上传超时 **120s**；兜底 `detail_key:"publishFailed", code:"SKILLHUB_PUBLISH_FAILED"`。
+
+#### skills.teamskillshub.delete
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `skill_id` | string | 是 | strip 非空 | 资产 ID |
+| `token` / `system_token` | string | **二选一（XOR）** | 同 publish（不回落环境变量） | 凭证 |
+| `version` | string | 否 | 缺省 "all" | 删除指定版本或全部 |
+| `market_url` | string | 否 | 同上 | 覆盖 base_url |
+
+- **响应**：`{success:true, skill_id, version}`；失败 `detail_key:"deleteFailed"` 无 code（超时 60s）。
+
+#### skills.swarmskillshub.recommend
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `top_k` | int（别名 `limit`） | 否 | 缺省 10；**夹取 1–500**；非整数报错 | 推荐数量 |
+| `user_id` / `request_id` / `category_id` | string | 否 | 缺省 ""；request_id 响应优先回填 Hub 返回值 | 个性化上下文；空 user_id 走匿名 TopK |
+| `timestamp` | 任意 | 否 | 仅非 None 才写入 body——文档早期版本漏列 | 透传 |
+| `plugin_type` | string | 否 | 别名 `skill_type`；逗号分隔多值去重，`teamskills`→`swarmskill` 归一 | 类型过滤 |
+| `cache_mode` / `refresh` | — | 否 | 仅 "prefer_cache"；**显式上下文（user_id/request_id/timestamp/publisher_id/凭证任一）且无 session 时绕过缓存直连**；私有缓存仅进程内 TTL≤60s，公共匿名走磁盘 | 缓存 |
+| `token` / `system_token` | string | 否 | **有环境变量回落**（`TEAM_SKILLS_HUB_SYSTEM_TOKEN` 优先于 `TEAM_SKILLS_HUB_USER_TOKEN`，区别于 publish/delete）；**完全无凭证不报错，匿名 POST** | 凭证 |
+| `language` / `locale` | string | 否 | 仅参与缓存 key，不上送——文档早期版本漏列 | — |
+| `market_url` | string | 否 | 同上 | 覆盖 base_url |
+
+- **响应**：`{success, request_id, user_id, source, category_id, plugin_type, count, skills, items}`（**skills 与 items 是同一列表**）；每项字段：`asset_id, name, display_name, summary, short_desc, version, latest_version, updated_at, plugin_type, skill_type, tags, score, publisher_name, author, install_count, like_count, view_count, icon_uri, category_id, category_name`。失败 `detail_key:"recommendFailed"` 无 code。
+
+#### skills.swarmskillshub.detail
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `asset_id` | string | 是 | `_safe_path_name`；非法 → `code:"SKILLHUB_DETAIL_FAILED"` | 查询的资产 ID |
+| `market_url` / `token` | — | **不可用** | **不读取 params**（"普通页面不得覆盖 market_url / token"）；base_url 用后端配置、鉴权用服务端 env 凭证 | 统一服务端凭证 |
+
+- **响应**：`{success:true, asset_id, version, data}`——`data` 为**固定 26 字段白名单**（asset_id/version/asset_type/plugin_type/name/display_name/short_desc/detail_desc/icon_uri/publisher_*/tags/category_*/certification/changelog/install_count/view_count/like_count/star_count/review_count/average_rating/create_time/update_time/review_summary/review_sections），**非整体透传**（"data 结构由 Hub 决定"对本方法不成立）。
+- **detail_desc 回填**：Hub 详情缺失时下载公开产物提取 README/SKILL.md 正文，**上限 200×1024 字符（截断不失败，仅作用于回填正文）**；回填失败静默 ""。错误：`SKILLHUB_DETAIL_NOT_FOUND`（资产不存在/无公开版本）/ `SKILLHUB_DETAIL_FAILED`（detail 截 300 字符，其余方法 500）。
 
 #### 10.6.5 skills 检索 / 演化 / 图谱 / 经验
 
-| 方法 | 关键参数 | 响应要点 | 特殊 |
-|------|---------|---------|------|
-| `skills.retrieval.status` | 无 | 检索目录状态：`{enabled, mode, effective_strategy, index_state, build_status, build_progress, build_logs(末 50 条), ...}` | 只读 |
-| `skills.retrieval.index_build` | `force`（默认 false） | 后台构建；未启用 → `{success:false, error_code:"skill_retrieval_disabled"}` | 经 status 轮询 |
-| `skills.retrieval.index_cancel` | `build_id`（缺省取消当前活跃构建） | `{success, build_status}` | 幂等 |
-| `skills.retrieval.search` | `query`（必填非空） | `{success, mode, query, result, detailed_output}` | 走 skill_index 工具 |
-| `skills.retrieval.tree` | 忽略 | 恒 `{success:false, unsupported:true}` | 已关闭的旧 RPC |
-| `skills.evolution.status` / `get` / `save` | `name`（必填）；save 另需 `entries`（数组，每项 id 非空 + change.content 为字符串） | status `{name, exists}`；get 规范化文档；save `{success, entry_count, updated_at}` | 内置技能 `SKILL_BUILTIN_READ_ONLY`；save 双写版本副本可回滚 |
-| `skills.graph.build` / `status` / `get` / `cancel` | build/cancel 仅 `force`（默认 false）；status/get 无参 | build `{success, background:true, build_status:"running"}`；get 缺失 → `{success:false, detail:"...请先构建总谱"}` | 后台单任务守卫 |
-| `skills.experience.list` / `request` | list 无参；request `recipe_id`/`recipe_version`（**params 白名单**，多余键 reason=invalid_parameters） | list `{success, enabled, candidates}`；request `{success, request_id, candidate}` | request 经审批提示流再次发出 |
+#### skills.retrieval.status
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：无（`_session_profile` 为服务端注入，客户端传入的同名键被覆盖）。
+- **响应字段**（`skill_manager.py:2087-2119`）：`enabled, index_enabled(=enabled), mode(auto|flat), candidate_scale(small|large), estimated_candidate_tokens, candidate_budget_tokens, effective_strategy(legacy|small_full|large_flat|indexed|indexed_stale), layout, index_state, index_required(恒 false), index_recommended(恒 false), build_supported, build_status(缺省 idle), build_stage, build_progress(float), build_message, build_error, build_id, build_logs(⚠️ 实际恒 []——状态链路以 include_logs=False 加载，"末 50 条"为死逻辑), index_exists, fresh, indexed_count, installed_count, installed_enabled_count, searchable_count, tool_name(恒 "skill_index"), profile_scope, profile_session_id, profile_model_name, pinned_index_revision, profile_recovery_error`。
+
+#### skills.retrieval.index_build
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `force` | bool \| string | 否 | 缺省 false；**宽松字符串解析**："1"/"true"/"yes"/"on" 为真，其余字符串（含 "false"）为假——与 bool() 真值语义不同 | 强制重建（即使索引新鲜） |
+
+- **响应**：`{success, background(=success), mode, effective_strategy, build_status(缺省 "running"), build_id, detail}`。
+- **分支**：检索未启用 → `{success:false, error_code:"skill_retrieval_disabled", effective_strategy:"legacy"}`；候选规模 small → `{success:false, error_code:"skill_index_not_needed"}`；可用技能为空 → core 层 `empty_inventory`（**该 code 不透出**）；已在构建 → 幂等成功复用。
+
+#### skills.retrieval.index_cancel
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `build_id` | string | 否 | strip 后空则置 None；**缺省=取消当前活跃构建**；与活跃 id 不一致 → `success:false + "Build id mismatch..."`（core 码 build_id_mismatch 不透出） | 指定构建 |
+
+- **响应**：`{success, mode, build_status, build_id, detail}`；无运行构建也幂等成功（`build_status:"idle"`）。取消不删除已发布索引；开关关闭后仍可作清理调用。
+
+#### skills.retrieval.search
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `query` | string | 是 | strip 非空 | 检索关键词，走 Agent 同款 `skill_index` 工具（内部固定 limit 10） |
+
+- **响应**：`{success(=无 error), mode, query, result(工具输出), detailed_output(诊断 dict)}`；空 query → `{success:false, mode, detail:"query must not be empty", matches:[]}`（无 error_code）。
+
+#### skills.retrieval.tree
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：忽略全部。**响应恒定**：`{success:false, mode, unsupported:true, tree_supported:false, nodes:[], detail:"Browse the Skill taxonomy through skill_index list operations."}`。
+
+#### skills.evolution.status / get / save
+
+#### skills.evolution.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 + `_safe_path_name`；**技能不存在不报错**（返回 `exists:false`） | 技能名 |
+- **响应**：`{name, exists}`。
+
+#### skills.evolution.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 同上 | 技能名 |
+- **响应**：`{name, exists, valid, skill_id(缺省回落 name), version(缺省/非法回落 "1.0.0"), updated_at, entries[]}`——entry 含 `id, source, timestamp, context, change{section, action, content, target, ...}, applied, score, usage_stats{...}`；无法解析项**静默跳过**；文件损坏 → `exists:true, valid:false, detail`。
+
+#### skills.evolution.save
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 同上 | 技能名 |
+| `entries` | array | 是 | 必须为数组；**每项须为对象、`id` 非空字符串、`change.content` 为字符串**；`action ∈ {append, merge, replace, skip}`（非 skip 时 `section` 须 ∈ 八个合法段），其余字段补默认（source="unknown"、score=0.6）——**整体覆盖写入** evolutions.json | 条目列表 |
+- **响应**：`{success:true, name, entry_count, updated_at}`；**双写版本副本可回滚**（任一步失败双侧回滚）；成功后轻量刷新 skill rails。
+- **错误**：技能不存在 → `SKILL_NOT_FOUND`；内置 → `SKILL_BUILTIN_READ_ONLY`；SkillPack → `SKILL_OPERATION_UNSUPPORTED`。
+
+#### skills.graph.build / status / get / cancel
+
+#### skills.graph.build
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `force` | bool \| string | 否 | 缺省 false；**宽松字符串解析**："1"/"true"/"yes"/"on" 为真，其余字符串（含 "false"）为假 | 强制重建（绕过指纹复用） |
+- **响应**：`{success:true, background:true, build_status:"running", graph_dir, build_log(末 80 条), build_progress{stage,label,percent,status}, llm_token_usage, build_error?}`；后台单任务守卫（已在构建 → 复用返回 running）。
+
+#### skills.graph.status
+
+- **参数**：无。**响应**：`GraphStatus.to_dict`（`success, graph_dir, exists, stale, skill_count, changed_count, added_count, removed_count, resume_available, checkpoint_dir, detail`）+ build 日志三件套；构建失败时 detail 被 build_error 覆盖。
+
+#### skills.graph.get
+
+- **参数**：无。**响应**：成功 `{success:true, graph_dir, graph_manifest, orchestration_min_edge_confidence, skills[](已剔除禁用), graph{nodes, edges, pack_nodes, pack_edges}, diagnostics}`；缺失 `{success:false, graph_dir, detail:"技能总谱不存在或不完整，请先构建总谱。", error}`。
+
+#### skills.graph.cancel
+
+- **参数**：无（**force 被忽略**）。**响应**：无任务 → `{success:false, cancelled:false, build_status:"idle", detail}`；成功 → `{success:true, cancelled:true, build_status:"cancelled", detail:"已取消…缓存和 checkpoint 会保留。"}`。
+
+#### skills.experience.list / request
+
+#### skills.experience.list
+
+- **参数**：无。**响应**：`{success, enabled, candidates:[{recipe_id, recipe_version, name, applicability, structure[[source,target,relation]...], execution_count, success_count, success_rate}]}`；**三分支**：SkillPack 产品化开启 → `{success:false, reason:"scoped_skillpack_tool_required"}`；flow 未启用 → `{success:true, enabled:false, candidates:[]}`。
+
+#### skills.experience.request
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `recipe_id` | string | 是 | strip 非空 | 保留候选的 Recipe id |
+| `recipe_version` | int \| 数字字符串 | 是 | 接受 int 或可 `int()` 的 str；**bool 显式拒绝**；`version ≥ 1` | Recipe 不可变版本号 |
+- **params 白名单**：仅 `{recipe_id, recipe_version}`（+服务端注入 `_session_id/_channel_id`）；任何多余键（如 `reason`）→ `{success:false, reason:"invalid_parameters"}`。其余 reason：`invalid_recipe_version`/`invalid_recipe`/`scoped_skillpack_tool_required`/`flow_disabled`/`candidate_not_found`。成功 `{success:true, request_id("symphony_experience_"+sha256[:20]), candidate}`；**经审批提示流再次发出**。
 
 #### 10.6.6 assets.publish.\*（资产发布）
 
-公共（`asset_publish_api.py:243-346`）：仅 web 通道（否则 `WEB_CHANNEL_REQUIRED`）；params **禁止** `path/scope/workspace/hub_url/market_url/publisher_id/user_id`（→ `INVALID_PARAMETERS`）；除 local_status 外均需 `auth`（`oauth_provider ∈ {gitcode, github}` + `access_token` ≤8192，否则 `AUTH_REQUIRED`）；`kind ∈ {skill, agent_template, agent_group, plugin, mcp}`（非法 `INVALID_KIND`）；未归类异常 `PUBLISH_UNAVAILABLE`；本地资产仅接受服务端解析的已安装根（`RESOURCE_NOT_FOUND`）。
+**公共约束**（`server/runtime/marketplace/asset_publish_api.py`，下称 api）：
 
-| 方法 | 关键参数 | 响应要点 |
-|------|---------|---------|
-| `describe` | `kind`、`local_id`（必填）、`auth` | `{defaults:{asset_name, version, display_name, description, tags, visibility}, records, can_publish, hub_url}` |
-| `prepare` | + `metadata`（必填，白名单键：asset_name/version/display_name/description/tags/version_desc/visibility/dependency_sources）、`target_asset_id`、`force` | 两阶段第一步：`{draft_id, expires_at, checksum_sha256, size_bytes, files, warnings, errors:[{code:"VERSION_CONFLICT"}]?}` |
-| `commit` | `draft_id`、`request_id`（幂等键）、`auth` | 两阶段第二步，异步上传；响应即 status 记录结构 |
-| `status` | `operation_id`、`auth` | `{execution_status: queued\|uploading\|completed\|failed\|unknown, result?, error?}` |
-| `records` | `kind`、`local_id`、`auth` | `{records:[...], identity_verified:false}`（按凭据 scope 隔离） |
-| `local_status` | `kind`、`local_id`（**无 auth**） | `{state: published\|pending\|unpublished\|unknown}`（跨 scope 聚合） |
+- 仅 `channel_id=="web"`（否则 `WEB_CHANNEL_REQUIRED`）；params 禁止键 `path/scope/workspace/hub_url/market_url/publisher_id/user_id` → `INVALID_PARAMETERS`（api:253-257）。
+- `auth`：`{oauth_provider ∈ {gitcode, github}, access_token}`；token 非空 str ≤8192 且可打印 ASCII（api:227-242）→ 违规 `AUTH_REQUIRED`。例外：`local_status` 不需要；`describe` 在 auth 缺省或 token 为空时走**本地回退**（records 空）。
+- `kind` 枚举 `{skill, skillpack, agent_template, agent_group, plugin, mcp}` → 非法 `INVALID_KIND`（api:260, 311）。
+- `local_id`：非空 ≤256、非 `.`/`..`、不含 `/ \ \0` → 否则 `RESOURCE_NOT_FOUND`（api:32-41）。
+- 错误外壳：`ok:false + {code, error, can_submit:false, errors:[{code, field}]}`；未归类异常 → `PUBLISH_UNAVAILABLE`（agent_ws_server.py:10357-10362）。
+- 限额：draft TTL **1800s**、每 scope draft ≤64（`draft_limit`）、artifact ≤512MB（`artifact_limit`）、上传前复核 ≤50MB（`file_too_large`）（asset_publish_service.py:39-41, 375-381）。
+
+#### assets.publish.describe
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `kind` | string | 是 | 枚举六值 | 资产类型 |
+| `local_id` | string | 是 | `_safe_id` | 本地已安装资产标识（服务端解析安装根） |
+| `auth` | dict | 条件 | 缺省/token 空 → 本地模式 | skillpack 本地模式仍会查 hub：401/403 → `AUTH_REQUIRED`，其余 → `SKILLPACK_HUB_CHECK_FAILED`（api:283-294） |
+
+- **响应**：`{kind, local_id, defaults, can_publish, hub_url, errors, records, identity_verified:false}`；`defaults={asset_name, version, display_name, description, tags, visibility:"public"}`，version 非 `x.y.z`/7 位 hex 回退 `1.0.0`。非 skillpack 的 `can_publish` 恒 true。
+
+#### assets.publish.prepare
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `kind` / `local_id` / `auth` | — | 是 | 见公共约束 | — |
+| `metadata` | dict | 是 | **白名单键** `asset_name/version/display_name/description/tags/version_desc/visibility/dependency_sources`，多余键 → `INVALID_METADATA`；`asset_name` 非空无首尾空白、`version` 须 `x.y.z` 或 7 位 hex（违规 → `INVALID_PACKAGE`） | 资产元数据 |
+| `target_asset_id` | string | 否 | 非空无首尾空白 | 更新已有 Hub 资产 |
+| `force` | 任意（truthy） | 否 | 缺省 false | 跳过同版本冲突检查 |
+
+- **响应**：`{draft_id, expires_at, kind, package_name, version, target_asset_id, checksum_sha256(=artifact_sha256), size_bytes, files, excluded, normalizations, dependencies, can_submit, warnings:[], errors:[{code:"VERSION_CONFLICT", field:"version"}]?}`。skillpack 独立路径：强制 `visibility:"public"` 且禁 force（`SKILLPACK_REQUIRES_IMMUTABLE_PUBLIC_VERSION`）、成员 ≤32、目录白名单（SKILL.md/skillpack.lock.json/.archive）。
+
+#### assets.publish.commit
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `draft_id` | string | 是 | scope 内查无 → `not_found` | prepare 产物 |
+| `request_id` | string | 是 | 非空 ≤4096（skillpack ≤256）；**幂等键**——同 request_id 复用同 operation，绑定不同 draft → `request_conflict` | 幂等收据 |
+| `auth` | dict | 是 | 见公共约束 | 凭据仅存于上传任务内存 |
+
+- **响应**：即 status 记录结构（见下）。错误：`draft_expired` / `target_conflict`（同 target+version 已有进行中操作）/ `queue_full`（每 scope 活跃 ≥32）。
+
+#### assets.publish.status
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `operation_id` | string | 是 | 查无 → `not_found` | commit 返回 |
+| `auth` | dict | 是 | skillpack 先 resume 续传 | — |
+
+- **响应**：`{operation_id, draft_id, execution_status(queued|uploading|completed|failed|unknown), created_at, updated_at, kind, local_id, package_name, version, target_asset_id, result?, error?}`；`result={asset_id, kind, package_name, version, publish_result, visibility, deduplicated}`；`error={code, http_status?, outcome_unknown?, retry_after?, message?}`。
+
+#### assets.publish.records
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：`kind` + `local_id` + `auth`（按凭据派生 scope 隔离）。**响应**：`{records:[同 status 记录], identity_verified:false}`（created_at 倒序）。
+
+#### assets.publish.local_status
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+- **参数**：`kind` + `local_id`（**无 auth**；资产缺失 → `RESOURCE_NOT_FOUND`）。**响应**：`{state}`，枚举 `published | pending | unpublished | unknown`（跨 scope 聚合 completed 记录）。
 
 #### 10.6.7 mcp.\*
 
-公共：响应带 `type` 字段（list/detail/installed/connected/auth_required/...）；错误码 `MCP_INTERNAL / MCP_BAD_REQUEST / MCP_NOT_FOUND / MCP_UNREACHABLE / MCP_AUTH_FAILED` + CLI 结构化码（`MCP_RUNTIME_MISSING / MCP_INSTALL_NETWORK / MCP_CLI_INCOMPLETE / MCP_NAME_CONFLICT / MCP_CREDENTIALS_INVALID / MCP_INSTALL_SCRIPT_DEP`）；所有卡片/详情**敏感字段一律脱敏**（`agent_ws_server.py:8406-8422`）。
+**公共契约**（WS 层 `agent_ws_server.py:10368+`，下称 aws；registry `server/runtime/mcp/registry.py`，下称 reg）：
 
-| 方法 | 关键参数 | 响应要点 | 特殊 |
-|------|---------|---------|------|
-| `mcp.list` | `filter`（默认 "builtin"：builtin\|local，非法值兜底 builtin）、`query`（缺省 ""=全量，分词 AND 匹配）、`cache_mode`（缺省直连，仅 "prefer_cache" 生效且无 query 时附 cache 状态）、`refresh`（默认 false） | `{type:"list", items:[卡片], cache?}` | Hub 不可达回退本地列表 |
-| `mcp.show` | `id` 或 `name`（必填） | `{type:"detail", item:{...含 tools/skills/mcp_spec(脱敏)}}` | 已连接但 tools 空时临时连接回填 |
-| `mcp.install` | `id`（Hub asset id，必填） | `{type:"installed", item, connect:{...}}`（安装后立即连接） | 同步 hold-open；连接失败不回滚安装 |
-| `mcp.uninstall` | `id`（必填） | `{type:"uninstalled", item, applied, error?}` | 卸载含内置 skills 与凭据 |
-| `mcp.connect` | `name`（必填） | `connected`（含脱敏 item）/ `auth_required`（两阶段哨兵，含 auth_url/step_index）/ `credentials_required`（含 required_tokens）/ `connect_failed`（**ok:false**） | CLI 型两阶段：第一阶段 ok:true + auth_required → 调 `mcp.wait_auth`；live 探测失败回滚（`MCP_UNREACHABLE`） |
-| `mcp.wait_auth` | `name`（必填）、`step_index`（默认 0） | hold-open 轮询（200 次×3s ≈ 10 分钟）→ connected / cancelled / 超时 `MCP_AUTH_FAILED` | 单次最终响应 |
-| `mcp.cancel_connect` | `name`（必填） | `{type:"cancelled", name}` | 幂等；绝不碰已 connected |
-| `mcp.disconnect` | `name`（必填） | `{type:"disconnected", name, applied, item, error?}` | 保留包/自定义定义 |
-| `mcp.register_custom` | `name`（必填）、`transport`（必填：stdio\|sse\|streamable-http）、`command`（stdio）/ `url`（远程）、`headers/env/timeout_s` | `{type:"registered", name, item}` | 不连接——随后须调 `mcp.connect` |
-| `mcp.delete_custom` | `name`（必填） | `{type:"deleted", name, applied, item}` | 自定义 MCP 终极删除 |
-| `mcp.save_credentials` | `name`、`tokens`（dict 必填非空） | `{type:"credentials_saved", name, saved_keys}` | token 永不回显 |
+- 12 个方法 WS/HTTP 双落点近乎复制；**`mcp.oauth.start` 仅 WS 层可达**（HTTP 南向 dispatch 缺项）；`wait_auth` 的 host-OAuth 分支仅 WS 层。
+- 所有卡片/详情响应经 `_mask_sensitive_fields`（aws:9512-9527）：key 含 api_key/token/authorization/secret 等 12 个子串或值含 `bearer `/`api-key `/`secret-` 的非容器值替换为 `"***"`，dict/list 递归。
+- 响应 payload 首字段恒为 `type`；错误码族 `MCP_INTERNAL / MCP_BAD_REQUEST / MCP_NOT_FOUND / MCP_UNREACHABLE / MCP_AUTH_FAILED` + CLI 结构化码 `MCP_RUNTIME_MISSING / MCP_INSTALL_NETWORK / MCP_CLI_INCOMPLETE / MCP_NAME_CONFLICT / MCP_CREDENTIALS_INVALID / MCP_INSTALL_SCRIPT_DEP`（reg:72-85, 1085-1128）。
+
+#### mcp.list
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `filter` | string | 否 | 缺省 `builtin`；strip+lower；∉{builtin, local} **静默兜底 builtin** | builtin=预置目录；local=已连接预置+全部自定义 |
+| `query` | string | 否 | 缺省 ""；casefold 分词 **AND** 匹配 name/display_name/description/category/tags | 搜索词 |
+| `cache_mode` | string | 否 | 仅精确 `"prefer_cache"` 且 **query 为空**时走目录缓存并附 `cache`；其他值静默忽略 | 缓存策略 |
+| `refresh` | bool | 否 | **严格 `is True`**——字符串 "true" 不生效 | 强刷缓存 |
+
+- **响应**：`{type:"list", items:[卡片], cache?}`；卡片含 `id/name/package_name/display_name/description/category/integration_state/connection_state/has_bundled_skills/icon/source/installed/version/tags`。Hub 不可达（非缓存路径）→ 仅返回本地卡片不报错。
+
+#### mcp.show
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 与 name 二选一（id 优先） | 两者皆空 → `MCP_BAD_REQUEST` | Hub asset id |
+| `name` | string | 与 id 二选一 | 同上 | 运行时包名 |
+
+- **响应**：`{type:"detail", item:{...含 tools/skills/mcp_spec/cli_spec_present/bundled_skills（脱敏）}}`；tools 空时临时连接回填。错误：`{type:"show_failed", code:"MCP_NOT_FOUND"}`。
+
+#### mcp.install
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | strip 非空；包名校验拒绝 `.`/`..`/路径；与 builtin 冲突拒绝 | Hub asset id |
+
+- **响应**：已装幂等早退 `{id, name, installed:true}`；新装 `{type:"installed", item, connect:{...}}`——**连接失败不致命**，嵌入 connect 子对象（type ∈ connected/auth_required/credentials_required/connect_failed/cancelled；内嵌 connect 探测失败**不回滚安装**）。⚠️ Hub 资产不存在落 `MCP_INTERNAL`（非 MCP_NOT_FOUND）。
+
+#### mcp.uninstall
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | strip；空 → `MCP_NOT_FOUND`；未知 id **不报错**：`{removed:false, already_removed:true}` | asset id 或包名 |
+
+- **响应**：`{type:"uninstalled", item:{id, name, removed[, already_removed]}, applied, error?}`；live 注销 15s 超时 → `applied:false` 附 error；清凭据+刷 skill rails 尽力而为。
+
+#### mcp.connect
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 → `MCP_BAD_REQUEST` | 包名或自定义 MCP 名 |
+
+- **响应（两阶段哨兵）**：`connected` / `auth_required`（CLI 型含 auth_url/step_index/steps_total/auth_domain/command/install；host-OAuth 型含 auth_pending/host_oauth/credential_kind）/ `credentials_required`（含 required_tokens/credential_kind/title/description/doc_url 等）/ `cancelled`（与 cancel 竞态）。
+- **错误**：探测失败 → `{type:"connect_failed", code:"MCP_UNREACHABLE"}`（先写 connecting、探测通过才 flip connected，失败回滚）；KeyError → `MCP_NOT_FOUND`；CliConnectError → 结构化 code+runtime+install_cmd。
+
+#### mcp.wait_auth
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 | — |
+| `step_index` | int | 否 | 缺省 0；`int()` 强转，非数字报错；负数 clamp 0 | 多步 CLI 起始步 |
+
+- **hold-open 轮询**：CLI 型 **200 次 × 3s ≈ 10 分钟**；host-OAuth 型 200 次 × **1s**（仅 WS 层）；每轮先查 cancel 标记；多步采用新 step_index 防死循环。
+- **响应**：`connected` / `cancelled`；超时/失败 → `{type:"connect_failed", code:"MCP_AUTH_FAILED"}`。
+
+#### mcp.cancel_connect / mcp.disconnect / mcp.delete_custom
+
+#### mcp.cancel_connect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 → `MCP_BAD_REQUEST` | 包名 |
+- **响应**：`{type:"cancelled", name}`（幂等；绝不碰已 connected）。
+
+#### mcp.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 → `MCP_BAD_REQUEST` | 包名 |
+- **响应**：`{type:"disconnected", name, applied, item(脱敏), error?}`；KeyError → `MCP_NOT_FOUND`。自定义 MCP 不删记录仅回 registered+抹凭据；市场 MCP 全量清理。
+
+#### mcp.delete_custom
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip；builtin → `MCP_BAD_REQUEST "cannot be deleted"` | 自定义 MCP 名 |
+- **响应**：`{type:"deleted", name, applied, item:{name, removed:true, was_connected}, error?}`；无 state 记录 → `MCP_NOT_FOUND`。
+
+#### mcp.register_custom
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip；与 builtin 包冲突 → `MCP_NAME_CONFLICT`；**其余所有 params 键原样作为 config 透传** | 自定义 MCP 名 |
+| `transport` | string | 是 | 枚举 {stdio, sse, http, streamable-http, streamable_http}（lower；http/streamable_http 归一化 streamable-http） | 传输类型 |
+| `command` | string | stdio 必填 | 空 → "stdio transport requires command" | 可含整条命令 |
+| `args` | list/str | 否 | list 原样；str 单元素；空 → 按空白拆分 command | 启动参数 |
+| `url` | string | 远程必填 | 空 → "remote transport requires url" | sse/http/streamable-http |
+| `headers` / `env` | dict | 否 | 键值强转 str | — |
+| `timeout_s` | number | 否 | >0 才写入，int 截断 | 超时 |
+
+- **响应**：`{type:"registered", name, item(脱敏)}`；仅持久化 state=registered 不连接；编辑已连接实例会先移除旧 live 实例。
+
+#### mcp.save_credentials
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip 非空 | — |
+| `tokens` | dict | 是 | **非空 dict**；value 为 None 静默跳过（不计入 saved_keys）、其余强转 str | Form-B `${VAR}` 占位符填值 |
+
+- **响应**：`{type:"credentials_saved", name, saved_keys:[排序后非 None 键]}`；token 永不回显；不触发重载（需再调 connect）。
+
+#### mcp.oauth.start（仅 WS 层）
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | strip；**仅白名单 provider（如 canva）支持 host OAuth**，其余 → `MCP_AUTH_FAILED "does not support host OAuth"` | host-OAuth 远程 MCP |
+| `callback_url` | string | 是 | 必须 loopback 基址：http + host 127.0.0.1 + 有端口 + path 空/"/" + 无 query/fragment | 本地回调基址 |
+- **响应**：`{type:"auth_required", name, auth_required:true, auth_url, flow, redirect_uri}`；flow TTL 600s。
 
 #### 10.6.8 agents.\*（子 agent 配置）
 
-数据模型 `AgentDefinition`：`name/description/prompt/source(builtin\|user\|project\|local)/model/tools/color/permission_mode/memory_scope/shadowed_by/enabled/when_to_use/max_iterations/skills`；合并优先级 project > user > local > builtin。除注明外错误为 `ok:false {error}` 无 code。
+**公共契约**（`server/handlers/agents.py` + `server/runtime/agent_config_service.py`，下称 acs）：所有失败为 `ok:false + {error}` **无 code**；`workspace_dir` 缺省 cwd；合并优先级 project > user > local > builtin；**不在参数字段集内的键被静默丢弃**（agents.py:203-207）。
 
-| 方法 | 关键参数 | 响应要点 |
-|------|---------|---------|
-| `agents.list` | `workspace_dir`（可选，缺省 cwd） | `{agents:[AgentDefinition]}` |
-| `agents.get` | `name`（必填） | `{agent:{...}}` |
-| `agents.create` | `name`（必填，`^[a-zA-Z0-9_-]{3,50}$`）、`description`/`prompt`/`location`（user\|project\|local）必填、`generate`（**默认 true**：LLM 生成 when_to_use/prompt，失败回退）、其余模型字段可选 | `{agent, generated, applied, reload_error}`；写 `<location>/agents/<name>.md` 并热 reload |
-| `agents.update` | `name` + 全可选字段（None=不改）、`generate`（默认 false） | 同 create |
-| `agents.delete` | `name` | `{ok, applied, reload_error}`；builtin 拒绝 |
-| `agents.enable` / `disable` | `name`（必填） | `{name, enabled, applied, reload_error}`；builtin 拒绝 |
-| `agents.tools_list` | `workspace_dir` | `{tools:[{name, internal_name, description, group}], groups, disallowed_for_subagents}` |
+#### agents.list / agents.get
+
+#### agents.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `workspace_dir` | string | 否 | 缺省 cwd | 定位 project/local agent 目录 |
+- **响应**：`{agents: [AgentDefinition...]}`——含被 shadow 的同名项，按 source 排序 builtin→local→user→project。
+
+#### agents.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 缺省 `""` → 查不到报错 | agent 名 |
+| `workspace_dir` | string | 否 | 缺省 cwd | — |
+- **响应**：`{agent: AgentDefinition}`（仅活跃未 shadow 版本）；不存在 → `"Agent 不存在: {name}"`。
+
+#### agents.create
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 正则 `^[a-zA-Z0-9_-]{3,50}$`；同名 builtin 拒绝 | strip 后校验 |
+| `description` | string | 是 | 无校验 | LLM 生成输入之一 |
+| `prompt` | string | 条件必填 | schema 必填；`generate=true` 且 LLM 成功时服务端覆写 | system prompt |
+| `location` | string | 是 | 枚举 `user\|project\|local`，非法 ValueError | 写入目标目录 |
+| `generate` | 任意（truthy） | 否 | **默认 true**；需 name+description 均非空才触发 LLM，失败回退请求值 | LLM 生成 when_to_use/prompt |
+| `model/tools/color/permission_mode/memory_scope/disallowed_tools/when_to_use/max_iterations/skills` | — | 否 | tools 缺省 `["*"]` | 其余字段 |
+
+- **响应**：`{agent, generated, applied, reload_error}`；成功后写 `react.subagents.<name>.enabled=true` 并热 reload（失败 `applied:false`+`reload_error`）。
+
+#### agents.update / delete / enable / disable / tools_list
+
+#### agents.update
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 定位键（**不可改**）；不存在/builtin → 报错 | agent 名 |
+| `description`/`when_to_use`/`prompt`/`model`/`tools`/`color`/`permission_mode`/`memory_scope`/`disallowed_tools`/`max_iterations`/`skills` | — | 否 | None=不改（**不含 name/location**；未知键静默丢弃） | 更新字段 |
+| `generate` | 任意（truthy） | 否 | 缺省 **false**；需 name+description | LLM 生成 |
+- **响应**：`{agent, generated, applied, reload_error}`；builtin 拒绝"不能修改内置 agent"。
+
+#### agents.delete
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | 缺省 `""` | agent 名 |
+| `workspace_dir` | string | 否 | 缺省 cwd | — |
+- **响应**：`{ok, applied, reload_error}`——**目标不存在返回 `ok:true` + 内层 `payload.ok:false`**（不报错）；builtin 拒绝；成功后从 config 移除条目。
+
+#### agents.enable / agents.disable
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是 | `str()` 强转+strip；空 → `BAD_REQUEST "agent name is required"` | agent 名（enabled 由方法名固定） |
+- **响应**：`{name, enabled, applied, reload_error}`；builtin 拒绝。
+
+#### agents.tools_list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `workspace_dir` | string | 否 | 缺省 cwd（实际未用于枚举——工具表为静态） | — |
+- **响应**：`{tools:[{name, internal_name, description, group}], groups, disallowed_for_subagents}`。
 
 #### 10.6.9 agent_groups / agent_templates / plugin_packages（装备包）
 
-公共：`id` 为主键（`name` 兼容别名）；列表 `filter` 枚举 `builtin / builtin+hub / mine / local`；安装失败包装 `{error}`，Hub 资产不存在 `code:"HUB_ASSET_NOT_FOUND"`；文件预览仅 `.md/.mdx/.json/.py/.pdf`（文本 ≤1MiB、脱敏、防穿越/symlink、PDF 返回 600s 下载链接）。
+**公共契约**（三族共用 `extension_package_manager.py`，下称 EPM；分发入口 `interface.py:2978-3159`）：
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `agent_groups.list` / `show` | list：`filter`（枚举 builtin\|builtin+hub\|mine\|local，缺省不过滤）、`query`（缺省不过滤）、`cache_mode`（缺省直连）、`refresh`（默认 false）；show：`id`（必填） | `{agentGroups:[卡片]}` / `{group}`（show 含 version/details/persona/members/skills/capabilities） | — |
-| `agent_groups.file.list` / `file.read` | `id`（+read 的 `path`） | `{tree:[...]}` / `{path, content}`（PDF → download_url） | — |
-| `agent_groups.create` | `id`、`name/description/persona`（必填非空）、`leaderId`（必填）、`memberIds`（list，可空）、`skills`（须已存在）、`quickInputs/tags/category`；**禁止** `model/mcps/pluginNames/apiKey/apiBase/path` | `{id: package_id}` | `AGENT_GROUP_*` 结构化码族（NAME_INVALID/DUPLICATE/LEADER_REQUIRED/MEMBER_INVALID 等 12 个，`extension_package_manager.py:3535-3592`） |
-| `agent_groups.import_local` | `path`（必填：本地**绝对**路径的目录或 zip/tar，解压 ≤512MiB/≤10000 文件/深度 ≤32） | `{id}`；**导入后立即 install** | — |
-| `agent_groups.install` / `uninstall` | `id` | `{}` | 组安装**无 connector 门、无超时**（对比模板/插件） |
-| `agent_templates.list` / `show` | list：`filter/query/include_team_compatibility`；show：`id` | `{templates:[卡片]}` / `{template}`（含 mcps/pending_connectors/connection_state/persona/runtime） | connection_state 由 connector 的 MCP 状态聚合 |
-| `agent_templates.file.list` / `file.read` | 同 groups | 同 groups | — |
-| `agent_templates.create` / `update` | `id`、`name/description/persona`（必填）、`skills`（必填）、`mcps/quickInputs/tags/runtime`；runtime 设定时禁止 connectors | `{}` | 仅 local 包可 update/delete |
-| `agent_templates.delete` | `id` | `{}` | 先卸载运行中实例 |
-| `agent_templates.import_local` | `path`（同上；须含 README.md 与 persona 目录） | `{id}`；**导入但不安装** | — |
-| `agent_templates.install` | `id` | `{}` | **connector 就绪门**：manifest 声明的 connector 任一未 connected → `ok:false {error, pending_connectors:[...]}`；120s 超时 |
-| `agent_templates.uninstall` | `id` | `{}`（+connector 保留 notice） | — |
-| `plugin_packages.*` | 与 agent_templates 同构（create 无 persona/quickInputs/tags/runtime） | `{packages}` / `{package}` / `{}` | install/uninstall 与模板同契约（connector 门 + 120s） |
+- **主键**：`id` 为主键、`name` 为兼容别名——**别名仅对 show/file.\* 与 agent_groups.uninstall 生效**；`agent_templates.update/delete/uninstall` 与两族 install/uninstall 的实际操作**只认 `id`**。
+- **名称安全** `_reject_package_name`（EPM:112-140）：拒绝空、`.`/`..`、点开头隐藏名、含 `/`/`\`、绝对路径。
+- **文件预览**（file.read）：白名单 `.md/.mdx/.json/.py/.pdf`；路径任一段不得以 `.` 开头、拒绝 `..`/绝对路径/symlink 段；文本 ≤1MiB 且经敏感信息脱敏；**本地 PDF → 600s `download_url`（无 1MiB 限制）；Hub ZIP 内 PDF → base64 data URL（≤1MiB）**；非 UTF-8 文本返回占位串 `[二进制文件，大小 N bytes]`（不报错）。
+- **导入限额**（import_local）：解压文件数 ≤10000、未压缩总量 ≤512MiB、路径深度 ≤32 段；拒绝绝对/`..` 成员、symlink 与特殊文件；path 须绝对路径、存在、非 symlink、不含 `://`（不支持 URL）。
+- **布尔**：`include_team_compatibility` **严格 `is True`**（字符串 "true" 无效）；`refresh`/`force` 为 bool() 真值。
+
+#### agent_groups.list（专家团列表）
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `filter` | string | 否 | 缺省不过滤；枚举 `builtin`（source==builtin）/`local`（source==local 或 builtin/hub 且已装）/`builtin+hub`（source∈{builtin,hub}）/`mine`（source==local 或已装）；其它值忽略；**filter∈{local,mine} 时不请求 Hub** | 来源过滤 |
+| `query` | string | 否 | 缺省不过滤；空格分词 AND 匹配 name/displayName/description/category/tags（casefold） | 关键词 |
+| `cache_mode` | string | 否 | 缺省=直连 Hub 分页搜索（≤100 页）；**仅 "prefer_cache" 且 query 为空时走缓存**（TTL 600s） | 目录缓存 |
+| `refresh` | bool（真值） | 否 | 缺省 false | 仅 prefer_cache 模式生效，强制重载 |
+
+- **响应**：`{agentGroups:[卡片]}` + 可选顶层 `cache`。本地卡（EPM:2609-2726）：`id, name, displayName, displayDescription, category, tags, source, installed, avatar, memberCount, members[{id, agentTemplateId, displayName, role, avatar}], skills[{id, displayName}], capabilities{canUse, canInstall, canUninstall, canPreviewFiles, canEdit, canPublish}`；Hub 卡同构但 `source:"hub", installed:false, members:[], skills:[]`。Hub 拉取失败降级仅返回本地卡。
+
+#### agent_groups.show
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `name` 兼容别名；解析顺序 local→built_in→resources | 专家团包 ID |
+
+- **响应**：`{group: 卡片}` = list 卡 + 详情字段：`version, updatedAt(manifest mtime), details(README/description), persona, leaderId(恒 "leader"), quickInputs, disabledRuntimes[]`。不存在 → not found；Hub 身份不匹配 → `HUB_ASSET_NOT_FOUND`。
+
+#### agent_groups.file.list / file.read
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `file.list` **透传** | `id` | 响应 `{tree:[...]}`：目录 `{path(尾"/"), type:"dir", children[]}`、文件 `{path, type:"file", size, previewable}`；隐藏点文件与 symlink 排除；Hub 包先映射 runtime id，本地无定义时下载 ZIP 预览（LRU 8 份进程缓存） |
+| `file.read` **透传** | `id` + `path`（缺省 ""） | 响应文本 `{path, content}`（脱敏）/ PDF `{path, content:null, download_url}`；规则见公共契约"文件预览" |
+
+#### agent_groups.create
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `_reject_package_name`（违规 → `AGENT_GROUP_NAME_INVALID`） | 包 ID |
+| `name` | string | 是 | 非空 strip；casefold 全库查重 → `AGENT_GROUP_DUPLICATE` | 展示名 |
+| `description` / `persona` | string | 是 | 非空 | persona 写入 manifest instruction |
+| `leaderId` | string | 是 | 非空 + 包名校验；缺失 → `AGENT_GROUP_LEADER_REQUIRED`；须为已存在的 Team 兼容专家模板 | 领队模板 ID |
+| `memberIds` | list[string] | 是（必须为 list） | 缺失/非 list → `AGENT_GROUP_MEMBERS_REQUIRED`；逐项校验（见错误码总表） | 成员模板 ID 列表 |
+| `skills` | list[string] | 否（但必须为 list） | 每项须为工作区已存在 skill；去重 | 复制进包 `skills/` |
+| `quickInputs` | list[string] | 否 | — | 双语化 {zh,en} |
+| `tags` | list[{zh, en, id?}] | 否 | zh/en 非空 | — |
+| `category` | string | 否 | 缺省 "" | — |
+| **禁止字段** | — | — | `model/mcps/pluginNames/apiKey/apiBase/path` 任一存在即报 `unsupported agent_group field` | — |
+
+- **响应**：`{id: package_id}`；创建后为**未安装**定义（installed=false, source=local）。
+- **成员模板校验**：找不到 → `AGENT_GROUP_MEMBER_NOT_FOUND`；package_type 错 → `AGENT_GROUP_TEMPLATE_INVALID`；Team 加载失败 → `AGENT_GROUP_MEMBER_INCOMPATIBLE`；成员含 AGENT.md → `AGENT_GROUP_MEMBER_AGENT_MD`。
+
+#### agent_groups.import_local
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `path` | string | 是 | 绝对路径、存在、非 symlink、不含 `://`；支持目录/`.zip`/`.tar`/`.tar.gz`；导入限额见公共契约 | 本地包位置 |
+
+- **响应**：`{id: package_id}`，**随后立即自动 install**（⚠️ 与 templates.import_local 相反）；组特有校验：manifest package_type=agent_group、展示名查重、manifest name=目录名（不符时自动改名规范化）、`load_agent_group_package` 通过。
+
+#### agent_groups.install / uninstall
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `install` | `id` | 本地无定义时下载 Hub 资产校验后安装（installed=true）。**无 connector 门、无超时**（区别于模板/插件）。响应 `{}`；not found → `AGENT_GROUP_REQUEST_FAILED` 兜底 |
+| `uninstall` | `id`（`name` 兼容别名） | **先删定义、后停运行 Team**（仅停 organization/expert Team；文件删除失败则不停任何运行时）；仅查 local/built_in。响应 `{}` |
+
+#### agent_templates.list（专家/模板列表）
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `filter` / `query` / `cache_mode` / `refresh` | — | 否 | 语义同 agent_groups.list | 同上 |
+| `include_team_compatibility` | bool | 否 | **严格 `is True`**（字符串 "true" 无效）；仅给**本地卡**附加 `teamCompatible:{leader:bool, member:bool}`（member=false 当存在 AGENT.md） | Team 兼容标记 |
+
+- **响应**：`{templates:[卡片]}` + 可选 `cache`。本地卡（EPM:788-803）：`id, displayName, displayDescription, category, tags, source, avatar, installed, connection_state, [teamCompatible], [runtime:{provider_name}]`；Hub 卡：`id, packageName, displayName, ..., source:"hub", installed:false, connection_state:"disconnected", version`。`connection_state` 语义（EPM:681-704）：无 connector → installed?connected:disconnected；否则各 MCP 状态 AND——任一 connecting→connecting、全 connected→connected、否则 disconnected。
+
+#### agent_templates.show
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | `name` 别名；Hub id 先查状态店映射 | 模板 ID |
+
+- **响应**：`{template: 卡片}`（本地 EPM:820-879）：`id, displayName, displayDescription, source, avatar, version, details(=description), tags, skills[], tools[], rails[], mcps[], persona, installed, connection_state, pending_connectors[], quickInputs[], runtime?`；Hub 未装卡另含 `packageName`（details 空时回读公共 README）。
+
+#### agent_templates.file.list / file.read
+
+- 参数与响应同 agent_groups.file.\*（Hub ZIP 预览共用同一 LRU 缓存与校验）。
+
+#### agent_templates.create
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `id` | string | 是 | 包名校验（违规为普通 ValueError，**非 AGENT_GROUP_\* 码**） | 模板 ID |
+| `name` / `description` / `persona` | string | 是 | 非空 | persona 写 `persona/{id}.md` |
+| `skills` | list[string] | **是（必须为 list，可为空）** | 非 list 即拒"missing or invalid skills"；每项须为已存在 skill | 技能清单 |
+| `mcps` | list[string] | 否 | 缺省 []；去重 | connector 名单 |
+| `quickInputs` / `tags` | list | 否 | 缺省 [] | 同 groups |
+| `runtime` | `{provider_name, config}` | 否 | 必须为 dict；`provider_name ∈ {claudecode, codex}`；**设定时禁止 connectors**（mcps 非空即拒）并自动附加"三方Harness/External Harness"标签 | 外部 Harness 运行时 |
+
+- **响应**：**`{}`**（⚠️ 与 groups.create 返回 `{id}` 不同——分发层兜底分支不回传 id）。
+
+#### agent_templates.update / delete
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `update` | `id`（只认 id）+ 同 create 的全部可选字段（全量覆写 persona/skills/manifest） | **仅 local 包可改**（marketplace source≠local 拒绝"only local packages can be edited"）；分发层先卸载运行会话中的模板实例使更新立即生效。响应 `{}` |
+| `delete` | `id` | **仅 local 包可删**；永久 rmtree + 删 marketplace 条目；先卸载运行实例。响应 `{}` |
+
+#### agent_templates.import_local
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `path` | string | 是 | 同 groups.import_local 全套校验 | 本地包位置 |
+
+- 模板特有校验：**必须含 README.md**；persona 须为 `{"dir":"./persona"}` 形态且目录内至少一个 `.md`；skill dir 须包内相对。
+- **响应**：`{id: package_id}`，**不自动安装**（与 groups 相反）。
+
+#### agent_templates.install / uninstall
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `install` | `id` | **connector 就绪门**（EPM:3220-3243）：manifest 声明的 connector 任一未 connected → `ok:false + {error, pending_connectors:[...]}`（**响应体而非异常**，不落 marketplace）；通过后 installed=true；**整体 120s 超时**（超时报"安装超时，请稍后重试"）。企业隐藏/白名单门在安装前。external harness 包另校验：manifest 不得含 tools/rails/subagents |
+| `uninstall` | `id`（name 别名仅用于运行实例定位） | 先卸载运行会话实例；仅查 local/built_in；connector MCP 记录不回收。**响应**：声明过 connector → `{"notice":"本装备依赖的 connector 仍保持连接，可在 MCP 管理页断开"}`，否则 `{}` |
+
+#### plugin_packages.*
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+
+- 与 agent_templates **同构**：list/show/file.\*/install/uninstall 共用同一分发与 gated 安装路径（`interface.py:3042-3097`，install 同 connector 门 + 120s）；`create` 差异：无 `persona`/`quickInputs`/`tags`/`runtime` 字段，其余校验同模板。
+
+#### 错误码总表（装备包域）
+
+| code | 触发条件 |
+|------|---------|
+| `AGENT_GROUP_NAME_INVALID` | id/名为空、`.`/`..`、隐藏名、含分隔符、绝对路径 |
+| `AGENT_GROUP_DUPLICATE` | package_id 撞 local/built_in/resources；展示名 casefold 撞已有组 |
+| `AGENT_GROUP_LEADER_REQUIRED` / `AGENT_GROUP_MEMBERS_REQUIRED` | leaderId 缺失或空白 / memberIds 缺失或非 list |
+| `AGENT_GROUP_MEMBER_INVALID` / `_RESERVED` / `_DUPLICATE` | 成员项空或非字符串 / 等于 "leader" / 重复 |
+| `AGENT_GROUP_LEADER_MEMBER_CONFLICT` | memberId == leaderId |
+| `AGENT_GROUP_MEMBER_NOT_FOUND` / `_TEMPLATE_INVALID` / `_INCOMPATIBLE` / `_AGENT_MD` | 成员模板解析不到 / package_type 非 agent_template / Team 加载失败 / 成员含 AGENT.md |
+| `AGENT_GROUP_REQUEST_FAILED` | 组 8 方法任何无 code 异常的兜底 |
+| `AGENT_GROUP_NOT_INSTALLED` / `AGENT_GROUP_UNAVAILABLE` | Team 装配路径（组未安装/不可用） |
+| `HUB_ASSET_NOT_FOUND` | Hub 资产不存在（同时失效 Hub 目录缓存） |
 
 #### 10.6.10 plugins / extensions
 
-| 方法 | 关键参数 | 响应要点 | 特殊 |
-|------|---------|---------|------|
-| `plugins.list` | 无 | `{plugins:[{plugin_name, marketplace, spec, version, installed_at, git_commit, skills, enabled}]}` | — |
-| `plugins.install` | `spec`（必填：marketplace spec 或本地路径/URL）、`force` | 透传 skills 安装结果 | 成功后重建 agent 实例 |
-| `plugins.uninstall` | `name` | 透传 skills 卸载结果 | — |
-| `plugins.enable` / `disable` | `name`（必填） | `{success, detail:"...请执行 /reload-plugins 使其生效"}` | 物理目录移动延迟到 reload |
-| `plugins.reload` | 无 | `{success, plugins_count, disabled_count, skills_count, detail}` | 按 enabled 移动目录 |
-| `extensions.list` | 无 | `{extensions:[{name, class_name, enabled, description, priority}]}` | — |
-| `extensions.import` | `folder_path`（必填：目录须含 rail.py 且内容可编译） | 新扩展对象（enabled=false） | 复制到 extensions 目录 |
-| `extensions.delete` | `name`（必填） | `{deleted:true, name}` | — |
-| `extensions.toggle` | `name`、`enabled`（必填 bool） | 更新后的扩展对象 | live agent 热注册/注销 |
+#### plugins.*（SkillManager）
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `plugins.list` **透传** | 无 | `{plugins:[{plugin_name, marketplace, spec("name@marketplace" 或裸名), version, installed_at, git_commit, skills, enabled(缺省 true)}]}` |
+| `plugins.install` **透传** | `spec`（必填：`plugin@marketplace` / 本地路径（`/`、`./`、`../`、`~` 前缀）/ http(s) URL）、`force`（默认 false） | 透传 skills 安装：本地/URL 走 import_local，marketplace 走 skills.install（裸名仅允许内置）；成功后置 enabled=true + **重建 Agent 实例**；业务失败 `ok:true + {success:false, detail}` |
+| `plugins.uninstall` **透传** | `name`（必填）、`origin`（可选，透传 skills.uninstall 按来源精确删除） | 先清 `_disabled_plugins/<name>` 缓存；prebuilt（企业版含 builtin）→ `{success:false, error_code:"prebuilt_not_removable"}` |
+| `plugins.enable` / `disable` **透传** | `name`（必填） | 只改状态不动物理目录；成功 `{success:true, detail:"插件 X 已启用/已禁用，请执行 /reload-plugins 使其生效"}`；未找到 `{success:false, detail:"未找到插件: X"}` |
+| `plugins.reload` **透传** | 无 | 按 enabled 把技能目录移入/移出 `_disabled_plugins` 后重建 Agent 实例；`{success:true, plugins_count, disabled_count, skills_count, detail}` |
+
+#### extensions.*（RailManager）
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `extensions.list` **透传** | 无 | `{extensions:[{name, class_name, enabled, description, priority}]}` |
+| `extensions.import` **透传** | `folder_path`（必填：目录须存在、**目录名须 ASCII 英文标识符**、同名拒绝、须含 `rail.py` 且内容 import DeepAgentRail/AgentRail 可编译） | 复制进扩展目录，返回新扩展对象（enabled=false，priority 缺省 50）；错误 `ok:false {error}` |
+| `extensions.delete` **透传** | `name`（必填；不存在报错） | 删除目录与注册状态；`{deleted:true, name}` |
+| `extensions.toggle` **透传** | `name`（必填）、`enabled`（**缺省 false**，非必填——文档早期版本有误） | 对 live agent 热注册/注销（无实例时报"DeepAgent 实例未设置"）；返回更新后的扩展对象 |
 
 #### 10.6.11 personal_context.runtime.*（采集与使用开关）
 
-公共：实现于 `server/personal_context/`（Host 主目录 `~/.jiuwenswarm/.personal_context`）；业务错误码为 **Core 数值串**：`154000`（配置/参数类，reason 细分 config_invalid/parameter_invalid/duplicate_service/service_limit/unknown_service/model_invalid/authorization_*/credentials_invalid/not_configured）、`154001`（状态类：state_invalid/service_running/collection_disabled/not_configured）、`154002`（文件/图读取类）、`154003-154006`（采集/处理/写入/超时）——payload 附加 `status`（状态名）与本地化消息；参数 ValueError → `BAD_REQUEST`。开关类方法响应均为**投影配置** `{master_enabled, collection_enabled, agent_use_enabled, strategy_profile, max_pages_per_directory, max_subdirectories_per_directory, fetch_services[](已去凭据), model_index, model_id}`。
+**公共契约**（`server/personal_context/ws_handler.py`，下称 WS；host_api.py 下称 HOST；Core 在 openjiuwen 包）：
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `runtime.status` | 无（params 忽略） | 有界状态快照：`{configured, collection_enabled, agent_use_enabled, state(CREATED…FAILED 七态), pipeline_running, fetch_service_states{}, fetch_run_progress{}, context_ready, last_error}` | 只读，不启动运行时 |
-| `runtime.start_collection` / `stop_collection` | 无 | 投影配置 | start 未配置时**创建初始配置**；stop 未配置返回未配置投影不报错；stop 先写盘再停 |
-| `runtime.start_agent_use` / `stop_agent_use` | 无 | 投影配置 | 未配置 → `154001 not_configured`；只翻内存标志不启停运行时，幂等 |
-| `runtime.set_master_enabled` | `enabled`（bool，必填） | 投影配置 | 总开关级联两个子开关；**之后子开关可独立切换不反写总开关** |
-| `runtime.get_config` | 无 | 已配置→投影配置（无 configured 字段）；未配置→含 `configured:false` 与默认值 | — |
-| `runtime.patch_config` | `patch`（dict，必填；**仅允许** `collection_enabled/agent_use_enabled/strategy_profile`，strategy ∈ rules\|balanced\|agent） | 更新后的投影配置 | 未知字段 `154000`；活动轮次中 `154001 service_running`；热重启失败自动回滚 |
-| `runtime.select_model` | `model_index`（int，必填，非负；按 `models.list` 下标） | 投影配置（含稳定 `model_id`，格式 provider:model_name） | 越界 → `154000 model_invalid` |
+- 实际 **26 个方法**（runtime 9 + fetch 12 + context 5）。
+- 错误出口（WS:381-412）：WS 层形状校验（缺参/非字符串/非 bool/非对象/流式缺 is_stream）→ `BAD_REQUEST`；Host/Core 语义校验 → **Core 数值码 `154000`-`154006`** + `status` 状态名 + 本地化消息；其余 → `INTERNAL_ERROR`。注意：`not_configured` 在 Host 写路径默认落 **154000**（仅 fetch.run_* 经 reason 改写落 154001）。
+- **投影配置**（开关/写方法标准响应）：`{master_enabled, collection_enabled, agent_use_enabled, strategy_profile, max_pages_per_directory, max_subdirectories_per_directory, model_index, model_id, fetch_services[]}`——fetch_services 每项去 `credentials`，**凭据永不回传**；未配置投影额外含 `configured:false`。
+- status 七态：`CREATED/CONFIGURED/STARTING/RUNNING/STOPPING/STOPPED/FAILED`。
 
-#### 10.6.12 personal_context.fetch.*（采集服务）
+### runtime.*（9 个）
 
-service 对象字段：`service_id`（≤约 500 字符）、`provider`（`local_files|github|gitcode|feishu|browser_bookmarks|zhihu_reader|toutiao_reader|rss_feed`）、`enabled`（bool）、`interval_seconds`（默认 10800，0<v≤31536000）、`max_items_per_run`（null，1..10000）、`time_range`（`{mode:"all"}` | `{mode:"recent", recent_days}` | `{mode:"fixed", start_at, end_at}`）、`source`（按 provider：github `{owner, repo, resources?}`、feishu `{mode:account|wiki_space, ...}`、rss_feed `{feed_url}` 等）。
+#### runtime.status
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `fetch.list_services` | 无 | `{services:[投影 service]}`；未配置 → 空列表 | — |
-| `fetch.create_service` | `service`（dict，必填） | 创建后的投影 service | 同 provider ≥20 → `154000 service_limit`；github/gitcode 须先授权（`authorization_required`）；热应用失败回滚 |
-| `fetch.delete_service` | `service_id`（必填） | `{ok:true}` | 活动轮次 → `154001 service_running`；保留已发布 Context 文件 |
-| `fetch.patch_service` | `service_id` + `patch`（**仅允许** interval_seconds/max_items_per_run/source/time_range） | 更新后的投影 service | 服务跑动中拒绝 |
-| `fetch.start_service` / `stop_service` | `service_id`（必填） | `{ok:true}` | 只切换**未来调度开关**（enabled 位），不影响进行中轮次；立即执行用 run_one |
-| `fetch.run_all` | 无 | `{state:"accepted", service_ids, runs:[{service_id, run_id}]}`（异步） | 采集关闭 → `154001 collection_disabled`；无 enabled 服务拒绝 |
-| `fetch.run_one` | `service_id`（必填） | 同上单元素 | — |
-| `fetch.stop_run` | `service_id`（必填） | `{ok:true}` | **幂等**——无活动任务静默成功 |
-| `fetch.get_run_status` | `service_id`?、`run_id`?（run_id 须伴随 service_id） | 三形态：按服务分组 / 单服务 / 单条 record（含进度、错误、created_node_count；历史每服务保留 5 条） | run 过期 → `154001` |
-| `fetch.get_authorization_status` | `provider`（必填） | github/gitcode：`{provider, state: not_authorized\|authorized\|authorization_failed, account?, verification_url, expires_at, error}`（已存 PAT 实时验证）；feishu 设备流状态 | github 未配置返回 not_authorized **不报错** |
-| `fetch.authorize_provider` | `provider`（必填）、`credentials`（github 须恰 `{token}`、gitcode 须恰 `{pat}`；feishu 必须 null）、`reauthorize`（默认 false） | github/gitcode：PAT 直传验证存盘；feishu：设备流 OAuth（`{state: authorizing\|authorized, authorization_step, verification_url, ...}`） | PAT 无效 `154000 credentials_invalid`；reauthorize=true 热替换该 provider 全部服务凭据；凭据永不回传 |
+- **参数**：无（params 忽略）。**响应**：Status 全字段（`configured, collection_enabled, agent_use_enabled, state, pipeline_running, pipeline_queue_size, fetch_service_states{}, fetch_service_errors{}, fetch_run_progress{}, context_root, context_ready, last_error`）。
 
-#### 10.6.13 personal_context.context.*（已发布上下文）
+#### runtime.start_collection / stop_collection
 
-事件 `personal_context.context.start/nodes/edges/end` 全量 payload 透传（§3.3）。
+- **参数**：无。**响应**：投影配置。start 未配置时**创建初始配置**（master/collection=true、agent_use=false）；stop 未配置返回未配置投影不报错；活动采集轮中改配置 → `154001 service_running`。
 
-| 方法 | 关键参数 | 响应要点 | 错误码/特殊 |
-|------|---------|---------|------------|
-| `context.stream_graph` / `stream_tree` | `root_id`（缺省 null=从根的子层开始）、`depth`（默认 3，1..10）；**必须 `is_stream:true`** | 事件序列 start → nodes×N（每批 200）→ edges×N → end；node `{id:"page:<相对路径>", kind, label, path, has_children}`、edge `{source, target, kind: contains\|references}`（tree 仅 contains） | graph 与 tree 的差异仅在边类型；纯文件读不启动运行时 |
-| `context.search_pages` | `query`（必填非空） | `{results:[{node_id, title, path, snippet}]}（最多 10 条，BM25F 加权）` | — |
-| `context.get_node` | `node_id`（必填，须 `page:` 前缀） | `{node_id, title, path, markdown}` | `source:` 前缀提示改用 get_source |
-| `context.get_source` | `source_id`（必填，`^src_[0-9a-f]{32}$`） | `{source_id, title, source_type, locator, provider, service_id, first_seen, last_seen}` | — |
+#### runtime.start_agent_use / stop_agent_use
+
+- **参数**：无。**响应**：投影配置。未配置 → `154000 not_configured`；仅翻内存标志不启停运行时，幂等。
+
+#### runtime.set_master_enabled
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `enabled` | bool | 是 | **严格 bool**（非 bool → BAD_REQUEST） | 总开关 |
+- **响应**：投影配置。级联两子开关，之后子开关独立切换不反写总开关。
+
+#### runtime.get_config
+
+- **参数**：无。**响应**：已配置→投影配置（无 `configured` 键）；未配置→含 `configured:false` 的默认投影。
+
+#### runtime.patch_config
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `patch` | dict | 是 | **仅允许 3 键** `collection_enabled/agent_use_enabled/strategy_profile`（strategy ∈ rules\|balanced\|agent）；未知键 → `154000` | 局部补丁 |
+- **响应**：更新后的投影配置。活动轮 → `154001 service_running`；热重启失败自动回滚。
+
+#### runtime.select_model
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `model_index` | int | 是 | 非 int/负数 → `154000 parameter_invalid`；越界/不可用 → `154000 model_invalid` | 按 models.list 下标 |
+- **响应**：投影配置（含稳定 `model_id`，格式 provider:model_name）。
+
+### fetch.*（12 个）
+
+**service 对象字段**（create_service 的 `service`）——完整字段表见 §10.6.11 原始位置（此处仅列方法级参数）。
+
+#### fetch.list_services
+
+- **参数**：无。**响应**：`{services:[投影 service]}`；未配置 → 空列表。
+
+#### fetch.create_service
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service` | dict | 是 | 非 object → **BAD_REQUEST**；字段校验见 service 对象字段表 | 新服务定义 |
+- **响应**：创建后的投影 service。错误：未配置 → `154000 not_configured`；service_id 重复 → `duplicate_service`；同 provider ≥20 → `service_limit`；github/gitcode 传 credentials → `credentials_invalid`；未授权 → `authorization_required`。
+
+#### fetch.delete_service
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string | 是 | 空/缺 → **BAD_REQUEST** | 目标服务 |
+- **响应**：`{ok:true}`。错误：未知 → `154000 unknown_service`；活动轮 → `154001 service_running`；**保留已发布 Context 文件**。
+
+#### fetch.patch_service
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string | 是 | 空/缺 → **BAD_REQUEST** | 目标服务 |
+| `patch` | dict | 是 | **仅允许 4 键** `interval_seconds/max_items_per_run/source/time_range` | 局部补丁 |
+- **响应**：更新后的投影 service。热更新失败回滚。
+
+#### fetch.start_service / stop_service
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string | 是 | 空/缺 → **BAD_REQUEST** | 目标服务 |
+- **响应**：`{ok:true}`。**只切换未来调度开关**（enabled 位），不影响进行中轮次。
+
+#### fetch.run_all / run_one
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string | run_one 是 | 空/缺 → **BAD_REQUEST** | 指定服务；run_all 无参 |
+- **响应**：`{state:'accepted', service_ids, runs:[{service_id, run_id}]}`（异步）。错误：未配置 → `154001 not_configured`；采集关 → `154001 collection_disabled`；目标忙 → `154001`。
+
+#### fetch.stop_run
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string | 是 | 空/缺 → **BAD_REQUEST** | 目标服务 |
+- **响应**：`{ok:true}`。对已知服务**幂等**（无活动任务静默成功）；未知 → `154001`。
+
+#### fetch.get_run_status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `service_id` | string \| null | 否 | 给值时须非空，否则 `154000 parameter_invalid` | 过滤单服务 |
+| `run_id` | string \| null | 否 | **须伴随 service_id 且非空**，否则 `154000 parameter_invalid` | 定位单轮 |
+- **响应**三形态：单条 run 记录 / `{service_id, runs:[当前+历史 ≤5]}` / `{services:[...]}`；未配置返回空列表**不报错**。
+
+#### fetch.get_authorization_status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `provider` | string | 是 | 空/缺 → **BAD_REQUEST**；strip+casefold | github/gitcode/feishu |
+- **响应**：github/gitcode 实时 PAT 验证 → `{provider, state: not_authorized\|authorized\|authorization_failed, account, error}`（未存 PAT 返回 not_authorized **不报错**）；feishu 设备流状态。
+
+#### fetch.authorize_provider
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `provider` | string | 是 | 空/缺 → **BAD_REQUEST** | github/gitcode/feishu |
+| `credentials` | dict \| null | 否 | 非对象非 null → **BAD_REQUEST**；github 须恰 `{token}`、gitcode 须恰 `{pat}`；**feishu 必须 null** | PAT 直传 |
+| `reauthorize` | bool | 否 | 缺省 false；**严格 bool** | 热替换凭据 |
+- **响应**：github/gitcode → `{provider, state:'authorized', account, ...}`；feishu → 设备流 OAuth 挑战。凭据永不回传。
+
+### context.*（5 个）
+
+#### context.stream_graph / stream_tree
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `root_id` | string \| null | 否 | 给值须非空，否则 **BAD_REQUEST**；缺省 null 时根节点入选第 1 层；显式 root_id 时根不出现在 nodes、从子层开始 | 根节点 ID（`page:` 形式） |
+| `depth` | int | 否 | 缺省 3；`type is not int`（**拒 bool**）且 1≤depth≤10，否则 **BAD_REQUEST** | BFS 层数 |
+- **必须 `is_stream:true`**（否则 BAD_REQUEST）。**响应事件序列**：`start → nodes×N（每批 200）→ edges×N → end`。
+- node：`{id:'page:<相对路径>', kind, subkind, label, path, service_id:null, has_children}`；edge：`{source, target, kind: contains\|references}`（references 仅 graph）。Context 未就绪 → `{context_ready:false, nodes:[], edges:[]}`。
+
+#### context.search_pages
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `query` | string | 是 | 空/缺/纯空白 → **BAD_REQUEST** | 检索词 |
+- **响应**：`{results:[{node_id, title, path, snippet}]}`——BM25F 加权（title 4.0/path 3.0/headings 2.0/body 1.0），最多 10 条，snippet ≤240 字符；未就绪返回空列表**不报错**。
+
+#### context.get_node
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `node_id` | string | 是 | **`page:` 前缀** + POSIX 相对 + `.md` 后缀，禁 `\\`/绝对/`..`；`source:` 前缀提示改用 get_source | 页面节点 ID |
+- **响应**：`{node_id, title, path, markdown}`；未就绪/缺失 → `154002`。
+
+#### context.get_source
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `source_id` | string | 是 | 正则 `^src_[0-9a-f]{32}$` | 原子源稳定 ID |
+- **响应**：`{source_id, title, source_type, locator, provider, service_id, first_seen, last_seen}`。
 
 #### 10.6.14 a4p.*（预授权）
 
-公共：网关前置 `AGENT_NOT_READY`（AgentServer 未就绪）与 `A4P_WEB_SESSION_REQUIRED`（WS 路由表无该 session 的 Web authorizer 路由）；配置类方法在 A4P 关闭时仍可用；两阶段授权流：`a4p.authorization_request` 事件（payload 含 requestId/kind/mandate/signingOptions/originalActions/preparedActionIndexes）→ reprepare/complete/reject → `a4p.authorization_terminated` 事件（终码 `A4P_AUTHORIZATION_TIMEOUT`(默认 300s)/`A4P_AUTHORIZATION_CANCELLED`/`A4P_REPREPARE_FAILED`）。
+**公共契约**（`agents/harness/common/a4p/rpc.py`，下称 RPC；authorizer.py 下称 AUTH）：错误 payload=`{error, code}`（缺省 BAD_REQUEST）；授权类方法要求 A4P 已启用（否则 `A4P_DISABLED`）且请求带交互式 Web 路由（否则 `A4P_WEB_SESSION_REQUIRED`，RPC:122-128）；`pending` 在关闭时返回 `{ok:true, pending:null}` 不报错。
 
-| 方法 | 关键参数 | 响应要点 | 错误码 |
-|------|---------|---------|--------|
-| `a4p.config.get` | 无（**不接受任何配置字段**） | `{enabled: bool}` | — |
-| `a4p.config.update` | `enabled`（bool，必填，仅此一键） | `{enabled}`（落盘值） | `A4P_CONFIG_APPLY_FAILED`（已保存但热重配失败） |
-| `a4p.authorization.reprepare` | `requestId`（必填）、`selectedActionIndexes`（int[]，必填：非空、0≤i<len(original_actions)、无重复） | `{ok, pending:<快照>}`；旧 requestId 作废并重新推送 | `A4P_INVALID_SELECTION` / `A4P_NOT_PENDING` / `A4P_ROUTE_MISMATCH` / `A4P_REPREPARE_FAILED` / `A4P_DISABLED` |
-| `a4p.authorization.complete` | `requestId`（必填） | `{ok:true, requestId}`（签发签名 mandate 给 Agent） | `A4P_NOT_PENDING` / `A4P_ROUTE_MISMATCH` / `A4P_AUTHORIZATION_INVALID` |
-| `a4p.authorization.reject` | `requestId`（必填）、`reason`（缺省 "User rejected..."） | `{ok:true, requestId}` | 同上 |
-| `a4p.authorization.pending` | 无 | `{ok:true, pending:<快照>\|null}` | A4P 关闭时返回 `{ok, pending:null}` 不报错 |
+**两阶段授权事件**：`a4p.authorization_request`（requestId/kind/uiContext/mandate/signingOptions/originalActions/preparedActionIndexes）→ complete/reject/reprepare → `a4p.authorization_terminated`。**超时 180s**（`DEFAULT_AUTHORIZATION_TIMEOUT_SECONDS=180`，runtime.py:49——注意早期文档写 300s 有误）；超时推 `A4P_AUTHORIZATION_TIMEOUT` 按拒绝结算、取消推 `A4P_AUTHORIZATION_CANCELLED`；禁用/改配取消在途授权推 `A4P_DISABLED` / `A4P_CONFIG_CHANGED`。
+
+#### a4p.config.get / a4p.config.update
+
+> **网关处理**：**E2A 代理**——_forward_a4p_to_agent；**前置检查** AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED 网关即拒；params 原样。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `config.get` **E2A 代理** | 无（**不接受任何配置字段**，session_id 被剥离） | `{enabled: <落盘 bool>}` |
+| `config.update` | `enabled`（**必填且仅此一键**，值必须 bool） | `{enabled}`（落盘值）；热重配失败 → `A4P_CONFIG_APPLY_FAILED`（已保存）；update 会取消在途授权（`A4P_CONFIG_CHANGED`） |
+
+#### a4p.authorization.reprepare
+
+> **网关处理**：**E2A 代理**——_forward_a4p_to_agent；前置检查同上；params 原样。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `requestId` | string | 是 | strip 非空；**未知键一律拒绝**（仅允许 session_id/requestId/selectedActionIndexes） | 待改选授权请求 |
+| `selectedActionIndexes` | int[] | 是 | 非空 list；每项 int 且 0≤i<len(original_actions)；无重复 | 改选动作索引 |
+
+- **响应**：`{ok, pending:<快照>}`；与已 prepared 索引一致时幂等返回；否则生成新 requestId 作废旧请求并重推 authorization_request。
+- **错误**：`A4P_INVALID_SELECTION` / `A4P_NOT_PENDING` / `A4P_ROUTE_MISMATCH` / `A4P_REPREPARE_FAILED` / `A4P_DISABLED`。
+
+#### a4p.authorization.complete / reject / pending
+
+> **网关处理**：**E2A 代理**——_forward_a4p_to_agent；前置检查同上；params 原样。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `complete` | `requestId`（必填；**未知键拒绝**，仅 requestId/session_id） | `{ok:true, requestId}`——签发签名 mandate 给等待中的 Agent；`A4P_NOT_PENDING` / `A4P_ROUTE_MISMATCH` / `A4P_AUTHORIZATION_INVALID` |
+| `reject` | `requestId`（必填）、`reason`（可选，缺省 "User rejected A4P authorization"；不校验未知键） | `{ok:true, requestId}`；`A4P_NOT_PENDING` / `A4P_ROUTE_MISMATCH` |
+| `pending` | 无 | `{ok:true, pending:<快照>\|null}`——取该路由**最新一条**待审；快照含 requestId/kind/mandate/signingOptions/uiContext/originalActions/preparedActionIndexes/replacesRequestId/repreparing |
 
 #### 10.6.15 rsi.*（训练）
 
-公共：错误语义 RsiError → `{error, code}`；网关注入 `session_id`（推送事件 `rsi.training.status.changed/progress/tree.delta` 据此路由回发起会话）。任务状态机：CREATED→QUEUED→RUNNING→COMPLETED/FAILED/PAUSED/TERMINATED（每步触发推送）。
+**公共契约**（`server/rsi/rsi_handlers.py`，下称 RH；services.py 下称 SVC）：网关注入的 `session_id` 转为私有 `_rsi_session_id` 用于事件回推；响应 `{ok:true, payload}` / `{ok:false, error, code}`；推送事件 `rsi.training.status.changed`（含 old/new_status，FAILED 附 failure_reason）/ `rsi.training.progress` / `rsi.training.tree.delta`。**任务状态机**：CREATED→{QUEUED,TERMINATED}；QUEUED→{RUNNING,PAUSED,TERMINATED}；RUNNING→{COMPLETED,FAILED,PAUSED,TERMINATED}；PAUSED→{QUEUED,TERMINATED}；非法迁移 → `TASK_STATE_CONFLICT`。
 
-| 方法 | 关键参数 | 响应要点 | 错误码 |
-|------|---------|---------|--------|
-| `rsi.dataset.validate` | `input_file`（必填，别名 dataset_path）、`scenario`（必填：HARNESS\|ARTIFACT）、`artifact_type`（ARTIFACT 必填：PAPER\|PROGRAM） | `{valid, sample_count, errors:[{reason, code}]}` | `SCENARIO_NOT_SUPPORTED` / `PATH_INVALID` / `DATASET_INVALID` |
-| `rsi.task.create` | `name`（1–100 字符）、`scenario`、`model_refs:{optimizer, tester?}`、HARNESS 另需 `input_file`；PROGRAM 需 `artifact_path`；PAPER 需 artifact_path 或 `optimization_instruction`；`max_iterations`（默认 1）；HARNESS `training_options`（execution_method/max_epochs 等） | `{task_id:"rsi-<uuid8>", status:"CREATED"}` | `INVALID_HARNESS` / `MODEL_NOT_FOUND` / `UNSUPPORTED_PARAMETER` 等 |
-| `rsi.task.list` | `scenario`（缺省不过滤：HARNESS\|ARTIFACT）、`artifact_type`（缺省不过滤；HARNESS 过滤时携带报错） | `{tasks:[六字段投影]}`（created_at 倒序） | — |
-| `rsi.task.get` | `task_id`（必填） | `{config, progress, best_artifact, usage?, failure_reason?}` | `TASK_NOT_FOUND` |
-| `rsi.task.delete` | `task_id`（必填） | `{ok:true}` | `TASK_STATE_CONFLICT`（RUNNING/PAUSED 不可删；QUEUED 先 cancel） |
-| `rsi.training.start` / `resume` | `task_id`（必填） | `{status:"QUEUED"}`（单队列并发=1；QUEUED 幂等短路） | `TASK_STATE_CONFLICT`（resume 仅 PAUSED 可用） |
-| `rsi.training.pause` | `task_id`（必填） | QUEUED→立即 PAUSED；RUNNING→返回当前 RUNNING（待 Provider 确认迁移） | `TASK_STATE_CONFLICT` |
-| `rsi.training.terminate` | `task_id`（必填） | QUEUED→TERMINATED；RUNNING/PAUSED→保持当前态待确认（生产引擎无钩子时立即 TERMINATED） | 终态任务拒绝 |
-| `rsi.report.get` / `rsi.usage.get` / `rsi.tree.get` | `task_id`（必填） | 报告（best_score/metrics/usage）/ 用量（tokens/cost/按轮次/按节点）/ 演进树 `{nodes:[{node_id, iteration, parent_id, type, adopted, score, ...}], depth}` | `TASK_NOT_FOUND` |
-| `rsi.artifact.download` | `task_id`（必填）、`artifact_id`（缺省=best 产物） | 文件 → `{path, kind, filename, download_url, download_token}`（短时 HTTP 凭证，与聊天附件同机制）；目录 → `{path, is_directory:true}`（改走 files.list） | `ARTIFACT_NOT_FOUND` / `PATH_INVALID`（产物路径限任务目录内）；**下载即消费**——放行后续 delete |
-| `rsi.artifact.files.list` | `task_id`、`path`（必填） | `{root, files:[{name, path, isDirectory, size, type}]}`（仅 artifact/run/snapshots/.rsi_artifact_views 四目录公开；zip 产物展开到内容寻址缓存） | zip >256MB 拒绝 |
-| `rsi.artifact.files.get` | `task_id`、`path`（必填） | `{path, size, type, encoding: text\|base64, content}`（预览上限 10MB） | — |
-| `rsi.harness.install` | `task_id`（必填） | `{installation_id, harness_name, sha256, status:"ACTIVE", already_active, hot_load}`（不可变版本目录 + 原子替换 + 热加载广播） | `RSI_HARNESS_NOT_READY/NOT_PUBLISHED/INVALID/INSTALL_CONFLICT/INSTALL_FAILED`；幂等 |
-| `rsi.harness.versions.list` | 无（忽略参数） | `{active_installation_id, versions:[{installation_id, task_id, sha256, is_active, is_initial, available}]}`（**不暴露本地路径**） | — |
-| `rsi.harness.rollback` | `installation_id`（必填） | 安装记录 + `{from_installation_id, rolled_back}` | 存在非终态任务时 `TASK_STATE_CONFLICT`；**校验目标内容 hash 未变化** |
+#### rsi.dataset.validate
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `input_file` | string | 是 | 别名 dataset_path | 数据集路径 |
+| `scenario` | string | 是 | `HARNESS\|ARTIFACT`（大写归一） | 非法 → `SCENARIO_NOT_SUPPORTED` |
+| `artifact_type` | string | 条件必填 | scenario=ARTIFACT 时必填 `PAPER\|PROGRAM`；HARNESS 不接受 | 产物类型 |
+
+- **响应**：`{valid, sample_count, errors:[{reason, code}]}`。错误：`PATH_INVALID` / `DATASET_INVALID`。
+
+#### rsi.task.create
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `scenario` | string | 是 | `HARNESS\|ARTIFACT` | — |
+| `artifact_type` | string | 条件必填 | ARTIFACT 必填 `PAPER\|PROGRAM`；HARNESS 携带报错 | — |
+| `name` | string | 是 | 1–100 字符 | 实验名称 |
+| `model_refs` | object | 是 | `optimizer` 必填；HARNESS 另必填 `tester` | 模型引用 |
+| `input_file` | string | 条件必填 | HARNESS 必填（别名 dataset_path） | 数据集 |
+| `artifact_path` | string | 条件必填 | PROGRAM 必填；PAPER 与 `optimization_instruction` 至少其一；HARNESS 不接受 | 产物路径 |
+| `optimization_instruction` | string | 否 | 仅 PAPER 可填；空串归一 None | 优化指令 |
+| `max_iterations` | int | 否 | 正整数，**缺省 1**；PROGRAM 未填时读 bundle task.json 同名键 | 迭代上限 |
+| `web_proxy` | string | 否 | 仅 ARTIFACT+PAPER；http(s) URL、≤512 字符、须含端口、无 path/query/fragment | 评测代理 |
+| `training_options` | object | 否 | HARNESS 专属（亦可平铺顶层）：domain(general\|office)、execution_mode(仅 local，auto→local)、**evaluation_method**(script_based\|exact_match\|llm_as_judge，默认 script_based)、max_epochs(默认1)、batch_size(默认1)、max_issue_attempts(默认8)、max_repair_rounds(默认3)、sibling_candidate_count(必须=1)、rollout_concurrency(默认1) | 训练选项 |
+
+- **响应**：`{task_id:"rsi-<uuid8>", status:"CREATED"}`。错误：`INVALID_HARNESS`（无可用活动 Harness 配置）、`UNSUPPORTED_PARAMETER`（training_options 越界）、`DATASET_INVALID`/`PATH_INVALID`。
+
+#### rsi.task.list / get / delete
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `list` | `scenario?`（缺省不过滤）、`artifact_type?`（HARNESS 过滤时携带报错） | `{tasks:[{task_id,name,scenario,artifact_type,status,created_at}]}`（created_at 倒序） |
+| `get` | `task_id`（必填 strip 非空） | `{task_id,name,scenario,artifact_type,status, config:{model:{optimizer,tester},input_file,max_iterations,optimization_instruction,artifact_path,web_proxy_configured}, progress:{iteration,total_iterations,score,baseline}, best_artifact:{artifact_id,name,adopted}\|null, usage?, failure_reason?}`——usage 仅在有记录时、failure_reason 仅 FAILED 时返回 |
+| `delete` | `task_id`（必填） | `{ok:true}`；`TASK_STATE_CONFLICT` 四分支：任务持有保留 Harness 版本 / QUEUED·PAUSED 且产物未释放 / RUNNING·PAUSED 不可删 / 在用产物未消费不可删；QUEUED 先 cancel 再删 |
+
+#### rsi.training.start / pause / resume / terminate
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `start` | `task_id` | `{status:"QUEUED"}`；QUEUED 幂等短路；单队列并发=1；**PAUSED 任务须走 resume**（否则 TASK_STATE_CONFLICT） |
+| `pause` | `task_id` | `{status}`——QUEUED→立即 PAUSED；RUNNING→返回当前 RUNNING（迁移待 Provider 确认）；ARTIFACT 场景不支持 → `SCENARIO_NOT_SUPPORTED` |
+| `resume` | `task_id` | `{status:"QUEUED"}`；运行中暂停且 Provider 支持 → 续跑，否则全新 run；仅 PAUSED 可 resume；引擎指纹不匹配 → `RESUME_MISMATCH` |
+| `terminate` | `task_id` | `{status}`——QUEUED/CREATED→立即 TERMINATED；RUNNING/PAUSED 有钩子→待确认、无钩子（生产引擎）→立即 TERMINATED；终态任务拒绝 |
+
+#### rsi.report.get / usage.get / tree.get
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `report.get` | `task_id` | Provider 报告；未运行兜底 `{status, best_score, baseline, metrics:{eval_passed,eval_total,pruned_count,iterations}, usage, best_artifact, report_summary:"", markdown:null}` |
+| `usage.get` | `task_id` | `{usage:{tokens:{input,output,cache_hit},cost_estimate,call_count}, per_iteration:[...], usage_by_node:{...}}`；无记录且无快照 → `TASK_NOT_FOUND` |
+| `tree.get` | `task_id` | `{nodes:[{node_id,iteration,parent_id,type,adopted,score,description,snapshot_artifact_id,failure_reason,changes,extra}], depth, iteration}` |
+
+#### rsi.artifact.download / files.list / files.get
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_ARTIFACT_DOWNLOAD)；**注入 session_id** + 按 user_id 注入 _download_user_id。
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `download` | `task_id`（必填）、`artifact_id`（可选，**缺省=best 产物**） | 文件 → `{path, kind(harness_plugin\|artifact_package), is_best, filename, is_directory:false, download_url, download_token}`（短时 HTTP 凭证）；**目录 → `{path, is_directory:true}`（不含下载链接）**；best/缺省下载即置 active_ref_released 放行后续 delete。`ARTIFACT_NOT_FOUND` / `PATH_INVALID` |
+| `files.list` | `task_id`（必填，格式 `^[A-Za-z0-9][A-Za-z0-9_-]*$`）、`path` **或** `artifact_id`（**二选一，同给报错**；artifact_id 只读定位不释放在用产物） | `{root, initial_path, files:[{name,path,isDirectory,size,type}]}`；仅 artifact/run/snapshots/.rsi_artifact_views 四目录公开；zip >256MB → `BAD_REQUEST` |
+| `files.get` | `task_id`、`path`（必填，限公开目录内） | `{path, name, size, type, encoding(text\|base64 按后缀), content}`；预览上限 10MB |
+
+#### rsi.harness.install / versions.list / rollback
+
+> **网关处理**：**E2A 代理**——_register_harness(RSI_*)；**注入 session_id**（网关→连接会话）。
+
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `install` | `task_id`（必填；仅 HARNESS+COMPLETED 且 publication_status=published） | `{installation_id, task_id, node_id, harness_name, sha256, status:"ACTIVE", already_active, hot_load}`；同 task+同 sha256 幂等；installation_id=`rsi-harness-<sha256[:16]>`。`RSI_HARNESS_NOT_READY/NOT_PUBLISHED/INVALID/INSTALL_CONFLICT/INSTALL_FAILED` |
+| `versions.list` | 无（忽略入参） | `{active_installation_id, versions:[{installation_id,task_id,node_id,harness_name,sha256,installed_at,is_active,is_initial,available}]}`——**不暴露本地路径** |
+| `rollback` | `installation_id`（必填；已是 active 时幂等 rolled_back:false） | 安装记录 + `{from_installation_id, rolled_back:true}`；存在非终态任务 → `TASK_STATE_CONFLICT`；**校验目标内容 hash 未变化** |
 
 #### 10.6.16 harness.*（扩展包管理）
 
-⚠️ **`harness.import` / `harness.export` 在 AgentServer 侧无分发分支**（`HARNESS_PACKAGES_IMPORT/EXPORT` 枚举存在、网关正常转发并带 >4MB 分块上传与结构化错误透传，但 `agent_ws_server.py` 分发链无 handler）——调用会落入通用 unary/chat 运行时，**响应形态未定义**；业务实现 `import_package/export_package` 存在于 `AutoHarnessService` 但无 E2A 接线。其余方法错误码由消息映射：already active/exists → `CONFLICT`、not found → `NOT_FOUND`、其余 `BAD_REQUEST`。
+**公共契约**：错误码映射 `_harness_error_code`——消息含 "already active/exists" → `CONFLICT`、"not found" → `NOT_FOUND`、`"native"` → `BAD_REQUEST`、兜底 `BAD_REQUEST`；缺 `package_id` → `BAD_REQUEST "missing package_id"`；其他异常 → `INTERNAL_ERROR`（`server/handlers/extensions.py:17-27, 306-452`）。
 
-| 方法 | 关键参数 | 响应要点 |
-|------|---------|---------|
-| `harness.packages`（wire 名 `harness.packages.get`） | 无 | `{packages:[{id, extension_name, is_active, version_label, ...}], native_version, active_package_ids}` |
-| `harness.packages.scan` | 无 | 同上（扫描 runtime_extensions 并持久化） |
-| `harness.activate` | `package_id`（必填） | `{activated_package_id, message}`；已激活幂等成功（`CONFLICT` 语义但成功）；热加载广播 |
-| `harness.deactivate` | `package_id`（必填） | `{deactivated_package_id, message}`；未激活幂等 |
-| `harness.delete` | `package_id`（必填；`"native"` 拒绝） | `{deleted_package_id, switched_to_native, message}`；活动包先卸载再删 |
-| `harness.import` | `file_content`（base64；>4MB 网关先分块上传再以 `uploaded_path` 转发） | **无 AgentServer 处理方，未定义** |
-| `harness.export` | `package_id` | **无 AgentServer 处理方，未定义** |
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `harness.packages`（wire 名 `harness.packages.get`） **E2A 代理** | 无 | `{packages:[{id, extension_name, runtime_path, config_path, created_at, is_active, version_label, description}], native_version:{id:"native", extension_name:"Native Agent", is_active}, active_package_ids, last_updated}` |
+| `harness.packages.scan` **E2A 代理** | 无 | 同上；扫描 `runtime_extensions/*/*/harness_config.yaml`，保留既有元数据、过滤已下线 active id，持久化 harness-packages.json |
+| `harness.activate` **E2A 代理** | `package_id`（必填） | 已激活幂等成功（响应路径字段为空串+“扩展已处于激活状态”）；成功 `{activated_package_id, extension_name, runtime_path, config_path, loaded_resources, message:"扩展已热生效（agent 模式），加载资源: N 项"}`；无 agent 实例 → “扩展已标记为激活”；堆叠激活并广播同 channel 实例 |
+| `harness.deactivate` **E2A 代理** | `package_id`（必填） | 未激活幂等；成功 `{deactivated_package_id, extension_name, message}` |
+| `harness.delete` **E2A 代理** | `package_id`（必填；`"native"` 双重拒绝 `BAD_REQUEST "Cannot delete native agent version"`） | 活动包先卸载+广播再 rmtree；`{deleted_package_id, extension_name, switched_to_native, message}` |
+| `harness.import` **E2A 代理** | `file_content`（base64）/ `uploaded_path` 二选一 | 网关：>4MB 且 AgentServer ready → FILE_UPLOAD_CHUNK 分块上传（2MB/块）后仅以 `uploaded_path` 转发并剔除 `file_content`，上传失败 → `SERVICE_UNAVAILABLE`；≤4MB 直接转发（`preserve_error_payload=True`）。另有 multipart 专用入口 `POST /api/v1/harness/packages/actions/import-file`（字段 `file`，>50MB 拒绝）。⚠️ **AgentServer 侧无分发分支（现状核实仍成立）**：协议枚举存在（`harness.packages.import`），jiuwenswarm dispatch 仅注册 get/scan/activate/deactivate/delete；业务实现 `import_package`（zip 校验/Zip-Slip 防护/harness_config.yaml 位置校验/重名 CONFLICT/注册未激活包）已具备但未接线——**响应形态未定义** |
+| `harness.export` **E2A 代理** | `package_id`（必填） | 网关直转（`preserve_error_payload=True`）；⚠️ **AgentServer 无分发分支，响应未定义**（REST 摘要宣称的 download_url/token 无下游处理方支撑）；业务实现 `export_package`（native 拒绝/产物 zip 到 temp/exports）已具备但未接线 |
 
 #### 10.6.17 issue.*（GitCode issue 自动处理）
 
-公共：响应恒 `ok:true`（异常 `ok:false` 仅 `{error}` 无 code）；token 回退链 params → env `GITCODE_ACCESS_TOKEN` → base_config。
+**公共契约**（`server/handlers/schedule.py:152-169`）：**恒 `ok:true`**——业务错误（缺 token/任务不存在等）放 payload 的 `{error}` 而 ok 仍为 true；仅异常才 `ok:false {error}` 且**无 code 字段**。token 回退链：params → env `GITCODE_ACCESS_TOKEN` → base config。
 
-| 方法 | 关键参数 | 响应要点 |
-|------|---------|---------|
-| `issue.watch_once` | `access_token`?、`owner`+`repo_name` 或 `repo`?、`max_issues`（默认 1，夹取 1–5）、`issue_numbers`?、`labels`（默认 auto-harness）、`exclude_labels`、`dry_run`（默认 false）、`comment_on_start`、`max_auto_difficulty`（默认 medium） | `{owner, repo, fetched, started:[...], skipped:[...], reconciled:[...]}`（跳过条件：已关闭/缺 label/终态/已有关联 PR/难度超限） |
-| `issue.state.list` | 无 | `{issues:[{...记录, task_status?, progress?, pr_url?}]}`（轻量对账） |
-| `issue.matrix` | `force_refresh`（默认 false）、`page`（默认 1）、`per_page`（默认 50，夹取 1–100）、`labels`? | `{total, added, removed, updated, difficulty_counts, matrix:[...], cached}`（缓存按 owner/repo 持久化） |
-| `issue.delete` | `issue_numbers`?、`delete_completed`/`delete_failed`（默认 false） | `{deleted:[...], rejected:[{issue, reason:"任务正在执行中..."}]}`（running 态拒绝删除） |
+#### issue.watch_once
 
-另有 `proactive.feedback`（点赞/点踩反馈，经 E2A 写 recommendation.json 的 feedback_buffer）；`schedule.*` 见 §8.3。
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `access_token` | string | 否 | 回退 env/base config；缺失 → `{error:"缺少 GitCode Access Token…"}` | — |
+| `owner` + `repo_name` 或 `repo` | string | 三选一 | `repo` 支持 "owner/repo" 或 URL；全缺省用 base config；无法解析报错 | 目标仓库 |
+| `max_issues` | int | 否 | 缺省 1；非数字回退 1；**夹取 1–5**；指定 issue_numbers 时覆盖为其数量 | 拉取上限 |
+| `issue_numbers` | int/list/str | 否 | 别名 `issues`/`issue`/`numbers`；逗号（含中文）分隔正整数去重 | 指定编号 |
+| `labels` | str/list | 否 | 默认 `("auto-harness",)` | — |
+| `exclude_labels` | str/list | 否 | 默认 `("blocked","wontfix","needs-discussion")` | — |
+| `per_page` | int | 否 | 缺省 20；夹取 1–100 | 分页 |
+| `pipeline` | string | 否 | 默认 META_EVOLVE_PIPELINE | — |
+| `comment_on_start` / `dry_run` | bool（`bool()` 强转） | 否 | 缺省 false；dry_run 条目不入库 | — |
+| `start_interval_seconds` | number | 否 | 缺省 0；≤0 且 max_issues>1 自动抬到 1.2（防 worktree 冲突） | 启动间隔 |
+| `max_auto_difficulty` | string | 否 | 默认 "medium"；枚举 low<medium<high<unclear，超限记 needs_human | 难度上限 |
+| `model_name` | string | 否 | ⚠️ 被 resolve 后 `del` 丢弃，对行为无效 | — |
+
+- **响应**：`{owner, repo, fetched, started:[...], skipped:[{issue, status:"skipped"|"needs_human", reason}], reconciled:[...]}`。跳过条件：已关闭/缺必需 label/终态或在途/已有关联 PR/难度超限。
+
+#### issue.state.list / issue.matrix / issue.delete
+
+> **网关处理**：**透传**——params 原样转发（仅附录 F.2 通用归一化）。
+| 方法 | 参数 | 说明 |
+|------|------|------|
+| `state.list` | 无 | `{issues:[<记录> + task_status?, progress?, pr_url?]}`；任务已删 → `task_status:"task_deleted"`；含轻量终态对账 |
+| `matrix` | `access_token`/`repo` 同上、`force_refresh`（默认 false）、`page`（缺省 1，下限 1；**非数字直接 ok:false**，区别于 watch_once 的容错）、`per_page`（**缺省 50，夹取 1–100**）、`labels`（空=不过滤、小写匹配，仅作用于返回不入库） | `{owner, repo, total, added, removed, updated, difficulty_counts, matrix:[{number, title, body(截 200), labels, difficulty, updated_at, first_seen, last_analyzed}], has_more, page, per_page, cached, labels_filter}`（缓存按 owner/repo 持久化） |
+| `delete` | `issue_numbers`（解析同 watch_once）、`delete_completed`（默认 false，命中 success/pr_created/completed/completed_without_pr）、`delete_failed`（默认 false，命中 failed/cancelled） | `{deleted:[{issue, task_id}], rejected:[{issue, reason:"任务正在执行中…"}]}`（running 态拒绝，任务残留例外放行） |
 
 ### 10.7 Designer 画布（执行图编排）
 
@@ -1576,13 +3650,610 @@ service 对象字段：`service_id`（≤约 500 字符）、`provider`（`local
 
 | 方法 | 说明 |
 |------|------|
-| `designer.workspace.create` / `designer.workspace.get` | 画布工作区创建 / 读取 |
-| `designer.workspace.session.create` / `designer.workspace.session.compose` | 在工作区内创建 / 组合画布会话 |
-| `designer.graph.get` / `designer.graph.list` / `designer.graph.save` / `designer.graph.patch` | 执行图读写（`designer.graph.bootstrap` / `designer.graph.chat` 尚未挂到 Web 路由） |
-| `designer.media.capabilities` | 媒体能力查询 |
-| `designer.run.start` / `designer.run.get` / `designer.run.pause` / `designer.run.cancel` | 画布运行控制（`designer.run.choose_output` 已删除） |
+| `designer.workspace.create` / `designer.workspace.get` **E2A 代理** | 画布工作区创建 / 读取 |
+| `designer.workspace.session.create` / `designer.workspace.session.compose` **E2A 代理** | 在工作区内创建 / 组合画布会话 |
+| `designer.graph.get` / `designer.graph.list` / `designer.graph.save` / `designer.graph.patch` **E2A 代理** | 执行图读写（`designer.graph.bootstrap` / `designer.graph.chat` 尚未挂到 Web 路由） |
+| `designer.media.capabilities` **E2A 代理** | 媒体能力查询 |
+| `designer.run.start` / `designer.run.get` / `designer.run.pause` / `designer.run.cancel` **E2A 代理** | 画布运行控制（`designer.run.choose_output` 已删除） |
 
 推送事件（全量 payload，附录 B）：`designer.run.updated` / `designer.node.updated` / `designer.graph.updated` / `designer.leader.activity`。**路由**：designer 帧走通用三级路由（发起连接 ws_id 钉死 → A4P 改绑 → session 桶；旧基线"不按 ws_id 钉死"的特例已删除，`web_connect.py:1509-1543`）。
+
+### 10.8 新增方法族（topic_starters / prompt_suggestion / client / mcp_app / 会话素材）
+
+以下方法在基线后新增，依据 AgentServer 仓 develop@475e3a3b64 核对。**转发包装**：topic_starters.\* 与 prompt_suggestion.\* 经网关 `_forward_recommendation` 薄包装——RPC 名映射为 `action` 字段经 `recommendation.job` 转发（`topic_starters.control` 的客户端 `action` 改写为 `control_action`；连接登录会话注入 `auth_session`，`app_web_handlers.py:5550-5586`）；`recommendation.job` 免会话存活校验。client.\*/mcp_app.\*/session.assets.\*/initialize/proactive.feedback 为纯转发。
+
+#### topic_starters.status / select_model / profile / restore_direction / control / get / foreground / event
+
+#### topic_starters.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `include_api_key` | bool | 否 | 仅 `is True` 才回显密钥 | 是否含专用模型 api_key |
+- **响应**：配置状态 + 模型信息 + `model_config` + `enabled`；`status ∈ ready\|missing_configuration\|invalid_configuration`。
+
+#### topic_starters.select_model
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `model` | string | 与 configuration 二选一 | 须为可用 OpenAI 型模型 id；**空串=清空并关闭** | 选择目录内模型 |
+| `configuration` | dict | 与 model 二选一 | 字段 model/provider/api_base/api_key/vendor_key/plan/endpoint_profile 均须 str；provider=='OpenAI'、model 非空 ≤100、api_base 须 http(s):// 且 ≤512、api_key ≤2048、context_window_tokens 正整数 | 独立 OpenAI 兼容直连配置 |
+- **响应**：完整 status payload；清空时推 `topic_starters.control_changed{enabled:false}`；非法 `BAD_REQUEST 'invalid recommendation model configuration'`。
+
+#### topic_starters.profile
+
+- **参数**：无。**响应**：`{units:[{unit_id, summary, sources}], semantic_version, permanent_directions:[{direction_id, summary, since}]}`。
+
+#### topic_starters.restore_direction
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `direction_id` | string | 是 | 必须命中现存 permanent direction | 恢复被永久屏蔽的方向 |
+- **响应**：恢复后的完整 profile payload；未命中 `BAD_REQUEST 'no such permanent direction'`。
+
+#### topic_starters.control
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `action` | string | 是 | 枚举 enable/disable/delete | 开关/删除推荐数据 |
+| `include_history` | bool | 否 | 缺省 false；**须为 bool** | enable/disable 时是否保留历史 |
+- **响应**：status payload；并推送 `topic_starters.control_changed{enabled: <bool>}`。
+
+#### topic_starters.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 缺省回退信封 session_id；空 → `BAD_REQUEST` | 访问会话 |
+| `policy_id` | string | 否 | ''/v4→旧历史道；v5→prepare 道；v6→产品道；其余 `BAD_REQUEST` | 选数据道 |
+| `context_scope` | string | 条件 | v5 只许 `global_new_chat`（或缺省）；v6 须 `global_new_chat` 或 `project:<id>` 且与 project_id 一致 | 范围 |
+| `project_id` | string \| null | 条件 | v5 必须 null；v6 须匹配 scope | 项目范围 |
+| `manual_retry` | bool | 否 | 仅 `is True` 触发 | 产品道手动重试 |
+| `slate_id` | string | 否 | — | 拉取指定 slate |
+| `model_name` | string | 否（仅 v4 道） | 存在连接类字段即拒 `invalid_model_request_fields` | v4 道模型选择 |
+- **响应**：v5/v6 道 `{available, session_id, policy_id, (context_scope, project_id), ...slate 字段}`；不可用 `{available:false, reason: prepare_service_unavailable\|topic_service_unavailable\|topic_starter_unavailable}`。
+
+#### topic_starters.foreground
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `context_scope` | string | 否 | 仅 `global_new_chat` 触发调度 | 前台到访信号 |
+| `visit_id` | string | 否 | 兜底信封 session_id，再兜底 'foreground' | 访问标识 |
+- **响应**：`{scheduled: bool}`。
+
+#### topic_starters.event
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 兜底信封 session_id | 会话 |
+| `slate_id` | string | 是 | 非空 | 曝光批次 |
+| `event_type` | string | 是 | 枚举 dynamic_exposure/topic_click/not_interested/post_exposure_direct/page_left/session_bound | 事件类型 |
+| `policy_id` | string | 是 | v3/v4（legacy）、v5、v6 | 数据道 |
+| `selection_mode` | string | 条件 | v3/v4 ∈ {static_fallback, personalized_dynamic, generic_dynamic}；v5/v6 ∈ {personalized_dynamic, mixed_dynamic, generic_dynamic} | 选择模式 |
+| `topic_id` | string | 条件 | topic_click/not_interested/session_bound 须与 payload.card_revision_id 一致 | 卡片 |
+| `profile_version` | — | v3/v4 必填 | 必须存在 | 画像版本 |
+| `payload` | dict | v5/v6 必填 | 须含 manifest_id、generation_batch_id（非空）；context_scope/project_id 约束同 get；exposure 需 topics 列表 | 事件体 |
+- **响应**：`{recorded: bool}`。
+
+#### prompt_suggestion.get / prompt_suggestion.event
+
+#### prompt_suggestion.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 兜底信封 session_id；空 → `BAD_REQUEST` | 取该会话最新一次成功回答的未消费建议 |
+- **响应**：`{enabled, suggestions:[{session_id, request_id, suggestion_id, text}]}`。
+
+#### prompt_suggestion.event
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `event_type` | string | 是 | 枚举 input_changed/shown/accepted/ignored/suppressed | 事件类型 |
+| `session_id` | string | input_changed 必填 | 网关与服务端双重校验非空 | 会话 |
+| `suggestion_id` | string | outcome 事件必填 | 须为该会话已生成的建议 | 建议 id |
+| `method` | string | accepted 必填 | 枚举 click\|tab | 接受方式 |
+| `time_to_accept_ms` | int | accepted 必填 | 非负整数 | 耗时 |
+| `reason` | string | ignored/suppressed 必填 | ignored ∈ {dismissed, sent_other, left_session, typed}；suppressed 仅 timing | 原因 |
+- **响应**：input_changed → `{cancelled: bool}`；总开关关闭 → `{recorded: false, reason: 'disabled'}`；其余 → `{recorded: bool}`（一次性记录）。
+
+#### client.attach / renew / list / conversation.messages（客户端宿主挂载）
+
+#### client.attach
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 须为请求者拥有的现存会话，否则 `NOT_FOUND_OR_FORBIDDEN` | 目标会话 |
+| `plugin_id` | string | 是 | 正则 `^[a-z0-9][a-z0-9_-]{0,63}$` | 应用插件 id |
+| `resource` | dict | 是 | key/display_name/kind/host_vendor 均为非空 str；key 不得为路径/URL | 资源稳定标识 |
+| `capabilities` | dict | 是 | JSON ≤64KB；supported_tools 须为字符串列表且 ⊆ 插件已定义工具 | 宿主可执行能力 |
+- **响应**：`{attachment_id, session_id, plugin_id, pending:[...], lease_seconds:120.0, renew_every_seconds:30.0}`。
+- **错误**：`BAD_REQUEST` / `INVALID_ARGUMENT` / `NOT_FOUND_OR_FORBIDDEN` / `CONFLICT`（会话已属其他应用）/ `PLUGIN_UNAVAILABLE` / `UNAVAILABLE`。
+
+#### client.renew
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `attachment_id` | string | 是 | 须与本 socket（channel_id+ws_id）及 session_id 三者匹配 | 续约 |
+| `session_id` | string | 是 | 同上 | 会话 |
+- **响应**：`{lease_seconds: 120.0, renew_every_seconds: 30.0}`；失配 `NOT_ATTACHED 'no such attachment: attach again'`。
+
+#### client.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 否 | 兜底信封 session_id；标记 is_current | 过滤 |
+- **响应**：`{attachments:[{attachment_id, display_name, kind, host_vendor, session_id, is_current}]}`。
+
+#### client.conversation.messages
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `target_session_id` | string | 是 | 须为请求者拥有的现存会话 | 读取其他已挂客户端会话的最新消息页 |
+- **响应**：`{messages:[...]}`——history.get 第 1 页的倒序公开记录，剥离 reasoning* 字段（保留 `has_reasoning` 标记）。
+
+#### mcp_app.list_tools / read_resource / call_tool（MCP Apps 沙箱）
+
+#### mcp_app.list_tools
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `server` | string | 是 | 非空；须为已配置且可连接的 MCP 服务名 | MCP 服务名 |
+- **响应**：`{tools:[raw tools/list dump]}`（保留 _meta/schema/annotations）；`MCP_NOT_FOUND`/`MCP_BAD_REQUEST`/`MCP_INTERNAL`。
+
+#### mcp_app.read_resource
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `server` | string | 是 | 同上 | MCP 服务名 |
+| `uri` | string | 是 | **必须 `ui://` 开头**，否则 `MCP_BAD_REQUEST` | UI 资源 URI |
+- **响应**：raw `ReadResourceResult` dump（contents + `_meta.ui` 的 csp/permissions）。
+
+#### mcp_app.call_tool
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `server` | string | 是 | 同上 | MCP 服务名 |
+| `tool` | string | 是 | 非空；须存在于该服务的 tools/list | 工具名 |
+| `arguments` | dict \| null | 否 | 非 dict → `MCP_BAD_REQUEST`；缺省 `{}` | 工具入参 |
+- **响应**：raw `CallToolResult` dump；工具 `_meta.ui.visibility` 不含 'app' → `MCP_APP_FORBIDDEN`。
+
+#### initialize / session.assets.* / proactive.feedback
+
+#### initialize
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `protocolVersion` | string | 否 | 缺省 '0.1.0' | 协议版本 |
+| `clientCapabilities` | dict | 否 | 缺省 `{}` | 客户端能力声明 |
+- **响应**：ACP 能力 payload：`{protocolVersion:1, agentInfo:{name:'jiuwenswarm', title:'JiuwenSwarm', version}, agentCapabilities:{loadSession:false, promptCapabilities, sessionCapabilities, mcpCapabilities}, authMethods:[]}`。
+
+#### session.assets.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 缺省回退信封 session_id | 会话 id |
+- **响应**：`{assets:[{asset_id('asset_'+8hex), name, kind(image\|video\|audio\|document), path, source(upload\|generated), created_at, client_id?, name_history?}]}`；错误 `INVALID_PARAMS`。
+
+#### session.assets.register
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 同上 | 会话 |
+| `items` | list | 是 | 每项 `path` 必须为存在的绝对文件路径（缺失→该项 created=null）；`source` ∈ {upload, generated}（非法回落 upload）；`client_id` ≤60 幂等键（同 client_id 已存在则幂等返回原素材）；`name` 缺省取 stem/非法自动洗牌/冲突追加 -N | 批量注册 |
+- **响应**：`{assets:[全部], created:[与 items 平行的资产或 null]}`——upload 按 client_id、generated 按 path 幂等去重。
+
+#### session.assets.rename
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `session_id` | string | 是 | 同上 | 会话 |
+| `asset_id` | string | 是 | 不存在 → `ASSET_NOT_FOUND` | 目标素材 |
+| `name` | string | 是 | 非空 ≤60、无 `@\r\n\t`；大小写不敏感冲突 → `NAME_CONFLICT` | 新名称 |
+- **响应**：`{assets:[全部]}`；旧名写入 name_history。
+
+#### proactive.feedback
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `rec_id` | string | 是 | 非空 | 推荐条目 id |
+| `feedback_type` | string | 是 | 枚举 explicit_like\|explicit_dislike | 反馈类型 |
+| `rec_type` | string | 否 | 兜底键 proactive_type | 推荐类型元数据 |
+| `rec_target` | string | 否 | 兜底键 proactive_target | 推荐目标元数据 |
+- **响应**：`{status:'feedback_recorded', rec_id}`；缺参 `ok:false {error}` **无 code**。
+
+### 10.9 jiuwenmate.*（企业协同入口，46 个 Web 白名单 + 1 个本地）
+
+**可达性注记**：46 个方法在网关 `_JIUWENMATE_FORWARD_METHODS` 白名单（`app_web_handlers.py:409-457`），params 原样透传；**服务端实现位于 AgentServer `releases/0.2.9.beta2` 发布线**（develop 线当前不含 `server/jiuwenmate/`），以下契约按该线核对（`server/jiuwenmate/web_adapter.py`，下称 WA）。业务错误统一 `PersistentAgentError(message, code)`（缺省 `BAD_REQUEST`）。另有 10 个**内部 E2A 方法不在 Web 白名单**（inbound/ack/group.response 等，由网关主动发起，见本节末）。`jiuwenmate.colleague.delete` 为网关本地编排（local_only）。
+
+**colleague 域（同事/数字分身）**：
+
+**colleague 域（同事/数字分身）**（域内方法均**透传**）：
+
+#### jiuwenmate.colleague.ensure_default
+
+- **参数**：无。**响应**：`{colleague: wire\|null}`（不存在返回 null 不报错）。
+
+#### jiuwenmate.colleague.list
+
+- **参数**：无。**响应**：`{colleagues:[wire]}`。
+
+#### jiuwenmate.colleague.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+- **响应**：`{colleague: wire}`；`NOT_FOUND 'colleague not found'`。
+
+#### jiuwenmate.colleague.create
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `settings` | dict | 是 | `name` str ≤64 必填；`description` ≤2000；`persona` ≤20000；`tags` list[str] ≤64 项；`category` str ≤64 缺省 'custom'；`avatar_url` ≤2048；`group_reply_mode` ∈ {passive,adaptive}；`permission_profile` ∈ {default,automatic,full_access}；`capabilities{model str ≤512, skills/connectors/plugins/knowledge/starter_prompts 各 list}`；**未知字段报错** | 同事设置 |
+| `template_id` | string | 否 | 非 str 报错 | 模板 id |
+| `source_template_id` | string | 否 | — | 来源模板 |
+| `unique_source` | bool | 否 | 仅 `is True` 生效 | 唯一来源约束 |
+- **响应**：`{colleague: wire}`；模板不存在 `TEMPLATE_NOT_FOUND`。
+
+#### jiuwenmate.colleague.settings.get / settings.update
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `settings` | dict | settings.update 是 | 结构同 create | 更新设置 |
+- **响应**：get → `{settings}`；update → `{colleague: wire}`；`NOT_FOUND`。
+
+#### jiuwenmate.colleague.publish / set_enabled
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `enabled` | bool | set_enabled 是 | **严格 bool**（非 bool 报错） | 启停 |
+- **响应**：publish → `{version}`；set_enabled → `{colleague: wire}`。
+
+#### jiuwenmate.colleague.delete（网关本地编排）
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | `agent_id` 即 config_id | 同事 agent id |
+| `mode` | string | 是 | 枚举 unbind\|purge（unbind=hide 保数据；purge=清数据） | 删除模式 |
+- **流程**：E2A `colleague.connections` 列连接 → feishu/welink/dingtalk 三平台摘除绑定 → E2A `colleague.remove`。**响应**：`{deleted: true}`。
+
+**conversation / chat 域**（域内方法均**透传**）：`conversation.list`（`agent_id`）→ `{conversations:[...]}`；`conversation.rename`/`pin`（`agent_id`+`conversation_id`+`title`/`pinned`）、`conversation.delete`（软删归档）——不存在 `NOT_FOUND "conversation not found"`；`chat.send`（`agent_id`+`conversation_id`+`text`+`message_id` 均必填，会话须已打开）→ `{request, conversation}`，流式片段经 `jiuwenmate.chat.stream` **事件**推给 watch 连接；`chat.history`（`agent_id`+`conversation_id`）→ `{requests:[...]}`。
+
+**request / permission / sharing 域**（域内方法均**透传**）：`request.get`/`request.abort`（`request_id` 必填；abort 可带 `reason`）；`permission.decide`（`approval_id`+`decision ∈ approve|reject` 必填，另可 `conversation_id`/`tool_call_id`/`agent_id`；跨群共享需 owner 专批 `FORBIDDEN`）；`sharing.list`（`agent_id`+`mark_read` 仅 `is True` 生效）；`sharing.decide`（`agent_id`+`approval_id`+`decision`，未命中 `NOT_FOUND`/`CONTINUATION_NOT_READY`）；`sharing.revoke`（`agent_id`+`grant_id`）。
+
+**knowledge / models / activity**（域内方法均**透传**）：`knowledge.list`（无参 → `{pages:[{name,label}]}`）；`models.list`（无参 → 模型目录含 vendor_key，无连接凭据）；`activity.get`（无参 → `{activity: report}`）。
+
+**channel 域（群记录）**（域内方法均**透传**）：
+
+**channel 域（群记录）**（域内方法均**透传**）：
+
+#### jiuwenmate.channel.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+- **响应**：`{channels:[{id, name, platform, coverage, artifacts, token_usage, last_response_minutes}]}`（按最近活跃倒序）。
+
+#### jiuwenmate.channel.messages
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `group_id` | string | 是 | strip 非空 | 群 id |
+| `cursor` | string | 否 | 非空时分页 | 游标 |
+- **响应**：`{status, next_cursor, coverage, coverage_reason, messages:[{id, sender 字段, text, status, received_at, attachments}]}`；无归档 → `{messages:[], status:'empty', next_cursor:null}`。
+
+#### jiuwenmate.channel.trace
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `group_id` | string | 是 | strip 非空 | 群 id |
+- **响应**：`{started_at: iso|null, rows:[...]}`；无 Session → `{started_at:null, rows:[]}`。
+
+**agent_mail 域**（统一前置 `agent_id`；域内方法均**透传**）：
+
+**agent_mail 域**（统一前置 `agent_id`；域内方法均**透传**）：
+
+#### jiuwenmate.agent_mail.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同事存在性校验 NOT_FOUND | 目标同事 |
+- **响应**：`{agent_mail:{status, cli_version, ...}}`；无 runtime → `{status:'unavailable', cli_version:null}`。
+
+#### jiuwenmate.agent_mail.auth.begin
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{authorization:{status, cli_version, operation_id, auth_url, frontend_opens_auth}}`；错误 `AGENT_MAIL_RUNTIME_ERROR`（auth_url 须 https 且 qq.com/tencent.com 域 ≤4096）。
+
+#### jiuwenmate.agent_mail.auth.poll / auth.cancel
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `operation_id` | string | 是 | strip 非空 | 操作 id |
+- **响应**：`{agent_mail:{status...}}`（状态机：authorizing→connected）。
+
+#### jiuwenmate.agent_mail.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{agent_mail:{status...}}`。
+
+**dingtalk_auth 域**（统一前置 `agent_id`+`connection_key`，域内方法均**透传**；
+
+**dingtalk_auth 域**（统一前置 `agent_id`+`connection_key`，域内方法均**透传**；绑定解析失败 → `NOT_FOUND 'DingTalk connection is not bound to this employee'`）：
+
+#### jiuwenmate.dingtalk_auth.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 即 config_id | 目标同事 |
+| `connection_key` | string | 是 | strip 非空 | 绑定 key |
+- **响应**：`{dingtalk_auth:{status, cli_version[, group_monitor]}}`（connected 时附 group_monitor）。
+
+#### jiuwenmate.dingtalk_auth.begin
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+- **响应**：`{authorization:{...}}`；锁忙 `CONFLICT 'DingTalk application binding is busy'`；CLI 侧 `DINGTALK_CLI_APP_NOT_CONFIGURED` 等。
+
+#### jiuwenmate.dingtalk_auth.poll / cancel
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+| `operation_id` | string | 是 | poll 变更 `CONFLICT 'DingTalk authorization operation changed'` | 操作 id |
+- **响应**：`{dingtalk_auth:{...}}`。
+
+#### jiuwenmate.dingtalk_auth.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上；允许已保存但停用的绑定 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+- **响应**：`{dingtalk_auth:{...}}`。
+
+**welink_office 域**（前置 `agent_id`；域内方法均**透传**）：
+
+**welink_office 域**（前置 `agent_id`；域内方法均**透传**）：
+
+#### jiuwenmate.welink_office.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | get_colleague 校验 | 目标同事 |
+- **响应**：`{welink_office:{status: unavailable\|not_connected\|connected, account?, email?, reason?}}`。
+
+#### jiuwenmate.welink_office.connect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `email` | string | 是 | 邮箱正则、≤320、不以 `-` 开头 | 绑定邮箱 |
+- **响应**：连接后的 status。错误：`WELINK_NOT_BOUND` / `WELINK_MAIL_DISCOVERY_FAILED`。
+
+#### jiuwenmate.welink_office.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{welink_office: status}`（enabled=0）。
+
+**jiuwenmate.schedule.\***（7 个，均**透传**；区别于 §8.3 的 schedule.*）：
+
+#### jiuwenmate.schedule.list / create / update / set_enabled / delete / run / history
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `name` | string | 是（create/update） | strip 非空 | 任务名 |
+| `prompt` | string | 是（create/update） | strip 非空 | 提示词 |
+| `cron_expr` | string | 否 | 缺省 '' | cron 表达式 |
+| `timezone` | string | 否 | 缺省 'Asia/Shanghai' | 时区 |
+| `schedule_kind` | string | 否 | 缺省 'cron' | 调度类型 |
+| `interval_seconds` | int | 否 | — | 间隔秒 |
+| `run_at` / `starts_at` / `ends_at` | string | 否 | — | 时间点 |
+| `agent_id` | string | create 必填 | strip 非空 | 归属同事 |
+| `plan_id` | string | update/set_enabled/delete/run/history 必填 | strip 非空 | 计划 id |
+| `enabled` | bool | set_enabled 必填 | — | 启停 |
+- **响应**：list → `{plans:[...]}`；create/update → `{plan}`；run → `{request_id}`；history → report；delete → `{deleted:true}`。
+
+**内部 E2A 方法不在 Web 白名单**（inbound/ack/group.response 等，由网关主动发起，见本节末）。`jiuwenmate.colleague.delete` 为网关本地编排（local_only）。
+
+**colleague 域（同事/数字分身）**：
+
+**colleague 域（同事/数字分身）**（域内方法均**透传**）：
+
+#### jiuwenmate.colleague.ensure_default
+
+- **参数**：无。**响应**：`{colleague: wire\|null}`（不存在返回 null 不报错）。
+
+#### jiuwenmate.colleague.list
+
+- **参数**：无。**响应**：`{colleagues:[wire]}`。
+
+#### jiuwenmate.colleague.get
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+- **响应**：`{colleague: wire}`；`NOT_FOUND 'colleague not found'`。
+
+#### jiuwenmate.colleague.create
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `settings` | dict | 是 | `name` str ≤64 必填；`description` ≤2000；`persona` ≤20000；`tags` list[str] ≤64 项；`category` str ≤64 缺省 'custom'；`avatar_url` ≤2048；`group_reply_mode` ∈ {passive,adaptive}；`permission_profile` ∈ {default,automatic,full_access}；`capabilities{model str ≤512, skills/connectors/plugins/knowledge/starter_prompts 各 list}`；**未知字段报错** | 同事设置 |
+| `template_id` | string | 否 | 非 str 报错 | 模板 id |
+| `source_template_id` | string | 否 | — | 来源模板 |
+| `unique_source` | bool | 否 | 仅 `is True` 生效 | 唯一来源约束 |
+- **响应**：`{colleague: wire}`；模板不存在 `TEMPLATE_NOT_FOUND`。
+
+#### jiuwenmate.colleague.settings.get / settings.update
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `settings` | dict | settings.update 是 | 结构同 create | 更新设置 |
+- **响应**：get → `{settings}`；update → `{colleague: wire}`；`NOT_FOUND`。
+
+#### jiuwenmate.colleague.publish / set_enabled
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `enabled` | bool | set_enabled 是 | **严格 bool**（非 bool 报错） | 启停 |
+- **响应**：publish → `{version}`；set_enabled → `{colleague: wire}`。
+
+#### jiuwenmate.colleague.delete（网关本地编排）
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | `agent_id` 即 config_id | 同事 agent id |
+| `mode` | string | 是 | 枚举 unbind\|purge（unbind=hide 保数据；purge=清数据） | 删除模式 |
+- **流程**：E2A `colleague.connections` 列连接 → feishu/welink/dingtalk 三平台摘除绑定 → E2A `colleague.remove`。**响应**：`{deleted: true}`。
+
+**conversation / chat 域**（域内方法均**透传**）：`conversation.list`（`agent_id`）→ `{conversations:[...]}`；`conversation.rename`/`pin`（`agent_id`+`conversation_id`+`title`/`pinned`）、`conversation.delete`（软删归档）——不存在 `NOT_FOUND "conversation not found"`；`chat.send`（`agent_id`+`conversation_id`+`text`+`message_id` 均必填，会话须已打开）→ `{request, conversation}`，流式片段经 `jiuwenmate.chat.stream` **事件**推给 watch 连接；`chat.history`（`agent_id`+`conversation_id`）→ `{requests:[...]}`。
+
+**request / permission / sharing 域**（域内方法均**透传**）：`request.get`/`request.abort`（`request_id` 必填；abort 可带 `reason`）；`permission.decide`（`approval_id`+`decision ∈ approve|reject` 必填，另可 `conversation_id`/`tool_call_id`/`agent_id`；跨群共享需 owner 专批 `FORBIDDEN`）；`sharing.list`（`agent_id`+`mark_read` 仅 `is True` 生效）；`sharing.decide`（`agent_id`+`approval_id`+`decision`，未命中 `NOT_FOUND`/`CONTINUATION_NOT_READY`）；`sharing.revoke`（`agent_id`+`grant_id`）。
+
+**knowledge / models / activity**（域内方法均**透传**）：`knowledge.list`（无参 → `{pages:[{name,label}]}`）；`models.list`（无参 → 模型目录含 vendor_key，无连接凭据）；`activity.get`（无参 → `{activity: report}`）。
+
+**channel 域（群记录）**（域内方法均**透传**）：
+
+**channel 域（群记录）**（域内方法均**透传**）：
+
+#### jiuwenmate.channel.list
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+- **响应**：`{channels:[{id, name, platform, coverage, artifacts, token_usage, last_response_minutes}]}`（按最近活跃倒序）。
+
+#### jiuwenmate.channel.messages
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `group_id` | string | 是 | strip 非空 | 群 id |
+| `cursor` | string | 否 | 非空时分页 | 游标 |
+- **响应**：`{status, next_cursor, coverage, coverage_reason, messages:[{id, sender 字段, text, status, received_at, attachments}]}`；无归档 → `{messages:[], status:'empty', next_cursor:null}`。
+
+#### jiuwenmate.channel.trace
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | strip 非空 | 同事 agent id |
+| `group_id` | string | 是 | strip 非空 | 群 id |
+- **响应**：`{started_at: iso|null, rows:[...]}`；无 Session → `{started_at:null, rows:[]}`。
+
+**agent_mail 域**（统一前置 `agent_id`；域内方法均**透传**）：
+
+**agent_mail 域**（统一前置 `agent_id`；域内方法均**透传**）：
+
+#### jiuwenmate.agent_mail.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同事存在性校验 NOT_FOUND | 目标同事 |
+- **响应**：`{agent_mail:{status, cli_version, ...}}`；无 runtime → `{status:'unavailable', cli_version:null}`。
+
+#### jiuwenmate.agent_mail.auth.begin
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{authorization:{status, cli_version, operation_id, auth_url, frontend_opens_auth}}`；错误 `AGENT_MAIL_RUNTIME_ERROR`（auth_url 须 https 且 qq.com/tencent.com 域 ≤4096）。
+
+#### jiuwenmate.agent_mail.auth.poll / auth.cancel
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `operation_id` | string | 是 | strip 非空 | 操作 id |
+- **响应**：`{agent_mail:{status...}}`（状态机：authorizing→connected）。
+
+#### jiuwenmate.agent_mail.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{agent_mail:{status...}}`。
+
+**dingtalk_auth 域**（统一前置 `agent_id`+`connection_key`，域内方法均**透传**；
+
+**dingtalk_auth 域**（统一前置 `agent_id`+`connection_key`，域内方法均**透传**；绑定解析失败 → `NOT_FOUND 'DingTalk connection is not bound to this employee'`）：
+
+#### jiuwenmate.dingtalk_auth.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 即 config_id | 目标同事 |
+| `connection_key` | string | 是 | strip 非空 | 绑定 key |
+- **响应**：`{dingtalk_auth:{status, cli_version[, group_monitor]}}`（connected 时附 group_monitor）。
+
+#### jiuwenmate.dingtalk_auth.begin
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+- **响应**：`{authorization:{...}}`；锁忙 `CONFLICT 'DingTalk application binding is busy'`；CLI 侧 `DINGTALK_CLI_APP_NOT_CONFIGURED` 等。
+
+#### jiuwenmate.dingtalk_auth.poll / cancel
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+| `operation_id` | string | 是 | poll 变更 `CONFLICT 'DingTalk authorization operation changed'` | 操作 id |
+- **响应**：`{dingtalk_auth:{...}}`。
+
+#### jiuwenmate.dingtalk_auth.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上；允许已保存但停用的绑定 | 目标同事 |
+| `connection_key` | string | 是 | 同上 | 绑定 key |
+- **响应**：`{dingtalk_auth:{...}}`。
+
+**welink_office 域**（前置 `agent_id`；域内方法均**透传**）：
+
+**welink_office 域**（前置 `agent_id`；域内方法均**透传**）：
+
+#### jiuwenmate.welink_office.status
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | get_colleague 校验 | 目标同事 |
+- **响应**：`{welink_office:{status: unavailable\|not_connected\|connected, account?, email?, reason?}}`。
+
+#### jiuwenmate.welink_office.connect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+| `email` | string | 是 | 邮箱正则、≤320、不以 `-` 开头 | 绑定邮箱 |
+- **响应**：连接后的 status。错误：`WELINK_NOT_BOUND` / `WELINK_MAIL_DISCOVERY_FAILED`。
+
+#### jiuwenmate.welink_office.disconnect
+
+| 参数 | 类型 | 必填 | 默认/校验 | 说明 |
+|------|------|------|----------|------|
+| `agent_id` | string | 是 | 同上 | 目标同事 |
+- **响应**：`{welink_office: status}`（enabled=0）。
+
+**jiuwenmate.schedule.\***（7 个，均**透传**；区别于 §8.3 的 schedule.*）：`list/create/update/set_enabled/delete/run/history`——字段：`name`+`prompt`（str 必填）、`cron_expr`（缺省 ""）、`timezone`（缺省 Asia/Shanghai）、`schedule_kind`（缺省 cron）、`interval_seconds`（int 可选）、`run_at/starts_at/ends_at`（可选）；create 需 `agent_id`、操作类需 `plan_id`、set_enabled 需 `enabled`（bool）。
+
+**内部 E2A 方法（不在 Web 白名单，网关主动发起；对前端不可达）**：`colleague.connections`/`colleague.remove`（删除编排用）、`connection.attach`、`feishu.prepare`、`group.response`（群成员校验应答）、`delivery.ack`（投递回执：stage="send" + outcome ∈ delivered/failed/unknown/pending）、`thinking_notice.ack`、`feishu/dingtalk/welink.inbound`（归一化事件投递，响应恒 `{disposition: accepted|rejected|retryable}`）。
+
+> ⚠️ `jiuwenmate.dingtalk.binding_check`：白名单在册但**已废弃**（beta2 起由 `connection.attach` 替代，AgentServer 侧 handler 为死代码）；`jiuwenmate.chat.stream` 是事件类型而非请求方法；`jiuwenmate.artifact.list` 服务端存在但未进 Web 白名单。
 
 ---
 
@@ -1597,6 +4268,8 @@ service 对象字段：`service_id`（≤约 500 字符）、`provider`（`local
 | 白名单转发（无本地 handler） | `initialize`、`session.switch/fork`、`session.assets.list/register/rename`、`team.*`（templates.list/bindings.list/binding.create/binding.generate/session.bind/delete/snapshot/history.get/mq.publish/list）、`group.*`、`org.snapshot`、`swarmflow.pause/resume/stop`、`command.goal/btw/compact/mcp/workflows`、`chat.*`（上述空 ack 之外的转发主体）、`history.get`（数据主体）、`schedule.*`、`issue.*`、`skills.*`（40+）、`assets.publish.*`、`mcp.*`、`agents.*`、`agent_groups.*`、`agent_templates.*`、`plugins.*`、`plugin_packages.*`、`extensions.*`、`personal_context.*`、`proactive.feedback` |
 
 `/ws/git` 封闭方法集（6 个）：`project.git.diff_watch/diff_files_watch/diff_detail_watch/diff_unwatch/discard_turn_changes/redo_turn_changes`（§7.3）。
+
+> 方法级「透传 / 网关处理 / 不可达」标注与自动化透传验证见**附录 F**。
 
 当前全集 489 个 WS 方法（个人版 482；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
 
@@ -1654,10 +4327,10 @@ service 对象字段：`service_id`（≤约 500 字符）、`provider`（`local
 | 模型/更新 | `MODEL_LIST_ERROR`、`AGENT_NOT_READY`、`CONFIG_SYNC_FAILED` |
 | ASR | `ASR_NOT_CONFIGURED`、`ASR_BAD_CONFIG`、`ASR_UNSUPPORTED_FORMAT`、`ASR_AUDIO_TOO_LARGE`、`ASR_TIMEOUT`、`ASR_CONNECTION_ERROR`、`ASR_UPSTREAM_ERROR`、`ASR_INVALID_RESPONSE`、`ASR_EMPTY_TRANSCRIPT` |
 | 平台 | `UNSUPPORTED`（选择器等） |
-| skills | `SKILL_NOT_FOUND / SKILL_INVALID_PACKAGE / SKILL_INVALID_METADATA / SKILL_RESERVED_PATH / SKILL_IMPORT_OVERWRITE_REQUIRED / SKILL_BUILTIN_READ_ONLY / SKILL_ALREADY_EXISTS / SKILL_NAME_CONFLICT / SKILL_UNSAFE_PATH / SKILL_FILE_TOO_LARGE / SKILL_OPERATION_UNSUPPORTED / SKILL_VERSION_NOT_FOUND / SKILL_VERSION_CONTENT_INVALID / SKILL_DOWNLOAD_TOKEN_INVALID / SKILL_KNOWLEDGE_INPUT_CONFLICT / SKILL_REBUILD_FAILED / SKILL_PUBLISH_VERSION_CONFLICT / SKILLHUB_INSTALL_FAILED / SKILLHUB_PUBLISH_FAILED / SKILLHUB_DETAIL_NOT_FOUND / SKILLHUB_DETAIL_FAILED` |
+| skills | `SKILL_NOT_FOUND / SKILL_INVALID_PACKAGE / SKILL_INVALID_METADATA / SKILL_RESERVED_PATH / SKILL_IMPORT_OVERWRITE_REQUIRED / SKILL_BUILTIN_READ_ONLY / SKILL_ALREADY_EXISTS / SKILL_NAME_CONFLICT / SKILL_UNSAFE_PATH / SKILL_FILE_TOO_LARGE / SKILL_OPERATION_UNSUPPORTED / SKILL_VERSION_NOT_FOUND / SKILL_VERSION_CONTENT_INVALID / SKILL_DOWNLOAD_TOKEN_INVALID / SKILL_KNOWLEDGE_INPUT_CONFLICT / SKILL_REBUILD_FAILED / SKILL_PUBLISH_VERSION_CONFLICT / SKILLHUB_INSTALL_FAILED / SKILLHUB_PUBLISH_FAILED / SKILLHUB_DETAIL_NOT_FOUND / SKILLHUB_DETAIL_FAILED / SKILL_INVENTORY_BUSY（清单锁忙）/ SKILL_REFERENCED_BY_PACK（卸载被技能包引用）；另有非 SKILL_ 前缀的 error_code：prebuilt_not_toggleable / prebuilt_not_removable` |
 | 资产发布 | `WEB_CHANNEL_REQUIRED / AUTH_REQUIRED / INVALID_KIND / INVALID_PARAMETERS / INVALID_METADATA / INVALID_PACKAGE / RESOURCE_NOT_FOUND / PUBLISH_UNAVAILABLE`（+ store/build 映射码如 `draft_limit / artifact_limit / VERSION_CONFLICT`） |
 | MCP | `MCP_INTERNAL / MCP_BAD_REQUEST / MCP_NOT_FOUND / MCP_UNREACHABLE / MCP_AUTH_FAILED`；CLI 结构化：`MCP_RUNTIME_MISSING / MCP_INSTALL_NETWORK / MCP_CLI_INCOMPLETE / MCP_NAME_CONFLICT / MCP_CREDENTIALS_INVALID / MCP_INSTALL_SCRIPT_DEP` |
-| agents 装备包 | `AGENT_GROUP_NAME_INVALID / AGENT_GROUP_DUPLICATE / AGENT_GROUP_LEADER_REQUIRED / AGENT_GROUP_MEMBER_*`（INVALID/CONFLICT/RESERVED/DUPLICATE/NOT_FOUND/INCOMPATIBLE/AGENT_MD 共 7 个）/ `AGENT_GROUP_TEMPLATE_INVALID / AGENT_GROUP_MEMBERS_REQUIRED / AGENT_GROUP_REQUEST_FAILED / HUB_ASSET_NOT_FOUND` |
+| agents 装备包 | `AGENT_GROUP_NAME_INVALID / AGENT_GROUP_DUPLICATE / AGENT_GROUP_LEADER_REQUIRED / AGENT_GROUP_MEMBER_*`（INVALID/CONFLICT/RESERVED/DUPLICATE/NOT_FOUND/INCOMPATIBLE/AGENT_MD 共 7 个）/ `AGENT_GROUP_TEMPLATE_INVALID / AGENT_GROUP_MEMBERS_REQUIRED / AGENT_GROUP_REQUEST_FAILED（组方法无 code 异常兜底）/ AGENT_GROUP_NOT_INSTALLED / AGENT_GROUP_UNAVAILABLE / HUB_ASSET_NOT_FOUND`（逐码触发条件见 §10.6.9 错误码总表） |
 | personal_context | **Core 数值串**：`154000`（配置/参数）、`154001`（状态）、`154002`（文件/图）、`154003-154006`（采集/处理/写入/超时）——payload 附加 `status` 状态名 |
 | a4p | `A4P_NOT_PENDING / A4P_INVALID_SELECTION / A4P_ROUTE_MISMATCH / A4P_REPREPARE_FAILED / A4P_DISABLED / A4P_CONFIG_APPLY_FAILED / A4P_AUTHORIZATION_INVALID / A4P_WEB_SESSION_REQUIRED / A4P_AUTHORIZATION_TIMEOUT / A4P_AUTHORIZATION_CANCELLED` |
 | rsi | `SCENARIO_NOT_SUPPORTED / PATH_INVALID / DATASET_INVALID / INVALID_HARNESS / MODEL_NOT_FOUND / MODEL_CONFIG_INVALID / UNSUPPORTED_PARAMETER / TASK_NOT_FOUND / TASK_STATE_CONFLICT / ARTIFACT_NOT_FOUND / RESUME_MISMATCH / RESUME_INPUT_CHANGED / RSI_HARNESS_NOT_READY / RSI_HARNESS_NOT_PUBLISHED / RSI_HARNESS_INVALID / RSI_HARNESS_INSTALL_CONFLICT / RSI_HARNESS_INSTALL_FAILED` |
@@ -2110,7 +4783,1163 @@ ws.addEventListener('open', async () => {
 
 ---
 
+## 附录 F. 方法级网关处理标注总表（透传 vs 网关处理）
+
+> 依据网关 `upstream/develop@0d50e02b0` 的转发注册表、帧级校验与归一化实现汇总。**全量透传结论由 `st_test/testcases_gateway/test_gateway_forward_passthrough.py`（267 个用例，真实网关进程 + Stub AgentServer）逐方法验证**：纯透传方法按本文档参数约束调用后，E2A 信封 `params` 逐键原样到达 AgentServer。
+> 形态说明：个人版 WS 方法全集 **482**（企业版另注册 team 控制面 7 个 = 489）；`/ws/git` 封闭协议 6 个另计（§7.3）。
+
+### F.1 分发类别与网关处理一览（个人版）
+
+| 类别 | 数量 | 方法 | 网关处理 |
+|---|---|---|---|
+| **纯透传** | 231（含下行 5 个下游未实现方法；其中 jiuwenmate.\* 46 个的服务端实现在 AgentServer `releases/0.2.9.beta2` 发布线——develop 线不含 server/jiuwenmate，契约按该发布线核对） | `_FORWARD_NO_LOCAL_HANDLER_METHODS` 全集：skills.\*、mcp.\*、agents.\*、装备包三族、plugins/extensions、personal_context.\*、a4p.\*、rsi.\*、team.\*、group.\*、org.snapshot、swarmflow.\*、command.\*、initialize、session.switch/fork、session.assets.\*、assets.publish.\*、jiuwenmate.\*、client.\*、mcp_app.\* 等 | **无**：params 逐键原样转发（仅 F.2 通用归一化）；`is_stream` 透传客户端顶层值 |
+| 网关注册、AgentServer 未实现 | 7 | group.execution.list/get、group.file.rename/delete、group.history.clear（含于纯透传 231）；client.conversations（含于纯透传）；models.refresh_status（E2A 代理） | 网关经 `protocol_compat` 注入枚举，帧级可解析、正常转发（网关侧透传已由 ST 验证）；**AgentServer 当前版本无对应成员与 handler**，南向落通用 fall-through——业务契约未定义 |
+| 派发等同纯透传 | 13 | issue.\*（4）+ schedule.\*（9）——白名单在册但未列入 no-local 名单、无本地 handler | 无（ST 已验证 params 相等） |
+| 白名单 + 网关处理 | 6 | chat.send / chat.interrupt / chat.resume / chat.user_answer / chat.swarmflow_reply / history.get | 见 F.3 逐方法改写 |
+| E2A 代理 | 128 | session.\*、project.\*、project.git.\*、media.\*、document.\*、heartbeat.job.\*、permissions.\*、a4p.\*、harness.\*、rsi.\*、designer.\*（13）、config 面板（config.\*/models.\*/model_groups.\*）、session.selection.set、workspace.\*、file.import_url/upload_chunk 等（注册本地 handler 内构造 E2A 请求） | 见 F.4 网关侧处理点 |
+| 纯本地 | 68 | cron.job.\*（9）、updater.\*（7）、channel.get + 九渠道 get_conf/set_conf（19）+ wechat 登录/解绑（2）、path.\*（5）、external_cli.\*（8）、task.asr.transcribe、memory.compute、memory.forbidden.get/set、hooks.list、commands.list、locale.\*、openai_account.\*（6）、health_check/heartbeat.get_conf/set_conf（4）、connection.status、vendors.\*（2） | 网关内执行不触达 AgentServer；path.select_\*/path.get/set、hooks.list、memory.forbidden、locale 带 legacy 本地 / AgentOS→E2A 分流 |
+| 网关薄包装转发 | 10 | topic_starters.\*（8）、prompt_suggestion.\*（2） | RPC 名改写为 `action` 字段经 `recommendation.job` 转发（注入 auth_session）；与纯本地/纯透传均不同 |
+
+> **逐方法标注**：全量 489 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。
+| **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
+| 企业版专用 | 7 | team.create / team.get / team.stop / team.member.join / leave / team.members.list / team.quota.get | 个人版从白名单与注册表双双剔除 → `METHOD_NOT_FOUND`；HTTP 路由同步过滤 |
+| /ws/git 封闭协议 | 6 | project.git.diff_watch / diff_files_watch / diff_detail_watch / diff_unwatch / discard_turn_changes / redo_turn_changes | 独立分发：网关 busy 预检 + 转发 + `preserve_error_payload` |
+| local_only（注册但不转发） | 14 | channel.feishu/dingtalk.bind_agent/unbind_agent、channel.feishu.get_bindings/revoke、channel.welink.\*（7）、jiuwenmate.colleague.delete | 网关本地执行；企业版拦截为 **handler 内自检**（WS/HTTP 均拦，区别于 invoke 的 HTTP-only 写保护）：绑定/撤销与 welink 全部方法 → FORBIDDEN（feishu.get_bindings 放行） |
+
+### F.2 全部转发方法共用的网关归一化（帧进网关即发生）
+
+| 改写点 | 规则 | 影响 |
+|---|---|---|
+| content→query | params 无 `query` 且有 `content` 时复制 content 为 query | 全部转发方法（含纯透传——传 content 即附带 query） |
+| is_stream | chat.send / history.get 恒 true；其余透传客户端顶层值 | 全部 |
+| session_id | 显式携带则帧级格式校验（≤80 正则）并 re-register 路由；缺省沿用连接注册会话 | 全部 |
+| params 非对象 | 静默置 `{}` | 全部 |
+| 帧级校验 | `params.mode`/`agent_id` 必须 string；`group_id` 须等于显式 session_id；swarmflow 的 run_id/workflow_run_id 同传须相等 | 全部（失败 `BAD_REQUEST`，不转发） |
+| 登录凭据 | `_model_auth` 无条件先删客户端同名键；登录模型时服务端注入凭据、过期先同步续期（≤20s） | 全部转发 |
+
+### F.3 网关处理方法（6 个）的逐方法改写
+
+| 方法 | 网关处理 | 到达 AgentServer 的形态 |
+|---|---|---|
+| chat.send | 本地 handler 先回 ack `{accepted:true}`；先发 `chat.processing_status(true)`；归一化 content→query；强制流式；后台消费流事件 | method=chat.send，params=发送值+query 复制，is_stream=true |
+| chat.interrupt | 本地 handler 回 ack；cancel 分支**重构信封** `{intent:"cancel", session_id}` + 透传定位参数（mode/team/trusted_dirs/work_mode/project_dir）；`agent_notify="await"` 等真实结果再转发 interrupt_result | method=chat.interrupt，params=重构值 |
+| chat.resume | 归一化改写为 chat.interrupt + `intent:"resume"`（setdefault 语义，不覆盖显式值） | method=chat.interrupt |
+| chat.user_answer | 本地 handler 回 ack；转发原 params | 原样 |
+| chat.swarmflow_reply | 本地 handler 回 ack；非流式转发原 params | 原样 |
+| history.get | 本地 handler 回 ack（参数回显）；强制流式；不抬升/不清 busy | 原样 + is_stream=true |
+
+### F.4 E2A 代理与纯本地的逐方法网关处理
+
+> 已合并至正文各方法的 `> **网关处理**` 标注行（含 E2A 组装方式、参数改动、本地处理与返回值）。
+
+### F.5 透传保证的自动化验证
+
+`st_test/testcases_gateway/test_gateway_forward_passthrough.py`（267 用例，方法清单从网关注册表动态导入保证与代码同步）：
+
+1. 纯透传 244 个方法逐方法参数化——断言 stub 收到的 E2A 信封 `params` 与发送**逐键相等**、`channel=web`、`is_stream` 语义正确；
+2. chat 族 6 方法断言 F.3 的文档化改写（cancel 重构与定位参数透传、resume 的 intent setdefault、强制流式）；
+3. rsi.session_id 注入断言（未携带时注入连接会话 id）；
+4. 帧级拒绝负例（mode 非字符串 / session_id 非法 / group_id 不匹配 / swarmflow run_id 不一致 → `BAD_REQUEST` 且不触达 AgentServer）；未知方法与个人版 team 控制面 → `METHOD_NOT_FOUND`；
+5. 不可达集合硬校验（11 方法；协议包补枚举后测试失败以提醒同步本文档）。
+
+运行：`python -m pytest st_test/testcases_gateway --no-cov`。
+
+### F.6 逐方法标注总表（全量 489 个，程序化生成）
+
+> 由网关转发注册表 + 协议枚举 + 注册方法清单程序化生成（与 ST 同口径）；分类口径与 F.1 一致，要点列为该方法**特有**的处理（通用归一化见 F.2）。`模型 M 属多类时按最高优先级归类：不可达 > 企业专用 > AgentServer 未实现 > 网关处理 > 透传 > local_only > 薄包装 > 纯本地 > E2A 代理`。
+
+| 方法 | 网关处理分类 | 要点 / 改写 |
+|------|-------------|------------|
+| `a4p.authorization.complete` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `a4p.authorization.pending` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `a4p.authorization.reject` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `a4p.authorization.reprepare` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `a4p.config.get` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `a4p.config.update` | E2A 代理（本地 handler 构造请求） | 前置检查 AGENT_NOT_READY / A4P_WEB_SESSION_REQUIRED |
+| `acp.tool_response` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.file.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.file.read` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.import_local` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.show` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_groups.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.file.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.file.read` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.import_local` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.show` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agent_templates.update` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.disable` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.enable` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.tools_list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `agents.update` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.commit` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.describe` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.local_status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.prepare` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.records` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `assets.publish.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `channel.dingtalk.bind_agent` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.dingtalk.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.dingtalk.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.dingtalk.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.dingtalk.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.dingtalk.unbind_agent` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.discord.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.discord.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.discord.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.discord.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.feishu.bind_agent` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.feishu.get_bindings` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.feishu.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.feishu.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.feishu.revoke` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.feishu.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.feishu.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.feishu.unbind_agent` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.get` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.get", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"channels": [{"channel_id": "feishu"}, {"channel_id": "web"}]}}
+```
+
+| `channel.slack.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.slack.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.slack.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.slack.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.telegram.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.telegram.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.telegram.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.telegram.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.wechat.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wechat.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.wechat.get_login_ui` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wechat.get_login_ui", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"phase": "idle", "message": "", "qr": null}}
+```
+
+| `channel.wechat.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wechat.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.wechat.unbind` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wechat.unbind", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false, "bot_token": ""}}}
+```
+
+| `channel.wecom.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wecom.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.wecom.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.wecom.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.welink.assistant_credential_save` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.assistant_login_start` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.assistant_login_status` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.get_bindings` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.login_start` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.login_status` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.welink.revoke` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `channel.whatsapp.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.whatsapp.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.whatsapp.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.whatsapp.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `channel.xiaoyi.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.xiaoyi.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": false}}}
+```
+
+| `channel.xiaoyi.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "channel.xiaoyi.set_conf", "params": {"enabled": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"config": {"enabled": true}}}
+```
+
+| `chat.interrupt` | 网关处理（白名单+本地 handler） | cancel 分支重构信封 {intent:'cancel', session_id}+定位参数；agent_notify='await' |
+| `chat.resume` | 网关处理（白名单+本地 handler） | 改写为 chat.interrupt + intent:'resume'（setdefault） |
+| `chat.send` | 网关处理（白名单+本地 handler） | 归一化 content→query；强制流式；先回 ack + processing_status(true) |
+| `chat.swarmflow_reply` | 网关处理（白名单+本地 handler） | 本地 handler 回 ack 后非流式转发原 params |
+| `chat.user_answer` | 网关处理（白名单+本地 handler） | 本地 handler 回 ack 后转发原 params |
+| `client.attach` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `client.conversation.messages` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `client.conversations` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `client.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `client.renew` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `command.btw` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `command.compact` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `command.goal` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `command.mcp` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `command.workflows` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `commands.list` | 纯本地 | 网关内执行，不触达 AgentServer |
+| `config.get` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `config.moa_status` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `config.save_all` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `config.set` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `config.validate_model` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `connection.status` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "connection.status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"agent_ready": true, "protocol_version": "1.0"}}
+```
+
+| `cron.job.create` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.create", "params": {"name": "每日日报", "cron_expr": "0 9 * * *", "description": "总结今天的工作", "targets": "web", "mode": "agent"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<hex32>", "name": "每日日报", "enabled": true}}}
+```
+
+| `cron.job.delete` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.delete", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"deleted": true}}
+```
+
+| `cron.job.get` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.get", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "name": "每日日报", "enabled": true, "cron_expr": "0 9 * * *", "mode": "agent"}}}
+```
+
+| `cron.job.list` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.list", "params": {"project_id": "default"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"jobs": []}}
+```
+
+| `cron.job.meta` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.meta", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"modes": ["agent", "team"], "default_mode": "agent", "default_timeout_seconds": 3600, "default_team_timeout_seconds": 3600, "max_timeout_seconds": 259200}}
+```
+
+| `cron.job.preview` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.preview", "params": {"id": "<job_id>", "count": 5}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"next": [{"wake_at": "2026-11-11T09:00:00+08:00", "push_at": "2026-11-11T09:00:00+08:00"}]}}
+```
+
+| `cron.job.run_now` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.run_now", "params": {"id": "<job_id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"accepted": true, "run_id": "<job_id>:1760600100", "session_id": "sess_cron_01"}}
+```
+
+| `cron.job.toggle` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.toggle", "params": {"id": "<job_id>", "enabled": false}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "enabled": false}}}
+```
+
+| `cron.job.update` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "cron.job.update", "params": {"id": "<job_id>", "patch": {"enabled": false}}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"job": {"id": "<job_id>", "enabled": false}}}
+```
+
+| `designer.graph.get` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.graph.list` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.graph.patch` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.graph.save` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.media.capabilities` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.run.cancel` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.run.get` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.run.pause` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.run.start` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.workspace.create` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.workspace.get` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.workspace.session.compose` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `designer.workspace.session.create` | E2A 代理（本地 handler 构造请求） | E2A 代理（timeout_seconds 可配） |
+| `document.formats` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `document.persist` | E2A 代理（本地 handler 构造请求） | >4MB base64 先经 E2A 分块预上传（path/_persisted 替代） |
+| `extensions.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `extensions.import` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `extensions.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `extensions.toggle` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `external_cli.codex_install_status` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.codex_install_status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "codex", "status": "idle", "phase": "idle"}}
+```
+
+| `external_cli.custom_agent.remove` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.custom_agent.remove", "params": {"cli_agent": "my_agent"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "my_agent"}}
+```
+
+| `external_cli.detect` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.detect", "params": {"cli_agent": "claude"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "claude", "status": "ok", "path": "/usr/local/bin/claude", "version": "1.0.0"}}
+```
+
+| `external_cli.install` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.install", "params": {"cli_agent": "claude"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "claude", "status": "running", "phase": "preparing"}}
+```
+
+| `external_cli.install_status` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.install", "params": {"cli_agent": "claude"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"cli_agent": "claude", "status": "running", "phase": "preparing"}}
+```
+
+| `external_cli.prune_path_histories` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.prune_path_histories", "params": {"cli_agent": "claude", "remove_paths": ["/old/path"]}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"histories": ["/usr/local/bin/claude"]}}
+```
+
+| `external_cli.validate_paths` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "external_cli.validate_paths", "params": {"paths": ["/usr/local/bin/claude", "/usr/local/bin/codex"]}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"results": {"/usr/local/bin/claude": true, "/usr/local/bin/codex": false}}}
+```
+
+| `file.import_url` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+| `file.upload_chunk` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+| `group.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.execution.get` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `group.execution.list` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `group.file.delete` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `group.file.rename` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `group.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.history.clear` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `group.history.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.member.add` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `group.update` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `harness.activate` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `harness.deactivate` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `harness.delete` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `harness.export` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `harness.import` | E2A 代理（本地 handler 构造请求） | >4MB base64 先经 E2A 分块预上传（path/_persisted 替代） |
+| `harness.packages` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `harness.packages.scan` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `health_check.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "health_check.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"every": 60, "target": "", "active_hours": null}}
+```
+
+| `health_check.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "health_check.set_conf", "params": {"every": 120, "target": "feishu"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"every": 120, "target": "feishu", "active_hours": null}}
+```
+
+| `heartbeat.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "heartbeat.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"every": 60, "target": "", "active_hours": null}}
+```
+
+| `heartbeat.job.cancel` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.create` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.delete` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.get` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.list` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.meta` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.preview` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.run_now` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.toggle` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.job.update` | E2A 代理（本地 handler 构造请求） | 经 HeartbeatControllerProxy 单通道转发 |
+| `heartbeat.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "heartbeat.set_conf", "params": {"every": 120, "target": "feishu"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"every": 120, "target": "feishu", "active_hours": null}}
+```
+
+| `history.get` | 网关处理（白名单+本地 handler） | 强制流式；ack 参数回显；不抬升/清 busy |
+| `hooks.list` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+| `initialize` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `issue.delete` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `issue.matrix` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `issue.state.list` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `issue.watch_once` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `jiuwenmate.activity.get` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.agent_mail.auth.begin` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.agent_mail.auth.cancel` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.agent_mail.auth.poll` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.agent_mail.disconnect` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.agent_mail.status` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.channel.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.channel.messages` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.channel.trace` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.chat.history` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.chat.send` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.create` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.delete` | local_only 本地 | 网关本地执行不经转发；企业版 handler 内自检拦截（feishu.get_bindings 放行） |
+| `jiuwenmate.colleague.ensure_default` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.get` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.publish` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.set_enabled` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.settings.get` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.colleague.settings.update` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.conversation.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.conversation.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.conversation.pin` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.conversation.rename` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.dingtalk_auth.begin` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.dingtalk_auth.cancel` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.dingtalk_auth.disconnect` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.dingtalk_auth.poll` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.dingtalk_auth.status` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.knowledge.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.models.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.permission.decide` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.request.abort` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.request.get` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.create` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.history` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.run` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.set_enabled` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.schedule.update` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.sharing.decide` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.sharing.list` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.sharing.revoke` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.welink_office.connect` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.welink_office.disconnect` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `jiuwenmate.welink_office.status` | **透传** | params 逐键原样（仅 F.2 通用归一化）（服务端在 releases/0.2.9.beta2 线） |
+| `locale.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "locale.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"preferred_language": "zh"}}
+```
+
+| `locale.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "locale.set_conf", "params": {"preferred_language": "zh"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"preferred_language": "zh"}}
+```
+
+| `mcp.cancel_connect` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.connect` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.delete_custom` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.disconnect` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.oauth.start` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.register_custom` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.save_credentials` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.show` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp.wait_auth` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp_app.call_tool` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp_app.list_tools` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `mcp_app.read_resource` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `media.discard` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `media.persist` | E2A 代理（本地 handler 构造请求） | >4MB base64 先经 E2A 分块预上传（path/_persisted 替代） |
+| `memory.compute` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "memory.compute", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"rss_mb": 256.0, "total_mb": 16384.0, "available_mb": 8192.0}}
+```
+
+| `memory.forbidden.get` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `memory.forbidden.set` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `model_groups.delete` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `model_groups.list` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `model_groups.upsert` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.delete` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.get` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.list` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.references` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.refresh_status` | 网关可达、**AgentServer 未实现** | 南向落通用 fall-through，契约未定义 |
+| `models.replace_all` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.upsert` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `models.validate` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `openai_account.auth.logout` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.auth.logout", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"logged_out": true}}
+```
+
+| `openai_account.auth.pending_login` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.auth.pending_login", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"status": "pending", "login_id": "<id>"}}
+```
+
+| `openai_account.auth.poll_login` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.auth.poll_login", "params": {"login_id": "<id>"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"status": "authenticated", "authenticated": true}}
+```
+
+| `openai_account.auth.start_login` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.auth.start_login", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"status": "pending", "login_id": "<id>", "user_code": "XXXX-XXXX", "verification_uri": "https://...", "interval": 5, "expires_in": 300}}
+```
+
+| `openai_account.auth.status` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.auth.status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"authenticated": false, "auth_path": "~/.openai/auth.json", "has_refresh_token": false, "needs_refresh": false}}
+```
+
+| `openai_account.models.list` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "openai_account.models.list", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"models": ["gpt-4o", "gpt-4o-mini"], "base_url": "https://api.openai.com"}}
+```
+
+| `org.snapshot` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `path.get` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.get", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"chrome_path": "/usr/bin/google-chrome", "headless": true, "decision_mode": "llm"}}
+```
+
+| `path.select_directory` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_directory", "params": {"initial_dir": "/Users/me/project"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"path": "/Users/me/project/src", "cancelled": false}}
+```
+
+| `path.select_file` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_file", "params": {"initial_dir": "/Users/me/project"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"path": "/Users/me/project/main.py", "cancelled": false}}
+```
+
+| `path.select_files` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.select_files", "params": {"initial_dir": "/Users/me/project", "allow_multiple": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"files": [{"path": "/Users/me/project/a.py", "kind": "document"}], "cancelled": false}}
+```
+
+| `path.set` | 纯本地 | legacy 本地 / AgentOS 走 E2A 分流 |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "path.set", "params": {"chrome_path": "/usr/bin/google-chrome", "headless": true}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"chrome_path": "/usr/bin/google-chrome", "headless": true}}
+```
+
+| `permissions.approval_overrides.delete` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.approval_overrides.get` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.owner_scopes.get` | E2A 代理（本地 handler 构造请求） | A4g/A5：统一 E2A |
+| `permissions.owner_scopes.set` | E2A 代理（本地 handler 构造请求） | A4g/A5：统一 E2A |
+| `permissions.rules.create` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.rules.delete` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.rules.get` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.rules.update` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.tools.delete` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.tools.get` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.tools.set` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.tools.update` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `permissions.tools.update_user` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `personal_context.context.get_node` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.context.get_source` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.context.search_pages` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.context.stream_graph` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.context.stream_tree` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.authorize_provider` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.create_service` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.delete_service` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.get_authorization_status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.get_run_status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.list_services` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.patch_service` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.run_all` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.run_one` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.start_service` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.stop_run` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.fetch.stop_service` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.get_config` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.patch_config` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.select_model` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.set_master_enabled` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.start_agent_use` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.start_collection` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.stop_agent_use` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `personal_context.runtime.stop_collection` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.import_local` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.show` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugin_packages.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.disable` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.enable` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.reload` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `plugins.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `proactive.feedback` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `project.create` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.get_cron_sessions` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.get_sessions` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.git.commit` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.create_branch` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.diff_status` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.init` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.probe` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.push` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.status` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.switch_branch` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.turn_diff` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.git.turn_diff_list` | E2A 代理（本地 handler 构造请求） | preserve_error_payload=True（失败 payload 整体保留） |
+| `project.info` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.list` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.pin` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.pinned_sessions` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.remove` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.rename` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.restore` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.sessions.archive` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `project.sessions.delete_archived` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `prompt_suggestion.event` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `prompt_suggestion.get` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `rsi.artifact.download` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id；按 user_id 注入 _download_user_id |
+| `rsi.artifact.files.get` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.artifact.files.list` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.dataset.validate` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.harness.install` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.harness.rollback` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.harness.versions.list` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.report.get` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.task.create` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.task.delete` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.task.get` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.task.list` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.training.pause` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.training.resume` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.training.start` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.training.terminate` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.tree.get` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `rsi.usage.get` | E2A 代理（本地 handler 构造请求） | 网关注入 session_id |
+| `schedule.cancel` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.check_config` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.create` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.delete` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.list` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.logs` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.run` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.status` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `schedule.update_config` | **透传（白名单在册、未列 no-local 名单，无本地 handler）** | params 逐键原样；业务错误恒 ok:true（§10.6.17/§8.3） |
+| `session.archive` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.archived.list` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.assets.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `session.assets.register` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `session.assets.remove` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `session.assets.rename` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `session.create` | E2A 代理（本地 handler 构造请求） | drop 客户端 session_id；注入 work_mode 归一化+_work_mode_explicit+create_token |
+| `session.delete` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.fork` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `session.get_metadata` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.list` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.message.continue_queued` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.pin` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.plan_status` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.rename` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `session.selection.set` | E2A 代理（本地 handler 构造请求） | A4g/A5：统一 E2A |
+| `session.switch` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `session.unarchive` | E2A 代理（本地 handler 构造请求） | 网关构造 E2A 请求，params 透传 |
+| `skills.clawhub.download` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.clawhub.get_token` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.clawhub.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.clawhub.set_token` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.create_from_knowledge` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.enterprise.install` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.enterprise.list` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.enterprise.source.providers` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.enterprise.source.search` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.enterprise.uninstall` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.evolution.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.evolution.save` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.evolution.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.experience.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.experience.request` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.files.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.files.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.graph.build` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.graph.cancel` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.graph.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.graph.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.import_local` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.import_upload` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.installed` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.marketplace.add` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.marketplace.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.marketplace.remove` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.marketplace.toggle` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.online_search.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.online_search.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.pack_member.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.rebuild` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.retrieval.index_build` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.retrieval.index_cancel` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.retrieval.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.retrieval.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.retrieval.tree` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.skillnet.evaluate` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.skillnet.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.skillnet.install_status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.skillnet.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.source.install` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.source.providers` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.source.search` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.swarmskillshub.detail` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.swarmskillshub.recommend` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.info` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.init` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.install` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.pack` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.publish` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.teamskillshub.validate` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.toggle` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.uninstall` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `skills.update` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.updates.check` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
+| `skills.versions.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `swarmflow.pause` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `swarmflow.resume` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `swarmflow.stop` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `task.asr.transcribe` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "task.asr.transcribe", "params": {"audio_base64": "<base64...>", "mime_type": "audio/webm"}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"text": "转写文本"}}
+```
+
+| `team.binding.create` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.binding.generate` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.bindings.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.create` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.delete` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.get` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.history.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.member.join` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.member.leave` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.members.list` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.mq.publish` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.quota.get` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.session.bind` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.snapshot` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `team.stop` | **企业版专用** | 个人版从白名单与注册表剔除 → METHOD_NOT_FOUND |
+| `team.templates.list` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
+| `topic_starters.control` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.event` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.foreground` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.get` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.profile` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.restore_direction` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.select_model` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `topic_starters.status` | 网关薄包装转发 | RPC 名改写为 action 经 recommendation.job 转发；注入 auth_session |
+| `updater.check` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.check", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"current_version": "0.1.0", "latest_version": "0.2.0", "state": "update_available", "has_update": true, "install_mode": "pip"}}
+```
+
+| `updater.download` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.download", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"state": "downloading", "downloaded_bytes": 0, "total_bytes": 10485760}}
+```
+
+| `updater.get_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.get_conf", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip", "repo_owner": "openJiuwen", "repo_name": "agent-gateway", "access_token": "****"}}
+```
+
+| `updater.get_status` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.get_status", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"current_version": "0.1.0", "latest_version": "", "state": "idle", "has_update": false, "platform": "darwin", "platform_supported": true}}
+```
+
+| `updater.reset_source` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.reset_source", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip"}}
+```
+
+| `updater.set_conf` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.set_conf", "params": {"enabled": true, "timeout_seconds": 30}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"enabled": true, "release_api_type": "gitcode", "install_mode": "pip", "timeout_seconds": 30}}
+```
+
+| `updater.upgrade` | 纯本地 | 网关内执行，不触达 AgentServer；企业版写保护（set_conf/unbind） |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "updater.upgrade", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"state": "restarting", "installing": true, "restart_command": "pip install --upgrade agent-gateway"}}
+```
+
+| `vendors.fetch_models` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "vendors.fetch_models", "params": {"vendor_key": "openai", "plan": "coding_plan", "api_key": "sk-..."}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"models": ["gpt-4o", "gpt-4o-mini"], "source": "remote"}}
+```
+
+| `vendors.list` | 纯本地 | 网关内执行，不触达 AgentServer |
+
+
+**请求/返回帧**：
+
+```jsonc
+→ {"type": "req", "id": "req_x", "method": "vendors.list", "params": {}}
+← {"type": "res", "id": "req_x", "ok": true, "payload": {"vendors": {"token_plan": [], "coding_plan": [], "custom_api": []}}}
+```
+
+| `workspace.entries.delete` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+| `workspace.preview` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+| `workspace.tree` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+| `workspace.usage` | E2A 代理（本地 handler 构造请求） | E2A 代理；路径规范校验在服务端 |
+
+
+
+---
+
 ## 返回导航
 
 - [返回文档首页](../../README.md)
 - [返回项目首页](../../../README.zh.md)
+
