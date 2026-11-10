@@ -257,6 +257,26 @@ _PRESETS: list[VendorPreset] = [
         models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/coding",
     ),
+    VendorPreset(
+        vendor_key="opencode-go", display_name="OpenCode Go", plan=PlanKind.CODING_PLAN,
+        client_provider="OpenAI",
+        api_base="https://opencode.ai/zen/go/v1",
+        default_model="deepseek-v4.1-flash",
+        model_options=(
+            "deepseek-v4.1-flash",
+            "deepseek-v4-pro",
+            "glm-5.3",
+            "kimi-k3",
+            "qwen3.8-max",
+            "minimax-m3.1-flash",
+        ),
+        icon_key="openai",
+        # Go 套餐 key 只在 zen/go 域名有效;/v1/models 实测 200(需 Bearer)。
+        models_endpoint="https://opencode.ai/zen/go/v1/models",
+        models_needs_key=True,
+        # zen/go 仅提供 OpenAI 兼容端点,无 Anthropic 格式。
+        anthropic_base=None,
+    ),
 
     # ── 自定义API (通用Token / 按量计费) ────────────────────────────────────
     VendorPreset(
