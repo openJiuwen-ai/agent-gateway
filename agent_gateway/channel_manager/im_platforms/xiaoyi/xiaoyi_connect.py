@@ -9,6 +9,7 @@ import base64
 import hashlib
 import hmac
 import inspect
+import ipaddress
 import json
 import logging
 import os
@@ -171,6 +172,47 @@ class XiaoyiChannelConfig:
     task_timeout_ms: int = 3600000
     # Session cleanup timeout in milliseconds (default: 1 hour)
     session_cleanup_timeout_ms: int = 3600000
+
+
+XIAOYI_TLS_VERIFY_ENV = "XIAOYI_TLS_VERIFY"
+_FALSY_TLS_VALUES = {"0", "false", "no", "off"}
+
+
+def _is_ip_host(host: str | None) -> bool:
+    """Return True when ``host`` is a literal IPv4/IPv6 address."""
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def _build_ssl_context(host: str | None) -> ssl.SSLContext:
+    """Build the TLS context used by the Xiaoyi WebSocket connection.
+
+    Historically an IP literal switched the context to ``CERT_NONE``, which drops
+    *all* identity checks while the same request still carries authentication
+    headers. Keep the certificate-chain validation and only relax hostname
+    matching for IP literals (certificates are usually issued for a domain name).
+    Explicitly disable verification via ``XIAOYI_TLS_VERIFY=false`` for a trusted
+    intranet self-signed endpoint.
+    """
+    context = ssl.create_default_context()
+    raw = (os.getenv(XIAOYI_TLS_VERIFY_ENV) or "").strip().casefold()
+    if raw in _FALSY_TLS_VALUES:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        logger.warning(
+            "[XiaoyiChannel] TLS 校验已被 %s=%s 关闭，仅应在可信内网使用",
+            XIAOYI_TLS_VERIFY_ENV,
+            raw,
+        )
+        return context
+    if _is_ip_host(host):
+        context.check_hostname = False
+    return context
 
 
 def _generate_signature(sk: str, timestamp: str) -> str:
@@ -1261,12 +1303,8 @@ class XiaoyiChannel(BaseChannel):
 
         headers = _generate_auth_headers(self.config)
         parsed = urlparse(url)
-        is_ip = bool(parsed.hostname and parsed.hostname.replace(".", "").isdigit())
 
-        ssl_context = ssl.create_default_context()
-        if is_ip:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_context = _build_ssl_context(parsed.hostname)
 
         async with websockets.connect(
                 url,
