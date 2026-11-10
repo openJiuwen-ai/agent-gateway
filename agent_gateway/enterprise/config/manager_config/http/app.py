@@ -55,6 +55,7 @@ _MANAGER_PATH_PREFIXES = (
     "/api/v1/a4p",
     "/api/v1/symphony",
     "/api/v1/auto-memory",
+    "/api/v1/proactive-recommendation",
     "/api/v1/cron-policy",
     "/api/v1/audit-log",
     "/api/v1/log-masking-rules",

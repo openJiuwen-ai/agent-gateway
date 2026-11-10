@@ -52,6 +52,9 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "a4p_config": EnterpriseRecordSpec(key_fields=("agent_template_id",)),
     "symphony_config": EnterpriseRecordSpec(key_fields=("agent_template_id",)),
     "auto_memory_config": EnterpriseRecordSpec(key_fields=("agent_template_id",)),
+    "proactive_recommendation_config": EnterpriseRecordSpec(
+        key_fields=("agent_template_id",)
+    ),
     "cron_policy": EnterpriseRecordSpec(key_fields=()),
     "audit_log_config": EnterpriseRecordSpec(key_fields=()),
     "manager_sign_pubkey": EnterpriseRecordSpec(

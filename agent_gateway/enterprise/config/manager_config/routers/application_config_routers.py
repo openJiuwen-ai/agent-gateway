@@ -27,8 +27,9 @@ from ..schemas.application_config_schemas import (
     A4pCapabilityUpsertRequest,
     AgentTemplateCapabilityDeleteRequest,
     AutoMemoryCapabilityUpsertRequest,
-    SymphonyCapabilityUpsertRequest,
     MemoryConfigUpsertRequest,
+    ProactiveRecommendationCapabilityUpsertRequest,
+    SymphonyCapabilityUpsertRequest,
     TaskMemoryUpsertRequest,
 )
 from ..schemas.common_schemas import ResponseModel
@@ -59,6 +60,9 @@ A4pSyncBody = make_sync_body("A4pSyncBody", A4pCapabilityUpsertRequest)
 SymphonySyncBody = make_sync_body("SymphonySyncBody", SymphonyCapabilityUpsertRequest)
 AutoMemorySyncBody = make_sync_body(
     "AutoMemorySyncBody", AutoMemoryCapabilityUpsertRequest
+)
+ProactiveSyncBody = make_sync_body(
+    "ProactiveSyncBody", ProactiveRecommendationCapabilityUpsertRequest
 )
 CapabilityDeleteSyncBody = make_sync_body(
     "CapabilityDeleteSyncBody", AgentTemplateCapabilityDeleteRequest
@@ -347,3 +351,19 @@ async def delete_auto_memory(
     sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
 ):
     return await _delete_agent_capability("auto_memory", sync)
+
+
+@application_config_router.put("/proactive-recommendation", response_model=ResponseModel)
+async def upsert_proactive_recommendation(
+    sync: Annotated[SyncContext, Depends(verify_sync(ProactiveSyncBody))],
+):
+    return await _upsert_agent_capability("proactive_recommendation", sync)
+
+
+@application_config_router.delete(
+    "/proactive-recommendation", response_model=ResponseModel
+)
+async def delete_proactive_recommendation(
+    sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
+):
+    return await _delete_agent_capability("proactive_recommendation", sync)

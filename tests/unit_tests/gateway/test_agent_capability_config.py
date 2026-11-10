@@ -20,6 +20,13 @@ from agent_gateway.enterprise.config.manager_config.schemas.application_config_s
 
 def test_capability_tables_are_one_row_per_agent_template() -> None:
     definitions = {table.table_name: table for table in ALL_TABLE_DEFINITIONS}
+    assert set(CAPABILITY_TABLES.values()) == {
+        "a2ui_config",
+        "a4p_config",
+        "symphony_config",
+        "auto_memory_config",
+        "proactive_recommendation_config",
+    }
     for table_name in CAPABILITY_TABLES.values():
         assert ENTERPRISE_RECORD_SPECS[table_name].key_fields == ("agent_template_id",)
         columns = {column.name for column in definitions[table_name].columns}

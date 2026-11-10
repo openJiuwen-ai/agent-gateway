@@ -113,6 +113,14 @@ class AutoMemoryCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
     enabled: bool
 
 
+class ProactiveRecommendationCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
+    """这个 Agent 自己的主动推荐。次数上限按这个 Agent 单独算。"""
+
+    enabled: bool
+    max_recommend_per_day: int | None = Field(default=None, ge=1, le=50)
+    max_rounds_per_tick: int | None = Field(default=None, ge=1, le=50)
+
+
 class SymphonyFlowCapability(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
