@@ -249,6 +249,58 @@ def test_migration_does_not_consume_unreadable_cron_backup(tmp_path):
     assert current.read_text(encoding="utf-8") == "gateway: {}\n"
 
 
+def test_failed_final_rename_cannot_replay_cron_etcd_backup(tmp_path, monkeypatch):
+    from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text("gateway: {}\n", encoding="utf-8")
+    backup = config.with_suffix(".yaml.migrated")
+    legacy = "gateway: {cron: {store_backend: etcd, etcd_endpoints: [http://old-etcd:2379]}}\n"
+    backup.write_text(legacy, encoding="utf-8")
+    rename = Path.rename
+
+    def fail_final_rename(source, target):
+        if target == config.with_suffix(".yaml.migrated.restored"):
+            raise PermissionError(target)
+        return rename(source, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", fail_final_rename)
+        restore_migrated_cron_etcd_settings(config)
+
+    assert yaml.safe_load(config.read_text())["gateway"]["cron"]["store_backend"] == "etcd"
+    assert not backup.exists()
+    assert config.with_suffix(".yaml.migrated.restoring").read_text() == legacy
+    file_config = "gateway: {cron: {store_backend: file}}\n"
+    config.write_text(file_config, encoding="utf-8")
+    restore_migrated_cron_etcd_settings(config)
+    assert config.read_text() == file_config
+
+
+def test_failed_config_write_leaves_cron_etcd_backup_retryable(tmp_path, monkeypatch):
+    from agent_gateway.common import config as config_io
+    from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
+
+    config = tmp_path / "config.yaml"
+    config.write_text("gateway: {}\n", encoding="utf-8")
+    backup = config.with_suffix(".yaml.migrated")
+    legacy = "gateway: {cron: {store_backend: etcd, etcd_endpoints: [http://old-etcd:2379]}}\n"
+    backup.write_text(legacy, encoding="utf-8")
+
+    def fail_write(path, _data):
+        raise PermissionError(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(config_io, "dump_yaml_round_trip", fail_write)
+        restore_migrated_cron_etcd_settings(config)
+
+    assert backup.read_text() == legacy
+    assert config.read_text() == "gateway: {}\n"
+    restore_migrated_cron_etcd_settings(config)
+    assert yaml.safe_load(config.read_text())["gateway"]["cron"]["store_backend"] == "etcd"
+    assert config.with_suffix(".yaml.migrated.restored").read_text() == legacy
+
+
 @pytest.mark.parametrize("moved", [True, False])
 def test_migration_only_accepts_confirmed_concurrent_move(tmp_path, monkeypatch, moved):
     source = tmp_path / "legacy"

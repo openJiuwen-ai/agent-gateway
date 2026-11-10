@@ -57,9 +57,10 @@ def load_cron_store_settings(config: dict[str, Any] | None = None) -> CronStoreS
 def restore_migrated_cron_etcd_settings(config_path: Path) -> None:
     """Evaluate the first legacy config backup once, retaining its contents."""
     backup = config_path.with_name(f"{config_path.name}.migrated")
+    restoring = backup.with_name(f"{backup.name}.restoring")
     restored = backup.with_name(f"{backup.name}.restored")
     skipped = backup.with_name(f"{backup.name}.skipped")
-    if not backup.is_file() or restored.exists() or skipped.exists():
+    if not backup.is_file() and not restoring.is_file():
         return
 
     from agent_gateway.common.config import (
@@ -71,6 +72,9 @@ def restore_migrated_cron_etcd_settings(config_path: Path) -> None:
 
     try:
         with config_write_lock(config_path=config_path):
+            if restoring.is_file():
+                logger.warning("Previous cron etcd recovery did not finalize. Backup retained at %s", restoring)
+                return
             if not backup.is_file() or restored.exists() or skipped.exists():
                 return
 
@@ -103,10 +107,16 @@ def restore_migrated_cron_etcd_settings(config_path: Path) -> None:
                 etcd_endpoints=legacy_cron["etcd_endpoints"],
                 etcd_prefix=legacy_cron.get("etcd_prefix") or _DEFAULT_PREFIX,
             )
-            dump_yaml_round_trip(config_path, current)
-            backup.rename(restored)
+            # Claim the backup before writing so a failed final rename cannot replay it.
+            backup.rename(restoring)
+            try:
+                dump_yaml_round_trip(config_path, current)
+            except (OSError, UnicodeError, YAMLError):
+                restoring.rename(backup)
+                raise
+            restoring.rename(restored)
     except (OSError, LockException, UnicodeError, YAMLError):
-        logger.warning("Could not restore migrated cron etcd settings from %s", backup, exc_info=True)
+        logger.warning("Could not complete cron etcd recovery for %s", config_path, exc_info=True)
 
 
 def _migration_cron_section(config: Any) -> dict[str, Any] | None:
