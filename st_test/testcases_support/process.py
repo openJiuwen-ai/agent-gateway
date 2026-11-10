@@ -213,12 +213,7 @@ def _config_candidates():
 
 
 def _seed_gateway_config(home: Path) -> None:
-    """workswarm 模板补一份 config.yaml 到隔离工作区。
-
-    gateway 启动必须读取 config.yaml；隔离工作区里没有时，它回退到宿主包
-    ``resources`` 或仓库根目录 ``config/``，而流水线把 workswarm 装在
-    ``.st-src`` 下，两条回退都找不到，进程会以 exit 70 退出。
-    """
+    """Seed the host configuration for the workswarm compatibility ST."""
     target = home / ".jiuwenswarm" / "config" / "config.yaml"
     if target.exists():
         return
@@ -234,11 +229,17 @@ def start_gateway(
     agent_server_url: str,
     *,
     timeout: float = START_TIMEOUT,
+    use_host_config: bool = True,
 ) -> GatewayProcess:
-    _seed_gateway_config(home)
+    if use_host_config:
+        _seed_gateway_config(home)
     port = free_port()
     log_path = home / f"gateway-{port}.log"
     env = service_env(home)
+    if not use_host_config:
+        # Standalone contract ST must boot with Gateway's own template and extensions.
+        env.pop("JIUWENSWARM_RUNTIME_WORKSPACE_READY", None)
+        env.pop("EXTENSION_DIRS", None)
     # ACP/TUI 侧固定端口，默认 19001；同一轮里多实例并行会互相抢占。
     env["GATEWAY_PORT"] = str(free_port())
     cmd = [
