@@ -2711,6 +2711,95 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a flat frontend-style model entry into the nested config format.
+
+    If the entry already has a ``model_client_config`` dict, assume it is already
+    normalized and return as-is.  Otherwise promote flat fields into the nested
+    structure the rest of the system expects.
+    """
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
+    if isinstance(saved.get("model_client_config"), dict):
+        return saved
+    mcc: dict[str, Any] = {}
+    mco: dict[str, Any] = {}
+    if "model_name" in saved:
+        mcc["model_name"] = str(saved.pop("model_name") or "")
+    if "api_base" in saved:
+        mcc["api_base"] = str(saved.pop("api_base") or "")
+    if "api_key" in saved:
+        mcc["api_key"] = saved.pop("api_key") or ""
+    provider = str(saved.pop("model_provider", saved.pop("client_provider", "")) or "")
+    if provider:
+        mcc["client_provider"] = provider
+    if "timeout" in saved:
+        mcc["timeout"] = saved.pop("timeout")
+    if "verify_ssl" in saved:
+        mcc["verify_ssl"] = bool(saved.pop("verify_ssl"))
+    if "endpoint_profile" in saved:
+        val = saved.pop("endpoint_profile")
+        if val:
+            mcc["endpoint_profile"] = str(val)
+    if "vendor_key" in saved:
+        val = saved.pop("vendor_key")
+        if val:
+            mcc["vendor_key"] = str(val)
+    if "plan" in saved:
+        val = saved.pop("plan")
+        if val:
+            mcc["plan"] = str(val)
+    temp = saved.pop("temperature", None)
+    if temp is not None:
+        mco["temperature"] = float(temp)
+    rl = saved.pop("reasoning_level", None)
+    if rl is not None and str(rl).strip():
+        mco["reasoning_level"] = str(rl).strip()
+    if mcc:
+        saved["model_client_config"] = mcc
+    if mco:
+        saved["model_config_obj"] = mco
+    return saved
+
+
+def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge an editable DTO while preserving omitted/write-only settings."""
+    merged = deepcopy(current)
+    for key, value in update.items():
+        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_model_update(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
+    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
+    client = update.get("model_client_config") or {}
+    if "api_key" not in client:
+        return
+    key = client["api_key"]
+    previous = (current.get("model_client_config") or {}).get("api_key")
+    if key == previous or not key:
+        return
+    crypto = get_crypto_provider()
+    if crypto is not None:
+        resolved = _decrypt_model_entries([current])[0]
+        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
+        if previous and key == previous_plaintext:
+            client["api_key"] = previous
+        else:
+            client["api_key"] = crypto.encrypt(key)
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
