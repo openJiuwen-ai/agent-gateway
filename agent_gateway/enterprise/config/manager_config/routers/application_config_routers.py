@@ -7,6 +7,10 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..core.application_config.agent_capability_config import (
+    AgentCapabilityConfigService,
+    capability_body,
+)
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
@@ -19,6 +23,8 @@ from ..schemas.application_config_schemas import (
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
+    A2uiCapabilityUpsertRequest,
+    AgentTemplateCapabilityDeleteRequest,
     MemoryConfigUpsertRequest,
     TaskMemoryUpsertRequest,
 )
@@ -44,6 +50,10 @@ LogMaskingCreateSyncBody = make_sync_body(
 )
 LogMaskingUpdateSyncBody = make_sync_body(
     "LogMaskingUpdateSyncBody", LogMaskingRuleUpdateRequest
+)
+A2uiSyncBody = make_sync_body("A2uiSyncBody", A2uiCapabilityUpsertRequest)
+CapabilityDeleteSyncBody = make_sync_body(
+    "CapabilityDeleteSyncBody", AgentTemplateCapabilityDeleteRequest
 )
 
 
@@ -250,3 +260,40 @@ async def delete_log_masking_rule(
         raise HTTPException(status_code=status, detail=detail) from exc
     trigger_runtime_config_update()
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+async def _upsert_agent_capability(kind: str, sync: SyncContext) -> ResponseModel:
+    try:
+        template_id = str(sync.business.get("agent_template_id") or "")
+        result = await AgentCapabilityConfigService(kind).upsert(
+            template_id,
+            capability_body(sync.business),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
+
+
+async def _delete_agent_capability(kind: str, sync: SyncContext) -> ResponseModel:
+    try:
+        template_id = str(sync.business.get("agent_template_id") or "")
+        await AgentCapabilityConfigService(kind).delete(template_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put("/a2ui", response_model=ResponseModel)
+async def upsert_a2ui(
+    sync: Annotated[SyncContext, Depends(verify_sync(A2uiSyncBody))],
+):
+    return await _upsert_agent_capability("a2ui", sync)
+
+
+@application_config_router.delete("/a2ui", response_model=ResponseModel)
+async def delete_a2ui(
+    sync: Annotated[SyncContext, Depends(verify_sync(CapabilityDeleteSyncBody))],
+):
+    return await _delete_agent_capability("a2ui", sync)

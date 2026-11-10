@@ -206,6 +206,48 @@ AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
+def _agent_capability_table(table_name: str) -> TableDefinition:
+    """按 Agent 模板存一份能力开关。一行一个模板，body 是要盖到 YAML 上的字段。"""
+    return TableDefinition(
+        table_name=table_name,
+        columns=[
+            ColumnDefinition(
+                "id",
+                "integer",
+                primary_key=True,
+                autoincrement=True,
+                nullable=False,
+            ),
+            ColumnDefinition(
+                "agent_template_id",
+                "string",
+                length=100,
+                nullable=False,
+            ),
+            ColumnDefinition("body", "json", nullable=False),
+            ColumnDefinition(
+                "source",
+                "string",
+                length=16,
+                nullable=False,
+                default="manager",
+            ),
+            ColumnDefinition("revision", "integer", nullable=False, default=1),
+            ColumnDefinition("created_at", "datetime", nullable=False),
+            ColumnDefinition("updated_at", "datetime", nullable=False),
+        ],
+        indexes=[
+            IndexDefinition(["agent_template_id"], unique=True),
+        ],
+    )
+
+
+A2UI_CONFIG_TABLE_DEF = _agent_capability_table("a2ui_config")
+
+AGENT_CAPABILITY_TABLE_DEFS: tuple[TableDefinition, ...] = (
+    A2UI_CONFIG_TABLE_DEF,
+)
+
 # config_poll 用 revision 发现变更。更新由数据库执行 revision = revision + 1。
 POLL_REVISION_TABLES = frozenset({
     CHANNEL_CONFIG_TABLE_DEF.table_name,

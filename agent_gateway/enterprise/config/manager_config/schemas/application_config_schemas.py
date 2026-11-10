@@ -83,6 +83,24 @@ class LogMaskingRuleUpdateRequest(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class AgentTemplateCapabilityDeleteRequest(BaseModel):
+    """按 Agent 模板删除一条能力配置。删掉之后运行时退回本地 YAML。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    agent_template_id: str = Field(..., min_length=1, max_length=100)
+
+
+class A2uiCapabilityUpsertRequest(AgentTemplateCapabilityDeleteRequest):
+    """A2UI 富界面协议。只下发开关和协议字段，不带本机路径。"""
+
+    enabled: bool
+    protocol_version: str | None = Field(default=None, max_length=16)
+    stream_validation_enabled: bool | None = None
+    non_web_fallback_enabled: bool | None = None
+    dev_smoke_tools_enabled: bool | None = None
+
+
 class InstanceDataLifecycleRequest(BaseModel):
     """实例数据生命周期（默认 purge）。
 
