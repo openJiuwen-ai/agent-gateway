@@ -33,7 +33,7 @@ def test_fresh_workspace_installs_own_template_without_overwriting_user_config()
     assert config.read_text() == "custom: retained\n"
 
 
-def test_legacy_logs_and_checkpoints_migrate_once_without_replacing_new_data(monkeypatch):
+def test_legacy_logs_and_checkpoints_migrate_once():
     root = paths.get_user_workspace_dir()
     legacy = root / ".checkpoint"
     legacy.mkdir(parents=True)
@@ -41,11 +41,10 @@ def test_legacy_logs_and_checkpoints_migrate_once_without_replacing_new_data(mon
     logs = root / ".logs"
     logs.mkdir(parents=True)
     (logs / "old.log").write_text("old logs")
-    monkeypatch.setattr(paths, "_legacy_migration_done", False)
-    paths._migrate_legacy_checkpoint_and_logs()
+    paths.migrate_partitioned_data_root_layout()
     assert (root / "domain/agent/.checkpoint/state").read_text() == "old state"
     assert (root / "infra/logs/agent/old.log").read_text() == "old logs"
-    paths._migrate_legacy_checkpoint_and_logs()
+    paths.migrate_partitioned_data_root_layout()
     assert not legacy.exists()
 
 
@@ -148,3 +147,75 @@ setup_gateway_logger().warning(sys.argv[1])
         assert (root / "domain/agent/workspace/pod-0").is_file()
         assert (root / "domain/agent/workspace/pod-1").is_file()
     assert not (shared_domain / "logs").exists()
+
+
+def test_workspace_upgrade_preserves_config_and_local_jobs():
+    root = paths.get_user_workspace_dir()
+    legacy = {
+        "config/config.yaml": ("infra/config/config.yaml", "gateway:\n  cron:\n    store_backend: etcd\n"),
+        "config/.env": ("infra/config/.env", "UPGRADE_TEST=legacy\n"),
+        "agent/home/cron_jobs.json": ("domain/agent/home/cron_jobs.json", '{"jobs": []}'),
+        "agent/.checkpoint/session_map.json": ("domain/agent/.checkpoint/session_map.json", "{}"),
+        "agent/.logs/gateway.log": ("infra/logs/agent/gateway.log", "legacy log"),
+        "gateway/persistent/state.json": ("domain/gateway/persistent/state.json", "{}"),
+    }
+    for name, (_, contents) in legacy.items():
+        source = root / name
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text(contents)
+
+    paths.prepare_runtime_workspace(cleanup_stale_descs=False)
+    for name, (destination, contents) in legacy.items():
+        assert not (root / name).exists()
+        assert (root / destination).read_text() == contents
+
+
+def test_workspace_migration_keeps_existing_config_and_legacy_copy():
+    root = paths.get_user_workspace_dir()
+    old = root / "config/config.yaml"
+    new = root / "infra/config/config.yaml"
+    old.parent.mkdir(parents=True)
+    new.parent.mkdir(parents=True)
+    old.write_text("legacy: true")
+    new.write_text("current: true")
+
+    paths.migrate_partitioned_data_root_layout()
+    assert new.read_text() == "current: true"
+    assert new.with_suffix(".yaml.migrated").read_text() == "legacy: true"
+    assert not old.exists()
+
+    snapshot = {p: p.stat().st_mtime_ns for p in root.rglob("*")}
+    paths.migrate_partitioned_data_root_layout()
+    assert {p: p.stat().st_mtime_ns for p in root.rglob("*")} == snapshot
+
+
+def test_workspace_migration_leaves_new_layout_alone():
+    root = paths.get_user_workspace_dir()
+    config = root / "infra/config/config.yaml"
+    config.parent.mkdir(parents=True)
+    config.write_text("current: true")
+
+    paths.migrate_partitioned_data_root_layout()
+    assert sorted(p.relative_to(root).as_posix() for p in root.rglob("*")) == [
+        "infra", "infra/config", "infra/config/config.yaml",
+    ]
+
+
+def test_workspace_migration_keeps_legacy_sqlite_sidecars_with_legacy_database():
+    root = paths.get_user_workspace_dir()
+    old = root / "gateway/team_route_bindings.db"
+    current = root / "infra/gateway/team_route_bindings.db"
+    old.parent.mkdir(parents=True)
+    current.parent.mkdir(parents=True)
+    old.write_bytes(b"legacy database")
+    old.with_name(old.name + "-wal").write_bytes(b"legacy WAL")
+    current.write_bytes(b"current database")
+    current.with_name(current.name + "-wal").write_bytes(b"current WAL")
+
+    paths.migrate_partitioned_data_root_layout()
+
+    assert current.read_bytes() == b"current database"
+    assert current.with_name(current.name + "-wal").read_bytes() == b"current WAL"
+    assert current.with_name(current.name + ".migrated").read_bytes() == b"legacy database"
+    assert current.with_name(current.name + ".migrated-wal").read_bytes() == b"legacy WAL"
+    assert not old.parent.exists()

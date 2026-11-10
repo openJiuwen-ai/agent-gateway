@@ -194,37 +194,103 @@ def get_xy_tmp_dir() -> Path:
     return xy_tmp_dir
 
 
-# --- checkpoint / 日志目录 ---
-_legacy_migration_done: bool = False
-
-
-def _move_if_absent(old: Path, new: Path) -> None:
-    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
-
-    并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
-    if not old.exists() or new.exists():
+# --- Workspace layout migration ---
+def _move_legacy_entry(source: Path, target: Path) -> None:
+    """Move legacy data, preserving existing data when both layouts are present."""
+    if source.is_symlink() or not source.exists():
         return
-    new.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.move(str(old), str(new))
-    except FileNotFoundError:
-        pass
-
-
-def _migrate_legacy_checkpoint_and_logs() -> None:
-    """数据根旧平铺路径一次性搬迁。
-
-    - ``.checkpoint``（业务态）→ ``domain/agent/``
-    - ``.logs``（系统日志）→ ``infra/logs/agent/``
-    """
-    global _legacy_migration_done
-    if _legacy_migration_done:
+    if source.is_dir() and target.is_dir() and not target.is_symlink():
+        for child in source.iterdir():
+            _move_legacy_entry(child, target / child.name)
+        if not any(source.iterdir()):
+            source.rmdir()
         return
-    _legacy_migration_done = True
+    if target.exists() or target.is_symlink():
+        original = target
+        index = 0
+        while target.exists() or target.is_symlink():
+            suffix = ".migrated" if index == 0 else f".migrated.{index}"
+            target = original.with_name(original.name + suffix)
+            index += 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(target))
 
-    workspace = get_user_workspace_dir()
-    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
-    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
+
+def _move_legacy_sqlite(source: Path, target: Path) -> None:
+    """Keep a legacy database and its sidecars separate from a newer database."""
+    if source.is_symlink() or not source.is_file():
+        return
+    sidecars = ("-wal", "-shm", "-journal", "")
+    original = target
+    index = 0
+    while any(os.path.lexists(target.with_name(target.name + suffix)) for suffix in sidecars):
+        suffix = ".migrated" if index == 0 else f".migrated.{index}"
+        target = original.with_name(original.name + suffix)
+        index += 1
+    for suffix in sidecars:
+        _move_legacy_entry(
+            source.with_name(source.name + suffix), target.with_name(target.name + suffix)
+        )
+
+
+def migrate_partitioned_data_root_layout() -> None:
+    """Upgrade the data root before Gateway opens its configuration or logs."""
+    root = get_user_workspace_dir()
+    domain = get_domain_data_dir()
+    infra = get_infra_data_dir()
+    domain_entries = (
+        "agent",
+        "application_plugins",
+        ".agent_teams",
+        ".organizations",
+        "jiuwenmate",
+        ".trace",
+        ".agent_history",
+        "agents",
+        ".personal_context",
+        "gateway",
+        "runtime_state",
+    )
+    infra_entries = (
+        "config",
+        "run",
+        "logs",
+        "runtime",
+        "tokenizers",
+        "auth",
+        "rsi",
+        "auto-harness",
+        ".gateway.lock",
+        "last_file_picker_dir.txt",
+    )
+    has_legacy_data = any(
+        (root / name).exists() and not (root / name).is_symlink()
+        for name in (*domain_entries, *infra_entries, ".checkpoint", ".logs")
+    )
+    lock_path = infra / ".workspace-layout.lock"
+    if not lock_path.is_file() and not has_legacy_data:
+        return
+
+    import portalocker
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with portalocker.Lock(lock_path, mode="a+b", timeout=60):
+        move = _move_legacy_entry
+        if not (root / "config").is_symlink():
+            _move_legacy_entry(root / "config/runtime_state", domain / "runtime_state")
+        if not (root / "agent").is_symlink():
+            _move_legacy_entry(root / "agent/.logs", infra / "logs/agent")
+            _move_legacy_sqlite(root / "agent/teams/team_control.db", infra / "agent/teams/team_control.db")
+        if not (root / "gateway").is_symlink():
+            _move_legacy_sqlite(root / "gateway/team_route_bindings.db", infra / "gateway/team_route_bindings.db")
+        if not (root / "logs").is_symlink():
+            _move_legacy_entry(root / "logs/logs", infra / "logs/core")
+        _move_legacy_entry(root / ".logs", infra / "logs/agent")
+        _move_legacy_entry(root / ".checkpoint", domain / "agent/.checkpoint")
+        for name in domain_entries:
+            move(root / name, domain / name)
+        for name in infra_entries:
+            move(root / name, infra / name)
 
 
 def get_checkpoint_dir() -> Path:
@@ -350,6 +416,7 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
     ``JIUWENSWARM_RUNTIME_WORKSPACE_READY=1``，不会走到这里。本函数创建必需目录，
     并在配置缺失时安装 Gateway 的默认模板。
     """
+    migrate_partitioned_data_root_layout()
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
@@ -401,13 +468,5 @@ __all__ = [
     "set_user_home",
 ]
 
-# 旧平铺 checkpoint/logs 迁移在导入期执行一次：先于本包任何目录创建
-# 行为（_resolve_paths 的 mkdir、prepare_runtime_workspace），保证迁移
-# 目标位不被抢占。失败仅降级告警：迁移幂等，下次启动重试。
-try:
-    _migrate_legacy_checkpoint_and_logs()
-except Exception:  # noqa: BLE001
-    logger.warning(
-        "legacy checkpoint/logs migration failed; retried on next start",
-        exc_info=True,
-    )
+# Startup imports paths before opening configuration or creating log directories.
+migrate_partitioned_data_root_layout()
