@@ -714,7 +714,7 @@ async def _unary(
         )
         body, status = _envelope_from_res(frame, req_id, rpc_method=method)
         if method == "chat.interrupt":
-            result = frame.get("payload") or {}
+            result = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
             logger.info(
                 "[WebHTTP] interrupt settled request_id=%s session_id=%s success=%s todos=%s code=%s",
                 req_id, _sid, result.get("success"),

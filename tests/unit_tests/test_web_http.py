@@ -896,6 +896,7 @@ def test_chat_interrupt(app_with_mock, success):
     assert r.status_code == 200
     assert dispatch.await_args.kwargs["method"] == "chat.interrupt"
     assert r.json()["data"]["event_type"] == "chat.interrupt_result"
+    assert r.json()["data"]["accepted"] is True
     assert r.json()["data"]["success"] is success
     assert r.json()["data"]["todos"] == todos
 
@@ -921,6 +922,120 @@ def test_interrupt_rejection_does_not_wait_for_result():
         rejected = {"type": "res", "id": "r1", "ok": False, "error": "rejected"}
         peer.accept_frame(rejected)
         assert await peer.wait_response("r1", timeout=0.01, result_event="chat.interrupt_result") == rejected
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("payload", [None, [], ["unexpected"], "unexpected", 1])
+def test_interrupt_non_object_response_payload(payload):
+    async def run():
+        peer = outbound_mod.HttpJsonOutbound(session_id="s1")
+        response = {"type": "res", "id": "r1", "ok": True, "payload": payload}
+        peer.accept_frame(response)
+        assert await peer.wait_response("r1", result_event="chat.interrupt_result") == response
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("payload", ["unexpected", ["unexpected"]])
+def test_interrupt_logging_handles_non_object_payload(app_with_mock, payload):
+    app, dispatch = app_with_mock
+    dispatch.return_value = (
+        _FakePeer([{"type": "res", "id": "r1", "ok": True, "payload": payload}]), "r1", "s1",
+    )
+    response = TestClient(app).post("/api/v1/chat/s1/actions/interrupt", json={})
+    assert response.status_code == 200
+    assert response.json()["data"] == payload
+
+
+def test_interrupt_repeated_ack_does_not_extend_deadline():
+    async def run():
+        peer = outbound_mod.HttpJsonOutbound(session_id="s1")
+
+        async def repeat_ack():
+            while True:
+                peer.accept_frame({"type": "res", "id": "r1", "ok": True, "payload": {"accepted": True}})
+                await asyncio.sleep(0.005)
+
+        producer = asyncio.create_task(repeat_ack())
+        try:
+            result = await asyncio.wait_for(
+                peer.wait_response("r1", timeout=0.03, result_event="chat.interrupt_result"),
+                timeout=0.5,
+            )
+            assert result["ok"] is False
+            assert result["code"] == "TIMEOUT"
+        finally:
+            producer.cancel()
+            await asyncio.gather(producer, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("targeted", [False, True])
+@pytest.mark.parametrize("success", [False, True])
+def test_interrupt_channel_routes_only_to_origin_and_backfills_session(targeted, success):
+    from openjiuwen_protocol.message import EventType, Message
+
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound, HttpSseOutbound
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from agent_gateway.routing.keys import WebDeliveryTarget
+    from agent_gateway.routing.session_sharing import RoutingTarget
+
+    async def run():
+        channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+        first = HttpJsonOutbound(session_id="s1")
+        second = HttpJsonOutbound(session_id="s1")
+        stream = HttpSseOutbound(session_id="s1")
+        for peer in (first, second, stream):
+            channel.register_request_outbound(peer)
+        tasks = []
+        try:
+            for peer, rid in ((first, "r1"), (second, "r2")):
+                await peer.reply(rid, ok=True, payload={"accepted": True, "session_id": "s1"})
+                tasks.append(asyncio.create_task(peer.wait_response(
+                    rid, timeout=1, result_event="chat.interrupt_result",
+                )))
+
+            def message(origin, intent="cancel", todos=None):
+                return Message(
+                    id="internal_interrupt_id", type="event", channel_id="web", session_id="s1",
+                    params={}, timestamp=0, ok=True, event_type=EventType.CHAT_INTERRUPT_RESULT,
+                    payload={"intent": intent, "success": success, "todos": todos},
+                    metadata={"ws_id": origin} if origin else {},
+                )
+
+            # Generic stream cancellation, a stale origin, and unrelated pause
+            # still reach session streams, but cannot settle either HTTP waiter.
+            for origin, intent in ((None, "cancel"), ("closed-origin", "cancel"), (None, "pause")):
+                await channel.send(message(origin, intent))
+            await asyncio.sleep(0.01)
+            assert all(not task.done() for task in tasks)
+            assert not stream._frames.empty()
+
+            for index, peer in enumerate((first, second)):
+                todos = [{"id": str(index), "status": "cancelled"}]
+                target = (
+                    RoutingTarget(intent="godview", delivery=WebDeliveryTarget(ws_id=peer.outbound_id))
+                    if targeted else None
+                )
+                await channel.send(message(peer.outbound_id, todos=todos), routing_target=target)
+                result = await tasks[index]
+                assert result["id"] == f"r{index + 1}"
+                assert result["payload"]["session_id"] == "s1"
+                assert result["payload"]["accepted"] is True
+                assert result["payload"]["success"] is success
+                assert result["payload"]["todos"] == todos
+                if index == 0:
+                    assert not tasks[1].done()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for peer in (first, second, stream):
+                await channel.unregister_request_outbound(peer)
+        assert not channel.delivery.request_outbounds
 
     asyncio.run(run())
 

@@ -31,6 +31,7 @@ from agent_gateway.channel_manager.base import (
     ConnectHook,
     RobotMessageRouter,
 )
+from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
@@ -1538,6 +1539,14 @@ class WebChannel(BaseWsChannel):
                 isinstance(msg.payload, dict) and msg.payload.get("cron_session_stream")
             ))
             for peer in self._peers_for_session(msg.session_id):
+                # An interrupt receipt belongs to its metadata.ws_id HTTP request.
+                # Session broadcasts (including stream-cancel notifications) must
+                # not settle another pending unary interrupt in the same session.
+                if (
+                    self._resolve_event_name(msg) == "chat.interrupt_result"
+                    and isinstance(peer, HttpJsonOutbound)
+                ):
+                    continue
                 if cron_stream and not self._matches_cron_recipient(peer, msg):
                     continue
                 ws_set.add(peer)
