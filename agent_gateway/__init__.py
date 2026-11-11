@@ -14,13 +14,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agent_gateway.common.protocol_compat import (
-    ensure_gateway_event_types,
-    ensure_gateway_req_methods,
-)
-
-ensure_gateway_req_methods()
-ensure_gateway_event_types()
+# Gateway 不再修补协议枚举：方法名与事件名都按线上字符串处理，只在自身词汇表
+# （``common.gateway_methods`` / ``common.gateway_events``）上分支，因此包初始化
+# 不需要任何补注册钩子。
 
 if TYPE_CHECKING:  # 静态分析(mypy/IDE)仍然可见全部导出名
     from agent_gateway.channel_manager import ChannelManager

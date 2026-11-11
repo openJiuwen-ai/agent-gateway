@@ -6,13 +6,10 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import (
-    TEAM_ATTACH_ONLY_PARAM,
-    EventType,
-    Message,
-    ReqMethod,
-)
+from openjiuwen_protocol.message import TEAM_ATTACH_ONLY_PARAM, Message
 
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 
@@ -180,7 +177,7 @@ class _TestMessageHandler(MessageHandler):
         return await self._prepare_agent_dispatch_message(msg)
 
 
-def _message(req_method: ReqMethod) -> Message:
+def _message(req_method: GatewayMethod) -> Message:
     return Message(
         id="req-1",
         type="req",
@@ -203,7 +200,7 @@ def _answer_message(params: dict[str, object]) -> Message:
         params=params,
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_ANSWER,
+        req_method=GatewayMethod.CHAT_ANSWER,
         is_stream=False,
     )
 
@@ -217,7 +214,7 @@ def _chat_send_message(params: dict[str, object]) -> Message:
         params=params,
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         is_stream=False,
     )
 
@@ -382,7 +379,7 @@ def _control_message() -> Message:
         params={"mode": "team"},
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         is_stream=False,
     )
 
@@ -491,17 +488,17 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
     handler = _TestMessageHandler.create()
 
     assert handler.should_emit_processing_status_for_stream(
-        _message(ReqMethod.CHAT_SEND)
+        _message(GatewayMethod.CHAT_SEND)
     ) is True
     assert handler.should_emit_processing_status_for_stream(
-        _message(ReqMethod.HISTORY_GET)
+        _message(GatewayMethod.HISTORY_GET)
     ) is False
 
 
 def test_attach_only_stream_does_not_emit_processing_status() -> None:
     """An attach subscription must not raise or own the processing state."""
     handler = _TestMessageHandler.create()
-    attach_message = _message(ReqMethod.CHAT_SEND)
+    attach_message = _message(GatewayMethod.CHAT_SEND)
     attach_message.params = {TEAM_ATTACH_ONLY_PARAM: True}
 
     assert handler.should_emit_processing_status_for_stream(attach_message) is False
@@ -510,15 +507,15 @@ def test_attach_only_stream_does_not_emit_processing_status() -> None:
 def test_steer_stream_does_not_emit_processing_status() -> None:
     """STEER is a receipt-only inject; session busy stays owned by the parent turn."""
     handler = _TestMessageHandler.create()
-    steer_message = _message(ReqMethod.CHAT_SEND)
+    steer_message = _message(GatewayMethod.CHAT_SEND)
     steer_message.params = {
         "query": "111",
         "input_mode": "steer",
         "expected_execution_id": "exec-1",
     }
-    follow_up = _message(ReqMethod.CHAT_SEND)
+    follow_up = _message(GatewayMethod.CHAT_SEND)
     follow_up.params = {"query": "next", "input_mode": "follow_up"}
-    ordinary = _message(ReqMethod.CHAT_SEND)
+    ordinary = _message(GatewayMethod.CHAT_SEND)
     ordinary.params = {"query": "hello"}
 
     assert handler.should_emit_processing_status_for_stream(steer_message) is False
@@ -532,10 +529,10 @@ def test_steer_stream_does_not_block_processing_false() -> None:
     handler = _TestMessageHandler.create()
     handler._stream_sessions["steer-1"] = "sess-1"
     handler._stream_emits_processing_status["steer-1"] = False
-    handler._stream_methods["steer-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_methods["steer-1"] = GatewayMethod.CHAT_SEND.value
     handler._stream_sessions["parent-1"] = "sess-1"
     handler._stream_emits_processing_status["parent-1"] = True
-    handler._stream_methods["parent-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_methods["parent-1"] = GatewayMethod.CHAT_SEND.value
 
     assert handler._session_has_streams_blocking_processing_false(
         "sess-1", exclude_rid="parent-1"
@@ -558,7 +555,7 @@ async def test_attach_only_stream_does_not_block_processing_false() -> None:
     ]
     # Seed an in-flight attach stream on the same session (emit=False).
     getattr(handler, "_stream_emits_processing_status")["attach-1"] = False
-    getattr(handler, "_stream_methods")["attach-1"] = ReqMethod.CHAT_SEND.value
+    getattr(handler, "_stream_methods")["attach-1"] = GatewayMethod.CHAT_SEND.value
     getattr(handler, "_stream_sessions")["attach-1"] = "sess-attach"
     getattr(handler, "_stream_modes")["attach-1"] = "team.work.normal"
     getattr(handler, "_stream_channels")["attach-1"] = "web"
@@ -567,7 +564,7 @@ async def test_attach_only_stream_does_not_block_processing_false() -> None:
         SimpleNamespace(
             request_id="turn-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method=GatewayMethod.CHAT_SEND.value,
             params={"query": "hi", "mode": "team.work.normal"},
         ),
         "sess-attach",
@@ -593,7 +590,7 @@ async def test_permission_resume_stream_keeps_processing_while_goal_stream_activ
     ]
     # Seed an in-flight Goal stream on the same session (emit=False).
     getattr(handler, "_stream_emits_processing_status")["goal-1"] = False
-    getattr(handler, "_stream_methods")["goal-1"] = ReqMethod.COMMAND_GOAL.value
+    getattr(handler, "_stream_methods")["goal-1"] = GatewayMethod.COMMAND_GOAL.value
     getattr(handler, "_stream_sessions")["goal-1"] = "sess-goal"
     getattr(handler, "_stream_modes")["goal-1"] = "agent"
     getattr(handler, "_stream_channels")["goal-1"] = "web"
@@ -602,7 +599,7 @@ async def test_permission_resume_stream_keeps_processing_while_goal_stream_activ
         SimpleNamespace(
             request_id="perm-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method=GatewayMethod.CHAT_SEND.value,
             params={
                 "source": "permission_interrupt",
                 "request_id": "call_perm_1",
@@ -632,7 +629,7 @@ async def test_chat_send_clears_processing_while_history_get_stream_active() -> 
         {"event_type": "chat.final", "content": "done"},
     ]
     getattr(handler, "_stream_emits_processing_status")["hist-1"] = False
-    getattr(handler, "_stream_methods")["hist-1"] = ReqMethod.HISTORY_GET.value
+    getattr(handler, "_stream_methods")["hist-1"] = GatewayMethod.HISTORY_GET.value
     getattr(handler, "_stream_sessions")["hist-1"] = "sess-chat"
     getattr(handler, "_stream_modes")["hist-1"] = "agent"
     getattr(handler, "_stream_channels")["hist-1"] = "web"
@@ -641,7 +638,7 @@ async def test_chat_send_clears_processing_while_history_get_stream_active() -> 
         SimpleNamespace(
             request_id="chat-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method=GatewayMethod.CHAT_SEND.value,
             params={"query": "hello"},
         ),
         "sess-chat",
@@ -671,7 +668,7 @@ async def _drain_robot_payloads_for_permission_resume(handler: _TestMessageHandl
 
 def test_queued_supplement_message_instructs_todo_continuation():
     handler = _TestMessageHandler.create()
-    msg = _message(ReqMethod.CHAT_CANCEL)
+    msg = _message(GatewayMethod.CHAT_CANCEL)
 
     queued = handler.build_queued_chat_send_message(
         msg,
@@ -690,7 +687,7 @@ def test_queued_supplement_message_instructs_todo_continuation():
 
 def test_chat_send_query_context_is_remembered_for_supplement():
     handler = _TestMessageHandler.create()
-    msg = _message(ReqMethod.CHAT_SEND)
+    msg = _message(GatewayMethod.CHAT_SEND)
     msg.params = {
         "query": r"Read C:\repo\src\ui\screen-layout.ts and summarize it",
     }
@@ -1009,7 +1006,7 @@ async def test_interrupt_evolution_approval_user_answer_is_dispatched_as_chat_se
         assert handler.pending_evolution_approval("sess-1") is None
         assert _FakeAgentClient.sent_requests == []
         sent = _FakeAgentClient.sent_stream_requests[0]
-        assert sent.method == ReqMethod.CHAT_SEND.value
+        assert sent.method == GatewayMethod.CHAT_SEND.value
         assert sent.is_stream is True
         assert sent.params["request_id"] == "call_123"
         assert sent.params["answers"] == [{"selected_options": ["allow_once"]}]
@@ -1139,7 +1136,7 @@ async def test_fire_and_forget_cancel_forwards_cancelled_tools() -> None:
             await asyncio.sleep(0.01)
 
         assert tool_out is not None
-        assert tool_out.event_type.value == "chat.tool_result"
+        assert tool_out.event_type == "chat.tool_result"
         assert tool_out.payload["tool_result"]["tool_call_id"] == "call_spin"
         assert "[Interrupted]" in tool_out.payload["tool_result"]["result"]
     finally:
@@ -1168,7 +1165,7 @@ async def test_forward_loop_cancel_intent_awaits_agent_interrupt(
             params={"intent": "cancel", "session_id": "sess-1"},
             timestamp=0.0,
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method=GatewayMethod.CHAT_CANCEL,
             is_stream=False,
             metadata={"ws_id": "ws-stop-1"},
         )
@@ -1203,7 +1200,7 @@ async def test_forward_loop_supplement_forwards_new_input_to_interrupt(monkeypat
             },
             timestamp=0.0,
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method=GatewayMethod.CHAT_CANCEL,
             is_stream=False,
         )
         await handler.publish_user_messages(supplement_msg)
@@ -1303,7 +1300,7 @@ def test_error_protocols_are_mapped_to_terminal_chat_error_for_stream_and_unary(
 
     for message in (stream_message, unary_message):
         assert message.type == "event"
-        assert message.event_type == EventType.CHAT_ERROR
+        assert message.event_type == GatewayEvent.CHAT_ERROR
         assert message.ok is False
         assert message.payload == {
             "event_type": "chat.error",
@@ -1340,7 +1337,7 @@ def test_source_less_terminal_stream_error_uses_legacy_chat_error_protocol() -> 
     )
 
     assert message.type == "event"
-    assert message.event_type == EventType.CHAT_ERROR
+    assert message.event_type == GatewayEvent.CHAT_ERROR
     assert message.ok is False
     assert message.payload == {
         "event_type": "chat.error",
@@ -1371,18 +1368,18 @@ def test_source_less_failed_unary_without_chat_context_remains_response() -> Non
 @pytest.mark.parametrize(
     ("request_method", "request_params", "expected_type"),
     [
-        (ReqMethod.PERMISSIONS_RULES_CREATE, {}, "res"),
-        (ReqMethod.CHAT_SEND, {}, "event"),
-        (ReqMethod.CHAT_RESUME, {}, "event"),
-        (ReqMethod.CHAT_CANCEL, {"intent": "resume"}, "event"),
-        (ReqMethod.CHAT_CANCEL, {"intent": "cancel"}, "res"),
-        (ReqMethod.CHAT_ANSWER, {}, "event"),
-        (ReqMethod.CHAT_SWARMFLOW_REPLY, {}, "event"),
+        (GatewayMethod.PERMISSIONS_RULES_CREATE, {}, "res"),
+        (GatewayMethod.CHAT_SEND, {}, "event"),
+        (GatewayMethod.CHAT_RESUME, {}, "event"),
+        (GatewayMethod.CHAT_CANCEL, {"intent": "resume"}, "event"),
+        (GatewayMethod.CHAT_CANCEL, {"intent": "cancel"}, "res"),
+        (GatewayMethod.CHAT_ANSWER, {}, "event"),
+        (GatewayMethod.CHAT_SWARMFLOW_REPLY, {}, "event"),
     ],
 )
 async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
     monkeypatch: pytest.MonkeyPatch,
-    request_method: ReqMethod,
+    request_method: GatewayMethod,
     request_params: dict[str, object],
     expected_type: str,
 ) -> None:
@@ -1424,7 +1421,7 @@ async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
     assert out.type == expected_type
     assert out.ok is False
     if expected_type == "event":
-        assert out.event_type == EventType.CHAT_ERROR
+        assert out.event_type == GatewayEvent.CHAT_ERROR
         assert out.payload == {
             "event_type": "chat.error",
             "error": "boom",

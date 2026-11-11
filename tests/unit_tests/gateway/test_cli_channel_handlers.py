@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
 from agent_gateway.channel_manager.tui.tui_connect import (
@@ -244,7 +244,7 @@ async def test_memory_list_forwards_to_agentserver_with_routing_user():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.MEMORY_LIST.value
+    assert request.method == GatewayMethod.MEMORY_LIST.value
     assert request.user_id == "user-a"
     assert request.params == {"mode": "code"}
     assert request.session_id == "sess-memory"
@@ -316,7 +316,7 @@ async def test_harmonyos_dev_init_cancel_waits_for_background_cleanup(monkeypatc
     await asyncio.wait_for(started.wait(), timeout=1)
     assert len(received_envs) == 1
     env, label = received_envs[0]
-    assert env.method == ReqMethod.HARMONYOS_DEV_INIT.value
+    assert env.method == GatewayMethod.HARMONYOS_DEV_INIT.value
     assert env.params == {"skipDevecocliUpdate": True}
     assert label == "tui harmonyos.dev_init"
     assert all(response["id"] != "req-init" for response in server.responses)
@@ -727,7 +727,7 @@ async def test_config_validate_model_handler_forwards_to_agentserver():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.CONFIG_VALIDATE_MODEL.value
+    assert request.method == GatewayMethod.CONFIG_VALIDATE_MODEL.value
     assert request.params == params
     assert request.user_id == "user-a"
     assert server.responses[-1] == {
@@ -1168,7 +1168,7 @@ async def test_models_list_forwards_to_agentserver():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.MODELS_LIST.value
+    assert request.method == GatewayMethod.MODELS_LIST.value
     assert request.user_id == "user-a"
     assert server.responses[-1]["ok"] is True
     assert server.responses[-1]["payload"] == {"models": [{"name": "m"}]}

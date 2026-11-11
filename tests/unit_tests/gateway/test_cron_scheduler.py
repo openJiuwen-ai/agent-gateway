@@ -14,7 +14,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import EventType, ReqMethod
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
@@ -521,7 +522,7 @@ async def test_web_cron_stream_broadcasts_final_result(tmp_path, mode):
     # only delivery path for scheduled-task results).
     broadcasts = [
         msg for msg in handler.published
-        if msg.event_type == EventType.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
+        if msg.event_type == GatewayEvent.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
     ]
     assert len(broadcasts) == 1
     broadcast = broadcasts[0]
@@ -568,7 +569,7 @@ async def test_web_cron_placeholder_stays_silent(tmp_path):
     await scheduler.handle_event(event)
     broadcasts = [
         msg for msg in handler.published
-        if msg.event_type == EventType.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
+        if msg.event_type == GatewayEvent.CHAT_FINAL and str(msg.id or "").startswith("cron-push-")
     ]
     assert broadcasts == []
     assert scheduler.runs[run_id].placeholder_sent is True
@@ -635,7 +636,7 @@ async def test_lifecycle_cancel_does_not_persist_a_failure(tmp_path, targets):
     assert [item for item in payloads if item.get("event_type") == "chat.final"] == []
     assert [
         env for env in client.unary_requests
-        if env.method == ReqMethod.HISTORY_APPEND_RECORD.value
+        if env.method == GatewayMethod.HISTORY_APPEND_RECORD.value
     ] == []
     assert [
         item for item in payloads
@@ -1256,7 +1257,7 @@ class TestHandleEventStoreValidation:
         # silent: the personal WS edition has no other delivery path.
         assert len(handler.published) == 1
         broadcast = handler.published[0]
-        assert broadcast.event_type == EventType.CHAT_FINAL
+        assert broadcast.event_type == GatewayEvent.CHAT_FINAL
         assert broadcast.session_id is None
         assert broadcast.payload["content"] == "web result"
         assert broadcast.payload["cron"]["status"] == "succeeded"
@@ -2973,7 +2974,7 @@ class TestSingleAgentCronStream:
         assert completed is False
         assert text == CRON_INTERRUPT_RESULT_TEXT
         assert len(agent_client.cancel_requests) == 1
-        assert agent_client.cancel_requests[0].method == ReqMethod.CHAT_CANCEL.value
+        assert agent_client.cancel_requests[0].method == GatewayMethod.CHAT_CANCEL.value
         assert agent_client.cancel_requests[0].session_id == state.exec_session_id
 
     @pytest.mark.asyncio
@@ -3943,7 +3944,7 @@ def test_message_handler_mirrors_cron_chat_file_push(tmp_path):
                 "event_type": "chat.file",
                 "files": [{"name": "a.txt", "path": "/tmp/a.txt"}],
             },
-            event_type=EventType.CHAT_FILE,
+            event_type=GatewayEvent.CHAT_FILE,
         ),
     )
 
@@ -3994,7 +3995,7 @@ def test_message_handler_mirrors_web_uuid_exec_session_chat_file(tmp_path):
                 "event_type": "chat.file",
                 "files": [{"name": "uuid.txt", "path": "/tmp/uuid.txt"}],
             },
-            event_type=EventType.CHAT_FILE,
+            event_type=GatewayEvent.CHAT_FILE,
         ),
     )
 

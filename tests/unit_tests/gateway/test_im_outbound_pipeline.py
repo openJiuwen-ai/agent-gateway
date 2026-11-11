@@ -6,7 +6,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.im_pipeline.im_outbound import IMOutboundPipeline
 
 
@@ -24,7 +25,7 @@ class _FakeAdapter:
 def _message(
     event_type: str,
     *,
-    message_event_type: EventType | None = None,
+    message_event_type: str | None = None,
 ) -> Message:
     payload = {"content": "我会提醒你"}
     if event_type:
@@ -108,5 +109,5 @@ async def test_message_level_non_terminal_event_does_not_enter_classifier() -> N
     pipeline._classify_personal_action = unexpected_classifier
 
     await pipeline.apply(
-        _message("", message_event_type=EventType.CHAT_DELTA)
+        _message("", message_event_type=GatewayEvent.CHAT_DELTA)
     )

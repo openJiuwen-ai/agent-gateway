@@ -58,6 +58,7 @@ from agent_gateway.common.config import (
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import config_set_handlers, models_handlers
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -455,6 +456,15 @@ _JIUWENMATE_FORWARD_METHODS = frozenset({
     "jiuwenmate.welink_office.disconnect",
     "jiuwenmate.welink_office.status",
 })
+
+
+_GATEWAY_METHOD_VALUES = frozenset(item.value for item in GatewayMethod)
+
+
+def _gateway_method_values() -> frozenset[str]:
+    """Known Gateway methods, used to reject unrecognized handler inputs."""
+    return _GATEWAY_METHOD_VALUES
+
 
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
@@ -1624,12 +1634,12 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     try:
         if agent_client is not None:
             from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-            from openjiuwen_protocol.message import ReqMethod
+            from agent_gateway.common.gateway_methods import GatewayMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
                 channel_id="",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+                req_method=GatewayMethod.AGENT_RELOAD_CONFIG,
             )
             await agent_client.send_request(env)
         else:
@@ -1649,12 +1659,12 @@ async def _restart_agent_browser_runtime(
         return
 
     from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-    from openjiuwen_protocol.message import ReqMethod
+    from agent_gateway.common.gateway_methods import GatewayMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
         channel_id="",
-        req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
+        req_method=GatewayMethod.BROWSER_RUNTIME_RESTART,
         params={
             "browser_key": "",
             "profile_name": (
@@ -2237,7 +2247,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
 
-    from openjiuwen_protocol.message import EventType, Message
+    from openjiuwen_protocol.message import Message
+    from agent_gateway.common.gateway_events import GatewayEvent
 
     def _resolve(ref, key="value"):
         """若为 ref 字典则取 key（无则返回 None），否则返回自身。"""
@@ -2263,7 +2274,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 from openjiuwen_protocol.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from openjiuwen_protocol.message import ReqMethod
+                from agent_gateway.common.gateway_methods import GatewayMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -2277,7 +2288,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 env = e2a_from_agent_fields(
                     request_id=f"agent-prewarm-project-{uuid.uuid4().hex[:8]}",
                     channel_id="web",
-                    req_method=ReqMethod.AGENT_PREWARM_SYNC,
+                    req_method=GatewayMethod.AGENT_PREWARM_SYNC,
                     params={"enabled_channels": sorted(set(enabled_channels))},
                     is_stream=False,
                     timestamp=time.time(),
@@ -2330,7 +2341,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params={},
             timestamp=time.time(),
             ok=True,
-            event_type=EventType.CONNECTION_ACK,
+            event_type=GatewayEvent.CONNECTION_ACK,
             payload={
                 "session_id": sid,
                 "mode": "BUILD",
@@ -3095,7 +3106,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter 处理），
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3106,7 +3117,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_LIST,
+            req_method=GatewayMethod.SESSION_LIST,
             label="session.list",
         )
 
@@ -3118,7 +3129,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         持久化 metadata：由 AgentServer 返回权威执行快照，Gateway 透传，
         避免 Gateway 重启后用空的本地 busy 缓存覆盖仍在执行的 Worker 状态。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3146,13 +3157,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_GET_METADATA,
+            req_method=GatewayMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
             on_done=project_activity,
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3164,7 +3175,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
+            req_method=GatewayMethod.SESSION_MESSAGE_CONTINUE_QUEUED,
             label="session.message.continue_queued",
         )
 
@@ -3174,7 +3185,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         转发 AgentServer ``SESSION_PLAN_STATUS``：单 agent 读 live
         ``plan_mode``，集群 / 读不到 agent 状态时回退 metadata.mode。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3186,7 +3197,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_PLAN_STATUS,
+            req_method=GatewayMethod.SESSION_PLAN_STATUS,
             label="session.plan_status",
         )
 
@@ -3210,7 +3221,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
             )
             return
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3226,7 +3237,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=create_params,
             session_id=None,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_CREATE,
+            req_method=GatewayMethod.SESSION_CREATE,
             label="session.create",
             drop_params=("session_id",),
             default_error_code="SESSION_CREATE_FAILED",
@@ -3240,7 +3251,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         下重命名必须落在用户 AgentServer 的会话目录（方案 §10.3 契约）。
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3251,7 +3262,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_RENAME,
+            req_method=GatewayMethod.SESSION_RENAME,
             label="session.rename",
         )
 
@@ -3261,7 +3272,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3272,7 +3283,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_PIN,
+            req_method=GatewayMethod.SESSION_PIN,
             label="session.pin",
         )
 
@@ -3288,7 +3299,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         仅统计该项目的非置顶**普通**会话(``cron_id`` 为空)。置顶会话与 cron 会话
         不计入任何项目统计。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3300,7 +3311,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_LIST,
+            req_method=GatewayMethod.PROJECT_LIST,
             label="project.list",
         )
         return
@@ -3330,7 +3341,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_get_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的非置顶普通会话列表（目标 AgentServer 执行）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3342,13 +3353,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_GET_SESSIONS,
+            req_method=GatewayMethod.PROJECT_GET_SESSIONS,
             label="project.get_sessions",
         )
 
     async def _project_get_cron_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目 cron 会话（目标 AgentServer 执行）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3360,7 +3371,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_GET_CRON_SESSIONS,
+            req_method=GatewayMethod.PROJECT_GET_CRON_SESSIONS,
             label="project.get_cron_sessions",
         )
 
@@ -3371,7 +3382,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         injected user directory. Gateway only schedules deployment-side warm
         key reconciliation after a successful mutation.
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3389,7 +3400,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_CREATE,
+            req_method=GatewayMethod.PROJECT_CREATE,
             label="project.create",
             # 保留 AgentServer 返回的结构化错误明细。
             preserve_error_payload=True,
@@ -3402,7 +3413,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止重命名(``FORBIDDEN``)。``name`` 与已有项目(含隐藏)重复时返回 ``CONFLICT``。
         ``name`` 含文件系统非法字符 / 为保留设备名时返回 ``BAD_REQUEST``。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3414,7 +3425,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_RENAME,
+            req_method=GatewayMethod.PROJECT_RENAME,
             label="project.rename",
         )
 
@@ -3424,7 +3435,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止置顶(``FORBIDDEN``)。新置顶项目 ``pin_order`` 默认 0,
         重编号后置于置顶区顶部(与 ``session.pin`` 行为一致)。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3436,7 +3447,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_PIN,
+            req_method=GatewayMethod.PROJECT_PIN,
             label="project.pin",
         )
 
@@ -3461,7 +3472,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_remove(ws, req_id, params, session_id, user_id=None):
         """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -3514,7 +3525,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 params=params if isinstance(params, dict) else {},
                 session_id=session_id,
                 user_id=user_id,
-                req_method=ReqMethod.PROJECT_REMOVE,
+                req_method=GatewayMethod.PROJECT_REMOVE,
                 channel_id="web",
                 label="project.remove",
             )
@@ -3545,7 +3556,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_restore(ws, req_id, params, session_id, user_id=None):
         """Forward project restoration to the target AgentServer."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3565,7 +3576,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_RESTORE,
+            req_method=GatewayMethod.PROJECT_RESTORE,
             label="project.restore",
             on_done=_after_restore,
         )
@@ -3578,7 +3589,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         统计口径同 ``project.list``:仅统计该项目的非置顶普通会话(``cron_id`` 为空)。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3590,7 +3601,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_INFO,
+            req_method=GatewayMethod.PROJECT_INFO,
             label="project.info",
         )
 
@@ -3600,7 +3611,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         置顶会话已从项目分组中剥离,通过本接口独立获取。``project_dir`` 仍指向
         原归属项目。不接受任何参数。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -3612,7 +3623,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PROJECT_PINNED_SESSIONS,
+            req_method=GatewayMethod.PROJECT_PINNED_SESSIONS,
             label="project.pinned_sessions",
         )
 
@@ -3638,7 +3649,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 project_id, exc,
             )
 
-    from openjiuwen_protocol.message import ReqMethod
+    from agent_gateway.common.gateway_methods import GatewayMethod
 
     def _make_git_proxy_handler(
         req_method, label, *, doc, mark_dirty=False, mark_dirty_on_failure=False
@@ -3683,36 +3694,36 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return _handler
 
     _project_git_status = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_STATUS,
+        GatewayMethod.PROJECT_GIT_STATUS,
         "project.git.status",
         doc="Forward Git status to the AgentServer that owns the worktree.",
     )
     _project_git_probe = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_PROBE,
+        GatewayMethod.PROJECT_GIT_PROBE,
         "project.git.probe",
         doc="Probe Git in AgentServer and refresh the Gateway watcher afterwards.",
         mark_dirty=True,
     )
     _project_git_init = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_INIT,
+        GatewayMethod.PROJECT_GIT_INIT,
         "project.git.init",
         doc="Initialize Git in the target AgentServer's project worktree.",
         mark_dirty=True,
     )
     _project_git_switch_branch = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_SWITCH_BRANCH,
+        GatewayMethod.PROJECT_GIT_SWITCH_BRANCH,
         "project.git.switch_branch",
         doc="Switch a branch in the target AgentServer's project worktree.",
         mark_dirty=True,
     )
     _project_git_create_branch = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_CREATE_BRANCH,
+        GatewayMethod.PROJECT_GIT_CREATE_BRANCH,
         "project.git.create_branch",
         doc="Create a branch in the target AgentServer's project worktree.",
         mark_dirty=True,
     )
     _project_git_commit = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_COMMIT,
+        GatewayMethod.PROJECT_GIT_COMMIT,
         "project.git.commit",
         doc=(
             "提交当前工作区改动到当前分支(设计文档 §4.9 ``project.git.commit``)。"
@@ -3724,7 +3735,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         mark_dirty_on_failure=True,
     )
     _project_git_push = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_PUSH,
+        GatewayMethod.PROJECT_GIT_PUSH,
         "project.git.push",
         doc=(
             "推送本地分支到远程(设计文档 §4.10 ``project.git.push``)。"
@@ -3737,7 +3748,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         mark_dirty=True,
     )
     _project_git_diff_status = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_DIFF_STATUS,
+        GatewayMethod.PROJECT_GIT_DIFF_STATUS,
         "project.git.diff_status",
         doc=(
             "拉取当前分支 diff 和上一轮对话 diff 的快照(设计文档 §4.1.16)。"
@@ -3747,19 +3758,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         ),
     )
     _project_git_turn_diff_list = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_TURN_DIFF_LIST,
+        GatewayMethod.PROJECT_GIT_TURN_DIFF_LIST,
         "project.git.turn_diff_list",
         doc="查询历史 Diff 摘要列表。",
     )
     _project_git_turn_diff = _make_git_proxy_handler(
-        ReqMethod.PROJECT_GIT_TURN_DIFF,
+        GatewayMethod.PROJECT_GIT_TURN_DIFF,
         "project.git.turn_diff",
         doc="查询指定轮次 Diff 详情。",
     )
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
         """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -3771,7 +3782,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
                 params={}, session_id=session_id, user_id=user_id,
-                req_method=ReqMethod.PATH_GET, label="path.get",
+                req_method=GatewayMethod.PATH_GET, label="path.get",
             )
             return
         try:
@@ -3830,7 +3841,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             fetch_agent_unary,
@@ -3847,7 +3858,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             try:
                 prev_ok, prev_payload = await fetch_agent_unary(
                     agent_client=resolved_client,
-                    req_method=ReqMethod.PATH_GET,
+                    req_method=GatewayMethod.PATH_GET,
                     params=None,
                     session_id=session_id,
                     user_id=user_id,
@@ -3885,7 +3896,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
                 params=set_params,
                 session_id=session_id, user_id=user_id,
-                req_method=ReqMethod.PATH_SET, label="path.set",
+                req_method=GatewayMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
             )
             return
@@ -3952,7 +3963,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_DIRECTORY，注入 workspace 内解析/校验，越界返回 BAD_REQUEST）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -3998,7 +4009,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PATH_SELECT_DIRECTORY,
+            req_method=GatewayMethod.PATH_SELECT_DIRECTORY,
             label="path.select_directory",
         )
 
@@ -4008,7 +4019,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_FILES，注入 workspace 内枚举，返回与桌面端同形元数据）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -4057,7 +4068,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.PATH_SELECT_FILES,
+            req_method=GatewayMethod.PATH_SELECT_FILES,
             label="path.select_files",
         )
 
@@ -4160,7 +4171,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         MEDIA_PERSIST，base64 小文件由注入目录落盘；大文件在 Gateway 侧解码后
         走受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -4181,13 +4192,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.MEDIA_PERSIST,
+            req_method=GatewayMethod.MEDIA_PERSIST,
             label="media.persist",
         )
 
     async def _media_discard(ws, req_id, params, session_id, user_id=None):
         """删除尚未发送的会话 uploads 副本（E2A 转发，路径边界在 AgentServer）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -4199,14 +4210,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.MEDIA_DISCARD,
+            req_method=GatewayMethod.MEDIA_DISCARD,
             label="media.discard",
         )
 
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
         """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
         大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -4227,13 +4238,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.DOCUMENT_PERSIST,
+            req_method=GatewayMethod.DOCUMENT_PERSIST,
             label="document.persist",
         )
 
     async def _document_formats(ws, req_id, params, session_id, user_id=None):
         """返回文档上传黑名单格式（E2A 转发 AgentServer）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -4245,7 +4256,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.DOCUMENT_FORMATS,
+            req_method=GatewayMethod.DOCUMENT_FORMATS,
             label="document.formats",
         )
 
@@ -4293,7 +4304,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
         """Return the selected AgentServer user's preferred language."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -4318,12 +4329,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
             req_id=req_id, params={}, session_id=session_id, user_id=user_id,
-            req_method=ReqMethod.LOCALE_GET_CONF, label="locale.get_conf",
+            req_method=GatewayMethod.LOCALE_GET_CONF, label="locale.get_conf",
         )
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
         """Update preferred language in the selected AgentServer directory."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -4361,7 +4372,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
             req_id=req_id, params={"preferred_language": lang}, session_id=session_id,
-            user_id=user_id, req_method=ReqMethod.LOCALE_SET_CONF,
+            user_id=user_id, req_method=GatewayMethod.LOCALE_SET_CONF,
             label="locale.set_conf",
         )
 
@@ -5548,7 +5559,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
         """Send a recommendation panel call to AgentServer and return its payload."""
-        from agent_gateway.common.protocol_methods import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5580,7 +5591,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=body,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.RECOMMENDATION,
+            req_method=GatewayMethod.RECOMMENDATION,
             label="recommendation",
         )
 
@@ -5744,8 +5755,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     forwarded[E2A_AUTH_SESSION_PARAM_KEY] = auth_session
                 params = forwarded
             if req_method in (
-                _ConfigReq.CONFIG_SET,
-                _ConfigReq.CONFIG_SAVE_ALL,
+                GatewayMethod.CONFIG_SET,
+                GatewayMethod.CONFIG_SAVE_ALL,
             ) and isinstance(params, dict):
                 if resolved_client is not None and is_legacy_shared_directory_client(resolved_client):
                     install_payload = _external_cli_install_gate(params)
@@ -5757,38 +5768,38 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         channel.register_method(method_name, _handler)
 
-    from openjiuwen_protocol.message import ReqMethod as _ConfigReq
+    from agent_gateway.common.gateway_methods import GatewayMethod as _ConfigReq
 
     async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
         await _proxy_config_request(
             ws, req_id, params, session_id, user_id,
-            req_method=_ConfigReq.CONFIG_MOA_STATUS,
+            req_method=GatewayMethod.CONFIG_MOA_STATUS,
         )
 
     channel.register_method("config.moa_status", _config_moa_status)
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
-    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
-    _register_config_proxy("models.refresh_status", _ConfigReq.MODELS_REFRESH_STATUS)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
-    _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
+    _register_config_proxy("config.get", GatewayMethod.CONFIG_GET, _config_get)
+    _register_config_proxy("config.set", GatewayMethod.CONFIG_SET, _config_set)
+    _register_config_proxy("config.save_all", GatewayMethod.CONFIG_SAVE_ALL, _config_save_all)
+    _register_config_proxy("config.validate_model", GatewayMethod.CONFIG_VALIDATE_MODEL, _config_validate_model)
+    _register_config_proxy("models.refresh_status", GatewayMethod.MODELS_REFRESH_STATUS)
+    _register_config_proxy("models.list", GatewayMethod.MODELS_LIST, _models_list)
+    _register_config_proxy("models.get", GatewayMethod.MODELS_GET,
                            lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
-    _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
-    _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
-    _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
+    _register_config_proxy("models.replace_all", GatewayMethod.MODELS_REPLACE_ALL, _models_replace_all)
+    _register_config_proxy("models.validate", GatewayMethod.MODELS_VALIDATE, _models_validate)
+    _register_config_proxy("models.upsert", GatewayMethod.MODELS_UPSERT,
                            lambda *a: _model_resource_rpc(*a, "models.upsert"))
-    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
+    _register_config_proxy("models.delete", GatewayMethod.MODELS_DELETE,
                            lambda *a: _model_resource_rpc(*a, "models.delete"))
-    _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
+    _register_config_proxy("models.references", GatewayMethod.MODELS_REFERENCES,
                            lambda *a: _model_resource_rpc(*a, "models.references"))
-    _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,
+    _register_config_proxy("model_groups.list", GatewayMethod.MODEL_GROUPS_LIST,
                            lambda *a: _model_resource_rpc(*a, "groups.list"))
-    _register_config_proxy("model_groups.upsert", _ConfigReq.MODEL_GROUPS_UPSERT,
+    _register_config_proxy("model_groups.upsert", GatewayMethod.MODEL_GROUPS_UPSERT,
                            lambda *a: _model_resource_rpc(*a, "groups.upsert"))
-    _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE,
+    _register_config_proxy("model_groups.delete", GatewayMethod.MODEL_GROUPS_DELETE,
                            lambda *a: _model_resource_rpc(*a, "groups.delete"))
-    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET)
+    _register_config_proxy("session.selection.set", GatewayMethod.SESSION_SELECTION_SET)
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
@@ -5868,7 +5879,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _hooks_list(ws, req_id, params, session_id, user_id=None):
         # 单用户共享目录：本地读取 config.yaml（hooks 属用户态配置，共享目录等价；
         # AgentServer 未启动/断连时保持可用）。AgentOS：经 E2A 在目标注入目录执行。
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -5897,7 +5908,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
             req_id=req_id, params={}, session_id=session_id, user_id=user_id,
-            req_method=ReqMethod.HOOKS_LIST, label="hooks.list",
+            req_method=GatewayMethod.HOOKS_LIST, label="hooks.list",
         )
 
     channel.register_method("memory.compute", _memory_compute)
@@ -5914,7 +5925,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
         ``missing_token``（issue #5325）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5926,18 +5937,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            req_method=GatewayMethod.FILE_UPLOAD_CHUNK,
             label="file.upload_chunk",
             timeout_seconds=120.0,
         )
 
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
-    from agent_gateway.common.protocol_methods import ReqMethod as _FileReq
+    from agent_gateway.common.gateway_methods import GatewayMethod as _FileReq
 
     for file_method in (
-        _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,
-        _FileReq.WORKSPACE_USAGE, _FileReq.WORKSPACE_ENTRIES_DELETE,
+        GatewayMethod.FILE_IMPORT_URL, GatewayMethod.WORKSPACE_TREE, GatewayMethod.WORKSPACE_PREVIEW,
+        GatewayMethod.WORKSPACE_USAGE, GatewayMethod.WORKSPACE_ENTRIES_DELETE,
     ):
         channel.register_method(file_method.value, _file_proxy(file_method))
     channel.register_method("media.persist", _media_persist)
@@ -6347,26 +6358,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 其余 permissions.*（tools / rules / approval_overrides）走 _forward_permissions_to_agent。
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params={}, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_GET,
+                                  req_method=GatewayMethod.PERMISSIONS_OWNER_SCOPES_GET,
                                   label="permissions.owner_scopes.get")
 
     async def _permissions_owner_scopes_set(ws, req_id, params, session_id, user_id=None):
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.PERMISSIONS_OWNER_SCOPES_SET,
+                                  req_method=GatewayMethod.PERMISSIONS_OWNER_SCOPES_SET,
                                   label="permissions.owner_scopes.set")
 
     channel.register_method("permissions.owner_scopes.get", _permissions_owner_scopes_get)
@@ -6374,11 +6385,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_permissions_to_agent(ws, req_id, params, session_id, user_id=None, *, req_method):
         """Forward permissions requests; Gateway never falls back to local state."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-        if not isinstance(req_method, ReqMethod):
+        if req_method not in _gateway_method_values():
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
         await proxy_unary_request(
@@ -6393,7 +6404,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="permissions",
         )
 
-    from openjiuwen_protocol.message import ReqMethod as _PermReq
+    from agent_gateway.common.gateway_methods import GatewayMethod as _PermReq
 
     def _register_perm(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -6401,24 +6412,24 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
-    _register_perm("permissions.tools.get", _PermReq.PERMISSIONS_TOOLS_GET)
-    _register_perm("permissions.tools.set", _PermReq.PERMISSIONS_TOOLS_SET)
-    _register_perm("permissions.tools.update", _PermReq.PERMISSIONS_TOOLS_UPDATE)
-    _register_perm("permissions.tools.update_user", _PermReq.PERMISSIONS_TOOLS_UPDATE_USER)
-    _register_perm("permissions.tools.delete", _PermReq.PERMISSIONS_TOOLS_DELETE)
-    _register_perm("permissions.rules.get", _PermReq.PERMISSIONS_RULES_GET)
-    _register_perm("permissions.rules.create", _PermReq.PERMISSIONS_RULES_CREATE)
-    _register_perm("permissions.rules.update", _PermReq.PERMISSIONS_RULES_UPDATE)
-    _register_perm("permissions.rules.delete", _PermReq.PERMISSIONS_RULES_DELETE)
-    _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
-    _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
+    _register_perm("permissions.tools.get", GatewayMethod.PERMISSIONS_TOOLS_GET)
+    _register_perm("permissions.tools.set", GatewayMethod.PERMISSIONS_TOOLS_SET)
+    _register_perm("permissions.tools.update", GatewayMethod.PERMISSIONS_TOOLS_UPDATE)
+    _register_perm("permissions.tools.update_user", GatewayMethod.PERMISSIONS_TOOLS_UPDATE_USER)
+    _register_perm("permissions.tools.delete", GatewayMethod.PERMISSIONS_TOOLS_DELETE)
+    _register_perm("permissions.rules.get", GatewayMethod.PERMISSIONS_RULES_GET)
+    _register_perm("permissions.rules.create", GatewayMethod.PERMISSIONS_RULES_CREATE)
+    _register_perm("permissions.rules.update", GatewayMethod.PERMISSIONS_RULES_UPDATE)
+    _register_perm("permissions.rules.delete", GatewayMethod.PERMISSIONS_RULES_DELETE)
+    _register_perm("permissions.approval_overrides.get", GatewayMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET)
+    _register_perm("permissions.approval_overrides.delete", GatewayMethod.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
 
     async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
-        if not isinstance(req_method, ReqMethod):
+        if req_method not in _gateway_method_values():
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
         ac = _resolve(agent_client)
@@ -6465,8 +6476,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             metadata=route_metadata,
         )
         authorize_completion = req_method in {
-            ReqMethod.A4P_AUTHORIZATION_COMPLETE,
-            ReqMethod.A4P_AUTHORIZATION_REJECT,
+            GatewayMethod.A4P_AUTHORIZATION_COMPLETE,
+            GatewayMethod.A4P_AUTHORIZATION_REJECT,
         }
         if authorize_completion:
             # 刷新后经新连接完成/拒绝授权：把该恢复 turn 的输出改绑到当前连接，
@@ -6499,7 +6510,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload=resp.payload if isinstance(resp.payload, dict) else {},
         )
 
-    from openjiuwen_protocol.message import ReqMethod as _A4PReq
+    from agent_gateway.common.gateway_methods import GatewayMethod as _A4PReq
 
     def _register_a4p(method_name: str, req_method: Any) -> None:
         async def _handler(ws, req_id, params, session_id):
@@ -6509,15 +6520,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
-    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
-    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
-    _register_a4p("a4p.authorization.reprepare", _A4PReq.A4P_AUTHORIZATION_REPREPARE)
-    _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
-    _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
-    _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
+    _register_a4p("a4p.config.get", GatewayMethod.A4P_CONFIG_GET)
+    _register_a4p("a4p.config.update", GatewayMethod.A4P_CONFIG_UPDATE)
+    _register_a4p("a4p.authorization.reprepare", GatewayMethod.A4P_AUTHORIZATION_REPREPARE)
+    _register_a4p("a4p.authorization.complete", GatewayMethod.A4P_AUTHORIZATION_COMPLETE)
+    _register_a4p("a4p.authorization.reject", GatewayMethod.A4P_AUTHORIZATION_REJECT)
+    _register_a4p("a4p.authorization.pending", GatewayMethod.A4P_AUTHORIZATION_PENDING)
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -6528,7 +6539,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
             await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
                                       params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
+                                      req_method=GatewayMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
             return
         try:
             cfg = get_config() or {}
@@ -6543,7 +6554,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
@@ -6554,7 +6565,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
             await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
                                       params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
+                                      req_method=GatewayMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
             return
         try:
             update_memory_forbidden_in_config(params)
@@ -6573,18 +6584,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         ``e2a_proxy`` 的 legacy fallback 在 Gateway 进程内执行同一业务；远程/
         AgentOS client 返回可重试错误，不读部署侧目录。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-        if not isinstance(req_method, ReqMethod):
+        if req_method not in _gateway_method_values():
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
 
         request_params = dict(params if isinstance(params, dict) else {})
         if str(req_method.value).startswith("rsi."):
             request_params["session_id"] = session_id
-            if req_method is ReqMethod.RSI_ARTIFACT_DOWNLOAD and user_id:
+            if req_method is GatewayMethod.RSI_ARTIFACT_DOWNLOAD and user_id:
                 request_params["_download_user_id"] = user_id
 
         await proxy_unary_request(
@@ -6599,7 +6610,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="harness",
         )
 
-    from openjiuwen_protocol.message import ReqMethod as _HarnessReq
+    from agent_gateway.common.gateway_methods import GatewayMethod as _HarnessReq
 
     def _register_harness(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -6607,40 +6618,40 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
-    _register_harness("harness.packages", _HarnessReq.HARNESS_PACKAGES_GET)
-    _register_harness("harness.packages.scan", _HarnessReq.HARNESS_PACKAGES_SCAN)
-    _register_harness("harness.activate", _HarnessReq.HARNESS_PACKAGES_ACTIVATE)
-    _register_harness("harness.deactivate", _HarnessReq.HARNESS_PACKAGES_DEACTIVATE)
-    _register_harness("harness.delete", _HarnessReq.HARNESS_PACKAGES_DELETE)
+    _register_harness("harness.packages", GatewayMethod.HARNESS_PACKAGES_GET)
+    _register_harness("harness.packages.scan", GatewayMethod.HARNESS_PACKAGES_SCAN)
+    _register_harness("harness.activate", GatewayMethod.HARNESS_PACKAGES_ACTIVATE)
+    _register_harness("harness.deactivate", GatewayMethod.HARNESS_PACKAGES_DEACTIVATE)
+    _register_harness("harness.delete", GatewayMethod.HARNESS_PACKAGES_DELETE)
 
     # RSI 优化平台 18 个 web method（web 契约 v0.3 §4）：经 E2A 转发到 AgentServer。
     # 与 harness.* 同构（仅注册 + proxy_unary_request，不承载业务）。
     rsi_methods = [
-        ("rsi.dataset.validate", _HarnessReq.RSI_DATASET_VALIDATE),
-        ("rsi.task.create", _HarnessReq.RSI_TASK_CREATE),
-        ("rsi.task.list", _HarnessReq.RSI_TASK_LIST),
-        ("rsi.task.get", _HarnessReq.RSI_TASK_GET),
-        ("rsi.task.delete", _HarnessReq.RSI_TASK_DELETE),
-        ("rsi.training.start", _HarnessReq.RSI_TRAINING_START),
-        ("rsi.training.pause", _HarnessReq.RSI_TRAINING_PAUSE),
-        ("rsi.training.resume", _HarnessReq.RSI_TRAINING_RESUME),
-        ("rsi.training.terminate", _HarnessReq.RSI_TRAINING_TERMINATE),
-        ("rsi.report.get", _HarnessReq.RSI_REPORT_GET),
-        ("rsi.usage.get", _HarnessReq.RSI_USAGE_GET),
-        ("rsi.artifact.download", _HarnessReq.RSI_ARTIFACT_DOWNLOAD),
-        ("rsi.artifact.files.list", _HarnessReq.RSI_ARTIFACT_FILES_LIST),
-        ("rsi.artifact.files.get", _HarnessReq.RSI_ARTIFACT_FILES_GET),
-        ("rsi.tree.get", _HarnessReq.RSI_TREE_GET),
-        ("rsi.harness.install", _HarnessReq.RSI_HARNESS_INSTALL),
-        ("rsi.harness.versions.list", _HarnessReq.RSI_HARNESS_VERSIONS_LIST),
-        ("rsi.harness.rollback", _HarnessReq.RSI_HARNESS_ROLLBACK),
+        ("rsi.dataset.validate", GatewayMethod.RSI_DATASET_VALIDATE),
+        ("rsi.task.create", GatewayMethod.RSI_TASK_CREATE),
+        ("rsi.task.list", GatewayMethod.RSI_TASK_LIST),
+        ("rsi.task.get", GatewayMethod.RSI_TASK_GET),
+        ("rsi.task.delete", GatewayMethod.RSI_TASK_DELETE),
+        ("rsi.training.start", GatewayMethod.RSI_TRAINING_START),
+        ("rsi.training.pause", GatewayMethod.RSI_TRAINING_PAUSE),
+        ("rsi.training.resume", GatewayMethod.RSI_TRAINING_RESUME),
+        ("rsi.training.terminate", GatewayMethod.RSI_TRAINING_TERMINATE),
+        ("rsi.report.get", GatewayMethod.RSI_REPORT_GET),
+        ("rsi.usage.get", GatewayMethod.RSI_USAGE_GET),
+        ("rsi.artifact.download", GatewayMethod.RSI_ARTIFACT_DOWNLOAD),
+        ("rsi.artifact.files.list", GatewayMethod.RSI_ARTIFACT_FILES_LIST),
+        ("rsi.artifact.files.get", GatewayMethod.RSI_ARTIFACT_FILES_GET),
+        ("rsi.tree.get", GatewayMethod.RSI_TREE_GET),
+        ("rsi.harness.install", GatewayMethod.RSI_HARNESS_INSTALL),
+        ("rsi.harness.versions.list", GatewayMethod.RSI_HARNESS_VERSIONS_LIST),
+        ("rsi.harness.rollback", GatewayMethod.RSI_HARNESS_ROLLBACK),
     ]
     for _method_name, _req_method in rsi_methods:
         _register_harness(_method_name, _req_method)
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.agent_http_bridge import (
             E2A_PAYLOAD_MAX_BYTES,
@@ -6687,19 +6698,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws,
                                   req_id=req_id, params=request_params,
                                   session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.HARNESS_PACKAGES_IMPORT,
+                                  req_method=GatewayMethod.HARNESS_PACKAGES_IMPORT,
                                   label="harness.import", preserve_error_payload=True)
 
     channel.register_method("harness.import", _harness_import_handler)
 
     async def _harness_export_handler(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws,
                                   req_id=req_id, params=params if isinstance(params, dict) else {},
                                   session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.HARNESS_PACKAGES_EXPORT,
+                                  req_method=GatewayMethod.HARNESS_PACKAGES_EXPORT,
                                   label="harness.export", preserve_error_payload=True)
 
     channel.register_method("harness.export", _harness_export_handler)

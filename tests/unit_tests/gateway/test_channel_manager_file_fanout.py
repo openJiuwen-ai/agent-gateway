@@ -8,7 +8,8 @@ session (e.g. Feishu) instead of only the originating channel.
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
 from agent_gateway.routing.session_sharing import SessionSharingRegistry, SubRole
@@ -61,7 +62,7 @@ def _make_file_msg(session_id: str, channel_id: str = "web", metadata: dict | No
         timestamp=0.0,
         ok=True,
         payload={"event_type": "chat.file", "files": [{"path": "/tmp/a.txt", "name": "a.txt"}]},
-        event_type=EventType.CHAT_FILE,
+        event_type=GatewayEvent.CHAT_FILE,
         metadata=metadata if metadata is not None else {},
     )
 

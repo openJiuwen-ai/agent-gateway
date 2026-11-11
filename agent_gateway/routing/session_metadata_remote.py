@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.common.external_providers import register
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
@@ -123,7 +123,7 @@ class SessionMetadataRemoteProvider:
         """
         ok, payload = await fetch_agent_unary(
             agent_client=_agent_client,
-            req_method=ReqMethod.SESSION_GET_METADATA,
+            req_method=GatewayMethod.SESSION_GET_METADATA,
             params={
                 "session_id": session_id,
                 # 只读语义随调用方声明透传（server 侧读路径据此关闭推断写盘），

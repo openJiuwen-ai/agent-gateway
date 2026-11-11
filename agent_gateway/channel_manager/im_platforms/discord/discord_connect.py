@@ -6,7 +6,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -201,7 +202,7 @@ class DiscordChannel(BaseChannel):
             params={"content": text, "query": text},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             metadata={
                 "discord_user_id": author_id,
                 "discord_username": author_name,
@@ -243,7 +244,7 @@ class DiscordChannel(BaseChannel):
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
+        if msg.event_type == "health_check.relay" and isinstance(payload, dict):
             health_check = payload.get("health_check")
             if health_check:
                 return str(health_check).strip()

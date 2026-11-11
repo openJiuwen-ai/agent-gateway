@@ -10,11 +10,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from openjiuwen_protocol.message import ReqMethod
 
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import (
     application_config_router,
 )
+
+HUB_CATALOG_METHOD = "hub.expert_packages.catalog"
 
 
 @pytest.mark.asyncio
@@ -54,7 +55,7 @@ async def test_catalog_gateway_rpc_without_session_or_agent(hub_failed):
     )
     send_request.assert_awaited_once()
     envelope = send_request.await_args.args[0]
-    assert envelope.method == ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value
+    assert envelope.method == HUB_CATALOG_METHOD
     assert envelope.params == {}
     assert envelope.session_id is None
     assert envelope.user_id is None
@@ -84,14 +85,14 @@ async def test_catalog_server_unavailable_keeps_management_response(state):
     assert response.json()["data"]["error"]
 
 
-def test_hub_catalog_method_available_without_application_imports():
-    """A standalone Gateway can use the pinned protocol without Server shims."""
+def test_hub_catalog_method_needs_no_protocol_enum():
+    """The Gateway sends the wire method string and imports no method enum."""
     script = (
         "import sys; "
-        "from openjiuwen_protocol.message import ReqMethod; "
-        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
+        "import agent_gateway.common.gateway_methods as gm; "
+        f"assert gm.GatewayMethod.HUB_EXPERT_PACKAGES_CATALOG == {HUB_CATALOG_METHOD!r}; "
         "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway', 'agent_gateway') "
-        "for name in sys.modules)"
+        "for name in sys.modules if name != 'agent_gateway.common.gateway_methods')"
     )
     subprocess.run([sys.executable, "-I", "-c", script], check=True)
 

@@ -485,7 +485,7 @@ async def serve_verified_download(
     *, routing_identity: dict[str, str] | None = None,
 ) -> Response:
     """Stream the existing signed, sealed asset over any AgentServer transport."""
-    from openjiuwen_protocol.message import ReqMethod
+    from agent_gateway.common.gateway_methods import GatewayMethod
     from agent_gateway.common.request_identity import apply_routing_metadata
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -504,7 +504,7 @@ async def serve_verified_download(
     ) -> tuple[bytes, int, str, str, bool] | JSONResponse:
         ok, result = await fetch_agent_unary(
             agent_client=agent_client,
-            req_method=ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            req_method=GatewayMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
             params={"token": token, "offset": offset, "limit": limit},
             metadata=apply_routing_metadata(None, routing_identity),
             session_id=session_id_value,

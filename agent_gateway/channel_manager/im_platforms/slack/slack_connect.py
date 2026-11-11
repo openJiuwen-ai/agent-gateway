@@ -10,7 +10,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
@@ -129,7 +130,7 @@ class SlackChannel(BaseChannel):
     ) -> None:
         if self._client is None:
             return
-        if msg.event_type == EventType.CHAT_DELTA:
+        if msg.event_type == "chat.delta":
             return
 
         content = self._extract_outgoing_text(msg)
@@ -228,7 +229,7 @@ class SlackChannel(BaseChannel):
             provider="slack",
             chat_id=channel_id,
             user_id=user_id,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             metadata={
                 "user_id": user_id,
                 "slack_event_id": event_id,
@@ -292,7 +293,7 @@ class SlackChannel(BaseChannel):
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
+        if msg.event_type == "health_check.relay" and isinstance(payload, dict):
             health_check = payload.get("health_check")
             if health_check:
                 return str(health_check).strip()

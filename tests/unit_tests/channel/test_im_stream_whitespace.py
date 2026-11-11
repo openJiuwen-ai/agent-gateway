@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
@@ -24,7 +25,7 @@ def _stream_message(
     content: str,
     *,
     metadata: dict[str, Any],
-    event_type: EventType = EventType.CHAT_DELTA,
+    event_type: str = GatewayEvent.CHAT_DELTA,
 ) -> Message:
     return Message(
         id="request-1",
@@ -32,7 +33,7 @@ def _stream_message(
         channel_id=channel_id,
         session_id="session-1",
         params={},
-        payload={"event_type": event_type.value, "content": content},
+        payload={"event_type": str(event_type), "content": content},
         metadata=metadata,
         timestamp=0,
         ok=True,
@@ -124,7 +125,7 @@ async def test_wecom_final_content_replaces_stream_accumulation_without_duplicat
             "wecom",
             "Hello",
             metadata=metadata,
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
         )
     )
 
@@ -155,7 +156,7 @@ async def test_wecom_whitespace_final_still_finishes_visible_stream() -> None:
             "wecom",
             " ",
             metadata=metadata,
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
         )
     )
 

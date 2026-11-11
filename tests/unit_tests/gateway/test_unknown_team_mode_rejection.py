@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.common.mode_matrix import is_team_mode
 from agent_gateway.message_handler.message_handler import (
@@ -20,7 +22,7 @@ def _chat_send(*, mode: str) -> Message:
         type="request",
         channel_id="web",
         session_id="sess-team",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         params={"content": "拆解一下这个需求", "mode": mode},
         timestamp=0.0,
         ok=True,
@@ -67,7 +69,7 @@ def test_missing_mode_is_untouched():
 
 def test_non_chat_request_is_untouched():
     msg = _chat_send(mode="team.foo")
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = GatewayMethod.CHAT_CANCEL
 
     assert MessageHandler._is_unknown_team_mode_send(msg) is False
 
@@ -84,7 +86,7 @@ async def test_rejection_replies_with_error_listing_valid_modes():
 
     assert len(published) == 1
     reply = published[0]
-    assert reply.event_type == EventType.CHAT_ERROR
+    assert reply.event_type == GatewayEvent.CHAT_ERROR
     assert reply.ok is False
     assert reply.payload["is_complete"] is True
     assert reply.enable_streaming is False

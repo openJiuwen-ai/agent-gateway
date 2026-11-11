@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import httpx
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import event_name_of
+from agent_gateway.common.gateway_methods import GatewayMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -645,7 +647,7 @@ class DingTalkChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             chat_id=conversation_id,
             metadata=metadata,
         )
@@ -825,7 +827,7 @@ class DingTalkChannel(BaseChannel):
 
     def _extract_message_content(self, msg: Message) -> str | None:
         """从消息对象中提取内容"""
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(
+        if msg.event_type == "health_check.relay" and isinstance(
             msg.payload, dict
         ):
             health_check = msg.payload.get("health_check")
@@ -933,7 +935,7 @@ class DingTalkChannel(BaseChannel):
         """通过钉钉发送消息"""
         # 提取事件类型
         payload = msg.payload if isinstance(msg.payload, dict) else {}
-        event_type = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
+        event_type = event_name_of(msg.event_type) or payload.get("event_type") or ""
 
         # 处理文件发送事件（chat.media 与 chat.file 统一走文件发送路径）
         if event_type in ("chat.file", "chat.media"):

@@ -5,7 +5,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.auth import login_credentials as lc
 from agent_gateway.auth.login_credentials import credential_ref_for_user
@@ -55,7 +55,7 @@ async def test_refresh_request_is_answered_with_an_update(monkeypatch):
 
     assert seen_refs == [REF]
     assert len(sent) == 1
-    assert sent[0].method == ReqMethod.AUTH_CREDENTIALS_UPDATE.value
+    assert sent[0].method == GatewayMethod.AUTH_CREDENTIALS_UPDATE.value
     assert sent[0].params == {"credential_ref": REF, "api_key": "id-new"}
 
 
@@ -113,7 +113,7 @@ async def test_logout_revokes_the_agent_server_credential(monkeypatch):
     await web_http_auth._revoke_agent_server_credential("openid-1")
 
     assert len(sent) == 1
-    assert sent[0].method == ReqMethod.AUTH_CREDENTIALS_UPDATE.value
+    assert sent[0].method == GatewayMethod.AUTH_CREDENTIALS_UPDATE.value
     assert sent[0].params == {
         "credential_ref": credential_ref_for_user("openid-1"),
         "revoked": True,

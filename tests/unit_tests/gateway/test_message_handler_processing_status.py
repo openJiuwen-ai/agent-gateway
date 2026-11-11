@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.message import EventType
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -44,7 +44,7 @@ async def test_send_processing_status_forwards_ws_id_and_merges_mode() -> None:
 
     assert len(handler.published) == 1
     msg = handler.published[0]
-    assert msg.event_type == EventType.CHAT_PROCESSING_STATUS
+    assert msg.event_type == GatewayEvent.CHAT_PROCESSING_STATUS
     assert msg.payload["is_processing"] is False
     assert msg.payload["request_id"] == "rid-1"
     assert msg.metadata["ws_id"] == "http-outbound-old"

@@ -21,7 +21,9 @@ from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -596,7 +598,7 @@ class XiaoyiChannel(BaseChannel):
         active = self._active_push_sessions.get(agent_id) if agent_id else None
         member_lifecycle_event = bool(
             metadata.get("member_name")
-            and msg.event_type in {None, EventType.CHAT_PROCESSING_STATUS}
+            and msg.event_type in {None, "chat.processing_status"}
         )
         hold_team_task = bool(
             active
@@ -605,7 +607,7 @@ class XiaoyiChannel(BaseChannel):
             and (
                 (
                     metadata.get("xiaoyi_team_task_hold")
-                    and msg.event_type == EventType.CHAT_FINAL
+                    and msg.event_type == "chat.final"
                 )
                 or member_lifecycle_event
             )
@@ -618,7 +620,7 @@ class XiaoyiChannel(BaseChannel):
                 task_id,
             )
         # Handle chat.file event
-        if self.config.mode == "xiaoyi_claw" and msg.event_type == EventType.CHAT_FILE:
+        if self.config.mode == "xiaoyi_claw" and msg.event_type == "chat.file":
             files = msg.payload.get("files", {}) if isinstance(msg.payload, dict) else {}
             if files:
                 for file_info in files:
@@ -655,7 +657,7 @@ class XiaoyiChannel(BaseChannel):
             return
 
         # 处理错误消息：发送 failed 状态 + 错误文本 + 结束会话
-        if msg.event_type == EventType.CHAT_ERROR:
+        if msg.event_type == "chat.error":
             error_text = get_status_text_for_event(msg.event_type, msg.payload)
             # 优先从 payload.error 提取详细错误信息
             if isinstance(msg.payload, dict):
@@ -729,8 +731,8 @@ class XiaoyiChannel(BaseChannel):
             final = not hold_team_task
         else:
             # 流式模式：按事件类型计算增量与是否结束
-            is_delta = msg.event_type == EventType.CHAT_DELTA
-            last_chunk = msg.event_type == EventType.CHAT_FINAL
+            is_delta = msg.event_type == "chat.delta"
+            last_chunk = msg.event_type == "chat.final"
             is_final = msg.payload.get("is_complete", False)
             last_chunk = True if is_final else last_chunk
 
@@ -803,13 +805,13 @@ class XiaoyiChannel(BaseChannel):
     #       CHAT_ERROR（错误）/ CHAT_TOOL_CALL/RESULT（status 透传）/ CHAT_PROCESSING_STATUS（终态信号）。
     # 丢弃：CHAT_REASONING / CHAT_DELTA / CHAT_ASK_USER_QUESTION / usage / todo / symphony_status 等。
     _TEAM_ALLOWED_EVENTS = frozenset({
-        EventType.TEAM_MESSAGE,
-        EventType.CHAT_FINAL,
-        EventType.CHAT_FILE,
-        EventType.CHAT_ERROR,
-        EventType.CHAT_TOOL_CALL,
-        EventType.CHAT_TOOL_RESULT,
-        EventType.CHAT_PROCESSING_STATUS,
+        GatewayEvent.TEAM_MESSAGE,
+        GatewayEvent.CHAT_FINAL,
+        GatewayEvent.CHAT_FILE,
+        GatewayEvent.CHAT_ERROR,
+        GatewayEvent.CHAT_TOOL_CALL,
+        GatewayEvent.CHAT_TOOL_RESULT,
+        GatewayEvent.CHAT_PROCESSING_STATUS,
     })
 
     async def _finalize_held_team_task(
@@ -866,7 +868,7 @@ class XiaoyiChannel(BaseChannel):
     @staticmethod
     def _is_team_terminal_status(msg: Message) -> bool:
         """Return whether a Team processing-status frame closes the round."""
-        if msg.event_type != EventType.CHAT_PROCESSING_STATUS:
+        if msg.event_type != "chat.processing_status":
             return False
         payload = msg.payload
         if not isinstance(payload, dict):
@@ -933,7 +935,7 @@ class XiaoyiChannel(BaseChannel):
                         ws_task, ws_session, status_text, status_state, url_key
                     )
             return
-        if msg.event_type == EventType.CHAT_FILE:
+        if msg.event_type == "chat.file":
             if ws_session and ws_task:
                 files = msg.payload.get("files", {}) if isinstance(msg.payload, dict) else {}
                 for file_info in files:
@@ -972,7 +974,7 @@ class XiaoyiChannel(BaseChannel):
                                (agent_id or "")[:8])
 
         if (
-            msg.event_type == EventType.CHAT_ERROR
+            msg.event_type == "chat.error"
             and (ws_session, ws_task) in self._team_task_holds
         ):
             await self._finalize_held_team_task(
@@ -1039,7 +1041,7 @@ class XiaoyiChannel(BaseChannel):
         缓解高频小 chunk 导致的客户端卡顿，同时保持人眼连续的流式实时性。
         final 消息立即冲刷缓冲并发送，保证结尾不延迟。
         """
-        last_chunk = msg.event_type == EventType.CHAT_FINAL
+        last_chunk = msg.event_type == "chat.final"
         is_final = False
         if isinstance(msg.payload, dict):
             is_final = bool(msg.payload.get("is_complete", False))
@@ -1047,11 +1049,11 @@ class XiaoyiChannel(BaseChannel):
             last_chunk = True
 
         # team.message 是完整的逻辑消息（monitor 转发全文，非流式 delta），
-        if msg.event_type == EventType.TEAM_MESSAGE:
+        if msg.event_type == "team.message":
             last_chunk = True
             is_final = False
         elif (
-            msg.event_type in {EventType.CHAT_FINAL, EventType.CHAT_ERROR}
+            msg.event_type in {"chat.final", "chat.error"}
             and (session_id, task_id) in self._team_task_holds
         ):
             # Leader finals and held-task errors keep task cleanup centralized
@@ -1573,7 +1575,7 @@ class XiaoyiChannel(BaseChannel):
             timestamp=time.time(),
             is_stream=self.config.enable_streaming,
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             chat_id=session_id,  # 顶层 sessionId（物理回发兜底）
             metadata=metadata,
         )

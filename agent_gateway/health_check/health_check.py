@@ -12,7 +12,7 @@ Heartbeat 任务(线程续跑,``gateway/heartbeat/``)严格区分。探活不再
 只做连通性检查,不再作为任务系统。
 
 迁移已完成:旧 ``gateway/heartbeat/heartbeat.py`` shim 已删除;IM 渠道 8 文件
-+ web_connect 的 relay 分支已全量切换到 ``EventType.HEALTH_CHECK_RELAY``;
++ web_connect 的 relay 分支已全量切换到 ``GatewayEvent.HEALTH_CHECK_RELAY``;
 探活配置已从 config.yaml 的 ``heartbeat`` 段迁移到 ``health_check`` 段。
 环境变量 ``HEARTBEAT_RELAY_CHANNEL_ID`` 等保留旧名(运维侧不断裂)。
 """
@@ -237,10 +237,11 @@ class GatewayHealthCheckService(IHealthCheck):
                 )
 
             # 将响应内容作为 event 类型 Message 回传到配置的 channel(如 WebChannel)。
-            # 发送 EventType.HEALTH_CHECK_RELAY(新值);接收端(8 个 IM 渠道 + web_connect)
+            # 发送 GatewayEvent.HEALTH_CHECK_RELAY(新值);接收端(8 个 IM 渠道 + web_connect)
             # 已在任务 2 全量切换到 HEALTH_CHECK_RELAY,端到端一致。
             if self._config.relay_channel_id and self._message_handler:
-                from openjiuwen_protocol.message import Message, EventType
+                from openjiuwen_protocol.message import Message
+                from agent_gateway.common.gateway_events import GatewayEvent
 
                 relay_msg = Message(
                     id=f"healthcheck-relay-{request_id}",
@@ -255,7 +256,7 @@ class GatewayHealthCheckService(IHealthCheck):
                         # Deprecated payload alias for legacy relay consumers.
                         "heartbeat": health_check_content,
                     },
-                    event_type=EventType.HEALTH_CHECK_RELAY,
+                    event_type=GatewayEvent.HEALTH_CHECK_RELAY,
                 )
                 await self._message_handler.publish_robot_messages(relay_msg)
                 logger.debug(

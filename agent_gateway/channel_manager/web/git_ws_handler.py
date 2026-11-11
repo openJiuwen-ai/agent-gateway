@@ -533,13 +533,13 @@ class GitDiffWebSocketHandler:
           故仅在 ``errors`` 为空时截断;有错误时返回 ``ok=False, partial=True``
           并保留日志,调用方可重试。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         await self._proxy_turn_mutation(
             ws,
             req_id,
             params,
-            req_method=ReqMethod.PROJECT_GIT_DISCARD_TURN_CHANGES,
+            req_method=GatewayMethod.PROJECT_GIT_DISCARD_TURN_CHANGES,
             busy_error="session is busy; stop the current run before discarding changes",
         )
 
@@ -558,13 +558,13 @@ class GitDiffWebSocketHandler:
           - 会话非忙碌(agent 未在执行)
           - 最后一轮已被 discard(status == "discarded")
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         await self._proxy_turn_mutation(
             ws,
             req_id,
             params,
-            req_method=ReqMethod.PROJECT_GIT_REDO_TURN_CHANGES,
+            req_method=GatewayMethod.PROJECT_GIT_REDO_TURN_CHANGES,
             busy_error="session is busy; stop the current run before redoing changes",
         )
 

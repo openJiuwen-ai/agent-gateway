@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.common.external_providers import register
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
@@ -73,7 +73,7 @@ class McpRegistryRemoteProvider:
         """经 WS 执行 oauth 回调完成；不可达/失败/超时一律按失败返回。"""
         ok, payload = await fetch_agent_unary(
             agent_client=_agent_client,
-            req_method=ReqMethod.COMMAND_MCP,
+            req_method=GatewayMethod.COMMAND_MCP,
             params={"action": "oauth_callback", "query": dict(query or {})},
             session_id=None,
             user_id=None,

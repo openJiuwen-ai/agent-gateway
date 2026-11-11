@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     validate_http_origin,
@@ -47,7 +47,7 @@ _UNAVAILABLE_CODES = frozenset(
 )
 _TIMEOUT_CODE = "AGENT_SERVER_TIMEOUT"
 
-DiagnosisFetch = Callable[[ReqMethod, str, dict[str, Any]], Awaitable[tuple[bool, dict[str, Any]]]]
+DiagnosisFetch = Callable[[GatewayMethod, str, dict[str, Any]], Awaitable[tuple[bool, dict[str, Any]]]]
 
 
 class _BadRequest(Exception):
@@ -94,7 +94,7 @@ async def _read_json_object(request: Request) -> dict[str, Any]:
 def build_diagnosis_fetch(channel: WebChannel) -> DiagnosisFetch:
     """Return the callable that sends one ``diagnosis.*`` request to the AgentServer."""
 
-    async def fetch(method: ReqMethod, session_id: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    async def fetch(method: GatewayMethod, session_id: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
         from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
         return await fetch_agent_unary(
@@ -136,7 +136,7 @@ def attach_diagnosis_routes(
 
     async def proxy(
         request: Request,
-        method: ReqMethod,
+        method: GatewayMethod,
         session_id: str,
         *,
         diagnosis_id: str | None = None,
@@ -172,29 +172,29 @@ def attach_diagnosis_routes(
     @app.post(base)
     async def run_diagnosis(session_id: str, request: Request) -> Response:
         """Fix the scope and start one diagnosis."""
-        return await proxy(request, ReqMethod.DIAGNOSIS_RUN, session_id, with_body=True, success_status=202)
+        return await proxy(request, GatewayMethod.DIAGNOSIS_RUN, session_id, with_body=True, success_status=202)
 
     @app.get(base)
     async def list_diagnoses(session_id: str, request: Request) -> Response:
         """List diagnosis summaries, newest first."""
-        return await proxy(request, ReqMethod.DIAGNOSIS_LIST, session_id)
+        return await proxy(request, GatewayMethod.DIAGNOSIS_LIST, session_id)
 
     @app.get(f"{base}/{{diagnosis_id}}")
     async def get_diagnosis(session_id: str, diagnosis_id: str, request: Request) -> Response:
         """Return one record, live when it is running."""
-        return await proxy(request, ReqMethod.DIAGNOSIS_GET, session_id, diagnosis_id=diagnosis_id)
+        return await proxy(request, GatewayMethod.DIAGNOSIS_GET, session_id, diagnosis_id=diagnosis_id)
 
     @app.post(f"{base}/{{diagnosis_id}}/cancel")
     async def cancel_diagnosis(session_id: str, diagnosis_id: str, request: Request) -> Response:
         """Cancel a running diagnosis."""
-        return await proxy(request, ReqMethod.DIAGNOSIS_CANCEL, session_id, diagnosis_id=diagnosis_id)
+        return await proxy(request, GatewayMethod.DIAGNOSIS_CANCEL, session_id, diagnosis_id=diagnosis_id)
 
     @app.delete(f"{base}/{{diagnosis_id}}")
     async def delete_diagnosis(session_id: str, diagnosis_id: str, request: Request) -> Response:
         """Delete a finished diagnosis record."""
         return await proxy(
             request,
-            ReqMethod.DIAGNOSIS_DELETE,
+            GatewayMethod.DIAGNOSIS_DELETE,
             session_id,
             diagnosis_id=diagnosis_id,
             success_status=204,
@@ -205,7 +205,7 @@ def attach_diagnosis_routes(
         """Trigger TTSE experience generation with the selected experience root causes."""
         return await proxy(
             request,
-            ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
+            GatewayMethod.DIAGNOSIS_TTSE_TRIGGER,
             session_id,
             diagnosis_id=diagnosis_id,
             with_body=True,

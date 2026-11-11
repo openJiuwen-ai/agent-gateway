@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
@@ -82,18 +82,18 @@ class _BlobFetch:
     def __init__(self, body: bytes, *, chunk_size: int = 4) -> None:
         self.body = body
         self.chunk_size = chunk_size
-        self.calls: list[tuple[ReqMethod, dict, str | None]] = []
+        self.calls: list[tuple[GatewayMethod, dict, str | None]] = []
 
     async def __call__(self, method, params, user_id=None):
         self.calls.append((method, dict(params), user_id))
-        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+        if method == GatewayMethod.TRAJECTORY_ARCHIVE_OPEN:
             return True, {
                 "chunked": True,
                 "export_id": "export-1",
                 "size": len(self.body),
                 "content_type": "application/zip",
             }
-        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+        if method == GatewayMethod.TRAJECTORY_BLOB_READ:
             offset = int(params["offset"])
             chunk = self.body[offset:offset + self.chunk_size]
             next_offset = offset + len(chunk)
@@ -102,7 +102,7 @@ class _BlobFetch:
                 "next_offset": next_offset,
                 "done": next_offset >= len(self.body),
             }
-        if method == ReqMethod.TRAJECTORY_BLOB_CLOSE:
+        if method == GatewayMethod.TRAJECTORY_BLOB_CLOSE:
             return True, {}
         raise AssertionError(f"unexpected trajectory method: {method}")
 
@@ -122,15 +122,15 @@ async def test_http_list_detail_and_raw_preserve_contract() -> None:
         "records": [{"record_id": f"{_TRACE_ID}:{_SPAN_ID}", "operation": "upsert"}],
         "revision": 7,
     }
-    calls: list[tuple[ReqMethod, dict, str | None]] = []
+    calls: list[tuple[GatewayMethod, dict, str | None]] = []
 
     async def fetch(method, params, user_id=None):
         calls.append((method, params, user_id))
-        if method == ReqMethod.TRAJECTORY_SUBJECTS_LIST:
+        if method == GatewayMethod.TRAJECTORY_SUBJECTS_LIST:
             return True, {"result": list_payload}
-        if method == ReqMethod.TRAJECTORY_SUBJECT_GET:
+        if method == GatewayMethod.TRAJECTORY_SUBJECT_GET:
             return True, {"result": detail_payload}
-        if method == ReqMethod.TRAJECTORY_RAW_GET:
+        if method == GatewayMethod.TRAJECTORY_RAW_GET:
             return True, {"raw_b64": base64.b64encode(expected_raw).decode("ascii")}
         raise AssertionError(f"unexpected trajectory method: {method}")
 
@@ -153,12 +153,12 @@ async def test_http_list_detail_and_raw_preserve_contract() -> None:
     assert bytes(raw_response.body) == expected_raw
     assert calls == [
         (
-            ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+            GatewayMethod.TRAJECTORY_SUBJECTS_LIST,
             {"session_id": "session-1", "after_revision": 0},
             None,
         ),
         (
-            ReqMethod.TRAJECTORY_SUBJECT_GET,
+            GatewayMethod.TRAJECTORY_SUBJECT_GET,
             {
                 "session_id": "session-1",
                 "subject_id": "main",
@@ -168,7 +168,7 @@ async def test_http_list_detail_and_raw_preserve_contract() -> None:
             None,
         ),
         (
-            ReqMethod.TRAJECTORY_RAW_GET,
+            GatewayMethod.TRAJECTORY_RAW_GET,
             {"session_id": "session-1", "trace_id": _TRACE_ID, "span_id": _SPAN_ID},
             None,
         ),
@@ -183,7 +183,7 @@ async def test_http_stream_frame_page_preserves_cursor_and_limit() -> None:
         "has_more": True,
         "reset": False,
     }
-    calls: list[tuple[ReqMethod, dict]] = []
+    calls: list[tuple[GatewayMethod, dict]] = []
 
     async def fetch(method, params, user_id=None):
         del user_id
@@ -197,14 +197,14 @@ async def test_http_stream_frame_page_preserves_cursor_and_limit() -> None:
     assert response.headers["cache-control"] == "no-store"
     assert _response_json(response) == result
     assert calls == [(
-        ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
+        GatewayMethod.TRAJECTORY_STREAM_FRAMES_GET,
         {"session_id": "session-1", "since_frame_seq": 50, "limit": 500},
     )]
 
 
 @pytest.mark.asyncio
 async def test_http_rejects_invalid_cursor_and_page_inputs_before_fetch() -> None:
-    calls: list[ReqMethod] = []
+    calls: list[GatewayMethod] = []
 
     async def fetch(method, params, user_id=None):
         del params, user_id
@@ -435,12 +435,12 @@ async def test_archive_get_download_preserves_gateway_contract() -> None:
     assert missing.headers["cache-control"] == "no-store"
     assert missing.json()["code"] == "NOT_FOUND"
     assert all(user_id == "alice" for _method, _params, user_id in fetch.calls)
-    assert fetch.calls[-1][0] == ReqMethod.TRAJECTORY_BLOB_CLOSE
+    assert fetch.calls[-1][0] == GatewayMethod.TRAJECTORY_BLOB_CLOSE
 
 
 @pytest.mark.asyncio
 async def test_archive_route_is_export_only() -> None:
-    calls: list[ReqMethod] = []
+    calls: list[GatewayMethod] = []
 
     async def fetch(method, params, user_id=None):
         del params, user_id
@@ -508,7 +508,7 @@ async def test_route_query_validation_keeps_no_store_header() -> None:
 async def test_framework_trajectory_errors_are_json_and_non_cacheable() -> None:
     async def fetch(method, params, user_id=None):
         del params, user_id
-        if method == ReqMethod.TRAJECTORY_SUBJECT_GET:
+        if method == GatewayMethod.TRAJECTORY_SUBJECT_GET:
             return False, {"error": "subject not found", "code": "NOT_FOUND", "status": 404}
         return True, {"result": {"items": []}}
 
@@ -679,14 +679,14 @@ async def test_missing_trajectory_status_is_logged(caplog: pytest.LogCaptureFixt
 
 @pytest.mark.asyncio
 async def test_blob_read_without_progress_fails_closed() -> None:
-    calls: list[ReqMethod] = []
+    calls: list[GatewayMethod] = []
 
     async def fetch(method, params, user_id=None):
         del params, user_id
         calls.append(method)
-        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+        if method == GatewayMethod.TRAJECTORY_ARCHIVE_OPEN:
             return True, {"chunked": True, "export_id": "export-1", "size": 4}
-        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+        if method == GatewayMethod.TRAJECTORY_BLOB_READ:
             return True, {"data": "", "next_offset": 0}
         return True, {}
 
@@ -699,8 +699,8 @@ async def test_blob_read_without_progress_fails_closed() -> None:
         "error": "trajectory query failed",
         "code": "TRAJECTORY_QUERY_FAILED",
     }
-    assert calls.count(ReqMethod.TRAJECTORY_BLOB_READ) == 1
-    assert calls.count(ReqMethod.TRAJECTORY_BLOB_CLOSE) == 1
+    assert calls.count(GatewayMethod.TRAJECTORY_BLOB_READ) == 1
+    assert calls.count(GatewayMethod.TRAJECTORY_BLOB_CLOSE) == 1
 
 
 @pytest.mark.asyncio
@@ -710,9 +710,9 @@ async def test_blob_read_chunk_limit_fails_closed() -> None:
     async def fetch(method, params, user_id=None):
         nonlocal reads
         del user_id
-        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+        if method == GatewayMethod.TRAJECTORY_ARCHIVE_OPEN:
             return True, {"chunked": True, "export_id": "export-1", "size": 1}
-        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+        if method == GatewayMethod.TRAJECTORY_BLOB_READ:
             reads += 1
             return True, {
                 "data": "",
@@ -732,19 +732,19 @@ async def test_blob_read_chunk_limit_fails_closed() -> None:
 @pytest.mark.asyncio
 async def test_blob_read_terminal_empty_chunk_completes() -> None:
     payload_body = b"x" * 10
-    calls: list[ReqMethod] = []
+    calls: list[GatewayMethod] = []
 
     async def fetch(method, params, user_id=None):
         del user_id
         calls.append(method)
-        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+        if method == GatewayMethod.TRAJECTORY_ARCHIVE_OPEN:
             return True, {
                 "chunked": True,
                 "export_id": "export-1",
                 "size": len(payload_body),
                 "content_type": "application/zip",
             }
-        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+        if method == GatewayMethod.TRAJECTORY_BLOB_READ:
             offset = int(params["offset"])
             if offset < len(payload_body):
                 chunk = payload_body[offset:offset + 4]
@@ -762,7 +762,7 @@ async def test_blob_read_terminal_empty_chunk_completes() -> None:
     assert response.status_code == 200
     chunks = [chunk async for chunk in response.body_iterator]
     assert b"".join(chunks) == payload_body
-    assert calls[-1] == ReqMethod.TRAJECTORY_BLOB_CLOSE
+    assert calls[-1] == GatewayMethod.TRAJECTORY_BLOB_CLOSE
 
 
 @pytest.mark.asyncio
@@ -775,14 +775,14 @@ async def test_blob_read_terminal_empty_chunk_completes() -> None:
     ],
 )
 async def test_blob_read_malformed_chunks_fail_closed(read_payload: dict) -> None:
-    calls: list[ReqMethod] = []
+    calls: list[GatewayMethod] = []
 
     async def fetch(method, params, user_id=None):
         del params, user_id
         calls.append(method)
-        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+        if method == GatewayMethod.TRAJECTORY_ARCHIVE_OPEN:
             return True, {"chunked": True, "export_id": "export-1", "size": 4}
-        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+        if method == GatewayMethod.TRAJECTORY_BLOB_READ:
             return True, read_payload
         return True, {}
 
@@ -791,7 +791,7 @@ async def test_blob_read_malformed_chunks_fail_closed(read_payload: dict) -> Non
 
     assert response.status_code == 500
     assert _response_json(response)["code"] == "TRAJECTORY_QUERY_FAILED"
-    assert calls[-1] == ReqMethod.TRAJECTORY_BLOB_CLOSE
+    assert calls[-1] == GatewayMethod.TRAJECTORY_BLOB_CLOSE
 
 
 @pytest.mark.asyncio

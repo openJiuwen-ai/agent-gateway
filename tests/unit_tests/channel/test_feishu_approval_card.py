@@ -10,7 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
@@ -103,7 +104,7 @@ def _event_message(request_id: str, source: str, questions: list[dict]) -> Messa
             "source": source,
             "questions": questions,
         },
-        event_type=EventType.CHAT_ASK_USER_QUESTION,
+        event_type=GatewayEvent.CHAT_ASK_USER_QUESTION,
         metadata={
             "feishu_chat_id": "oc_chat",
             "feishu_open_id": "ou_requester",

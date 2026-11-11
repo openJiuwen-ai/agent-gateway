@@ -7,7 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
@@ -15,7 +16,7 @@ from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannel
 def status(request_id, processing, team_id=""):
     return Message(
         id=request_id, type="event", channel_id="web", session_id="session",
-        params={}, timestamp=0, ok=True, event_type=EventType.CHAT_PROCESSING_STATUS,
+        params={}, timestamp=0, ok=True, event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
         payload={
             "event_type": "chat.processing_status", "is_processing": processing,
             "request_id": request_id,
@@ -128,7 +129,7 @@ async def test_expert_cancel_result_never_synthesizes_owner_status(monkeypatch):
     broadcast = AsyncMock()
     monkeypatch.setattr(channel, "_broadcast_to", broadcast)
     message = status("cancel", False, "expert")
-    message.event_type = EventType.CHAT_INTERRUPT_RESULT
+    message.event_type = GatewayEvent.CHAT_INTERRUPT_RESULT
     message.payload.update({"event_type": "chat.interrupt_result", "success": True, "intent": "cancel"})
     channel._track_session_busy(status("owner", True))
     # Exercise the legacy broadcast path, where synthetic status used to leak.
@@ -153,7 +154,7 @@ def test_organization_terminal_fallback_preserves_other_rounds(event, role, term
     channel._track_session_busy(status("second", True, "expert"))
     ended = status("first", False, "expert")
     ended.payload["source"] = source
-    ended.event_type = None if event == "org.turn_completed" else EventType.CHAT_ERROR
+    ended.event_type = None if event == "org.turn_completed" else GatewayEvent.CHAT_ERROR
     ended.payload.update({"event_type": event, "role": role})
     ended.payload.pop("is_processing")
     channel._track_session_busy(ended)
@@ -174,7 +175,7 @@ def test_owner_stop_only_releases_git_busy_guard_after_success(success):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel._track_session_busy(status("owner", True))
     response = status("stop", False)
-    response.event_type = EventType.CHAT_INTERRUPT_RESULT
+    response.event_type = GatewayEvent.CHAT_INTERRUPT_RESULT
     response.payload.update({"source": "org_stop", "success": success})
     channel._track_session_busy(response)
     assert channel.is_session_busy("session") is not success
@@ -189,7 +190,7 @@ def test_organization_stop_uses_payload_session_and_preserves_uncancelled_reques
     channel._track_session_busy(status("second", True, "expert"))
     response = status("stop", False)
     response.session_id = envelope_session
-    response.event_type = EventType.CHAT_INTERRUPT_RESULT
+    response.event_type = GatewayEvent.CHAT_INTERRUPT_RESULT
     response.payload.update({
         "session_id": "session", "source": "org_stop", "success": success,
         "cancelled_requests": [{"team_id": "expert", "request_id": "first"}],
@@ -230,7 +231,7 @@ async def test_malformed_stop_request_list_does_not_prevent_result_delivery(monk
     broadcast = AsyncMock()
     monkeypatch.setattr(channel, "_broadcast_to", broadcast)
     response = status("stop", False)
-    response.event_type = EventType.CHAT_INTERRUPT_RESULT
+    response.event_type = GatewayEvent.CHAT_INTERRUPT_RESULT
     response.metadata = {"ws_id": "socket"}
     response.payload.update({
         "event_type": "chat.interrupt_result", "source": "org_stop", "success": True,

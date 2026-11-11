@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType
+from agent_gateway.common.gateway_events import event_name_of
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
@@ -102,7 +102,7 @@ class TuiChannel(BaseWsChannel):
         # cron 推送（占位 + 结果）带 payload.cron 标记，普通对话 chat.final 不带，
         # 以此为识别条件广播给所有 tui 客户端，与 WebChannel.send 对称。
         if (
-            getattr(msg, "event_type", None) == EventType.CHAT_FINAL
+            getattr(msg, "event_type", None) == "chat.final"
             and isinstance(getattr(msg, "payload", None), dict)
             and isinstance(msg.payload.get("cron"), dict)
         ):
@@ -249,7 +249,7 @@ class TuiChannel(BaseWsChannel):
         # event 帧
         event_name = "chat.final"
         if getattr(msg, "event_type", None) is not None:
-            event_name = msg.event_type.value
+            event_name = event_name_of(msg.event_type)
         payload = msg.payload
         if isinstance(payload, dict):
             out_payload = {**payload}

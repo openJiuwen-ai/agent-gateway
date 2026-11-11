@@ -12,7 +12,8 @@ from openjiuwen_protocol.e2a.wire_codec import (
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
 )
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.message_handler import MessageHandler
@@ -51,7 +52,7 @@ def test_client_tool_request_is_a_registered_gateway_event() -> None:
     )
 
     assert message.type == "event"
-    assert message.event_type is EventType.CHAT_CLIENT_TOOL_REQUEST
+    assert message.event_type == "chat.client_tool_request"
     assert message.payload["client_tool"]["input"] == {"call_goal": "inspect"}
 
 
@@ -87,8 +88,8 @@ async def test_agent_server_s_refusal_of_a_client_resume_reaches_the_client_nami
     await handler.process_stream(resume, session_id="session-1", request_metadata={})
     error, *after = await _drain_robot_messages(handler)
 
-    payload = WebChannel._build_event_payload(error, error.event_type.value)
-    assert error.event_type is EventType.CHAT_ERROR
+    payload = WebChannel._build_event_payload(error, error.event_type)
+    assert error.event_type == "chat.error"
     assert (payload["request_id"], payload["code"]) == (
         "office_resume_1",
         "CLIENT_TOOL_ANSWER_MISMATCH",
@@ -110,7 +111,7 @@ def test_web_channel_preserves_the_whole_client_tool_request() -> None:
         timestamp=0.0,
         ok=True,
         payload=REQUEST,
-        event_type=EventType.CHAT_CLIENT_TOOL_REQUEST,
+        event_type=GatewayEvent.CHAT_CLIENT_TOOL_REQUEST,
     )
 
     payload = WebChannel._build_event_payload(msg, "chat.client_tool_request")
@@ -134,7 +135,7 @@ def test_web_channel_preserves_the_attachments_change_notice() -> None:
             "event_type": "client.attachments_changed",
             "request_id": "client_attachments_changed_1",
         },
-        event_type=EventType.CLIENT_ATTACHMENTS_CHANGED,
+        event_type=GatewayEvent.CLIENT_ATTACHMENTS_CHANGED,
     )
 
     payload = WebChannel._build_event_payload(msg, "client.attachments_changed")

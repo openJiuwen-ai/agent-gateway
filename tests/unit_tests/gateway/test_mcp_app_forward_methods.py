@@ -2,13 +2,11 @@
 
 """MCP Apps host-bridge requests (mcp_app.*) are forwarded to AgentServer by the standalone gateway."""
 
-from openjiuwen_protocol.message import ReqMethod
-
-import agent_gateway  # noqa: F401  registers the methods the pinned protocol has not published
 from agent_gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS,
     _FORWARD_REQ_METHODS,
 )
+from jiuwenswarm.common.schema.message import ReqMethod
 
 MCP_APP_METHODS = {
     "mcp_app.list_tools",
@@ -23,6 +21,7 @@ def test_mcp_app_methods_are_plain_forwards():
 
 
 def test_mcp_app_methods_resolve_to_a_request_method():
-    # The forward path looks a method up in ReqMethod by value and answers "unknown method" when it is missing.
+    # Cross-repo contract: the AgentServer decodes the forwarded name with its
+    # own ReqMethod. The Gateway itself only forwards wire strings.
     known = {item.value for item in ReqMethod}
     assert MCP_APP_METHODS <= known

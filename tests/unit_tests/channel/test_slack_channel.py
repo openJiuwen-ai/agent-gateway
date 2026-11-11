@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.slack import slack_connect
 from agent_gateway.channel_manager.im_platforms.slack.slack_connect import (
@@ -21,7 +22,7 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 
 def _message(
     *,
-    event_type: EventType = EventType.CHAT_FINAL,
+    event_type: str = GatewayEvent.CHAT_FINAL,
     content: str = "response",
     metadata: dict[str, Any] | None = None,
     session_id: str = "slack_T1_C1_1710000000.000100",
@@ -180,7 +181,7 @@ async def test_send_uses_routing_target_chunks_text_and_ignores_delta() -> None:
 
     await channel.send(_message(content="x" * 4100), routing_target=target)
     await channel.send(
-        _message(event_type=EventType.CHAT_DELTA, content="partial"),
+        _message(event_type=GatewayEvent.CHAT_DELTA, content="partial"),
         routing_target=target,
     )
 

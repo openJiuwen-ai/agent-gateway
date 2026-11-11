@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -118,7 +119,7 @@ class WhatsAppChannel(BaseChannel):
         if (
                 not self.config.enable_streaming
                 and msg.type == "event"
-                and msg.event_type == EventType.CHAT_DELTA
+                and msg.event_type == "chat.delta"
         ):
             return
 
@@ -299,7 +300,7 @@ class WhatsAppChannel(BaseChannel):
             params={"content": text, "query": text},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             metadata={
                 "whatsapp_jid": jid,
                 "whatsapp_sender": sender,
@@ -475,7 +476,7 @@ class WhatsAppChannel(BaseChannel):
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
+        if msg.event_type == "health_check.relay" and isinstance(payload, dict):
             health_check = payload.get("health_check")
             if health_check:
                 return str(health_check)

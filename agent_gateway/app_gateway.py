@@ -46,7 +46,7 @@ from openjiuwen_protocol.message import (
     Message,
     Mode,
 )
-from agent_gateway.common.protocol_methods import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from agent_gateway.common.media_capability_config import (
@@ -125,6 +125,7 @@ from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from agent_gateway.routing.route_binding import GatewayRouteBinding
 from agent_gateway.common.log_sanitize import mask_sensitive
 from agent_gateway.telemetry import configure_gateway_telemetry, shutdown_gateway_telemetry, trace_stage
+from agent_gateway.common.gateway_events import event_name_of
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
@@ -246,7 +247,7 @@ def _load_gateway_runtime_config(
 def _build_event_frame(msg) -> dict[str, Any]:
     event_name = "chat.final"
     if msg.event_type is not None:
-        event_name = msg.event_type.value
+        event_name = event_name_of(msg.event_type)
     if isinstance(msg.payload, dict):
         payload = {**msg.payload}
         payload.setdefault("session_id", msg.session_id)
@@ -312,18 +313,18 @@ async def _refresh_expired_login_credential(msg) -> None:
 
 def _normalize_gateway_message(msg):
 
-    req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
+    req_method = getattr(msg, "req_method", None) or GatewayMethod.CHAT_SEND
     params = dict(msg.params or {})
     if "query" not in params and "content" in params:
         params["query"] = params["content"]
-    if req_method == ReqMethod.CHAT_RESUME:
-        req_method = ReqMethod.CHAT_CANCEL
+    if req_method == GatewayMethod.CHAT_RESUME:
+        req_method = GatewayMethod.CHAT_CANCEL
         params.setdefault("intent", "resume")
 
     method_val = method_value(req_method)
     is_stream = bool(
         msg.is_stream
-        or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
+        or method_val in (GatewayMethod.CHAT_SEND.value, GatewayMethod.HISTORY_GET.value)
     )
 
     # 登录模型的凭据在这里挂上，随请求带给AgentServer
@@ -1356,7 +1357,7 @@ class GatewayServer(BaseWebChannel):
 
         event_name = "chat.final"
         if msg.event_type is not None:
-            event_name = msg.event_type.value
+            event_name = event_name_of(msg.event_type)
 
         if isinstance(msg.payload, dict):
             payload = {**msg.payload}
@@ -1604,10 +1605,10 @@ class GatewayServer(BaseWebChannel):
             or method not in route.local_handlers
         )
         if should_forward:
-            req_method = next(
-                (item for item in ReqMethod if item.value == method),
-                method,
-            )
+            # The Gateway forwards method names as wire strings.  It no longer
+            # resolves them against a local enum, so a method this build does
+            # not know still reaches the AgentServer unchanged.
+            req_method = method
 
             # V2: 提取 agent_ref 用于路由键（支撑场景 2 同 session 切 mode 不串窗）。
             # 客户端未发送 agent_ref 时不合成——保持 2 元组注册，与响应查找侧
@@ -1837,7 +1838,7 @@ async def sync_saved_topic_recommendation(
     try:
         ok, payload = await fetch_agent_unary(
             agent_client=client,
-            req_method=ReqMethod.RECOMMENDATION,
+            req_method=GatewayMethod.RECOMMENDATION,
             params={
                 "action": "apply_saved_config",
                 "updated_env_keys": sorted(updated_env_keys or []),
@@ -2191,7 +2192,7 @@ async def _run(
             env = e2a_from_agent_fields(
                 request_id=f"agent-prewarm-sync-{uuid_module.uuid4().hex[:8]}",
                 channel_id="",
-                req_method=ReqMethod.AGENT_PREWARM_SYNC,
+                req_method=GatewayMethod.AGENT_PREWARM_SYNC,
                 params={
                     "enabled_channels": sorted(prewarm_channels),
                 },
@@ -2288,7 +2289,7 @@ async def _run(
                 channel_id="",
                 session_id="sess_reload",
                 user_id="agentos_test",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+                req_method=GatewayMethod.AGENT_RELOAD_CONFIG,
                 params={
                     # config: full config snapshot after save; Agent should prefer this over local yaml.
                     "config": dict(config_payload or {}),
@@ -2396,7 +2397,7 @@ async def _run(
                     channel_id="",
                     session_id="sess_reload",
                     user_id="agentos_test",
-                    req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
+                    req_method=GatewayMethod.BROWSER_RUNTIME_RESTART,
                 )
                 try:
                     await client.send_request(restart_env)

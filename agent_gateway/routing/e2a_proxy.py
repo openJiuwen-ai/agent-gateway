@@ -31,7 +31,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields, method_value
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.common.request_identity import apply_routing_metadata
 from agent_gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
 from agent_gateway.routing.agent_client import (
@@ -164,7 +164,7 @@ async def proxy_unary_request(
     params: dict[str, Any] | None,
     session_id: str | None,
     user_id: str | None,
-    req_method: ReqMethod | str,
+    req_method: GatewayMethod | str,
     label: str = DEFAULT_PROXY_LABEL,
     timeout_seconds: float | None = None,
     extra_params: dict[str, Any] | None = None,
@@ -237,7 +237,7 @@ async def proxy_unary_request(
             user_id=user_id or None,
             metadata=apply_routing_metadata(
                 {"app_id": str(ws_app_id) or "default"}
-                if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
+                if req_method == GatewayMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
                 getattr(ws, "_web_routing", None),
             ),
         )
@@ -306,7 +306,7 @@ async def proxy_unary_request(
 async def fetch_agent_unary(
     *,
     agent_client: Any,
-    req_method: ReqMethod | str,
+    req_method: GatewayMethod | str,
     params: dict[str, Any] | None,
     session_id: str | None,
     user_id: str | None,
@@ -424,7 +424,7 @@ async def resolve_agent_cron_project_binding(
     """
     return await fetch_agent_unary(
         agent_client=agent_client,
-        req_method=ReqMethod.PROJECT_CRON_RESOLVE_BINDING,
+        req_method=GatewayMethod.PROJECT_CRON_RESOLVE_BINDING,
         params=params,
         session_id=session_id,
         user_id=user_id,
@@ -462,7 +462,7 @@ async def fetch_git_diff_status(
         params["hunk_paths"] = list(hunk_paths)
     return await fetch_agent_unary(
         agent_client=agent_client,
-        req_method=ReqMethod.PROJECT_GIT_DIFF_STATUS,
+        req_method=GatewayMethod.PROJECT_GIT_DIFF_STATUS,
         params=params,
         session_id=session_id or None,
         user_id=user_id,

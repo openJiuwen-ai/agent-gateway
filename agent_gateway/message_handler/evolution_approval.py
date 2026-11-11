@@ -10,7 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.runtime.evolution import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,
@@ -311,7 +312,7 @@ class EvolutionApprovalCoordinator:
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_ANSWER,
+            req_method=GatewayMethod.CHAT_ANSWER,
             is_stream=False,
             metadata=metadata,
         )

@@ -557,7 +557,7 @@ class MessageHandler(ABC):
         from uuid import uuid4
 
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         response = await self.agent_client.send_request(
             E2AEnvelope(
@@ -565,7 +565,7 @@ class MessageHandler(ABC):
                 channel="feishu",
                 user_id=event.sender_id,
                 chat_id=event.chat_id,
-                method=ReqMethod.JIUWENMATE_FEISHU_INBOUND.value,
+                method=GatewayMethod.JIUWENMATE_FEISHU_INBOUND.value,
                 params={"event": event.to_payload()},
             )
         )
@@ -581,11 +581,11 @@ class MessageHandler(ABC):
         """Forward a claimed DingTalk event without entering ordinary chat routing."""
         from uuid import uuid4
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         response = await self.agent_client.send_request(E2AEnvelope(
             request_id=f"jm21_{uuid4().hex}", channel="dingtalk", user_id=event.sender_staff_id,
-            chat_id=event.conversation_id, method=ReqMethod.JIUWENMATE_DINGTALK_INBOUND.value,
+            chat_id=event.conversation_id, method=GatewayMethod.JIUWENMATE_DINGTALK_INBOUND.value,
             params={"event": event.to_payload()},
         ))
 
@@ -602,7 +602,7 @@ class MessageHandler(ABC):
         from uuid import uuid4
 
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
         from agent_gateway.channel_manager.im_platforms.welink.facts import WelinkInboundEvent
 
         try:
@@ -615,7 +615,7 @@ class MessageHandler(ABC):
                 channel="welink",
                 user_id=parsed.sender_id,
                 chat_id=parsed.chat_id,
-                method=ReqMethod.JIUWENMATE_WELINK_INBOUND.value,
+                method=GatewayMethod.JIUWENMATE_WELINK_INBOUND.value,
                 params={"event": parsed.to_payload()},
             )
         )
@@ -629,7 +629,7 @@ class MessageHandler(ABC):
 
     async def _handle_feishu_group_push(self, payload: dict[str, Any]) -> None:
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         query_id = payload.get("query_id")
         if not isinstance(query_id, str) or not query_id:
@@ -643,7 +643,7 @@ class MessageHandler(ABC):
                 if isinstance(candidate, dict) and candidate.get("status") in statuses:
                     result = candidate
             await self.agent_client.send_request(E2AEnvelope(
-                request_id=f"jm11_{query_id}", channel="feishu", method=ReqMethod.JIUWENMATE_GROUP_RESPONSE.value,
+                request_id=f"jm11_{query_id}", channel="feishu", method=GatewayMethod.JIUWENMATE_GROUP_RESPONSE.value,
                 params={**result, "query_id": query_id, "app_id": payload.get("app_id"),
                         "chat_id": payload.get("chat_id")},
             ))
@@ -655,7 +655,7 @@ class MessageHandler(ABC):
         from uuid import uuid4
 
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         idempotency_key = payload.get("idempotency_key")
         channel = payload.get("channel")
@@ -686,7 +686,7 @@ class MessageHandler(ABC):
         envelope = E2AEnvelope(
             request_id=f"jm23_ack_{uuid4().hex}",
             channel=channel,
-            method=ReqMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
+            method=GatewayMethod.JIUWENMATE_THINKING_NOTICE_ACK.value,
             params={
                 "idempotency_key": idempotency_key,
                 "outcome": outcome,
@@ -710,7 +710,7 @@ class MessageHandler(ABC):
         from uuid import uuid4
 
         from openjiuwen_protocol.e2a.models import E2AEnvelope
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         delivery_id = payload.get("delivery_id")
         stage = payload.get("stage")
@@ -759,7 +759,7 @@ class MessageHandler(ABC):
         envelope = E2AEnvelope(
             request_id=f"jm09_ack_{uuid4().hex}",
             channel=payload.get("channel", "feishu"),
-            method=ReqMethod.JIUWENMATE_DELIVERY_ACK.value,
+            method=GatewayMethod.JIUWENMATE_DELIVERY_ACK.value,
             params=ack,
         )
         try:
@@ -1005,7 +1005,7 @@ class MessageHandler(ABC):
     def _is_chat_send_message(msg: "Message") -> bool:
         method = getattr(msg, "req_method", None)
         value = getattr(method, "value", method)
-        return value == "chat.send" or str(value) == "ReqMethod.CHAT_SEND"
+        return value == "chat.send" or str(value) == "GatewayMethod.CHAT_SEND"
 
     @staticmethod
     def _is_team_chat_send(msg: "Message") -> bool:
@@ -1029,7 +1029,8 @@ class MessageHandler(ABC):
 
     async def _reject_unknown_team_mode_send(self, msg: "Message") -> None:
         """Reply with an error listing the known team modes."""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         params = msg.params if isinstance(msg.params, dict) else {}
         mode = str(params.get("mode") or "").strip()
@@ -1043,14 +1044,14 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=False,
             payload={
-                "event_type": EventType.CHAT_ERROR.value,
+                "event_type": GatewayEvent.CHAT_ERROR.value,
                 "error": _UNKNOWN_TEAM_MODE_NOTICE.format(
                     mode=mode, valid=", ".join(_KNOWN_TEAM_MODE_INPUTS)
                 ),
                 "code": "UNKNOWN_TEAM_MODE",
                 "is_complete": True,
             },
-            event_type=EventType.CHAT_ERROR,
+            event_type=GatewayEvent.CHAT_ERROR,
             metadata=metadata,
             enable_streaming=False,
         )
@@ -1087,7 +1088,8 @@ class MessageHandler(ABC):
 
     async def _reject_non_stream_team_send(self, msg: "Message") -> None:
         """Answer a non-streaming team request with an explanation."""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         metadata = msg.metadata if isinstance(msg.metadata, dict) else None
         out = Message(
@@ -1099,11 +1101,11 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=True,
             payload={
-                "event_type": EventType.CHAT_FINAL.value,
+                "event_type": GatewayEvent.CHAT_FINAL.value,
                 "content": _NON_STREAM_TEAM_NOTICE,
                 "is_complete": True,
             },
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
             metadata=metadata,
             enable_streaming=False,
         )
@@ -1242,7 +1244,7 @@ class MessageHandler(ABC):
     ) -> str:
         """Allocate and persist a real AgentServer-owned session for a channel."""
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         channel_type = self._resolve_control_channel_type(msg)
         mode = state.mode.value
@@ -1260,7 +1262,7 @@ class MessageHandler(ABC):
         env = e2a_from_agent_fields(
             request_id=f"session-create-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
             channel_id=channel_type,
-            req_method=ReqMethod.SESSION_CREATE,
+            req_method=GatewayMethod.SESSION_CREATE,
             params=create_params,
             is_stream=False,
             timestamp=time.time(),
@@ -1383,7 +1385,8 @@ class MessageHandler(ABC):
         关闭「处理中」接收周期）。CLI 控制指令等 notice 均为终态回包，必须默认 True；
         若确需多帧未完结，调用方显式传入 is_complete=False。
         """
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         if isinstance(text_or_payload, dict):
             payload = dict(text_or_payload)
@@ -1401,7 +1404,7 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=True,
             payload=payload,
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
             metadata=user_infos['meta_data'],
             app_id=_app_id or None,
         )
@@ -1730,7 +1733,8 @@ class MessageHandler(ABC):
             AgentServer failed. Gateway-task cancellation is best-effort and
             does not affect the return value.
         """
-        from openjiuwen_protocol.message import Message, ReqMethod
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         async def _cancel_tasks(tasks: list[asyncio.Task]) -> None:
             if not tasks:
@@ -1820,7 +1824,7 @@ class MessageHandler(ABC):
             params=cancel_params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method=GatewayMethod.CHAT_CANCEL,
             metadata=cancel_metadata or None,
             provider=getattr(msg, "provider", None),
             chat_id=getattr(msg, "chat_id", None),
@@ -2088,7 +2092,8 @@ class MessageHandler(ABC):
         user_id: str | None = None,
         mode: str | None = None,
     ) -> "Message":
-        from openjiuwen_protocol.message import Message, ReqMethod
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         disconnect_params = {
             "intent": "cancel",
@@ -2123,7 +2128,7 @@ class MessageHandler(ABC):
             params=disconnect_params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method=GatewayMethod.CHAT_CANCEL,
             is_stream=False,
             user_id=user_id,
         )
@@ -2714,7 +2719,8 @@ class MessageHandler(ABC):
         同时保留原始字段：飞书仍可经 ``_build_skills_list_card_content`` 识别 ``skills``
         键渲染为卡片，其它 IM 通道则回退到读取 ``content`` 文本。
         """
-        from openjiuwen_protocol.message import Message, ReqMethod
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         from agent_gateway.message_handler.command_parser.slash_command import (
             format_skills_list_for_notice,
@@ -2729,7 +2735,7 @@ class MessageHandler(ABC):
             params={},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.SKILLS_LIST,
+            req_method=GatewayMethod.SKILLS_LIST,
             is_stream=False,
             metadata=msg.metadata,
             provider=getattr(msg, "provider", None),
@@ -2784,7 +2790,7 @@ class MessageHandler(ABC):
         engine) are performed atomically.
         """
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         state = self.get_or_create_channel_state(msg)
         source_sid = state.session_id
@@ -2802,7 +2808,7 @@ class MessageHandler(ABC):
                 request_id=f"branch-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                 channel_id=channel_type,
                 session_id=source_sid,
-                req_method=ReqMethod.SESSION_FORK,
+                req_method=GatewayMethod.SESSION_FORK,
                 params={
                     "source_session_id": source_sid,
                     "title": branch_name,
@@ -2892,7 +2898,7 @@ class MessageHandler(ABC):
         （方案 §8：禁止用部署侧目录代替用户目录）。
         """
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         state = self.get_or_create_channel_state(msg)
         target_sid = state.session_id
@@ -2913,7 +2919,7 @@ class MessageHandler(ABC):
                     request_id=f"rewind-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                     channel_id=channel_id,
                     session_id=target_sid,
-                    req_method=ReqMethod.SESSION_REWIND,
+                    req_method=GatewayMethod.SESSION_REWIND,
                     params={"session_id": target_sid, "turn_index": turn_index},
                     is_stream=False,
                     timestamp=time.time(),
@@ -3270,12 +3276,12 @@ class MessageHandler(ABC):
 
     async def _ensure_acp_agent_session(self) -> str:
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         env = e2a_from_agent_fields(
             request_id=f"acp-session-create-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
             channel_id=_ACP_CHANNEL_ID,
-            req_method=ReqMethod.SESSION_CREATE,
+            req_method=GatewayMethod.SESSION_CREATE,
             params={
                 "create_token": secrets.token_hex(16),
                 "mode": "agent",
@@ -3321,12 +3327,12 @@ class MessageHandler(ABC):
             return await self._prepare_agent_dispatch_message_impl(msg)
 
     async def _prepare_agent_dispatch_message_impl(self, msg: "Message") -> "Message":
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         msg = self._attach_original_request_to_ask_user_answer(msg)
         if msg.channel_id != _ACP_CHANNEL_ID:
             return msg
-        if msg.req_method in (ReqMethod.INITIALIZE, ReqMethod.SESSION_CREATE):
+        if msg.req_method in (GatewayMethod.INITIALIZE, GatewayMethod.SESSION_CREATE):
             return msg
 
         internal_session_id, aliased = await self._resolve_acp_internal_session_id(msg.session_id)
@@ -3615,18 +3621,18 @@ class MessageHandler(ABC):
         request_params: dict[str, Any] | None = None,
     ) -> bool:
         """Whether a source-less unary failure belongs to the chat event flow."""
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         method = getattr(request_method, "value", request_method)
         if method in {
-            ReqMethod.CHAT_SEND.value,
-            ReqMethod.CHAT_RESUME.value,
-            ReqMethod.CHAT_ANSWER.value,
-            ReqMethod.CHAT_SWARMFLOW_REPLY.value,
+            GatewayMethod.CHAT_SEND.value,
+            GatewayMethod.CHAT_RESUME.value,
+            GatewayMethod.CHAT_ANSWER.value,
+            GatewayMethod.CHAT_SWARMFLOW_REPLY.value,
         }:
             return True
         return (
-            method == ReqMethod.CHAT_CANCEL.value
+            method == GatewayMethod.CHAT_CANCEL.value
             and isinstance(request_params, dict)
             and request_params.get("intent") == "resume"
         )
@@ -3641,7 +3647,9 @@ class MessageHandler(ABC):
         request_method: Any = None,
         request_params: dict[str, Any] | None = None,
     ) -> "Message":
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+
+        from agent_gateway.common.gateway_events import GatewayEvent, normalize_event_name
 
         metadata = MessageHandler._merge_agent_metadata(request_metadata, resp.metadata)
 
@@ -3672,29 +3680,27 @@ class MessageHandler(ABC):
                     )
                 ),
             )
-            if isinstance(event_type_str, str):
-                try:
-                    event_type = EventType(event_type_str)
-                    # 如果是事件类型，创建事件消息而不是响应消息
-                    return Message(
-                        id=resp.request_id,
-                        type="event",
-                        channel_id=resp.channel_id,
-                        session_id=session_id,
-                        params={},
-                        timestamp=time.time(),
-                        ok=event_type != EventType.CHAT_ERROR,
-                        payload=payload,
-                        event_type=event_type,
-                        metadata=metadata,
-                        app_id=app_id,
-                        agent_ref=resp_agent_ref,
-                        group_digital_avatar=group_digital_avatar,
-                        enable_memory=enable_memory,
-                    )
-                except ValueError:
-                    # 不是有效的 EventType，继续作为普通响应处理
-                    pass
+            event_type = normalize_event_name(event_type_str)
+            if event_type is not None:
+                # 事件名是线上字符串：原样保留交给渠道分发，不再本地枚举校验。
+                # 未知事件也按事件下发，避免 AgentServer 新增事件被静默降级成
+                # 普通响应（那会把工具调用当正文发出）。
+                return Message(
+                    id=resp.request_id,
+                    type="event",
+                    channel_id=resp.channel_id,
+                    session_id=session_id,
+                    params={},
+                    timestamp=time.time(),
+                    ok=event_type != "chat.error",
+                    payload=payload,
+                    event_type=event_type,
+                    metadata=metadata,
+                    app_id=app_id,
+                    agent_ref=resp_agent_ref,
+                    group_digital_avatar=group_digital_avatar,
+                    enable_memory=enable_memory,
+                )
 
         # 普通响应消息
         return Message(
@@ -3706,7 +3712,7 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=resp.ok,
             payload=payload,
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
             metadata=metadata,
             app_id=app_id,
             agent_ref=resp_agent_ref,
@@ -3740,11 +3746,11 @@ class MessageHandler(ABC):
     async def push_login_credential_update(self, params: dict[str, Any]) -> bool:
         """把登录凭据的新 token（或撤销）推给 AgentServer。返回是否被接受。"""
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         env = e2a_from_agent_fields(
             request_id=f"auth-credentials-update-{secrets.token_hex(6)}",
-            req_method=ReqMethod.AUTH_CREDENTIALS_UPDATE,
+            req_method=GatewayMethod.AUTH_CREDENTIALS_UPDATE,
             params=dict(params),
             timestamp=time.time(),
         )
@@ -4414,7 +4420,8 @@ class MessageHandler(ABC):
         if not channel_id:
             return
 
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
         out = Message(
             id=request_id,
             type="event",
@@ -4428,7 +4435,7 @@ class MessageHandler(ABC):
                 "tool_name": "cron",
                 "result": data,
             },
-            event_type=EventType.CHAT_TOOL_RESULT,
+            event_type=GatewayEvent.CHAT_TOOL_RESULT,
             metadata=metadata,
             enable_streaming=False,  # 工具结果不开启流式，避免被发送到群聊
         )
@@ -4445,11 +4452,11 @@ class MessageHandler(ABC):
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
             from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-            from openjiuwen_protocol.message import ReqMethod
+            from agent_gateway.common.gateway_methods import GatewayMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cron-command-ack-{command_id}", channel_id="",
-                req_method=ReqMethod.CRON_COMMAND_ACK,
+                req_method=GatewayMethod.CRON_COMMAND_ACK,
                 params={"command_id": command_id, "data": data},
                 is_stream=False, timestamp=time.time(), user_id=user_id,
                 session_id=session_id,
@@ -4478,12 +4485,12 @@ class MessageHandler(ABC):
             return
         try:
             from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-            from openjiuwen_protocol.message import ReqMethod
+            from agent_gateway.common.gateway_methods import GatewayMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cron-run-ack-{request_id}",
                 channel_id="",
-                req_method=ReqMethod.CRON_RUN_NOW_ACK,
+                req_method=GatewayMethod.CRON_RUN_NOW_ACK,
                 params={
                     "ack_request_id": request_id,
                     "job_id": job_id,
@@ -4515,7 +4522,9 @@ class MessageHandler(ABC):
         """将 AgentResponseChunk 转换为 Message（用于流式处理）。
         metadata 传入 request 的 metadata，供 Feishu/Xiaoyi 等通道回发时使用平台身份。
         """
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+
+        from agent_gateway.common.gateway_events import GatewayEvent, normalize_event_name
 
         # 从 metadata 中提取 group_digital_avatar 和 enable_memory 字段
         # 这些字段在 message_to_e2a 中被放入 metadata，需要在这里提取出来
@@ -4543,11 +4552,9 @@ class MessageHandler(ABC):
                 payload,
                 legacy_failed=bool(getattr(chunk, "is_complete", False)),
             )
-            if isinstance(event_type_str, str):
-                try:
-                    event_type = EventType(event_type_str)
-                except ValueError:
-                    logger.debug("未知的 event_type: %s", event_type_str)
+            event_type = normalize_event_name(event_type_str)
+            if event_type is None:
+                logger.debug("空 event_type: %r", event_type_str)
 
         return Message(
             id=chunk.request_id,
@@ -4556,7 +4563,7 @@ class MessageHandler(ABC):
             session_id=session_id,
             params={},
             timestamp=time.time(),
-            ok=event_type != EventType.CHAT_ERROR,
+            ok=event_type != "chat.error",
             payload=payload,
             event_type=event_type,
             metadata=merged_metadata,
@@ -4660,7 +4667,8 @@ class MessageHandler(ABC):
         error: Exception,
     ) -> None:
         """Finish a failed stream with a visible error, preserving its routing."""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         request_id = env.request_id or ""
         code = getattr(error, "code", None)
@@ -4679,14 +4687,14 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=False,
             payload={
-                "event_type": EventType.CHAT_ERROR.value,
+                "event_type": GatewayEvent.CHAT_ERROR.value,
                 "request_id": request_id,
                 **self._expert_stream_route(env.params),
                 "error": str(error) or type(error).__name__,
                 "code": code,
                 "is_complete": True,
             },
-            event_type=EventType.CHAT_ERROR,
+            event_type=GatewayEvent.CHAT_ERROR,
             metadata=request_metadata,
             app_id=self._stream_app_ids.get(request_id, ""),
         )
@@ -4699,34 +4707,34 @@ class MessageHandler(ABC):
         网关队列否则串行 await Agent，慢请求（如 SkillNet 搜索）会堵住后续的 skills.list 刷新。
         普通非流式聊天由独立的 Session 顺序队列管理。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         m = getattr(env.method, "value", env.method)
         if not m:
             return False
         return m not in (
-            ReqMethod.CHAT_SEND.value,
-            ReqMethod.CHAT_RESUME.value,
-            ReqMethod.CHAT_CANCEL.value,
-            ReqMethod.CHAT_ANSWER.value,
+            GatewayMethod.CHAT_SEND.value,
+            GatewayMethod.CHAT_RESUME.value,
+            GatewayMethod.CHAT_CANCEL.value,
+            GatewayMethod.CHAT_ANSWER.value,
         )
 
     @staticmethod
     def _should_trigger_before_chat_request_hook(msg: "Message") -> bool:
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         return msg.req_method in (
-            ReqMethod.CHAT_SEND,
-            ReqMethod.CHAT_RESUME,
-            ReqMethod.CHAT_ANSWER,
+            GatewayMethod.CHAT_SEND,
+            GatewayMethod.CHAT_RESUME,
+            GatewayMethod.CHAT_ANSWER,
         )
 
     @staticmethod
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
         from agent_gateway.runtime.session_input import SessionInputMode
 
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != GatewayMethod.CHAT_SEND:
             return False
         # An attach-only stream is a pure observation subscription: it must
         # neither raise the Session's processing state on start nor block the
@@ -4755,7 +4763,7 @@ class MessageHandler(ABC):
         ``history.get`` 等短只读流不计入，否则 chat 结束时若并发拉历史，会永远
         等不到 false（这些流自身 emit=False，退出时也不会补发）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         if any(
             msg.session_id == session_id and not self._expert_stream_route(msg.params)
@@ -4771,7 +4779,7 @@ class MessageHandler(ABC):
                 continue
             if self._stream_emits_processing_status.get(active_rid, True):
                 return True
-            if self._stream_methods.get(active_rid) == ReqMethod.COMMAND_GOAL.value:
+            if self._stream_methods.get(active_rid) == GatewayMethod.COMMAND_GOAL.value:
                 return True
         return False
 
@@ -4878,7 +4886,8 @@ class MessageHandler(ABC):
         （issue #2792）。这里检测 query/model_name 是否被钩子改写，改了就
         发一条 chat.message_updated 事件，前端按 request_id 原地更新。
         """
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         params = msg.params if isinstance(msg.params, dict) else {}
         changed = {
@@ -4904,7 +4913,7 @@ class MessageHandler(ABC):
                 "session_id": msg.session_id,
                 "updates": changed,
             },
-            event_type=EventType.CHAT_MESSAGE_UPDATED,
+            event_type=GatewayEvent.CHAT_MESSAGE_UPDATED,
             metadata=msg.metadata,
         )
         operation = get_message_trace(msg)
@@ -4958,13 +4967,13 @@ class MessageHandler(ABC):
         self,
         msg: "Message",
     ) -> bool:
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         if self._is_current_pending_evolution_approval(
             msg.session_id,
             (msg.params or {}).get("request_id") if isinstance(msg.params, dict) else None,
         ):
-            forwarded = replace(msg, req_method=ReqMethod.CHAT_SEND, is_stream=True)
+            forwarded = replace(msg, req_method=GatewayMethod.CHAT_SEND, is_stream=True)
             attach_message_trace(forwarded, get_message_trace(msg))
             self.publish_user_messages_nowait(forwarded)
             return True
@@ -5138,7 +5147,8 @@ class MessageHandler(ABC):
         attachments: list[dict[str, Any]] | None = None,
         original_request: str = "",
     ) -> "Message":
-        from openjiuwen_protocol.message import Message, ReqMethod
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         new_req_id = f"req_{int(time.time() * 1000):x}_{msg.id}"
         params: dict[str, Any] = {
@@ -5161,7 +5171,7 @@ class MessageHandler(ABC):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             is_stream=True,
             user_id=getattr(msg, "user_id", None),
         )
@@ -5472,7 +5482,7 @@ class MessageHandler(ABC):
 
         支持中断机制：当收到 CHAT_CANCEL 请求时，会立即取消正在执行的流式任务。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         while self._running:
             msg = None
@@ -5560,7 +5570,7 @@ class MessageHandler(ABC):
                         logger.debug("Gateway hook UserPromptSubmit failed", exc_info=True)
 
 
-                if msg.req_method == ReqMethod.CHAT_ANSWER:
+                if msg.req_method == GatewayMethod.CHAT_ANSWER:
                     answer_payload = msg.params if isinstance(msg.params, dict) else {}
                     is_evolution_approval_answer = self._is_evolution_approval_payload(answer_payload)
                     if is_evolution_approval_answer:
@@ -5589,7 +5599,7 @@ class MessageHandler(ABC):
                             )
                     continue
 
-                if msg.req_method == ReqMethod.CHAT_SWARMFLOW_REPLY:
+                if msg.req_method == GatewayMethod.CHAT_SWARMFLOW_REPLY:
                     # Forward a swarmflow human reply to the agent adapter
                     # (non-stream). Unlike CHAT_ANSWER, no evolution-approval
                     # machinery; unlike CHAT_SEND, no cancel-existing-stream.
@@ -5598,7 +5608,7 @@ class MessageHandler(ABC):
                     await self._process_non_stream_request(msg, env)
                     continue
 
-                if msg.req_method == ReqMethod.CHAT_CANCEL:
+                if msg.req_method == GatewayMethod.CHAT_CANCEL:
                     params = msg.params if isinstance(msg.params, dict) else {}
                     organization_stop = params.get("organization_owner_stop") is True
                     organization_stop = organization_stop or params.get("organization_stop") is True
@@ -5705,7 +5715,7 @@ class MessageHandler(ABC):
                             request_id=f"supplement_{int(time.time() * 1000):x}",
                             channel_id=msg.channel_id,
                             session_id=agent_msg.session_id,
-                            req_method=ReqMethod.CHAT_CANCEL,
+                            req_method=GatewayMethod.CHAT_CANCEL,
                             params=supplement_params,
                             is_stream=False,
                             timestamp=time.time(),
@@ -5756,7 +5766,7 @@ class MessageHandler(ABC):
                             },
                             timestamp=time.time(),
                             ok=True,
-                            req_method=ReqMethod.CHAT_SEND,
+                            req_method=GatewayMethod.CHAT_SEND,
                             is_stream=True,
                             provider=msg.provider,
                             chat_id=msg.chat_id,
@@ -5830,7 +5840,7 @@ class MessageHandler(ABC):
                     continue
 
                 # ---- Inbound Pipeline（数字分身入站过滤）----
-                if self._inbound_pipeline is not None and msg.req_method == ReqMethod.CHAT_SEND:
+                if self._inbound_pipeline is not None and msg.req_method == GatewayMethod.CHAT_SEND:
                     try:
                         should_forward = await self._inbound_pipeline.apply(msg)
                     except Exception:
@@ -5840,7 +5850,7 @@ class MessageHandler(ABC):
                             continue  # 不相关消息，跳过
 
                 # ---- Resolve @file references in chat.send content ----
-                if msg.req_method == ReqMethod.CHAT_SEND and msg.params and not is_session_input:
+                if msg.req_method == GatewayMethod.CHAT_SEND and msg.params and not is_session_input:
                     content = msg.params.get("query") or msg.params.get("content") or ""
                     attachments = msg.params.get("attachments")
                     if isinstance(content, str):
@@ -6281,12 +6291,13 @@ class MessageHandler(ABC):
             request_error = exc
             setattr(env, "_gateway_trace_outcome", "failed")
             if resolve_session_input_mode(env.params) is not None:
-                from openjiuwen_protocol.message import Message, ReqMethod
+                from openjiuwen_protocol.message import Message
+                from agent_gateway.common.gateway_methods import GatewayMethod
 
                 request_message = Message(
                     id=rid, type="req", channel_id=channel_id, session_id=session_id,
                     params=env.params, timestamp=time.time(), ok=True,
-                    req_method=ReqMethod.CHAT_SEND, metadata=request_metadata,
+                    req_method=GatewayMethod.CHAT_SEND, metadata=request_metadata,
                 )
                 await self.publish_robot_messages(self._build_error_out_message(request_message, exc))
                 return
@@ -6322,7 +6333,8 @@ class MessageHandler(ABC):
                 not cancelled
                 and self._is_interrupt_evolution_approval_answer_payload(env.params)
             ):
-                from openjiuwen_protocol.message import Message, ReqMethod
+                from openjiuwen_protocol.message import Message
+                from agent_gateway.common.gateway_methods import GatewayMethod
 
                 await self._complete_evolution_approval_if_current(
                     Message(
@@ -6333,7 +6345,7 @@ class MessageHandler(ABC):
                         params=dict(env.params or {}),
                         timestamp=time.time(),
                         ok=True,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method=GatewayMethod.CHAT_SEND,
                         is_stream=True,
                         metadata=request_metadata,
                     ),
@@ -6413,7 +6425,8 @@ class MessageHandler(ABC):
         if not request_id:
             return
 
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         cancel_msg = Message(
             id=request_id,
@@ -6429,7 +6442,7 @@ class MessageHandler(ABC):
                 "success": True,
                 "message": "任务已取消",
             },
-            event_type=EventType.CHAT_INTERRUPT_RESULT,
+            event_type=GatewayEvent.CHAT_INTERRUPT_RESULT,
             metadata=None,
         )
         await self.publish_robot_messages(cancel_msg)
@@ -6677,7 +6690,8 @@ class MessageHandler(ABC):
         ``metadata`` 应带上发起停止的 web 连接 ``ws_id``：cron session 往往没有
         挂着的 WebSocket，只按 session_id 投递会被 ``has no connected ws`` 丢掉。
         """
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         # 根据 has_active_task 调整 pause/resume 的消息
         success_messages_map = {
@@ -6715,7 +6729,7 @@ class MessageHandler(ABC):
             timestamp=time.time(),
             ok=True,
             payload=payload_dict,
-            event_type=EventType.CHAT_INTERRUPT_RESULT,
+            event_type=GatewayEvent.CHAT_INTERRUPT_RESULT,
             metadata=notify_meta,
         )
         await self.publish_robot_messages(notify_msg)
@@ -6735,7 +6749,8 @@ class MessageHandler(ABC):
         trace_operation: Any | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         _mode = self._stream_modes.get(request_id)
         # 带上入站 ws_id，避免 HTTP cancel-replace 时旧 false 经 session
@@ -6763,7 +6778,7 @@ class MessageHandler(ABC):
                 "is_processing": is_processing,
                 "is_complete": not is_processing
             },
-            event_type=EventType.CHAT_PROCESSING_STATUS,
+            event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             metadata=status_metadata or None,
         )
         if trace_operation is not None:
@@ -6809,7 +6824,8 @@ class MessageHandler(ABC):
         metadata: dict | None,
     ) -> "Message":
         """Build tool_result message for cancelled tool execution."""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         return Message(
             id=f"tool_result_{int(time.time() * 1000):x}_{secrets.token_hex(3)}",
@@ -6827,7 +6843,7 @@ class MessageHandler(ABC):
                     "status": tool_info.get("status", "error"),
                 },
             },
-            event_type=EventType.CHAT_TOOL_RESULT,
+            event_type=GatewayEvent.CHAT_TOOL_RESULT,
             metadata=metadata,
         )
 

@@ -274,7 +274,8 @@ class JoinExitHandlers:
 
         action: "joined" | "left"，控制消息 ID 前缀、emoji/动词和 member_action 字段。
         """
-        from openjiuwen_protocol.message import Message, EventType
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         # 根据动作类型设置不同的显示内容
         if action == "joined":
@@ -302,7 +303,7 @@ class JoinExitHandlers:
                 "display_name": display_name or member_name,
                 "member_action": action,  # 前端用于区分 join/exit
             },
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
             agent_ref=agent_ref,
             # V2: 通过 fan_out_targets 精确路由到所有 GodView 订阅者，
             # 而非走旧路径依赖 session_id 广播（web ws 可能还未注册该 session_id）
@@ -368,7 +369,7 @@ class JoinExitHandlers:
         不再进历史，避免同一条消息既实时又历史造成重复。
         """
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         channel_id = msg.channel_id
         reply_session_id = msg.session_id
@@ -377,7 +378,7 @@ class JoinExitHandlers:
                 request_id=f"join-history-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                 channel_id=channel_id,
                 session_id=session_id,
-                req_method=ReqMethod.TEAM_HISTORY_GET,
+                req_method=GatewayMethod.TEAM_HISTORY_GET,
                 params={
                     "session_id": session_id,
                     "member_name": member_name,
@@ -459,14 +460,14 @@ class JoinExitHandlers:
         由调用方统一拼"team 不存在"文案。channel_id 不参与业务查询，仅回填 E2A envelope。
         """
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.gateway_methods import GatewayMethod
 
         try:
             env = e2a_from_agent_fields(
                 request_id=f"join-members-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                 channel_id=channel_id,
                 session_id=session_id,
-                req_method=ReqMethod.TEAM_MEMBERS_GET,
+                req_method=GatewayMethod.TEAM_MEMBERS_GET,
                 params={"session_id": session_id, "team_name": team_name},
             )
             resp = await self._h.agent_client.send_request(env)

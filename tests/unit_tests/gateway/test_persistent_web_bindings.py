@@ -447,11 +447,13 @@ async def test_welink_manual_credential_attaches_runtime_agent_and_hides_secret(
 
 
 def test_public_colleague_methods_forward_but_owner_and_internal_operations_stay_local():
-    from openjiuwen_protocol.message import ReqMethod
+    from jiuwenswarm.common.schema.message import ReqMethod
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _JIUWENMATE_FORWARD_METHODS,
     )
     for name in _JIUWENMATE_FORWARD_METHODS:
+        # Cross-repo contract: the AgentServer decodes these with its own enum,
+        # so every forwarded name must be defined there.
         assert ReqMethod(name).value == name
         assert name in _FORWARD_REQ_METHODS and name in _FORWARD_NO_LOCAL_HANDLER_METHODS
     for name in ("jiuwenmate.colleague.delete", "jiuwenmate.connection.attach", "jiuwenmate.colleague.remove",

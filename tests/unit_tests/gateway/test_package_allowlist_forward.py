@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
 from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.common.expert_packages import METADATA_KEY, HEADER_NAME, encode_expert_packages_header, decode_expert_packages_header
 from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot, packages_from_template_rows
 from agent_gateway.routing.agent_client import _stamp_expert_packages
@@ -17,7 +17,7 @@ def _envelope() -> E2AEnvelope:
     return E2AEnvelope(
         request_id="req-1",
         channel="web",
-        method=ReqMethod.CHAT_SEND.value,
+        method=GatewayMethod.CHAT_SEND.value,
         session_id="sess-1",
         params={"session_id": "sess-1"},
         user_id="alice",

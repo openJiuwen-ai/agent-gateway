@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.common import paths
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
@@ -269,7 +270,7 @@ def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
         timestamp=1.0,
         ok=True,
         payload={"event_type": "chat.final", "content": "done"},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
         metadata={"automation": automation, "ws_id": "private-route"},
     )
 
@@ -306,7 +307,7 @@ def test_web_channel_preserves_cross_session_stream_identity():
             "session_message_id": "sm-1",
             "cross_session": cross_session,
         },
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     payload = WebChannel._build_event_payload(msg, "chat.final")
@@ -369,7 +370,7 @@ def test_web_channel_preserves_goal_structured_payloads():
                 timestamp=0.0,
                 ok=True,
                 payload={"event_type": "goal.snapshot", "action": "get", "goal": goal},
-                event_type=EventType.GOAL_SNAPSHOT,
+                event_type=GatewayEvent.GOAL_SNAPSHOT,
             ),
             {
                 "event_type": "goal.snapshot",
@@ -390,7 +391,7 @@ def test_web_channel_preserves_goal_structured_payloads():
                 timestamp=0.0,
                 ok=True,
                 payload={"event_type": "goal.updated", "goal": goal},
-                event_type=EventType.GOAL_UPDATED,
+                event_type=GatewayEvent.GOAL_UPDATED,
             ),
             {
                 "event_type": "goal.updated",
@@ -410,7 +411,7 @@ def test_web_channel_preserves_goal_structured_payloads():
                 timestamp=0.0,
                 ok=True,
                 payload={"event_type": "runtime.accepted", "request_id": "req-goal-set"},
-                event_type=EventType.RUNTIME_ACCEPTED,
+                event_type=GatewayEvent.RUNTIME_ACCEPTED,
             ),
             {"event_type": "runtime.accepted", "request_id": "req-goal-set", "session_id": "sess-goal"},
         ),
@@ -430,7 +431,7 @@ def test_web_channel_preserves_goal_structured_payloads():
                     "message": "round failed",
                     "goal": None,
                 },
-                event_type=EventType.EXECUTION_ERROR,
+                event_type=GatewayEvent.EXECUTION_ERROR,
             ),
             {
                 "event_type": "execution.error",
@@ -506,7 +507,7 @@ async def test_web_channel_preserves_symphony_status_payload():
             "content": "Symphony status",
             "status": "in_progress",
         },
-        event_type=EventType.CHAT_SYMPHONY_STATUS,
+        event_type=GatewayEvent.CHAT_SYMPHONY_STATUS,
     )
 
     # 创建 RoutingTarget 包含 routing_keys
@@ -772,7 +773,7 @@ async def test_web_channel_routes_event_by_request_ws_id_before_session_bucket()
                 "session_id": "sess-old",
                 "usage": {"total_tokens": 7},
             },
-            event_type=EventType.CHAT_USAGE_SUMMARY,
+            event_type=GatewayEvent.CHAT_USAGE_SUMMARY,
             metadata={"ws_id": getattr(client, "_jiuwen_ws_id", "")},
         )
 
@@ -807,7 +808,7 @@ def _processing_status_message(session_id: str, is_processing: bool) -> Message:
             "is_processing": is_processing,
             "is_complete": not is_processing,
         },
-        event_type=EventType.CHAT_PROCESSING_STATUS,
+        event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
     )
 
 
@@ -903,7 +904,7 @@ async def test_web_channel_session_busy_tracks_interrupt_result_via_fanout():
                 timestamp=0.0,
                 ok=True,
                 payload={"event_type": "chat.interrupt_result", "intent": "resume"},
-                event_type=EventType.CHAT_INTERRUPT_RESULT,
+                event_type=GatewayEvent.CHAT_INTERRUPT_RESULT,
             ),
             routing_target=routing_target,
         )
@@ -920,7 +921,7 @@ async def test_web_channel_session_busy_tracks_interrupt_result_via_fanout():
                 timestamp=0.0,
                 ok=True,
                 payload={"event_type": "chat.interrupt_result", "intent": "cancel"},
-                event_type=EventType.CHAT_INTERRUPT_RESULT,
+                event_type=GatewayEvent.CHAT_INTERRUPT_RESULT,
             ),
         )
         assert channel.is_session_busy("sess-1") is False

@@ -18,7 +18,7 @@ from typing import Any, Coroutine, Mapping
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -2585,7 +2585,7 @@ class AgentOSRouterClient(AgentServerClient):
 
     @staticmethod
     def _is_ssh_relay_request(envelope: E2AEnvelope) -> bool:
-        return str(envelope.method or "") == ReqMethod.SSH_RELAY.value
+        return str(envelope.method or "") == GatewayMethod.SSH_RELAY.value
 
     async def _handle_ssh_relay(self, envelope: E2AEnvelope) -> AgentResponse:
         """Start the southbound SSH relay for an ``ssh.relay`` request.
@@ -2621,7 +2621,7 @@ class AgentOSRouterClient(AgentServerClient):
             request_id=str(envelope.request_id or ""),
             channel_id=str(envelope.channel or ""),
             ok=True,
-            payload={"method": ReqMethod.SSH_RELAY.value, "status": "relay_started"},
+            payload={"method": GatewayMethod.SSH_RELAY.value, "status": "relay_started"},
         )
 
     async def _run_ssh_relay(self, envelope: E2AEnvelope, relay_session: Any) -> None:
@@ -4149,7 +4149,7 @@ class AgentOSRouterClient(AgentServerClient):
 
     @staticmethod
     def _is_cancel_method(envelope: E2AEnvelope) -> bool:
-        return str(envelope.method or "") == ReqMethod.CHAT_CANCEL.value
+        return str(envelope.method or "") == GatewayMethod.CHAT_CANCEL.value
 
     @staticmethod
     def _cancel_noop_response(envelope: E2AEnvelope) -> AgentResponse:

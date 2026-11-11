@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from openjiuwen_protocol.e2a.models import E2AEnvelope
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import _proxy_http
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
@@ -498,7 +498,7 @@ async def test_web_moa_status_routes_to_authenticated_user_runtime(monkeypatch: 
         )
         send_request.assert_awaited_once()
         envelope = send_request.await_args.args[0]
-        assert envelope.method == ReqMethod.CONFIG_MOA_STATUS.value
+        assert envelope.method == GatewayMethod.CONFIG_MOA_STATUS.value
         assert envelope.user_id == "alice"
         assert envelope.session_id == "chat"
         assert envelope.params == {"model_selection": selection}
@@ -807,7 +807,7 @@ async def test_chat_interrupt_does_not_cold_start_when_no_runtime() -> None:
         channel="tui",
         user_id="u1",
         session_id="sess-1",
-        method=ReqMethod.CHAT_CANCEL.value,
+        method=GatewayMethod.CHAT_CANCEL.value,
         params={"intent": "cancel", "session_id": "sess-1"},
     )
 
@@ -841,7 +841,7 @@ async def test_chat_interrupt_forwards_to_ready_runtime() -> None:
         channel="tui",
         user_id="u1",
         session_id="sess-1",
-        method=ReqMethod.CHAT_CANCEL.value,
+        method=GatewayMethod.CHAT_CANCEL.value,
         params={"intent": "cancel", "session_id": "sess-1"},
     )
 

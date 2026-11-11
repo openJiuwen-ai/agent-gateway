@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
     XiaoyiChannel,
@@ -74,7 +75,7 @@ def _join_notice(*, hold: bool = True) -> Message:
         timestamp=time.time(),
         ok=True,
         payload={"content": "已加入 session", "is_complete": True},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
         metadata=metadata,
     )
 
@@ -97,7 +98,7 @@ def _team_message() -> Message:
                 "content": "#count-3 complete",
             },
         },
-        event_type=EventType.TEAM_MESSAGE,
+        event_type=GatewayEvent.TEAM_MESSAGE,
     )
 
 
@@ -202,7 +203,7 @@ async def test_held_team_final_stays_open_until_round_terminal() -> None:
         timestamp=time.time(),
         ok=True,
         payload={"content": "member result", "is_complete": True},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     await XiaoyiChannel._send_ws_to_user(
@@ -235,7 +236,7 @@ async def test_held_team_error_text_stays_open_until_round_terminal() -> None:
         timestamp=time.time(),
         ok=False,
         payload={"error": "team failed", "is_complete": True},
-        event_type=EventType.CHAT_ERROR,
+        event_type=GatewayEvent.CHAT_ERROR,
     )
 
     await XiaoyiChannel._send_ws_to_user(
@@ -267,7 +268,7 @@ async def test_team_round_terminal_closes_held_join_task() -> None:
         timestamp=time.time(),
         ok=True,
         payload={"is_processing": False, "is_complete": True},
-        event_type=EventType.CHAT_PROCESSING_STATUS,
+        event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
     )
 
     await channel.send(terminal, routing_target=_routing_target())
@@ -291,7 +292,7 @@ async def test_terminal_status_without_hold_does_not_send_empty_final() -> None:
         timestamp=time.time(),
         ok=True,
         payload={"is_processing": False, "is_complete": True},
-        event_type=EventType.CHAT_PROCESSING_STATUS,
+        event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
     )
 
     await channel.send(terminal, routing_target=_routing_target())
@@ -344,7 +345,7 @@ async def test_team_error_releases_held_task() -> None:
         timestamp=time.time(),
         ok=False,
         payload={"error": "team failed", "is_complete": True},
-        event_type=EventType.CHAT_ERROR,
+        event_type=GatewayEvent.CHAT_ERROR,
     )
 
     await channel.send(error, routing_target=_routing_target())

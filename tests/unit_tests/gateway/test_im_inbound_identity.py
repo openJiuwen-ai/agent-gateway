@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 
 import pytest
 from openjiuwen_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.im_pipeline.im_inbound import (
@@ -78,7 +79,7 @@ def _group_message(user_id: str, text: str, *, mentions: list[str] | None = None
         params={"query": text, "content": text},
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         is_stream=True,
         metadata={
             "chat_type": "group",

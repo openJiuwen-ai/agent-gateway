@@ -18,7 +18,9 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import event_name_of
+from agent_gateway.common.gateway_methods import GatewayMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -534,7 +536,7 @@ class FeishuChannel(BaseChannel):
                         user_id=principal_id,
                         bot_id=str(inbound.bot_id or self.config.app_id or ""),
                         app_id=self.config.app_id,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method=GatewayMethod.CHAT_SEND,
                         is_stream=False,
                         metadata=_meta,
                         group_digital_avatar=True,
@@ -560,7 +562,7 @@ class FeishuChannel(BaseChannel):
             user_id=str(inbound.user_id or ""),
             bot_id=str(inbound.bot_id or self.config.app_id or ""),
             app_id=self.config.app_id,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             is_stream=_is_stream,
             metadata=_meta,
             group_digital_avatar=_effective_group_digital_avatar,
@@ -2341,7 +2343,7 @@ class FeishuChannel(BaseChannel):
 
         try:
             payload = msg.payload if isinstance(msg.payload, dict) else {}
-            event_name = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
+            event_name = event_name_of(msg.event_type) or payload.get("event_type") or ""
             stream_key = str(getattr(msg, "id", "") or "")
             _msg_streaming = getattr(msg, "enable_streaming", None)
             streaming_enabled = bool(_msg_streaming if _msg_streaming is not None else self.config.enable_streaming)
@@ -2362,23 +2364,23 @@ class FeishuChannel(BaseChannel):
                 return
 
             # 跳过 reasoning 信息
-            if msg.event_type == EventType.CHAT_REASONING:
+            if msg.event_type == "chat.reasoning":
                 return
 
             # 处理文件消息
-            if msg.event_type == EventType.CHAT_FILE:
+            if msg.event_type == "chat.file":
                 if self.config.enable_file_upload and self._file_service:
                     await self._send_file_message(msg, delivery=route_delivery)
                 return
 
             # 处理媒体消息
-            if msg.event_type == EventType.CHAT_MEDIA:
+            if msg.event_type == "chat.media":
                 if self.config.enable_file_upload and self._file_service:
                     await self._send_media_message(msg, delivery=route_delivery)
                 return
 
             # 处理team message — V2: 传入 routing_target 以提取 mention_member_ids
-            if msg.event_type == EventType.TEAM_MESSAGE:
+            if msg.event_type == "team.message":
                 await self._send_team_message(
                     msg,
                     delivery=route_delivery,
@@ -2388,7 +2390,7 @@ class FeishuChannel(BaseChannel):
                 return
 
             # 处理用户询问消息（发送确认卡片）
-            if msg.event_type == EventType.CHAT_ASK_USER_QUESTION:
+            if msg.event_type == "chat.ask_user_question":
                 await self._send_ask_user_question_card(msg)
                 return
 
@@ -2477,7 +2479,7 @@ class FeishuChannel(BaseChannel):
                 }
                 card_json = json.dumps(card, ensure_ascii=False)
                 request_id = str(msg.id or "").strip()
-                if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
+                if request_id and msg.event_type != "health_check.relay":
                     self._clear_group_progress_state(request_id)
                 await self._create_and_send_message(
                     FeishuMessageSendRequest(
@@ -2493,12 +2495,12 @@ class FeishuChannel(BaseChannel):
             skills_card_content = self._build_skills_list_card_content(payload, event_name)
             if skills_card_content:
                 request_id = str(msg.id or "").strip()
-                if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
+                if request_id and msg.event_type != "health_check.relay":
                     self._clear_group_progress_state(request_id)
                 await self._send_feishu_message(receive_id, id_type, skills_card_content, msg.id)
                 return
             if (
-                msg.event_type == EventType.HEALTH_CHECK_RELAY
+                msg.event_type == "health_check.relay"
                 and isinstance(payload, dict)
                 and payload.get("health_check")
             ):
@@ -2509,7 +2511,7 @@ class FeishuChannel(BaseChannel):
                 return
 
             request_id = str(msg.id or "").strip()
-            if request_id and msg.event_type != EventType.HEALTH_CHECK_RELAY:
+            if request_id and msg.event_type != "health_check.relay":
                 self._clear_group_progress_state(request_id)
 
             # 过滤群聊消息中的用户敏感信息
@@ -2906,7 +2908,7 @@ class FeishuChannel(BaseChannel):
             str: 消息内容字符串
         """
         payload = msg.payload if isinstance(msg.payload, dict) else {}
-        event_name = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
+        event_name = event_name_of(msg.event_type) or payload.get("event_type") or ""
 
         if event_name == "chat.tool_call":
             tool_info = payload.get("tool_call", payload)
@@ -4093,7 +4095,7 @@ class FeishuChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             provider=self.name,
             chat_id=chat_id,
             user_id=operator_id,

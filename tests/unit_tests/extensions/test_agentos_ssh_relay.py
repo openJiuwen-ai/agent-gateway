@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
@@ -65,7 +65,7 @@ def _ssh_envelope(
         channel="ssh",
         user_id="alice",
         session_id=session_id or (session.session_id if session else "ssh_missing"),
-        method=ReqMethod.SSH_RELAY.value,
+        method=GatewayMethod.SSH_RELAY.value,
         params=params,
     )
 

@@ -37,7 +37,8 @@ def _thinking_notice_message(
     idempotency_key: str,
 ):
     """A completed chat event any channel can send without a persistent-result method."""
-    from openjiuwen_protocol.message import EventType, Message
+    from openjiuwen_protocol.message import Message
+    from agent_gateway.common.gateway_events import GatewayEvent
 
     return Message(
         id=idempotency_key,
@@ -48,7 +49,7 @@ def _thinking_notice_message(
         timestamp=time.time(),
         ok=True,
         payload={"content": text, "is_complete": True},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
         metadata={"chat_id": chat_id, "source_message_id": source_message_id},
         app_id=app_id,
         chat_id=chat_id,
@@ -586,7 +587,7 @@ class ChannelManager(ABC):
         async def _persist_hook(content: Any, category: str, filename: str) -> dict[str, Any]:
             import base64 as _base64
 
-            from openjiuwen_protocol.message import ReqMethod
+            from agent_gateway.common.gateway_methods import GatewayMethod
 
             from agent_gateway.routing.agent_http_bridge import (
                 E2A_PAYLOAD_MAX_BYTES,
@@ -643,7 +644,7 @@ class ChannelManager(ABC):
 
             ok, payload = await fetch_agent_unary(
                 agent_client=agent_client,
-                req_method=ReqMethod.IM_FILE_PERSIST,
+                req_method=GatewayMethod.IM_FILE_PERSIST,
                 params={
                     "platform": storage_platform,
                     "category": category,
@@ -902,13 +903,13 @@ class ChannelManager(ABC):
                 # ── 企业飞书（feishu_enterprise:<app_id>）不进此分支：一 channel_id 一 bot 无需 fan-out，
                 # 且其 cron 推送的 feishu_chat_id 是创建任务时绑定的特定群（来自 routing_sid 的
                 # feishu::chat_id::bot_id::...，见 scheduler._push_to_targets），清掉会误投到 last_* 的群。
-                from openjiuwen_protocol.message import EventType as _EventType
+                from agent_gateway.common.gateway_events import GatewayEvent
                 _is_feishu_fanout = (
                     isinstance(msg.channel_id, str)
                     and msg.channel_id == "feishu"
                     and (
                         (getattr(msg, "id", "") or "").startswith("cron-push-")
-                        or getattr(msg, "event_type", None) == _EventType.HEALTH_CHECK_RELAY
+                        or getattr(msg, "event_type", None) == GatewayEvent.HEALTH_CHECK_RELAY
                     )
                 )
                 if _is_feishu_fanout:
@@ -1009,7 +1010,8 @@ class ChannelManager(ABC):
 
     async def _notify_cron_delivery_error(self, original_msg: "Message", error: Exception) -> None:
         """推送失败时，通过 web channel 发送 chat.error 通知前端。"""
-        from openjiuwen_protocol.message import EventType, Message
+        from openjiuwen_protocol.message import Message
+        from agent_gateway.common.gateway_events import GatewayEvent
 
         cron_info = (original_msg.payload or {}).get("cron", {})
         job_name = cron_info.get("job_name", "")
@@ -1023,7 +1025,7 @@ class ChannelManager(ABC):
             timestamp=time.time(),
             ok=False,
             payload={"event_type": "chat.error", "error": error_text},
-            event_type=EventType.CHAT_ERROR,
+            event_type=GatewayEvent.CHAT_ERROR,
         )
         web_channel = self._get_channel_by_id("web")
         if web_channel:

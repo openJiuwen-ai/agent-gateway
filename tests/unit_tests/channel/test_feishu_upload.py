@@ -7,7 +7,8 @@ import tempfile
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
-from openjiuwen_protocol.message import Message, EventType
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from agent_gateway.channel_manager.base import RobotMessageRouter
@@ -42,7 +43,7 @@ def _make_file_message(files: list[str], receive_id: str = "oc_test123") -> Mess
         timestamp=1000.0,
         ok=True,
         payload={"event_type": "chat.file", "files": files},
-        event_type=EventType.CHAT_FILE,
+        event_type=GatewayEvent.CHAT_FILE,
         metadata={"feishu_chat_id": receive_id},
     )
 

@@ -16,7 +16,8 @@ from __future__ import annotations
 import time
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
@@ -66,7 +67,7 @@ def _interrupt_result_msg(intent: str) -> Message:
             "success": True,
             "message": "任务已暂停",
         },
-        event_type=EventType.CHAT_INTERRUPT_RESULT,
+        event_type=GatewayEvent.CHAT_INTERRUPT_RESULT,
         metadata={},
     )
 

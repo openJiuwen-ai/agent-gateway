@@ -1,7 +1,8 @@
 import time
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2A_THOUGHT_METADATA_KEY,
@@ -90,7 +91,7 @@ def test_message_to_a2a_parts_filters_completion_sentinel_text():
         timestamp=time.time(),
         ok=True,
         payload={"content": "{'is_complete': True}"},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     parts = A2AChannel.message_to_a2a_parts(msg, fallback_to_text=False)
@@ -109,7 +110,7 @@ def test_message_to_a2a_parts_maps_tool_events():
         timestamp=time.time(),
         ok=True,
         payload={"tool_call": {"name": "view_file"}},
-        event_type=EventType.CHAT_TOOL_CALL,
+        event_type=GatewayEvent.CHAT_TOOL_CALL,
     )
     tool_result_msg = Message(
         id="r3",
@@ -120,7 +121,7 @@ def test_message_to_a2a_parts_maps_tool_events():
         timestamp=time.time(),
         ok=True,
         payload={"tool_name": "view_file", "result": "ok"},
-        event_type=EventType.CHAT_TOOL_RESULT,
+        event_type=GatewayEvent.CHAT_TOOL_RESULT,
     )
 
     call_parts = A2AChannel.message_to_a2a_parts(tool_call_msg, fallback_to_text=False)
@@ -143,7 +144,7 @@ def test_is_terminal_message_rules():
         timestamp=time.time(),
         ok=False,
         payload={"error": "boom"},
-        event_type=EventType.CHAT_ERROR,
+        event_type=GatewayEvent.CHAT_ERROR,
     )
     terminal_complete = Message(
         id="e2",
@@ -154,7 +155,7 @@ def test_is_terminal_message_rules():
         timestamp=time.time(),
         ok=True,
         payload={"is_complete": True},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
     non_terminal = Message(
         id="e3",
@@ -165,7 +166,7 @@ def test_is_terminal_message_rules():
         timestamp=time.time(),
         ok=True,
         payload={"content": "delta"},
-        event_type=EventType.CHAT_DELTA,
+        event_type=GatewayEvent.CHAT_DELTA,
     )
 
     assert A2AChannel.is_terminal_message(terminal_error) is True
@@ -219,7 +220,7 @@ async def test_dispatch_a2a_request_and_send_queue_roundtrip():
         timestamp=time.time(),
         ok=True,
         payload={"content": "ok", "is_complete": True},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
     await channel.send(inbound)
     queued = await pending.queue.get()
@@ -299,7 +300,7 @@ async def test_executor_empty_query_emits_failed_task_lifecycle():
 def _make_message(
     *,
     payload: dict,
-    event_type: EventType,
+    event_type: str,
     msg_id: str = "req-r",
 ) -> Message:
     return Message(
@@ -318,15 +319,15 @@ def _make_message(
 def test_is_reasoning_message_detection():
     reasoning_event = _make_message(
         payload={"content": "let me think"},
-        event_type=EventType.CHAT_REASONING,
+        event_type=GatewayEvent.CHAT_REASONING,
     )
     reasoning_delta = _make_message(
         payload={"content": "thinking", "source_chunk_type": "llm_reasoning"},
-        event_type=EventType.CHAT_DELTA,
+        event_type=GatewayEvent.CHAT_DELTA,
     )
     plain_delta = _make_message(
         payload={"content": "answer"},
-        event_type=EventType.CHAT_DELTA,
+        event_type=GatewayEvent.CHAT_DELTA,
     )
 
     assert A2AChannel.is_reasoning_message(reasoning_event) is True
@@ -339,11 +340,11 @@ def test_message_to_a2a_parts_marks_thought_metadata():
 
     reasoning_msg = _make_message(
         payload={"content": "let me think"},
-        event_type=EventType.CHAT_REASONING,
+        event_type=GatewayEvent.CHAT_REASONING,
     )
     plain_msg = _make_message(
         payload={"content": "final answer"},
-        event_type=EventType.CHAT_DELTA,
+        event_type=GatewayEvent.CHAT_DELTA,
     )
 
     thought_parts = A2AChannel.message_to_a2a_parts(reasoning_msg, fallback_to_text=False)
@@ -409,11 +410,11 @@ def _stream_reasoning_then_final() -> list[Message]:
     return [
         _make_message(
             payload={"content": "let me think", "source_chunk_type": "llm_reasoning"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         ),
         _make_message(
             payload={"content": "final answer", "is_complete": True},
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
         ),
     ]
 
@@ -478,7 +479,7 @@ async def test_executor_terminal_reasoning_chunk_does_not_leak_into_artifact():
     stream = [
         _make_message(
             payload={"content": "answer part"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         ),
         _make_message(
             payload={
@@ -486,7 +487,7 @@ async def test_executor_terminal_reasoning_chunk_does_not_leak_into_artifact():
                 "source_chunk_type": "llm_reasoning",
                 "is_complete": True,
             },
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         ),
     ]
     event_queue = await _run_executor_with_stream(channel, stream)

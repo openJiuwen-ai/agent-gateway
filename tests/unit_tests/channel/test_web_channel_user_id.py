@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -311,7 +312,7 @@ async def test_web_channel_cron_push_targets_only_its_agentos_user(monkeypatch):
         timestamp=0,
         ok=True,
         payload={"content": "done", "user_id": "alice", "cron": {"job_id": "job-a"}},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     await channel.send(msg)
@@ -336,7 +337,7 @@ async def test_web_channel_cron_push_default_user_reaches_personal_client(monkey
         timestamp=0,
         ok=True,
         payload={"content": "你好", "user_id": "default", "cron": {"job_id": "job-d"}},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     await channel.send(msg)
@@ -361,7 +362,7 @@ async def test_web_channel_cron_push_empty_user_reaches_personal_client(monkeypa
         timestamp=0,
         ok=True,
         payload={"content": "你好", "user_id": "", "cron": {"job_id": "job-e"}},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
     )
 
     await channel.send(msg)
@@ -480,7 +481,7 @@ async def test_enterprise_cron_missing_or_default_owner_never_broadcasts(monkeyp
     monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
     await channel.send(Message(
         id="cron-default", type="event", channel_id="web", session_id=None,
-        params={}, timestamp=0, ok=True, event_type=EventType.CHAT_FINAL,
+        params={}, timestamp=0, ok=True, event_type=GatewayEvent.CHAT_FINAL,
         payload={"content": "private", "user_id": owner, "cron": {"job_id": "job-1"}},
     ))
     assert sent == []

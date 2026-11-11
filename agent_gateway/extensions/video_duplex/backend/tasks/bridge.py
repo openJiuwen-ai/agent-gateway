@@ -6,7 +6,7 @@ import uuid
 import weakref
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 _endpoints = weakref.WeakValueDictionary()
 EVENT = "voice.task.command"
@@ -128,7 +128,7 @@ async def handle_checkpoint_push(client, chunk, session_id):
     acknowledgement = e2a_from_agent_fields(
         request_id="ack-" + str(command.get("command_id") or ""),
         channel_id="video_tool", session_id=session_id,
-        req_method=ReqMethod.VOICE_TASK_CHECKPOINT_ACK,
+        req_method=GatewayMethod.VOICE_TASK_CHECKPOINT_ACK,
         user_id=command.get("owner") or None, is_stream=False,
         params={"command_id": command.get("command_id"), "result": result,
                 "execution_request_id": chunk.request_id},

@@ -20,7 +20,7 @@ from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapProp
 from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
 from openjiuwen_protocol.e2a.models import E2AEnvelope
 from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire, encode_agent_chunk_for_wire
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway import app_gateway, telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter
@@ -177,7 +177,7 @@ async def wait_finished(operation):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("response_ok", [True, False])
 @pytest.mark.parametrize("req_method", [
-    ReqMethod.MODELS_LIST, ReqMethod.SESSION_LIST, ReqMethod.CONFIG_GET,
+    GatewayMethod.MODELS_LIST, GatewayMethod.SESSION_LIST, GatewayMethod.CONFIG_GET,
 ])
 @pytest.mark.parametrize("incoming", [
     {"traceparent": "00-11111111111111111111111111111111-2222222222222222-01"},
@@ -665,7 +665,7 @@ async def test_three_provider_wire_acceptance_and_request_isolation(collector, m
     async def list_models(ws, req_id, params, session_id, *, user_id=None):
         await proxy_unary_request(channel=channel, agent_client=client, ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.MODELS_LIST)
+                                  req_method=GatewayMethod.MODELS_LIST)
 
     channel.register_method('models.list', list_models)
     try:
@@ -785,7 +785,7 @@ async def test_collector_failure_does_not_block_web_messages(monkeypatch, failur
     async def list_models(ws, req_id, params, session_id, *, user_id=None):
         await proxy_unary_request(channel=channel, agent_client=client, ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
-                                  req_method=ReqMethod.MODELS_LIST)
+                                  req_method=GatewayMethod.MODELS_LIST)
 
     channel.register_method('models.list', list_models)
 

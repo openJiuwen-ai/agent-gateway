@@ -15,7 +15,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from agent_gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
 from agent_gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer, SshKeyIssuer
@@ -343,14 +344,14 @@ class SshChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.SSH_RELAY,
+            req_method=GatewayMethod.SSH_RELAY,
             is_stream=False,
             metadata=metadata,
         )
         logger.info(
             "[SSHChannel] deliver to MessageHandler: session=%s method=%s",
             session_id,
-            ReqMethod.SSH_RELAY.value,
+            GatewayMethod.SSH_RELAY.value,
         )
         result = self._on_message_cb(msg)
         if asyncio.iscoroutine(result):

@@ -4,7 +4,8 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
@@ -20,7 +21,7 @@ def _question(payload: dict) -> Message:
         timestamp=1000.0,
         ok=True,
         payload={"event_type": "chat.ask_user_question", **payload},
-        event_type=EventType.CHAT_ASK_USER_QUESTION,
+        event_type=GatewayEvent.CHAT_ASK_USER_QUESTION,
         metadata={"feishu_chat_id": "oc_test123"},
     )
 

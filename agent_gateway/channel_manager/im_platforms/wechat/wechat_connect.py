@@ -14,7 +14,9 @@ from typing import Any, Callable
 
 import aiohttp
 from aiohttp.client_exceptions import ContentTypeError
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import (
@@ -481,10 +483,10 @@ class WechatChannel(BaseChannel):
 
         streaming = bool(self.config.enable_streaming)
 
-        if msg.event_type == EventType.CHAT_PROCESSING_STATUS:
+        if msg.event_type == "chat.processing_status":
             return
 
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
+        if msg.event_type == "health_check.relay":
             user_id = self._extract_platform_user_id(msg)
             if not user_id:
                 logger.warning(
@@ -499,7 +501,7 @@ class WechatChannel(BaseChannel):
                 await self._send_text_chunks_to_user(msg, content)
             return
 
-        if msg.event_type == EventType.CHAT_TOOL_CALL:
+        if msg.event_type == "chat.tool_call":
             if not streaming:
                 return
             flushed = self._take_accumulated_delta(msg)
@@ -514,10 +516,10 @@ class WechatChannel(BaseChannel):
             await self._send_text_chunks_to_user(msg, content)
             return
 
-        if msg.event_type == EventType.CHAT_TOOL_RESULT:
+        if msg.event_type == "chat.tool_result":
             return
 
-        if msg.event_type == EventType.CHAT_ERROR:
+        if msg.event_type == "chat.error":
             if await self._should_skip_due_to_send_limit(msg):
                 self._stash_overflow_content(msg, self._extract_content(msg))
                 return
@@ -527,7 +529,7 @@ class WechatChannel(BaseChannel):
                 await self._send_text_chunks_to_user(msg, err_line)
             return
 
-        if msg.event_type == EventType.CHAT_DELTA:
+        if msg.event_type == "chat.delta":
             if self._is_reasoning_chunk(msg):
                 return
             payload = msg.payload if isinstance(msg.payload, dict) else {}
@@ -559,8 +561,8 @@ class WechatChannel(BaseChannel):
             and not self._is_stream_accept_ack_only(msg)
         )
         final_like_events = (
-            EventType.CHAT_FINAL,
-            EventType.CHAT_INTERRUPT_RESULT,
+            GatewayEvent.CHAT_FINAL,
+            GatewayEvent.CHAT_INTERRUPT_RESULT,
         )
         if msg.event_type not in final_like_events and not allow_plain_res:
             return
@@ -1287,7 +1289,7 @@ class WechatChannel(BaseChannel):
             params={"content": content, "query": content},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             is_stream=self.config.enable_streaming,
             metadata={
                 "wechat_user_id": user_id,
@@ -1379,12 +1381,12 @@ class WechatChannel(BaseChannel):
 
     @staticmethod
     def _extract_content(msg: Message) -> str:
-        if msg.event_type == EventType.CHAT_ERROR:
+        if msg.event_type == "chat.error":
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             err = payload.get("error", "处理出错")
             return f"⚠️ {err}"
 
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
+        if msg.event_type == "health_check.relay":
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             hb = payload.get("health_check")
             return str(hb or "").strip()

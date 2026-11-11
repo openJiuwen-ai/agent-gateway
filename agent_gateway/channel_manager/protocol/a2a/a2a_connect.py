@@ -8,7 +8,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from openjiuwen_protocol.e2a.acp.acp_tool_updates import is_reasoning_event
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import BaseChannel
 from agent_gateway.routing.keys import DeliveryTarget
@@ -196,7 +198,7 @@ class _A2AAgentExecutor(_AgentExecutorBase):
                 if (
                     is_terminal
                     and not response_parts
-                    and response_msg.event_type == EventType.CHAT_ERROR
+                    and response_msg.event_type == "chat.error"
                 ):
                     response_parts = self._channel.message_to_a2a_parts(
                         response_msg,
@@ -226,9 +228,9 @@ class _A2AAgentExecutor(_AgentExecutorBase):
                     )
                     artifact_started = True
                 if is_terminal:
-                    if response_msg.event_type == EventType.CHAT_ERROR:
+                    if response_msg.event_type == "chat.error":
                         final_state = TaskState.TASK_STATE_FAILED
-                    elif response_msg.event_type == EventType.CHAT_INTERRUPT_RESULT:
+                    elif response_msg.event_type == "chat.interrupt_result":
                         final_state = TaskState.TASK_STATE_CANCELED
                     else:
                         final_state = TaskState.TASK_STATE_COMPLETED
@@ -399,7 +401,7 @@ class A2AChannel(BaseChannel):
                     timestamp=time.time(),
                     ok=False,
                     payload={"error": "a2a channel stopped", "is_complete": True},
-                    event_type=EventType.CHAT_ERROR,
+                    event_type=GatewayEvent.CHAT_ERROR,
                 )
             )
         self._pending.clear()
@@ -433,7 +435,7 @@ class A2AChannel(BaseChannel):
                 params=self._build_request_params(query=query, files=files),
                 timestamp=time.time(),
                 ok=True,
-                req_method=ReqMethod.CHAT_SEND,
+                req_method=GatewayMethod.CHAT_SEND,
                 is_stream=True,
                 metadata=dict(metadata or {}),
             )
@@ -451,7 +453,7 @@ class A2AChannel(BaseChannel):
     @staticmethod
     def message_to_text(msg: Message) -> str:
         payload = msg.payload if isinstance(msg.payload, dict) else {}
-        if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
+        if msg.type == "event" and msg.event_type == "chat.error":
             return str(payload.get("error") or payload.get("content") or "agent request failed")
         if "content" in payload:
             return str(payload.get("content") or "")
@@ -474,7 +476,7 @@ class A2AChannel(BaseChannel):
         parts: list[Any] = []
 
         # Keep error response readable for A2A callers.
-        if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
+        if msg.type == "event" and msg.event_type == "chat.error":
             error_text = str(payload.get("error") or payload.get("content") or "agent request failed")
             return [Part(text=error_text)]
 
@@ -495,11 +497,11 @@ class A2AChannel(BaseChannel):
             if not A2AChannel.is_completion_sentinel_text(normalized_result):
                 parts.append(Part(text=normalized_result))
         # Surface tool events in stream mode so callers can observe progress.
-        if msg.event_type == EventType.CHAT_TOOL_CALL and isinstance(payload.get("tool_call"), dict):
+        if msg.event_type == "chat.tool_call" and isinstance(payload.get("tool_call"), dict):
             tool_call = payload.get("tool_call") or {}
             tool_name = str(tool_call.get("name") or "tool").strip()
             parts.append(Part(text=f"[tool_call] {tool_name}"))
-        if msg.event_type == EventType.CHAT_TOOL_RESULT:
+        if msg.event_type == "chat.tool_result":
             tool_name = str(payload.get("tool_name") or "").strip()
             tool_result = payload.get("result")
             if isinstance(tool_result, str) and tool_result.strip():
@@ -547,8 +549,8 @@ class A2AChannel(BaseChannel):
         if msg.type != "event":
             return False
         if msg.event_type in {
-            EventType.CHAT_ERROR,
-            EventType.CHAT_INTERRUPT_RESULT,
+            GatewayEvent.CHAT_ERROR,
+            GatewayEvent.CHAT_INTERRUPT_RESULT,
         }:
             return True
         payload = msg.payload if isinstance(msg.payload, dict) else {}

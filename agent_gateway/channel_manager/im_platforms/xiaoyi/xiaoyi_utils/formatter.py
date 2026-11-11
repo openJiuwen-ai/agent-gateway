@@ -10,7 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 
 
 # ==================== Data Classes ====================
@@ -482,7 +483,7 @@ class MessageFormatter:
 
 # ==================== Event Type Utilities ====================
 
-def should_send_as_reasoning_text(event_type: EventType | None) -> bool:
+def should_send_as_reasoning_text(event_type: str | None) -> bool:
     """
     判断是否应该将消息作为 reasoningText 发送。
 
@@ -501,15 +502,15 @@ def should_send_as_reasoning_text(event_type: EventType | None) -> bool:
     # - CHAT_SUBTASK_UPDATE: 子任务更新
     # - CHAT_PROCESSING_STATUS: 处理状态
     reasoning_text_events = {
-        EventType.CHAT_DELTA,
-        EventType.CHAT_SUBTASK_UPDATE,
-        EventType.CHAT_PROCESSING_STATUS,
+        GatewayEvent.CHAT_DELTA,
+        GatewayEvent.CHAT_SUBTASK_UPDATE,
+        GatewayEvent.CHAT_PROCESSING_STATUS,
     }
 
     return event_type in reasoning_text_events
 
 
-def should_send_as_text(event_type: EventType | None) -> bool:
+def should_send_as_text(event_type: str | None) -> bool:
     """
     判断是否应该将消息作为 text 发送。
 
@@ -528,16 +529,16 @@ def should_send_as_text(event_type: EventType | None) -> bool:
     # - CHAT_ERROR: 错误消息
     # - CHAT_INTERRUPT_RESULT: 中断结果
     text_events = {
-        EventType.CHAT_FINAL,
-        EventType.CHAT_MEDIA,
-        EventType.CHAT_ERROR,
-        EventType.CHAT_INTERRUPT_RESULT,
+        GatewayEvent.CHAT_FINAL,
+        GatewayEvent.CHAT_MEDIA,
+        GatewayEvent.CHAT_ERROR,
+        GatewayEvent.CHAT_INTERRUPT_RESULT,
     }
 
     return event_type in text_events
 
 
-def should_send_as_status_update(event_type: EventType | None) -> bool:
+def should_send_as_status_update(event_type: str | None) -> bool:
     """
     判断是否应该作为 status update 发送。
 
@@ -555,14 +556,14 @@ def should_send_as_status_update(event_type: EventType | None) -> bool:
     # - CHAT_TOOL_RESULT: 工具结果
     # - CHAT_PROCESSING_STATUS: 处理状态
     status_events = {
-        EventType.CHAT_TOOL_CALL,
-        EventType.CHAT_TOOL_RESULT
+        GatewayEvent.CHAT_TOOL_CALL,
+        GatewayEvent.CHAT_TOOL_RESULT
     }
 
     return event_type in status_events
 
 
-def get_status_state_for_event(event_type: EventType | None, payload: dict | None = None) -> str:
+def get_status_state_for_event(event_type: str | None, payload: dict | None = None) -> str:
     """
     根据事件类型获取状态值。
 
@@ -576,23 +577,23 @@ def get_status_state_for_event(event_type: EventType | None, payload: dict | Non
     if event_type is None:
         return "unknown"
 
-    if event_type == EventType.CHAT_PROCESSING_STATUS:
+    if event_type == "chat.processing_status":
         if payload and isinstance(payload, dict):
             is_processing = payload.get("is_processing", True)
             return "working" if is_processing else "completed"
         return "working"
 
     status_map = {
-        EventType.CHAT_TOOL_CALL: "working",
-        EventType.CHAT_TOOL_RESULT: "working",
-        EventType.CHAT_FINAL: "completed",
-        EventType.CHAT_ERROR: "failed",
+        GatewayEvent.CHAT_TOOL_CALL: "working",
+        GatewayEvent.CHAT_TOOL_RESULT: "working",
+        GatewayEvent.CHAT_FINAL: "completed",
+        GatewayEvent.CHAT_ERROR: "failed",
     }
 
     return status_map.get(event_type, "unknown")
 
 
-def get_status_text_for_event(event_type: EventType | None, payload: dict | None = None) -> str:
+def get_status_text_for_event(event_type: str | None, payload: dict | None = None) -> str:
     """
     根据事件类型获取状态文本。
 
@@ -607,19 +608,19 @@ def get_status_text_for_event(event_type: EventType | None, payload: dict | None
         return "处理中"
 
     if payload and isinstance(payload, dict):
-        if event_type == EventType.CHAT_TOOL_CALL:
+        if event_type == "chat.tool_call":
             tool_call = payload.get("tool_call", {})
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get("name", "")
                 if tool_name:
                     return f"正在使用工具：{tool_name}"
             return "正在使用工具..."
-        if event_type == EventType.CHAT_TOOL_RESULT:
+        if event_type == "chat.tool_result":
             tool_name = payload.get("tool_name", "")
             if tool_name:
                 return f"工具 {tool_name} 执行完成"
             return "工具执行完成"
-        if event_type == EventType.CHAT_PROCESSING_STATUS:
+        if event_type == "chat.processing_status":
             is_processing = payload.get("is_processing", True)
             if is_processing:
                 return "任务正在处理中，请稍后~"
@@ -631,12 +632,12 @@ def get_status_text_for_event(event_type: EventType | None, payload: dict | None
             return content.get("output", "处理中")
 
     status_text_map = {
-        EventType.CHAT_TOOL_CALL: "正在使用工具...",
-        EventType.CHAT_TOOL_RESULT: "工具执行完成",
-        EventType.CHAT_PROCESSING_STATUS: "任务正在处理中",
-        EventType.CHAT_FINAL: "任务已完成",
-        EventType.CHAT_ERROR: "处理失败，请稍后重试",
-        EventType.CHAT_INTERRUPT_RESULT: "任务已中断",
+        GatewayEvent.CHAT_TOOL_CALL: "正在使用工具...",
+        GatewayEvent.CHAT_TOOL_RESULT: "工具执行完成",
+        GatewayEvent.CHAT_PROCESSING_STATUS: "任务正在处理中",
+        GatewayEvent.CHAT_FINAL: "任务已完成",
+        GatewayEvent.CHAT_ERROR: "处理失败，请稍后重试",
+        GatewayEvent.CHAT_INTERRUPT_RESULT: "任务已中断",
     }
 
     return status_text_map.get(event_type, "处理中")
@@ -648,9 +649,9 @@ def extract_msg_content(msg: Message) -> str:
     payload = msg.payload if msg.payload else {}
     if not isinstance(payload, dict):
         return str(msg.payload)
-    if msg.event_type == EventType.CHAT_TOOL_CALL:
+    if msg.event_type == "chat.tool_call":
         content = payload.get("tool_call", {}).get("name", "")
-    elif msg.event_type == EventType.CHAT_TOOL_RESULT:
+    elif msg.event_type == "chat.tool_result":
         content = payload.get("result", "")
     else:
         content = msg.payload.get("content", "")

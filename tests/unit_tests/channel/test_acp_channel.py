@@ -8,7 +8,9 @@ import types
 from collections import deque
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.protocol.acp.acp_connect import AcpChannel, AcpChannelConfig
 
@@ -315,7 +317,7 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "thinking", "source_chunk_type": "llm_reasoning"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送最终回复 (CHAT_DELTA with text)
@@ -329,7 +331,7 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -343,7 +345,7 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -352,7 +354,7 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
 
     assert len(seen) == 1
     req = seen[0]
-    assert req.req_method == ReqMethod.CHAT_SEND
+    assert req.req_method == GatewayMethod.CHAT_SEND
     assert req.session_id == "sess-2"
     assert req.params.get("query") == "hello"
 
@@ -421,7 +423,7 @@ async def test_jsonrpc_session_prompt_echoes_user_message_id_in_result(monkeypat
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await channel.send(
@@ -434,7 +436,7 @@ async def test_jsonrpc_session_prompt_echoes_user_message_id_in_result(monkeypat
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -490,7 +492,7 @@ async def test_jsonrpc_session_prompt_accepts_text_param(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -504,7 +506,7 @@ async def test_jsonrpc_session_prompt_accepts_text_param(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -512,7 +514,7 @@ async def test_jsonrpc_session_prompt_accepts_text_param(monkeypatch):
     await channel.start()
 
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.CHAT_SEND
+    assert seen[0].req_method == GatewayMethod.CHAT_SEND
     assert seen[0].session_id == "sess-text"
     assert seen[0].params.get("query") == "hello from text"
 
@@ -573,7 +575,7 @@ async def test_jsonrpc_session_prompt_emits_final_text_as_agent_message_chunk(mo
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer from chat.final"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await channel.send(
@@ -586,7 +588,7 @@ async def test_jsonrpc_session_prompt_emits_final_text_as_agent_message_chunk(mo
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -662,7 +664,7 @@ async def test_jsonrpc_session_prompt_merges_session_context(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "done"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -676,7 +678,7 @@ async def test_jsonrpc_session_prompt_merges_session_context(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -725,7 +727,7 @@ async def test_jsonrpc_session_prompt_does_not_end_turn_from_chat_final_before_l
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await channel.send(
@@ -742,7 +744,7 @@ async def test_jsonrpc_session_prompt_does_not_end_turn_from_chat_final_before_l
                     "tool_call_id": "tool-call-late-2",
                     "result": "index.html written",
                 },
-                event_type=EventType.CHAT_TOOL_RESULT,
+                event_type=GatewayEvent.CHAT_TOOL_RESULT,
             )
         )
         await channel.send(
@@ -755,7 +757,7 @@ async def test_jsonrpc_session_prompt_does_not_end_turn_from_chat_final_before_l
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -827,7 +829,7 @@ async def test_jsonrpc_session_prompt_does_not_auto_finalize_from_delta_only(mon
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "partial answer"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # delta-only 场景不会自动 end_turn；显式停止通道，避免测试等待未完成请求而超时。
@@ -879,7 +881,7 @@ async def test_jsonrpc_session_cancel_finalizes_active_prompt(monkeypatch):
     monkeypatch.setattr("agent_gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
 
     async def _on_message(msg):
-        if msg.req_method == ReqMethod.CHAT_SEND:
+        if msg.req_method == GatewayMethod.CHAT_SEND:
             await channel.send(
                 Message(
                     id=msg.id,
@@ -890,7 +892,7 @@ async def test_jsonrpc_session_cancel_finalizes_active_prompt(monkeypatch):
                     timestamp=time.time(),
                     ok=True,
                     payload={"content": "still running"},
-                    event_type=EventType.CHAT_DELTA,
+                    event_type=GatewayEvent.CHAT_DELTA,
                 )
             )
             # 注意：cancel 会立即触发 finalize，不需要等待 is_processing=false
@@ -939,7 +941,7 @@ async def test_jsonrpc_response_is_forwarded_as_acp_tool_response(monkeypatch):
 
     assert len(seen) == 1
     msg = seen[0]
-    assert msg.req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert msg.req_method == GatewayMethod.ACP_TOOL_RESPONSE
     assert msg.session_id == "sess-tool"
     assert msg.params["jsonrpc_id"] == "tool-1"
     assert msg.params["response"]["result"] == {"content": "from client"}
@@ -1018,7 +1020,7 @@ async def test_processing_idle_defers_end_turn_until_pending_client_rpc_resolves
             timestamp=time.time(),
             ok=True,
             payload={"is_processing": False},
-            event_type=EventType.CHAT_PROCESSING_STATUS,
+            event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
         ),
         ctx,
     )
@@ -1058,7 +1060,7 @@ async def test_processing_idle_defers_end_turn_until_pending_client_rpc_resolves
     }
     assert channel.has_request_context_for_test(request_id) is False
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert seen[0].req_method == GatewayMethod.ACP_TOOL_RESPONSE
     assert seen[0].session_id == session_id
 
 
@@ -1099,7 +1101,7 @@ async def test_processing_idle_waits_for_late_chat_final_and_only_emits_missing_
             timestamp=time.time(),
             ok=True,
             payload={"content": "partial"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         ),
         ctx,
     )
@@ -1113,7 +1115,7 @@ async def test_processing_idle_waits_for_late_chat_final_and_only_emits_missing_
             timestamp=time.time(),
             ok=True,
             payload={"is_processing": False},
-            event_type=EventType.CHAT_PROCESSING_STATUS,
+            event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
         ),
         ctx,
     )
@@ -1127,7 +1129,7 @@ async def test_processing_idle_waits_for_late_chat_final_and_only_emits_missing_
             timestamp=time.time(),
             ok=True,
             payload={"content": "partial final answer"},
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
         ),
         ctx,
     )
@@ -1297,7 +1299,7 @@ async def test_jsonrpc_session_prompt_emits_tool_call_update(monkeypatch):
                         "tool_call_id": "tool-call-1",
                     }
                 },
-                event_type=EventType.CHAT_TOOL_CALL,
+                event_type=GatewayEvent.CHAT_TOOL_CALL,
             )
         )
         # 发送最终回复 (CHAT_DELTA)
@@ -1311,7 +1313,7 @@ async def test_jsonrpc_session_prompt_emits_tool_call_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "done"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -1325,7 +1327,7 @@ async def test_jsonrpc_session_prompt_emits_tool_call_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1399,7 +1401,7 @@ async def test_jsonrpc_session_prompt_emits_tool_result_update(monkeypatch):
                     "tool_call_id": "tool-call-2",
                     "result": "file contents",
                 },
-                event_type=EventType.CHAT_TOOL_RESULT,
+                event_type=GatewayEvent.CHAT_TOOL_RESULT,
             )
         )
         # 发送最终回复 (CHAT_DELTA)
@@ -1413,7 +1415,7 @@ async def test_jsonrpc_session_prompt_emits_tool_result_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "done"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -1427,7 +1429,7 @@ async def test_jsonrpc_session_prompt_emits_tool_result_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1498,7 +1500,7 @@ async def test_jsonrpc_session_prompt_emits_tool_in_progress_update(monkeypatch)
                         "tool_call_id": "tool-call-progress-1",
                     }
                 },
-                event_type=EventType.CHAT_TOOL_CALL,
+                event_type=GatewayEvent.CHAT_TOOL_CALL,
             )
         )
         await channel.send(
@@ -1514,7 +1516,7 @@ async def test_jsonrpc_session_prompt_emits_tool_in_progress_update(monkeypatch)
                     "tool_call_id": "tool-call-progress-1",
                     "status": "in_progress",
                 },
-                event_type=EventType.CHAT_TOOL_UPDATE,
+                event_type=GatewayEvent.CHAT_TOOL_UPDATE,
             )
         )
         await channel.send(
@@ -1527,7 +1529,7 @@ async def test_jsonrpc_session_prompt_emits_tool_in_progress_update(monkeypatch)
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1605,7 +1607,7 @@ async def test_jsonrpc_session_prompt_emits_plan_update(monkeypatch):
                     "result": "已启动后台会话",
                     "is_parallel": True,
                 },
-                event_type=EventType.CHAT_SUBTASK_UPDATE,
+                event_type=GatewayEvent.CHAT_SUBTASK_UPDATE,
             )
         )
         # 发送最终回复 (CHAT_DELTA)
@@ -1619,7 +1621,7 @@ async def test_jsonrpc_session_prompt_emits_plan_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "done"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -1633,7 +1635,7 @@ async def test_jsonrpc_session_prompt_emits_plan_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1692,7 +1694,7 @@ async def test_jsonrpc_session_prompt_emits_processing_status_update(monkeypatch
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": True},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
         await channel.send(
@@ -1705,7 +1707,7 @@ async def test_jsonrpc_session_prompt_emits_processing_status_update(monkeypatch
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1767,7 +1769,7 @@ async def test_jsonrpc_session_prompt_emits_usage_update_before_result(monkeypat
                         "outputTokens": 34,
                     },
                 },
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         # 发送 is_processing=false 触发最终响应
@@ -1781,7 +1783,7 @@ async def test_jsonrpc_session_prompt_emits_usage_update_before_result(monkeypat
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1838,7 +1840,7 @@ async def test_processing_status_true_does_not_schedule_idle_finalize(monkeypatc
             timestamp=time.time(),
             ok=True,
             payload={"is_processing": True},
-            event_type=EventType.CHAT_PROCESSING_STATUS,
+            event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
         ),
         ctx,
     )
@@ -1900,7 +1902,7 @@ async def test_tool_events_cancel_idle_finalize_instead_of_scheduling(monkeypatc
                     "tool_call_id": "tc-idle-1",
                 }
             },
-            event_type=EventType.CHAT_TOOL_CALL,
+            event_type=GatewayEvent.CHAT_TOOL_CALL,
         ),
         ctx,
     )
@@ -1945,7 +1947,7 @@ async def test_jsonrpc_session_prompt_emits_direct_reasoning_update(monkeypatch)
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "reasoning step", "event_type": "chat.reasoning"},
-                event_type=EventType.CHAT_REASONING,
+                event_type=GatewayEvent.CHAT_REASONING,
             )
         )
         await channel.send(
@@ -1958,7 +1960,7 @@ async def test_jsonrpc_session_prompt_emits_direct_reasoning_update(monkeypatch)
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -2025,7 +2027,7 @@ async def test_jsonrpc_session_prompt_emits_todo_update(monkeypatch):
                         }
                     ]
                 },
-                event_type=EventType.TODO_UPDATED,
+                event_type=GatewayEvent.TODO_UPDATED,
             )
         )
         await channel.send(
@@ -2038,7 +2040,7 @@ async def test_jsonrpc_session_prompt_emits_todo_update(monkeypatch):
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -2106,7 +2108,7 @@ async def test_reasoning_and_todo_events_cancel_idle_finalize(monkeypatch):
             timestamp=time.time(),
             ok=True,
             payload={"content": "reasoning", "source_chunk_type": "llm_reasoning"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         ),
         39,
     )
@@ -2120,7 +2122,7 @@ async def test_reasoning_and_todo_events_cancel_idle_finalize(monkeypatch):
             timestamp=time.time(),
             ok=True,
             payload={"content": "reasoning", "event_type": "chat.reasoning"},
-            event_type=EventType.CHAT_REASONING,
+            event_type=GatewayEvent.CHAT_REASONING,
         ),
         40,
     )
@@ -2145,7 +2147,7 @@ async def test_reasoning_and_todo_events_cancel_idle_finalize(monkeypatch):
                     }
                 ]
             },
-            event_type=EventType.TODO_UPDATED,
+            event_type=GatewayEvent.TODO_UPDATED,
         ),
         41,
     )

@@ -10,7 +10,8 @@ import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -31,8 +32,8 @@ def operation(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel, method", [
-    ("tui", ReqMethod.CHAT_SEND),
-    ("feishu", ReqMethod.HISTORY_GET),
+    ("tui", GatewayMethod.CHAT_SEND),
+    ("feishu", GatewayMethod.HISTORY_GET),
 ])
 async def test_non_web_user_queue_starts_and_reuses_request_trace(monkeypatch, channel, method):
     exporter = InMemorySpanExporter()
@@ -79,9 +80,9 @@ async def test_non_web_user_queue_starts_and_reuses_request_trace(monkeypatch, c
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enabled, kind, method", [
-    (True, "event", ReqMethod.CHAT_SEND),
+    (True, "event", GatewayMethod.CHAT_SEND),
     (True, "req", None),
-    (False, "req", ReqMethod.CHAT_SEND),
+    (False, "req", GatewayMethod.CHAT_SEND),
 ])
 async def test_non_web_queue_does_not_start_unrelated_or_disabled_trace(monkeypatch, enabled, kind, method):
     exporter = InMemorySpanExporter()

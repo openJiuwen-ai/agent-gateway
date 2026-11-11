@@ -12,7 +12,8 @@ import time
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
 
@@ -97,7 +98,7 @@ def _chat_final_msg(ws_id: str | None, session_id: str = "sess-1") -> Message:
         timestamp=time.time(),
         ok=True,
         payload={"event_type": "chat.final", "content": "旧请求的回复"},
-        event_type=EventType.CHAT_FINAL,
+        event_type=GatewayEvent.CHAT_FINAL,
         metadata=metadata,
     )
 
@@ -164,8 +165,8 @@ async def test_orphan_res_delivered_to_new_ws() -> None:
     assert frame["payload"] == {"data": 1}
 
 
-@pytest.mark.parametrize("event_type", [EventType.CHAT_FINAL, EventType.CHAT_ERROR])
-async def test_orphan_terminal_delivered_to_live_session_sockets(event_type: EventType) -> None:
+@pytest.mark.parametrize("event_type", [GatewayEvent.CHAT_FINAL, GatewayEvent.CHAT_ERROR])
+async def test_orphan_terminal_delivered_to_live_session_sockets(event_type: str) -> None:
     """原连接已断开的终态按 session_id 投给仍打开的连接，不投给已关闭连接和其他会话。"""
     channel = _make_channel()
     expected = _FakeWs("ws-new")
@@ -191,7 +192,7 @@ async def test_orphan_terminal_delivered_to_live_session_sockets(event_type: Eve
 
     assert len(calls) == 1
     frame, clients = calls[0]
-    assert frame["event"] == event_type.value
+    assert frame["event"] == event_type
     assert clients == {expected, other_user, other_app}
 
 
@@ -206,7 +207,7 @@ async def test_orphan_delta_delivered_to_new_ws() -> None:
     channel._clients_by_key[route] = [socket]
     calls = await _capture_broadcast(channel)
     msg = _chat_final_msg("ws-old")
-    msg.event_type = EventType.CHAT_DELTA
+    msg.event_type = GatewayEvent.CHAT_DELTA
     msg.metadata["user_id"] = None
     msg.app_id = "default"
 
@@ -319,7 +320,7 @@ async def test_orphan_rebound_cleared_after_terminal() -> None:
     assert len(calls) == 1
 
     delta = _chat_final_msg(ws_id="ws-old")
-    delta.event_type = EventType.CHAT_DELTA
+    delta.event_type = GatewayEvent.CHAT_DELTA
     await channel.send(delta)
 
     assert len(calls) == 1, "绑定应已解除，且该连接不在 session 桶里，后续事件不再改投"
@@ -377,7 +378,7 @@ async def test_orphan_rebound_cleared_on_payload_event_type_only_terminal() -> N
     assert len(calls) == 1
 
     delta = _chat_final_msg(ws_id="ws-old")
-    delta.event_type = EventType.CHAT_DELTA
+    delta.event_type = GatewayEvent.CHAT_DELTA
     await channel.send(delta)
 
     assert len(calls) == 1, "绑定应已解除，且该连接不在 session 桶里，后续事件不再改投"

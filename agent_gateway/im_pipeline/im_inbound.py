@@ -16,7 +16,8 @@ from openjiuwen.core.foundation.llm.schema.config import (
     ModelClientConfig,
     ModelRequestConfig,
 )
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.common.config import _parse_custom_headers
 from agent_gateway.common.paths import get_deepagent_user_md_path, logger
@@ -184,7 +185,7 @@ class IMConversationProcessor:
         *,
         pending_context: str | None = None,
     ) -> InboundProcessResult:
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != GatewayMethod.CHAT_SEND:
             return InboundProcessResult(reason="non-chat-send")
 
         text = self._extract_text(msg)

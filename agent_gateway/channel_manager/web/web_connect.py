@@ -23,7 +23,9 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from openjiuwen_protocol.message import Message, Mode
+from agent_gateway.common.gateway_events import event_name_of
+from agent_gateway.common.gateway_methods import GatewayMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from agent_gateway.channel_manager.base import (
@@ -101,13 +103,13 @@ def _resolve_ws_auth_session(
             return value
     return ""
 
-_HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
+_HANDLER_BEFORE_CALLBACK_METHODS = frozenset({GatewayMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
 _SWARMFLOW_CONTROL_METHODS = frozenset(
     {
-        ReqMethod.SWARMFLOW_PAUSE.value,
-        ReqMethod.SWARMFLOW_RESUME.value,
-        ReqMethod.SWARMFLOW_STOP.value,
+        GatewayMethod.SWARMFLOW_PAUSE.value,
+        GatewayMethod.SWARMFLOW_RESUME.value,
+        GatewayMethod.SWARMFLOW_STOP.value,
     }
 )
 
@@ -807,7 +809,7 @@ class WebChannel(BaseWsChannel):
 
         ok, payload = await fetch_agent_unary(
             agent_client=ac,
-            req_method=ReqMethod.FILE_IMPORT_URL,
+            req_method=GatewayMethod.FILE_IMPORT_URL,
             # Retain the historic overwrite semantics in the shared-directory
             # single-user deployment.  Per-user AgentOS directories keep
             # collision-safe names so independent uploads never overwrite a
@@ -1316,7 +1318,7 @@ class WebChannel(BaseWsChannel):
         # 按常规 session_id 路由会被当作"无连接"丢弃。探活状态是全局的（非会话级），
         # 前端 setHeartbeatStatus 也是全局 store，因此直接广播给所有 web 客户端。
         # 与 wechat 等 IM 渠道在 send() 中对 HEALTH_CHECK_RELAY 的专属分支对齐。
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
+        if msg.event_type == "health_check.relay":
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             clients = self.clients
             for w in clients:
@@ -1341,7 +1343,7 @@ class WebChannel(BaseWsChannel):
         payload = msg.payload
         cron_payload = payload.get("cron") if isinstance(payload, dict) else None
         is_cron_push = isinstance(cron_payload, dict) and not payload.get("cron_session_stream")
-        if msg.event_type == EventType.CHAT_FINAL and is_cron_push:
+        if msg.event_type == "chat.final" and is_cron_push:
             frame = self._serialize_frame(msg, None)  # 返回 dict，由 writer 统一序列化
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
             # 个人版没填用户是空串；历史误写成 ``default`` 的也当无主。
@@ -1376,7 +1378,7 @@ class WebChannel(BaseWsChannel):
         # "proactive_notification" 标记，据此广播给所有 web 客户端。前端 shouldHandleSessionEvent
         # 对无 session_id 的 payload 放行，作为普通 assistant 消息渲染。
         if (
-            msg.event_type == EventType.CHAT_FINAL
+            msg.event_type == "chat.final"
             and isinstance(msg.payload, dict)
             and msg.payload.get("source") == "proactive_notification"
         ):
@@ -1552,7 +1554,7 @@ class WebChannel(BaseWsChannel):
         # 确定事件名称
         event_name = "chat.final"
         if msg.event_type is not None:
-            event_name = msg.event_type.value
+            event_name = event_name_of(msg.event_type)
         elif isinstance(msg.payload, dict):
             payload_event_type = msg.payload.get("event_type")
             if isinstance(payload_event_type, str) and payload_event_type.strip():
@@ -1641,18 +1643,15 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _resolve_event_name(msg: Message) -> str:
-        """解析事件名：优先 ``event_type.value``，回退 ``payload["event_type"]``。
+        """解析事件名：优先 ``msg.event_type``，回退 ``payload["event_type"]``。
 
-        ``_chunk_to_message`` 仅在 payload 的事件名能解析为已知 ``EventType`` 时
-        才填充 ``event_type``，否则保持 None；本函数沿用 send() 与
-        ``_serialize_frame`` 既有的回退逻辑，避免同一条终态事件在不同分支被识别
-        成不同类型。
+        ``event_type`` 是线上事件名字符串（Gateway 不再持有协议枚举）；为空时
+        沿用 send() 与 ``_serialize_frame`` 既有的回退逻辑，避免同一条终态事件
+        在不同分支被识别成不同类型。
         """
-        event_type = getattr(msg, "event_type", None)
-        if event_type is not None:
-            value = getattr(event_type, "value", "")
-            if isinstance(value, str) and value:
-                return value
+        value = event_name_of(getattr(msg, "event_type", None))
+        if value:
+            return value
         payload = getattr(msg, "payload", None)
         if isinstance(payload, dict):
             payload_event_type = payload.get("event_type")
@@ -1697,7 +1696,7 @@ class WebChannel(BaseWsChannel):
         payload = msg.payload if isinstance(msg.payload, dict) else None
         event_type = getattr(msg, "event_type", None)
         if event_type is not None:
-            event_name = event_type.value
+            event_name = event_name_of(event_type)
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
         if payload is not None and payload.get("source") == "org_stop":
@@ -1793,7 +1792,7 @@ class WebChannel(BaseWsChannel):
 
         try:
             ok, payload = await fetch_agent_unary(
-                agent_client=self.agent_client, req_method=ReqMethod.TEAM_LIST,
+                agent_client=self.agent_client, req_method=GatewayMethod.TEAM_LIST,
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
                 metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
@@ -2501,7 +2500,7 @@ class WebChannel(BaseWsChannel):
         """将 Message 转为 Web 前端帧 dict（由 writer 统一序列化）."""
         event_name = "chat.final"
         if getattr(msg, "event_type", None) is not None:
-            event_name = msg.event_type.value
+            event_name = event_name_of(msg.event_type)
         elif isinstance(getattr(msg, "payload", None), dict):
             et = msg.payload.get("event_type")
             if isinstance(et, str) and et.strip():
@@ -2534,13 +2533,13 @@ class WebChannel(BaseWsChannel):
         return frame
 
     @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | str:
-        for item in ReqMethod:
-            if item.value == method:
-                return item
-        # E2A method names are extensible.  Keep an unknown method as its wire
-        # string so the AgentServer, rather than the Gateway, can decide if it
-        # is implemented.
+    def _parse_req_method(method: str) -> str:
+        """Return the wire method name unchanged.
+
+        E2A method names are extensible, and the AgentServer—not the
+        Gateway—decides whether one is implemented.  Passing the string
+        through keeps methods this Gateway build does not know forwardable.
+        """
         return method
 
     # Public aliases for HTTP dispatch (G.CLS.11).

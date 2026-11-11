@@ -2,7 +2,7 @@
 import hashlib
 
 import pytest
-from openjiuwen_protocol.message import ReqMethod
+from jiuwenswarm.common.schema.message import ReqMethod
 
 
 def test_bound_dingtalk_apps_keep_separate_robot_and_employee():
@@ -18,7 +18,9 @@ def test_bound_dingtalk_apps_keep_separate_robot_and_employee():
                                     "jiuwenmate.delivery.ack", "jiuwenmate.thinking_notice.ack",
                                     "jiuwenmate.group.response"])
 def test_gateway_wire_method_decodes(method):
-    import agent_gateway  # noqa: F401 -- registers supported transport methods
+    # Cross-repo contract: the AgentServer decodes this wire method with the
+    # implementation-side enum, so it must be defined there. The Gateway only
+    # forwards the string.
     assert ReqMethod(method).value == method
 
 

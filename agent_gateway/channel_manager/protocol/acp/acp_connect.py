@@ -39,7 +39,14 @@ from openjiuwen_protocol.e2a.models import (
     E2AResponse,
     utc_now_iso,
 )
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from openjiuwen_protocol.message import Message, Mode
+from agent_gateway.common.gateway_events import (
+    KNOWN_EVENT_NAMES,
+    GatewayEvent,
+    event_name_of,
+    normalize_event_name,
+)
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import parse_dotenv_early
@@ -65,7 +72,7 @@ def _acp_tool_response_message_factory(
 ) -> Message:
     """为协议包 ``build_acp_tool_response_message`` 构造本仓 ``Message`` 实例。
 
-    协议包不依赖 jiuwenswarm 的 Message/ReqMethod（拆分边界），调用方注入
+    协议包不依赖 jiuwenswarm 的 Message/GatewayMethod（拆分边界），调用方注入
     本工厂保持 ``_dispatch_message`` 收到的仍是 Message 对象（与迁移前一致）。
     """
     return Message(
@@ -76,7 +83,7 @@ def _acp_tool_response_message_factory(
         params=params,
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.ACP_TOOL_RESPONSE,
+        req_method=GatewayMethod.ACP_TOOL_RESPONSE,
         is_stream=False,
         metadata=metadata,
     )
@@ -325,7 +332,7 @@ class AcpGatewayBridge:
                         },
                         timestamp=time.time(),
                         ok=True,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method=GatewayMethod.CHAT_SEND,
                         mode=Mode.AGENT,
                         metadata={"acp": {"jsonrpc_id": rpc_id, "method": method}},
                     )
@@ -381,7 +388,7 @@ class AcpGatewayBridge:
         if ctx is None:
             return False
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_DELTA:
+        if msg.type == "event" and msg.event_type == "chat.delta":
             update = build_acp_session_update(msg, payload, ctx)
             if update is None:
                 return True
@@ -401,13 +408,13 @@ class AcpGatewayBridge:
             return True
 
         if msg.type == "event" and msg.event_type in (
-            EventType.CHAT_REASONING,
-            EventType.CHAT_TOOL_CALL,
-            EventType.CHAT_TOOL_UPDATE,
-            EventType.CHAT_TOOL_RESULT,
-            EventType.CHAT_SYMPHONY_STATUS,
-            EventType.TODO_UPDATED,
-            EventType.CHAT_SUBTASK_UPDATE,
+            GatewayEvent.CHAT_REASONING,
+            GatewayEvent.CHAT_TOOL_CALL,
+            GatewayEvent.CHAT_TOOL_UPDATE,
+            GatewayEvent.CHAT_TOOL_RESULT,
+            GatewayEvent.CHAT_SYMPHONY_STATUS,
+            GatewayEvent.TODO_UPDATED,
+            GatewayEvent.CHAT_SUBTASK_UPDATE,
         ):
             update = build_acp_session_update(msg, payload, ctx)
             if update is None:
@@ -420,7 +427,7 @@ class AcpGatewayBridge:
             )
             return True
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_FINAL:
+        if msg.type == "event" and msg.event_type == "chat.final":
             ctx.saw_chat_final = True
             update = build_acp_final_text_update(payload, ctx)
             if update is not None:
@@ -454,7 +461,7 @@ class AcpGatewayBridge:
             _cancel_idle_finalize_task(ctx)
             return True
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
+        if msg.type == "event" and msg.event_type == "chat.error":
             _cancel_idle_finalize_task(ctx)
             await self._send_raw_jsonrpc_error(
                 ws,
@@ -465,7 +472,7 @@ class AcpGatewayBridge:
             self._clear_request_context(str(msg.id), ctx.session_id)
             return True
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_PROCESSING_STATUS:
+        if msg.type == "event" and msg.event_type == "chat.processing_status":
             update = build_acp_session_update(msg, payload, ctx)
             if update is not None:
                 await self._send_raw_jsonrpc_notification(
@@ -902,11 +909,11 @@ class AcpChannel(BaseChannel):
             text = self._extract_prompt_text(params)
             params.setdefault("content", text)
             params.setdefault("query", text)
-            req_method = ReqMethod.CHAT_SEND
+            req_method = GatewayMethod.CHAT_SEND
         if req_method is None:
             raise ValueError(f"unsupported ACP/E2A method: {method or '<empty>'}")
 
-        if req_method == ReqMethod.CHAT_SEND:
+        if req_method == GatewayMethod.CHAT_SEND:
             params.setdefault("query", params.get("content", ""))
 
         return Message(
@@ -918,7 +925,7 @@ class AcpChannel(BaseChannel):
             timestamp=time.time(),
             ok=True,
             req_method=req_method,
-            is_stream=bool(env.is_stream or req_method == ReqMethod.CHAT_SEND),
+            is_stream=bool(env.is_stream or req_method == GatewayMethod.CHAT_SEND),
             metadata={
                 "acp": {
                     "jsonrpc_id": env.jsonrpc_id,
@@ -937,7 +944,7 @@ class AcpChannel(BaseChannel):
         ts = utc_now_iso()
         sequence = ctx.sequence
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_DELTA:
+        if msg.type == "event" and msg.event_type == "chat.delta":
             ctx.sequence += 1
             source_chunk_type = payload.get("source_chunk_type")
             delta_kind = "reasoning" if source_chunk_type == "llm_reasoning" else "text"
@@ -962,7 +969,7 @@ class AcpChannel(BaseChannel):
                 },
             )
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
+        if msg.type == "event" and msg.event_type == "chat.error":
             ctx.sequence += 1
             return E2AResponse(
                 response_id=f"{msg.id}:{sequence}",
@@ -982,7 +989,7 @@ class AcpChannel(BaseChannel):
                 },
             )
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_FINAL:
+        if msg.type == "event" and msg.event_type == "chat.final":
             ctx.sequence += 1
             result_body = dict(payload)
             result_body.setdefault("session_id", msg.session_id)
@@ -1014,7 +1021,7 @@ class AcpChannel(BaseChannel):
                     status=E2A_RESPONSE_STATUS_IN_PROGRESS,
                     response_kind=E2A_RESPONSE_KIND_ACP_SESSION_UPDATE,
                     timestamp=ts,
-                    provenance=self._provenance(str(msg.event_type.value if msg.event_type else "session.update")),
+                    provenance=self._provenance(str(event_name_of(msg.event_type) or "session.update")),
                     channel=self.channel_id,
                     session_id=msg.session_id,
                     is_stream=True,
@@ -1145,7 +1152,7 @@ class AcpChannel(BaseChannel):
             params=dict(params),
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.INITIALIZE,
+            req_method=GatewayMethod.INITIALIZE,
             is_stream=False,
             metadata={"acp": {"method": "initialize"}},
         )
@@ -1231,7 +1238,7 @@ class AcpChannel(BaseChannel):
             params={"session_id": session_id},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method=GatewayMethod.CHAT_CANCEL,
             is_stream=False,
             metadata={"acp": {"jsonrpc_id": rpc_id, "method": "session/cancel"}},
         )
@@ -1381,7 +1388,7 @@ class AcpChannel(BaseChannel):
         payload = dict(msg.payload or {})
         session_id = str(msg.session_id or ctx.session_id or "")
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_DELTA:
+        if msg.type == "event" and msg.event_type == "chat.delta":
             text = str(payload.get("content", "") or "")
             if not text:
                 return False
@@ -1397,13 +1404,13 @@ class AcpChannel(BaseChannel):
             return False
 
         if msg.type == "event" and msg.event_type in (
-            EventType.CHAT_REASONING,
-            EventType.CHAT_TOOL_CALL,
-            EventType.CHAT_TOOL_UPDATE,
-            EventType.CHAT_TOOL_RESULT,
-            EventType.CHAT_SYMPHONY_STATUS,
-            EventType.TODO_UPDATED,
-            EventType.CHAT_SUBTASK_UPDATE,
+            GatewayEvent.CHAT_REASONING,
+            GatewayEvent.CHAT_TOOL_CALL,
+            GatewayEvent.CHAT_TOOL_UPDATE,
+            GatewayEvent.CHAT_TOOL_RESULT,
+            GatewayEvent.CHAT_SYMPHONY_STATUS,
+            GatewayEvent.TODO_UPDATED,
+            GatewayEvent.CHAT_SUBTASK_UPDATE,
         ):
             update = self._build_acp_session_update(msg, payload, ctx)
             if update is None:
@@ -1412,7 +1419,7 @@ class AcpChannel(BaseChannel):
             await self._write_acp_session_update(session_id, update)
             return False
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_FINAL:
+        if msg.type == "event" and msg.event_type == "chat.final":
             # ACP fallback: defer end_turn until processing stops.
             ctx.saw_chat_final = True
             update = build_acp_final_text_update(payload, ctx)
@@ -1437,7 +1444,7 @@ class AcpChannel(BaseChannel):
             _cancel_idle_finalize_task(ctx)
             return False
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_ERROR:
+        if msg.type == "event" and msg.event_type == "chat.error":
             _cancel_idle_finalize_task(ctx)
             await self._write_jsonrpc_error(
                 ctx.jsonrpc_id,
@@ -1446,7 +1453,7 @@ class AcpChannel(BaseChannel):
             )
             return True
 
-        if msg.type == "event" and msg.event_type == EventType.CHAT_INTERRUPT_RESULT:
+        if msg.type == "event" and msg.event_type == "chat.interrupt_result":
             _cancel_idle_finalize_task(ctx)
             await self._write_jsonrpc_result(
                 ctx.jsonrpc_id,
@@ -1458,7 +1465,7 @@ class AcpChannel(BaseChannel):
             return True
 
         if msg.type == "event":
-            if msg.event_type == EventType.CHAT_PROCESSING_STATUS:
+            if msg.event_type == "chat.processing_status":
                 update = self._build_acp_session_update(msg, payload, ctx)
                 if update is not None:
                     await self._write_acp_session_update(session_id, update)
@@ -1560,11 +1567,16 @@ class AcpChannel(BaseChannel):
         return ""
 
     @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
-        for item in ReqMethod:
-            if item.value == method:
-                return item
-        return None
+    def _parse_req_method(method: str) -> GatewayMethod | None:
+        """Map an ACP/E2A method name to the Gateway vocabulary, else ``None``.
+
+        Unlike the Web channel, ACP ingress rejects methods it does not know,
+        so the unknown case stays ``None`` and the caller raises.
+        """
+        try:
+            return GatewayMethod(method)
+        except ValueError:
+            return None
 
     @staticmethod
     def _provenance(kind: str) -> E2AProvenance:
@@ -1782,11 +1794,13 @@ class AcpChannel(BaseChannel):
         )
 
     @staticmethod
-    def _parse_event_type(event_name: str) -> EventType | None:
-        for item in EventType:
-            if item.value == event_name:
-                return item
-        return None
+    def _parse_event_type(event_name: str) -> str | None:
+        """校验并在已知事件名内归一；未知事件返回 ``None``（ACP 侧硬拒）。
+
+        返回值是线上字符串而不是枚举：Gateway 只转发/转发式消费事件名，
+        不再持有协议枚举。
+        """
+        return normalize_event_name(event_name) if event_name in KNOWN_EVENT_NAMES else None
 
 
 def _load_acp_channel_config() -> AcpChannelConfig:

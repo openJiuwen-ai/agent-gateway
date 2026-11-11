@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.message_handler.message_handler import (
     _NON_STREAM_TEAM_NOTICE,
     MessageHandler,
@@ -19,7 +21,7 @@ def _chat_send(*, mode: str, enable_streaming: bool) -> Message:
         type="request",
         channel_id="feishu",
         session_id="sess-team",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         params={"content": "拆解一下这个需求", "mode": mode},
         timestamp=0.0,
         ok=True,
@@ -65,7 +67,7 @@ def test_non_streaming_single_agent_send_is_allowed():
 
 def test_non_streaming_non_chat_request_is_untouched():
     msg = _chat_send(mode="team", enable_streaming=False)
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = GatewayMethod.CHAT_CANCEL
 
     assert MessageHandler._is_unsupported_non_stream_team_send(msg) is False
 
@@ -80,7 +82,7 @@ async def test_rejection_replies_with_an_explanation():
 
     assert len(published) == 1
     reply = published[0]
-    assert reply.event_type == EventType.CHAT_FINAL
+    assert reply.event_type == GatewayEvent.CHAT_FINAL
     assert reply.payload["content"] == _NON_STREAM_TEAM_NOTICE
     assert reply.payload["is_complete"] is True
     assert reply.enable_streaming is False

@@ -16,7 +16,9 @@ from collections import OrderedDict
 from typing import Any, Callable
 
 import requests
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import event_name_of
+from agent_gateway.common.gateway_methods import GatewayMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import (
@@ -517,7 +519,7 @@ class WecomChannel(BaseChannel):
             is_dm_intent
             and chat_type == "group"
             and target_user_id
-            and event_type == EventType.CHAT_FINAL
+            and event_type == "chat.final"
         )
 
     async def _handle_processing_status_event(
@@ -829,7 +831,7 @@ class WecomChannel(BaseChannel):
                         params={"content": content, "query": content},
                         timestamp=time.time(),
                         ok=True,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method=GatewayMethod.CHAT_SEND,
                         is_stream=False,
                         metadata=metadata,
                         group_digital_avatar=True,
@@ -851,7 +853,7 @@ class WecomChannel(BaseChannel):
             params={"content": content, "query": content},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             is_stream=is_stream,
             chat_id=chat_id,
             metadata=metadata,
@@ -1153,7 +1155,7 @@ class WecomChannel(BaseChannel):
             return
 
         # 不向企业微信发送 chat.processing_status（思考状态事件），避免展示思考过程
-        if msg.event_type == EventType.CHAT_PROCESSING_STATUS:
+        if msg.event_type == "chat.processing_status":
             payload = getattr(msg, "payload", None) or {}
             meta = getattr(msg, "metadata", None) or {}
             if isinstance(payload, dict):
@@ -1162,7 +1164,7 @@ class WecomChannel(BaseChannel):
 
         # 提取事件类型
         payload = msg.payload if isinstance(msg.payload, dict) else {}
-        event_type = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
+        event_type = event_name_of(msg.event_type) or payload.get("event_type") or ""
 
         # 处理文件发送事件（chat.media 与 chat.file 统一走文件发送路径）
         if event_type in ("chat.file", "chat.media"):
@@ -1170,7 +1172,7 @@ class WecomChannel(BaseChannel):
             return
 
         # 心跳/系统事件
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY:
+        if msg.event_type == "health_check.relay":
             chatid = self._extract_chatid(msg)
             logger.info("[WecomChannel] 心跳/系统事件处理: chatid=%s, msg.id=%s", chatid, msg.id)
             if chatid:
@@ -1208,7 +1210,7 @@ class WecomChannel(BaseChannel):
                     return
                 content = self._extract_content_from_payload(msg)
                 if content is not None:
-                    is_final = msg.event_type == EventType.CHAT_FINAL
+                    is_final = msg.event_type == "chat.final"
                     if is_final and content.strip():
                         entry["accumulated"] = content
                     else:
@@ -1216,7 +1218,7 @@ class WecomChannel(BaseChannel):
                     # 移除 <think>...</think> 块，不将 Agent 思考过程展示给用户
                     to_send = self._strip_think_tags(entry["accumulated"]).strip()
                     if not to_send or self._is_thinking_only_content(to_send):
-                        if msg.event_type == EventType.CHAT_FINAL:
+                        if msg.event_type == "chat.final":
                             self._pending_streams.pop(req_id, None)
                             self._stream_completed_requests.add(req_id)
                         return
@@ -1268,7 +1270,7 @@ class WecomChannel(BaseChannel):
                             self._stream_completed_requests.add(req_id)
                     except Exception as e:
                         logger.error("WecomChannel 流式发送失败: %s", e)
-                        if msg.event_type == EventType.CHAT_FINAL:
+                        if msg.event_type == "chat.final":
                             self._pending_streams.pop(req_id, None)
                             self._stream_completed_requests.add(req_id)
                     return
@@ -1278,7 +1280,7 @@ class WecomChannel(BaseChannel):
             self._stream_completed_requests.discard(req_id)
             return
 
-        if msg.event_type == EventType.CHAT_ERROR:
+        if msg.event_type == "chat.error":
             if req_id:
                 self._pending_streams.pop(req_id, None)
             payload = getattr(msg, "payload", None) or {}
@@ -1295,7 +1297,7 @@ class WecomChannel(BaseChannel):
             return
 
         # 非流式或无 pending：仅 CHAT_FINAL 用 send_message
-        if msg.event_type != EventType.CHAT_FINAL:
+        if msg.event_type != "chat.final":
             return
         if req_id:
             self._pending_streams.pop(req_id, None)
@@ -1810,7 +1812,7 @@ class WecomChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method=GatewayMethod.CHAT_SEND,
             is_stream=True,
             chat_id=chatid,
             metadata={

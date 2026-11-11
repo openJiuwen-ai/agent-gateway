@@ -10,7 +10,7 @@ from websockets.exceptions import ConnectionClosedError
 
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
 
@@ -28,7 +28,7 @@ class Channel:
 async def invoke(client, entry, request_id="create", timeout=1):
     if entry == "fetch":
         return await fetch_agent_unary(
-            agent_client=client, req_method=ReqMethod.SESSION_CREATE,
+            agent_client=client, req_method=GatewayMethod.SESSION_CREATE,
             params={}, session_id=None, user_id=None, channel_id="web",
             timeout_seconds=timeout,
         )
@@ -36,7 +36,7 @@ async def invoke(client, entry, request_id="create", timeout=1):
     await proxy_unary_request(
         channel=channel, agent_client=client, ws=object(), req_id=request_id,
         params={}, session_id=None, user_id=None,
-        req_method=ReqMethod.SESSION_CREATE, timeout_seconds=timeout,
+        req_method=GatewayMethod.SESSION_CREATE, timeout_seconds=timeout,
     )
     response = channel.responses[-1]
     return response["ok"], response.get("payload") or response

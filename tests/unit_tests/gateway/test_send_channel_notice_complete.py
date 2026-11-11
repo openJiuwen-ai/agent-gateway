@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.message import EventType
+from agent_gateway.common.gateway_events import GatewayEvent
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 
@@ -63,7 +63,7 @@ async def test_send_channel_notice_xiaoyi_defaults_is_complete_true() -> None:
     assert len(handler.published) == 1
     msg = handler.published[0]
     assert msg.channel_id == "xiaoyi"
-    assert msg.event_type == EventType.CHAT_FINAL
+    assert msg.event_type == GatewayEvent.CHAT_FINAL
     assert msg.payload["content"] == "[收到 CLI 指令], mode 已变更为 agent"
     assert msg.payload["is_complete"] is True
 

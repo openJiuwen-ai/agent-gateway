@@ -10,7 +10,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -224,7 +225,7 @@ class TelegramChannel(BaseChannel):
     def _extract_content(self, msg: Message) -> str:
         """从 Message 中提取文本内容."""
         payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(
+        if msg.event_type == "health_check.relay" and isinstance(
             payload, dict
         ):
             health_check = payload.get("health_check")
@@ -371,7 +372,7 @@ class TelegramChannel(BaseChannel):
                 params={"content": text, "query": text},
                 timestamp=time.time(),
                 ok=True,
-                req_method=ReqMethod.CHAT_SEND,
+                req_method=GatewayMethod.CHAT_SEND,
                 metadata={
                     "chat_id": chat_id,
                     "user_id": user_id,

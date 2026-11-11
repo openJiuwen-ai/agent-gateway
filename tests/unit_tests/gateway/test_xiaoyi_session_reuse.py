@@ -15,7 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_methods import GatewayMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 _CONVERSATION_ID = "5a423bc9f2ce471cab9e316d2d06edbf"
@@ -64,7 +65,7 @@ def _xiaoyi_msg(request_id: str, *, conversation_id: str = _CONVERSATION_ID) -> 
         session_id=conversation_id,
         user_id="agent86d3225ab3ae403a8092872de86574f4",
         bot_id="agent86d3225ab3ae403a8092872de86574f4",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         is_stream=True,
         timestamp=0,
         ok=True,

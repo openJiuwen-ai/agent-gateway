@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import Message
+from agent_gateway.common.gateway_events import GatewayEvent
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.app_gateway import (
     GatewayServer,
@@ -121,12 +123,12 @@ def build_server() -> GatewayServerProbe:
             "/acp": RouteConfig(
                 path="/acp",
                 channel_id="acp",
-                forward_methods=frozenset({ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value}),
+                forward_methods=frozenset({GatewayMethod.CHAT_SEND.value, GatewayMethod.HISTORY_GET.value}),
             ),
             "/tui": RouteConfig(
                 path="/tui",
                 channel_id="tui",
-                forward_methods=frozenset({ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value}),
+                forward_methods=frozenset({GatewayMethod.CHAT_SEND.value, GatewayMethod.HISTORY_GET.value}),
             ),
         },
     )
@@ -143,12 +145,12 @@ def test_normalize_gateway_message_maps_chat_resume_to_interrupt_resume():
         params={"session_id": "sess-1"},
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.CHAT_RESUME,
+        req_method=GatewayMethod.CHAT_RESUME,
     )
 
     normalized = _normalize_gateway_message(msg)
 
-    assert normalized.req_method == ReqMethod.CHAT_CANCEL
+    assert normalized.req_method == GatewayMethod.CHAT_CANCEL
     assert normalized.params["intent"] == "resume"
     assert normalized.session_id == "sess-1"
 
@@ -162,7 +164,7 @@ def test_normalize_gateway_message_preserves_user_id():
         params={"session_id": "sess-1", "content": "hi"},
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=GatewayMethod.CHAT_SEND,
         user_id="testuser",
     )
 
@@ -524,7 +526,7 @@ async def test_gateway_server_send_event_targets_session_client():
             timestamp=time.time(),
             ok=True,
             payload={"content": "hello"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -558,7 +560,7 @@ async def test_gateway_server_falls_back_to_session_client_when_request_ws_close
             timestamp=time.time(),
             ok=True,
             payload={"content": "still running"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -623,7 +625,7 @@ async def test_gateway_server_binds_session_for_local_request_and_calls_hook():
             timestamp=time.time(),
             ok=True,
             payload={"content": "resumed"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -766,7 +768,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
 
     async def on_message(msg):
         seen.append(msg)
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != GatewayMethod.CHAT_SEND:
             return
         await server.send(
             Message(
@@ -778,7 +780,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final before client rpc"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -815,7 +817,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -880,7 +882,7 @@ async def test_gateway_server_defers_end_turn_until_pending_client_rpc_resolves(
             "userMessageId": "user-msg-pending-rpc",
         },
     }
-    assert any(msg.req_method == ReqMethod.ACP_TOOL_RESPONSE for msg in seen)
+    assert any(msg.req_method == GatewayMethod.ACP_TOOL_RESPONSE for msg in seen)
 
 
 @pytest.mark.asyncio
@@ -891,7 +893,7 @@ async def test_gateway_server_expired_pending_rpc_does_not_block_end_turn(monkey
                         -1.0)
 
     async def on_message(msg):
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != GatewayMethod.CHAT_SEND:
             return
         await server.send(
             Message(
@@ -903,7 +905,7 @@ async def test_gateway_server_expired_pending_rpc_does_not_block_end_turn(monkey
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final before expired rpc"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -940,7 +942,7 @@ async def test_gateway_server_expired_pending_rpc_does_not_block_end_turn(monkey
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1037,7 +1039,7 @@ async def test_gateway_server_handle_raw_jsonrpc_response_forwards_acp_tool_resp
     msg = seen[0]
     assert msg.channel_id == "acp"
     assert msg.session_id == "sess-tool"
-    assert msg.req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert msg.req_method == GatewayMethod.ACP_TOOL_RESPONSE
     assert msg.params == {
         "jsonrpc_id": "tool-1",
         "response": {
@@ -1105,7 +1107,7 @@ async def test_gateway_server_handles_acp_jsonrpc_prompt_and_streams_back_jsonrp
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "hello from gateway"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         await server.send(
@@ -1118,7 +1120,7 @@ async def test_gateway_server_handles_acp_jsonrpc_prompt_and_streams_back_jsonrp
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "hello from gateway"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -1131,7 +1133,7 @@ async def test_gateway_server_handles_acp_jsonrpc_prompt_and_streams_back_jsonrp
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1154,7 +1156,7 @@ async def test_gateway_server_handles_acp_jsonrpc_prompt_and_streams_back_jsonrp
     )
 
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.CHAT_SEND
+    assert seen[0].req_method == GatewayMethod.CHAT_SEND
     assert seen[0].session_id == "sess-jsonrpc"
     assert seen[0].params["query"] == "hello"
 
@@ -1184,7 +1186,7 @@ async def test_gateway_server_emits_agent_message_chunk_from_chat_final_when_no_
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "gateway final only"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -1197,7 +1199,7 @@ async def test_gateway_server_emits_agent_message_chunk_from_chat_final_when_no_
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1254,7 +1256,7 @@ async def test_gateway_server_defers_end_turn_until_processing_idle_after_final_
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "partial"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         await server.send(
@@ -1267,7 +1269,7 @@ async def test_gateway_server_defers_end_turn_until_processing_idle_after_final_
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -1284,7 +1286,7 @@ async def test_gateway_server_defers_end_turn_until_processing_idle_after_final_
                     "tool_call_id": "tool-call-9",
                     "result": "still running",
                 },
-                event_type=EventType.CHAT_TOOL_RESULT,
+                event_type=GatewayEvent.CHAT_TOOL_RESULT,
             )
         )
         await server.send(
@@ -1297,7 +1299,7 @@ async def test_gateway_server_defers_end_turn_until_processing_idle_after_final_
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1366,7 +1368,7 @@ async def test_gateway_server_waits_for_late_chat_final_after_idle_and_only_emit
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "partial"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
         await server.send(
@@ -1379,7 +1381,7 @@ async def test_gateway_server_waits_for_late_chat_final_after_idle_and_only_emit
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
         await server.send(
@@ -1392,7 +1394,7 @@ async def test_gateway_server_waits_for_late_chat_final_after_idle_and_only_emit
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "partial final answer"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
 
@@ -1474,7 +1476,7 @@ async def test_gateway_server_prompt_result_echoes_user_message_id():
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "gateway final"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -1487,7 +1489,7 @@ async def test_gateway_server_prompt_result_echoes_user_message_id():
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1539,7 +1541,7 @@ async def test_gateway_server_does_not_end_turn_from_chat_final_before_late_tool
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "final answer"},
-                event_type=EventType.CHAT_FINAL,
+                event_type=GatewayEvent.CHAT_FINAL,
             )
         )
         await server.send(
@@ -1556,7 +1558,7 @@ async def test_gateway_server_does_not_end_turn_from_chat_final_before_late_tool
                     "tool_call_id": "tool-call-late-1",
                     "result": "index.html written",
                 },
-                event_type=EventType.CHAT_TOOL_RESULT,
+                event_type=GatewayEvent.CHAT_TOOL_RESULT,
             )
         )
         await server.send(
@@ -1569,7 +1571,7 @@ async def test_gateway_server_does_not_end_turn_from_chat_final_before_late_tool
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1631,7 +1633,7 @@ async def test_gateway_server_emits_direct_reasoning_update_then_waits_for_idle(
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "reasoning step", "event_type": "chat.reasoning"},
-                event_type=EventType.CHAT_REASONING,
+                event_type=GatewayEvent.CHAT_REASONING,
             )
         )
         await server.send(
@@ -1644,7 +1646,7 @@ async def test_gateway_server_emits_direct_reasoning_update_then_waits_for_idle(
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1711,7 +1713,7 @@ async def test_gateway_server_emits_todo_update_then_waits_for_idle():
                         }
                     ]
                 },
-                event_type=EventType.TODO_UPDATED,
+                event_type=GatewayEvent.TODO_UPDATED,
             )
         )
         await server.send(
@@ -1724,7 +1726,7 @@ async def test_gateway_server_emits_todo_update_then_waits_for_idle():
                 timestamp=time.time(),
                 ok=True,
                 payload={"is_processing": False},
-                event_type=EventType.CHAT_PROCESSING_STATUS,
+                event_type=GatewayEvent.CHAT_PROCESSING_STATUS,
             )
         )
 
@@ -1791,7 +1793,7 @@ async def test_gateway_server_delta_only_does_not_trigger_idle_finalize(monkeypa
                 timestamp=time.time(),
                 ok=True,
                 payload={"content": "partial answer"},
-                event_type=EventType.CHAT_DELTA,
+                event_type=GatewayEvent.CHAT_DELTA,
             )
         )
 
@@ -1861,7 +1863,7 @@ async def test_gateway_server_handle_raw_message_forwards_request():
     assert msg.id == "req-3"
     assert msg.channel_id == "acp"
     assert msg.session_id == "sess-3"
-    assert msg.req_method == ReqMethod.CHAT_SEND
+    assert msg.req_method == GatewayMethod.CHAT_SEND
     assert msg.params.get("content") == "hello"
     # P2 起 Mode.from_raw 经 DEPRECATION_MAP 静默映射:agent.fast → agent.work.normal。
     assert msg.mode.value == "agent.work.normal"
@@ -1958,7 +1960,7 @@ async def test_gateway_server_send_event_routes_same_session_id_by_channel():
             timestamp=time.time(),
             ok=True,
             payload={"content": "hello cli"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -1994,7 +1996,7 @@ async def test_gateway_server_routes_event_by_payload_session_id_only():
             timestamp=time.time(),
             ok=True,
             payload={"content": "for a", "session_id": "sess-a"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -2021,7 +2023,7 @@ async def test_gateway_server_session_less_event_broadcasts_to_all_tui_clients()
             timestamp=time.time(),
             ok=True,
             payload={"content": "cron reminder", "cron": {"job_id": "j1"}},
-            event_type=EventType.CHAT_FINAL,
+            event_type=GatewayEvent.CHAT_FINAL,
         )
     )
 
@@ -2048,7 +2050,7 @@ async def test_gateway_server_drops_event_when_session_client_gone():
             timestamp=time.time(),
             ok=True,
             payload={"content": "stale"},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -2072,7 +2074,7 @@ async def test_gateway_server_routes_by_params_session_id_when_payload_empty():
             timestamp=time.time(),
             ok=True,
             payload={},
-            event_type=EventType.CHAT_DELTA,
+            event_type=GatewayEvent.CHAT_DELTA,
         )
     )
 
@@ -2202,7 +2204,7 @@ def _build_tui_server_with_agent_switch() -> GatewayServerProbe:
                 channel_id="tui",
                 forward_methods=frozenset(
                     {
-                        ReqMethod.CHAT_SEND.value,
+                        GatewayMethod.CHAT_SEND.value,
                     }
                 ),
             ),

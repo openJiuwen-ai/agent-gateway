@@ -22,7 +22,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from agent_gateway.common.protocol_methods import ReqMethod
+from agent_gateway.common.gateway_methods import GatewayMethod
 
 from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
@@ -69,7 +69,7 @@ _MAX_BLOB_CHUNKS = 4096
 
 SessionMetadataLoader = Callable[[str, "str | None"], Awaitable[Mapping[str, Any]]]
 TrajectoryFetch = Callable[
-    [ReqMethod, dict[str, Any], str | None],
+    [GatewayMethod, dict[str, Any], str | None],
     Awaitable[tuple[bool, dict[str, Any]]],
 ]
 _UNAVAILABLE_CODES = frozenset(
@@ -135,7 +135,7 @@ class TrajectoryHttpService:
         if after_revision > _MAX_SQLITE_INTEGER:
             return _error_response("after_revision is too large", "BAD_REQUEST", 400)
         return await self._json_query(
-            ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+            GatewayMethod.TRAJECTORY_SUBJECTS_LIST,
             {"session_id": session_id, "after_revision": after_revision},
             user_id=user_id,
         )
@@ -163,7 +163,7 @@ class TrajectoryHttpService:
         if error is not None:
             return error
         ok, payload = await self._call(
-            ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
+            GatewayMethod.TRAJECTORY_ARCHIVE_OPEN,
             {"session_id": session_id},
             user_id,
         )
@@ -207,7 +207,7 @@ class TrajectoryHttpService:
         if error is not None:
             return error
         return await self._json_query(
-            ReqMethod.TRAJECTORY_USAGE_GET,
+            GatewayMethod.TRAJECTORY_USAGE_GET,
             {"session_id": session_id},
             user_id=user_id,
         )
@@ -222,7 +222,7 @@ class TrajectoryHttpService:
         if error is not None:
             return error
         return await self._json_query(
-            ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
+            GatewayMethod.TRAJECTORY_CHECKPOINTS_GET,
             {"session_id": session_id},
             user_id=user_id,
         )
@@ -250,7 +250,7 @@ class TrajectoryHttpService:
         if not 1 <= limit <= 1000:
             return _error_response("limit must be between 1 and 1000", "BAD_REQUEST", 400)
         return await self._json_query(
-            ReqMethod.TRAJECTORY_SUBJECT_GET,
+            GatewayMethod.TRAJECTORY_SUBJECT_GET,
             {
                 "session_id": session_id,
                 "subject_id": normalized_subject_id,
@@ -283,7 +283,7 @@ class TrajectoryHttpService:
                 400,
             )
         return await self._json_query(
-            ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
+            GatewayMethod.TRAJECTORY_STREAM_FRAMES_GET,
             {
                 "session_id": session_id,
                 "since_frame_seq": since_frame_seq,
@@ -317,7 +317,7 @@ class TrajectoryHttpService:
         if any(_SEQUENCE_HASH_PATTERN.fullmatch(value) is None for value in requested):
             return _error_response("invalid sequence hash", "BAD_REQUEST", 400)
         return await self._json_query(
-            ReqMethod.TRAJECTORY_SEQUENCES_GET,
+            GatewayMethod.TRAJECTORY_SEQUENCES_GET,
             {
                 "session_id": session_id,
                 "hashes": requested,
@@ -344,7 +344,7 @@ class TrajectoryHttpService:
         if _SPAN_ID_PATTERN.fullmatch(normalized_span_id) is None:
             return _error_response("invalid span_id", "BAD_REQUEST", 400)
         ok, payload = await self._call(
-            ReqMethod.TRAJECTORY_RAW_GET,
+            GatewayMethod.TRAJECTORY_RAW_GET,
             {
                 "session_id": session_id,
                 "trace_id": normalized_trace_id,
@@ -407,7 +407,7 @@ class TrajectoryHttpService:
 
     async def _json_query(
         self,
-        method: ReqMethod,
+        method: GatewayMethod,
         params: dict[str, Any],
         *,
         user_id: str | None,
@@ -434,7 +434,7 @@ class TrajectoryHttpService:
 
     async def _call(
         self,
-        method: ReqMethod,
+        method: GatewayMethod,
         params: dict[str, Any],
         user_id: str | None,
     ) -> tuple[bool, dict[str, Any]]:
@@ -468,7 +468,7 @@ class TrajectoryHttpService:
         try:
             while True:
                 ok, payload = await self._call(
-                    ReqMethod.TRAJECTORY_BLOB_READ,
+                    GatewayMethod.TRAJECTORY_BLOB_READ,
                     {"export_id": export_id, "offset": offset},
                     user_id,
                 )
@@ -504,7 +504,7 @@ class TrajectoryHttpService:
                     )
                 offset = next_offset
         finally:
-            await self._call(ReqMethod.TRAJECTORY_BLOB_CLOSE, {"export_id": export_id}, user_id)
+            await self._call(GatewayMethod.TRAJECTORY_BLOB_CLOSE, {"export_id": export_id}, user_id)
 
 
 class _QueryFailed(Exception):
@@ -535,7 +535,7 @@ def build_trajectory_fetch(channel: WebChannel) -> TrajectoryFetch:
     """Return the callable that sends one ``trajectory.*`` request."""
 
     async def fetch(
-        method: ReqMethod,
+        method: GatewayMethod,
         params: dict[str, Any],
         user_id: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
