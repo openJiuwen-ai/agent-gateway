@@ -2638,15 +2638,51 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             channels = []
         await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
 
-    async def _task_asr_transcribe(ws, req_id, params, session_id):
-        del session_id
+    async def _task_asr_transcribe(ws, req_id, params, session_id, user_id=None):
         if not isinstance(params, dict):
             await channel.send_response(
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
             )
             return
         try:
-            text = await transcribe_task_audio(params)
+            # Personal config writes live in AgentServer, not Gateway's startup env.
+            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+            resolved_client = _resolve(agent_client)
+            use_local_config = _is_enterprise_edition() and (
+                resolved_client is None
+                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_legacy_shared_directory_client(resolved_client)
+            )
+            if use_local_config:
+                text = await transcribe_task_audio(params)
+            else:
+                from openjiuwen_protocol.message import ReqMethod
+                from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+                from agent_gateway.common.request_identity import apply_routing_metadata
+
+                ok, config = await fetch_agent_unary(
+                    agent_client=resolved_client,
+                    req_method=ReqMethod.CONFIG_GET,
+                    params={},
+                    session_id=session_id,
+                    user_id=user_id,
+                    channel_id=channel.channel_id,
+                    metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
+                    label="task-asr-config",
+                )
+                if not ok:
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error=str(config.get("error") or "ASR configuration unavailable"),
+                        code=str(config.get("code") or "SERVICE_UNAVAILABLE"),
+                    )
+                    return
+                text = await transcribe_task_audio(params, environ={
+                    "ASR_API_BASE": str(config.get("asr_api_base") or ""),
+                    "ASR_API_KEY": str(config.get("asr_api_key") or ""),
+                    "ASR_MODEL_NAME": str(config.get("asr_model") or ""),
+                })
         except TaskAsrError as exc:
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=exc.code

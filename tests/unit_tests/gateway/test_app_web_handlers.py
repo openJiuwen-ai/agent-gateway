@@ -1380,10 +1380,21 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
 
 @pytest.mark.asyncio
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
-    async def fake_transcribe(params):
+    from agent_gateway.routing import e2a_proxy
+
+    async def fetch_config(**kwargs):
+        assert kwargs['req_method'].value == 'config.get'
+        assert kwargs['session_id'] == 'session'
+        assert kwargs['user_id'] == 'user-1'
+        return True, {'asr_api_base': 'https://asr.example/v1', 'asr_api_key': 'saved-key', 'asr_model': 'saved-model'}
+
+    async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        assert environ == {'ASR_API_BASE': 'https://asr.example/v1', 'ASR_API_KEY': 'saved-key', 'ASR_MODEL_NAME': 'saved-model'}
         return "transcribed speech"
 
+    monkeypatch.setattr(app_web_handlers, '_is_enterprise_edition', lambda: False)
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch_config)
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
     channel = _bind()
     await channel.methods["task.asr.transcribe"](
@@ -1391,6 +1402,7 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         "req-task-asr",
         {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"},
         "session",
+        "user-1",
     )
     assert channel.responses[-1] == {
         "id": "req-task-asr",
@@ -1399,6 +1411,25 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         "error": None,
         "code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_task_asr_config_failure_does_not_use_gateway_credentials(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    async def unavailable(**kwargs):
+        return False, {'error': 'AgentServer is unavailable', 'code': 'SERVICE_UNAVAILABLE'}
+
+    async def unexpected_transcribe(*args, **kwargs):
+        pytest.fail('must not use stale Gateway configuration')
+
+    monkeypatch.setattr(app_web_handlers, '_is_enterprise_edition', lambda: False)
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', unavailable)
+    monkeypatch.setattr(app_web_handlers, 'transcribe_task_audio', unexpected_transcribe)
+    channel = _bind()
+    await channel.methods['task.asr.transcribe'](object(), 'asr-unavailable', {}, 'session')
+    assert channel.responses[-1]['ok'] is False
+    assert channel.responses[-1]['code'] == 'SERVICE_UNAVAILABLE'
 
 
 @pytest.mark.asyncio
