@@ -52,6 +52,8 @@ async def test_accepted_lifecycle_keeps_busy_flags(monkeypatch, method):
     }
 
     async def fake_call(*args, **kwargs):
+        assert kwargs["req_method"] == method
+        assert type(kwargs["req_method"]) is str
         return True, payload
 
     monkeypatch.setattr(

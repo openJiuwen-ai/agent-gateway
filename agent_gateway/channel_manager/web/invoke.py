@@ -139,6 +139,9 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
+    # Local handlers are authoritative only when explicitly marked local_only.
+    # A registered forwarding hook (chat.send, for example) still goes through
+    # the normal Gateway -> AgentServer pipeline.
     if handler is not None and method in getattr(channel, "_local_only_methods", ()):
         await _invoke_handler(
             channel, outbound=outbound, method=method, request_id=request_id,

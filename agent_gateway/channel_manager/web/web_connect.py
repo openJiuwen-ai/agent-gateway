@@ -2534,11 +2534,14 @@ class WebChannel(BaseWsChannel):
         return frame
 
     @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
+    def _parse_req_method(method: str) -> ReqMethod | str:
         for item in ReqMethod:
             if item.value == method:
                 return item
-        return None
+        # E2A method names are extensible.  Keep an unknown method as its wire
+        # string so the AgentServer, rather than the Gateway, can decide if it
+        # is implemented.
+        return method
 
     # Public aliases for HTTP dispatch (G.CLS.11).
     parse_req_method = _parse_req_method

@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import contextmanager, nullcontext
 from typing import Any
 
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields, method_value
 from openjiuwen_protocol.message import ReqMethod
 from agent_gateway.common.request_identity import apply_routing_metadata
 from agent_gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
@@ -164,7 +164,7 @@ async def proxy_unary_request(
     params: dict[str, Any] | None,
     session_id: str | None,
     user_id: str | None,
-    req_method: ReqMethod,
+    req_method: ReqMethod | str,
     label: str = DEFAULT_PROXY_LABEL,
     timeout_seconds: float | None = None,
     extra_params: dict[str, Any] | None = None,
@@ -197,7 +197,7 @@ async def proxy_unary_request(
         True 表示已向通道回写响应（调用方无需再 send_response）。
     """
     with _bind_proxy_request_trace(
-        channel, ws, req_id, req_method.value, session_id, user_id,
+        channel, ws, req_id, method_value(req_method), session_id, user_id,
     ) as operation:
         if _agent_unavailable(agent_client):
             if operation is not None:
@@ -245,7 +245,7 @@ async def proxy_unary_request(
             response = await send_agent_request_with_timeout(
                 agent_client,
                 env,
-                label=f"{label} {req_method.value}",
+                label=f"{label} {method_value(req_method)}",
                 timeout_seconds=timeout_seconds,
             )
         except AgentRequestTimeoutError:
@@ -265,7 +265,7 @@ async def proxy_unary_request(
             logger.warning(
                 "[%s] %s 转发失败: request_id=%s error=%s",
                 label,
-                req_method.value,
+                method_value(req_method),
                 req_id,
                 exc,
             )
@@ -291,13 +291,13 @@ async def proxy_unary_request(
                 if callback_result is not None:
                     await callback_result
             except Exception as exc:  # noqa: BLE001 - maintenance must not fail the RPC
-                logger.warning("[%s] %s done callback failed: %s", label, req_method.value, exc)
+                logger.warning("[%s] %s done callback failed: %s", label, method_value(req_method), exc)
         await channel.send_response(
             ws,
             req_id,
             ok=bool(response.ok),
             payload=payload if response.ok or preserve_error_payload else None,
-            error=None if response.ok else str(payload.get("error") or f"{req_method.value} failed"),
+            error=None if response.ok else str(payload.get("error") or f"{method_value(req_method)} failed"),
             code=None if response.ok else str(payload.get("code") or default_error_code),
         )
         return True
@@ -306,7 +306,7 @@ async def proxy_unary_request(
 async def fetch_agent_unary(
     *,
     agent_client: Any,
-    req_method: ReqMethod,
+    req_method: ReqMethod | str,
     params: dict[str, Any] | None,
     session_id: str | None,
     user_id: str | None,
@@ -347,7 +347,7 @@ async def fetch_agent_unary(
             response = await send_agent_request_with_timeout(
                 agent_client,
                 env,
-                label=f"{label} {req_method.value}",
+                label=f"{label} {method_value(req_method)}",
                 timeout_seconds=timeout_seconds,
             )
             break
@@ -361,14 +361,14 @@ async def fetch_agent_unary(
                 logger.warning(
                     "[%s] %s request_id 撞号，换号重试: request_id=%s",
                     label,
-                    req_method.value,
+                    method_value(req_method),
                     exc.request_id,
                 )
                 continue
             logger.error(
                 "[%s] %s request_id 重复撞号，放弃: request_id=%s",
                 label,
-                req_method.value,
+                method_value(req_method),
                 exc.request_id,
             )
             return False, {"error": str(exc), "code": SERVICE_UNAVAILABLE_CODE}
@@ -376,7 +376,7 @@ async def fetch_agent_unary(
             logger.warning(
                 "[%s] %s 转发失败: request_id=%s error=%s",
                 label,
-                req_method.value,
+                method_value(req_method),
                 getattr(env, "request_id", ""),
                 exc,
             )
@@ -394,7 +394,7 @@ async def fetch_agent_unary(
     )
     if not response.ok:
         forwarded: dict[str, Any] = {
-            "error": str(payload.get("error") or f"{req_method.value} failed"),
+            "error": str(payload.get("error") or f"{method_value(req_method)} failed"),
             "code": str(payload.get("code") or "BAD_REQUEST"),
         }
         reported_status = payload.get("status")

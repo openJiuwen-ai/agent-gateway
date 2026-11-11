@@ -203,7 +203,7 @@ class GitDiffWebSocketHandler:
             session_id=session_id or None,
             user_id=connection_user_id,
             req_method=req_method,
-            label=req_method.value,
+            label=getattr(req_method, "value", req_method),
             preserve_error_payload=True,
             on_done=_on_done,
         )

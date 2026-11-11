@@ -66,6 +66,12 @@ class FakeAgentClient:
                 (),
                 {"ok": False, "payload": {"error": "boom", "code": "SESSION_LIST_FAILED"}},
             )()
+        if self.behavior == "method_error":
+            return type(
+                "Resp",
+                (),
+                {"ok": False, "payload": {"error": f"unknown method: {envelope.method}", "code": "METHOD_NOT_FOUND"}},
+            )()
         if self.behavior == "timeout":
             raise AgentRequestTimeoutError()
         raise RuntimeError("connection lost")
@@ -271,6 +277,35 @@ async def test_proxy_agent_error_response_passthrough() -> None:
     assert resp["error"] == "boom"
     assert resp["code"] == "SESSION_LIST_FAILED"
     assert resp["payload"] is None
+
+
+@pytest.mark.asyncio
+async def test_proxy_forwards_unknown_method_and_returns_agent_method_error() -> None:
+    channel = FakeChannel()
+    agent = FakeAgentClient()
+    agent.behavior = "method_error"
+    assert await _invoke(channel, agent, req_method="future.extension")
+    assert len(agent.envelopes) == 1
+    assert agent.envelopes[0].method == "future.extension"
+    response = channel.responses[-1]
+    assert response["id"] == "req-1"
+    assert response["ok"] is False
+    assert response["code"] == "METHOD_NOT_FOUND"
+    assert response["error"] == "unknown method: future.extension"
+
+
+@pytest.mark.asyncio
+async def test_fetch_forwards_unknown_method_and_preserves_agent_method_error() -> None:
+    agent = FakeAgentClient()
+    agent.behavior = "method_error"
+    ok, payload = await fetch_agent_unary(
+        agent_client=agent, req_method="future.extension", params={},
+        session_id=None, user_id=None, channel_id="web",
+    )
+    assert len(agent.envelopes) == 1
+    assert agent.envelopes[0].method == "future.extension"
+    assert not ok
+    assert payload == {"code": "METHOD_NOT_FOUND", "error": "unknown method: future.extension"}
 
 
 def test_new_fetch_request_id_is_unique_in_process() -> None:
