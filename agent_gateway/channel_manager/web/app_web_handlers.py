@@ -2684,11 +2684,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "[task.asr.transcribe] AgentServer config.get omitted all ASR fields; "
                         "deploy the matching Swarm ASR configuration fix"
                     )
-                text = await transcribe_task_audio(params, environ={
+                if config.get("asr_credential_error"):
+                    raise TaskAsrError(
+                        "ASR credential decryption failed at AgentServer; restore its crypto provider or save a new key",
+                        "ASR_CREDENTIAL_DECRYPTION_FAILED",
+                    )
+                asr_environment = {
                     "ASR_API_BASE": str(config.get("asr_api_base") or ""),
                     "ASR_API_KEY": str(config.get("asr_api_key") or ""),
                     "ASR_MODEL_NAME": str(config.get("asr_model") or ""),
-                })
+                }
+                if config.get("asr_api_key_decrypted") is True:
+                    asr_environment["ASR_API_KEY_DECRYPTED"] = "true"
+                text = await transcribe_task_audio(params, environ=asr_environment)
         except TaskAsrError as exc:
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=exc.code
