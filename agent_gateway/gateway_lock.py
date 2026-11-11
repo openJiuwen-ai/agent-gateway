@@ -68,6 +68,11 @@ def _is_process_alive(pid: int) -> bool:
             )
             return str(pid) in result.stdout and "INFO:" not in result.stdout
         except Exception:
+            # Never let an inconclusive probe masquerade as "process is dead"
+            # without leaving a trace: a timeout, a missing ``tasklist`` or a
+            # decode failure all land here, and the caller then treats the lock
+            # as free. The return value stays a plain bool.
+            logger.warning("tasklist probe failed for pid=%d", pid, exc_info=True)
             return False
     try:
         os.kill(pid, 0)
