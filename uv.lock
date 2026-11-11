@@ -132,7 +132,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3,<0.8" },
     { name = "minio", specifier = ">=7.2,<8" },
     { name = "openai", specifier = ">=1.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f24b478c883fd80b22fed8c5547bcd81153624f" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
@@ -3203,7 +3203,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4#f3f8f576164cc405c046e43079c8ad00ee17f0c4" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f24b478c883fd80b22fed8c5547bcd81153624f#2f24b478c883fd80b22fed8c5547bcd81153624f" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -3222,6 +3222,7 @@ dependencies = [
     { name = "intelli-router" },
     { name = "json-repair" },
     { name = "loguru" },
+    { name = "markdown-it-py" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "mermaid-py" },
