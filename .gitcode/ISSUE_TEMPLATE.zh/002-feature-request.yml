@@ -47,6 +47,7 @@ body:
         🚀 背景描述
       description: |
         请清晰、简洁地描述该功能提案的内容。请阐述提出此提案的动机。你的功能需求是否与某个具体问题相关？例如：“我在开发功能 X，希望能实现 Y 这个功能”。如果此需求与 GitCode 上的其他 Issue 相关，也请在此附上链接:
+    validations:
       required: true
   - type: textarea
     attributes:
