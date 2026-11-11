@@ -16,7 +16,6 @@ from agent_gateway.common.asr_client import (
     AUDIO_SUFFIXES,
     AsrClient,
     AsrError,
-    decrypt_api_key,
     normalize_ws_endpoint,
 )
 from agent_gateway.common.local_env_config import read_env
@@ -99,7 +98,19 @@ async def transcribe_task_audio(
     if not api_base or not model:
         return ""
     endpoint = task_asr_endpoint(api_base)
-    api_key = decrypt_api_key(str(get_config("ASR_API_KEY", "") or "").strip())
+    api_key = str(get_config("ASR_API_KEY", "") or "").strip()
+    if get_config("ASR_API_KEY_DECRYPTED", "") != "true" and api_key:
+        from agent_gateway.extensions.base_crypto import get_crypto_provider
+
+        crypto = get_crypto_provider()
+        if crypto is not None:
+            try:
+                api_key = str(crypto.decrypt(api_key))
+            except Exception:
+                raise TaskAsrError(
+                    "ASR credential decryption failed; check the configuration owner's crypto provider",
+                    "ASR_CREDENTIAL_DECRYPTION_FAILED",
+                ) from None
 
     mime_type = (
         str(params.get("mime_type") or "audio/webm").split(";", 1)[0].strip().lower()
