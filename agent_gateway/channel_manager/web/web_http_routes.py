@@ -707,11 +707,20 @@ async def _unary(
             bind_session_param=bind_session_param,
             client_host=_request_client_host(request),
         )
-        # For forwarded stream methods without SSE Accept, wait for first res (accepted).
+        # Interrupt needs its final result after ACK, including authoritative Todos.
         frame = await outbound.wait_response(
             req_id, timeout=resolve_web_http_unary_timeout(),
+            result_event="chat.interrupt_result" if method == "chat.interrupt" else None,
         )
         body, status = _envelope_from_res(frame, req_id, rpc_method=method)
+        if method == "chat.interrupt":
+            result = frame.get("payload") or {}
+            logger.info(
+                "[WebHTTP] interrupt settled request_id=%s session_id=%s success=%s todos=%s code=%s",
+                req_id, _sid, result.get("success"),
+                len(result["todos"]) if isinstance(result.get("todos"), list) else None,
+                frame.get("code"),
+            )
         if created and body.get("ok"):
             status = 201
         return JSONResponse(

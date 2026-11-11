@@ -44,7 +44,7 @@ class _FakePeer:
         self._frames = list(frames)
         self.closed = False
 
-    async def wait_response(self, req_id: str, *, timeout: float = 60.0) -> dict[str, Any]:
+    async def wait_response(self, req_id: str, *, timeout: float = 60.0, result_event=None) -> dict[str, Any]:
         for f in self._frames:
             if f.get("type") == "res" and f.get("id") == req_id:
                 return f
@@ -864,28 +864,30 @@ def test_resolve_web_http_timeouts_defaults_and_env(monkeypatch: pytest.MonkeyPa
     assert mod2.resolve_web_http_unary_timeout() == 15.0
 
 
-def test_chat_interrupt(app_with_mock):
+@pytest.mark.parametrize("success", [True, False])
+def test_chat_interrupt(app_with_mock, success):
     app, dispatch = app_with_mock
+    todos = [
+        {"id": "done", "content": "done", "status": "completed"},
+        {"id": "running", "content": "running", "status": "cancelled"},
+    ]
 
     async def _disp(*args, **kwargs):
         rid = kwargs.get("request_id") or "r"
-        peer = _FakePeer(
-            [
-                {
-                    "type": "res",
-                    "id": rid,
-                    "ok": True,
-                    "payload": {
-                        "accepted": True,
-                        "session_id": "sess_1",
-                        "intent": "cancel",
-                        "event_type": "chat.interrupt_result",
-                        "success": True,
-                        "message": "任务已取消",
-                    },
-                }
-            ]
-        )
+        peer = outbound_mod.HttpJsonOutbound(session_id="sess_1")
+        peer.accept_frame({"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}})
+
+        async def finish_interrupt():
+            await asyncio.sleep(0.01)
+            peer.accept_frame({
+                "type": "event", "event": "chat.interrupt_result",
+                "payload": {
+                    "request_id": "internal_interrupt_id", "session_id": "sess_1",
+                    "intent": "cancel", "success": success, "todos": todos,
+                },
+            })
+
+        asyncio.create_task(finish_interrupt())
         return peer, rid, "sess_1"
 
     dispatch.side_effect = _disp
@@ -894,7 +896,33 @@ def test_chat_interrupt(app_with_mock):
     assert r.status_code == 200
     assert dispatch.await_args.kwargs["method"] == "chat.interrupt"
     assert r.json()["data"]["event_type"] == "chat.interrupt_result"
-    assert r.json()["data"]["success"] is True
+    assert r.json()["data"]["success"] is success
+    assert r.json()["data"]["todos"] == todos
+
+
+def test_interrupt_ack_without_result_times_out():
+    async def run():
+        peer = outbound_mod.HttpJsonOutbound(session_id="s1")
+        peer.accept_frame({"type": "res", "id": "r1", "ok": True, "payload": {"accepted": True}})
+        peer.accept_frame({
+            "type": "event", "event": "chat.interrupt_result",
+            "payload": {"session_id": "another-session", "success": True},
+        })
+        result = await peer.wait_response("r1", timeout=0.01, result_event="chat.interrupt_result")
+        assert result["ok"] is False
+        assert result["code"] == "TIMEOUT"
+
+    asyncio.run(run())
+
+
+def test_interrupt_rejection_does_not_wait_for_result():
+    async def run():
+        peer = outbound_mod.HttpJsonOutbound(session_id="s1")
+        rejected = {"type": "res", "id": "r1", "ok": False, "error": "rejected"}
+        peer.accept_frame(rejected)
+        assert await peer.wait_response("r1", timeout=0.01, result_event="chat.interrupt_result") == rejected
+
+    asyncio.run(run())
 
 
 web_http_routes = _load_module(
