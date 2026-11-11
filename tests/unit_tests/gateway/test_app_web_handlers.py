@@ -1384,6 +1384,7 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
 
     async def fetch_config(**kwargs):
         assert kwargs['req_method'].value == 'config.get'
+        assert kwargs['timeout_seconds'] == 5
         assert kwargs['session_id'] == 'session'
         assert kwargs['user_id'] == 'user-1'
         return True, {'asr_api_base': 'https://asr.example/v1', 'asr_api_key': 'saved-key', 'asr_model': 'saved-model'}
@@ -2932,3 +2933,49 @@ async def test_run_notification_subscription_applies_access_checks(monkeypatch):
     web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
     endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
     assert await endpoint(SimpleNamespace()) is denied
+
+
+@pytest.mark.asyncio
+async def test_task_asr_enterprise_local_config_does_not_fetch(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    async def unexpected_fetch(**kwargs):
+        pytest.fail("local enterprise ASR must not fetch remote configuration")
+
+    async def transcribe(params, *, environ=None):
+        assert environ is None
+        return "local transcript"
+
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", unexpected_fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", transcribe)
+    channel = _bind(agent_client=None)
+    await channel.methods["task.asr.transcribe"](object(), "local-asr", {}, "session")
+    assert channel.responses[-1]["payload"] == {"text": "local transcript"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config, warns", [
+    ({}, True),
+    ({"asr_api_base": "", "asr_api_key": "", "asr_model": ""}, False),
+])
+async def test_task_asr_warns_only_for_missing_config_contract(monkeypatch, config, warns):
+    from agent_gateway.routing import e2a_proxy
+    from unittest.mock import Mock
+
+    async def fetch(**kwargs):
+        return True, config
+
+    async def transcribe(params, *, environ):
+        assert environ == {"ASR_API_BASE": "", "ASR_API_KEY": "", "ASR_MODEL_NAME": ""}
+        return ""
+
+    warning = Mock()
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", transcribe)
+    monkeypatch.setattr(app_web_handlers.logger, "warning", warning)
+    channel = _bind()
+    await channel.methods["task.asr.transcribe"](object(), "missing-asr", {}, "session")
+    assert warning.called is warns
+    assert channel.responses[-1]["ok"] is True
