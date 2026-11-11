@@ -1,6 +1,6 @@
 # E2A (Everything-to-Agent) Protocol
 
-> **Implementation**: `openjiuwen_protocol.e2a`（`models.py`, `adapters.py`, `constants.py`, `__init__.py`）. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
+> **Implementation**: `e2a`（`models.py`, `adapters.py`, `constants.py`, `__init__.py`）. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
 > **Chinese**: [../../zh/reference/e2a-protocol.md](../../zh/reference/e2a-protocol.md)
 
 ---
@@ -11,10 +11,10 @@
 |----------|------|
 | **docs/zh/reference/e2a-protocol.md** | Same specification in Chinese |
 | **docs/en/reference/e2a-protocol.md** (this file) | Normative description, pitfalls, examples (English) |
-| `openjiuwen_protocol/e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
-| `openjiuwen_protocol/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
-| `openjiuwen_protocol/e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
-| `openjiuwen_protocol/e2a/__init__.py` | Public exports |
+| `e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
+| `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
+| `e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
+| `e2a/__init__.py` | Public exports |
 
 ---
 
@@ -150,7 +150,7 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 ## 6. ACP strings in `constants.py` (bridge reference)
 
-For ACP bridging and doc cross-check only; **at runtime** use tuples in `openjiuwen_protocol.e2a.constants`:
+For ACP bridging and doc cross-check only; **at runtime** use tuples in `e2a.constants`:
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**: client → Agent JSON-RPC method names
 - **`ACP_AGENT_TO_CLIENT_METHODS`**, **`ACP_NOTIFICATION_NAMES`**: downstream / notifications
@@ -163,7 +163,7 @@ For ACP bridging and doc cross-check only; **at runtime** use tuples in `openjiu
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python: `openjiuwen_protocol.e2a.merge_params_to_acp_prompt(envelope)`.
+Python: `e2a.merge_params_to_acp_prompt(envelope)`.
 
 If and only if **`method == "session/prompt"`**:
 
@@ -476,7 +476,7 @@ as cancellation rather than being classified as a `chat.error`.
 
 ---
 
-*Maintained in sync with `openjiuwen_protocol/e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
+*Maintained in sync with `e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
 
 ## Changelog
 

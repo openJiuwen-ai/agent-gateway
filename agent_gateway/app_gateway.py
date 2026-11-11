@@ -38,8 +38,8 @@ _STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
 def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import (
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,

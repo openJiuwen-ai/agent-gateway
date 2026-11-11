@@ -9,8 +9,8 @@ from uuid import uuid4
 from weakref import WeakValueDictionary
 
 from filelock import Timeout
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from e2a.models import E2AEnvelope
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,

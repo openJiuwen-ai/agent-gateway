@@ -8,8 +8,8 @@ import secrets
 import time
 from typing import Any
 
-from openjiuwen_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.gateway_normalize import message_to_e2a_or_fallback
+from e2a.message import Message, ReqMethod
 
 
 class HeartbeatServiceUnavailableError(Exception):

@@ -23,7 +23,7 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from agent_gateway.channel_manager.base import (

@@ -13,7 +13,7 @@ from agent_gateway.common import paths
 from agent_gateway.enterprise.team.quota_policy import OwnerIdentity, TeamQuotaPolicyStore
 from agent_gateway.enterprise.team.route import TeamRouteResolver
 from agent_gateway.enterprise.team.route_binding_store import InMemoryTeamRouteBindingStore, SqliteTeamRouteBindingStore
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 
 def test_fresh_workspace_installs_own_template_without_overwriting_user_config():

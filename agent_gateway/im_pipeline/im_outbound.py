@@ -23,7 +23,7 @@ from agent_gateway.common.reasoning_injector import build_reasoning_model_reques
 from agent_gateway.routing.interaction_context import PendingInteraction
 
 if TYPE_CHECKING:
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     from agent_gateway.im_pipeline.im_inbound import IMPlatformAdapter
 

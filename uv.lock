@@ -56,6 +56,7 @@ dependencies = [
     { name = "croniter" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
+    { name = "e2a" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx", extra = ["http2", "socks"] },
@@ -66,7 +67,6 @@ dependencies = [
     { name = "minio" },
     { name = "openai" },
     { name = "openjiuwen" },
-    { name = "openjiuwen-protocol" },
     { name = "openjiuwen-runtime-foundation" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -123,6 +123,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=3.0.0,<7" },
     { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
     { name = "discord-py", specifier = ">=2.4.0,<3" },
+    { name = "e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "filelock", specifier = ">=3.25.0,<4" },
     { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
@@ -133,7 +134,6 @@ requires-dist = [
     { name = "minio", specifier = ">=7.2,<8" },
     { name = "openai", specifier = ">=1.0,<3" },
     { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=f3f8f576164cc405c046e43079c8ad00ee17f0c4" },
-    { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
@@ -1395,6 +1395,11 @@ sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/ea/07/448
 wheels = [
     { url = "https://repo.huaweicloud.com/repository/pypi/packages/d6/51/756e71bec48ece0ecc2a10e921ef2756e197dcb7e478f2b43673b6683902/docx2txt-0.9-py3-none-any.whl", hash = "sha256:e3718c0653fd6f2fcf4b51b02a61452ad1c38a4c163bcf0a6fd9486cd38f529a" },
 ]
+
+[[package]]
+name = "e2a"
+version = "0.1.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677#d3d1681e4dd96f9fe38bdac47ca81ea1774d7677" }
 
 [[package]]
 name = "email-validator"
@@ -3253,11 +3258,6 @@ dependencies = [
     { name = "trafilatura" },
     { name = "transformers" },
 ]
-
-[[package]]
-name = "openjiuwen-protocol"
-version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#4c5f3e9eb41bd33d34d012b06a3e364e8497ac11" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"

@@ -397,7 +397,7 @@ async def test_welink_manual_credential_attaches_runtime_agent_and_hides_secret(
 
 
 def test_public_colleague_methods_forward_but_owner_and_internal_operations_stay_local():
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _JIUWENMATE_FORWARD_METHODS,
     )

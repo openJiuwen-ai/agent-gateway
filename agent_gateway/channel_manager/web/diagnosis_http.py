@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 from agent_gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     validate_http_origin,

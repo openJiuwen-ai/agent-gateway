@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 import aiohttp
 from aiohttp.client_exceptions import ContentTypeError
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import (

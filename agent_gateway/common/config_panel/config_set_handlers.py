@@ -671,8 +671,8 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
 
     try:
         if agent_client is not None:
-            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-            from openjiuwen_protocol.message import ReqMethod
+            from e2a.gateway_normalize import e2a_from_agent_fields
+            from e2a.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{_uuid.uuid4().hex[:8]}",

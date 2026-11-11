@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.mode_matrix import is_team_mode
 from agent_gateway.runtime.session_input import SessionInputMode, resolve_session_input_mode

@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""补齐 pinned ``openjiuwen-protocol`` 尚未发布的协议枚举成员。
+"""补齐 pinned ``e2a`` 尚未发布的协议枚举成员。
 
 拆仓前这些成员由宿主进程动态注册；Gateway 作为独立进程不再导入宿主，
 必须自行注册同值成员，否则消费对应 RPC 或事件时会抛 ``AttributeError``。
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.message import EventType, ReqMethod
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound"),

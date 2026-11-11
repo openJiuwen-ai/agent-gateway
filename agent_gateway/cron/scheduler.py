@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE

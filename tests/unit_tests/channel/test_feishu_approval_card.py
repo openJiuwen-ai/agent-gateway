@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (

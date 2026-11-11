@@ -818,7 +818,7 @@ async def _load_session_metadata(
     user_id: str | None = None,
 ) -> Mapping[str, Any]:
     from agent_gateway.common.external_providers import provider
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     return await provider(
         PROVIDER_DOMAIN_SESSION_METADATA

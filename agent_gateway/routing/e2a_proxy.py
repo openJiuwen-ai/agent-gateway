@@ -30,8 +30,8 @@ from collections.abc import Awaitable, Callable
 from contextlib import contextmanager, nullcontext
 from typing import Any
 
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import ReqMethod
+from e2a.gateway_normalize import e2a_from_agent_fields
+from e2a.message import ReqMethod
 from agent_gateway.common.request_identity import apply_routing_metadata
 from agent_gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
 from agent_gateway.routing.agent_client import (

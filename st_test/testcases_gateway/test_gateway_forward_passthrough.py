@@ -53,7 +53,7 @@ STREAM_REQUIRED = ("personal_context.context.stream_graph", "personal_context.co
 def _forward_registry() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     """导入转发注册表与协议枚举，返回 (forward, no_local, unreachable)。"""
     from agent_gateway.channel_manager.web import app_web_handlers as awh
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
 
     forward: frozenset[str] = awh._FORWARD_REQ_METHODS
     no_local: frozenset[str] = awh._FORWARD_NO_LOCAL_HANDLER_METHODS

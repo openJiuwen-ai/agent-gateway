@@ -21,7 +21,7 @@ from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,

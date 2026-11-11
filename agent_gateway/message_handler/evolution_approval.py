@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 from agent_gateway.runtime.evolution import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,

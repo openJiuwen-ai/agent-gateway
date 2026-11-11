@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from openjiuwen_protocol.message import EventType
+from e2a.message import EventType
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,

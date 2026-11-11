@@ -229,8 +229,8 @@ async def command_model_handler(
     E2A 代理分叉与 ``force_local_config`` 语义由 gateway 侧包装器处理；
     本 handler 假定已在正确的用户目录上下文中执行。
     """
-    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.gateway_normalize import e2a_from_agent_fields
+    from e2a.message import ReqMethod
 
     if not isinstance(params, dict):
         params = {}

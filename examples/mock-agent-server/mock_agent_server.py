@@ -5,11 +5,11 @@ import asyncio
 import json
 import sys
 
-from jiuwenswarm.common.e2a.wire_codec import (
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from websockets.legacy.server import serve
 
 

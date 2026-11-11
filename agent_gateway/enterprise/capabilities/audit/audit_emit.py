@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Any
 
-from openjiuwen_protocol.audit import (
+from e2a.audit import (
     AUDIT_EVENT_EVENT,
     AUDIT_EVENT_USER_ACTION,
     AUDIT_LEVEL_INFO,

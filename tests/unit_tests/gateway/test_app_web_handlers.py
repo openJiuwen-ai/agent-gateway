@@ -15,7 +15,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
 from agent_gateway.channel_manager.web.app_web_handlers import (

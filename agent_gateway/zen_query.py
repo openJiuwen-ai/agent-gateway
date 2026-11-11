@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)

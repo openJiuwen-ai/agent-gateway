@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 from agent_gateway.common import paths
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
@@ -75,7 +75,7 @@ class _FakeClient:
 async def test_web_channel_stream_callback_preserves_delivery_state_and_legacy_payloads(delivery_state):
     from unittest.mock import AsyncMock
 
-    from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+    from e2a.agent_models import AgentResponseChunk
     from agent_gateway.message_handler.message_handler import MessageHandler
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())

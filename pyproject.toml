@@ -14,7 +14,7 @@ classifiers = [
 dependencies = [
     # 协议层与 Agent 内核（rev 与 jiuwenswarm 母仓保持一致，避免同环境双版本）
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@d3d1681e4dd96f9fe38bdac47ca81ea1774d7677#subdirectory=e2a",
     # 企业版审计与 DB 表定义（config/enterprise/tables 顶层 import）
     "openjiuwen-runtime-foundation",
     # Web / HTTP / WebSocket 服务面
@@ -86,6 +86,7 @@ agent-gateway = "agent_gateway.app_gateway:main"
 agent-gateway-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
 
 [tool.uv.sources]
+e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "d3d1681e4dd96f9fe38bdac47ca81ea1774d7677", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [tool.setuptools]

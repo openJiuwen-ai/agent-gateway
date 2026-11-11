@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
 )

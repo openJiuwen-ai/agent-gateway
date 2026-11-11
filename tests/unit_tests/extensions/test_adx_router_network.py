@@ -20,12 +20,12 @@ from cryptography.x509.oid import NameOID
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.agent_models import AgentResponse, AgentResponseChunk
 
 from tests.unit_tests.extensions.test_adx_router import EnvironmentAPI, _config
 from agent_gateway.extensions.adx.control_client import AdxControlClient

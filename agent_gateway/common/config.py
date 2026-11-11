@@ -1685,7 +1685,7 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     state_mcps: list[dict[str, Any]] = []
     try:
         from agent_gateway.common.external_providers import provider
-        from openjiuwen_protocol.provider_domains import (
+        from e2a.provider_domains import (
             PROVIDER_DOMAIN_MCP_REGISTRY,
             PROVIDER_DOMAIN_MCP_STATE,
         )

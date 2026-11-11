@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.message import EventType, ReqMethod
 
 from agent_gateway.health_check import (
     GatewayHealthCheckService,

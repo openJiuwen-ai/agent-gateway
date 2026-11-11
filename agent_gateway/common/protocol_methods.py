@@ -2,13 +2,13 @@
 
 from enum import Enum
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 
 def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
     """Register a member of a protocol enum the pinned protocol package does not ship yet.
 
-    ``openjiuwen-protocol`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
+    ``e2a`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
     待协议包提供同名同值成员后本函数与调用一并删除。
     """
     existing = enum_cls.__members__.get(name)

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.app_gateway import (
     GatewayServer,

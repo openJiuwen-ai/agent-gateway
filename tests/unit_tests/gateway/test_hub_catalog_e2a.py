@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import (
     application_config_router,
@@ -88,7 +88,7 @@ def test_hub_catalog_method_available_without_application_imports():
     """A standalone Gateway can use the pinned protocol without Server shims."""
     script = (
         "import sys; "
-        "from openjiuwen_protocol.message import ReqMethod; "
+        "from e2a.message import ReqMethod; "
         "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
         "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway', 'agent_gateway') "
         "for name in sys.modules)"

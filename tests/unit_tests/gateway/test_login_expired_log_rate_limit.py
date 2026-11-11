@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-pytest.importorskip("openjiuwen_protocol")
+pytest.importorskip("e2a")
 
 from agent_gateway.message_handler import message_handler as mh
 

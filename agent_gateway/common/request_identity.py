@@ -25,7 +25,7 @@
    - 个人版 Web：建议有顶层 ``user_id``；其余可缺
    - 企业版 Web：``routing.bot_id`` 建议有；``user_id``/``group_id`` 按策略需要
 
-实现已收口到 ``openjiuwen_protocol.identity``（gateway 与 AgentServer 共用的
+实现已收口到 ``e2a.identity``（gateway 与 AgentServer 共用的
 唯一来源）；本模块只 re-export 并保留 gateway 本地 handler 的
 ``merge_routing_into_params`` 适配。
 """
@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from openjiuwen_protocol.identity import (
+from e2a.identity import (
     ROUTING_METADATA_KEY,
     USER_ID_FIELD,
     WEB_IDENTITY_FIELDS,

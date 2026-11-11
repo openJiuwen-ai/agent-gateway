@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.common.external_providers import register
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
@@ -156,7 +156,7 @@ class SessionMetadataRemoteProvider:
 
 def install() -> None:
     """把 WS 远端实现注册进 ``common.external_providers`` 的 session_metadata 域。"""
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     register(PROVIDER_DOMAIN_SESSION_METADATA, SessionMetadataRemoteProvider())
     logger.info(

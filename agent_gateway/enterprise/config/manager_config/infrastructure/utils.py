@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from openjiuwen_protocol.template_slots import (
+from e2a.template_slots import (
     normalize_template_ref,  # noqa: F401  re-export，保持既有导入路径
 )
 

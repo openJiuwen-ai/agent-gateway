@@ -549,7 +549,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -687,7 +687,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
             )
             return
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -727,8 +727,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         重绑到另一个项目后，原项目撤回该会话的要求并重算最新来源，新项目也重算最新来源。
         """
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -803,7 +803,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
         SessionAdapter 删除路径。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -843,7 +843,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         fall back to the Gateway deployment directory.  AgentServer will
         support fast startup, so the legacy local fallback was removed.
         """
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.gateway_normalize import e2a_from_agent_fields
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -892,7 +892,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         Always returns True: failures are reported to the client and never
         fall back to local execution (AgentServer will support fast startup).
         """
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.gateway_normalize import e2a_from_agent_fields
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -936,8 +936,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         user_id: str | None = None,
     ) -> tuple[Optional[str], int]:
         """通过 E2A 转发 LLM 摘要请求到 AgentServer。返回 (summary, summarized_count)。"""
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.message import ReqMethod
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -974,7 +974,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_rewind(ws, req_id, params, session_id, user_id=None):
         """session.rewind: E2A → AgentServer（权威写入者），不可达即报错."""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1014,7 +1014,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         )
 
     async def _history_list_turns(ws, req_id, params, session_id, user_id=None):
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             params = {}
@@ -1033,7 +1033,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_rewind_and_restore(ws, req_id, params, session_id, user_id=None):
         """session.rewind_and_restore: E2A → AgentServer（权威写入者），不可达即报错."""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1074,7 +1074,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_restore_files(ws, req_id, params, session_id, user_id=None):
         """session.restore_files: 仅恢复文件，不截断对话；不可达即报错."""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1152,8 +1152,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             summarized_count = 0
 
         # Step 2: Send rewind to AgentServer (truncation + agent-internal record writing)
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.message import ReqMethod
 
         if real_client is not None:
             try:
@@ -1205,7 +1205,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _session_rename(ws, req_id, params, session_id, user_id=None):
         """优先经 E2A 转发至 AgentServer；单用户共享目录不可达时由薄代理跑
         SessionAdapter（``apply_session_rename`` 同一中立门面）本地回退。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1228,7 +1228,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         WebSocket 客户端在 AgentServer 不可达时由薄代理回落到 Gateway 本地执行
         同一适配器（共享目录），保持迁移前的离线可用性。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1246,7 +1246,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_preview(ws, req_id, params, session_id, user_id=None):
         """获取 session 预览信息（统一薄代理：AgentServer 注入目录 history 白名单过滤）。"""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1411,10 +1411,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _run_harmonyos_dev_init_operation() -> None:
             try:
-                from openjiuwen_protocol.e2a.gateway_normalize import (
+                from e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from openjiuwen_protocol.message import ReqMethod
+                from e2a.message import ReqMethod
 
                 from agent_gateway.routing.e2a_proxy import (
                     is_legacy_shared_directory_client,
@@ -1567,7 +1567,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         Phase 4 整合：统一薄代理 E2A 转发（HarmonyOSAdapter）；单用户共享目录
         不可达时由薄代理跑同一适配器（保持离线可用）。
         """
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1597,7 +1597,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         resolved_client = _resolve_agent_client(agent_client)
         if not force_local_config and resolved_client is not None:
-            from openjiuwen_protocol.message import ReqMethod
+            from e2a.message import ReqMethod
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws,
@@ -1720,7 +1720,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
         channel.register_local_handler(path, method_name, _handler)
 
-    from openjiuwen_protocol.message import ReqMethod as _ConfigReq
+    from e2a.message import ReqMethod as _ConfigReq
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
@@ -1778,7 +1778,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
             return
 
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1822,7 +1822,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
         channel.register_local_handler(path, method_name, _handler)
 
-    from openjiuwen_protocol.message import ReqMethod as _MemoryReq
+    from e2a.message import ReqMethod as _MemoryReq
     _register_memory_proxy("memory.list", _MemoryReq.MEMORY_LIST)
     _register_memory_proxy("memory.edit", _MemoryReq.MEMORY_EDIT)
     _register_memory_proxy("memory.status", _MemoryReq.MEMORY_STATUS)
@@ -1934,7 +1934,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if "project_dir" not in params and session_id:
                 try:
                     from agent_gateway.common.external_providers import provider
-                    from openjiuwen_protocol.provider_domains import (
+                    from e2a.provider_domains import (
                         PROVIDER_DOMAIN_SESSION_METADATA,
                     )
 

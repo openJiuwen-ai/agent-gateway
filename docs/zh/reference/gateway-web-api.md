@@ -2,7 +2,7 @@
 
 > **目标**：完整描述 JiuwenSwarm Gateway 对 Web 前端暴露的全部接口——WebSocket JSON-RPC 方法、HTTP 路由与推送事件，覆盖参数校验、错误码、权限、流式契约（出错处理 / 取消 / 完整性）与内部输入输出关联。预期读者为前端开发、SDK 开发与网关维护者。
 >
-> **基准版本**：本仓 `upstream/develop` @ `0d50e02b0`（2026-11-09），行为已按该版本核对修正。**路径前缀映射**：`gateway/*` → `agent_gateway/*`、`common/*` → `agent_gateway/common/*`、`common/schema/message.py`（ReqMethod/EventType/Mode/Message）→ 协议包 `openjiuwen_protocol/`（钉定 rev `4c5f3e9eb`）；`server/*`、`agents/*`、`channels/web/frontend/*` 引用属 AgentServer / 前端仓，本仓不可核。**未随本次修订整体刷新的行号仍为旧基线 jiuwenswarm `3548d192d` 行号**，仅作定位线索，以代码为最终实现源。
+> **基准版本**：本仓 `upstream/develop` @ `0d50e02b0`（2026-11-09），行为已按该版本核对修正。**路径前缀映射**：`gateway/*` → `agent_gateway/*`、`common/*` → `agent_gateway/common/*`、`common/schema/message.py`（ReqMethod/EventType/Mode/Message）→ 协议包 `e2a/`（钉定 rev `d3d1681e4`）；`server/*`、`agents/*`、`channels/web/frontend/*` 引用属 AgentServer / 前端仓，本仓不可核。**未随本次修订整体刷新的行号仍为旧基线 jiuwenswarm `3548d192d` 行号**，仅作定位线索，以代码为最终实现源。
 
 ---
 
@@ -730,7 +730,7 @@ chat.processing_status {is_processing:false, is_complete:true}
 
 ### 5.1 进入方式与 mode 枚举
 
-team 模式由 `chat.send` / `session.create` 的 `mode` 参数进入。`Mode` 枚举（协议包 `openjiuwen_protocol/message.py:689-708`）canonical 值：
+team 模式由 `chat.send` / `session.create` 的 `mode` 参数进入。`Mode` 枚举（协议包 `e2a/message.py:689-708`）canonical 值：
 
 | 类别 | canonical | 说明 |
 |------|-----------|------|
@@ -1476,7 +1476,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 - **`session_id`**：仅作 IM 渠道回发身份解析的线索（从绑定的会话找 chat_id）；web 创建时被 handler 无条件覆盖为当前会话，cron 执行**不**复用该会话（每次触发预建独立执行会话，§8.1.10）。
 
 - **响应**：`{job: CronJob}`。**错误**：`BAD_REQUEST`（一切校验异常，含项目执行闸门 `OPERATION_IN_PROGRESS`）、`SERVICE_UNAVAILABLE`（AgentOS 项目绑定解析失败）、`INTERNAL_ERROR`。
-- CronJob 响应体（`to_dict`，`runtime/cron/models.py:433-439`；数据结构已 protocol 化到 `openjiuwen_protocol/cron_models.py`）：恒有 `id, name, enabled, expired, cron_expr, timezone, wake_offset_seconds, description, targets, created_at, updated_at, project_id, work_mode, user_id, group_id, bot_id`（group/bot 为企业多租户身份，服务端注入）；条件输出 `session_id, chat_type, mode, delete_after_run, timeout_seconds, last_session_id, model_name, model_selection, mcp, app_id, credential_ref, next_run_at`。
+- CronJob 响应体（`to_dict`，`runtime/cron/models.py:433-439`；数据结构已 protocol 化到 `e2a/cron_models.py`）：恒有 `id, name, enabled, expired, cron_expr, timezone, wake_offset_seconds, description, targets, created_at, updated_at, project_id, work_mode, user_id, group_id, bot_id`（group/bot 为企业多租户身份，服务端注入）；条件输出 `session_id, chat_type, mode, delete_after_run, timeout_seconds, last_session_id, model_name, model_selection, mcp, app_id, credential_ref, next_run_at`。
 
 #### 8.1.5 cron.job.update
 
@@ -4273,7 +4273,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 当前全集 489 个 WS 方法（个人版 482；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
 
-## 附录 B. 事件类型总表（EventType，协议包 `openjiuwen_protocol/message.py` + 网关 shim `common/protocol_compat.py`，共 50 个）
+## 附录 B. 事件类型总表（EventType，协议包 `e2a/message.py` + 网关 shim `common/protocol_compat.py`，共 50 个）
 
 | 事件 | 载荷档 | 说明 |
 |------|--------|------|

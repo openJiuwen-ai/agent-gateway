@@ -11,7 +11,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.base import RobotMessageRouter

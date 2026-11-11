@@ -16,10 +16,10 @@ from time import monotonic
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
@@ -984,7 +984,7 @@ async def mock_agent_server_handler(ws: Any) -> None:
     协议兼容的 Mock AgentServer：按 is_stream 回 E2AResponse 线 JSON（与生产 AgentServer 一致）。
     """
     import websockets
-    from openjiuwen_protocol.e2a.wire_codec import (
+    from e2a.wire_codec import (
         encode_agent_chunk_for_wire,
         encode_agent_response_for_wire,
     )
@@ -1056,7 +1056,7 @@ async def run_mock_agent_server(
 
 async def _run_verification() -> None:
     """用内存 Mock 服务端验证 WebSocketAgentServerClient 的 connect/send_request/send_request_stream."""
-    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+    from e2a.gateway_normalize import e2a_from_agent_fields
 
     port = 18765
     uri = f"ws://127.0.0.1:{port}"

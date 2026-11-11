@@ -16,7 +16,7 @@ from openjiuwen.core.foundation.llm.schema.config import (
     ModelClientConfig,
     ModelRequestConfig,
 )
-from openjiuwen_protocol.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 
 from agent_gateway.common.config import _parse_custom_headers
 from agent_gateway.common.paths import get_deepagent_user_md_path, logger

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import (
+from e2a.message import (
     TEAM_ATTACH_ONLY_PARAM,
     EventType,
     Message,

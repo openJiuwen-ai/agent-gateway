@@ -6,8 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from openjiuwen_protocol.e2a.constants import E2A_RESPONSE_STATUS_SUCCEEDED
-from openjiuwen_protocol.e2a.models import E2AResponse
+from e2a.constants import E2A_RESPONSE_STATUS_SUCCEEDED
+from e2a.models import E2AResponse
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 

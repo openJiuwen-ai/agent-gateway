@@ -5,7 +5,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.auth import login_credentials as lc
 from agent_gateway.auth.login_credentials import credential_ref_for_user
