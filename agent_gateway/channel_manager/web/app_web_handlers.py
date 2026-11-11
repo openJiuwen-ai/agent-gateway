@@ -2641,6 +2641,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     channel_id=channel.channel_id,
                     metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
                     label="task-asr-config",
+                    timeout_seconds=5,
                 )
                 if not ok:
                     await channel.send_response(
@@ -2649,6 +2650,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         code=str(config.get("code") or "SERVICE_UNAVAILABLE"),
                     )
                     return
+                if not any(key in config for key in ("asr_api_base", "asr_api_key", "asr_model")):
+                    logger.warning(
+                        "[task.asr.transcribe] AgentServer config.get omitted all ASR fields; "
+                        "deploy the matching Swarm ASR configuration fix"
+                    )
                 text = await transcribe_task_audio(params, environ={
                     "ASR_API_BASE": str(config.get("asr_api_base") or ""),
                     "ASR_API_KEY": str(config.get("asr_api_key") or ""),
