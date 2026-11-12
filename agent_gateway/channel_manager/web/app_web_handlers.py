@@ -2661,10 +2661,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
                 from agent_gateway.common.request_identity import apply_routing_metadata
 
+                config_params = {}
+                auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+                if auth_session:
+                    config_params["_jiuwen_auth_session"] = auth_session
                 ok, config = await fetch_agent_unary(
                     agent_client=resolved_client,
                     req_method=ReqMethod.CONFIG_GET,
-                    params={},
+                    params=config_params,
                     session_id=session_id,
                     user_id=user_id,
                     channel_id=channel.channel_id,
@@ -2672,6 +2676,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     label="task-asr-config",
                     timeout_seconds=5,
                 )
+                if not isinstance(config, dict):
+                    raise TaskAsrError(
+                        "AgentServer returned an invalid ASR configuration response",
+                        "UPSTREAM_PROTOCOL_ERROR",
+                    )
                 if not ok:
                     await channel.send_response(
                         ws, req_id, ok=False,
@@ -2694,7 +2703,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "ASR_API_KEY": str(config.get("asr_api_key") or ""),
                     "ASR_MODEL_NAME": str(config.get("asr_model") or ""),
                 }
-                if config.get("asr_api_key_decrypted") is True:
+                # This protocol field is a JSON boolean, never a truthy string.
+                decrypted = config.get("asr_api_key_decrypted", False)
+                if not isinstance(decrypted, bool):
+                    raise TaskAsrError(
+                        "AgentServer returned an invalid ASR credential state",
+                        "UPSTREAM_PROTOCOL_ERROR",
+                    )
+                if decrypted:
                     asr_environment["ASR_API_KEY_DECRYPTED"] = "true"
                 text = await transcribe_task_audio(params, environ=asr_environment)
         except TaskAsrError as exc:
