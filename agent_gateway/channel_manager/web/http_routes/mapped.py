@@ -803,6 +803,26 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         path_to_param={"session_id": "session_id"},
     ),
     WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/assets", "session.assets.list", "files",
+        "列会话素材", bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "POST", "/sessions/{session_id}/assets", "session.assets.register", "files",
+        "登记会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/sessions/{session_id}/assets/{asset_id}", "session.assets.rename", "files",
+        "重命名会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
+    ),
+    WebHttpMappedRoute(
+        "DELETE", "/sessions/{session_id}/assets/{asset_id}", "session.assets.remove", "files",
+        "删除会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
+    ),
+    WebHttpMappedRoute(
         "POST", "/sessions/{session_id}/documents", "document.persist", "files",
         "保存会话文档", accept_body=True, bind_session_param=True,
         path_to_param={"session_id": "session_id"},
