@@ -49,9 +49,6 @@ from openjiuwen_protocol.message import (
 )
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
-from agent_gateway.common.media_capability_config import (
-    migrate_media_capability_switches,
-)
 from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
@@ -135,7 +132,6 @@ _mark_startup_import_phase("logging_configured")
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
-migrate_media_capability_switches(_env_file)
 apply_free_search_runtime_defaults()
 _mark_startup_import_phase("runtime_environment_applied")
 
