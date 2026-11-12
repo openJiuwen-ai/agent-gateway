@@ -91,6 +91,56 @@ def _bind(channel: FakeWebChannel | None = None, **kwargs) -> FakeWebChannel:
     return channel
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("method", [
+    "multimodal.models.list",
+    "multimodal.models.get",
+    "multimodal.models.upsert",
+    "multimodal.models.delete",
+    "multimodal.tools.update",
+    "multimodal.config.apply",
+])
+async def test_multimodal_uses_existing_config_routing_and_preserves_payload(monkeypatch, method, enterprise):
+    from agent_gateway.routing import e2a_proxy
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"code": "MM_CONFIRM_REQUIRED", "affected_tools": ["vision"]}
+    send = AsyncMock(return_value=SimpleNamespace(ok=False, payload=payload))
+    monkeypatch.setattr(client, "send_request", send)
+    proxy = AsyncMock(wraps=e2a_proxy.proxy_unary_request)
+    monkeypatch.setattr(e2a_proxy, "proxy_unary_request", proxy)
+    channel = _bind(agent_client=client)
+    ws = SimpleNamespace(_jiuwen_auth_session="authenticated-session")
+    await channel.methods[method](ws, "multimodal-request", {E2A_AUTH_SESSION_PARAM_KEY: "spoofed"}, "settings", "user-42")
+    send.assert_awaited_once()
+    request = send.call_args.args[0]
+    assert request.method == method
+    assert request.user_id == "user-42"
+    assert request.params[E2A_AUTH_SESSION_PARAM_KEY] == "authenticated-session"
+    assert channel.responses[-1]["payload"] == payload
+    assert channel.responses[-1]["ok"] is False
+    assert "timeout_seconds" not in proxy.call_args.kwargs
+    assert proxy.call_args.kwargs["preserve_error_payload"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("method", [
+    "multimodal.models.list", "multimodal.models.get", "multimodal.models.upsert",
+    "multimodal.models.delete", "multimodal.tools.update", "multimodal.config.apply",
+])
+async def test_multimodal_without_agent_server_uses_existing_unavailable_error(monkeypatch, method, enterprise):
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    channel = _bind()
+    await channel.methods[method](object(), "unavailable-multimodal", {}, None)
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
+
+
 class _FakeModelsResponse:
     def __init__(self, model_ids):
         self.status_code = 200

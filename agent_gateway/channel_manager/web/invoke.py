@@ -32,6 +32,8 @@ _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "config.set", "config.save_all", "models.replace_all", "models.save",
     "models.remove", "models.set_active", "path.set", "updater.download",
     "updater.upgrade", "updater.reset_source", "updater.set_conf",
+    "multimodal.models.upsert", "multimodal.models.delete",
+    "multimodal.tools.update", "multimodal.config.apply",
 })
 _ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.", "mcp.server.")
 _ENTERPRISE_SKILL_ALLOWED = frozenset({

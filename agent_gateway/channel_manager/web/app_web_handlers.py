@@ -5698,11 +5698,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.install", _external_cli_install)
     channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
-    async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
-        """经 E2A 在目标 AgentServer 注入目录执行配置请求（仅 AgentOS 多用户调用）。
+    async def _proxy_config_request(
+        ws, req_id, params, session_id, user_id=None, *, req_method,
+        preserve_error_payload=False,
+    ):
+        """经 E2A 在目标 AgentServer 的注入目录中执行配置请求。
 
-        单用户共享目录由 ``_register_config_proxy`` 走本地 handler（保留
-        on_config_saved 热更新与既有写回语义）；本函数只服务 AgentOS 路径。
+        个人版配置统一走此路径；企业版符合本地执行条件时，
+        由 ``_register_config_proxy`` 调用本地 handler，保留
+        on_config_saved 热更新与既有写回语义。
         """
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -5716,6 +5720,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=req_method,
             label="config",
+            preserve_error_payload=preserve_error_payload,
         )
 
     def _external_cli_install_gate(params: dict[str, Any]) -> dict[str, Any] | None:
@@ -5776,7 +5781,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "external_cli_dependency_installs": installs,
         }
 
-    def _register_config_proxy(method_name, req_method, local_handler=None):
+    def _register_config_proxy(
+        method_name, req_method, local_handler=None, *,
+        preserve_error_payload=False,
+    ):
         # A4g：个人版配置读写统一经目标 AgentServer 执行（与 develop 一致，
         # 不因 client 缺失回落 Gateway 本地）。企业版才走 local_handler：
         # RuntimeRouted / 无 client / legacy 共享目录（runtime HTTP 无
@@ -5819,11 +5827,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         await channel.send_response(ws, req_id, ok=True, payload=install_payload)
                         return
             await _proxy_config_request(
-                ws, req_id, params, session_id, user_id, req_method=req_method
+                ws, req_id, params, session_id, user_id, req_method=req_method,
+                preserve_error_payload=preserve_error_payload,
             )
         channel.register_method(method_name, _handler)
 
     from e2a.message import ReqMethod as _ConfigReq
+
+    multimodal_methods = (
+        _ConfigReq.MULTIMODAL_MODELS_LIST, _ConfigReq.MULTIMODAL_MODELS_GET,
+        _ConfigReq.MULTIMODAL_MODELS_UPSERT, _ConfigReq.MULTIMODAL_MODELS_DELETE,
+        _ConfigReq.MULTIMODAL_TOOLS_UPDATE, _ConfigReq.MULTIMODAL_CONFIG_APPLY,
+    )
+    for method in multimodal_methods:
+        _register_config_proxy(
+            method.value, method, preserve_error_payload=True,
+        )
 
     async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
         await _proxy_config_request(
