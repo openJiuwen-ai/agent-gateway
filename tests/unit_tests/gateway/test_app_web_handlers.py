@@ -1200,6 +1200,98 @@ async def test_personal_path_get_without_agent_server_is_unavailable(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_personal_path_set_without_agent_server_is_unavailable(monkeypatch) -> None:
+    # 个人版无可用 AgentServer：path.set 同样返回 SERVICE_UNAVAILABLE，且绝不
+    # 回落 Gateway 本地写回——否则"保存成功但写错一侧"的故障将原样回归。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    writes: list[object] = []
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: writes.append(updates))
+
+    async def fail_if_touched(*_args, **_kwargs):
+        raise AssertionError("local maintenance path must not run")
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", fail_if_touched)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", fail_if_touched)
+    channel = _bind()
+    await channel.methods["path.set"](
+        object(),
+        "req-path-set-noagent",
+        {"chrome_path": "/usr/bin/chromium", "headless": False},
+        "sess-1",
+    )
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_personal_unready_legacy_client_still_proxies(monkeypatch) -> None:
+    # 个人版"有 client 但未 ready"（桌面启动窗口期）：不视为不可用，走既有
+    # 请求驱动的重连代理路径（_agent_unavailable 的 can_reconnect 契约）。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()  # 未 _apply_connection_ack，server_ready=False
+    assert client.server_ready is False
+    # 已配置传输（can_reconnect=True）但尚未 ack：模拟启动窗口期。
+    monkeypatch.setattr(
+        type(client), "can_reconnect", property(lambda self: True),
+        raising=True,
+    )
+    payload = {"chrome_path": "/usr/bin/chromium", "headless": True, "jev_key_configured": True}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-path-unready", {}, "sess-1")
+    send_request.assert_awaited_once()
+    assert send_request.call_args.args[0].method == "path.get"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_enterprise_runtime_routed_path_uses_local_execution(monkeypatch) -> None:
+    # 企业版 + RuntimeRouted：与 config.*（_register_config_proxy）同判据走本地。
+    # 该判据下 config.set/save_all 本就是 Gateway 本地 handler（runtime HTTP 无
+    # config REST，企业配置读 Gateway Manager 库），path 读写保持同侧，避免
+    # "保存写 Gateway 侧、读取却代理到 Pod"的企业版读写分离。
+    class RuntimeRoutedAgentClient:
+        """只借用这个类名，测试不加载扩展包。"""
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    client = RuntimeRoutedAgentClient()
+    saved_configs: list[dict] = []
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda config: saved_configs.append(config))
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"browser": {"chrome_path": "", "headless": True}},
+    )
+    cache_clear = AsyncMock()
+    runtime_restart = AsyncMock()
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", cache_clear)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", runtime_restart)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-rr-path-get", {}, "sess-1")
+    get_resp = channel.responses[-1]
+    assert get_resp["ok"] is True
+    assert get_resp["payload"]["chrome_path"] == ""
+    await channel.methods["path.set"](
+        object(),
+        "req-rr-path-set",
+        {"chrome_path": "/usr/bin/chromium", "headless": False},
+        "sess-1",
+    )
+    set_resp = channel.responses[-1]
+    assert saved_configs == [{"chrome_path": "/usr/bin/chromium", "headless": False}]
+    assert set_resp["ok"] is True
+    assert set_resp["payload"]["chrome_path"] == "/usr/bin/chromium"
+    cache_clear.assert_awaited_once_with(client)
+    runtime_restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_enterprise_no_runtime_models_list_uses_gateway_manager(monkeypatch) -> None:
     from agent_gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
