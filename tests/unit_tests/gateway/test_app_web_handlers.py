@@ -1227,26 +1227,33 @@ async def test_personal_path_set_without_agent_server_is_unavailable(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_personal_unready_legacy_client_still_proxies(monkeypatch) -> None:
-    # 个人版"有 client 但未 ready"（桌面启动窗口期）：不视为不可用，走既有
-    # 请求驱动的重连代理路径（_agent_unavailable 的 can_reconnect 契约）。
+async def test_personal_unready_legacy_client_contract(monkeypatch) -> None:
+    # 个人版"有 client 但未 ready"（桌面启动窗口期）的契约随基线不同：
+    # - develop：_agent_unavailable 有 can_reconnect 契约（请求驱动重连），
+    #   可重连的未 ready client 仍走代理路径；
+    # - release/0.1.0：基线早于该契约，未 ready 一律视为不可用 →
+    #   SERVICE_UNAVAILABLE。两侧都与 config.* 的处理一致。
     monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
     client = WebSocketAgentServerClient()  # 未 _apply_connection_ack，server_ready=False
     assert client.server_ready is False
-    # 已配置传输（can_reconnect=True）但尚未 ack：模拟启动窗口期。
-    monkeypatch.setattr(
-        type(client), "can_reconnect", property(lambda self: True),
-        raising=True,
-    )
+    has_reconnect_contract = hasattr(type(client), "can_reconnect")
+    if has_reconnect_contract:
+        monkeypatch.setattr(type(client), "can_reconnect", property(lambda self: True))
     payload = {"chrome_path": "/usr/bin/chromium", "headless": True, "jev_key_configured": True}
     send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
     monkeypatch.setattr(client, "send_request", send_request)
     channel = _bind(agent_client=client)
     await channel.methods["path.get"](object(), "req-path-unready", {}, "sess-1")
-    send_request.assert_awaited_once()
-    assert send_request.call_args.args[0].method == "path.get"
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"] == payload
+    resp = channel.responses[-1]
+    if has_reconnect_contract:
+        send_request.assert_awaited_once()
+        assert send_request.call_args.args[0].method == "path.get"
+        assert resp["ok"] is True
+        assert resp["payload"] == payload
+    else:
+        assert resp["ok"] is False
+        assert resp["code"] == "SERVICE_UNAVAILABLE"
+        assert resp["error"] == "AgentServer is unavailable"
 
 
 @pytest.mark.asyncio
