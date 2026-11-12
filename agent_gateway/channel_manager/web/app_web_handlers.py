@@ -3832,8 +3832,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             proxy_unary_request,
         )
 
+        from agent_gateway.enterprise import is_enterprise
+
         resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
+        # A4g 对齐：个人版 browser/jev 配置读写统一经目标 AgentServer——
+        # config.set/save_all 已纯代理写 AgentServer，本地回落读 Gateway
+        # 启动环境会把已保存的 key 显示成"未配置"。企业版保留本地执行，
+        # 判据与 _register_config_proxy 一致（RuntimeRouted / 无 client /
+        # legacy 共享目录）。
+        use_local_path = is_enterprise() and (
+            resolved_client is None
+            or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+            or is_legacy_shared_directory_client(resolved_client)
+        )
+        if not use_local_path:
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
                 params={}, session_id=session_id, user_id=user_id,
@@ -3904,8 +3916,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             proxy_unary_request,
         )
 
+        from agent_gateway.enterprise import is_enterprise
+
         resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
+        # A4g 对齐，同 _path_get：个人版统一经目标 AgentServer 写入；企业版
+        # （RuntimeRouted / 无 client / legacy 共享目录）保留本地写回语义。
+        use_local_path = is_enterprise() and (
+            resolved_client is None
+            or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+            or is_legacy_shared_directory_client(resolved_client)
+        )
+        if not use_local_path:
             # Fetch current browser config so the restart callback can match the
             # old runtime identity (custom binary / headed mode).
             previous_chrome_path = ""

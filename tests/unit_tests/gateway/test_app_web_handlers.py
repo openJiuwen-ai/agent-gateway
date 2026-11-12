@@ -1016,6 +1016,8 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
 async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 企业版 + legacy 共享目录：保留本地写回与 runtime 重启语义。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     agent_client = WebSocketAgentServerClient()
     saved_configs: list[dict] = []
     lifecycle_calls: list[tuple[str, object]] = []
@@ -1069,6 +1071,8 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
 async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 企业版 + legacy 共享目录：本地校验 hybrid 模式缺 key 时拒绝写回。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     agent_client = WebSocketAgentServerClient()
     writes: list[object] = []
     monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
@@ -1095,6 +1099,8 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
 
 @pytest.mark.asyncio
 async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    # 企业版 + 无 client：本地写回 display_name 并回显。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     from agent_gateway.common import config as config_module
 
     current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
@@ -1122,6 +1128,75 @@ async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
     assert current["browser"]["decision"]["display_name"] == "My Jev"
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_path_get_proxies_to_agent_server(monkeypatch) -> None:
+    # 回归（A4g 对齐）：个人版 legacy 共享目录的 path.get 统一经目标
+    # AgentServer——config.save_all 已写 AgentServer 侧环境，读取跟随同一侧
+    # 才能看到已保存的 Jev key（修复保存成功后显示"未配置"）。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {
+        "chrome_path": "/usr/bin/chromium",
+        "headless": False,
+        "decision_mode": "hybrid",
+        "jev_key_configured": True,
+    }
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-path-get", {}, "sess-1")
+    send_request.assert_awaited_once()
+    assert send_request.call_args.args[0].method == "path.get"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+    assert channel.responses[-1]["payload"]["jev_key_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_path_set_proxies_to_agent_server(monkeypatch) -> None:
+    # 个人版 legacy 共享目录的 path.set 同样经目标 AgentServer 写入；
+    # on_done 维护回调（清 AgentServer config 缓存、重启浏览器 runtime）
+    # 仍随成功响应触发。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"chrome_path": "/usr/bin/chromium", "headless": False, "jev_key_configured": True}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    cache_clear = AsyncMock()
+    runtime_restart = AsyncMock()
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", cache_clear)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", runtime_restart)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.set"](
+        object(),
+        "req-path-set",
+        {"chrome_path": "/usr/bin/chromium", "headless": False, "decision_mode": "hybrid"},
+        "sess-1",
+    )
+    proxied_methods = [call.args[0].method for call in send_request.await_args_list]
+    assert "path.get" in proxied_methods  # prev fetch for runtime identity
+    assert "path.set" in proxied_methods
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+    cache_clear.assert_awaited_once_with(client)
+    runtime_restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_personal_path_get_without_agent_server_is_unavailable(monkeypatch) -> None:
+    # 个人版无可用 AgentServer：与 A4g 后的 config.* 一致，返回
+    # SERVICE_UNAVAILABLE，不再回落读 Gateway 本地启动环境。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    channel = _bind()
+    await channel.methods["path.get"](object(), "req-path-noagent", {}, "sess-1")
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
 
 
 @pytest.mark.asyncio
