@@ -56,7 +56,7 @@ def _create_persistent() -> PersistentStore:
             build_gateway_store_registry(),
         )
 
-    from agent_gateway.common.utils import (
+    from agent_gateway.common.paths import (
         get_checkpoint_dir,
         get_config_file,
         get_domain_data_dir,

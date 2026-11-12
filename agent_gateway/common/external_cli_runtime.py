@@ -239,10 +239,10 @@ def external_cli_site_packages(cli_agent: str) -> Path:
 
 def _runtime_site_packages(cli_agent: str) -> Path:
     if _is_frozen_windows():
-        from agent_gateway.common.paths import get_user_workspace_dir
+        from agent_gateway.common.paths import get_infra_data_dir
 
         return (
-            get_user_workspace_dir()
+            get_infra_data_dir()
             / "runtime"
             / "external-cli"
             / cli_agent

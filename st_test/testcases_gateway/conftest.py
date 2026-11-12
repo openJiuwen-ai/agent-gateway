@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""agent-gateway 独立契约 ST：不依赖 jiuwenswarm / AgentServer / 沙箱 / 元戎。
+"""Gateway contract ST with a stub AgentServer.
 
-启动方式：``agent-gateway --agent-server-url <stub>``，南向由
-``StubAgentServer`` 提供固定应答；用例只验证 gateway 自身的传输与转发契约。
+Standalone tests boot with Gateway's bundled config. The host upgrade test
+also runs when JiuwenSwarm is installed.
 
 运行（仓库根目录）：
 
@@ -30,7 +30,7 @@ def stub_agent_server() -> StubAgentServer:
 @pytest.fixture(scope="session")
 def gateway(tmp_path_factory, stub_agent_server) -> GatewayProcess:
     home = tmp_path_factory.mktemp("gateway-st")
-    instance = start_gateway(home, stub_agent_server.url)
+    instance = start_gateway(home, stub_agent_server.url, use_host_config=False)
     yield instance
     instance.stop()
 
@@ -44,7 +44,7 @@ def gateway_factory(tmp_path):
     def _make(agent_server_url: str) -> GatewayProcess:
         home = tmp_path / f"gateway-{len(created)}"
         home.mkdir()
-        instance = start_gateway(home, agent_server_url)
+        instance = start_gateway(home, agent_server_url, use_host_config=False)
         created.append(instance)
         return instance
 

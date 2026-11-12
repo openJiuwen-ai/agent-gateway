@@ -94,6 +94,8 @@ health_check:
 也属于系统区；例如 `context_usage.jsonl` 写入 `infra/logs/agent/`，企业版通过 stdout
 采集留存。
 
+从旧版升级时，Gateway 和 AgentServer 都会在加载配置前检查数据目录。使用同一数据目录的两个进程会等待同一次迁移完成。旧会话和定时任务迁入 `domain/agent/`，旧配置迁入 `infra/config/`，旧组件日志迁入 `infra/logs/agent/`。已有新布局的文件继续使用，同名旧文件有差异时以 `.migrated` 后缀保留。
+
 ## 退出行为
 
 | 场景 | 行为 |

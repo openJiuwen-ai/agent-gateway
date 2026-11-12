@@ -108,8 +108,10 @@ from agent_gateway.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
 )
+from agent_gateway.common.cron_settings import restore_migrated_cron_etcd_settings
 from agent_gateway.common.paths import (
     apply_free_search_runtime_defaults,
+    get_config_file,
     get_env_file,
     get_infra_data_dir,
 )
@@ -132,6 +134,7 @@ _mark_startup_import_phase("logging_configured")
 
 _env_file = get_env_file()
 load_dotenv_runtime(dotenv_path=_env_file, override=True)
+restore_migrated_cron_etcd_settings(get_config_file())
 migrate_media_capability_switches(_env_file)
 apply_free_search_runtime_defaults()
 _mark_startup_import_phase("runtime_environment_applied")

@@ -95,6 +95,8 @@ deployments use the same paths as ordinary directories. Runtime logs, including
 `context_usage.jsonl`, belong in `infra/logs/agent/` and are collected through stdout
 in enterprise deployments.
 
+When upgrading from the old layout, Gateway and AgentServer both check the data directory before loading configuration. Processes using the same data directory wait for the same migration to finish. Existing sessions and cron jobs move to `domain/agent/`, configuration moves to `infra/config/`, and component logs move to `infra/logs/agent/`. Files already in the new layout stay active. Conflicting legacy files are retained with a `.migrated` suffix.
+
 ## Exit behavior
 
 | Scenario | Behavior |

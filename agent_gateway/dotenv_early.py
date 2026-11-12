@@ -155,10 +155,16 @@ def parse_dotenv_early(component_name: str = "agent-gateway") -> Path | None:
     result: Path | None = None
     if dotenv_path is not None:
         dotenv_file = Path(dotenv_path).expanduser().resolve()
-        if dotenv_file.exists():
+        if dotenv_file.is_file():
             load_dotenv_runtime(dotenv_file, override=True)
             result = dotenv_file
-        else:
+        if not dotenv_file.is_file() and dotenv_file.name == ".env" and dotenv_file.parent.name == "config":
+            # Another starter may already have moved the old bootstrap file.
+            relocated = dotenv_file.parent.parent / "infra/config/.env"
+            if relocated.is_file():
+                load_dotenv_runtime(relocated, override=True)
+                result = relocated
+        if result is None:
             _early_warning(component_name, f"--dotenv file not found: {dotenv_file}")
     elif name_value is not None:
         result = _load_bootstrap_by_name_early(name_value, component_name)
@@ -174,7 +180,10 @@ def _load_bootstrap_by_name_early(name: str, component_name: str) -> Path | None
         return None
 
     user_home = os.environ.get("JIUWENSWARM_HOME") or Path.home()
-    yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
+    data_root = Path(user_home) / ".jiuwenswarm"
+    yaml_path = data_root / "infra" / "instances.yaml"
+    if not yaml_path.exists():
+        yaml_path = data_root / "instances.yaml"
 
     if not yaml_path.exists():
         _early_error(component_name, f"instances.yaml not found: {yaml_path}")

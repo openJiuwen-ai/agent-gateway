@@ -19,6 +19,7 @@ from agent_gateway.common.config import get_config
 from agent_gateway.common.paths import (
     get_agent_sessions_dir,
     get_agent_workspace_dir,
+    get_domain_data_dir,
     get_user_workspace_dir,
 )
 
@@ -110,7 +111,7 @@ def cleanup_orphan_file_ops() -> dict[str, int]:
     removed = 0
     errors = 0
 
-    for base_dir in (get_agent_workspace_dir(), get_user_workspace_dir()):
+    for base_dir in (get_agent_workspace_dir(), get_domain_data_dir(), get_user_workspace_dir()):
         hist_dir = base_dir / ".agent_history"
         if not hist_dir.is_dir():
             continue
