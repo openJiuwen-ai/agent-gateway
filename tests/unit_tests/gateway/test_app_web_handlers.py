@@ -2979,3 +2979,26 @@ async def test_task_asr_warns_only_for_missing_config_contract(monkeypatch, conf
     await channel.methods["task.asr.transcribe"](object(), "missing-asr", {}, "session")
     assert warning.called is warns
     assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["invalid", [], 42, {"asr_api_key_decrypted": "true"}])
+async def test_task_asr_rejects_invalid_config_protocol(monkeypatch, payload):
+    from agent_gateway.routing import e2a_proxy
+
+    async def fetch(**kwargs):
+        assert kwargs["params"] == {"_jiuwen_auth_session": "login-session"}
+        return True, payload
+
+    async def unexpected_transcribe(*args, **kwargs):
+        pytest.fail("invalid protocol must not reach transcription")
+
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", unexpected_transcribe)
+    channel = _bind()
+    from types import SimpleNamespace
+    ws = SimpleNamespace(_jiuwen_auth_session="login-session")
+    await channel.methods["task.asr.transcribe"](ws, "invalid-config", {}, "session")
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "UPSTREAM_PROTOCOL_ERROR"
