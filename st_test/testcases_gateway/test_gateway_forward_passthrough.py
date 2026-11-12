@@ -86,14 +86,17 @@ def _is_stream_for(method: str) -> bool:
     return method in STREAM_REQUIRED
 
 
-def _drain(ws_client: GatewayWsClient, *, seconds: float = 1.5) -> None:
-    """消费响应帧，避免网关侧 per-connection 出站队列被积压帧填满。"""
-    deadline = time.monotonic() + seconds
+def _drain(ws_client: GatewayWsClient, *, seconds: float = 0.1) -> None:
+    """消费响应帧，避免网关侧 per-connection 出站队列被积压帧填满。
+
+    队列排空后第一次 recv 超时即返回，不再固定空等；总时长上限兜底异常场景。
+    """
+    deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         try:
-            ws_client._ws.recv(timeout=0.05)  # noqa: SLF001 - ST 客户端内部接口
-        except TimeoutError:  # websockets 同步客户端超时语义
-            continue
+            ws_client._ws.recv(timeout=seconds)  # noqa: SLF001 - ST 客户端内部接口
+        except TimeoutError:  # 静默期到达，队列已排空
+            return
         except Exception:  # noqa: BLE001 - 连接关闭等，退出消费
             return
 
