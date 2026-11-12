@@ -176,7 +176,7 @@ async def proxy_unary_request(
             由调用方自行判断是否只在成功/特定失败结果时行动。回调失败不影响
             已完成的业务请求。
         preserve_error_payload: 将 AgentServer 失败 payload 原样回写。仅用于
-            Git 等已定义结构化错误明细的外部协议。
+            Git、多模态配置等已定义结构化错误明细的外部协议。
         default_error_code: AgentServer 失败响应未携带 code 时回写的默认错误码
             （保持各入口迁移前的外部协议 code 不变）。
 
