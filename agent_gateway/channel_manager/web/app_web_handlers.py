@@ -2658,7 +2658,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if use_local_config:
                 text = await transcribe_task_audio(params)
             else:
-                from openjiuwen_protocol.message import ReqMethod
+                from e2a.message import ReqMethod
                 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
                 from agent_gateway.common.request_identity import apply_routing_metadata
 
