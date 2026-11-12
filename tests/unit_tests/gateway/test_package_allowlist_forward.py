@@ -164,3 +164,12 @@ async def test_personal_packages_for_bot_skips_repository(monkeypatch: pytest.Mo
     assert await packages_for_bot("bot-1") == []
 
 
+def test_allowlist_module_forwards_outbound_names() -> None:
+    from agent_gateway.enterprise.capabilities.experts import allowlist, outbound_packages
+
+    assert allowlist.bind_outbound_allowlist is outbound_packages.bind_outbound_packages
+    assert allowlist.outbound_allowlist_packages is outbound_packages.outbound_packages
+    assert allowlist.apply_allowlist_to_envelope is outbound_packages.apply_packages_to_envelope
+    assert allowlist.attach_expert_packages_header is outbound_packages.attach_expert_packages_header
+
+

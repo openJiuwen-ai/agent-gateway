@@ -818,11 +818,6 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
     ),
     WebHttpMappedRoute(
-        "DELETE", "/sessions/{session_id}/assets/{asset_id}", "session.assets.remove", "files",
-        "删除会话素材", accept_body=True, bind_session_param=True,
-        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
-    ),
-    WebHttpMappedRoute(
         "POST", "/sessions/{session_id}/documents", "document.persist", "files",
         "保存会话文档", accept_body=True, bind_session_param=True,
         path_to_param={"session_id": "session_id"},
