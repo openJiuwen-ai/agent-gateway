@@ -12,6 +12,8 @@ import pytest
 from fastapi import FastAPI
 from openjiuwen_protocol.message import ReqMethod
 
+pytest.importorskip("a2a", reason="a2a-sdk is an optional extra (pyproject a2a group); skip when not installed")
+
 from agent_gateway.enterprise.config.manager_config.routers.application_config_routers import (
     application_config_router,
 )
