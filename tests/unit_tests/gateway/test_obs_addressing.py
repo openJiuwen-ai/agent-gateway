@@ -1,11 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import hashlib
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import urlsplit
 
 import pytest
 
-from agent_gateway.common.obs_files import AttachmentStore, download_object_key, object_prefix
+from agent_gateway.common.obs_files import (
+    AttachmentStore,
+    download_object_key,
+    object_prefix,
+    skill_approvals_object_key,
+)
 
 
 @pytest.fixture
@@ -113,3 +121,80 @@ def test_bucket_domain_does_not_bypass_scope_checks(obs_env, monkeypatch):
         with pytest.raises(ValueError, match="current context"):
             store.remove_upload(url, prefix)
     delete.assert_not_called()
+
+
+def test_skill_approvals_object_key_scopes_tenant_and_shape():
+    key = skill_approvals_object_key("tenant", "a" * 32, "demo.zip")
+    scope = hashlib.sha256(b"tenant").hexdigest()
+
+    assert key == f"skill-approvals/{scope}/{'a' * 32}/demo.zip"
+    # 不同租户必须落在不同前缀下。
+    other = skill_approvals_object_key("other-tenant", "a" * 32, "demo.zip")
+    assert key.split("/")[1] != other.split("/")[1]
+
+
+@pytest.mark.parametrize(
+    ("tenant", "upload_id", "filename"),
+    [
+        ("", "a" * 32, "demo.zip"),
+        ("tenant", "not-a-uuid", "demo.zip"),
+        ("tenant", "a" * 31, "demo.zip"),
+        ("tenant", "a" * 32, ""),
+        ("tenant", "a" * 32, "."),
+        ("tenant", "a" * 32, ".."),
+        ("tenant", "a" * 32, "dir/demo.zip"),
+        ("tenant", "a" * 32, "dir\\demo.zip"),
+    ],
+)
+def test_skill_approvals_object_key_rejects_bad_scope(tenant, upload_id, filename):
+    with pytest.raises(ValueError, match="invalid skill approval object scope"):
+        skill_approvals_object_key(tenant, upload_id, filename)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", "/absolute", "a//b", "a/./b", "a/../b", "a\\b"],
+)
+def test_remove_and_list_keys_reject_malformed_keys(obs_env, monkeypatch, key):
+    store = AttachmentStore.from_env()
+    remove = Mock()
+    listing = Mock()
+    monkeypatch.setattr(store.client, "remove_object", remove)
+    monkeypatch.setattr(store.client, "list_objects", listing)
+
+    with pytest.raises(ValueError, match="invalid object key"):
+        store.remove_key(key)
+    with pytest.raises(ValueError, match="invalid object prefix"):
+        store.list_keys(key)
+    remove.assert_not_called()
+    listing.assert_not_called()
+
+
+def test_list_keys_returns_key_and_client_timestamp(obs_env, monkeypatch):
+    store = AttachmentStore.from_env()
+    modified = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    calls = {}
+
+    def fake_list(bucket, prefix, recursive):
+        calls.update(bucket=bucket, prefix=prefix, recursive=recursive)
+        return iter(
+            [
+                SimpleNamespace(
+                    object_name="skill-approvals/x/a/demo.zip",
+                    last_modified=modified,
+                )
+            ]
+        )
+
+    monkeypatch.setattr(store.client, "list_objects", fake_list)
+
+    assert store.list_keys("skill-approvals/x/a") == [
+        ("skill-approvals/x/a/demo.zip", modified)
+    ]
+    assert calls == {
+        "bucket": "artifacts",
+        "prefix": "skill-approvals/x/a",
+        "recursive": True,
+    }
+    # SDK 的 last_modified 已是 aware UTC，这里直接透传，调用方无需再归一化。
+    assert modified.tzinfo is timezone.utc
