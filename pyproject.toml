@@ -13,7 +13,9 @@ classifiers = [
 ]
 dependencies = [
     # 协议层与 Agent 内核（rev 与 jiuwenswarm 母仓保持一致，避免同环境双版本）
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
+    # observability extra 提供 telemetry.py 使用的 opentelemetry api/sdk/OTLP exporter，
+    # 版本约束统一由 agent-core 维护。
+    "openjiuwen[observability] @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
     "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
     # 企业版审计与 DB 表定义（config/enterprise/tables 顶层 import）
     "openjiuwen-runtime-foundation",
@@ -45,11 +47,6 @@ dependencies = [
     "psutil>=7.2.2,<8",
     # 企业版 OBS 对象存储（common/obs_files.py 顶层 import）
     "minio>=7.2,<8",
-    # openjiuwen observability 运行时依赖（openjiuwen 自身未声明为硬依赖）
-    "opentelemetry-api>=1.28.0,<1.42",
-    "opentelemetry-sdk>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
     # IM / 渠道适配
     "lark-oapi>=1.5.3,<2",
     "dingtalk-stream>=0.24.3,<0.25",
