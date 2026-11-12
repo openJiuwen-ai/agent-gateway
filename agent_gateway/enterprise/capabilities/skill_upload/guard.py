@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -35,6 +36,10 @@ _ORDER_NUM_RE = re.compile(r"apr_[0-9a-f]{32}")
 _UPLOAD_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 _MAX_PENDING_RESULTS = 256
+# 记录只服务于「finalize 响应回来后的回写」。回写必须带用户 JWT，因此它
+# 能在进程里保留多久由两个约束共同决定：本 TTL（过期后不再回写，并在下次
+# 登记时清理）和 256 条 LRU 上限。JWT 不写日志，随记录一起释放。
+_PENDING_RESULT_TTL_S = 600.0
 _PENDING_RESULTS: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 # 后台回写任务必须持引用，否则可能在完成前被回收。
 _WRITEBACK_TASKS: set[asyncio.Task[Any]] = set()
@@ -51,20 +56,79 @@ _INSTALL_FAILURE_CODES = frozenset({
     "SKILL_UPLOAD_NAME_CONFLICT",
     "SKILL_UPLOAD_BUILTIN_READ_ONLY",
 })
+# SKILL_FILE_TOO_LARGE 与 SKILL_UPLOAD_FEATURE_DISABLED 故意不在此表：
+# finalize 前会把前者重映射为 SKILL_UPLOAD_PACKAGE_TOO_LARGE；后者只在非
+# 企业版或缺少租户上下文时抛出，属于部署/配置问题，标 failed 会误导用户改包。
 
 
-def _remember_install_result(request_id: str, record: dict[str, Any]) -> None:
-    key = str(request_id or "").strip()
+def _pending_key(request_id: str) -> str:
+    return str(request_id or "").strip()
+
+
+def _install_result_expired(record: dict[str, Any]) -> bool:
+    created = record.get("created_at")
+    if not isinstance(created, float):
+        return True
+    return (time.monotonic() - created) > _PENDING_RESULT_TTL_S
+
+
+def _prune_expired_results() -> None:
+    """Drop expired records (bounded by ``_MAX_PENDING_RESULTS``)."""
+    expired = [
+        key
+        for key, record in _PENDING_RESULTS.items()
+        if _install_result_expired(record)
+    ]
+    for key in expired:
+        record = _PENDING_RESULTS.pop(key, None)
+        if record is not None:
+            logger.debug(
+                "[SkillUpload] dropped expired write-back request=%s order=%s",
+                key[:24],
+                record.get("order_num"),
+            )
+
+
+def _remember_install_result(request_id: str, record: dict[str, Any]) -> bool:
+    """登记待回写记录；同一 request_id 绑定到另一个 upload 时返回 False。
+
+    ``request_id`` 由客户端提供（WS 的 ``id`` / HTTP 的 ``X-Request-Id``），
+    所以必须防止它被复用来把 A 单的记录套到 B 单的回包上：
+    - 已过期：视为空闲，直接替换；
+    - 同一 upload：客户端重试，刷新记录；
+    - 不同 upload：失败关闭，由调用方返回 BAD_REQUEST。
+    """
+    key = _pending_key(request_id)
     if not key:
-        return
+        return True
+    _prune_expired_results()
+    record["created_at"] = time.monotonic()
+    existing = _PENDING_RESULTS.get(key)
+    if existing is not None:
+        if str(existing.get("upload_id") or "") != str(
+            record.get("upload_id") or ""
+        ):
+            logger.warning(
+                "[SkillUpload] request id already bound to another upload:"
+                " request=%s order=%s",
+                key[:24],
+                record.get("order_num"),
+            )
+            return False
+        logger.debug(
+            "[SkillUpload] refresh pending write-back request=%s order=%s",
+            key[:24],
+            record.get("order_num"),
+        )
     _PENDING_RESULTS[key] = record
     _PENDING_RESULTS.move_to_end(key)
     while len(_PENDING_RESULTS) > _MAX_PENDING_RESULTS:
         _PENDING_RESULTS.popitem(last=False)
+    return True
 
 
 def _pop_install_result(request_id: str) -> dict[str, Any] | None:
-    return _PENDING_RESULTS.pop(str(request_id or "").strip(), None)
+    return _PENDING_RESULTS.pop(_pending_key(request_id), None)
 
 
 async def _authorize_finalize(
@@ -126,8 +190,12 @@ async def _authorize_finalize(
     # 审批单是权威来源：覆盖前端可伪造的同名字段。
     params["expected_digest"] = digest
     params["skill_name"] = skill_name
-    params["replace"] = bool(data.get("replace", False))
-    _remember_install_result(
+    # Manager 正常返回 JSON bool；只接受真正的 bool，字符串 "false" 一律按
+    # 不覆盖处理，避免把"不可覆盖"误判成"可覆盖"。
+    replace = data.get("replace")
+    params["replace"] = replace if isinstance(replace, bool) else False
+    # 只保留回写必需字段：请求 id 与 upload_id 绑定，防止回包被套到另一张单。
+    if not _remember_install_result(
         request_id,
         {
             "authorization": token,
@@ -136,7 +204,10 @@ async def _authorize_finalize(
             "upload_id": upload_id,
             "digest": digest,
         },
-    )
+    ):
+        raise SkillUploadCheckError(
+            "BAD_REQUEST", "request id is already bound to another upload"
+        )
 
 
 async def enterprise_skill_upload_denial(
@@ -202,6 +273,11 @@ def schedule_pending_install_result(
     Manager 抖动直接变成 finalize 响应的延迟（最坏一个 timeout），因此
     响应出口只做调度，不等待网络往返。
     """
+    # 只有登记过本次 finalize 的 request_id 才需要回写；流式事件与普通 res
+    # 在热路径上直接返回，连后台任务都不建。
+    key = _pending_key(request_id)
+    if not key or key not in _PENDING_RESULTS:
+        return
     try:
         task = asyncio.create_task(
             report_pending_install_result(request_id, ok=ok, payload=payload),
@@ -223,12 +299,24 @@ async def report_pending_install_result(
     ok: bool,
     payload: dict[str, Any],
 ) -> None:
-    """finalize 响应返回后，把安装结果回写 manager；失败只记日志。"""
+    """finalize 响应返回后，把安装结果回写 manager；失败只记日志。
+
+    网络层重试在 ``client.report_install_result`` 内完成；这里只负责把
+    「响应 ok」映射成审批单状态。``ok`` 只代表 RPC 成功，handler 仍可能
+    在 payload 里返回 ``success=False``，因此必须同时看 payload。
+    成功只认 ``success is True``：request_id 由客户端提供，若另一个方法
+    复用了同一个 id，其 ok 响应不能把本次 finalize 标成 installed。
+    """
     record = _pop_install_result(request_id)
     if record is None:
         return
+    if _install_result_expired(record):
+        logger.warning(
+            "[SkillUpload] expired write-back dropped order=%s", record.get("order_num")
+        )
+        return
     code = str(payload.get("code") or "").strip()
-    if ok:
+    if ok and payload.get("success") is True:
         status = "installed"
         detail: str | None = None
     elif code in _INSTALL_FAILURE_CODES:
