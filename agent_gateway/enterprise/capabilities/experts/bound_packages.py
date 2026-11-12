@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""按当前 bot 的 Agent 模板槽展开出站专家包。空名单表示这只 bot 没有可用包。"""
+"""按当前 bot 的 Agent 模板槽展开出站专家包。展开为空表示这只 bot 没有可用包。"""
 
 from __future__ import annotations
 

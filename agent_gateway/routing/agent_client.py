@@ -148,12 +148,12 @@ async def _stamp_expert_packages(envelope: E2AEnvelope) -> None:
 
     if not is_enterprise():
         return
-    from agent_gateway.enterprise.capabilities.experts.allowlist import apply_allowlist_to_envelope
+    from agent_gateway.enterprise.capabilities.experts.outbound_packages import apply_packages_to_envelope
     from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
     from agent_gateway.common.request_identity import web_routing_identity
 
     bot_id = web_routing_identity(envelope.channel_context).get("bot_id", "")
-    apply_allowlist_to_envelope(envelope, await packages_for_bot(bot_id))
+    apply_packages_to_envelope(envelope, await packages_for_bot(bot_id))
 
 
 class WebSocketAgentServerClient(AgentServerClient):
