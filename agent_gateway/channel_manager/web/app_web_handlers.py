@@ -41,6 +41,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -2609,15 +2610,81 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             channels = []
         await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
 
-    async def _task_asr_transcribe(ws, req_id, params, session_id):
-        del session_id
+    async def _task_asr_transcribe(ws, req_id, params, session_id, user_id=None):
         if not isinstance(params, dict):
             await channel.send_response(
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
             )
             return
         try:
-            text = await transcribe_task_audio(params)
+            # Personal config writes live in AgentServer, not Gateway's startup env.
+            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+            resolved_client = _resolve(agent_client)
+            use_local_config = _is_enterprise_edition() and (
+                resolved_client is None
+                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_legacy_shared_directory_client(resolved_client)
+            )
+            if use_local_config:
+                text = await transcribe_task_audio(params)
+            else:
+                from openjiuwen_protocol.message import ReqMethod
+                from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+                from agent_gateway.common.request_identity import apply_routing_metadata
+
+                config_params = {}
+                auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+                if auth_session:
+                    config_params["_jiuwen_auth_session"] = auth_session
+                ok, config = await fetch_agent_unary(
+                    agent_client=resolved_client,
+                    req_method=ReqMethod.CONFIG_GET,
+                    params=config_params,
+                    session_id=session_id,
+                    user_id=user_id,
+                    channel_id=channel.channel_id,
+                    metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
+                    label="task-asr-config",
+                    timeout_seconds=5,
+                )
+                if not isinstance(config, dict):
+                    raise TaskAsrError(
+                        "AgentServer returned an invalid ASR configuration response",
+                        "UPSTREAM_PROTOCOL_ERROR",
+                    )
+                if not ok:
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error=str(config.get("error") or "ASR configuration unavailable"),
+                        code=str(config.get("code") or "SERVICE_UNAVAILABLE"),
+                    )
+                    return
+                if not any(key in config for key in ("asr_api_base", "asr_api_key", "asr_model")):
+                    logger.warning(
+                        "[task.asr.transcribe] AgentServer config.get omitted all ASR fields; "
+                        "deploy the matching Swarm ASR configuration fix"
+                    )
+                if config.get("asr_credential_error"):
+                    raise TaskAsrError(
+                        "ASR credential decryption failed at AgentServer; restore its crypto provider or save a new key",
+                        "ASR_CREDENTIAL_DECRYPTION_FAILED",
+                    )
+                asr_environment = {
+                    "ASR_API_BASE": str(config.get("asr_api_base") or ""),
+                    "ASR_API_KEY": str(config.get("asr_api_key") or ""),
+                    "ASR_MODEL_NAME": str(config.get("asr_model") or ""),
+                }
+                # This protocol field is a JSON boolean, never a truthy string.
+                decrypted = config.get("asr_api_key_decrypted", False)
+                if not isinstance(decrypted, bool):
+                    raise TaskAsrError(
+                        "AgentServer returned an invalid ASR credential state",
+                        "UPSTREAM_PROTOCOL_ERROR",
+                    )
+                if decrypted:
+                    asr_environment["ASR_API_KEY_DECRYPTED"] = "true"
+                text = await transcribe_task_audio(params, environ=asr_environment)
         except TaskAsrError as exc:
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=exc.code
