@@ -1,4 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Portions adapted from xiaoluolyg/god under Apache-2.0.
+# Portions Copyright (c) 2007 Pallets
+# Portions Copyright (c) 2026 GOD project authors
 
 """XiaoYi Media Utils - 媒体下载、处理和保存功能。
 基于 TypeScript xiaoyi-media.ts 实现。
@@ -196,8 +199,7 @@ async def download_and_save_media(
             _TMP_MEDIA_PATH.mkdir(parents=True, exist_ok=True)
 
         file_path = _TMP_MEDIA_PATH / file_name
-        with open(file_path, "wb") as f:
-            f.write(buffer)
+        await asyncio.to_thread(file_path.write_bytes, buffer)
 
         return DownloadedMedia(
             path=file_path,  # 实际项目中应该保存并返回本地路径

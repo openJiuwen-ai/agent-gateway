@@ -18,6 +18,7 @@ import ssl
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
@@ -259,8 +260,7 @@ class XYFileUploadService:
 
     async def upload_file(self, file_path: str, object_type: str = "TEMPORARY_MATERIAL_DOC") -> Optional[str]:
         try:
-            with open(file_path, 'rb') as f:
-                file_content = f.read()
+            file_content = await asyncio.to_thread(Path(file_path).read_bytes)
 
             file_name = os.path.basename(file_path)
             file_size = len(file_content)

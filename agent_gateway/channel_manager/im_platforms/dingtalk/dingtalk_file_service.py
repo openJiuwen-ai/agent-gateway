@@ -689,14 +689,14 @@ class DingTalkFileService:
         try:
             filename = os.path.basename(file_path)
             mime_type = get_mime_type(os.path.splitext(file_path)[1])
-            with open(file_path, 'rb') as f:
-                files = {
-                    "media": (filename, f.read(), mime_type),
-                }
-                data = {
-                    "type": file_type,
-                }
-                response = await self._http.post(url, data=data, files=files)
+            file_bytes = await asyncio.to_thread(Path(file_path).read_bytes)
+            files = {
+                "media": (filename, file_bytes, mime_type),
+            }
+            data = {
+                "type": file_type,
+            }
+            response = await self._http.post(url, data=data, files=files)
 
             if response.status_code != 200:
                 logger.error(f"[DingTalkFileService] 上传失败: {response.text}")
