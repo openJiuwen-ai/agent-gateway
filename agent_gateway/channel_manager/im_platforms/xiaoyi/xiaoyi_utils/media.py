@@ -196,8 +196,7 @@ async def download_and_save_media(
             _TMP_MEDIA_PATH.mkdir(parents=True, exist_ok=True)
 
         file_path = _TMP_MEDIA_PATH / file_name
-        with open(file_path, "wb") as f:
-            f.write(buffer)
+        await asyncio.to_thread(file_path.write_bytes, buffer)
 
         return DownloadedMedia(
             path=file_path,  # 实际项目中应该保存并返回本地路径
