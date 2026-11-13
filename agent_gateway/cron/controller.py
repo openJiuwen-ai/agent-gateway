@@ -22,6 +22,7 @@ from agent_gateway.cron.cron_expr import (
 from agent_gateway.cron.models import (
     CRON_JOB_DESCRIPTION_MAX_LENGTH,
     CRON_JOB_NAME_MAX_LENGTH,
+    CRON_MODEL_SOURCE_CONFIG,
     CRON_MODEL_SOURCE_LOGIN,
     CronTargetChannel,
     cron_job_metadata,
@@ -61,6 +62,18 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
             "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
         ) from exc
     return credential_ref_for_user(session.user_id)
+
+
+def _resolve_cron_model(
+    raw: Any, zen_entries: list[dict[str, Any]] | None
+) -> tuple[str | None, str]:
+    """解析 cron 模型名；AgentOS 的模型配置在用户沙箱侧，本进程按沙箱已校验的名字原样接受。"""
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        logger.info("[cron] accept agent-validated model %r", raw)
+        return str(raw or "").strip() or None, CRON_MODEL_SOURCE_CONFIG
+    return resolve_cron_model(raw, zen_entries=zen_entries)
 
 
 def _is_proactive_tick(job: Any) -> bool:
@@ -586,9 +599,8 @@ class CronController:
             group_id = normalize_tenant_id(params.get("group_id"))
             bot_id = normalize_tenant_id(params.get("bot_id"))
             user_id = normalize_tenant_id(params.get("user_id"))
-            model_name, model_source = resolve_cron_model(
-                params.get("model_name"),
-                zen_entries=await self._zen_entries(),
+            model_name, model_source = _resolve_cron_model(
+                params.get("model_name"), await self._zen_entries()
             )
             model_selection = params.get("model_selection")
             if model_selection is not None:
@@ -766,9 +778,8 @@ class CronController:
                     user_id=str(user_id or existing.user_id or ""),
                 )
         elif "model_name" in patch:
-            canonical, model_source = resolve_cron_model(
-                patch.get("model_name"),
-                zen_entries=await self._zen_entries(),
+            canonical, model_source = _resolve_cron_model(
+                patch.get("model_name"), await self._zen_entries()
             )
             patch["model_name"] = canonical
             # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
