@@ -871,7 +871,7 @@ class FeishuChannel(BaseChannel):
             try:
                 await self._shutdown_ws_client()
             except Exception as e:
-                logger.warning("停止WebSocket客户端时发生异常: {}", e)
+                logger.warning("停止WebSocket客户端时发生异常: %s", e)
 
         loop = self._ws_thread_loop
         if loop is not None:
@@ -904,7 +904,7 @@ class FeishuChannel(BaseChannel):
                 try:
                     await conn.close(code=1000, reason="bye")
                 except Exception as e:
-                    logger.debug("飞书连接关闭时出现异常: {}", e)
+                    logger.debug("飞书连接关闭时出现异常: %s", e)
 
             await asyncio.sleep(0.05)
 
@@ -916,7 +916,7 @@ class FeishuChannel(BaseChannel):
         except asyncio.TimeoutError:
             logger.debug("飞书客户端清理超时，继续停止事件循环")
         except Exception as e:
-            logger.debug("飞书客户端清理任务异常: {}", e)
+            logger.debug("飞书客户端清理任务异常: %s", e)
 
     @staticmethod
     def _patch_ws_client_shutdown(ws_client: Any) -> None:
@@ -932,7 +932,7 @@ class FeishuChannel(BaseChannel):
                 return await original_disconnect()
             except RuntimeError as e:
                 if "Lock is not acquired" in str(e):
-                    logger.debug("忽略 lark_oapi 断连并发异常: {}", e)
+                    logger.debug("忽略 lark_oapi 断连并发异常: %s", e)
                     return None
                 raise
 
