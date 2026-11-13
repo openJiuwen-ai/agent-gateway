@@ -32,6 +32,39 @@ class DingTalkFileUploadError(RuntimeError):
         self.code = code
 
 
+def _read_group_file_secured(path: Path, max_size: int) -> bytes:
+    """Read a regular group output file into memory with the same integrity checks."""
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
+            raise DingTalkFileUploadError("DingTalk upload source is not a regular file", code="OUTPUT_FILE_INVALID")
+        if before.st_size > max_size:
+            raise DingTalkFileUploadError("DingTalk upload exceeds the configured file size limit")
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
+        try:
+            opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise DingTalkFileUploadError("DingTalk upload source changed while opening", code="OUTPUT_FILE_INVALID")
+            chunks: list[bytes] = []
+            remaining = before.st_size + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            content = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except DingTalkFileUploadError:
+        raise
+    except OSError as exc:
+        raise DingTalkFileUploadError("DingTalk upload source is unavailable", code="OUTPUT_FILE_INVALID") from exc
+    if len(content) != before.st_size or len(content) > max_size:
+        raise DingTalkFileUploadError("DingTalk upload source changed while reading", code="OUTPUT_FILE_INVALID")
+    return content
+
+
 # 文件魔数映射（用于格式检测）
 FILE_SIGNATURES = {
     # 图片
@@ -229,34 +262,7 @@ class DingTalkFileService:
         if not all(isinstance(value, str) and value.strip() for value in (conversation_id, sender_staff_id)):
             raise DingTalkFileUploadError("DingTalk group file route is incomplete", code="INVALID_DELIVERY_PAYLOAD")
         path = Path(file_path)
-        try:
-            before = path.lstat()
-            if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
-                raise DingTalkFileUploadError("DingTalk upload source is not a regular file", code="OUTPUT_FILE_INVALID")
-            if before.st_size > self._max_download_size:
-                raise DingTalkFileUploadError("DingTalk upload exceeds the configured file size limit")
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0))
-            try:
-                opened = os.fstat(descriptor)
-                if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                    raise DingTalkFileUploadError("DingTalk upload source changed while opening", code="OUTPUT_FILE_INVALID")
-                chunks: list[bytes] = []
-                remaining = before.st_size + 1
-                while remaining:
-                    chunk = os.read(descriptor, min(1024 * 1024, remaining))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    remaining -= len(chunk)
-                content = b"".join(chunks)
-            finally:
-                os.close(descriptor)
-        except DingTalkFileUploadError:
-            raise
-        except OSError as exc:
-            raise DingTalkFileUploadError("DingTalk upload source is unavailable", code="OUTPUT_FILE_INVALID") from exc
-        if len(content) != before.st_size or len(content) > self._max_download_size:
-            raise DingTalkFileUploadError("DingTalk upload source changed while reading", code="OUTPUT_FILE_INVALID")
+        content = await asyncio.to_thread(_read_group_file_secured, path, self._max_download_size)
 
         token = access_token or await self._get_token()
         if not token:
