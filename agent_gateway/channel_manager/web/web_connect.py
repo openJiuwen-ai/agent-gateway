@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message, Mode
 import asyncio
 import inspect
 import json
@@ -23,7 +24,6 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from agent_gateway.channel_manager.base import (
@@ -35,10 +35,10 @@ from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
 from agent_gateway.common.paths import get_logs_dir
+from agent_gateway.common.gateway_methods import ACK_METHODS
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
-    validate_workflow_run_id,
 )
 from agent_gateway.common.security.ws_origin import (
     get_header_value,
@@ -101,15 +101,8 @@ def _resolve_ws_auth_session(
             return value
     return ""
 
-_HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
+_HANDLER_BEFORE_CALLBACK_METHODS = frozenset({'chat.send'})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
-_SWARMFLOW_CONTROL_METHODS = frozenset(
-    {
-        ReqMethod.SWARMFLOW_PAUSE.value,
-        ReqMethod.SWARMFLOW_RESUME.value,
-        ReqMethod.SWARMFLOW_STOP.value,
-    }
-)
 
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
 _STREAM_COALESCE_MAX_FRAMES = 32
@@ -807,7 +800,7 @@ class WebChannel(BaseWsChannel):
 
         ok, payload = await fetch_agent_unary(
             agent_client=ac,
-            req_method=ReqMethod.FILE_IMPORT_URL,
+            req_method="file.import_url",
             # Retain the historic overwrite semantics in the shared-directory
             # single-user deployment.  Per-user AgentOS directories keep
             # collision-safe names so independent uploads never overwrite a
@@ -1793,7 +1786,7 @@ class WebChannel(BaseWsChannel):
 
         try:
             ok, payload = await fetch_agent_unary(
-                agent_client=self.agent_client, req_method=ReqMethod.TEAM_LIST,
+                agent_client=self.agent_client, req_method="team.list",
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
                 metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
@@ -2255,18 +2248,6 @@ class WebChannel(BaseWsChannel):
                 if has_explicit_session
                 else self._make_session_id()
             )
-            if method in _SWARMFLOW_CONTROL_METHODS:
-                run_id = params.get("run_id")
-                workflow_run_id = params.get("workflow_run_id")
-                if (
-                    run_id not in (None, "")
-                    and workflow_run_id not in (None, "")
-                    and run_id != workflow_run_id
-                ):
-                    raise InvalidProtocolId(
-                        "run_id and workflow_run_id must match"
-                    )
-                validate_workflow_run_id(run_id or workflow_run_id)
         except InvalidProtocolId as exc:
             await self.send_response(
                 ws,
@@ -2369,20 +2350,18 @@ class WebChannel(BaseWsChannel):
 
         # 发布到 route 或回调
         handler = self._method_handlers.get(method)
-        if method in self._local_only_methods:
-            if handler is None:
-                await self.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error=f"unknown method: {method}",
-                    code="METHOD_NOT_FOUND",
-                )
-                return
+        if handler is not None and method in self._local_only_methods:
             invocation = _MethodHandlerInvocation(
                 ws, method, req_id, params, session_id, handler,
             )
             await self._invoke_method_handler(invocation)
+            return
+        # Registered handlers own local behavior. Only acknowledgement handlers
+        # also deliver the request through the upstream callback.
+        if handler is not None and method not in ACK_METHODS:
+            await self._invoke_method_handler(
+                _MethodHandlerInvocation(ws, method, req_id, params, session_id, handler),
+            )
             return
         handler_already_called = False
         if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
@@ -2401,10 +2380,13 @@ class WebChannel(BaseWsChannel):
                 result = await result
             handled_by_callback = bool(result)
         else:
-            await self.bus.publish_user_messages(user_message)
+            if self.bus is not None and hasattr(self.bus, "route_user_message"):
+                await self.bus.route_user_message(user_message)
+                handled_by_callback = True
 
         if handled_by_callback:
-            return
+            if handler is None or handler_already_called:
+                return
         if handler_already_called:
             return
 
@@ -2416,9 +2398,11 @@ class WebChannel(BaseWsChannel):
                 ),
             )
         else:
+            if self._on_message_cb is not None:
+                return
             await self.send_response(
                 ws, req_id, ok=False,
-                error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
+                error="upstream transport is unavailable", code="SERVICE_UNAVAILABLE",
             )
 
     @staticmethod
@@ -2534,11 +2518,13 @@ class WebChannel(BaseWsChannel):
         return frame
 
     @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
-        for item in ReqMethod:
-            if item.value == method:
-                return item
-        return None
+    def _parse_req_method(method: str) -> str:
+        """方法名按线上字符串透传。
+
+        Gateway 不再用本地枚举校验：AgentServer 新增的方法必须能穿过 Gateway。
+        空值返回空串，由下游按既有约定处理。
+        """
+        return method if isinstance(method, str) else ""
 
     # Public aliases for HTTP dispatch (G.CLS.11).
     parse_req_method = _parse_req_method

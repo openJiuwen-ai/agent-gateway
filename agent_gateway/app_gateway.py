@@ -25,7 +25,7 @@ import signal
 import sys
 import time
 import uuid as uuid_module
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -39,6 +39,7 @@ def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 from e2a.gateway_normalize import e2a_from_agent_fields
+from agent_gateway.common.gateway_methods import ACK_METHODS
 from e2a.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
@@ -46,7 +47,6 @@ from e2a.message import (
     Message,
     Mode,
 )
-from agent_gateway.common.protocol_methods import ReqMethod
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from agent_gateway.common.ws_diagnostics import (
@@ -308,38 +308,30 @@ async def _refresh_expired_login_credential(msg) -> None:
 
 def _normalize_gateway_message(msg):
 
-    req_method = getattr(msg, "req_method", None) or ReqMethod.CHAT_SEND
+    req_method = getattr(msg, "req_method", None) or "chat.send"
+    if req_method not in ACK_METHODS:
+        return msg
     params = dict(msg.params or {})
-    if "query" not in params and "content" in params:
+    if req_method == "chat.send" and "query" not in params and "content" in params:
         params["query"] = params["content"]
-    if req_method == ReqMethod.CHAT_RESUME:
-        req_method = ReqMethod.CHAT_CANCEL
+    if req_method == "chat.resume":
+        req_method = "chat.interrupt"
         params.setdefault("intent", "resume")
 
-    method_val = req_method.value
+    method_val = req_method
     is_stream = bool(
         msg.is_stream
-        or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
+        or method_val in ('chat.send', 'history.get')
     )
 
     # 登录模型的凭据在这里挂上，随请求带给AgentServer
     _normalize_model_auth(params, msg)
 
-    normalized = Message(
-        id=msg.id,
-        type=msg.type,
-        channel_id=msg.channel_id,
-        session_id=msg.session_id,
+    normalized = replace(
+        msg,
         params=params,
-        timestamp=msg.timestamp,
-        ok=msg.ok,
         req_method=req_method,
-        mode=msg.mode,
         is_stream=is_stream,
-        stream_seq=msg.stream_seq,
-        stream_id=msg.stream_id,
-        metadata=msg.metadata,
-        user_id=getattr(msg, "user_id", None),
     )
     from agent_gateway.telemetry import attach_message_trace, get_message_trace
     attach_message_trace(normalized, get_message_trace(msg))
@@ -350,72 +342,9 @@ async def _normalize_and_forward_message(msg, channel_manager) -> bool:
     with trace_stage("preprocess.credentials"):
         await _refresh_expired_login_credential(msg)
     normalized = _normalize_gateway_message(msg)
-    # ACP/直连转发路径(session.create 等)也需注入 work_mode 归一化,
-    # 与 _norm_and_forward(Web/TUI 主路径)保持一致。否则直连 AgentServer 的
-    # 调用方传真实 project_id + 合法但不匹配的 work_mode 时,AgentServer 侧
-    # _work_mode_explicit marker 缺失,不会返回设计要求的 BAD_REQUEST。
-    method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
-    if method_val == "session.create":
-        _inject_session_work_mode(normalized)
     await channel_manager.deliver_to_message_handler(normalized)
     logger.info("[App] Gateway inbound -> MessageHandler: id=%s channel_id=%s", msg.id, msg.channel_id)
     return False
-
-
-def _inject_session_work_mode(msg: Message) -> None:
-    """为 ``session.create`` 请求注入 work_mode 归一化(主路径兜底)。
-
-    与 fallback ``_session_create`` 共用同一 helper
-    ``resolve_session_work_mode_params``,保持主路径/fallback 一致。
-
-    成功时写回归一化后的 ``project_id`` / ``project_dir`` / ``work_mode`` 到
-    ``msg.params``;失败时(非法 work_mode)不写回,保留原始 params 由后续
-    AgentServer 或 fallback ``_session_create`` 返回 BAD_REQUEST。
-
-    本函数做参数归一化 + **TUI project_dir 预解析**(设计文档 §5.3.5):
-    - TUI 通道下,若 project_id 为默认项目且 project_dir 非空绝对路径,
-      按 work_mode="code" 查找/创建 code 项目,将真实 project_id 写回 params。
-    - 非 TUI 通道仅做纯参数归一化,最终 work_mode 以 Project 记录为准的
-      校验由 ``_session_create`` / AgentServer 侧完成。
-
-    显式性判定(``has_explicit_work_mode``)由 ``resolve_session_work_mode_params``
-    随 binding 返回。但 gateway → AgentServer 是跨进程通信,binding 结果不能
-    直接传递。因此 gateway 将 ``has_explicit_work_mode`` 注入 params 的
-    ``_work_mode_explicit`` 字段作为传输标记,AgentServer 消费后立即 pop。
-    AgentServer 直连调用方(非 gateway 路径)不携带此标记,此时 AgentServer
-    通过重新调用 ``resolve_session_work_mode_params`` 获取 binding 中的
-    ``has_explicit_work_mode``(直连场景 params 为原始值,计算结果正确)。
-    """
-    params = getattr(msg, "params", None)
-    if not isinstance(params, dict):
-        return
-    channel_id = getattr(msg, "channel_id", None)
-    try:
-        from agent_gateway.runtime.work_mode import resolve_session_work_mode_params
-        binding = resolve_session_work_mode_params(params, channel_id=channel_id)
-    except Exception:  # noqa: BLE001
-        # 归一化异常时不写回,保留原始 params 由后续处理
-        return
-    if binding.error:
-        return
-
-    resolved_project_id = binding.project_id
-    resolved_project_dir = binding.project_dir
-    resolved_work_mode = binding.work_mode
-
-    # 注意:TUI 通道的 session.create 不走 forward 路径(不在 CLI_FORWARD_REQ_METHODS),
-    # TUI 的 cwd→code project 绑定由 AgentServer 侧在 SESSION_CREATE 处理时通过
-    # find_or_create_code_project_for_tui_params 完成（经 E2A 转发后解析）。
-    # 此处仅处理 WEB/ACP 通道的 work_mode 绑定注入。
-
-    params["project_id"] = resolved_project_id
-    params["project_dir"] = resolved_project_dir
-    params["work_mode"] = resolved_work_mode
-    # _work_mode_explicit: 跨进程传输"请求是否显式传了 work_mode"标志。
-    # AgentServer 消费后立即 pop,不持久化、不序列化到日志。
-    # 该标志区分"用户显式传 work_mode"(需做 Project 一致性校验)与
-    # "gateway 注入通道默认 work_mode"(跳过一致性校验,以 Project 记录为准)。
-    params["_work_mode_explicit"] = binding.has_explicit_work_mode
 
 
 class _InboundGatewayServer:
@@ -701,8 +630,6 @@ class RouteConfig:
 
     path: str
     channel_id: str
-    forward_methods: frozenset[str] = frozenset()
-    forward_no_local_handler_methods: frozenset[str] = frozenset()
     local_handlers: dict[str, Callable[..., Awaitable[None]]] = field(default_factory=dict)
     inbound_interceptor: Callable[..., Awaitable[bool]] | None = None
     outbound_interceptor: Callable[..., Awaitable[bool]] | None = None
@@ -1575,9 +1502,9 @@ class GatewayServer(BaseWebChannel):
             return
 
         req_id = str(data.get("id") or "").strip()
-        method = str(data.get("method") or "").strip()
+        method = data.get("method")
         params = data.get("params") if isinstance(data.get("params"), dict) else {}
-        if not req_id or not method:
+        if not req_id or not isinstance(method, str) or not method.strip():
             await ws.send(
                 json.dumps(
                     {"type": "res", "id": req_id, "ok": False, "error": "invalid request"},
@@ -1592,22 +1519,12 @@ class GatewayServer(BaseWebChannel):
 
         req_user_id = self._connection_user_id(ws)
 
-        # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
-        if method in route.forward_methods:
-            req_method = None
-            for item in ReqMethod:
-                if item.value == method:
-                    req_method = item
-                    break
-
-            if req_method is None:
-                await ws.send(
-                    json.dumps(
-                        {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                        ensure_ascii=False,
-                    )
-                )
-                return
+        # Local handlers own their methods; all other names go upstream.
+        local_handler = route.local_handlers.get(method)
+        if local_handler is None or method in ACK_METHODS:
+            # 方法名原样透传：Gateway 不认识的方法由 AgentServer 判定是否实现，
+            # 不在这里按本地枚举拦截，否则 AgentServer 新增方法必须同步改 Gateway。
+            req_method = method
 
             # V2: 提取 agent_ref 用于路由键（支撑场景 2 同 session 切 mode 不串窗）。
             # 客户端未发送 agent_ref 时不合成——保持 2 元组注册，与响应查找侧
@@ -1653,12 +1570,13 @@ class GatewayServer(BaseWebChannel):
             # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
             # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
             params = dict(params)
-            if not isinstance(params.get("mode"), str):
+            if method in ACK_METHODS and not isinstance(params.get("mode"), str):
                 params["mode"] = mode.value
 
             # 连接级 agent_type 为 SSOT，注入后续转发请求
             # （3rdagent.switch 由 TUI local_handler 写回 ws._gateway_agent_type）
-            params["agent_type"] = self._connection_agent_type(ws)
+            if method in ACK_METHODS:
+                params["agent_type"] = self._connection_agent_type(ws)
 
             # V2: agent_ref 全链路透传（阶段2）。
             # tui 客户端从不发 agent_ref（_agent_ref 恒 None）→ 按 mode/agent_id 合成 AgentRef，
@@ -1747,6 +1665,12 @@ class GatewayServer(BaseWebChannel):
                 result = self._on_message_cb(msg)
                 if asyncio.iscoroutine(result):
                     await result
+            else:
+                await self.send_response(
+                    ws, req_id, ok=False,
+                    error="upstream transport is unavailable", code="SERVICE_UNAVAILABLE",
+                )
+                return
 
             # ACP route may receive legacy ``type=req`` frames from some clients.
             # They should be forwarded upstream without falling through to the
@@ -1754,8 +1678,7 @@ class GatewayServer(BaseWebChannel):
             if route.channel_id == "acp":
                 return
 
-            # 如果在 forward_no_local_handler_methods 中，不需要本地 ack
-            if method in route.forward_no_local_handler_methods:
+            if local_handler is None:
                 return
 
         # 2. 本地 handler：发 ack 或纯本地处理
@@ -1794,28 +1717,16 @@ class GatewayServer(BaseWebChannel):
                     )
             return
 
-        # 3. 无 forward 也无本地 handler
-        await ws.send(
-            json.dumps(
-                {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                ensure_ascii=False,
-            )
-        )
-
 
 def _build_acp_route_binding(
         *,
         path: str,
         channel_id: str,
-        forward_methods: frozenset[str],
-        forward_no_local_handler_methods: frozenset[str],
         on_message_cb,
 ) -> GatewayRouteBinding:
     return GatewayRouteBinding(
         path=path,
         channel_id=channel_id,
-        forward_methods=forward_methods,
-        forward_no_local_handler_methods=forward_no_local_handler_methods,
     )
 
 
@@ -1837,7 +1748,7 @@ async def sync_saved_topic_recommendation(
     try:
         ok, payload = await fetch_agent_unary(
             agent_client=client,
-            req_method=ReqMethod.RECOMMENDATION,
+            req_method="recommendation.job",
             params={
                 "action": "apply_saved_config",
                 "updated_env_keys": sorted(updated_env_keys or []),
@@ -1867,8 +1778,6 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
         binding.path: RouteConfig(
             path=binding.path,
             channel_id=binding.channel_id,
-            forward_methods=binding.forward_methods,
-            forward_no_local_handler_methods=binding.forward_no_local_handler_methods,
             inbound_interceptor=binding.inbound_interceptor,
             outbound_interceptor=binding.outbound_interceptor,
             cleanup_handler=binding.cleanup_handler,
@@ -1902,8 +1811,6 @@ async def _run(
         register_3rdagent_web_method,
     )
     from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-        _FORWARD_REQ_METHODS,
         WebHandlersBindParams,
         _DummyBus,
         _normalize_feishu_conf,
@@ -2191,7 +2098,7 @@ async def _run(
             env = e2a_from_agent_fields(
                 request_id=f"agent-prewarm-sync-{uuid_module.uuid4().hex[:8]}",
                 channel_id="",
-                req_method=ReqMethod.AGENT_PREWARM_SYNC,
+                req_method="agent.prewarm.sync",
                 params={
                     "enabled_channels": sorted(prewarm_channels),
                 },
@@ -2288,7 +2195,7 @@ async def _run(
                 channel_id="",
                 session_id="sess_reload",
                 user_id="agentos_test",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+                req_method="agent.reload_config",
                 params={
                     # config: full config snapshot after save; Agent should prefer this over local yaml.
                     "config": dict(config_payload or {}),
@@ -2396,7 +2303,7 @@ async def _run(
                     channel_id="",
                     session_id="sess_reload",
                     user_id="agentos_test",
-                    req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
+                    req_method="browser.runtime_restart",
                 )
                 try:
                     await client.send_request(restart_env)
@@ -2524,37 +2431,20 @@ async def _run(
     log_startup_stage("web_handlers_registered")
 
     def _make_norm_and_forward(
-            forward_methods: set[str] | frozenset[str],
-            no_local_methods: set[str] | frozenset[str],
             source_label: str,
     ):
         async def _norm_and_forward(msg: Message) -> bool:
-            method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
-            if method_val not in forward_methods:
-                return False
             with trace_stage("preprocess.credentials"):
                 await _refresh_expired_login_credential(msg)
             normalized = _normalize_gateway_message(msg)
-            # session.create 主路径注入 work_mode 归一化(与 fallback _session_create
-            # 共用同一 helper resolve_session_work_mode_params,保持主路径/fallback 一致):
-            # 成功时写回归一化后的 project_id/project_dir/work_mode 到 params,
-            # 转发到 AgentServer 后由其 session.create 处理逻辑使用;
-            # 失败时(非法 work_mode)不写回,保留原始 params 由 AgentServer 或
-            # fallback _session_create 返回 BAD_REQUEST。
-            if method_val == "session.create":
-                _inject_session_work_mode(normalized)
             await channel_manager.deliver_to_message_handler(normalized)
             logger.debug("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
-            if method_val in no_local_methods:
-                return True
-            return False
+            return True
 
         return _norm_and_forward
 
     homepage_request_dispatched = asyncio.Event()
     web_norm_and_forward = _make_norm_and_forward(
-        _FORWARD_REQ_METHODS,
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
         "Web",
     )
     channel_manager.register_channel_with_inbound(web_channel, web_norm_and_forward)
@@ -2602,16 +2492,12 @@ async def _run(
         TuiChannelConfig,
     )
     from agent_gateway.channel_manager.tui.tui_connect import (
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-        CLI_FORWARD_REQ_METHODS,
         CliRouteBindParams,
         build_cli_route_binding,
     )
 
     tui_channel = TuiChannel(TuiChannelConfig(enabled=True), _DummyBus())
     tui_norm_and_forward = _make_norm_and_forward(
-        CLI_FORWARD_REQ_METHODS,
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
         "TUI",
     )
     channel_manager.register_channel_with_inbound(tui_channel, tui_norm_and_forward)
@@ -2630,8 +2516,6 @@ async def _run(
         _build_acp_route_binding(
             path="/acp",
             channel_id="acp",
-            forward_methods=_FORWARD_REQ_METHODS,
-            forward_no_local_handler_methods=_FORWARD_NO_LOCAL_HANDLER_METHODS,
             on_message_cb=acp_inbound_server.handle_message,
         ),
         build_cli_route_binding(

@@ -116,6 +116,12 @@ class ChatActionBody(_ExtraAllow):
     pass
 
 
+class RpcBody(BaseModel):
+    method: str = Field(min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+    is_stream: bool = False
+
+
 def _body_dict(body: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
     if body is None:
         return {}
@@ -230,6 +236,17 @@ def register_web_http_api_routes(
     )
 
     register_share_job_routes(app)
+
+    @app.post("/api/v1/rpc", tags=["rpc"], summary="Invoke a method by wire name")
+    async def invoke_method(request: Request, body: RpcBody) -> Response:
+        if not body.method.strip():
+            return JSONResponse(
+                {"ok": False, "error": {"code": "BAD_REQUEST", "message": "method must not be blank"}},
+                status_code=400,
+            )
+        if body.is_stream:
+            return await _stream(request, channel, body.method, body.params)
+        return await _unary(request, channel, body.method, body.params, bind_session_param=False)
 
     @app.get("/api/v1/health", tags=["health"], summary="探活")
     async def health(request: Request) -> JSONResponse:

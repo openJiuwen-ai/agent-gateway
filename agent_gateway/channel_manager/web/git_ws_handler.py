@@ -203,7 +203,7 @@ class GitDiffWebSocketHandler:
             session_id=session_id or None,
             user_id=connection_user_id,
             req_method=req_method,
-            label=req_method.value,
+            label=req_method,
             preserve_error_payload=True,
             on_done=_on_done,
         )
@@ -533,13 +533,12 @@ class GitDiffWebSocketHandler:
           故仅在 ``errors`` 为空时截断;有错误时返回 ``ok=False, partial=True``
           并保留日志,调用方可重试。
         """
-        from e2a.message import ReqMethod
 
         await self._proxy_turn_mutation(
             ws,
             req_id,
             params,
-            req_method=ReqMethod.PROJECT_GIT_DISCARD_TURN_CHANGES,
+            req_method="project.git.discard_turn_changes",
             busy_error="session is busy; stop the current run before discarding changes",
         )
 
@@ -558,13 +557,12 @@ class GitDiffWebSocketHandler:
           - 会话非忙碌(agent 未在执行)
           - 最后一轮已被 discard(status == "discarded")
         """
-        from e2a.message import ReqMethod
 
         await self._proxy_turn_mutation(
             ws,
             req_id,
             params,
-            req_method=ReqMethod.PROJECT_GIT_REDO_TURN_CHANGES,
+            req_method="project.git.redo_turn_changes",
             busy_error="session is busy; stop the current run before redoing changes",
         )
 

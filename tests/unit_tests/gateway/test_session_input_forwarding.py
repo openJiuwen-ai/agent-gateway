@@ -7,14 +7,14 @@ from unittest.mock import AsyncMock
 import pytest
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 from agent_gateway.message_handler.message_handler import MessageHandler
 
 
 def message(rid, *, stream=False, mode=None, channel="web", **params):
     return Message(
         id=rid, type="req", channel_id=channel, session_id="sess-input-gateway",
-        req_method=ReqMethod.CHAT_SEND, is_stream=stream, timestamp=0, ok=True,
+        req_method='chat.send', is_stream=stream, timestamp=0, ok=True,
         params={"query": rid, "mode": "agent", **({"input_mode": mode} if mode else {}), **params},
         metadata={"ws_id": "original-connection", "user_id": "test-user"},
     )
@@ -86,6 +86,27 @@ async def receive(handler, rid, *, event_type=None, ok=None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "tui"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_unknown_method_traverses_running_queue_without_chat_preprocessing(gateway, channel, stream):
+    handler, client = gateway
+    request = message("future", channel=channel, stream=stream)
+    request.req_method = "future.capability.execute"
+    request.params = {"content": "/new_session", "nested": {"opaque": [1, False, None]}}
+    expected = dict(request.params)
+    await handler.publish_user_messages(request)
+    assert await asyncio.wait_for(client.started.get(), 5) == "future"
+    response = await receive(handler, "future")
+    assert response.ok
+    envelope = client.calls[0]
+    assert type(envelope.method) is str
+    assert envelope.method == request.req_method
+    assert envelope.params == expected
+    assert envelope.is_stream is stream
+    assert envelope.session_id == request.session_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("original_stream", [False, True])
 @pytest.mark.parametrize("input_stream", [False, True])
 async def test_input_reaches_running_request_with_independent_receipt(gateway, original_stream, input_stream):
@@ -150,7 +171,7 @@ async def test_unary_active_and_queued_tasks_are_cleaned_up(gateway, action):
         await handler.stop_forwarding()
     else:
         cancel = message("cancel")
-        cancel.req_method = ReqMethod.CHAT_CANCEL
+        cancel.req_method = 'chat.interrupt'
         cancel.params = {"intent": "cancel"}
         await handler.publish_user_messages(cancel)
         await receive(handler, "cancel", event_type="chat.interrupt_result")

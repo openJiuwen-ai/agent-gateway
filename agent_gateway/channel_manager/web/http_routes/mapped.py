@@ -991,6 +991,7 @@ def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, 
 
 # Core routes implemented in web_http_routes.py (hand-written because of SSE / history collect).
 CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
+    ("POST", "/rpc", "", "Invoke a method by wire name; is_stream selects SSE"),
     ("GET", "/health", "", "探活（非 RPC method）"),
     ("GET", "/connection/status", "connection.status", "Agent 连接状态"),
     ("GET", "/sessions", "session.list", "列会话"),

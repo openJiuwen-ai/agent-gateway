@@ -14,13 +14,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from agent_gateway.common.protocol_compat import (
-    ensure_gateway_event_types,
-    ensure_gateway_req_methods,
-)
-
-ensure_gateway_req_methods()
-ensure_gateway_event_types()
+# Local handler registrations own Gateway behavior. Other method strings
+# pass upstream without enum registration during package initialization.
 
 if TYPE_CHECKING:  # 静态分析(mypy/IDE)仍然可见全部导出名
     from agent_gateway.channel_manager import ChannelManager

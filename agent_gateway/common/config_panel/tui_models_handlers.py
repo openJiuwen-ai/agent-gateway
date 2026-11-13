@@ -230,7 +230,6 @@ async def command_model_handler(
     本 handler 假定已在正确的用户目录上下文中执行。
     """
     from e2a.gateway_normalize import e2a_from_agent_fields
-    from e2a.message import ReqMethod
 
     if not isinstance(params, dict):
         params = {}
@@ -250,7 +249,7 @@ async def command_model_handler(
             request_id=req_id,
             channel_id="cli",
             session_id=session_id,
-            req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+            req_method="agent.reload_config",
             params={"config": config_payload, "env": {}},
             is_stream=False,
             timestamp=time.time(),
@@ -957,7 +956,7 @@ async def command_model_handler(
             request_id=req_id,
             channel_id="cli",
             session_id=session_id,
-            req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+            req_method="agent.reload_config",
             params={
                 "config": _config_payload,
                 "env": {},

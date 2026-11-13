@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+from e2a.message import EventType, Message
 import asyncio
 import json
 import logging
@@ -11,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import httpx
-from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -645,7 +645,7 @@ class DingTalkChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             chat_id=conversation_id,
             metadata=metadata,
         )

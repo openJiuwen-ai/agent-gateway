@@ -122,7 +122,6 @@ async def delete_memory(
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
 async def list_package_allowlist_catalog(request: Request):
     """Query the Server via E2A, preserving the management response contract."""
-    from e2a.message import ReqMethod
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
     channel = getattr(request.app.state, "manager_agent_channel", None)
@@ -131,7 +130,7 @@ async def list_package_allowlist_catalog(request: Request):
         client = client()
     ok, payload = await fetch_agent_unary(
         agent_client=client,
-        req_method=ReqMethod.HUB_EXPERT_PACKAGES_CATALOG,
+        req_method="hub.expert_packages.catalog",
         params={},
         session_id=None,
         user_id=None,

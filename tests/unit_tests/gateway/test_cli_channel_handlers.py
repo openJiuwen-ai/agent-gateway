@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from e2a.agent_models import AgentResponse
-from e2a.message import ReqMethod
+
 
 from agent_gateway.channel_manager.tui import tui_connect as tui_connect_module
 from agent_gateway.channel_manager.tui.tui_connect import (
@@ -244,7 +244,7 @@ async def test_memory_list_forwards_to_agentserver_with_routing_user():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.MEMORY_LIST.value
+    assert request.method == 'memory.list'
     assert request.user_id == "user-a"
     assert request.params == {"mode": "code"}
     assert request.session_id == "sess-memory"
@@ -316,7 +316,7 @@ async def test_harmonyos_dev_init_cancel_waits_for_background_cleanup(monkeypatc
     await asyncio.wait_for(started.wait(), timeout=1)
     assert len(received_envs) == 1
     env, label = received_envs[0]
-    assert env.method == ReqMethod.HARMONYOS_DEV_INIT.value
+    assert env.method == 'harmonyos.dev_init'
     assert env.params == {"skipDevecocliUpdate": True}
     assert label == "tui harmonyos.dev_init"
     assert all(response["id"] != "req-init" for response in server.responses)
@@ -608,14 +608,11 @@ def test_build_cli_route_binding_creates_route_and_install_hook():
 
     assert binding.path == "/tui"
     assert binding.channel_id == "tui"
-    assert "chat.send" in binding.forward_methods
-    assert "history.get" in binding.forward_methods
-    assert "team.mq.publish" in binding.forward_methods
-    assert "team.mq.publish" in binding.forward_no_local_handler_methods
     assert binding.install is not None
 
     binding.install(server)
     handlers = server.local_handlers["/tui"]
+    assert "team.mq.publish" not in handlers
     for method in ("config.get", "config.validate_model", "session.list", "chat.send"):
         assert method in handlers
 
@@ -727,7 +724,7 @@ async def test_config_validate_model_handler_forwards_to_agentserver():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.CONFIG_VALIDATE_MODEL.value
+    assert request.method == 'config.validate_model'
     assert request.params == params
     assert request.user_id == "user-a"
     assert server.responses[-1] == {
@@ -1168,7 +1165,7 @@ async def test_models_list_forwards_to_agentserver():
 
     assert len(client.requests) == 1
     request = client.requests[0]
-    assert request.method == ReqMethod.MODELS_LIST.value
+    assert request.method == 'models.list'
     assert request.user_id == "user-a"
     assert server.responses[-1]["ok"] is True
     assert server.responses[-1]["payload"] == {"models": [{"name": "m"}]}

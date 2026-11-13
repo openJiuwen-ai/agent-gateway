@@ -129,7 +129,6 @@ def register_enterprise_file_routes(app: FastAPI, channel) -> None:
     @app.api_route("/file-api/raw-file", methods=["GET", "HEAD"])
     async def raw_file(request: Request) -> Response:
         from agent_gateway.common.request_identity import apply_routing_metadata
-        from agent_gateway.common.protocol_methods import ReqMethod
         from agent_gateway.channel_manager.web.container_file_http import (
             _decode_verified_chunk, _error_json, serve_file_chunks,
         )
@@ -144,7 +143,7 @@ def register_enterprise_file_routes(app: FastAPI, channel) -> None:
         async def read_chunk(offset: int, limit: int):
             ok, result = await fetch_agent_unary(
                 agent_client=getattr(channel, "agent_client", None),
-                req_method=ReqMethod.FILE_READ_UPLOAD_CHUNK,
+                req_method="file.read_upload_chunk",
                 params={"path": path, "offset": offset, "limit": limit},
                 metadata=apply_routing_metadata(None, identity),
                 session_id=session_id, user_id=identity["user_id"],

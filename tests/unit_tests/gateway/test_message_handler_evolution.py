@@ -6,12 +6,7 @@ from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
-from e2a.message import (
-    TEAM_ATTACH_ONLY_PARAM,
-    EventType,
-    Message,
-    ReqMethod,
-)
+from e2a.message import TEAM_ATTACH_ONLY_PARAM, EventType, Message
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -180,7 +175,7 @@ class _TestMessageHandler(MessageHandler):
         return await self._prepare_agent_dispatch_message(msg)
 
 
-def _message(req_method: ReqMethod) -> Message:
+def _message(req_method: str) -> Message:
     return Message(
         id="req-1",
         type="req",
@@ -203,7 +198,7 @@ def _answer_message(params: dict[str, object]) -> Message:
         params=params,
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_ANSWER,
+        req_method='chat.user_answer',
         is_stream=False,
     )
 
@@ -217,7 +212,7 @@ def _chat_send_message(params: dict[str, object]) -> Message:
         params=params,
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=False,
     )
 
@@ -382,7 +377,7 @@ def _control_message() -> Message:
         params={"mode": "team"},
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=False,
     )
 
@@ -491,17 +486,17 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
     handler = _TestMessageHandler.create()
 
     assert handler.should_emit_processing_status_for_stream(
-        _message(ReqMethod.CHAT_SEND)
+        _message('chat.send')
     ) is True
     assert handler.should_emit_processing_status_for_stream(
-        _message(ReqMethod.HISTORY_GET)
+        _message('history.get')
     ) is False
 
 
 def test_attach_only_stream_does_not_emit_processing_status() -> None:
     """An attach subscription must not raise or own the processing state."""
     handler = _TestMessageHandler.create()
-    attach_message = _message(ReqMethod.CHAT_SEND)
+    attach_message = _message('chat.send')
     attach_message.params = {TEAM_ATTACH_ONLY_PARAM: True}
 
     assert handler.should_emit_processing_status_for_stream(attach_message) is False
@@ -510,15 +505,15 @@ def test_attach_only_stream_does_not_emit_processing_status() -> None:
 def test_steer_stream_does_not_emit_processing_status() -> None:
     """STEER is a receipt-only inject; session busy stays owned by the parent turn."""
     handler = _TestMessageHandler.create()
-    steer_message = _message(ReqMethod.CHAT_SEND)
+    steer_message = _message('chat.send')
     steer_message.params = {
         "query": "111",
         "input_mode": "steer",
         "expected_execution_id": "exec-1",
     }
-    follow_up = _message(ReqMethod.CHAT_SEND)
+    follow_up = _message('chat.send')
     follow_up.params = {"query": "next", "input_mode": "follow_up"}
-    ordinary = _message(ReqMethod.CHAT_SEND)
+    ordinary = _message('chat.send')
     ordinary.params = {"query": "hello"}
 
     assert handler.should_emit_processing_status_for_stream(steer_message) is False
@@ -532,10 +527,10 @@ def test_steer_stream_does_not_block_processing_false() -> None:
     handler = _TestMessageHandler.create()
     handler._stream_sessions["steer-1"] = "sess-1"
     handler._stream_emits_processing_status["steer-1"] = False
-    handler._stream_methods["steer-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_methods["steer-1"] = 'chat.send'
     handler._stream_sessions["parent-1"] = "sess-1"
     handler._stream_emits_processing_status["parent-1"] = True
-    handler._stream_methods["parent-1"] = ReqMethod.CHAT_SEND.value
+    handler._stream_methods["parent-1"] = 'chat.send'
 
     assert handler._session_has_streams_blocking_processing_false(
         "sess-1", exclude_rid="parent-1"
@@ -558,7 +553,7 @@ async def test_attach_only_stream_does_not_block_processing_false() -> None:
     ]
     # Seed an in-flight attach stream on the same session (emit=False).
     getattr(handler, "_stream_emits_processing_status")["attach-1"] = False
-    getattr(handler, "_stream_methods")["attach-1"] = ReqMethod.CHAT_SEND.value
+    getattr(handler, "_stream_methods")["attach-1"] = 'chat.send'
     getattr(handler, "_stream_sessions")["attach-1"] = "sess-attach"
     getattr(handler, "_stream_modes")["attach-1"] = "team.work.normal"
     getattr(handler, "_stream_channels")["attach-1"] = "web"
@@ -567,7 +562,7 @@ async def test_attach_only_stream_does_not_block_processing_false() -> None:
         SimpleNamespace(
             request_id="turn-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method='chat.send',
             params={"query": "hi", "mode": "team.work.normal"},
         ),
         "sess-attach",
@@ -593,7 +588,7 @@ async def test_permission_resume_stream_keeps_processing_while_goal_stream_activ
     ]
     # Seed an in-flight Goal stream on the same session (emit=False).
     getattr(handler, "_stream_emits_processing_status")["goal-1"] = False
-    getattr(handler, "_stream_methods")["goal-1"] = ReqMethod.COMMAND_GOAL.value
+    getattr(handler, "_stream_methods")["goal-1"] = 'command.goal'
     getattr(handler, "_stream_sessions")["goal-1"] = "sess-goal"
     getattr(handler, "_stream_modes")["goal-1"] = "agent"
     getattr(handler, "_stream_channels")["goal-1"] = "web"
@@ -602,7 +597,7 @@ async def test_permission_resume_stream_keeps_processing_while_goal_stream_activ
         SimpleNamespace(
             request_id="perm-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method='chat.send',
             params={
                 "source": "permission_interrupt",
                 "request_id": "call_perm_1",
@@ -632,7 +627,7 @@ async def test_chat_send_clears_processing_while_history_get_stream_active() -> 
         {"event_type": "chat.final", "content": "done"},
     ]
     getattr(handler, "_stream_emits_processing_status")["hist-1"] = False
-    getattr(handler, "_stream_methods")["hist-1"] = ReqMethod.HISTORY_GET.value
+    getattr(handler, "_stream_methods")["hist-1"] = 'history.get'
     getattr(handler, "_stream_sessions")["hist-1"] = "sess-chat"
     getattr(handler, "_stream_modes")["hist-1"] = "agent"
     getattr(handler, "_stream_channels")["hist-1"] = "web"
@@ -641,7 +636,7 @@ async def test_chat_send_clears_processing_while_history_get_stream_active() -> 
         SimpleNamespace(
             request_id="chat-1",
             channel="web",
-            method=ReqMethod.CHAT_SEND.value,
+            method='chat.send',
             params={"query": "hello"},
         ),
         "sess-chat",
@@ -671,7 +666,7 @@ async def _drain_robot_payloads_for_permission_resume(handler: _TestMessageHandl
 
 def test_queued_supplement_message_instructs_todo_continuation():
     handler = _TestMessageHandler.create()
-    msg = _message(ReqMethod.CHAT_CANCEL)
+    msg = _message('chat.interrupt')
 
     queued = handler.build_queued_chat_send_message(
         msg,
@@ -690,7 +685,7 @@ def test_queued_supplement_message_instructs_todo_continuation():
 
 def test_chat_send_query_context_is_remembered_for_supplement():
     handler = _TestMessageHandler.create()
-    msg = _message(ReqMethod.CHAT_SEND)
+    msg = _message('chat.send')
     msg.params = {
         "query": r"Read C:\repo\src\ui\screen-layout.ts and summarize it",
     }
@@ -1009,7 +1004,7 @@ async def test_interrupt_evolution_approval_user_answer_is_dispatched_as_chat_se
         assert handler.pending_evolution_approval("sess-1") is None
         assert _FakeAgentClient.sent_requests == []
         sent = _FakeAgentClient.sent_stream_requests[0]
-        assert sent.method == ReqMethod.CHAT_SEND.value
+        assert sent.method == 'chat.send'
         assert sent.is_stream is True
         assert sent.params["request_id"] == "call_123"
         assert sent.params["answers"] == [{"selected_options": ["allow_once"]}]
@@ -1168,7 +1163,7 @@ async def test_forward_loop_cancel_intent_awaits_agent_interrupt(
             params={"intent": "cancel", "session_id": "sess-1"},
             timestamp=0.0,
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method='chat.interrupt',
             is_stream=False,
             metadata={"ws_id": "ws-stop-1"},
         )
@@ -1203,7 +1198,7 @@ async def test_forward_loop_supplement_forwards_new_input_to_interrupt(monkeypat
             },
             timestamp=0.0,
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method='chat.interrupt',
             is_stream=False,
         )
         await handler.publish_user_messages(supplement_msg)
@@ -1371,18 +1366,18 @@ def test_source_less_failed_unary_without_chat_context_remains_response() -> Non
 @pytest.mark.parametrize(
     ("request_method", "request_params", "expected_type"),
     [
-        (ReqMethod.PERMISSIONS_RULES_CREATE, {}, "res"),
-        (ReqMethod.CHAT_SEND, {}, "event"),
-        (ReqMethod.CHAT_RESUME, {}, "event"),
-        (ReqMethod.CHAT_CANCEL, {"intent": "resume"}, "event"),
-        (ReqMethod.CHAT_CANCEL, {"intent": "cancel"}, "res"),
-        (ReqMethod.CHAT_ANSWER, {}, "event"),
-        (ReqMethod.CHAT_SWARMFLOW_REPLY, {}, "event"),
+        ('permissions.rules.create', {}, "res"),
+        ('chat.send', {}, "event"),
+        ('chat.resume', {}, "event"),
+        ('chat.interrupt', {"intent": "resume"}, "event"),
+        ('chat.interrupt', {"intent": "cancel"}, "res"),
+        ('chat.user_answer', {}, "event"),
+        ('chat.swarmflow_reply', {}, "event"),
     ],
 )
 async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
     monkeypatch: pytest.MonkeyPatch,
-    request_method: ReqMethod,
+    request_method: str,
     request_params: dict[str, object],
     expected_type: str,
 ) -> None:
@@ -1414,7 +1409,7 @@ async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
     await handler._process_non_stream_request(
         msg,
         SimpleNamespace(
-            method=request_method.value,
+        method=request_method,
             request_id=msg.id,
         ),
     )

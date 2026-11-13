@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from e2a.message import Message
+from agent_gateway.common.gateway_methods import ACK_METHODS
 
 from agent_gateway.common.request_identity import (
     merge_routing_into_params,
@@ -36,29 +37,6 @@ _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "multimodal.tools.update", "multimodal.config.apply",
 })
 _ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.", "mcp.server.")
-_ENTERPRISE_SKILL_ALLOWED = frozenset({
-    "skills.list",
-    "skills.get",
-    "skills.toggle",
-    # 技能详情只读接口：文件预览 / 版本列表（与 skills.get 同属查看已安装 skill）。
-    "skills.files.list",
-    "skills.files.get",
-    "skills.versions.list",
-    "skills.source.providers",
-    "skills.source.search",
-    "skills.source.install",
-    # 用户安装的 skill 卸载；SkillManager 会拦截 builtin/prebuilt。
-    "skills.uninstall",
-    "skills.updates.check",
-    "skills.update",
-    # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
-    "skills.import_local",
-    "skills.enterprise.list",
-    "skills.enterprise.install",
-    "skills.enterprise.uninstall",
-    "skills.enterprise.source.providers",
-    "skills.enterprise.source.search",
-})
 
 
 def is_enterprise_write_forbidden(method: str) -> bool:
@@ -70,8 +48,6 @@ def is_enterprise_write_forbidden(method: str) -> bool:
     if method.startswith("a2a."):
         return True
     if method.startswith("channel.") and (method.endswith(".set_conf") or method.endswith(".unbind")):
-        return True
-    if method.startswith("skills.") and method not in _ENTERPRISE_SKILL_ALLOWED:
         return True
     return False
 
@@ -123,7 +99,7 @@ async def dispatch_web_request(
     session_id: str,
     user_message: Message,
 ) -> None:
-    """Run HANDLER_BEFORE → on_message (or bus) → local handler / METHOD_NOT_FOUND.
+    """Run local handlers, otherwise forward the unrecognized method upstream.
 
     ``outbound`` is the reply target: a real WebSocket peer or request-scoped
     HTTP Outbound (``HttpJsonOutbound`` / ``HttpSseOutbound``).
@@ -133,14 +109,14 @@ async def dispatch_web_request(
         _HANDLER_BEFORE_CALLBACK_METHODS,
     )
 
-    if is_enterprise_write_forbidden(method):
+    handler = _method_handlers(channel).get(method)
+    if handler is not None and is_enterprise_write_forbidden(method):
         await channel.send_response(
             outbound, request_id, ok=False,
             error="企业版配置由管理面统一下发", code="FORBIDDEN",
         )
         return
 
-    handler = _method_handlers(channel).get(method)
     if handler is not None and method in getattr(channel, "_local_only_methods", ()):
         await _invoke_handler(
             channel, outbound=outbound, method=method, request_id=request_id,
@@ -170,6 +146,12 @@ async def dispatch_web_request(
             override=True,
         )
     handler_already_called = False
+    if handler is not None and method not in ACK_METHODS:
+        await _invoke_handler(
+            channel, outbound=outbound, method=method, request_id=request_id,
+            params=handler_params, session_id=session_id, handler=handler,
+        )
+        return
     if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
         handler_already_called = await _invoke_handler(
             channel,
@@ -192,10 +174,11 @@ async def dispatch_web_request(
         handled_by_callback = bool(result)
     else:
         bus = getattr(channel, "bus", None)
-        if bus is not None and hasattr(bus, "publish_user_messages"):
-            await bus.publish_user_messages(user_message)
+        if bus is not None and hasattr(bus, "route_user_message"):
+            await bus.route_user_message(user_message)
+            handled_by_callback = True
 
-    if handled_by_callback:
+    if handled_by_callback and (handler is None or handler_already_called):
         return
     if handler_already_called:
         return
@@ -211,10 +194,12 @@ async def dispatch_web_request(
             handler=handler,
         )
     else:
+        if on_message_cb is not None:
+            return
         await channel.send_response(
             outbound,
             request_id,
             ok=False,
-            error=f"unknown method: {method}",
-            code="METHOD_NOT_FOUND",
+            error="upstream transport is unavailable",
+            code="SERVICE_UNAVAILABLE",
         )

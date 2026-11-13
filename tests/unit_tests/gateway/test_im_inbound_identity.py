@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import pytest
 from e2a.gateway_normalize import message_to_e2a_or_fallback
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 
 from e2a.agent_compat import e2a_to_agent_request
 from agent_gateway.im_pipeline.im_inbound import (
@@ -78,7 +78,7 @@ def _group_message(user_id: str, text: str, *, mentions: list[str] | None = None
         params={"query": text, "content": text},
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=True,
         metadata={
             "chat_type": "group",

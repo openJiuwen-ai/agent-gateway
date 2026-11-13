@@ -24,7 +24,7 @@ async def _usage_metadata_loader(
 
 async def _usage_fetch(method, params, user_id):
     """Stand in for the AgentServer trajectory store (southbound)."""
-    assert method.value == "trajectory.usage.get"
+    assert method == "trajectory.usage.get"
     assert params == {"session_id": "session-1"}
     return True, {
         "result": {

@@ -101,13 +101,13 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
     """
     import base64 as _b64
 
-    from e2a.message import ReqMethod
+
     from agent_gateway.routing.agent_http_bridge import (
         _E2A_UPLOAD_CHUNK_BYTES,
         E2A_PAYLOAD_MAX_BYTES,
     )
 
-    chunks: list[tuple[ReqMethod, dict]] = []
+    chunks: list[tuple[str, dict]] = []
     total = 0
 
     async def fake_fetch_agent_unary(*, req_method, params, **_kwargs):
@@ -133,7 +133,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
     rel_path = "agent/workspace/feishu_files/downloads/files/report.pdf"
     expected_chunks = -(-len(big) // _E2A_UPLOAD_CHUNK_BYTES)  # ceil
     assert len(chunks) == expected_chunks
-    assert [method for method, _ in chunks] == [ReqMethod.FILE_UPLOAD_CHUNK] * expected_chunks
+    assert [method for method, _ in chunks] == ['file.upload_chunk'] * expected_chunks
     assert all(params["target_rel_path"] == rel_path for _, params in chunks)
     # 首块无 resolved_path，后续块沿用前块响应路径
     assert chunks[0][1]["resolved_path"] == ""
@@ -150,7 +150,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
 @pytest.mark.asyncio
 async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persist_hook):
     """小附件（≤4MB）保持 base64 E2A 落盘（IM_FILE_PERSIST）。"""
-    from e2a.message import ReqMethod
+
 
     calls = []
 
@@ -173,7 +173,7 @@ async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persis
 
     assert len(calls) == 1
     method, params = calls[0]
-    assert method == ReqMethod.IM_FILE_PERSIST
+    assert method == 'im.file_persist'
     assert params["platform"] == "feishu"
     assert params["category"] == "images"
     assert params["filename"] == "a.png"

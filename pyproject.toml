@@ -17,7 +17,7 @@ dependencies = [
     # “同一个包出现两个直接 URL”直接 ResolutionImpossible（pip 没有 override）。
     # uv 环境的具体 rev 由下方 [tool.uv.sources] 固定。
     "openjiuwen>=0.1.20",
-    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@06a75d66eb011762077e8924d0d1e41791a93034#subdirectory=e2a",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@c499c69f29828984d9c25ac9c74fdde625deeb4f#subdirectory=e2a",
     # 企业版审计与 DB 表定义（config/enterprise/tables 顶层 import）
     "openjiuwen-runtime-foundation",
     # Web / HTTP / WebSocket 服务面

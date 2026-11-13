@@ -10,7 +10,6 @@ from weakref import WeakValueDictionary
 
 from filelock import Timeout
 from e2a.models import E2AEnvelope
-from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,
@@ -68,7 +67,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
         service = client()
         if service is None:
             raise BindingError("SERVICE_UNAVAILABLE", "colleague service is unavailable")
-        env = E2AEnvelope(request_id=uuid4().hex, channel="web", method=method.value, params=params)
+        env = E2AEnvelope(request_id=uuid4().hex, channel="web", method=method, params=params)
         try:
             response = await asyncio.wait_for(service.send_request(env), timeout)
         except Exception as exc:
@@ -90,7 +89,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             if _binding_identity(app, id_key) == app_id
         }
         if saved_owners - owners - {""}:
-            listed = await request(ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id}, 120)
+            listed = await request("jiuwenmate.colleague.connections", {"config_id": config_id}, 120)
             owners.update(
                 item["agent_id"] for item in listed.get("connections", [])
                 if isinstance(item, dict) and item.get("channel") == platform and item.get("connection_key") == app_id
@@ -118,7 +117,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             for agent_id in old.keys() | new.keys():
                 if old.get(agent_id) != new.get(agent_id):
                     try:
-                        await request(ReqMethod.JIUWENMATE_FEISHU_PREPARE, {"agent_id": agent_id}, 2)
+                        await request("jiuwenmate.feishu.prepare", {"agent_id": agent_id}, 2)
                     except BindingError:
                         logger.warning("Feishu CLI preparation deferred after binding change")
 
@@ -160,7 +159,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
         current = ((config or {}).get("channels") or {}).get("dingtalk")
         owners = {_binding_identity(app, "persistent_agent_id") for app in dingtalk_apps(current) if selected(app)}
         for agent_id in sorted(owners):
-            cleared = await request(ReqMethod.JIUWENMATE_DINGTALK_AUTH_DISCONNECT, {
+            cleared = await request("jiuwenmate.dingtalk_auth.disconnect", {
                 "agent_id": agent_id, "connection_key": app_id,
             }, 30)
             status = cleared.get("dingtalk_auth")
@@ -210,7 +209,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             secret_key = "app_secret" if platform == "feishu" else "client_secret"
             secret = _required(params, secret_key)
             config_id = _required(params, "config_id")
-            connected = await request(ReqMethod.JIUWENMATE_CONNECTION_ATTACH, {
+            connected = await request("jiuwenmate.connection.attach", {
                 "config_id": config_id, "channel": platform, "connection_key": app_id,
             }, 120)
             agent_id = connected.get("agent_id")
@@ -357,7 +356,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             if mode not in ("unbind", "purge"):
                 raise ValueError("mode must be unbind or purge")
             async with colleague_lock(config_id):
-                listed = await request(ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id}, 120)
+                listed = await request("jiuwenmate.colleague.connections", {"config_id": config_id}, 120)
                 agents = {config_id} | {item["agent_id"] for item in listed.get("connections", [])
                                        if isinstance(item, dict) and isinstance(item.get("agent_id"), str)}
                 async with lock:
@@ -382,7 +381,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                         saved = await edit_channel_body(platform, remove)
                         if saved != before:
                             await apply(cm, platform, saved, "jiuwenmate.colleague.delete", before)
-                await request(ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE, {"config_id": config_id, "mode": mode}, 120)
+                await request("jiuwenmate.colleague.remove", {"config_id": config_id, "mode": mode}, 120)
         except BindingError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except ValueError as exc:

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 from agent_gateway.im_pipeline.im_inbound import IMInboundPipeline
 from agent_gateway.im_pipeline.im_session_input import (
     is_shared_im_channel,
@@ -42,7 +42,7 @@ def _message(channel: str, text: str = "补充一下验收标准", **params) -> 
         params={"query": text, "content": text, **params},
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=True,
         metadata={"im_sender_user_id": "user-1"},
     )

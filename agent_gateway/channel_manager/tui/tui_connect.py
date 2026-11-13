@@ -92,311 +92,6 @@ async def _tui_config_send_request(client: Any, env: Any, *, label: str) -> Any:
     return await _send_tui_agent_request(client, env, label=label)
 
 
-# ── 需要转发到 Agent 的方法集合 ──────────────────────────────
-
-CLI_FORWARD_REQ_METHODS = frozenset(
-    {
-        "command.add_dir",
-        "command.btw",
-        "command.chrome",
-        "command.compact",
-        "command.compact_partial",
-        "command.context",
-        "command.recap",
-        "command.diff",
-        "command.simplify",
-        "command.mcp",
-        "command.resume",
-        "command.sandbox",
-        "command.session",
-        "command.workflows",
-        "swarmflow.pause",
-        "swarmflow.resume",
-        "swarmflow.stop",
-        "command.status",
-        "command.goal",
-        "chat.send",
-        "chat.interrupt",
-        "chat.resume",
-        "chat.user_answer",
-        "chat.swarmflow_reply",
-        "history.get",
-        "skills.marketplace.list",
-        "skills.list",
-        "skills.installed",
-        "skills.get",
-        "skills.toggle",
-        "skills.install",
-        "skills.import_local",
-        "skills.import_upload",
-        "skills.create_from_knowledge",
-        "skills.marketplace.add",
-        "skills.marketplace.remove",
-        "skills.marketplace.toggle",
-        "skills.uninstall",
-        "skills.online_search.search",
-        "skills.online_search.install",
-        "skills.skillnet.search",
-        "skills.skillnet.install",
-        "skills.skillnet.install_status",
-        "skills.skillnet.evaluate",
-        "skills.clawhub.get_token",
-        "skills.clawhub.set_token",
-        "skills.clawhub.search",
-        "skills.clawhub.download",
-        "skills.teamskillshub.info",
-        "skills.teamskillshub.init",
-        "skills.teamskillshub.validate",
-        "skills.teamskillshub.pack",
-        "skills.teamskillshub.search",
-        "skills.swarmskillshub.recommend",
-        "skills.teamskillshub.install",
-        "skills.teamskillshub.publish",
-        "skills.teamskillshub.delete",
-        "skills.swarmskillshub.detail",
-        "skills.evolution.status",
-        "skills.evolution.get",
-        "skills.evolution.save",
-        "plugins.list",
-        "plugins.install",
-        "plugins.uninstall",
-        "plugins.enable",
-        "plugins.disable",
-        "plugins.reload",
-        "agent_groups.list",
-        "agent_groups.show",
-        "agent_groups.file.list",
-        "agent_groups.file.read",
-        "agent_groups.create",
-        "agent_groups.import_local",
-        "agent_groups.install",
-        "agent_groups.uninstall",
-        "agent_templates.list",
-        "agent_templates.show",
-        "agent_templates.file.list",
-        "agent_templates.file.read",
-        "agent_templates.create",
-        "agent_templates.update",
-        "agent_templates.delete",
-        "agent_templates.import_local",
-        "agent_templates.install",
-        "agent_templates.uninstall",
-        "plugin_packages.list",
-        "plugin_packages.show",
-        "plugin_packages.create",
-        "plugin_packages.import_local",
-        "plugin_packages.install",
-        "plugin_packages.uninstall",
-        "permissions.tools.get",
-        "permissions.tools.update",
-        "permissions.tools.update_user",
-        "permissions.tools.delete",
-        "permissions.rules.get",
-        "permissions.rules.create",
-        "permissions.rules.update",
-        "permissions.rules.delete",
-        "extensions.list",
-        "extensions.import",
-        "extensions.delete",
-        "extensions.toggle",
-        "session.switch",
-        "team.templates.list",
-        "team.bindings.list",
-        "team.binding.create",
-        "team.binding.generate",
-        "team.session.bind",
-        "team.create",
-        "team.get",
-        "team.stop",
-        "team.member.join",
-        "team.member.leave",
-        "team.members.list",
-        "team.quota.get",
-        "team.mq.publish",
-        "session.fork",
-        # Agent configuration
-        "agents.list",
-        "agents.get",
-        "agents.create",
-        "agents.update",
-        "agents.delete",
-        "agents.enable",
-        "agents.disable",
-        "agents.tools_list",
-        # Schedule task management
-        "schedule.check_config",
-        "schedule.update_config",
-        "schedule.create",
-        "schedule.run",
-        "schedule.list",
-        "schedule.status",
-        "schedule.logs",
-        "schedule.cancel",
-        "schedule.delete",
-        "issue.watch_once",
-        "issue.state.list",
-        "issue.matrix",
-        "issue.delete",
-    }
-)
-
-CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
-    {
-        "command.add_dir",
-        "command.btw",
-        "command.chrome",
-        "command.compact",
-        "command.compact_partial",
-        "command.context",
-        "command.recap",
-        "command.diff",
-        "command.simplify",
-        "command.mcp",
-        "command.resume",
-        "command.sandbox",
-        "command.session",
-        "command.workflows",
-        "swarmflow.pause",
-        "swarmflow.resume",
-        "swarmflow.stop",
-        "command.status",
-        "command.goal",
-        "skills.marketplace.list",
-        "skills.list",
-        "skills.installed",
-        "skills.get",
-        "skills.toggle",
-        "skills.install",
-        "skills.import_local",
-        "skills.import_upload",
-        "skills.create_from_knowledge",
-        "skills.marketplace.add",
-        "skills.marketplace.remove",
-        "skills.marketplace.toggle",
-        "skills.uninstall",
-        "skills.online_search.search",
-        "skills.online_search.install",
-        "skills.skillnet.search",
-        "skills.skillnet.install",
-        "skills.skillnet.install_status",
-        "skills.skillnet.evaluate",
-        "skills.clawhub.get_token",
-        "skills.clawhub.set_token",
-        "skills.clawhub.search",
-        "skills.clawhub.download",
-        "skills.teamskillshub.info",
-        "skills.teamskillshub.init",
-        "skills.teamskillshub.validate",
-        "skills.teamskillshub.pack",
-        "skills.teamskillshub.search",
-        "skills.swarmskillshub.recommend",
-        "skills.teamskillshub.install",
-        "skills.teamskillshub.publish",
-        "skills.teamskillshub.delete",
-        "skills.swarmskillshub.detail",
-        "skills.evolution.status",
-        "skills.evolution.get",
-        "skills.evolution.save",
-        "plugins.list",
-        "plugins.install",
-        "plugins.uninstall",
-        "plugins.enable",
-        "plugins.disable",
-        "plugins.reload",
-        "agent_groups.list",
-        "agent_groups.show",
-        "agent_groups.file.list",
-        "agent_groups.file.read",
-        "agent_groups.create",
-        "agent_groups.import_local",
-        "agent_groups.install",
-        "agent_groups.uninstall",
-        "agent_templates.list",
-        "agent_templates.show",
-        "agent_templates.file.list",
-        "agent_templates.file.read",
-        "agent_templates.create",
-        "agent_templates.update",
-        "agent_templates.delete",
-        "agent_templates.import_local",
-        "agent_templates.install",
-        "agent_templates.uninstall",
-        "plugin_packages.list",
-        "plugin_packages.show",
-        "plugin_packages.create",
-        "plugin_packages.import_local",
-        "plugin_packages.install",
-        "plugin_packages.uninstall",
-        "permissions.tools.get",
-        "permissions.tools.update",
-        "permissions.tools.update_user",
-        "permissions.tools.delete",
-        "permissions.rules.get",
-        "permissions.rules.create",
-        "permissions.rules.update",
-        "permissions.rules.delete",
-        "extensions.list",
-        "extensions.import",
-        "extensions.delete",
-        "extensions.toggle",
-        "session.switch",
-        "team.templates.list",
-        "team.bindings.list",
-        "team.binding.create",
-        "team.binding.generate",
-        "team.session.bind",
-        "team.create",
-        "team.get",
-        "team.stop",
-        "team.member.join",
-        "team.member.leave",
-        "team.members.list",
-        "team.quota.get",
-        "team.mq.publish",
-        "session.fork",
-        # Agent configuration
-        "agents.list",
-        "agents.get",
-        "agents.create",
-        "agents.update",
-        "agents.delete",
-        "agents.enable",
-        "agents.disable",
-        "agents.tools_list",
-        # Schedule task management
-        "schedule.check_config",
-        "schedule.update_config",
-        "schedule.create",
-        "schedule.run",
-        "schedule.list",
-        "schedule.status",
-        "schedule.logs",
-        "schedule.cancel",
-        "schedule.delete",
-        "issue.watch_once",
-        "issue.state.list",
-        "issue.matrix",
-        "issue.delete",
-    }
-)
-
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
-if not _is_enterprise_edition():
-    CLI_FORWARD_REQ_METHODS = CLI_FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
-    CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = (
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
-    )
-
-
 @dataclass
 class CliHandlersBindParams:
     channel: Any  # GatewayServer instance
@@ -549,7 +244,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     harmonyos_dev_init_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -570,7 +264,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
         ok, payload = await fetch_agent_unary(
             agent_client=real_client,
-            req_method=ReqMethod.SESSION_LIST,
+            req_method="session.list",
             params=params or {},
             user_id=user_id,
             session_id=session_id,
@@ -687,7 +381,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
             )
             return
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -711,7 +404,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=create_params,
             session_id=None,
             user_id=user_id or getattr(ws, "_gateway_user_id", None),
-            req_method=ReqMethod.SESSION_CREATE,
+            req_method="session.create",
             label="session.create",
             default_error_code="SESSION_CREATE_FAILED",
         )
@@ -728,7 +421,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         重绑到另一个项目后，原项目撤回该会话的要求并重算最新来源，新项目也重算最新来源。
         """
         from e2a.gateway_normalize import e2a_from_agent_fields
-        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -767,7 +459,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 request_id=req_id,
                 channel_id="tui",
                 session_id=target,
-                req_method=ReqMethod.SESSION_REBIND_PROJECT,
+                req_method="session.rebind_project",
                 params=forward_params,
                 is_stream=False,
                 timestamp=time.time(),
@@ -803,7 +495,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
         SessionAdapter 删除路径。
         """
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -831,7 +522,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=params,
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
+            req_method="session.delete",
             label="session.delete",
             on_done=_left_project,
         )
@@ -937,7 +628,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     ) -> tuple[Optional[str], int]:
         """通过 E2A 转发 LLM 摘要请求到 AgentServer。返回 (summary, summarized_count)。"""
         from e2a.gateway_normalize import e2a_from_agent_fields
-        from e2a.message import ReqMethod
 
         real_client = _resolve_agent_client(agent_client)
         if real_client is None:
@@ -948,7 +638,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 request_id=str(time.time()),
                 channel_id="tui",
                 session_id=target_sid,
-                req_method=ReqMethod.COMMAND_COMPACT_PARTIAL,
+                req_method="command.compact_partial",
                 params={
                     "session_id": target_sid,
                     "turn_index": turn_index,
@@ -974,7 +664,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_rewind(ws, req_id, params, session_id, user_id=None):
         """session.rewind: E2A → AgentServer（权威写入者），不可达即报错."""
-        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1007,14 +696,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 req_id=req_id,
                 target_sid=target_sid,
                 turn_index=turn_index,
-                req_method=ReqMethod.SESSION_REWIND,
+                req_method="session.rewind",
                 error_label="session.rewind failed",
                 user_id=user_id,
             )
         )
 
     async def _history_list_turns(ws, req_id, params, session_id, user_id=None):
-        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             params = {}
@@ -1028,12 +716,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         forward_params["session_id"] = target_sid
         await _forward_tui_unary(
             ws, req_id, forward_params, target_sid, user_id,
-            req_method=ReqMethod.HISTORY_LIST_TURNS, label="history.list_turns",
+            req_method="history.list_turns", label="history.list_turns",
         )
 
     async def _session_rewind_and_restore(ws, req_id, params, session_id, user_id=None):
         """session.rewind_and_restore: E2A → AgentServer（权威写入者），不可达即报错."""
-        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1066,7 +753,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 req_id=req_id,
                 target_sid=target_sid,
                 turn_index=turn_index,
-                req_method=ReqMethod.SESSION_REWIND_AND_RESTORE,
+                req_method="session.rewind_and_restore",
                 error_label="session.rewind_and_restore failed",
                 user_id=user_id,
             )
@@ -1074,7 +761,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_restore_files(ws, req_id, params, session_id, user_id=None):
         """session.restore_files: 仅恢复文件，不截断对话；不可达即报错."""
-        from e2a.message import ReqMethod
 
         if not isinstance(params, dict):
             await channel.send_response(
@@ -1105,7 +791,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         forward_params["turn_index"] = turn_index
         await _forward_tui_unary(
             ws, req_id, forward_params, target_sid, user_id,
-            req_method=ReqMethod.SESSION_RESTORE_FILES, label="session.restore_files",
+            req_method="session.restore_files", label="session.restore_files",
         )
 
     async def _command_rewind_compact(ws, req_id, params, session_id, user_id=None):
@@ -1153,7 +839,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         # Step 2: Send rewind to AgentServer (truncation + agent-internal record writing)
         from e2a.gateway_normalize import e2a_from_agent_fields
-        from e2a.message import ReqMethod
 
         if real_client is not None:
             try:
@@ -1161,7 +846,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     request_id=req_id,
                     channel_id="tui",
                     session_id=target_sid,
-                    req_method=ReqMethod.SESSION_REWIND_COMPACT,
+                    req_method="session.rewind_compact",
                     params={
                         "session_id": target_sid,
                         "turn_index": turn_index,
@@ -1205,7 +890,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _session_rename(ws, req_id, params, session_id, user_id=None):
         """优先经 E2A 转发至 AgentServer；单用户共享目录不可达时由薄代理跑
         SessionAdapter（``apply_session_rename`` 同一中立门面）本地回退。"""
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1217,7 +901,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_RENAME,
+            req_method="session.rename",
             label="session.rename",
         )
 
@@ -1228,7 +912,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         WebSocket 客户端在 AgentServer 不可达时由薄代理回落到 Gateway 本地执行
         同一适配器（共享目录），保持迁移前的离线可用性。
         """
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1240,13 +923,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_COLOR_SET,
+            req_method="session.color_set",
             label="session.color_set",
         )
 
     async def _session_preview(ws, req_id, params, session_id, user_id=None):
         """获取 session 预览信息（统一薄代理：AgentServer 注入目录 history 白名单过滤）。"""
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1258,7 +940,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=params if isinstance(params, dict) else {},
             session_id=session_id,
             user_id=user_id,
-            req_method=ReqMethod.SESSION_PREVIEW,
+            req_method="session.preview",
             label="session.preview",
         )
 
@@ -1414,7 +1096,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 from e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from e2a.message import ReqMethod
 
                 from agent_gateway.routing.e2a_proxy import (
                     is_legacy_shared_directory_client,
@@ -1434,7 +1115,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         request_id=req_id,
                         channel_id="tui",
                         session_id=session_id,
-                        req_method=ReqMethod.HARMONYOS_DEV_INIT,
+                        req_method="harmonyos.dev_init",
                         params=run_params,
                         is_stream=False,
                         timestamp=time.time(),
@@ -1567,7 +1248,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         Phase 4 整合：统一薄代理 E2A 转发（HarmonyOSAdapter）；单用户共享目录
         不可达时由薄代理跑同一适配器（保持离线可用）。
         """
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1584,7 +1264,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params=dict(params),
             session_id=session_id,
             user_id=user_id or getattr(ws, "_gateway_user_id", None),
-            req_method=ReqMethod.HARMONYOS_PROJECT_INIT,
+            req_method="harmonyos.project_init",
             label="harmonyos.project_init",
             default_error_code="INTERNAL_ERROR",
         )
@@ -1597,14 +1277,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         resolved_client = _resolve_agent_client(agent_client)
         if not force_local_config and resolved_client is not None:
-            from e2a.message import ReqMethod
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws,
                 req_id=req_id, params=params if isinstance(params, dict) else {},
                 session_id=session_id,
                 user_id=user_id or getattr(ws, "_gateway_user_id", None),
-                req_method=ReqMethod.COMMAND_MODEL, label="command.model",
+                req_method="command.model", label="command.model",
             )
             return
 
@@ -1720,11 +1399,10 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
         channel.register_local_handler(path, method_name, _handler)
 
-    from e2a.message import ReqMethod as _ConfigReq
-    _register_config_proxy("config.get", _ConfigReq.CONFIG_GET)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
-    _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL)
-    _register_config_proxy("models.list", _ConfigReq.MODELS_LIST)
+    _register_config_proxy("config.get", 'config.get')
+    _register_config_proxy("config.set", 'config.set')
+    _register_config_proxy("config.validate_model", 'config.validate_model')
+    _register_config_proxy("models.list", 'models.list')
     channel.register_local_handler(path, "3rdagent.list", _3rdagent_list)
     channel.register_local_handler(path, "3rdagent.switch", _3rdagent_switch)
     channel.register_local_handler(path, "session.list", _session_list)
@@ -1778,7 +1456,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
             return
 
-        from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
@@ -1790,7 +1467,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             params={},
             session_id=session_id,
             user_id=user_id or getattr(ws, "_gateway_user_id", None),
-            req_method=ReqMethod.HOOKS_LIST,
+            req_method="hooks.list",
             label="hooks.list",
         )
 
@@ -1818,16 +1495,15 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 session_id=session_id,
                 user_id=user_id,
                 req_method=req_method,
-                label=req_method.value,
+                label=req_method,
             )
         channel.register_local_handler(path, method_name, _handler)
 
-    from e2a.message import ReqMethod as _MemoryReq
-    _register_memory_proxy("memory.list", _MemoryReq.MEMORY_LIST)
-    _register_memory_proxy("memory.edit", _MemoryReq.MEMORY_EDIT)
-    _register_memory_proxy("memory.status", _MemoryReq.MEMORY_STATUS)
-    _register_memory_proxy("memory.toggle", _MemoryReq.MEMORY_TOGGLE)
-    _register_memory_proxy("memory.open", _MemoryReq.MEMORY_OPEN)
+    _register_memory_proxy("memory.list", 'memory.list')
+    _register_memory_proxy("memory.edit", 'memory.edit')
+    _register_memory_proxy("memory.status", 'memory.status')
+    _register_memory_proxy("memory.toggle", 'memory.toggle')
+    _register_memory_proxy("memory.open", 'memory.open')
 
     # ── Cron RPC handlers ────────────────────────────────────────────
 
@@ -2629,8 +2305,6 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
     return GatewayRouteBinding(
         path=bind.path,
         channel_id=bind.channel_id,
-        forward_methods=CLI_FORWARD_REQ_METHODS,
-        forward_no_local_handler_methods=CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
         install=_install,
         disconnect_handler=_tui_disconnect,
         session_bind_handler=_tui_session_bound,

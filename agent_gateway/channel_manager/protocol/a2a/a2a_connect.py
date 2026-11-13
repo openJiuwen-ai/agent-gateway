@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import logging
 import time
@@ -8,7 +9,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from e2a.acp.acp_tool_updates import is_reasoning_event
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import BaseChannel
 from agent_gateway.routing.keys import DeliveryTarget
@@ -433,7 +433,7 @@ class A2AChannel(BaseChannel):
                 params=self._build_request_params(query=query, files=files),
                 timestamp=time.time(),
                 ok=True,
-                req_method=ReqMethod.CHAT_SEND,
+                req_method="chat.send",
                 is_stream=True,
                 metadata=dict(metadata or {}),
             )
