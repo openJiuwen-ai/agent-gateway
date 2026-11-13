@@ -3998,7 +3998,7 @@ async def _run(
                         manager = WebPortManager(web_channel, wp_config)
                         web_channel.web_port_manager = manager
                         manager.start()
-                        from agent_gateway.cron.factory import (
+                        from agent_gateway.runtime.cron.factory import (
                             load_cron_store_settings,
                         )
                         from agent_gateway.extensions.agentos.registry_watcher.service import (
