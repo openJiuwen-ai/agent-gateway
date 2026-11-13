@@ -15,7 +15,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
-from e2a.message import ReqMethod
+
 
 from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
 from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -425,8 +425,6 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
 def test_client_attach_methods_are_plain_forwards_to_agent_server() -> None:
     channel = _bind()
     methods = {"client.attach", "client.renew", "client.list", "client.conversation.messages"}
-    assert methods <= app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-    assert methods <= app_web_handlers._FORWARD_REQ_METHODS
     assert not methods & channel.methods.keys()
 
 
@@ -2096,28 +2094,24 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
 def test_web_retains_mainline_group_and_session_asset_forwarding(method):
     channel = _bind()
     assert method not in channel.methods
-    assert method in app_web_handlers._FORWARD_REQ_METHODS
-    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
 
 
 def test_employee_artifact_list_is_forwarded_to_agent_server():
     method = "jiuwenmate.artifact.list"
     channel = _bind()
 
-    assert ReqMethod(method) is ReqMethod.JIUWENMATE_ARTIFACT_LIST
     assert method not in channel.methods
-    assert method in app_web_handlers._FORWARD_REQ_METHODS
-    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
 
 
-def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
+def test_web_leaves_graph_and_legacy_symphony_methods_to_agent_server():
     skill_graph_methods = {
         "skills.graph.build",
         "skills.graph.status",
         "skills.graph.get",
         "skills.graph.cancel",
     }
-    assert skill_graph_methods.issubset(app_web_handlers._FORWARD_REQ_METHODS)
+    channel = _bind()
+    assert skill_graph_methods.isdisjoint(channel.methods)
     legacy_symphony_methods = {
         "symphony.build_score",
         "symphony.pause_build",
@@ -2128,7 +2122,7 @@ def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
         "symphony.evolution_record_outcome",
         "symphony.evolution_rebuild",
     }
-    assert legacy_symphony_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
+    assert legacy_symphony_methods.isdisjoint(channel.methods)
 
 
 def test_web_forwards_only_canonical_personal_context_rpc_methods():
@@ -2160,16 +2154,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.context.get_node",
         "personal_context.context.get_source",
     }
-    forwarded = {
-        method for method in app_web_handlers._FORWARD_REQ_METHODS
-        if method.startswith("personal_context.")
-    }
-    no_local = {
-        method for method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
-        if method.startswith("personal_context.")
-    }
-    assert forwarded == methods
-    assert no_local == methods
+    assert methods.isdisjoint(_bind().methods)
     assert len(methods) == 26
 
 

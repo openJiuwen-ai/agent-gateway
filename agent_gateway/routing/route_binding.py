@@ -10,8 +10,6 @@ class GatewayRouteBinding:
 
     path: str
     channel_id: str
-    forward_methods: frozenset[str] = frozenset()
-    forward_no_local_handler_methods: frozenset[str] = frozenset()
     inbound_interceptor: Callable[..., Awaitable[bool]] | None = None
     outbound_interceptor: Callable[..., Awaitable[bool]] | None = None
     cleanup_handler: Callable[..., Any] | None = None

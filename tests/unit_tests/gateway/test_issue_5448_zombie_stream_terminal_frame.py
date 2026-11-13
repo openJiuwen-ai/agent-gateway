@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from e2a.agent_models import AgentResponseChunk
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -42,7 +42,7 @@ NON_TEAM_MODE = "agent.work.normal"
 def team_chat_send(rid: str, *, mode: str = TEAM_MODE) -> Message:
     return Message(
         id=rid, type="req", channel_id="web", session_id=SESSION_ID,
-        req_method=ReqMethod.CHAT_SEND, is_stream=True, timestamp=0, ok=True,
+        req_method='chat.send', is_stream=True, timestamp=0, ok=True,
         params={"query": rid, "mode": mode},
         metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
     )
@@ -254,7 +254,7 @@ async def test_pause_cancels_gateway_stream_consumers(gateway):
     }
     pause_msg = Message(
         id="pause-req-1", type="req", channel_id="web", session_id=SESSION_ID,
-        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        req_method='chat.interrupt', is_stream=False, timestamp=0, ok=True,
         params={"intent": "pause", "mode": TEAM_MODE},
         metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
     )
@@ -291,7 +291,7 @@ async def test_pause_on_idle_session_broadcasts_false(gateway):
 
     pause_msg = Message(
         id="pause-req-2", type="req", channel_id="web", session_id=SESSION_ID,
-        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        req_method='chat.interrupt', is_stream=False, timestamp=0, ok=True,
         params={"intent": "pause", "mode": TEAM_MODE},
         metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
     )
@@ -319,7 +319,7 @@ async def test_pause_on_single_agent_session_keeps_streams(gateway):
 
     pause_msg = Message(
         id="pause-req-3", type="req", channel_id="web", session_id=SESSION_ID,
-        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        req_method='chat.interrupt', is_stream=False, timestamp=0, ok=True,
         params={"intent": "pause", "mode": NON_TEAM_MODE},
         metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
     )
@@ -354,7 +354,7 @@ async def test_pause_governance_skipped_when_interrupt_rejected(gateway):
 
     pause_msg = Message(
         id="pause-req-4", type="req", channel_id="web", session_id=SESSION_ID,
-        req_method=ReqMethod.CHAT_CANCEL, is_stream=False, timestamp=0, ok=True,
+        req_method='chat.interrupt', is_stream=False, timestamp=0, ok=True,
         params={"intent": "pause", "mode": TEAM_MODE},
         metadata={"ws_id": "ws-5448", "user_id": "u-5448"},
     )

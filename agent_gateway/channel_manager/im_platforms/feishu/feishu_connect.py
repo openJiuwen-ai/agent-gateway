@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+from e2a.message import EventType, Message
 import asyncio
 import concurrent.futures
 import html
@@ -18,7 +19,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
-from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -534,7 +534,7 @@ class FeishuChannel(BaseChannel):
                         user_id=principal_id,
                         bot_id=str(inbound.bot_id or self.config.app_id or ""),
                         app_id=self.config.app_id,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method="chat.send",
                         is_stream=False,
                         metadata=_meta,
                         group_digital_avatar=True,
@@ -560,7 +560,7 @@ class FeishuChannel(BaseChannel):
             user_id=str(inbound.user_id or ""),
             bot_id=str(inbound.bot_id or self.config.app_id or ""),
             app_id=self.config.app_id,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             is_stream=_is_stream,
             metadata=_meta,
             group_digital_avatar=_effective_group_digital_avatar,
@@ -4093,7 +4093,7 @@ class FeishuChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             provider=self.name,
             chat_id=chat_id,
             user_id=operator_id,

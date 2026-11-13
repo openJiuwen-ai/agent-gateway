@@ -1,12 +1,12 @@
 """Discord channel implementation based on discord.py."""
 
+from e2a.message import EventType, Message
 import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -201,7 +201,7 @@ class DiscordChannel(BaseChannel):
             params={"content": text, "query": text},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             metadata={
                 "discord_user_id": author_id,
                 "discord_username": author_name,

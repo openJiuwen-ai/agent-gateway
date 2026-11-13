@@ -118,8 +118,7 @@ def steer_busy_im_chat(msg: Message) -> bool:
 
 def _is_chat_send(msg: Message) -> bool:
     method = getattr(msg, "req_method", None)
-    value = getattr(method, "value", method)
-    return value == "chat.send"
+    return method == "chat.send"
 
 
 def _has_interaction_answers(msg: Message) -> bool:

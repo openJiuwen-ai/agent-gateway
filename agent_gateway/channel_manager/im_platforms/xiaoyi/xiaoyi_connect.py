@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import base64
 import hashlib
@@ -21,7 +22,6 @@ from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -1573,7 +1573,7 @@ class XiaoyiChannel(BaseChannel):
             timestamp=time.time(),
             is_stream=self.config.enable_streaming,
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             chat_id=session_id,  # 顶层 sessionId（物理回发兜底）
             metadata=metadata,
         )

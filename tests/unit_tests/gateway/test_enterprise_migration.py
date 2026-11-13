@@ -104,11 +104,11 @@ from fastapi import FastAPI
 from agent_gateway.enterprise.team.quota_policy import TeamQuotaPolicyStore
 from agent_gateway.enterprise.team.route import TeamRouteResolver
 from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_from_template_rows
-from agent_gateway.common.protocol_methods import ReqMethod
+from e2a.models import E2AEnvelope
 prepare_runtime_workspace(cleanup_stale_descs=False)
 assert token_hex(8)
 assert isinstance(get_config(), dict)
-assert ReqMethod.VIDEO_CONVERSATION_APPEND.value == "video.conversation.append"
+assert E2AEnvelope(method="video.conversation.append").method == "video.conversation.append"
 '''
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

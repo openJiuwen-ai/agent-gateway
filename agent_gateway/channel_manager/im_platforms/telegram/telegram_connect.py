@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -371,7 +371,7 @@ class TelegramChannel(BaseChannel):
                 params={"content": text, "query": text},
                 timestamp=time.time(),
                 ok=True,
-                req_method=ReqMethod.CHAT_SEND,
+                req_method="chat.send",
                 metadata={
                     "chat_id": chat_id,
                     "user_id": user_id,

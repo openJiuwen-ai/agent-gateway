@@ -15,7 +15,10 @@ from e2a.message import Message
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
 from agent_gateway.enterprise import is_enterprise
-from agent_gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
+from agent_gateway.channel_manager.web.invoke import (
+    _method_handlers,
+    dispatch_web_request as invoke_web_request,
+)
 from agent_gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
     HttpSseOutbound,
@@ -119,12 +122,20 @@ async def dispatch_http_request(
     hdrs = _header_map(headers)
     params = dict(params or {})
     req_id = (request_id or _get_header(hdrs, "X-Request-Id") or uuid.uuid4().hex).strip()
-    session_id, params = bind_http_session(
-        method,
-        params,
-        header_session_id=_get_header(hdrs, "X-Session-Id"),
-        bind_param=bind_session_param,
-    )
+    if method in _method_handlers(channel):
+        session_id, params = bind_http_session(
+            method,
+            params,
+            header_session_id=_get_header(hdrs, "X-Session-Id"),
+            bind_param=bind_session_param,
+        )
+    else:
+        # Routing needs a session key; opaque business params must stay intact.
+        session_id, _ = bind_http_session(
+            "", params,
+            header_session_id=_get_header(hdrs, "X-Session-Id"),
+            bind_param=False,
+        )
     trust_tenant_headers = _trust_client_tenant_headers(client_host)
     user_id = _get_header(hdrs, "X-User-Id") if trust_tenant_headers else None
     channel_id_hdr = _get_header(hdrs, "X-Channel-Id") or "web"

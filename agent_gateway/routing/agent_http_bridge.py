@@ -66,7 +66,6 @@ async def upload_file_bytes_via_e2a(
     import base64
     import uuid
 
-    from e2a.message import ReqMethod
 
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
@@ -79,7 +78,7 @@ async def upload_file_bytes_via_e2a(
         chunk = content[offset:offset + _E2A_UPLOAD_CHUNK_BYTES]
         ok, payload = await fetch_agent_unary(
             agent_client=agent_client,
-            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            req_method="file.upload_chunk",
             params={
                 "upload_id": upload_id,
                 "target_rel_path": target_rel_path,

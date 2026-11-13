@@ -2,7 +2,7 @@
 
 > **目标**：完整描述 JiuwenSwarm Gateway 对 Web 前端暴露的全部接口——WebSocket JSON-RPC 方法、HTTP 路由与推送事件，覆盖参数校验、错误码、权限、流式契约（出错处理 / 取消 / 完整性）与内部输入输出关联。预期读者为前端开发、SDK 开发与网关维护者。
 >
-> **基准版本**：本仓 `upstream/develop` @ `0d50e02b0`（2026-11-09），行为已按该版本核对修正。**路径前缀映射**：`gateway/*` → `agent_gateway/*`、`common/*` → `agent_gateway/common/*`、`common/schema/message.py`（ReqMethod/EventType/Mode/Message）→ 协议包 `e2a/`（钉定 rev `d3d1681e4`）；`server/*`、`agents/*`、`channels/web/frontend/*` 引用属 AgentServer / 前端仓，本仓不可核。**未随本次修订整体刷新的行号仍为旧基线 jiuwenswarm `3548d192d` 行号**，仅作定位线索，以代码为最终实现源。
+> **基准版本**：本仓 `upstream/develop` @ `0d50e02b0`（2026-11-09），行为已按该版本核对修正。**路径前缀映射**：`gateway/*` → `agent_gateway/*`、`common/*` → `agent_gateway/common/*`、`common/schema/message.py` 中的 `ReqMethod` → `jiuwenswarm/common/schema/message.py`（Swarm 侧解析），`EventType/Mode/Message` → 协议包 `e2a/`；线上 method 始终为字符串。`server/*`、`agents/*`、`channels/web/frontend/*` 引用属 AgentServer / 前端仓，本仓不可核。**未随本次修订整体刷新的行号仍为旧基线 jiuwenswarm `3548d192d` 行号**，仅作定位线索，以代码为最终实现源。
 
 ---
 
@@ -887,7 +887,7 @@ team 模式由 `chat.send` / `session.create` 的 `mode` 参数进入。`Mode` �
 
 **group 内 chat.send 约束**（服务端 `group_requests.py:88-109`）：`group_id` 必须等于 `session_id`——该前半校验已上移到**网关帧级**（`web_connect.py:2247-2252`）；`params.mode` 若携带必须为 team 模式（否则 `MODE_MISMATCH "group chat requires team mode"`）；`params.type` 仅允许缺省或 `"group_chat"`（否则 `MODE_MISMATCH "group chat requires group_chat input"`）；chat.send 进组后服务端强制补 `type="group_chat"`。
 
-> ⚠️ **另 5 个方法（group.execution.list/get、group.file.rename/delete、group.history.clear）仅网关侧注册**：网关经 `common/protocol_compat.py:75-79` 注入 ReqMethod 成员，帧级可解析、正常转发（网关侧透传已由 ST 验证）；但 **AgentServer 当前版本无枚举成员、无 handler**（全仓 grep 无对应字符串），南向落入通用 fall-through——**业务契约当前未定义**，待 AgentServer 实现后补全。
+> ⚠️ **另 5 个方法（group.execution.list/get、group.file.rename/delete、group.history.clear）仅网关侧注册**：Gateway 不解析方法枚举，按字符串正常转发（网关侧透传已由 ST 验证）；但 **AgentServer 当前版本无 handler**（全仓 grep 无对应字符串），南向落入通用 fall-through——**业务契约当前未定义**，待 AgentServer 实现后补全。
 
 ### 5.4 org.snapshot
 
@@ -4273,7 +4273,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 当前全集 489 个 WS 方法（个人版 482；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
 
-## 附录 B. 事件类型总表（EventType，协议包 `e2a/message.py` + 网关 shim `common/protocol_compat.py`，共 50 个）
+## 附录 B. 事件类型总表（EventType，协议包 `e2a/message.py`，共 50 个）
 
 | 事件 | 载荷档 | 说明 |
 |------|--------|------|
@@ -4793,7 +4793,7 @@ ws.addEventListener('open', async () => {
 | 类别 | 数量 | 方法 | 网关处理 |
 |---|---|---|---|
 | **纯透传** | 231（含下行 5 个下游未实现方法；其中 jiuwenmate.\* 46 个的服务端实现在 AgentServer `releases/0.2.9.beta2` 发布线——develop 线不含 server/jiuwenmate，契约按该发布线核对） | `_FORWARD_NO_LOCAL_HANDLER_METHODS` 全集：skills.\*、mcp.\*、agents.\*、装备包三族、plugins/extensions、personal_context.\*、a4p.\*、rsi.\*、team.\*、group.\*、org.snapshot、swarmflow.\*、command.\*、initialize、session.switch/fork、session.assets.\*、assets.publish.\*、jiuwenmate.\*、client.\*、mcp_app.\* 等 | **无**：params 逐键原样转发（仅 F.2 通用归一化）；`is_stream` 透传客户端顶层值 |
-| 网关注册、AgentServer 未实现 | 7 | group.execution.list/get、group.file.rename/delete、group.history.clear（含于纯透传 231）；client.conversations（含于纯透传）；models.refresh_status（E2A 代理） | 网关经 `protocol_compat` 注入枚举，帧级可解析、正常转发（网关侧透传已由 ST 验证）；**AgentServer 当前版本无对应成员与 handler**，南向落通用 fall-through——业务契约未定义 |
+| 网关注册、AgentServer 未实现 | 7 | group.execution.list/get、group.file.rename/delete、group.history.clear（含于纯透传 231）；client.conversations（含于纯透传）；models.refresh_status（E2A 代理） | Gateway 按字符串正常转发（网关侧透传已由 ST 验证）；**AgentServer 当前版本无对应 handler**，南向落通用 fall-through——业务契约未定义 |
 | 派发等同纯透传 | 13 | issue.\*（4）+ schedule.\*（9）——白名单在册但未列入 no-local 名单、无本地 handler | 无（ST 已验证 params 相等） |
 | 白名单 + 网关处理 | 6 | chat.send / chat.interrupt / chat.resume / chat.user_answer / chat.swarmflow_reply / history.get | 见 F.3 逐方法改写 |
 | E2A 代理 | 128 | session.\*、project.\*、project.git.\*、media.\*、document.\*、heartbeat.job.\*、permissions.\*、a4p.\*、harness.\*、rsi.\*、designer.\*（13）、config 面板（config.\*/models.\*/model_groups.\*）、session.selection.set、workspace.\*、file.import_url/upload_chunk 等（注册本地 handler 内构造 E2A 请求） | 见 F.4 网关侧处理点 |
@@ -4801,7 +4801,7 @@ ws.addEventListener('open', async () => {
 | 网关薄包装转发 | 10 | topic_starters.\*（8）、prompt_suggestion.\*（2） | RPC 名改写为 `action` 字段经 `recommendation.job` 转发（注入 auth_session）；与纯本地/纯透传均不同 |
 
 > **逐方法标注**：全量 489 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。
-| **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
+| **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | Gateway 字符串透传；Swarm Front 对未注册方法返回 `METHOD_NOT_FOUND`，ST 用例锁定该集合以提醒契约同步 |
 | 企业版专用 | 7 | team.create / team.get / team.stop / team.member.join / leave / team.members.list / team.quota.get | 个人版从白名单与注册表双双剔除 → `METHOD_NOT_FOUND`；HTTP 路由同步过滤 |
 | /ws/git 封闭协议 | 6 | project.git.diff_watch / diff_files_watch / diff_detail_watch / diff_unwatch / discard_turn_changes / redo_turn_changes | 独立分发：网关 busy 预检 + 转发 + `preserve_error_payload` |
 | local_only（注册但不转发） | 14 | channel.feishu/dingtalk.bind_agent/unbind_agent、channel.feishu.get_bindings/revoke、channel.welink.\*（7）、jiuwenmate.colleague.delete | 网关本地执行；企业版拦截为 **handler 内自检**（WS/HTTP 均拦，区别于 invoke 的 HTTP-only 写保护）：绑定/撤销与 welink 全部方法 → FORBIDDEN（feishu.get_bindings 放行） |

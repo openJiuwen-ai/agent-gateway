@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import base64
 import copy
@@ -14,7 +15,6 @@ from typing import Any, Callable
 
 import aiohttp
 from aiohttp.client_exceptions import ContentTypeError
-from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import (
@@ -1287,7 +1287,7 @@ class WechatChannel(BaseChannel):
             params={"content": content, "query": content},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             is_stream=self.config.enable_streaming,
             metadata={
                 "wechat_user_id": user_id,

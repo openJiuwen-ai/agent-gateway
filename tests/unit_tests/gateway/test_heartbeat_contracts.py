@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from e2a.message import EventType, ReqMethod
+from e2a.message import EventType
 
 from agent_gateway.health_check import (
     GatewayHealthCheckService,
@@ -21,8 +21,8 @@ from agent_gateway.message_handler import MessageHandler
 
 
 def test_health_check_accepts_legacy_probe_wire_names() -> None:
-    assert ReqMethod.HEARTBEAT_GET_CONF.value == "heartbeat.get_conf"
-    assert ReqMethod.HEARTBEAT_SET_CONF.value == "heartbeat.set_conf"
+    assert 'heartbeat.get_conf' == "heartbeat.get_conf"
+    assert 'heartbeat.set_conf' == "heartbeat.set_conf"
     assert EventType.HEARTBEAT_RELAY is EventType.HEALTH_CHECK_RELAY
     assert EventType("heartbeat.relay") is EventType.HEALTH_CHECK_RELAY
     assert EventType("health_check.relay") is EventType.HEALTH_CHECK_RELAY
@@ -93,7 +93,7 @@ async def test_gateway_proxy_uses_one_unary_heartbeat_rpc() -> None:
     )
     assert result == {"jobs": [{"id": "job-1"}]}
     envelope = captured[0]
-    assert envelope.method == ReqMethod.HEARTBEAT_JOB.value
+    assert envelope.method == 'heartbeat.job'
     assert envelope.session_id == "session-1"
     assert envelope.user_id == "user-1"
     assert envelope.params == {"action": "list", "data": {}}

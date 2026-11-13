@@ -14,7 +14,7 @@ from e2a.wire_codec import (
     parse_agent_server_wire_unary,
 )
 from e2a.agent_models import AgentResponse
-from e2a.message import ReqMethod
+
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_partial_persistent_model_reload_returns_without_retry_or_restart(
     restart = Mock()
     sleep = AsyncMock()
     scope = {
-        "Any": object, "ReqMethod": ReqMethod, "uuid_module": uuid,
+        "Any": object, "uuid_module": uuid,
         "client": SimpleNamespace(set_or_update_server_config=Mock(), send_request=send),
         "e2a_from_agent_fields": lambda **fields: fields,
         "logger": logging.getLogger(__name__), "asyncio": SimpleNamespace(sleep=sleep),

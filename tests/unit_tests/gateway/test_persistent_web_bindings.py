@@ -51,7 +51,7 @@ def owner(tmp_path, monkeypatch):
     async def invoke(method, params):
         return await rpc("channel." + method, params)
 
-    return SimpleNamespace(invoke=invoke, rpc=rpc, cm=cm, service=service, settings=settings, path=path)
+    return SimpleNamespace(invoke=invoke, rpc=rpc, cm=cm, service=service, settings=settings, path=path, methods=methods)
 
 
 @pytest.fixture
@@ -396,14 +396,8 @@ async def test_welink_manual_credential_attaches_runtime_agent_and_hides_secret(
     assert binding["assistant_secret"] == "private-test-secret"
 
 
-def test_public_colleague_methods_forward_but_owner_and_internal_operations_stay_local():
-    from e2a.message import ReqMethod
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_REQ_METHODS, _FORWARD_NO_LOCAL_HANDLER_METHODS, _JIUWENMATE_FORWARD_METHODS,
-    )
-    for name in _JIUWENMATE_FORWARD_METHODS:
-        assert ReqMethod(name).value == name
-        assert name in _FORWARD_REQ_METHODS and name in _FORWARD_NO_LOCAL_HANDLER_METHODS
-    for name in ("jiuwenmate.colleague.delete", "jiuwenmate.connection.attach", "jiuwenmate.colleague.remove",
-                 "jiuwenmate.welink.inbound", "jiuwenmate.dingtalk.inbound", "jiuwenmate.feishu.inbound"):
-        assert name not in _FORWARD_REQ_METHODS and name not in _FORWARD_NO_LOCAL_HANDLER_METHODS
+def test_owner_operations_remain_registered_locally(owner):
+    for name in ("channel.feishu.bind_agent", "channel.dingtalk.bind_agent", "jiuwenmate.colleague.delete"):
+        assert callable(owner.methods[name])
+    for name in ("jiuwenmate.colleague.list", "jiuwenmate.connection.attach", "jiuwenmate.colleague.remove"):
+        assert name not in owner.methods

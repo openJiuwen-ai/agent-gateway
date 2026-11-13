@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import concurrent.futures
 import json
@@ -16,7 +17,6 @@ from collections import OrderedDict
 from typing import Any, Callable
 
 import requests
-from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import (
@@ -829,7 +829,7 @@ class WecomChannel(BaseChannel):
                         params={"content": content, "query": content},
                         timestamp=time.time(),
                         ok=True,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method="chat.send",
                         is_stream=False,
                         metadata=metadata,
                         group_digital_avatar=True,
@@ -851,7 +851,7 @@ class WecomChannel(BaseChannel):
             params={"content": content, "query": content},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             is_stream=is_stream,
             chat_id=chat_id,
             metadata=metadata,
@@ -1810,7 +1810,7 @@ class WecomChannel(BaseChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             is_stream=True,
             chat_id=chatid,
             metadata={

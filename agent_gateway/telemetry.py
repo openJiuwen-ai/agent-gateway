@@ -940,7 +940,7 @@ def queue_request_trace(message: object) -> TraceOperation | None:
             if getattr(message, "type", None) != "req":
                 return None
             method = getattr(message, "req_method", None)
-            method = str(getattr(method, "value", method) or "")
+            method = str(method or "")
             if not method:
                 return None
             metadata = getattr(message, "metadata", None) or {}
