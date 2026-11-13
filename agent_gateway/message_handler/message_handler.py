@@ -125,6 +125,9 @@ _SINGLE_USER_CHANNEL_IDS = frozenset({
 })
 _TUI_DISCONNECT_CANCEL_GRACE_SECONDS = 60.0
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
+_AT_FILE_REFERENCE_PATTERN = re.compile(
+    r'(?P<prefix>(?:^|(?<=\s)))@(?:"(?P<quoted>[^"]+)"|(?P<plain>[^\s#]+))(?:#[^#\s]*)?'
+)
 _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
     "sess_",
     "web_",
@@ -3390,9 +3393,7 @@ class MessageHandler(ABC):
         working_dir = cwd or os.getcwd()
 
         # Match @path or @"quoted path", optionally followed by #L... line range
-        pattern = re.compile(
-            r'(?P<prefix>(?:^|(?<=\s)))@(?:"(?P<quoted>[^"]+)"|(?P<plain>[^\s#]+))(?:#[^#\s]*)?'
-        )
+        pattern = _AT_FILE_REFERENCE_PATTERN
 
         def _replacer(m: re.Match[str]) -> str:
             raw = m.group("quoted") or m.group("plain") or ""
@@ -3528,9 +3529,7 @@ class MessageHandler(ABC):
         if not attached_paths:
             return content
 
-        pattern = re.compile(
-            r'(?P<prefix>(?:^|(?<=\s)))@(?:"(?P<quoted>[^"]+)"|(?P<plain>[^\s#]+))(?:#[^#\s]*)?'
-        )
+        pattern = _AT_FILE_REFERENCE_PATTERN
 
         def _replacer(match: re.Match[str]) -> str:
             raw = match.group("quoted") or match.group("plain") or ""
