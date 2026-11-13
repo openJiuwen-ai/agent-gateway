@@ -39,6 +39,44 @@ def _channel():
     return channel
 
 
+def test_workspace_file_detection_accepts_absolute_and_bare_workspace_files(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    report = workspace / "report.pdf"
+    report.write_text("report", encoding="utf-8")
+
+    assert _channel()._detect_workspace_files(
+        f'请发送 "{report}" 和 "report.pdf"', str(workspace),
+    ) == [str(report.resolve())]
+
+
+@pytest.mark.parametrize("candidate", [
+    "../../outside.env",
+    r"..\\..\\outside.env",
+    "nested/report.pdf",
+    r"nested\\report.pdf",
+])
+def test_workspace_file_detection_rejects_non_bare_filename_candidates(
+    tmp_path, candidate,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "report.pdf").write_text("report", encoding="utf-8")
+
+    assert _channel()._detect_workspace_files(f'"{candidate}"', str(workspace)) == []
+
+
+def test_workspace_file_detection_rejects_absolute_paths_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.env"
+    outside.write_text("secret", encoding="utf-8")
+
+    assert _channel()._detect_workspace_files(
+        f'"{outside}"', str(workspace),
+    ) == []
+
+
 async def _send(channel, *, chat_id="staff-test", **changes):
     return await channel.send_persistent_result(
         chat_id=chat_id, text="test result", source_message_id="message-test", idempotency_key="delivery-test",
