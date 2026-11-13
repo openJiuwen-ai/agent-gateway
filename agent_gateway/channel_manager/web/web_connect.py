@@ -2442,6 +2442,16 @@ class WebChannel(BaseWsChannel):
 
         # 发布到 route 或回调
         handler = self._method_handlers.get(method)
+        if handler is not None:
+            from agent_gateway.channel_manager.web.invoke import (
+                is_enterprise_write_forbidden,
+            )
+            if is_enterprise_write_forbidden(method):
+                await self.send_response(
+                    ws, req_id, ok=False,
+                    error="企业版配置由管理面统一下发", code="FORBIDDEN",
+                )
+                return
         if method in self._local_only_methods:
             if handler is None:
                 await self.send_response(
