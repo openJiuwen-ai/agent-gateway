@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable
 
 import httpx
@@ -32,6 +33,53 @@ logger = logging.getLogger(__name__)
 _TOKEN_RETRY_SECONDS = 30.0
 # Swarm membership checks can run three CLI calls, each with a 30-second limit.
 _LIFECYCLE_ACK_TIMEOUT_SECONDS = 120.0
+
+# 兜底文件发送的路径/文件名候选正则：避免每次消息都重编译。
+_FILENAME_CANDIDATE_PATTERN = re.compile(
+    r'["\'「「【《]([^"\'」」】》]+\.\w{1,10})["\'」」】》]'
+)
+
+
+@lru_cache(maxsize=64)
+def _workspace_path_pattern(workspace_dir: str) -> re.Pattern[str]:
+    """按 workspace 目录缓存绝对路径候选正则。"""
+    return re.compile(
+        r'(?:^|["\'「「【《\s])(' + re.escape(workspace_dir)
+        + r'[^\s"\'」」】》]+\.\w{1,10})(?:$|["\'」」】》\s])',
+        re.MULTILINE,
+    )
+
+
+def _resolve_workspace_file(
+    workspace_dir: str,
+    candidate: str,
+    *,
+    filename_only: bool = False,
+) -> str | None:
+    """Return a real file path only when it stays inside the workspace."""
+    try:
+        workspace = Path(workspace_dir).resolve()
+        if filename_only:
+            filename = Path(candidate)
+            if (
+                filename.is_absolute()
+                or PureWindowsPath(candidate).drive
+                or filename.name != candidate
+                or "/" in candidate
+                or "\\" in candidate
+            ):
+                return None
+            candidate_path = workspace / filename
+        else:
+            candidate_path = Path(candidate)
+
+        resolved = candidate_path.resolve()
+        resolved.relative_to(workspace)
+        if not resolved.is_file():
+            return None
+        return str(resolved)
+    except (OSError, RuntimeError, ValueError):
+        return None
 
 
 class DingTalkConfig(BaseModel):
@@ -1452,26 +1500,23 @@ class DingTalkChannel(BaseChannel):
 
         # 模式1：完整绝对路径匹配
         # 匹配类似 /home/xxx/.jiuwenswarm/agent/workspace/xxx.ext 的路径
-        path_pattern = re.compile(
-            r'(?:^|["\'「「【《\s])(' + re.escape(workspace_dir) + r'[^\s"\'」」】》]+\.\w{1,10})(?:$|["\'」」】》\s])',
-            re.MULTILINE
-        )
+        path_pattern = _workspace_path_pattern(workspace_dir)
         for match in path_pattern.finditer(text):
-            path = match.group(1).strip()
-            if os.path.isfile(path):
-                found_files.append(path)
+            resolved = _resolve_workspace_file(workspace_dir, match.group(1).strip())
+            if resolved and resolved not in found_files:
+                found_files.append(resolved)
 
         # 模式2：从引号/书名号中提取文件名
         # 匹配 "filename.ext"、'filename.ext'、「filename.ext」、《filename.ext》
-        filename_pattern = re.compile(
-            r'["\'「「【《]([^"\'」」】》]+\.\w{1,10})["\'」」】》]'
-        )
+        filename_pattern = _FILENAME_CANDIDATE_PATTERN
         for match in filename_pattern.finditer(text):
             filename = match.group(1).strip()
-            # 在 workspace 下查找同名文件
-            potential_path = os.path.join(workspace_dir, filename)
-            if os.path.isfile(potential_path) and potential_path not in found_files:
-                found_files.append(potential_path)
+            # 文件名模式只允许 workspace 根目录下、无路径组成部分的真实文件。
+            resolved = _resolve_workspace_file(
+                workspace_dir, filename, filename_only=True
+            )
+            if resolved and resolved not in found_files:
+                found_files.append(resolved)
 
         return found_files
 
