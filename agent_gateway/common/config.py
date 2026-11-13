@@ -2771,6 +2771,18 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if value is not None and not isinstance(value, str):
             raise ValueError(f"model.{key} must be a string")
     if isinstance(saved.get("model_client_config"), dict):
+        # Mixed payload: a flat top-level credential is never promoted into the
+        # nested block, so it would bypass _protect_model_key and be written back
+        # to config.yaml/.bak in plaintext by _merge_model_update. The read path
+        # (get_default_models) does emit top-level aliases, so this shape is
+        # reachable and cannot simply be rejected. Fold the credential into the
+        # nested block (the nested value wins) and drop the top-level residue.
+        client = saved["model_client_config"]
+        if "api_key" in saved:
+            client.setdefault("api_key", saved.pop("api_key"))
+        key = client.get("api_key")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("model.model_client_config.api_key must be a string")
         return saved
     mcc: dict[str, Any] = {}
     mco: dict[str, Any] = {}
@@ -2810,8 +2822,11 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if val:
             mcc["plan"] = str(val)
     temp = saved.pop("temperature", None)
-    if temp is not None:
-        mco["temperature"] = float(temp)
+    if temp is not None and not (isinstance(temp, str) and not temp.strip()):
+        try:
+            mco["temperature"] = float(temp)
+        except (TypeError, ValueError):
+            raise ValueError("model.temperature must be a number") from None
     rl = saved.pop("reasoning_level", None)
     if rl is not None and str(rl).strip():
         mco["reasoning_level"] = str(rl).strip()
@@ -2841,6 +2856,8 @@ def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
     if "api_key" not in client:
         return
     key = client["api_key"]
+    if key is not None and not isinstance(key, str):
+        raise ValueError("model.model_client_config.api_key must be a string")
     previous = (current.get("model_client_config") or {}).get("api_key")
     if key == previous:
         return
@@ -2854,22 +2871,23 @@ def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
         return
     try:
         crypto = get_crypto_provider()
-    except Exception:
-        # 与本文件 _decrypt_model_entries 保持一致：拿不到 provider 时降级为按提交值
-        # 落库，不能因为加密组件异常把整个模型保存流程打挂。
-        logger.warning(
-            "Crypto provider unavailable while protecting model api_key; "
-            "the submitted value will be stored as-is",
-            exc_info=True,
-        )
-        return
-    if crypto is not None:
+        if crypto is None:
+            return
         resolved = _decrypt_model_entries([current])[0]
         previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
         if previous and key == previous_plaintext:
             client["api_key"] = previous
         else:
             client["api_key"] = crypto.encrypt(key)
+    except Exception:
+        # 与本文件 _decrypt_model_entries 保持一致：provider 不可用或加密/解密
+        # 链路异常时降级为按提交值落库，不让加密组件异常升级为未捕获的 500。
+        logger.warning(
+            "Crypto provider unavailable or encryption failed while protecting "
+            "model api_key; the submitted value will be stored as-is",
+            exc_info=True,
+        )
+        return
 
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:

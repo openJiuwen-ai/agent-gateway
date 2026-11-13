@@ -176,3 +176,100 @@ class TestNormalizeModelEntryVerifySsl:
     def test_verify_ssl_is_parsed_instead_of_coerced(self, raw, expected):
         saved = config._normalize_model_entry({"model_id": "mdl_1", "verify_ssl": raw})
         assert saved["model_client_config"]["verify_ssl"] is expected
+
+
+class TestReviewFindings:
+    """atomgit-bot 对 !102 的三条 Medium 意见的回归。"""
+
+    # ① 混合载荷：顶层扁平 api_key 不能绕过加密契约留在顶层
+    @staticmethod
+    def test_mixed_flat_and_nested_key_is_folded_into_nested_block():
+        entry = {
+            "model_id": "mdl_1",
+            "api_key": "sk-top-level",
+            "model_client_config": {"model_name": "gpt-x"},
+        }
+        saved = config._normalize_model_entry(entry)
+        assert "api_key" not in saved
+        assert saved["model_client_config"]["api_key"] == "sk-top-level"
+        assert entry["api_key"] == "sk-top-level"  # 入参不被就地修改
+
+    @staticmethod
+    def test_nested_key_wins_over_top_level_alias():
+        entry = {
+            "model_id": "mdl_1",
+            "api_key": "sk-alias",
+            "model_client_config": {"api_key": "sk-authoritative"},
+        }
+        saved = config._normalize_model_entry(entry)
+        assert "api_key" not in saved
+        assert saved["model_client_config"]["api_key"] == "sk-authoritative"
+
+    def test_folded_key_is_encrypted_by_protect_model_key(self, fake_crypto):
+        saved = config._normalize_model_entry(
+            {
+                "model_id": "mdl_1",
+                "api_key": "sk-new",
+                "model_client_config": {"model_name": "gpt-x"},
+            }
+        )
+        config._protect_model_key(saved, _entry_with_key("enc(old-secret)"))
+        assert "api_key" not in saved
+        assert saved["model_client_config"]["api_key"] == "enc(sk-new)"
+
+    # ② 嵌套块 api_key 类型校验 + encrypt 异常不升级为 500
+    @staticmethod
+    @pytest.mark.parametrize("bad", [12345, 0, True, {"k": "v"}, ["x"]])
+    def test_nested_non_string_api_key_is_rejected(bad):
+        with pytest.raises(ValueError, match="model_client_config.api_key must be a string"):
+            config._normalize_model_entry(
+                {"model_id": "mdl_1", "model_client_config": {"api_key": bad}}
+            )
+
+    def test_protect_model_key_rejects_non_string_key(self, fake_crypto):
+        with pytest.raises(ValueError, match="api_key must be a string"):
+            config._protect_model_key(
+                {"model_client_config": {"api_key": 12345}},
+                _entry_with_key("enc(old)"),
+            )
+
+    def test_encryption_failure_degrades_to_submitted_value(self, monkeypatch):
+        class _BrokenCrypto(_FakeCrypto):
+            def encrypt(self, plaintext, **_kwargs):
+                raise RuntimeError("encrypt broken")
+
+        monkeypatch.setattr(config, "get_crypto_provider", lambda: _BrokenCrypto())
+        update = _entry_with_key("new-secret")
+        config._protect_model_key(update, _entry_with_key("enc(old-secret)"))
+        assert update["model_client_config"]["api_key"] == "new-secret"
+
+    def test_decrypt_failure_degrades_to_submitted_value(self, fake_crypto, monkeypatch):
+        def _broken(_entries):
+            raise RuntimeError("decrypt broken")
+
+        monkeypatch.setattr(config, "_decrypt_model_entries", _broken)
+        update = _entry_with_key("new-secret")
+        config._protect_model_key(update, _entry_with_key("enc(old-secret)"))
+        assert update["model_client_config"]["api_key"] == "new-secret"
+
+    # ③ temperature 边界：空值跳过，脏值给带字段名的错误
+    @staticmethod
+    @pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+    def test_blank_temperature_is_skipped(blank):
+        saved = config._normalize_model_entry({"model_id": "mdl_1", "temperature": blank})
+        assert "temperature" not in saved.get("model_config_obj", {})
+
+    @staticmethod
+    @pytest.mark.parametrize("bad", ["abc", "1.2.3", [], {}, object()])
+    def test_invalid_temperature_raises_named_value_error(bad):
+        with pytest.raises(ValueError, match=r"model\.temperature must be a number"):
+            config._normalize_model_entry({"model_id": "mdl_1", "temperature": bad})
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [("0.3", 0.3), (" 0.7 ", 0.7), (0, 0.0), (2.5, 2.5)],
+    )
+    def test_valid_temperature_is_converted(raw, expected):
+        saved = config._normalize_model_entry({"model_id": "mdl_1", "temperature": raw})
+        assert saved["model_config_obj"]["temperature"] == expected
