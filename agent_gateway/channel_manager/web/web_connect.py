@@ -2396,6 +2396,17 @@ class WebChannel(BaseWsChannel):
                 await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
 
+        from agent_gateway.channel_manager.web.invoke import (
+            is_enterprise_write_forbidden,
+        )
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws, req_id, ok=False,
+                error="企业版配置由管理面统一下发", code="FORBIDDEN",
+            )
+            return
+
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。
         # 请求未带 session_id（如 memory.compute 心跳、updater.check、config.get
