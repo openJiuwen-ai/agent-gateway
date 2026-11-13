@@ -2755,6 +2755,141 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a flat frontend-style model entry into the nested config format.
+
+    If the entry already has a ``model_client_config`` dict, assume it is already
+    normalized and return as-is.  Otherwise promote flat fields into the nested
+    structure the rest of the system expects.
+    """
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
+    if isinstance(saved.get("model_client_config"), dict):
+        # Mixed payload: a flat top-level credential is never promoted into the
+        # nested block, so it would bypass _protect_model_key and be written back
+        # to config.yaml/.bak in plaintext by _merge_model_update. The read path
+        # (get_default_models) does emit top-level aliases, so this shape is
+        # reachable and cannot simply be rejected. Fold the credential into the
+        # nested block (the nested value wins) and drop the top-level residue.
+        client = saved["model_client_config"]
+        if "api_key" in saved:
+            client.setdefault("api_key", saved.pop("api_key"))
+        key = client.get("api_key")
+        if key is not None and not isinstance(key, str):
+            raise ValueError("model.model_client_config.api_key must be a string")
+        return saved
+    mcc: dict[str, Any] = {}
+    mco: dict[str, Any] = {}
+    if "model_name" in saved:
+        mcc["model_name"] = str(saved.pop("model_name") or "")
+    if "api_base" in saved:
+        mcc["api_base"] = str(saved.pop("api_base") or "")
+    if "api_key" in saved:
+        mcc["api_key"] = saved.pop("api_key") or ""
+    # 两个扁平键都必须 pop 掉，但取值要回退：写成
+    # pop("model_provider", pop("client_provider", "")) 时默认参数会提前求值，
+    # client_provider 被删掉、值却只在 model_provider 缺键时才用得上，于是
+    # model_provider 为 null/空串时会把有效的 client_provider 一起丢掉。
+    model_provider = saved.pop("model_provider", None)
+    client_provider = saved.pop("client_provider", None)
+    provider = str(model_provider or client_provider or "")
+    if provider:
+        mcc["client_provider"] = provider
+    if "timeout" in saved:
+        mcc["timeout"] = saved.pop("timeout")
+    if "verify_ssl" in saved:
+        # 前端可能回传字符串（"false" 的裸 bool() 是 True，会把用户的关闭意图反转）
+        raw_verify_ssl = saved.pop("verify_ssl")
+        if isinstance(raw_verify_ssl, str):
+            raw_verify_ssl = raw_verify_ssl.strip().lower() not in {"", "0", "false", "no", "off"}
+        mcc["verify_ssl"] = bool(raw_verify_ssl)
+    if "endpoint_profile" in saved:
+        val = saved.pop("endpoint_profile")
+        if val:
+            mcc["endpoint_profile"] = str(val)
+    if "vendor_key" in saved:
+        val = saved.pop("vendor_key")
+        if val:
+            mcc["vendor_key"] = str(val)
+    if "plan" in saved:
+        val = saved.pop("plan")
+        if val:
+            mcc["plan"] = str(val)
+    temp = saved.pop("temperature", None)
+    if temp is not None and not (isinstance(temp, str) and not temp.strip()):
+        try:
+            mco["temperature"] = float(temp)
+        except (TypeError, ValueError):
+            raise ValueError("model.temperature must be a number") from None
+    rl = saved.pop("reasoning_level", None)
+    if rl is not None and str(rl).strip():
+        mco["reasoning_level"] = str(rl).strip()
+    if mcc:
+        saved["model_client_config"] = mcc
+    if mco:
+        saved["model_config_obj"] = mco
+    return saved
+
+
+def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge an editable DTO while preserving omitted/write-only settings."""
+    merged = deepcopy(current)
+    for key, value in update.items():
+        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_model_update(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
+    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
+    client = update.get("model_client_config") or {}
+    if "api_key" not in client:
+        return
+    key = client["api_key"]
+    if key is not None and not isinstance(key, str):
+        raise ValueError("model.model_client_config.api_key must be a string")
+    previous = (current.get("model_client_config") or {}).get("api_key")
+    if key == previous:
+        return
+    if not key:
+        # api_key 是 write-only 字段，空串按“未提交”处理：必须把旧密文写回，否则
+        # 随后的 _merge_model_update 会用空串覆盖已保存的凭据，模型立即鉴权失败。
+        if previous:
+            client["api_key"] = previous
+        else:
+            client.pop("api_key", None)
+        return
+    try:
+        crypto = get_crypto_provider()
+        if crypto is None:
+            return
+        resolved = _decrypt_model_entries([current])[0]
+        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
+        if previous and key == previous_plaintext:
+            client["api_key"] = previous
+        else:
+            client["api_key"] = crypto.encrypt(key)
+    except Exception:
+        # 与本文件 _decrypt_model_entries 保持一致：provider 不可用或加密/解密
+        # 链路异常时降级为按提交值落库，不让加密组件异常升级为未捕获的 500。
+        logger.warning(
+            "Crypto provider unavailable or encryption failed while protecting "
+            "model api_key; the submitted value will be stored as-is",
+            exc_info=True,
+        )
+        return
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
     model_config = saved.get("model_config_obj")
