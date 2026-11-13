@@ -18,7 +18,7 @@ import ssl
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -190,6 +190,15 @@ def _is_ip_host(host: str | None) -> bool:
         return False
 
 
+class XiaoyiTlsConfigError(OSError):
+    """``XIAOYI_CA_BUNDLE`` 无法加载（路径不存在、不可读或不是合法 PEM）。
+
+    继承 ``OSError`` 以保持既有调用方对 ``except OSError`` 的兼容；同时让重连
+    循环能把配置错误和网络层的 ``OSError``（拒绝连接、DNS 失败）区分开，避免
+    把配置问题记成一次普通抖动，也避免每 5 秒重复刷屏。
+    """
+
+
 def _build_ssl_context(host: str | None) -> ssl.SSLContext:
     """Build the TLS context used by the Xiaoyi WebSocket connection.
 
@@ -200,17 +209,22 @@ def _build_ssl_context(host: str | None) -> ssl.SSLContext:
 
     Trusted intranet self-signed endpoints have two migration paths:
 
-    * ``XIAOYI_CA_BUNDLE=/path/to/ca.pem`` loads a private CA and keeps
-      ``CERT_REQUIRED`` — the chain is still verified (recommended);
-    * ``XIAOYI_TLS_VERIFY=false`` disables verification entirely (weakest).
+    * ``XIAOYI_CA_BUNDLE=/path/to/ca.pem`` trusts **only** the certificates in
+      that bundle — the system roots are not loaded — and keeps
+      ``CERT_REQUIRED``. This matters because hostname matching is disabled for
+      IP literals: if the public roots stayed in the trust store, any
+      certificate issued by any public CA would be accepted for an IP endpoint
+      (recommended);
+    * ``XIAOYI_TLS_VERIFY=false`` disables verification entirely (weakest) and
+      takes precedence over ``XIAOYI_CA_BUNDLE``.
 
     An invalid ``XIAOYI_CA_BUNDLE`` path must raise rather than silently falling
     back to the system roots: otherwise operators would believe their private CA
     is trusted when it is not.
     """
-    context = ssl.create_default_context()
     raw = (os.getenv(XIAOYI_TLS_VERIFY_ENV) or "").strip().casefold()
     if raw in _FALSY_TLS_VALUES:
+        context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         logger.warning(
@@ -221,16 +235,41 @@ def _build_ssl_context(host: str | None) -> ssl.SSLContext:
         return context
     ca_bundle = (os.getenv(XIAOYI_CA_BUNDLE_ENV) or "").strip()
     if ca_bundle:
-        # load_verify_locations raises on a missing/invalid file; do not catch it.
-        context.load_verify_locations(cafile=ca_bundle)
+        # Passing cafile makes create_default_context load *only* this bundle.
+        # load_verify_locations() would append to the system roots instead, which
+        # silently keeps every public CA trusted for IP endpoints whose hostname
+        # check is disabled below.
+        try:
+            context = ssl.create_default_context(cafile=ca_bundle)
+        except OSError as exc:  # ssl.SSLError (invalid PEM) is an OSError too
+            raise XiaoyiTlsConfigError(
+                f"{XIAOYI_CA_BUNDLE_ENV}={ca_bundle} 无法加载为 CA bundle: {exc}"
+            ) from exc
         logger.info(
-            "[XiaoyiChannel] 已加载自定义 CA：%s=%s（证书链校验保持开启）",
+            "[XiaoyiChannel] 已加载自定义 CA：%s=%s（仅信任该 bundle，证书链校验保持开启）",
             XIAOYI_CA_BUNDLE_ENV,
             ca_bundle,
         )
+    else:
+        context = ssl.create_default_context()
     if _is_ip_host(host):
         context.check_hostname = False
     return context
+
+
+def _validate_tls_config(urls: Iterable[str]) -> None:
+    """Fail fast on a broken TLS configuration before any task is spawned.
+
+    ``_connect`` rebuilds the context on every reconnect attempt, so a bad
+    ``XIAOYI_CA_BUNDLE`` would otherwise surface only as a WARNING every five
+    seconds in a background task and the channel would stay silently offline.
+
+    Raises:
+        XiaoyiTlsConfigError: the configured CA bundle cannot be loaded.
+    """
+    for url in urls:
+        if url:
+            _build_ssl_context(urlparse(url).hostname)
 
 
 def _generate_signature(sk: str, timestamp: str) -> str:
@@ -456,6 +495,15 @@ class XiaoyiChannel(BaseChannel):
             if not self.config.ak or not self.config.sk or not self.config.agent_id:
                 logger.error("XiaoyiChannel 未配置 ak/sk/agent_id")
                 return
+
+        # TLS 配置必须在启动阶段校验：XIAOYI_CA_BUNDLE 配错时否则只会在后台
+        # 重连循环里每 5 秒抛一次 OSError，日志与网络抖动无法区分，表现为通道
+        # 静默失联。这里失败就显式 ERROR 并放弃启动。
+        try:
+            _validate_tls_config((self.config.ws_url1, self.config.ws_url2))
+        except XiaoyiTlsConfigError as exc:
+            logger.error("XiaoyiChannel TLS 配置无效，通道未启动：%s", exc)
+            return
 
         # 注册全局实例（供 tools 使用）
         _register_xiaoyi_channel(self)
@@ -1302,16 +1350,33 @@ class XiaoyiChannel(BaseChannel):
 
     async def _reconnect_loop(self, url_key: str, url: str) -> None:
         """自动重连循环（双通道）."""
+        tls_config_error_logged = False
         while self._running:
             try:
                 await self._connect(url_key, url)
+                tls_config_error_logged = False
                 if not self._running:
                     break
                 # 连接被远端正常关闭时也做退避，避免瞬时重连刷屏。
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
                 break
+            except XiaoyiTlsConfigError as e:
+                # CA bundle 缺失/非法是配置错误，不是网络抖动：用 ERROR 暴露。
+                # 同一条配置错误只记一次，避免每 5 秒刷屏；仍保留重试，运维修好
+                # 文件后下一轮连接即可自愈，不必重启进程。
+                if not tls_config_error_logged:
+                    logger.error(
+                        "XiaoyiChannel TLS 配置错误，连接无法建立 (%s): %s；"
+                        "修复 %s 指向的文件后将自动恢复",
+                        url,
+                        e,
+                        XIAOYI_CA_BUNDLE_ENV,
+                    )
+                    tls_config_error_logged = True
+                await asyncio.sleep(5)
             except Exception as e:
+                tls_config_error_logged = False
                 logger.warning(f"XiaoyiChannel 连接失败 ({url}): {e}")
                 await asyncio.sleep(5)
 
