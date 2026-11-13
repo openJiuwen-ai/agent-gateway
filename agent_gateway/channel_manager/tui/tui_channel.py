@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from e2a.message import EventType
 from agent_gateway.common.session_message import (
@@ -52,6 +52,8 @@ class TuiChannel(BaseWsChannel):
         super().__init__(config or TuiChannelConfig(), router or RobotMessageRouter())
         self.config: TuiChannelConfig = config or TuiChannelConfig()
         self._on_message_cb: Callable[[Any], Any] | None = None
+        self.session_switch_response_handler: Callable[[Any], Awaitable[bool]] | None = None
+        self.request_outbound_resolver: Callable[[Any], tuple[Any, Any] | None] | None = None
 
     def on_message(self, callback: Callable[[Any], Any]) -> None:
         self._on_message_cb = callback
@@ -97,6 +99,10 @@ class TuiChannel(BaseWsChannel):
         的 cron 广播分支，对此类消息广播给所有 tui 客户端——多开终端都会收到结果，
         前端按当前活跃会话展示。
         """
+        if self.session_switch_response_handler is not None:
+            if await self.session_switch_response_handler(msg):
+                return
+
         # ── 定时任务推 tui：scheduler 对 tui 置空 msg.session_id（见 scheduler
         # _push_to_targets 的 routing_sid 注释），按 session_id 路由会被丢弃。
         # cron 推送（占位 + 结果）带 payload.cron 标记，普通对话 chat.final 不带，
@@ -148,6 +154,16 @@ class TuiChannel(BaseWsChannel):
             for ws in clients:
                 self._enqueue_send(ws, frame)
             return
+
+        # In-flight request output belongs to its original socket even after
+        # that socket switches Sessions. Team fan-out keeps its explicit target.
+        if self.request_outbound_resolver is not None and (routing_target is None or getattr(msg, "type", None) == "res"):
+            resolved = self.request_outbound_resolver(msg)
+            if resolved is not None:
+                request_ws, outgoing = resolved
+                if request_ws is not None and not getattr(request_ws, "closed", False):
+                    self._enqueue_send(request_ws, self._serialize_frame(outgoing, routing_target))
+                return
 
         ws_set: set[Any] = set()
 
@@ -207,6 +223,14 @@ class TuiChannel(BaseWsChannel):
         frame_data = self._serialize_frame(msg, routing_target, member_names=None)
         for w in ws_set:
             self._enqueue_send(w, frame_data)
+
+    def enqueue_message(self, ws: Any, msg: Any) -> bool:
+        """Queue ``msg`` behind ``ws``'s pending frames; False if ``ws`` has no live writer."""
+        ws_id = getattr(ws, "_jiuwen_ws_id", "")
+        if self._is_writer_unavailable(ws, self._send_queues.get(ws_id), self._writers.get(ws_id)):
+            return False
+        self._enqueue_send(ws, self._serialize_frame(msg))
+        return True
 
     # ── BaseWsChannel 抽象方法 ──
 

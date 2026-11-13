@@ -14,6 +14,8 @@ from enum import Enum
 from e2a.message import EventType, ReqMethod
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
+    ("MODE_SET", "mode.set"),
+    ("MODE_GET", "mode.get"),
     ("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound"),
     ("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound"),
     ("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check"),

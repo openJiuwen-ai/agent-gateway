@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 _HARMONYOS_DEV_INIT_TASKS_ATTR = "_jiuwenswarm_harmonyos_dev_init_tasks"
 _TUI_EXPLICIT_EXIT_CANCEL_GRACE_SECONDS = 1.0
+# How long a window's resolved project membership is reused by lifecycle polls
+# that carry no new project revision. Bounds how late a Session move is noticed.
+_TUI_LIFECYCLE_MEMBERSHIP_REFRESH_SECONDS = 30.0
 
 
 def _get_harmonyos_dev_init_tasks(
@@ -115,6 +118,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "swarmflow.stop",
         "command.status",
         "command.goal",
+        "mode.set",
+        "mode.get",
         "chat.send",
         "chat.interrupt",
         "chat.resume",
@@ -242,6 +247,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
 
 CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     {
+        "mode.set",
+        "mode.get",
         "command.add_dir",
         "command.btw",
         "command.chrome",
@@ -566,7 +573,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         # Preserve the pre-refactor single-user startup/offline behavior: the
         # TUI can render an empty history before its AgentServer client exists.
         if real_client is None:
-            await channel.send_response(ws, req_id, ok=True, payload={"sessions": []})
+            offline = {"sessions": [], "total": 0, "page_count": 0, "current_branch": "HEAD"}
+            await channel.send_response(ws, req_id, ok=True, payload=offline)
             return
         ok, payload = await fetch_agent_unary(
             agent_client=real_client,
@@ -591,6 +599,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             if isinstance(payload, dict)
             else []
         )
+        # Upstream paging, before local filtering: page_count is a row count, not a page count.
+        page_info = {"total": payload.get("total") if isinstance(payload, dict) else None, "page_count": len(all_sessions)}
         # 过滤掉 None/非 dict/无效 session_id，防止前端 SelectList.render() 崩溃
         normalized_sessions = []
         for s in all_sessions:
@@ -614,6 +624,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             bool(params.get("all_projects"))
             if isinstance(params, dict) else False
         )
+        include_current = bool(params.get("include_current")) if isinstance(params, dict) else False
         project_dir = (
             str(params.get("project_dir", "")).strip()
             if isinstance(params, dict) else ""
@@ -628,6 +639,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         cli_sessions = []
         for s in all_sessions:
+            if include_current and s.get("session_id", "") == current_sid:
+                cli_sessions.append(s)  # Kept regardless of channel/project.
+                continue
             if s.get("channel_id", "") != "tui":
                 continue
             if not tui_session_matches_project_dir(
@@ -678,7 +692,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             ws,
             req_id,
             ok=True,
-            payload={"sessions": cli_sessions, "current_branch": current_branch},
+            payload={"sessions": cli_sessions, "current_branch": current_branch, **page_info},
         )
 
     async def _session_create(ws, req_id, params, session_id, user_id=None):
@@ -796,45 +810,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             ws, req_id, ok=False, error=str(err), code=code,
         )
 
-
-    async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发）。
-
-        AgentServer 不可达时返回 SERVICE_UNAVAILABLE；Gateway 不再跑本地
-        SessionAdapter 删除路径。
-        """
-        from e2a.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
-
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        target = str(params.get("session_id") or "").strip()
-        if not target:
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
-            )
-            return
-
-        async def _left_project(ok: bool, payload: dict[str, Any]) -> None:
-            if ok and on_session_left_project is not None:
-                await on_session_left_project(str(payload.get("project_id") or ""), target)
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve_agent_client(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
-            label="session.delete",
-            on_done=_left_project,
-        )
 
     async def _forward_rewind_e2a(params: ForwardRewindE2AParams) -> bool:
         """Forward a rewind request to AgentServer via E2A.
@@ -1730,13 +1705,148 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     channel.register_local_handler(path, "session.list", _session_list)
     channel.register_local_handler(path, "session.create", _session_create)
     channel.register_local_handler(path, "session.rebind_project", _session_rebind_project)
-    channel.register_local_handler(path, "session.delete", _session_delete)
     channel.register_local_handler(path, "session.rename", _session_rename)
     channel.register_local_handler(path, "session.color_set", _session_color_set)
     channel.register_local_handler(path, "session.preview", _session_preview)
     channel.register_local_handler(path, "session.rewind", _session_rewind)
     channel.register_local_handler(path, "session.rewind_and_restore", _session_rewind_and_restore)
     channel.register_local_handler(path, "session.restore_files", _session_restore_files)
+    from agent_gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
+
+    def _tui_bindings() -> list[tuple[tuple, Any]]:
+        """``(key, ws)`` for the TUI entries of the channel's Session bindings."""
+        return [
+            (key, ws) for key, ws in getattr(channel, "_session_to_client", {}).items()
+            if isinstance(key, tuple) and len(key) >= 2 and key[0] == "tui"
+        ]
+
+    def _tui_clients(user_id: str | None, session_id: str | None = None) -> list[Any]:
+        """Open TUI sockets of ``user_id``, optionally only those bound to ``session_id``."""
+        connection_user_id = getattr(channel, "_connection_user_id", None)
+        if session_id is None:
+            find_clients = getattr(channel, "_find_channel_clients", None)
+            candidates = find_clients("tui") if callable(find_clients) else []
+        else:
+            candidates = [ws for key, ws in _tui_bindings() if key[1] == session_id and not getattr(ws, "closed", False)]
+        clients: list[Any] = []
+        for ws in candidates if callable(connection_user_id) else []:
+            if all(ws is not seen for seen in clients) and str(connection_user_id(ws) or "") == str(user_id or ""):
+                clients.append(ws)
+        return clients
+
+    async def _tui_project_ids_for_client(
+        user_id: str | None, client_ws: Any, *, refresh: bool = True,
+    ) -> set[str]:
+        """Projects of the window's bound Sessions; empty if the window rebinds meanwhile.
+
+        ``refresh=False`` (the watcher's polls with no new project revision) answers
+        from the window's cache while its last lookup was complete and recent, so an
+        idle window does not query AgentServer on every poll.
+        """
+        from e2a.message import ReqMethod
+
+        from agent_gateway.common.request_identity import apply_routing_metadata
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+        generation = getattr(client_ws, "_lifecycle_binding_generation", 0)
+        session_ids = {key[1] for key, ws in _tui_bindings() if ws is client_ws}
+        # One dict per window, pruned in place so overlapping lookups share it. A
+        # deleted Session (NOT_FOUND) keeps its last project for completion events.
+        cached = getattr(client_ws, "_tui_lifecycle_session_projects", None)
+        if cached is None:
+            cached = client_ws._tui_lifecycle_session_projects = {}
+        for sid in [sid for sid in cached if sid not in session_ids]:
+            del cached[sid]
+        # (bound Sessions, time) of the last lookup that resolved every one of them.
+        resolved = getattr(client_ws, "_tui_lifecycle_membership_resolved", None)
+        if (
+            not refresh
+            and resolved is not None
+            and resolved[0] == session_ids
+            and time.monotonic() - resolved[1] < _TUI_LIFECYCLE_MEMBERSHIP_REFRESH_SECONDS
+        ):
+            return {cached[sid] for sid in session_ids if sid in cached}
+        complete = True
+        project_ids = set()
+        for sid in session_ids:
+            ok, payload = await fetch_agent_unary(
+                agent_client=_resolve_agent_client(agent_client),
+                req_method=ReqMethod.SESSION_GET_METADATA,
+                params={"session_id": sid},
+                session_id=sid,
+                user_id=user_id,
+                channel_id="tui",
+                timeout_seconds=10,
+                metadata=apply_routing_metadata(None, getattr(client_ws, "_web_routing", None)),
+            )
+            if generation != getattr(client_ws, "_lifecycle_binding_generation", 0):
+                return set()
+            if ok:
+                project_id = str(payload.get("project_id") or "").strip()
+                if project_id:
+                    cached[sid] = project_id
+                else:
+                    cached.pop(sid, None)
+            elif payload.get("code") != "NOT_FOUND":
+                complete = False
+                continue  # Unknown membership gets no events; the watcher retries next poll.
+            elif sid not in cached:
+                # Not created yet (bound before session.create finished): ask again
+                # next poll so its project is known before anyone can delete it.
+                complete = False
+            if sid in cached:
+                project_ids.add(cached[sid])
+        client_ws._tui_lifecycle_membership_resolved = (
+            (frozenset(session_ids), time.monotonic()) if complete else None
+        )
+        return project_ids
+
+    def _tui_bind_lifecycle_session(session_id: str) -> Any:
+        """Session-bind hook: one active Session per window, its membership, and watchers.
+
+        The window's other bindings are released here, in the same step as the new
+        binding. Only the returned coroutine may be deferred: if the release waited
+        with it, a hook left over from an earlier switch would run after a newer
+        switch was accepted and release the newer binding.
+        """
+        connection_user_id = getattr(channel, "_connection_user_id", None)
+        if not callable(connection_user_id):
+            return None
+        bindings = getattr(channel, "_session_to_client", {})
+        # By Session, not by exact key: binding keys may carry an agent_ref part.
+        client_ws = next((ws for key, ws in _tui_bindings() if key[1] == session_id), None)
+        if client_ws is not None:
+            # In-flight replies route by request, so the window's other bindings go.
+            for key, ws in _tui_bindings():
+                if ws is client_ws and key[1] != session_id:
+                    bindings.pop(key, None)
+        return _tui_resolve_lifecycle_session(client_ws, connection_user_id)
+
+    async def _tui_resolve_lifecycle_session(client_ws: Any, connection_user_id: Any) -> None:
+        """Deferrable part of the bind hook; the membership lookup guards itself
+        with the window's binding generation."""
+        if client_ws is not None:
+            # Resolve membership now so a deletion before the first poll still delivers.
+            try:
+                await _tui_project_ids_for_client(connection_user_id(client_ws), client_ws)
+            except Exception:
+                logger.debug("[tui] initial lifecycle membership lookup deferred", exc_info=True)
+        find_clients = getattr(channel, "_find_channel_clients", None)
+        for ws in find_clients("tui") if callable(find_clients) else []:
+            channel.ensure_lifecycle_watch(connection_user_id(ws), ws)
+
+    channel._bind_tui_lifecycle_session = _tui_bind_lifecycle_session
+
+    register_lifecycle_handlers(
+        channel,
+        lambda: _resolve_agent_client(agent_client),
+        lambda: cron_controller_ref,
+        on_session_deleted=on_session_left_project,
+        register_method=lambda method, handler: channel.register_local_handler(path, method, handler),
+        clients_for_user=_tui_clients,
+        session_event_clients=_tui_clients,
+        project_ids_for_client=_tui_project_ids_for_client,
+    )
     channel.register_local_handler(path, "command.rewind_compact", _command_rewind_compact)
     channel.register_local_handler(path, "history.list_turns", _history_list_turns)
     channel.register_local_handler(path, "chat.send", _chat_send)
@@ -2564,7 +2674,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
 
 def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
+    gateway_server = None
+
     def _install(channel: Any) -> None:
+        nonlocal gateway_server
+        gateway_server = channel
         # ``GatewayServer`` multiplexes ACP and TUI routes and therefore does
         # not have a class-level channel_id like ``TuiChannel``.  The CLI
         # handlers below use the value when building E2A envelopes; install a
@@ -2604,6 +2718,11 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
         # may still be tracked under stale_request_keys even when _session_to_client
         # was overwritten by a later reconnect on the same session_id.
         request_keys = stale_request_keys or []
+        # The window may have reconnected during the awaits above and taken its
+        # Session back; no await may follow this check before the cancel is scheduled.
+        unclaimed = getattr(gateway_server, "unclaimed_tui_disconnect_keys", None)
+        if callable(unclaimed):
+            stale_session_keys, request_keys = unclaimed(_ws, stale_session_keys, request_keys)
         if not stale_session_keys and not request_keys:
             return
         _ws_user_id = getattr(_ws, "_gateway_user_id", None)
@@ -2620,11 +2739,13 @@ def build_cli_route_binding(bind: CliRouteBindParams) -> GatewayRouteBinding:
             user_id=_ws_user_id,
         )
 
-    def _tui_session_bound(channel_id: str, session_id: str) -> None:
+    def _tui_session_bound(channel_id: str, session_id: str) -> Any:
         mh = bind.message_handler
-        if mh is None or not hasattr(mh, "cancel_scheduled_disconnect_cancel"):
-            return
-        mh.cancel_scheduled_disconnect_cancel(channel_id, session_id)
+        if mh is not None and hasattr(mh, "cancel_scheduled_disconnect_cancel"):
+            mh.cancel_scheduled_disconnect_cancel(channel_id, session_id)
+        # GatewayServer awaits (or defers) the lifecycle setup returned for an installed TUI.
+        bind_lifecycle = getattr(gateway_server, "_bind_tui_lifecycle_session", None)
+        return bind_lifecycle(session_id) if channel_id == "tui" and callable(bind_lifecycle) else None
 
     return GatewayRouteBinding(
         path=bind.path,

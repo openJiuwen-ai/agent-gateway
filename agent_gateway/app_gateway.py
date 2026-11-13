@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import deque
+from copy import copy
 import inspect
 import json
 import logging
@@ -25,7 +27,7 @@ import signal
 import sys
 import time
 import uuid as uuid_module
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -57,6 +59,24 @@ from agent_gateway.common.ws_diagnostics import (
 
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+_TUI_REQUEST_PREFIX = "tui-forward-"
+_REQUEST_REFERENCE_FIELDS = ("request_id", "turn_request_id", "source_request_id", "target_request_id")
+# Backstop for a TUI session.switch whose reply never reaches the gateway.
+# MessageHandler normally answers within its own unary timeout; the margin lets
+# that reply win. The fallback applies when the timeout policy sets no limit.
+_TUI_SWITCH_DEADLINE_MARGIN_SECONDS = 10.0
+_TUI_SWITCH_DEADLINE_FALLBACK_SECONDS = 55.0
+# Answered unary TUI requests whose correlation is kept per socket, so follow-up
+# requests and late events can still reference recent ones.
+_TUI_ANSWERED_ORIGINS_KEPT = 256
+# A TUI socket that drops mid-turn normally reconnects within seconds. Its Sessions
+# and in-flight request correlations are held this long for the same user's next
+# socket. Shorter than MessageHandler's 60 s disconnect cancel, so a re-attach that
+# is still allowed always comes before that cancel fires.
+_TUI_REATTACH_GRACE_SECONDS = 55.0
+_TUI_FOREGROUND_METHODS = frozenset({
+    "session.create", "session.switch", "history.get", "chat.send", "chat.resume",
+})
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 
@@ -118,7 +138,13 @@ from agent_gateway.common.security.ws_origin import (
     extract_handshake_request,
     get_header_value,
 )
-from agent_gateway.routing.agent_request_timeout import coerce_client_timeout_ms
+from agent_gateway.common.request_identity import apply_routing_metadata, normalize_routing_identity
+from agent_gateway.routing.agent_request_timeout import (
+    AGENT_SERVER_TIMEOUT_CODE,
+    AGENT_SERVER_TIMEOUT_ERROR,
+    coerce_client_timeout_ms,
+    resolve_agent_request_timeout_seconds,
+)
 from agent_gateway.routing.route_binding import GatewayRouteBinding
 from agent_gateway.common.log_sanitize import mask_sensitive
 from agent_gateway.telemetry import configure_gateway_telemetry, shutdown_gateway_telemetry, trace_stage
@@ -717,6 +743,38 @@ class RouteConfig:
     ws_channel: Any = None
 
 
+@dataclass(frozen=True)
+class _TuiRequestOrigin:
+    ws: Any
+    client_id: str
+    user_id: str | None
+    request_key: tuple
+    is_stream: bool = False
+    session_id: str = ""
+    adopted: bool = False  # Taken over from a dropped socket by a reconnected window.
+
+
+@dataclass
+class _DetachedTuiSession:
+    """What a dropped TUI socket held for one Session, kept for the re-attach grace."""
+
+    user_id: str | None
+    scope: tuple[str, ...]
+    expires_at: float
+    origins: dict[str, _TuiRequestOrigin]  # By upstream ID; their ws is cleared.
+    routing_keys: list[Any]
+
+
+@dataclass
+class _PendingTuiSwitch:
+    route: RouteConfig
+    session_id: str
+    ws: Any
+    request_key: tuple  # (channel, upstream ID[, agent_ref])
+    routing_key: Any = None
+    deadline: asyncio.TimerHandle | None = None
+
+
 @dataclass
 class GatewayServerConfig:
     enabled: bool = True
@@ -762,9 +820,14 @@ class GatewayServer(BaseWebChannel):
         # V2: key 升级为 (channel_id, session_id, agent_ref_str|None)，
         # 兼容旧 2-tuple key（agent_ref 为 None 时回退）。
         self._request_to_client: dict[tuple, Any] = {}
+        self._tui_request_origins: dict[str, _TuiRequestOrigin] = {}
         self._session_to_client: dict[tuple, Any] = {}
         # ACP 延迟绑定：session 在握手期先挂起，等首个 agent 请求 promote。
         self._pending_session_clients: dict[tuple[str, str], Any] = {}
+        self._pending_tui_switches: dict[tuple, _PendingTuiSwitch] = {}
+        self._detached_tui_sessions: dict[str, _DetachedTuiSession] = {}
+        # Work kept off the send path: deferred bind hooks and switch-deadline replies.
+        self._session_bind_tasks: set[asyncio.Task] = set()
         self.message_handler_ref = None
         self._acp_bridge = AcpGatewayBridge(
             self._dispatch_on_message,
@@ -773,6 +836,10 @@ class GatewayServer(BaseWebChannel):
             idle_finalize_seconds=lambda: _PROMPT_IDLE_FINALIZE_SECONDS,
         )
         self._install_default_route_hooks()
+        for route in config.routes.values():
+            if route.channel_id == "tui" and route.ws_channel is not None:
+                route.ws_channel.session_switch_response_handler = self._complete_tui_session_switch
+                route.ws_channel.request_outbound_resolver = self._tui_request_outbound
 
     @staticmethod
     def _extract_ws_user_id(ws: Any) -> str | None:
@@ -995,16 +1062,147 @@ class GatewayServer(BaseWebChannel):
         if session_key is not None:
             self._session_to_client[session_key] = ws
 
+    @staticmethod
+    def _tui_routing_scope(ws: Any) -> tuple[str, ...]:
+        routing = getattr(ws, "_web_routing", None) or {}
+        return tuple(str(routing.get(name) or "") for name in ("group_id", "bot_id", "gateway_id"))
+
+    def _detach_tui_socket(self, route: RouteConfig, ws: Any, session_keys: list[tuple]) -> None:
+        """Record what a dropped TUI socket held, before its tables are cleared.
+
+        Must not await: the reconnected socket's first request can arrive while
+        the rest of this socket's teardown is still running.
+        """
+        now = time.monotonic()
+        for sid in [sid for sid, record in self._detached_tui_sessions.items() if record.expires_at <= now]:
+            del self._detached_tui_sessions[sid]
+        own = {uid: origin for uid, origin in self._tui_request_origins.items() if origin.ws is ws}
+        # Lets unclaimed_tui_disconnect_keys() tell which requests belong to a
+        # Session that another socket holds by the time the cancel is scheduled.
+        ws._tui_stale_request_sessions = {origin.request_key: origin.session_id for origin in own.values()}
+        if getattr(ws, "_jiuwenswarm_tui_user_exit", False):
+            return  # The window quit: nothing will come back for its Sessions.
+        routing_keys_for = getattr(route.ws_channel, "routing_keys_for", None)
+        routing_keys = routing_keys_for(ws) if callable(routing_keys_for) else []
+        for key in session_keys:
+            sid = key[1]
+            self._detached_tui_sessions[sid] = _DetachedTuiSession(
+                user_id=self._connection_user_id(ws),
+                scope=self._tui_routing_scope(ws),
+                expires_at=now + _TUI_REATTACH_GRACE_SECONDS,
+                # All of them: a running stream may be older than any number of later
+                # requests. Answered unary ones are already capped per socket.
+                origins={
+                    uid: replace(origin, ws=None) for uid, origin in own.items() if origin.session_id == sid
+                },
+                routing_keys=[rk for rk in routing_keys if getattr(rk, "session_id", None) == sid],
+            )
+
+    def _detached_tui_session_matches(self, record: _DetachedTuiSession, ws: Any) -> bool:
+        return (
+            record.expires_at > time.monotonic()
+            and record.user_id == self._connection_user_id(ws)
+            and record.scope == self._tui_routing_scope(ws)
+        )
+
+    def _tui_request_reattaches(self, ws: Any, method: str, session_id: str) -> bool:
+        """Whether a non-foreground request re-attaches a reconnected window.
+
+        The TUI reconnects on a new socket without announcing its Session; the
+        only hint is the session_id it attaches to every request. The hint is
+        ignored for session.* requests, where it can name another Session
+        (preview, rename, delete), and for a socket that already holds or is
+        switching to a Session.
+        """
+        if method.startswith("session.") or method == "tui.disconnect":
+            return False
+        record = self._detached_tui_sessions.get(session_id)
+        if record is None or not self._detached_tui_session_matches(record, ws):
+            return False
+        if any(owner is ws for owner in self._session_to_client.values()):
+            return False
+        if any(pending.ws is ws for pending in self._pending_tui_switches.values()):
+            return False
+        holder = self._lookup_client(self._session_to_client, "tui", session_id)
+        return not self._ws_is_open(holder) and self._pending_tui_switch_owner(session_id) is None
+
+    def _adopt_detached_tui_session(self, session_id: str, ws: Any) -> None:
+        """A new binding ends a Session's detached state. The same user's socket in
+        the same routing scope (a reconnected window) takes over the dropped
+        socket's request correlations, so in-flight output reaches it."""
+        record = self._detached_tui_sessions.pop(session_id, None)
+        if record is None or not self._detached_tui_session_matches(record, ws):
+            return
+        for upstream_id, origin in record.origins.items():
+            if upstream_id in self._tui_request_origins:
+                continue
+            self._tui_request_origins[upstream_id] = replace(origin, ws=ws, adopted=True)
+            self._request_to_client[origin.request_key] = ws
+        ws._tui_adopted_routing_keys = list(record.routing_keys)
+
+    def unclaimed_tui_disconnect_keys(
+        self, ws: Any, session_keys: list[tuple], request_keys: list[tuple],
+    ) -> tuple[list[tuple], list[tuple]]:
+        """A dropped socket's keys that no open socket has taken over since.
+
+        The disconnect handler runs after awaits, so the window may already have
+        reconnected; scheduling the disconnect cancel for its Session then would
+        end a turn that is being watched again. Requests of a Session another
+        window holds are left alone for the same reason.
+        """
+        def held(session_id: str) -> bool:
+            return self._ws_is_open(self._lookup_client(self._session_to_client, "tui", session_id))
+
+        request_sessions = getattr(ws, "_tui_stale_request_sessions", None) or {}
+        return (
+            [key for key in session_keys if not held(key[1])],
+            [
+                key for key in request_keys
+                if not self._ws_is_open(self._request_to_client.get(key))
+                and not held(request_sessions.get(key, ""))
+            ],
+        )
+
+    async def _register_tui_ws(self, route: RouteConfig, ws: Any, routing_key: Any) -> None:
+        try:
+            await route.ws_channel.register_ws(ws, routing_key)
+        except Exception:
+            logger.warning(
+                "GatewayServer delegate _register to ws_channel failed: channel_id=%s",
+                route.channel_id, exc_info=True,
+            )
+
+    async def _bind_request_session(self, route: RouteConfig, session_id: str, ws: Any) -> bool:
+        """Bind a Session for an inbound request."""
+        ws_channel = route.ws_channel if route.channel_id == "tui" else None
+        if ws_channel is not None:
+            # The socket needs its writer before the bind can adopt a dropped socket's
+            # in-flight output, which may arrive while the bind hook is still running.
+            await self._register_tui_ws(route, ws, None)
+        bound = await self._bind_route_session_client(route, session_id, ws)
+        routing_keys = getattr(ws, "_tui_adopted_routing_keys", None)
+        if routing_keys:
+            ws._tui_adopted_routing_keys = None
+            if bound and ws_channel is not None:
+                # A local-only request registers no routing key of its own.
+                for routing_key in routing_keys:
+                    await self._register_tui_ws(route, ws, routing_key)
+        return bound
+
     async def _bind_route_session_client(
         self,
         route: RouteConfig,
         session_id: str,
         ws: Any,
+        *,
+        defer_bind_hook: bool = False,
     ) -> bool:
         session_key = self._client_route_key(route.channel_id, session_id)
         if session_key is None:
             return False
         existing_ws = self._session_to_client.get(session_key)
+        if route.channel_id == "tui" and self._pending_tui_switch_owner(session_id) is not None:
+            return False
         if (
             existing_ws is not None
             and existing_ws is not ws
@@ -1014,6 +1212,10 @@ class GatewayServer(BaseWebChannel):
                 self._pending_session_clients[session_key] = ws
             return False
         self._session_to_client[session_key] = ws
+        if route.channel_id == "tui" and existing_ws is not ws:
+            ws._lifecycle_binding_generation = getattr(ws, "_lifecycle_binding_generation", 0) + 1
+            # Before any await, so the first request's references already resolve.
+            self._adopt_detached_tui_session(session_id, ws)
         if self._pending_session_clients.get(session_key) is ws:
             self._pending_session_clients.pop(session_key, None)
         if existing_ws is ws or route.session_bind_handler is None:
@@ -1021,7 +1223,13 @@ class GatewayServer(BaseWebChannel):
         try:
             result = route.session_bind_handler(route.channel_id, session_id)
             if asyncio.iscoroutine(result):
-                await result
+                if defer_bind_hook:
+                    # Outbound callers must not stall every connection on the hook's AgentServer calls.
+                    task = asyncio.create_task(self._await_session_bind_hook(route.channel_id, session_id, result))
+                    self._session_bind_tasks.add(task)
+                    task.add_done_callback(self._session_bind_tasks.discard)
+                else:
+                    await result
         except Exception:
             logger.warning(
                 "GatewayServer session bind handler failed: channel_id=%s session_id=%s",
@@ -1030,6 +1238,187 @@ class GatewayServer(BaseWebChannel):
                 exc_info=True,
             )
         return True
+
+    @staticmethod
+    async def _await_session_bind_hook(channel_id: str, session_id: str, hook: Awaitable[Any]) -> None:
+        try:
+            await hook
+        except Exception:
+            logger.warning(
+                "GatewayServer session bind handler failed: channel_id=%s session_id=%s",
+                channel_id, session_id, exc_info=True,
+            )
+
+    def _pending_tui_switch_owner(self, session_id: str) -> Any | None:
+        """Return the open socket whose pending ``session.switch`` reserves ``session_id``."""
+        return next((
+            pending.ws for pending in self._pending_tui_switches.values()
+            if pending.session_id == session_id and self._ws_is_open(pending.ws)
+        ), None)
+
+    async def _complete_tui_session_switch(self, msg: Any) -> bool:
+        if getattr(msg, "type", None) != "res" or getattr(msg, "channel_id", None) != "tui":
+            return False
+        pending = self._lookup_client(self._pending_tui_switches, "tui", msg.id, getattr(msg, "agent_ref", None))
+        if pending is None:
+            return False
+        # The reply arrived: the deadline must not fire while it is being committed.
+        self._cancel_tui_switch_deadline(pending)
+        route, session_id, ws = pending.route, pending.session_id, pending.ws
+        origin = self._tui_request_origin(msg)
+        response_session = getattr(msg, "session_id", None)
+        if origin is None or origin.ws is not ws or (response_session and response_session != session_id):
+            await self._reject_tui_session_switch(msg, pending)
+            return True
+        payload = dict(msg.payload or {}) if isinstance(msg.payload, dict) else {}
+        accepted = bool(msg.ok) and payload.get("switched") is not False
+        try:
+            if self._ws_is_open(ws) and accepted and route.ws_channel is not None and pending.routing_key is not None:
+                await route.ws_channel.register_ws(ws, pending.routing_key, evict_previous=True)
+        finally:
+            # Keep the target reserved until the subscription commit finishes.
+            self._release_pending_tui_switch(pending)
+        if not self._ws_is_open(ws):
+            return True
+        if accepted:
+            # Runs inside the shared outbound dispatcher: defer the hook's
+            # metadata lookup rather than stall every connection's output.
+            await self._bind_route_session_client(route, session_id, ws, defer_bind_hook=True)
+            ws._tui_adopted_routing_keys = None  # The switch registered its own routing key.
+        await self._send_tui_reply(route, ws, self._tui_client_message(msg, origin))
+        self._note_tui_request_answered(msg.id, origin)
+        return True
+
+    @staticmethod
+    def _cancel_tui_switch_deadline(pending: _PendingTuiSwitch) -> None:
+        if pending.deadline is not None:
+            pending.deadline.cancel()
+            pending.deadline = None
+
+    def _release_pending_tui_switch(self, pending: _PendingTuiSwitch) -> None:
+        self._cancel_tui_switch_deadline(pending)
+        if self._pending_tui_switches.get(pending.request_key) is pending:
+            del self._pending_tui_switches[pending.request_key]
+
+    def _settle_failed_tui_switch(self, pending: _PendingTuiSwitch) -> _TuiRequestOrigin | None:
+        """Release a failed switch's reservation and drop its correlation, so a later
+        reply is discarded. Returns the origin if its window is still waiting."""
+        self._release_pending_tui_switch(pending)
+        self._request_to_client.pop(pending.request_key, None)
+        origin = self._tui_request_origins.pop(pending.request_key[1], None)
+        if origin is None or origin.ws is not pending.ws or not self._ws_is_open(pending.ws):
+            return None
+        return origin
+
+    async def _send_tui_switch_failure(
+        self, pending: _PendingTuiSwitch, origin: _TuiRequestOrigin, error: str, code: str,
+    ) -> None:
+        await self._send_tui_reply(pending.route, pending.ws, Message(
+            id=origin.client_id, type="res", channel_id="tui", session_id=pending.session_id,
+            params={}, timestamp=time.time(), ok=False, payload={"error": error, "code": code},
+        ))
+
+    async def _reject_tui_session_switch(self, msg: Any, pending: _PendingTuiSwitch) -> None:
+        """Settle a switch whose only reply failed validation: AgentServer answers each
+        upstream ID once, so release the reservation and tell the window it failed."""
+        origin = self._settle_failed_tui_switch(pending)
+        if origin is None:
+            return
+        logger.warning("GatewayServer rejected TUI session.switch reply: target=%s reply_session=%s",
+                       pending.session_id, getattr(msg, "session_id", None))
+        await self._send_tui_switch_failure(
+            pending, origin, "session switch reply did not match the request", "INTERNAL_ERROR",
+        )
+
+    def _expire_tui_session_switch(self, pending: _PendingTuiSwitch) -> None:
+        """Deadline callback: no reply reached the gateway. Without this the window
+        answers OPERATION_IN_PROGRESS to every later switch and the target stays
+        reserved against other windows until the socket disconnects."""
+        pending.deadline = None
+        if self._pending_tui_switches.get(pending.request_key) is not pending:
+            return
+        # Settle synchronously so a reply racing the timer is discarded, not delivered twice.
+        origin = self._settle_failed_tui_switch(pending)
+        if origin is None:
+            return
+        logger.warning("GatewayServer TUI session.switch got no reply: target=%s", pending.session_id)
+        task = asyncio.create_task(self._send_tui_switch_failure(
+            pending, origin, AGENT_SERVER_TIMEOUT_ERROR, AGENT_SERVER_TIMEOUT_CODE,
+        ))
+        self._session_bind_tasks.add(task)
+        task.add_done_callback(self._session_bind_tasks.discard)
+
+    async def _send_tui_reply(self, route: RouteConfig, ws: Any, outgoing: Any) -> None:
+        """Send a TUI reply in order with the socket's queued outbound frames."""
+        enqueue = getattr(route.ws_channel, "enqueue_message", None)
+        if callable(enqueue) and enqueue(ws, outgoing):
+            return
+        payload = outgoing.payload if isinstance(outgoing.payload, dict) else {}
+        await self.send_response(
+            ws, outgoing.id, ok=bool(outgoing.ok), payload=outgoing.payload,
+            error=payload.get("error"), code=payload.get("code"),
+        )
+
+    def _tui_request_origin(self, msg: Any) -> _TuiRequestOrigin | None:
+        origin = self._tui_request_origins.get(msg.id)
+        if origin is None:
+            return None
+        owner = self._lookup_client(self._request_to_client, "tui", msg.id, getattr(msg, "agent_ref", None))
+        if owner is not origin.ws or self._connection_user_id(owner) != origin.user_id:
+            return None
+        response_user = getattr(msg, "user_id", None)
+        if response_user and str(response_user) != str(origin.user_id or ""):
+            return None
+        return origin
+
+    def _tui_client_message(self, msg: Any, origin: _TuiRequestOrigin) -> Any:
+        outgoing = copy(msg)
+        outgoing.id = origin.client_id
+        if isinstance(getattr(msg, "payload", None), dict):
+            outgoing.payload = dict(msg.payload)
+            for field in _REQUEST_REFERENCE_FIELDS:
+                value = outgoing.payload.get(field)
+                referenced = self._tui_request_origins.get(value) if isinstance(value, str) else None
+                if referenced is not None and referenced.ws is origin.ws:
+                    outgoing.payload[field] = referenced.client_id
+        return outgoing
+
+    def _note_tui_request_answered(self, upstream_id: str, origin: _TuiRequestOrigin) -> None:
+        """Bound the correlations kept for a socket's answered unary requests.
+
+        Without this every forwarded request stays in ``_tui_request_origins`` and
+        ``_request_to_client`` until disconnect, and the TUI's periodic requests
+        make both grow for as long as the window is open. Stream origins are kept:
+        the gateway cannot see where a stream ends, and there is one per turn.
+        """
+        if origin.is_stream:
+            return
+        answered = getattr(origin.ws, "_tui_answered_requests", None)
+        if answered is None:
+            answered = origin.ws._tui_answered_requests = deque()
+        answered.append(upstream_id)
+        while len(answered) > _TUI_ANSWERED_ORIGINS_KEPT:
+            evicted = self._tui_request_origins.pop(answered.popleft(), None)
+            if evicted is not None:
+                self._request_to_client.pop(evicted.request_key, None)
+
+    def _tui_request_outbound(self, msg: Any) -> tuple[Any, Any] | None:
+        origin = self._tui_request_origin(msg)
+        if origin is not None:
+            is_reply = getattr(msg, "type", None) == "res"
+            if origin.adopted and is_reply:
+                # The reply answers the dropped socket's request table. Whoever
+                # holds the Session now may be another process with its own IDs.
+                return None, None
+            outgoing = self._tui_client_message(msg, origin)
+            if is_reply:
+                self._note_tui_request_answered(msg.id, origin)
+            return origin.ws, outgoing
+        if str(msg.id or "").startswith(_TUI_REQUEST_PREFIX):
+            # Expired or mismatched correlations must never fall back to a
+            # Session now owned by another window.
+            return None, None
+        return None
 
     async def _promote_pending_session_client(
         self,
@@ -1046,6 +1435,8 @@ class GatewayServer(BaseWebChannel):
             and self._ws_is_open(existing_ws)
         ):
             return
+        if route.channel_id == "tui" and existing_ws is not pending_ws:  # As in _bind_route_session_client.
+            pending_ws._lifecycle_binding_generation = getattr(pending_ws, "_lifecycle_binding_generation", 0) + 1
         self._session_to_client[session_key] = pending_ws
         if route.session_bind_handler is None:
             return
@@ -1194,21 +1585,37 @@ class GatewayServer(BaseWebChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients.clear()
         self._request_to_client.clear()
+        self._tui_request_origins.clear()
         self._session_to_client.clear()
         self._pending_session_clients.clear()
+        for pending_switch in list(self._pending_tui_switches.values()):
+            self._release_pending_tui_switch(pending_switch)
+        for task in self._session_bind_tasks:
+            task.cancel()
+        await asyncio.gather(*self._session_bind_tasks, return_exceptions=True)
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
+        # Connection handlers finish their teardown while the server closes.
+        self._detached_tui_sessions.clear()
         logger.info("[App] Gateway server stopped")
 
     async def send(self, msg, *, routing_target: "RoutingTarget | None" = None) -> None:
+        if await self._complete_tui_session_switch(msg):
+            return
         # V2: 提取 agent_ref，优先 3 元组查找，2↔3 双向兜底（_lookup_client）。
         _agent_ref = getattr(msg, "agent_ref", None) or None
         _send_cid = getattr(msg, "channel_id", None)
         _send_sid = getattr(msg, "session_id", None)
         _send_id = getattr(msg, "id", None)
         ws: Any = None
+        if _send_cid == "tui" and (routing_target is None or getattr(msg, "type", None) == "res"):
+            resolved = self._tui_request_outbound(msg)
+            if resolved is not None:
+                ws, msg = resolved
+                if not self._ws_is_open(ws):
+                    return
         # 三级级联 fallback 查找投递目标 ws：任一级命中可用（非 None 且未关闭）ws 即短路，
         # 不再执行后续更低优先级的查找。三级依次为：
         #   1) routing_target（team fan_out 投递，经 dispatch_to_session 调用）
@@ -1220,7 +1627,7 @@ class GatewayServer(BaseWebChannel):
         # routing_target.routing_keys 的 session_id 维度查 _session_to_client，
         # 命中任一仍活跃的 ws 即投递。保证 TUI/ACP 误入 team 路径时 GodView/
         # mention fan_out 不会因签名不符而静默丢弃。
-        if routing_target is not None:
+        if routing_target is not None and ws is None:
             _rt_keys = getattr(routing_target, "routing_keys", None) or []
             for _rk in _rt_keys:
                 _rk_sid = getattr(_rk, "session_id", None)
@@ -1433,6 +1840,16 @@ class GatewayServer(BaseWebChannel):
             if callable(reporter):
                 reporter(ws)
 
+        if route.channel_id == "tui":
+            # Routing scope: the authenticated user, then group/bot/gateway (headers over URL query).
+            headers = getattr(getattr(ws, "request", None), "headers", None) or getattr(ws, "request_headers", None)
+            query, fields = parse_qs(parsed.query), ("group_id", "bot_id", "gateway_id")
+            ws._web_routing = normalize_routing_identity(
+                {"user_id": self._connection_user_id(ws)},
+                {field: get_header_value(headers, "X-" + field.replace("_", "-").title()) for field in fields},
+                {field: (query.get(field) or [""])[0] for field in fields},
+            )
+
         # connection.ack
         try:
             await ws.send(json.dumps({
@@ -1464,11 +1881,17 @@ class GatewayServer(BaseWebChannel):
             stale_request_keys = [
                 key for key, client in self._request_to_client.items() if client is ws
             ]
-            for request_key in stale_request_keys:
-                self._request_to_client.pop(request_key, None)
             stale_session_keys = [
                 key for key, client in self._session_to_client.items() if client is ws
             ]
+            if route.channel_id == "tui":
+                self._detach_tui_socket(route, ws, stale_session_keys)
+            for request_key in stale_request_keys:
+                self._request_to_client.pop(request_key, None)
+                self._tui_request_origins.pop(request_key[1], None)
+                pending_switch = self._pending_tui_switches.get(request_key)
+                if pending_switch is not None:
+                    self._release_pending_tui_switch(pending_switch)
             for session_key in stale_session_keys:
                 self._session_to_client.pop(session_key, None)
             stale_pending_session_keys = [
@@ -1591,6 +2014,12 @@ class GatewayServer(BaseWebChannel):
         session_key = self._client_route_key(route.channel_id, session_id) if explicit_session_id else None
 
         req_user_id = self._connection_user_id(ws)
+        # Only foreground operations select the TUI window's Session. A target
+        # ID on preview, rename, or lifecycle requests is not a selection. The one
+        # exception is a reconnected window taking back the Session it dropped.
+        binds_session = route.channel_id != "tui" or method in _TUI_FOREGROUND_METHODS or (
+            explicit_session_id and self._tui_request_reattaches(ws, method, session_id)
+        )
 
         # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
         if method in route.forward_methods:
@@ -1615,7 +2044,8 @@ class GatewayServer(BaseWebChannel):
             # 对称，避免 3/2 元组不匹配导致响应消息被丢弃（设计 §1.1 非 team 零改动）。
             _agent_ref = params.get("agent_ref")
 
-            request_key = self._client_route_key(route.channel_id, req_id, _agent_ref)
+            upstream_id = _TUI_REQUEST_PREFIX + uuid_module.uuid4().hex if route.channel_id == "tui" else req_id
+            request_key = self._client_route_key(route.channel_id, upstream_id, _agent_ref)
             # 升级 session_key 为 3 元组（含 agent_ref），与 _session_to_client 键一致。
             session_key = (
                 self._client_route_key(route.channel_id, session_id, _agent_ref)
@@ -1626,6 +2056,8 @@ class GatewayServer(BaseWebChannel):
             # 前端 session.list 的 active_in_window 标记是"事后快照"，此处是实时防线。
             if session_key is not None:
                 existing_ws = self._session_to_client.get(session_key)
+                if existing_ws is None and route.channel_id == "tui":
+                    existing_ws = self._pending_tui_switch_owner(session_id)
                 if (
                     existing_ws is not None
                     and existing_ws is not ws
@@ -1641,10 +2073,33 @@ class GatewayServer(BaseWebChannel):
                         code="SESSION_IN_USE",
                     )
                     return
+            deferred_switch = route.channel_id == "tui" and method == "session.switch" and session_key is not None
+            if deferred_switch and any(pending.ws is ws for pending in self._pending_tui_switches.values()):
+                await self.send_response(
+                    ws, req_id, ok=False, error="Session switch already pending", code="OPERATION_IN_PROGRESS",
+                )
+                return
             if request_key is not None:
                 self._request_to_client[request_key] = ws
-            if session_key is not None:
-                await self._bind_route_session_client(route, session_id, ws)
+            if route.channel_id == "tui":
+                self._tui_request_origins[upstream_id] = _TuiRequestOrigin(
+                    ws, req_id, req_user_id, request_key=request_key,
+                    is_stream=bool(data.get("is_stream", False)),
+                    session_id=session_id if explicit_session_id else "",
+                )
+            if deferred_switch:
+                pending_switch = _PendingTuiSwitch(route, session_id, ws, request_key)
+                wait_seconds = resolve_agent_request_timeout_seconds(
+                    channel_id=route.channel_id, method=method, is_stream=False,
+                    client_timeout_ms=data.get("timeout_ms"),
+                ) or _TUI_SWITCH_DEADLINE_FALLBACK_SECONDS
+                pending_switch.deadline = asyncio.get_running_loop().call_later(
+                    wait_seconds + _TUI_SWITCH_DEADLINE_MARGIN_SECONDS,
+                    self._expire_tui_session_switch, pending_switch,
+                )
+                self._pending_tui_switches[request_key] = pending_switch
+            elif session_key is not None and binds_session:
+                await self._bind_request_session(route, session_id, ws)
 
             default_mode = Mode.CODE_NORMAL if route.channel_id == "tui" else Mode.AGENT
             mode = Mode.from_raw(params.get("mode"), default=default_mode)
@@ -1653,6 +2108,13 @@ class GatewayServer(BaseWebChannel):
             # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
             # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
             params = dict(params)
+            if route.channel_id == "tui" and any(field in params for field in _REQUEST_REFERENCE_FIELDS):
+                references = {
+                    o.client_id: rid for rid, o in self._tui_request_origins.items() if o.ws is ws and rid != upstream_id
+                }
+                for field in _REQUEST_REFERENCE_FIELDS:
+                    if isinstance(params.get(field), str) and params[field] in references:
+                        params[field] = references[params[field]]
             if not isinstance(params.get("mode"), str):
                 params["mode"] = mode.value
 
@@ -1692,8 +2154,13 @@ class GatewayServer(BaseWebChannel):
                     agent_ref=_resolved_agent_ref,
                     session_id=session_id,
                 )
+                if deferred_switch:
+                    self._pending_tui_switches[request_key].routing_key = _tui_rk
                 try:
-                    await route.ws_channel.register_ws(ws, _tui_rk)
+                    await route.ws_channel.register_ws(
+                        ws, None if deferred_switch or not binds_session else _tui_rk,
+                        evict_previous=route.channel_id == "tui" and binds_session,
+                    )
                     _ws_id_for_metadata = getattr(ws, "_jiuwen_ws_id", "") or ""
                 except Exception:
                     logger.warning(
@@ -1703,7 +2170,7 @@ class GatewayServer(BaseWebChannel):
 
             # 从 params 中提取 cwd/project_dir，注入到 metadata 中
             # cwd 供 message_handler 解析 @file 引用；project_dir 供 session.list 按项目过滤
-            metadata = {"method": method}
+            metadata = apply_routing_metadata({"method": method}, getattr(ws, "_web_routing", None))
             if _ws_id_for_metadata:
                 metadata["ws_id"] = _ws_id_for_metadata
             cwd = params.get("cwd")
@@ -1724,7 +2191,7 @@ class GatewayServer(BaseWebChannel):
             is_stream = bool(data.get("is_stream", False))
 
             msg = Message(
-                id=req_id,
+                id=upstream_id,
                 type="req",
                 channel_id=route.channel_id,
                 session_id=session_id,
@@ -1744,9 +2211,14 @@ class GatewayServer(BaseWebChannel):
             )
 
             if self._on_message_cb is not None:
-                result = self._on_message_cb(msg)
-                if asyncio.iscoroutine(result):
-                    await result
+                try:
+                    result = self._on_message_cb(msg)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except BaseException:
+                    if deferred_switch:
+                        self._release_pending_tui_switch(pending_switch)
+                    raise
 
             # ACP route may receive legacy ``type=req`` frames from some clients.
             # They should be forwarded upstream without falling through to the
@@ -1761,8 +2233,8 @@ class GatewayServer(BaseWebChannel):
         # 2. 本地 handler：发 ack 或纯本地处理
         local_handler = route.local_handlers.get(method)
         if local_handler is not None:
-            if session_key is not None:
-                await self._bind_route_session_client(route, session_id, ws)
+            if session_key is not None and binds_session:
+                await self._bind_request_session(route, session_id, ws)
             try:
                 await self._invoke_local_handler(
                     local_handler,

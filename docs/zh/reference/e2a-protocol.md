@@ -43,6 +43,56 @@ Gateway 的 WebSocket 客户端在异常断线后保留目标 URI 与鉴权头�
 
 ---
 
+## 1.1 TUI 会话接口约定
+
+TUI 的 `session.list` 成功响应包含以下字段：
+
+| 字段 | 含义 |
+|------|------|
+| `sessions` | 经本地有效性、通道、项目和当前会话过滤，再排序并按 `limit` 截取的会话列表 |
+| `total` | AgentServer 返回的源结果总数；上游未提供时为 `null` |
+| `page_count` | 本次上游 `sessions` 数组的原始行数，在本地过滤及截取之前计算，包含随后被丢弃的无效行；**不是分页页数** |
+| `current_branch` | 当前项目的 Git 分支；无法解析时为 `HEAD` |
+
+调用方可用 `page_count` 与请求页大小比较，判断源页是否已满，不能用过滤后的
+`sessions` 长度判断。AgentServer 客户端尚不存在时，返回
+`{"sessions": [], "total": 0, "page_count": 0, "current_branch": "HEAD"}`。
+
+`session.archive`、`session.unarchive` 与 `session.delete` 只从 `params` 读取目标：
+`session_ids`（1 到 100 个 ID）或一个非空白的 `session_id`。`session_ids` 优先：
+与它同时出现的 `session_id` 只是请求上下文（TUI 客户端会在每个请求中附带当前会话），
+不做校验、不作为目标、也不会转发。未提供 `session_ids` 时，归档与恢复会把单个
+`session_id` 转换为 `session_ids: [session_id]` 后转发。
+目标非法时返回 `BAD_REQUEST`：`session_ids must contain 1 to 100 IDs`、
+`invalid resource ID`、`invalid session_id`，或缺少目标时的
+`session_ids is required`（归档/恢复）/ `session_id is required`（删除）。
+
+TUI 连接从握手请求头（`X-Group-Id`、`X-Bot-Id`、`X-Gateway-Id`，优先）或 URL 查询参数
+取得 `group_id`、`bot_id`、`gateway_id`，用户身份取自认证后的连接。
+转发请求、生命周期轮询与事件投递均使用该路由范围。
+
+每个转发的 TUI 请求都会分配唯一的上游 ID。响应和流事件发回原连接并恢复客户端 ID，
+请求引用仅在同一连接内解析。仅前台请求（`session.create`、`session.switch`、
+`history.get`、`chat.send`、`chat.resume`）会改变窗口绑定的会话。
+
+重连是唯一的例外。TUI 连接在未显式退出的情况下断开时，Gateway 将其绑定的会话和在途请求
+关联保留 55 秒。同一用户、同一路由范围的下一个连接可以通过前台请求取回；在该连接尚未绑定
+任何会话时，携带该 `session_id` 的其他请求也可以取回。`session.*` 请求不会触发重新绑定，
+因为它们的 `session_id` 可能指向其他会话。被中断轮次的流事件随后在新连接上继续下发，
+并恢复客户端自己的请求 ID；断开连接上所发请求的响应（`res`）不再投递。
+`session.switch` 仅在 AgentServer 接受后绑定；未通过原连接或目标会话校验的响应
+以 `ok: false`、错误码 `INTERNAL_ERROR` 结束本次切换。若在 Gateway 的 unary 超时
+加一小段余量内始终没有响应到达，本次切换以 `ok: false`、错误码 `AGENT_SERVER_TIMEOUT`
+结束，目标会话随即释放，之后到达的响应被丢弃。
+
+项目生命周期事件只发送给绑定会话属于该项目的窗口，项目归属通过 AgentServer 元数据解析。
+会话删除后保留最后已知的项目归属；归属未知时在下次轮询重试。项目修订号没有变化时，
+已解析的归属最多复用 30 秒，因此会话移动到其他项目最迟在该间隔内被识别。会话事件发送给绑定该会话的
+窗口（请求自身的结果也发给请求方）。窗口的首轮快照按修订号各回放一次项目事件、其完成事件及阻塞执行的会话状态；
+重连会再次回放，客户端需幂等处理这些事件。
+
+---
+
 ## 2. 易混点：`method` 的两种含义（必读）
 
 同一字段 **`method`** 在不同来源下含义不同，**不是**两套字段，也**不要**与 `request_id` / `message_id` 混用。

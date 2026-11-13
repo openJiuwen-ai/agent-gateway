@@ -49,6 +49,68 @@ it changes neither the E2A wire protocol nor Agent Runtime readiness semantics.
 
 ---
 
+## 1.1 TUI session interface contract
+
+A successful TUI `session.list` response contains these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `sessions` | Sessions after local validity, channel, project, and current-session filtering, sorted and truncated to `limit` |
+| `total` | The upstream total returned by AgentServer, or `null` when omitted upstream |
+| `page_count` | Raw row count in the upstream `sessions` array for this response, before local filtering or truncation, including invalid rows later discarded; **not the number of pages** |
+| `current_branch` | The current project's Git branch, or `HEAD` when unavailable |
+
+Compare `page_count` with the requested page size to detect a full source page;
+the filtered `sessions` length cannot determine this. Before an AgentServer client
+exists, the response is
+`{"sessions": [], "total": 0, "page_count": 0, "current_branch": "HEAD"}`.
+
+For `session.archive`, `session.unarchive`, and `session.delete`, targets come only
+from `params`: `session_ids` (1 to 100 IDs) or one nonblank `session_id`.
+`session_ids` takes precedence. A `session_id` sent with it is request context (TUI
+clients attach their active Session to every request): it is not validated, is never
+a target, and is not forwarded. Without `session_ids`, archive and unarchive forward a
+single `session_id` as `session_ids: [session_id]`. Invalid targets return
+`BAD_REQUEST`: `session_ids must contain 1 to 100 IDs`, `invalid resource ID`,
+`invalid session_id`, or `session_ids is required` (archive/unarchive) /
+`session_id is required` (delete).
+
+TUI connections take `group_id`, `bot_id`, and `gateway_id` from handshake headers
+(`X-Group-Id`, `X-Bot-Id`, `X-Gateway-Id`, preferred) or URL query parameters, and the
+user from the authenticated connection. Requests, lifecycle polling, and event
+delivery use this routing scope.
+
+Each forwarded TUI request gets a unique upstream ID. Replies and stream events go to
+the originating socket with the client's ID restored, and request references resolve
+within that socket. Only foreground requests (`session.create`, `session.switch`,
+`history.get`, `chat.send`, `chat.resume`) change a window's bound Session.
+
+Reconnects are the one exception. When a TUI socket drops without an explicit exit,
+Gateway holds its bound Session and in-flight request correlations for 55 seconds.
+The same user's next socket in the same routing scope takes them back with a
+foreground request, or with any other request carrying that `session_id` while the
+socket holds no Session. `session.*` requests never re-attach, because their
+`session_id` can name another Session. Stream events of the interrupted turn then
+continue on the new socket with the client's own request IDs; replies (`res`) to
+requests sent on the dropped socket are not delivered.
+`session.switch` binds only after AgentServer accepts it; a reply that fails origin or
+target validation ends the switch with `ok: false` and code `INTERNAL_ERROR`. If no
+reply reaches Gateway within its unary timeout plus a short margin, the switch ends
+with `ok: false` and code `AGENT_SERVER_TIMEOUT`, the target is released, and a later
+reply is discarded.
+
+Project lifecycle events reach only windows whose bound Session belongs to the
+project, as resolved from AgentServer metadata. A deleted Session keeps its last known
+project; unknown membership is retried on the next poll. Resolved membership is
+reused for up to 30 seconds while no project revision changes, so a Session moved to
+another project is noticed within that interval. Session events reach the
+windows bound to that Session, and a request's own results also reach its caller. A
+window's first snapshot replays project events, their completion events, and
+execution-blocked Session state once per revision; reconnects replay again, so clients
+must handle these events idempotently.
+
+---
+
 ## 2. Pitfall: two meanings of `method` (required reading)
 
 The same field **`method`** means different things by origin. It is **not** two different fields; do not confuse it with `request_id` / `message_id`.

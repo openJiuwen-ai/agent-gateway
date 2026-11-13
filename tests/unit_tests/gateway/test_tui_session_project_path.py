@@ -138,6 +138,80 @@ async def test_session_delete_delegates_heartbeat_lifecycle_to_agentserver() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("agent_client", [None, {"value": None}])
+async def test_session_list_offline_has_complete_pagination_payload(monkeypatch, agent_client):
+    async def unexpected_fetch(**kwargs):
+        pytest.fail("offline session.list must not call AgentServer")
+
+    monkeypatch.setattr("agent_gateway.routing.e2a_proxy.fetch_agent_unary", unexpected_fetch)
+    channel = _TuiChannel()
+    register_cli_handlers(
+        CliHandlersBindParams(channel=channel, agent_client=agent_client, path="/tui")
+    )
+
+    await channel.local_handlers["/tui"]["session.list"](object(), "req-list", {}, "current")
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "sessions": [], "total": 0, "page_count": 0, "current_branch": "HEAD",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("include_current", [False, True])
+@pytest.mark.parametrize("current_channel", ["tui", "web"])
+@pytest.mark.parametrize("current_project", ["other", ""])
+async def test_session_list_include_current_bypasses_project_filter(
+    monkeypatch, tmp_path, include_current, current_channel, current_project
+):
+    project_dir = str(tmp_path / "project")
+    sessions = [
+        {
+            "session_id": "current", "channel_id": current_channel,
+            "project_dir": str(tmp_path / current_project) if current_project else "",
+            "last_message_at": 200,
+        },
+        {
+            "session_id": "matching", "channel_id": "tui",
+            "project_dir": project_dir, "last_message_at": 100,
+        },
+        {
+            "session_id": "other-project", "channel_id": "tui",
+            "project_dir": str(tmp_path / "other"), "last_message_at": 90,
+        },
+        {
+            "session_id": "other-channel", "channel_id": "web",
+            "project_dir": project_dir, "last_message_at": 80,
+        },
+    ]
+
+    async def fake_fetch(**kwargs):
+        return True, {"sessions": sessions, "total": len(sessions)}
+
+    monkeypatch.setattr("agent_gateway.routing.e2a_proxy.fetch_agent_unary", fake_fetch)
+    monkeypatch.setattr("agent_gateway.common.paths.resolve_git_branch", lambda _path: "HEAD")
+    channel = _TuiChannel()
+    register_cli_handlers(
+        CliHandlersBindParams(channel=channel, agent_client=object(), path="/tui")
+    )
+
+    await channel.local_handlers["/tui"]["session.list"](
+        object(), "req-list",
+        {"project_dir": project_dir, "include_current": include_current}, "current",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    payload = response["payload"]
+    assert [session["session_id"] for session in payload["sessions"]] == (
+        ["current", "matching"] if include_current else ["matching"]
+    )
+    assert payload["total"] == 4
+    assert payload["page_count"] == 4
+
+
+@pytest.mark.asyncio
 async def test_session_list_current_dir_includes_top_level_only_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -156,6 +230,7 @@ async def test_session_list_current_dir_includes_top_level_only_session(
             return SimpleNamespace(
                 ok=True,
                 payload={
+                    "total": 17,
                     "sessions": [
                         {
                             "session_id": "tui_old_no_channel_meta",
@@ -169,6 +244,7 @@ async def test_session_list_current_dir_includes_top_level_only_session(
                             "project_dir": str(tmp_path / "other"),
                             "last_message_at": 90.0,
                         },
+                        None,
                     ]
                 },
             )
@@ -191,6 +267,10 @@ async def test_session_list_current_dir_includes_top_level_only_session(
     assert agent.requests[0].params == {"project_dir": project_dir, "limit": 20}
     response = channel.responses[-1]
     assert response["ok"] is True
+    assert response["payload"]["total"] == 17
+    # Raw upstream row count, including filtered/invalid rows, never a page count.
+    assert response["payload"]["page_count"] == 3
+    assert response["payload"]["current_branch"] == "HEAD"
     sessions = response["payload"]["sessions"]
     assert [session["session_id"] for session in sessions] == ["tui_old_no_channel_meta"]
     assert sessions[0]["project_dir"] == os.path.realpath(project_dir)

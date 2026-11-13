@@ -91,7 +91,9 @@ async def test_session_close_cleans_records_only_after_completion(monkeypatch, o
         AsyncMock(return_value=(ok, payload)),
     )
     register_lifecycle_handlers(channel, lambda: object(), lambda: None)
-    await channel._method_handlers["session.delete"](object(), "delete", {}, "session", "user")
+    await channel._method_handlers["session.delete"](
+        object(), "delete", {"session_id": "session"}, "session", "user"
+    )
     await asyncio.sleep(0)
     assert channel.is_session_busy("session") is busy
 

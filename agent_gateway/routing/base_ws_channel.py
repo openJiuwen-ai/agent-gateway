@@ -113,11 +113,13 @@ class BaseWsChannel(BaseWebChannel):
     async def register_ws(
         self,
         ws: Any,
-        routing_key: RoutingKey,
+        routing_key: RoutingKey | None,
         *,
         evict_previous: bool = False,
     ) -> None:
         """握手时注册 ws → RoutingKey 映射，并生成 ws_id 挂到 ws 上.
+
+        ``routing_key=None`` registers only the physical socket, before a Session is accepted.
 
         默认 ``evict_previous=False``：一个 ws 可同时挂在多个 session_id 桶里，
         支持多 session 共存（Web 多 tab 语义）。投递精准度由 ``send`` 的
@@ -155,6 +157,8 @@ class BaseWsChannel(BaseWebChannel):
                 self._writers[ws_id] = asyncio.create_task(
                     self._writer_loop(ws, ws_id), name=f"ws-writer-{ws_id}"
                 )
+            if routing_key is None:
+                return
             # 仅显式窗口级切换才摘链：把这个 ws 从所有其他 session 桶里移除。
             # Web 普通请求（chat.send / history.get / session.create）不摘，
             # 让同一 ws 的多 session 在途流式输出互不干扰。
@@ -178,6 +182,10 @@ class BaseWsChannel(BaseWebChannel):
             ws_id,
             evict_previous,
         )
+
+    def routing_keys_for(self, ws: Any) -> list[RoutingKey]:
+        """Routing keys ``ws`` is registered under (a snapshot; changes nothing)."""
+        return [rk for rk, ws_list in self._clients_by_key.items() if ws in ws_list]
 
     async def unregister_ws(self, ws: Any) -> list[RoutingKey]:
         """断连时扫描 _clients_by_key 摘除死 ws，并清理 ws_id 映射。

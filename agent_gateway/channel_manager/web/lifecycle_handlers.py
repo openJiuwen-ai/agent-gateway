@@ -12,7 +12,46 @@ from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 from agent_gateway.common.request_identity import apply_routing_metadata
 
 
-def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
+_SESSION_TARGET_METHODS = frozenset({"session.archive", "session.unarchive", "session.delete"})
+
+
+def _session_target_error(method: str, params: dict) -> str | None:
+    """Validate Session targets. They come only from params: channels fill the
+    handler's session_id argument with a request-scoped fallback.
+
+    ``session_ids`` takes precedence. Clients such as the TUI attach their active
+    Session as ``session_id`` to every request, so beside ``session_ids`` it is
+    context, not a target, and is not validated.
+    """
+    if method not in _SESSION_TARGET_METHODS:
+        return None
+    if "session_ids" in params:
+        ids = params["session_ids"]
+        if not (isinstance(ids, list) and 1 <= len(ids) <= 100):
+            return "session_ids must contain 1 to 100 IDs"
+        if not all(isinstance(sid, str) and sid.strip() for sid in ids):
+            return "invalid resource ID"
+        return None
+    if "session_id" not in params:
+        return "session_id is required" if method == "session.delete" else "session_ids is required"
+    single = params["session_id"]
+    if not (isinstance(single, str) and single.strip()):
+        return "invalid session_id"
+    return None
+
+
+def register_lifecycle_handlers(
+    channel, resolve_client, resolve_cron, on_session_deleted=None, *, register_method=None,
+    clients_for_user=None, session_event_clients=None, project_ids_for_client=None,
+):
+    """Register lifecycle RPCs and polling.
+
+    TUI hooks: ``clients_for_user(user_id)`` lists connections;
+    ``session_event_clients(user_id, session_id)`` lists windows bound to a
+    Session; ``project_ids_for_client(user_id, ws, *, refresh=True)`` resolves a
+    window's projects, and makes project events replay once per connection. The
+    watcher passes ``refresh=False`` when nothing forces a new lookup.
+    """
     watchers = {}
 
     async def call(method, params, session_id, user_id, ws=None):
@@ -38,37 +77,96 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
             str(routing.get("gateway_id") or ""),
         )
 
+    def scoped_clients(user_id, scope):
+        if clients_for_user is not None:
+            return [ws for ws in clients_for_user(user_id) if scope_key(user_id, ws) == scope]
+        return [
+            ws
+            for ws in getattr(channel, "clients", None) or ()
+            if scope_key(channel.connection_user_id(ws), ws) == scope
+        ]
+
     async def watch(user_id, scope):
         revisions = {}
+        # Per-recipient replay state: (id(ws), event, resource) -> (ws, revision).
+        # Holding ws keeps a new socket that reuses its id() from inheriting it.
+        delivered = {}
+        polled = []  # Windows whose project membership the previous poll resolved.
         first = True
         while True:
-            clients = [
-                ws
-                for ws in getattr(channel, "clients", ())
-                if scope_key(channel.connection_user_id(ws), ws) == scope
-            ]
+            clients = scoped_clients(user_id, scope)
             if not clients:
                 return
+            live = {id(ws) for ws in clients}
+            delivered = {key: value for key, value in delivered.items() if key[0] in live}
             try:
                 ok, response = await call(
                     "project.lifecycle", {"events": True}, None, user_id, clients[0]
                 )
                 if ok:
+                    # A connection may join or disconnect while the poll is in flight.
+                    clients = scoped_clients(user_id, scope)
+                    generations = {id(ws): getattr(ws, "_lifecycle_binding_generation", 0) for ws in clients}
+                    # Resolve once per poll, including empty snapshots, so a deleted
+                    # Session can retain its last known project binding. Only a new
+                    # project revision or a window new to this watcher forces a
+                    # lookup; otherwise the hook may answer from its cache.
+                    client_projects = None
+                    if project_ids_for_client is not None:
+                        changed = any(
+                            item["event"].startswith("project.")
+                            and item["payload"]["revision"]
+                            > revisions.get((item["event"], item["payload"]["resource_id"]), -1)
+                            for item in response.get("events", [])
+                        )
+                        client_projects = list(zip(clients, await asyncio.gather(*(
+                            project_ids_for_client(
+                                user_id, ws, refresh=changed or all(ws is not seen for seen in polled),
+                            )
+                            for ws in clients
+                        ))))
+                        polled = clients
                     for entry in response.get("events", []):
                         payload = entry["payload"]
                         key = (entry["event"], payload["resource_id"])
                         previous = revisions.get(key, -1)
                         revisions[key] = payload["revision"]
-                        if payload["revision"] <= previous:
+                        scoped_project = client_projects is not None and entry["event"].startswith("project.")
+                        recipient_scoped = scoped_project or (
+                            session_event_clients is not None
+                            and entry["event"].startswith("session.")
+                            and payload.get("execution_blocked")
+                        )
+                        if not recipient_scoped and payload["revision"] <= previous:
                             continue
-                        if entry["completed"] and entry["kind"] in {"archive", "delete"}:
+                        # Completion can precede stop/finalization cleanup.
+                        completed = entry["completed"] and not _lifecycle_item_pending(entry["result"])
+                        if completed and entry["kind"] in {"archive", "delete"} and payload["revision"] > previous:
                             if entry["event"].startswith("session."):
                                 mark_sessions_idle([payload["resource_id"]])
-                        if first:
+                        if first and not recipient_scoped:
                             continue
-                        for ws in clients:
+                        if scoped_project:
+                            recipients = [ws for ws, ids in client_projects if payload["project_id"] in ids]
+                        elif session_event_clients is not None and entry["event"].startswith("session."):
+                            recipients = session_event_clients(user_id, payload["resource_id"])
+                        else:
+                            recipients = clients
+                        for ws in recipients:
+                            if scope_key(user_id, ws) != scope or getattr(ws, "closed", False):
+                                continue
+                            generation = generations.get(id(ws))
+                            seen_ws, seen_revision = delivered.get((id(ws), *key), (None, -1))
+                            if recipient_scoped and (
+                                getattr(ws, "_lifecycle_binding_generation", 0) != generation
+                                or (seen_ws is ws and payload["revision"] <= seen_revision)
+                            ):
+                                continue
                             await channel.send_event(ws, entry["event"], payload)
-                            if entry["completed"] and not (
+                            # A rebind during the send voids this delivery; it retries next poll.
+                            if recipient_scoped and getattr(ws, "_lifecycle_binding_generation", 0) != generation:
+                                continue
+                            if completed and not (
                                 entry["kind"] == "delete"
                                 and entry["event"].startswith("project.")
                                 and not entry["result"].get("deleted")
@@ -86,6 +184,8 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                                         "project_id": payload["project_id"],
                                     },
                                 )
+                            if recipient_scoped:
+                                delivered[(id(ws), *key)] = (ws, payload["revision"])
                     first = False
             except DuplicateRequestIdError:
                 # request_id 撞号说明 id 生成器出了问题（或同一连接上请求串行
@@ -111,6 +211,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
 
     channel.ensure_lifecycle_watch = ensure_watch
 
+    def _lifecycle_item_pending(item: dict) -> bool:
+        return bool(
+            item.get("finalizing")
+            or item.get("stop_pending")
+            or (item.get("accepted") and item.get("finalizing") is not False)
+        )
+
     def _completed_session_ids(payload: dict) -> list[str]:
         results = payload.get("results")
         items = results if isinstance(results, list) else [payload]
@@ -118,9 +225,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         for item in items:
             if not isinstance(item, dict) or not item.get("ok", True):
                 continue
-            if item.get("finalizing") or item.get("stop_pending"):
-                continue
-            if item.get("accepted") and item.get("finalizing") is not False:
+            if _lifecycle_item_pending(item):
                 continue
             session_id = item.get("session_id")
             if session_id:
@@ -153,6 +258,10 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     code="BAD_REQUEST",
                 )
                 return
+            error = _session_target_error(method, params)
+            if error is not None:
+                await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
+                return
             # Browser callers cannot inject internal stage acknowledgements.
             public = {}
             for k, v in params.items():
@@ -165,6 +274,25 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     "completed_cron_job_ids",
                 }:
                     public[k] = v
+            if method in _SESSION_TARGET_METHODS and "session_ids" in public:
+                # Never forward an accompanying session_id: AgentServer adds it
+                # to the delete targets, and it is the caller's active Session.
+                public.pop("session_id", None)
+            elif method in {"session.archive", "session.unarchive"} and "session_id" in public:
+                # AgentServer takes the batch field, even for one Session.
+                public["session_ids"] = [public.pop("session_id")]
+            if project_ids_for_client is not None and method in {"session.delete", "project.sessions.delete_archived"}:
+                # Capture membership before deletion removes the metadata; a new
+                # Session may not have existed when its window was bound. This is
+                # context for later events: a failed lookup must not stop the deletion.
+                for failure in await asyncio.gather(*(
+                    project_ids_for_client(user_id, client_ws)
+                    for client_ws in scoped_clients(user_id, scope_key(user_id, ws))
+                ), return_exceptions=True):
+                    if isinstance(failure, Exception):
+                        logging.getLogger(__name__).warning(
+                            "project membership lookup before %s failed", method, exc_info=failure
+                        )
             ok, payload = await call(method, public, session_id, user_id, ws)
             if ok and on_session_deleted is not None and method in {
                 "session.delete",
@@ -201,10 +329,21 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                     item.get("project_id") for item in payload.get("results", [payload])
                     if item.get("ok", True) and item.get("restored") and item.get("project_id")
                 }
-                for client_ws in list(getattr(channel, "clients", ()) or ()):
-                    if scope_key(channel.connection_user_id(client_ws), client_ws) != scope_key(user_id, ws):
+                for client_ws in scoped_clients(user_id, scope_key(user_id, ws)):
+                    generation = getattr(client_ws, "_lifecycle_binding_generation", 0)
+                    try:
+                        subscribed = await project_ids_for_client(user_id, client_ws) if project_ids_for_client else None
+                    except Exception:
+                        # The request is already answered; unknown membership gets no event.
+                        logging.getLogger(__name__).warning(
+                            "project membership lookup after %s failed", method, exc_info=True
+                        )
                         continue
                     for project_id in project_ids:
+                        if generation != getattr(client_ws, "_lifecycle_binding_generation", 0):
+                            break
+                        if subscribed is not None and project_id not in subscribed:
+                            continue
                         try:
                             await channel.send_event(client_ws, "project.restored", {"project_id": project_id})
                         except Exception:
@@ -222,6 +361,8 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
+                            if event in {"session.archived", "session.deleted"} and _lifecycle_item_pending(item):
+                                continue
                             clear_expert = getattr(channel, "clear_expert_processing", None)
                             session_closed = (
                                 event in {"session.archived", "session.deleted"}
@@ -231,7 +372,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
                                 clear_expert(item["session_id"])
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
-                                await send_event(ws, event, item)
+                                # Windows bound to the Session, and always the caller.
+                                targets = session_event_clients(user_id, item["session_id"]) if session_event_clients else []
+                                if not any(client_ws is ws for client_ws in targets):
+                                    targets = [*targets, ws]
+                                for client_ws in targets:
+                                    if scope_key(user_id, client_ws) == scope_key(user_id, ws):
+                                        await send_event(client_ws, event, item)
                 elif "operation_id" not in payload and (method != "project.delete" or payload.get("deleted")):
                     send_event = getattr(channel, "send_event", None)
                     if callable(send_event):
@@ -247,4 +394,4 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
         "project.sessions.archive",
         "project.sessions.delete_archived",
     ):
-        channel.register_method(method, handler(method))
+        (register_method or channel.register_method)(method, handler(method))
