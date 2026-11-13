@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -466,3 +468,49 @@ async def test_group_space_upload_uses_the_group_root_dentry_protocol(tmp_path):
     commit_call = http.post.await_args_list[3]
     assert commit_call.args[0] == "https://api.dingtalk.com/v2.0/storage/spaces/files/root-test/commit"
     assert result["dentryId"] == "dentry-test"
+
+
+@pytest.mark.asyncio
+async def test_group_file_reads_use_a_bounded_dedicated_executor(monkeypatch, tmp_path):
+    from agent_gateway.channel_manager.im_platforms.dingtalk import dingtalk_file_service
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-group-read")
+    entered = threading.Event()
+    release = threading.Event()
+    started = []
+
+    def read(path, max_size):
+        del max_size
+        started.append(path.name)
+        entered.set()
+        assert release.wait(2)
+        return path.read_bytes()
+
+    monkeypatch.setattr(dingtalk_file_service, "_GROUP_FILE_READ_EXECUTOR", executor)
+    monkeypatch.setattr(dingtalk_file_service, "_read_group_file_secured", read)
+    service = DingTalkFileService(
+        client_id="robot-test",
+        get_token_func=AsyncMock(return_value="token-test"),
+        http_client=AsyncMock(spec=httpx.AsyncClient),
+        api_base="https://api.dingtalk.com",
+        oapi_base="https://oapi.dingtalk.com",
+    )
+    first_path = tmp_path / "first.txt"
+    second_path = tmp_path / "second.txt"
+    first_path.write_bytes(b"first")
+    second_path.write_bytes(b"second")
+
+    first = asyncio.create_task(service._read_group_file(first_path))
+    assert await asyncio.to_thread(entered.wait, 1)
+    second = asyncio.create_task(service._read_group_file(second_path))
+    try:
+        await asyncio.sleep(0.05)
+        assert started == ["first.txt"]
+        release.set()
+        assert await asyncio.gather(first, second) == [b"first", b"second"]
+    finally:
+        release.set()
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        executor.shutdown(wait=True)
