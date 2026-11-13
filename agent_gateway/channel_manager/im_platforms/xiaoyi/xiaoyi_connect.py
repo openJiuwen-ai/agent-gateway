@@ -175,6 +175,7 @@ class XiaoyiChannelConfig:
 
 
 XIAOYI_TLS_VERIFY_ENV = "XIAOYI_TLS_VERIFY"
+XIAOYI_CA_BUNDLE_ENV = "XIAOYI_CA_BUNDLE"
 _FALSY_TLS_VALUES = {"0", "false", "no", "off"}
 
 
@@ -196,8 +197,16 @@ def _build_ssl_context(host: str | None) -> ssl.SSLContext:
     *all* identity checks while the same request still carries authentication
     headers. Keep the certificate-chain validation and only relax hostname
     matching for IP literals (certificates are usually issued for a domain name).
-    Explicitly disable verification via ``XIAOYI_TLS_VERIFY=false`` for a trusted
-    intranet self-signed endpoint.
+
+    Trusted intranet self-signed endpoints have two migration paths:
+
+    * ``XIAOYI_CA_BUNDLE=/path/to/ca.pem`` loads a private CA and keeps
+      ``CERT_REQUIRED`` — the chain is still verified (recommended);
+    * ``XIAOYI_TLS_VERIFY=false`` disables verification entirely (weakest).
+
+    An invalid ``XIAOYI_CA_BUNDLE`` path must raise rather than silently falling
+    back to the system roots: otherwise operators would believe their private CA
+    is trusted when it is not.
     """
     context = ssl.create_default_context()
     raw = (os.getenv(XIAOYI_TLS_VERIFY_ENV) or "").strip().casefold()
@@ -210,6 +219,15 @@ def _build_ssl_context(host: str | None) -> ssl.SSLContext:
             raw,
         )
         return context
+    ca_bundle = (os.getenv(XIAOYI_CA_BUNDLE_ENV) or "").strip()
+    if ca_bundle:
+        # load_verify_locations raises on a missing/invalid file; do not catch it.
+        context.load_verify_locations(cafile=ca_bundle)
+        logger.info(
+            "[XiaoyiChannel] 已加载自定义 CA：%s=%s（证书链校验保持开启）",
+            XIAOYI_CA_BUNDLE_ENV,
+            ca_bundle,
+        )
     if _is_ip_host(host):
         context.check_hostname = False
     return context
