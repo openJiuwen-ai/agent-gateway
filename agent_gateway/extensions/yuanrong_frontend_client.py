@@ -267,18 +267,6 @@ def _port_probe_from_ports(ports: Any) -> dict[str, Any] | None:
     return _normalize_port_probe(ports[0])
 
 
-def _startup_tcp_probe(
-    port: int, settings: RuntimeProbeSettings | None = None
-) -> dict[str, Any]:
-    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).startup_tcp(port)
-
-
-def _liveness_tcp_probe(
-    port: int, settings: RuntimeProbeSettings | None = None
-) -> dict[str, Any]:
-    return (settings or DEFAULT_RUNTIME_PROBE_SETTINGS).liveness_tcp(port)
-
-
 def _normalize_probes(value: Any) -> dict[str, Any] | None:
     """Keep ``startup`` / ``liveness`` / ``readiness`` objects if present."""
     if not isinstance(value, Mapping) or not value:

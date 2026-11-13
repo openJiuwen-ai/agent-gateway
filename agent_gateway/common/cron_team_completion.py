@@ -141,48 +141,6 @@ def _harness_round_can_end(state: dict[str, Any]) -> bool:
     )
 
 
-def _cron_solo_harness_end_pending(state: dict[str, Any]) -> bool:
-    """True when harness-style completion is imminent but tasks may still be delegated."""
-    if state.get("workflow_started") or state.get("workflow_completed"):
-        return False
-    if state.get("tasks_ever_created"):
-        return False
-    if cron_team_round_has_open_tasks(state) or cron_team_round_has_active_members(state):
-        return False
-    if cron_team_round_has_open_tool_calls(state):
-        return False
-    leader = str(state.get("leader_text") or "").strip()
-    return (
-        state.get("leader_final_seen")
-        and bool(leader)
-        and not is_cron_leader_placeholder_text(leader)
-    )
-
-
-async def _drain_cron_delegation_grace_events(
-    *,
-    request_queue: asyncio.Queue,
-    round_state: dict[str, Any],
-    grace_seconds: float = 2.0,
-) -> list[dict[str, Any]]:
-    """Wait briefly after a solo harness final in case task.created events follow."""
-    drained: list[dict[str, Any]] = []
-    deadline = asyncio.get_running_loop().time() + grace_seconds
-    while asyncio.get_running_loop().time() < deadline:
-        timeout = max(0.0, deadline - asyncio.get_running_loop().time())
-        try:
-            event = await asyncio.wait_for(request_queue.get(), timeout=timeout)
-        except asyncio.TimeoutError:
-            break
-        if not isinstance(event, dict):
-            continue
-        drained.append(event)
-        apply_cron_team_round_event(round_state, event)
-        if round_state.get("tasks_ever_created"):
-            break
-    return drained
-
-
 def cron_team_round_should_end(
     state: dict[str, Any],
     *,
