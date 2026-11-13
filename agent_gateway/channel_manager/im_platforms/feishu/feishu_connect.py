@@ -12,7 +12,7 @@ import threading
 import time
 import types
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -45,6 +45,30 @@ from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, 
 
 logger = logging.getLogger(__name__)
 
+# P1 回显防护（2026-11-06 判例：steering 输入原文被当机器人回复复读）。
+# IM 非可视控制事件与未识别事件不得投递；已知可投递事件走白名单。
+_IM_UNDELIVERABLE = frozenset({"chat.input_received", "chat.output_phase"})
+_IM_DELIVERABLE = frozenset({
+    "chat.delta", "chat.final", "chat.error", "chat.interrupt_result",
+    "chat.processing_status", "chat.tool_call", "chat.tool_result",
+    "chat.tool_update", "chat.subtask_update", "chat.subagent_activity",
+    "chat.message_updated", "chat.retract", "chat.symphony_status",
+    "todo.updated", "goal.snapshot", "goal.updated", "runtime.accepted",
+    "execution.error", "chat.ask_user_question", "plan.approval_required",
+    "chat.session_result", "cron.response", "health_check.relay",
+    "heartbeat.relay", "team.error",
+})
+# 白名单臂只拦「未识别」名（round-k/l P2）：payload 形态（event_type=None＋
+# payload.event_type）的已知枚举事件（chat.file/chat.media/team.message 等合法
+# 可投递值，含 ensure_gateway_event_types 运行期注入成员）放行交下游处置，
+# 守卫不吞合法事件——成员集合必须**调用时动态求值**，不得用导入期快照。
+
+# P1 守卫二误杀降级策略（atomgit gw49-2）：最小长度以下不判回声（短确认语「好的」
+# 「继续」等正常回复不被整轮吞掉）；入站记录带时间戳，仅窗口内的记录参与比对
+# （过期即淘汰，误杀窗口有界）；命中即消费该条记录（后续合法同文回复放行）。
+_ECHO_MIN_CHARS = 6
+_ECHO_WINDOW_SECONDS = 300.0
+_ECHO_SESSION_CAP = 200
 
 class _FeishuWebSocketLogHandler(logging.Handler):
     """Forward this channel's Lark SDK connection state into Gateway logs."""
@@ -424,6 +448,12 @@ class FeishuChannel(BaseChannel):
         self._websocket_connected = threading.Event()
         self._websocket_thread: threading.Thread | None = None  # WebSocket运行线程
         self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()  # 消息去重缓存
+        # P1 回显防护：每会话最近入站用户输入环形缓存（防复读出站护栏）。
+        self._recent_user_inputs: "OrderedDict[str, deque]" = OrderedDict()
+        # 守卫一（控制/未识别事件）与守卫二（回声命中）指标分账（round-e P3：
+        # 混记导致 stop()「echo suppressed total」口径失真）。
+        self._guard_blocked_total = 0
+        self._echo_blocked_total = 0
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
@@ -859,6 +889,14 @@ class FeishuChannel(BaseChannel):
         self._websocket_connected.clear()
         self._stream_text_buffers.clear()
         self._errored_stream_keys.clear()
+        # P1 守卫二缓存纳入 stop() 清理契约（atomgit gw49 force-scan P3-3）：
+        # 重启后 300s 窗口内不残留旧输入导致误拦合法回复；计数器读点＝关停汇总日志。
+        if self._guard_blocked_total or self._echo_blocked_total:
+            logger.info(
+                "[FeishuChannel][P1-guard] lifetime suppressed: guard1_non_deliverable=%s guard2_echo=%s",
+                self._guard_blocked_total, self._echo_blocked_total,
+            )
+        self._recent_user_inputs.clear()
         for session in list(self._cardkit_sessions.values()):
             try:
                 await session.finalize()
@@ -2325,6 +2363,28 @@ class FeishuChannel(BaseChannel):
             return {"outcome": "unknown", "error_code": "FEISHU_RECEIPT_MISSING"}
         return {"outcome": "delivered", "external_message_id": message_id}
 
+    def _match_recent_user_input(self, cid: str, cand_set: set):
+        """回声候选比对（守卫二/冲刷面同源）：过期清理＋命中返回记录（不消费）。"""
+        hist = self._recent_user_inputs.get(cid)
+        if not hist or not cand_set:
+            return None
+        now = time.monotonic()
+        for entry in list(hist):
+            if now - entry[1] > _ECHO_WINDOW_SECONDS:
+                hist.remove(entry)
+                continue
+            if entry[0] in cand_set:
+                return entry
+        return None
+
+    def _consume_recent_user_input(self, cid: str, entry) -> None:
+        """命中消费（同文合法回复后续放行）。"""
+        hist = self._recent_user_inputs.get(cid)
+        if hist:
+            for e in list(hist):
+                if e[0] == entry[0]:
+                    hist.remove(e)
+
     async def send(
         self,
         msg: Message,
@@ -2343,10 +2403,91 @@ class FeishuChannel(BaseChannel):
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             event_name = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
             stream_key = str(getattr(msg, "id", "") or "")
+            # round-q P3（verdict 200095280）：keepalive 跳过前移至守卫一之前——心跳帧
+            # event_type 空且事件名不在白名单，会被白名单臂 WARNING＋计数灌水，且
+            # 后段原跳过分支被遮蔽成死代码（行为等价：keepalive 从不投递）。
+            if event_name == "keepalive":
+                return
+            # P1 守卫一：IM 非可视控制事件与未识别事件不得投递（复读判例防护）。
+            # 黑名单臂不依赖 event_type is None（round-e P2 解耦）：ensure_gateway_event_types()
+            # 动态补枚举后黑名单事件名即便解析成 EventType，本臂照常拦截（守卫不再
+            # 静默失效）。白名单臂保留 event_type is None 门控——EventType 合法枚举含
+            # chat.file/chat.media/team.message 等合法可投递值不在 _IM_DELIVERABLE 白名单内，
+            # 白名单全面化属后续口径收敛（登记 §intake），此处不得盲改。
+            if event_name in _IM_UNDELIVERABLE:
+                self._guard_blocked_total += 1
+                logger.warning(
+                    "[FeishuChannel][P1-guard] suppress non-deliverable event: event=%s req=%s",
+                    event_name, str(getattr(msg, "id", "") or ""),
+                )
+                return
+            if (msg.event_type is None and event_name
+                    and event_name not in _IM_DELIVERABLE
+                    and not any(_e.value == event_name for _e in EventType)):
+                self._guard_blocked_total += 1
+                logger.warning(
+                    "[FeishuChannel][P1-guard] suppress unrecognized event: event=%s req=%s",
+                    event_name, str(getattr(msg, "id", "") or ""),
+                )
+                return
+            # P2 守卫：被运行时抑制的帧（steering 期间）不得投递（对齐 web 通道）。
+            if isinstance(payload, dict) and payload.get("output_suppressed") is True:
+                logger.info(
+                    "[FeishuChannel][P2-guard] suppressed frame not delivered: event=%s req=%s",
+                    event_name, str(getattr(msg, "id", "") or ""),
+                )
+                # round-h P2：被运行时抑制的终态帧同样走收尾契约（镜像 gw50 形制）——
+                # cron/scheduler 对抑制期 chat.error 打 output_suppressed=True，裸
+                # return 会绕过卡片 finalize/缓冲弹出/errored 记账（false success）。
+                # cleanup 内部门控保证 processing_status 中间帧延后收尾（D1 契约不变）。
+                await self._cleanup_suppressed_frame(msg, event_name, stream_key, routing_target)
+                return
             _msg_streaming = getattr(msg, "enable_streaming", None)
             streaming_enabled = bool(_msg_streaming if _msg_streaming is not None else self.config.enable_streaming)
 
             meta = dict(getattr(msg, "metadata", None) or {})
+            # P1 守卫二（前移）：出站正文与本会话最近入站用户输入全同则拦截（复读纵深防护）。
+            # 位于 cardkit 流式早退之前，保证默认流式配置下守卫在流式/非流式两条路径都生效；
+            # 比对用 _extract_message_content 的原始正文（早于 _filter_user_info_for_group 的
+            # [已过滤] 改写，避免改写后与入站录制的原文比对失败）；只比对不记账，无重复记账副作用。
+            # 会话键与入站录制统一：feishu_chat_id 优先，回退 session_id
+            # （/new_session 或 origin_session_id 改写 session_id 后仍与入站 chat_id 对齐）。
+            # 误杀降级策略：最小长度以下不判回声；入站记录仅时间窗内参与比对；
+            # 命中即消费该记录（同文合法回复后续放行）。命中收尾走 _cleanup_suppressed_frame，
+            # 不绕过 cardkit finalize / 增量缓冲弹出 / 群进度状态清理。
+            if event_name == "chat.final" and self._recent_user_inputs:
+                cid = str(meta.get("feishu_chat_id") or "").strip() or str(getattr(msg, "session_id", "") or "")
+                raw_content = self._extract_message_content(msg).strip()
+                # W3：比对面＝candidate 集 {裸 final，流缓冲 peek，merge(缓冲, final)}
+                # （peek 不 pop；弹出唯一发生在 _cleanup_suppressed_frame / 投递路径
+                # 的单次 pop，禁二次 pop 破坏收尾）。
+                buffered_peek = self._stream_text_buffers.get(stream_key, "").strip()
+                # round-e P2#1：cardkit 流式模式下 delta 只写 _cardkit_buffers
+                # （键=req\0receive\0id_type），比对面必须含该缓存文本（按 req
+                # 前缀查，peek 不 pop）。
+                ck_peek = ""
+                _req_prefix = f"{stream_key}\x00"
+                for _k, _v in self._cardkit_buffers.items():
+                    if _k.startswith(_req_prefix) and _v:
+                        ck_peek = str(_v).strip()
+                        break
+                merged_candidate = self._merge_stream_and_final_content(
+                    buffered_peek, raw_content).strip()
+                cand_set = {c for c in (raw_content, buffered_peek, ck_peek, merged_candidate)
+                            if c and len(c) >= _ECHO_MIN_CHARS}
+                matched_entry = self._match_recent_user_input(cid, cand_set)
+                if matched_entry is not None:
+                    self._echo_blocked_total += 1
+                    # 命中消费仅终帧生效：is_complete=False 的部分帧拦截但不
+                    # 消费记录，同文终帧抵达时仍能命中拦截（force-scan P3-2）。
+                    if payload.get("is_complete") is not False:
+                        self._consume_recent_user_input(cid, matched_entry)
+                    logger.warning(
+                        "[FeishuChannel][P1-guard] echo suppressed: chat=%s req=%s",
+                        cid[:16], str(getattr(msg, "id", "") or ""),
+                    )
+                    await self._cleanup_suppressed_frame(msg, event_name, stream_key, routing_target)
+                    return
 
             # ── V2: routing_target 覆盖投递地址 ──
             route_delivery: DeliveryTarget | None = None
@@ -2357,9 +2498,7 @@ class FeishuChannel(BaseChannel):
                 route_mention_member_ids = list(routing_target.mention_member_ids or [])
                 route_mention_all = routing_target.mention_all
 
-            # 跳过 keepalive 心跳消息 — 仅用于 WebSocket 连接保活，无需投递到飞书
-            if event_name == "keepalive":
-                return
+            # keepalive 跳过已前移至守卫一之前（round-q，见函数入口），此处不再重复
 
             # 跳过 reasoning 信息
             if msg.event_type == EventType.CHAT_REASONING:
@@ -2433,6 +2572,28 @@ class FeishuChannel(BaseChannel):
                         content_str = self._extract_message_content(msg)
                         if not content_str.strip():
                             return
+                # round-m P2：终态冲刷投递面与守卫二同源比对——冲刷出的缓冲文本
+                # （chat.input_received 回声可经此路径流出）命中入站记录即抑制。
+                if self._recent_user_inputs and content_str.strip():
+                    _cid = str(meta.get("feishu_chat_id") or "").strip() or str(getattr(msg, "session_id", "") or "")
+                    _cand = {c for c in (content_str.strip(),) if len(c) >= _ECHO_MIN_CHARS}
+                    _hit = self._match_recent_user_input(_cid, _cand)
+                    if _hit is not None:
+                        self._echo_blocked_total += 1
+                        # round-q P3（verdict 200095280）：冲刷面镜像守卫二「仅终帧消费」——
+                        # 中间 processing_status 帧命中只拦不消费记录，同文终态帧抵达
+                        # 仍能命中拦截（is_processing=False＝终态）。
+                        if payload.get("is_processing") is False:
+                            self._consume_recent_user_input(_cid, _hit)
+                        logger.warning(
+                            "[FeishuChannel][P1-guard] echo suppressed on status flush: chat=%s req=%s",
+                            _cid[:16], stream_key,
+                        )
+                        # round-n P3（gw50 verdict 200075834）：冲刷回声抑制不得绕过
+                        # 收尾清理——与守卫二命中同契约（群进度清理、cardkit 会话
+                        # finalize、errored 记账均不得旁路）。
+                        await self._cleanup_suppressed_frame(msg, event_name, stream_key, routing_target)
+                        return
             else:
                 buffered_text = ""
                 if event_name == "chat.final":
@@ -2514,7 +2675,6 @@ class FeishuChannel(BaseChannel):
 
             # 过滤群聊消息中的用户敏感信息
             content_str = self._filter_user_info_for_group(content_str, meta)
-
             # 兜底：chat.final 中提到了 workspace 文件但 LLM 未调用 send_file_to_user 时，
             # 自动提取文件路径并发送，避免用户收不到文件。
             if (
@@ -2764,6 +2924,120 @@ class FeishuChannel(BaseChannel):
             return False
         finally:
             self._cardkit_sessions.pop(key, None)
+            self._cardkit_buffers.pop(key, None)
+
+    async def _cleanup_suppressed_frame(
+        self,
+        msg: Message,
+        event_name: str,
+        stream_key: str,
+        routing_target: RoutingTarget | None,
+    ) -> None:
+        """守卫拦截帧的收尾：弹出增量缓冲、回收 cardkit 会话、清理群进度状态。
+
+        守卫提前 return 不得绕过正常 chat.final 路径的收尾，否则增量缓冲按请求
+        线性残留、流式卡片永久停在「生成中」、群进度状态泄漏（atomgit gw49-1）。
+        cardkit 会话以已流出的 cardkit 缓冲文本 finalize 收尾（无文本产出
+        则空文本收尾＝飞书允许的空摘要 close_card），保证卡片不悬停「生成中」、
+        内容与已流出一致。口径澄清（round-h P3）：流式路径 delta 已实时推入卡片、
+        拦截发生在终帧——已展示增量无法在渠道内收回（飞书 cardkit 无撤回语义），
+        本收尾不是「阻止预渲染」手段；非流式路径（无卡片会话）拦截即全文不投递。
+        D1（p2 同步镜像）：processing_status 仅终态（is_processing is False）
+        收尾——中间帧命中抑制时卡片/缓冲保持打开。
+        P2①（p2 同步镜像）：非终态事件集合外帧不弹缓冲（pop 在终态门后），
+        终帧缓冲不丢失。
+        """
+        if event_name == "chat.processing_status":
+            frame_payload = getattr(msg, "payload", None) or {}
+            if not isinstance(frame_payload, dict) or frame_payload.get("is_processing") is not False:
+                return
+        # round-e P2#2：chat.final 的 is_complete=False 部分帧属非终态——提前弹缓冲/
+        # finalize 会让后续合法终帧新开第二张卡片并丢失已流出文本。
+        if event_name == "chat.final":
+            frame_payload = getattr(msg, "payload", None) or {}
+            if isinstance(frame_payload, dict) and frame_payload.get("is_complete") is False:
+                return
+        # round-m P3：群进度状态清理移到终态成员门之后——非终态抑制帧（delta 等）
+        # 不得产生终态副作用（与函数「非终态无终态副作用」契约一致，防御性顺序）。
+        if event_name not in {"chat.final", "chat.error", "chat.interrupt_result", "chat.processing_status"}:
+            return
+        request_id = str(getattr(msg, "id", "") or "").strip()
+        if request_id and getattr(msg, "event_type", None) != EventType.HEALTH_CHECK_RELAY:
+            self._clear_group_progress_state(request_id)
+        # round-s P3（verdict 200147104）：终态抑制收尾同步撤销 errored 标记——
+        # 与正常终态冲刷路径（discard）清理契约对齐，防 `_errored_stream_keys`
+        # 随抑制帧单调增长（chat.error 登记后终帧被拦截则永无 discard 点）。
+        self._errored_stream_keys.discard(stream_key)
+        # mingo007 #200679559：收件地址解析先于缓冲弹出/errored 登记等副作用——
+        # 解析失败时卡机会话须以请求前缀兜底 finalize，卡片不得悬停「生成中」。
+        delivery = routing_target.delivery if routing_target is not None else None
+        if delivery is not None and delivery.chat_id:
+            receive_id = delivery.chat_id
+            id_type = delivery.id_type or "chat_id"
+        else:
+            try:
+                receive_id, id_type = self._extract_receive_info(msg)
+            except Exception:
+                logger.debug(
+                    "[FeishuChannel][guard-cleanup] receive info unavailable: req=%s", request_id
+                )
+                await self._salvage_suppressed_cleanup(msg, stream_key, request_id, event_name)
+                return
+        # P2①：缓冲弹出必须在终态门之后——非终态抑制帧（如 delta）命中收尾时
+        # 缓冲仍要留给后续终帧，此处弹出会永久丢失已流出文本。
+        buffered = self._stream_text_buffers.pop(stream_key, "")
+        # round-g P2：镜像正常路径的 errored 记账——被抑制的 chat.error 若不登记，
+        # 后续终态 processing_status 会补发「[状态] 已完成」。
+        if event_name == "chat.error" and stream_key:
+            self._errored_stream_keys.add(stream_key)
+        key = f"{getattr(msg, 'id', '')}\0{receive_id}\0{id_type}"
+        session = self._cardkit_sessions.pop(key, None)
+        if session is None:
+            self._cardkit_buffers.pop(key, None)
+            return
+        text = self._cardkit_buffers.pop(key, "") or buffered
+        try:
+            await session.finalize(self._filter_user_info_for_group(
+                text, dict(getattr(msg, "metadata", None) or {})
+            ))
+        except Exception:
+            logger.warning(
+                "[FeishuChannel][guard-cleanup] cardkit finalize failed: req=%s",
+                request_id, exc_info=True,
+            )
+
+    async def _salvage_suppressed_cleanup(
+        self,
+        msg: Message,
+        stream_key: str,
+        request_id: str,
+        event_name: str,
+    ) -> None:
+        """收件地址解析失败路径的兜底收尾（mingo007 #200679559）。
+
+        精确键无法重建（键含 receive_id/id_type），但键前缀恒为 `{msg.id}\0`——
+        以请求前缀匹配弹出 cardkit 会话并尽力 finalize（独立 try，单卡失败不
+        连坐），缓冲照单回收防线性残留；chat.error 的 errored 登记镜像照旧。
+        """
+        buffered = self._stream_text_buffers.pop(stream_key, "")
+        if event_name == "chat.error" and stream_key:
+            self._errored_stream_keys.add(stream_key)
+        if not request_id:
+            return
+        prefix = f"{request_id}\0"
+        for key in [k for k in self._cardkit_sessions if k.startswith(prefix)]:
+            session = self._cardkit_sessions.pop(key, None)
+            text = self._cardkit_buffers.pop(key, "") or buffered
+            try:
+                await session.finalize(self._filter_user_info_for_group(
+                    text, dict(getattr(msg, "metadata", None) or {})
+                ))
+            except Exception:
+                logger.warning(
+                    "[FeishuChannel][guard-cleanup] salvage finalize failed: req=%s",
+                    request_id, exc_info=True,
+                )
+        for key in [k for k in self._cardkit_buffers if k.startswith(prefix)]:
             self._cardkit_buffers.pop(key, None)
 
     def _detect_workspace_files(self, text: str) -> list[str]:
@@ -3607,6 +3881,111 @@ class FeishuChannel(BaseChannel):
                 type(exc).__name__,
             )
 
+    def _record_inbound_user_input(self, message: Any) -> None:
+        """录制入站用户原文（解析态+原始态双源），供出站回声比对。
+
+        双源录制：解析态文本经 _replace_mentions_with_names 把 @mention 占位符
+        替换为用户名，出站原始正文与它比对会失配（atomgit gw49-4），因此
+        text 消息同时录制原始 text 字段，两侧口径都能命中。W2 增补第三源＝
+        名字形解析态变体：用 message.mentions 的 key→@name 本地替换生成，
+        零 HTTP（不走 _parse_message_content／_fetch_bot_open_id），锁定
+        模型回声名字形（@张三 …）不再漏拦。会话字典按最近使用淘汰（LRU），
+        避免 FIFO 误删当前活跃会话。
+        """
+        try:
+            # 零 HTTP 录制（force-scan perf 项）：不走 _parse_message_content——
+            # 其 mention 归一化可能触发同步 _fetch_bot_open_id HTTP；录制侧只做
+            # 本地 safe-parse（text/post 双源），mention 占位符原样保留。
+            u = ""
+            msg_type = str(getattr(message, "message_type", None) or "")
+            if msg_type == "text":
+                try:
+                    u = str(json.loads(message.content or "{}").get("text", "") or "")
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    u = ""
+            elif msg_type == "post":
+                u = _extract_feishu_post_text(message.content or "")
+            # W2：名字形解析态变体（零 HTTP 本地归一化，D2 镜像同码）
+            src_variants: list = [u]
+            keyless = u
+            has_mentions = False
+            for mention in (getattr(message, "mentions", None) or []):
+                m_key = str(getattr(mention, "key", "") or "")
+                m_name = str(getattr(mention, "name", "") or "")
+                if m_key:
+                    has_mentions = True
+                    keyless = keyless.replace(m_key, "")
+                if m_key and m_name and m_key in u:
+                    name_form = u.replace(m_key, "@" + m_name)
+                    if name_form != u:
+                        src_variants.append(name_form)
+            # round-q P2（verdict 200095280）：@机器人解析态变体——模型回声用户文本
+            # 通常连头部「@机器人(mention key)」整体剥除，原始态/名字形仍失配，
+            # 群聊 @bot 主场景守卫二静默失效。补剔除全部 mention key 并去首尾空
+            # 的变体（零 HTTP 纯本地，录制点同源）。
+            if has_mentions:
+                keyless = keyless.strip()
+                if keyless and keyless != u:
+                    src_variants.append(keyless)
+                # round-r P2（verdict 200136390）：录制面镜像运行时
+                # `_replace_mentions_with_names` 各臂——@机器人 占位剥除＋
+                # @其他用户→@名字。录制侧无 HTTP 不可识别机器人，逐「仅摘除
+                # mention i、其余替 @名字」生成变体＋全替名字变体，混合 @ 场景
+                # 命中解析态原文；@_all 标记形态同步补录。
+                _ments = []
+                for mention in (getattr(message, "mentions", None) or []):
+                    _k = str(getattr(mention, "key", "") or "")
+                    _n = str(getattr(mention, "name", "") or "").strip()
+                    if _k:
+                        _ments.append((_k, _n))
+                if 0 < len(_ments) <= 5:
+                    def _pat(_k):
+                        return _k if _k.startswith("@") else "@" + _k
+                    for _drop in range(-1, len(_ments)):
+                        _v = u
+                        for _i, (_k, _n) in enumerate(_ments):
+                            _p = _pat(_k)
+                            if _p not in _v:
+                                continue
+                            if _i == _drop:
+                                _v = _v.replace(_p, "")
+                            elif _n:
+                                _v = _v.replace(_p, "@" + _n)
+                        _v = _v.strip()
+                        # round-s（verdict 200147104 测试缺口）：占位摘除原位留
+                        # 双空格，模型回声常归一为单空格——两形制同录。
+                        for _vv in {_v, " ".join(_v.split())}:
+                            if _vv and _vv != u and _vv not in src_variants:
+                                src_variants.append(_vv)
+                    _allv = u.replace("@_all", "@all").strip()
+                    if _allv and _allv != u and _allv not in src_variants:
+                        src_variants.append(_allv)
+            variants = []
+            for v in src_variants:
+                v = self._truncate_text(str(v or ""), max_len=4000)
+                if v and v not in variants:
+                    variants.append(v)
+            if not variants:
+                return
+            cid = str(getattr(message, "chat_id", "") or "")
+            # round-s P2（verdict 200147104）：一消息入列变体族（原始态＋逐
+            # mention 摘除/替名＋无键形等，n≤5 上限下最多 ~11 条）——旧容量 8
+            # 会先挤掉最早入列的原始态，回声比对静默失效。容量对齐变体族规模。
+            dq = self._recent_user_inputs.setdefault(cid, deque((), 32))
+            now = time.monotonic()
+            for v in variants:
+                # round-e P3#4：同文二次入站刷新时间戳（先摘旧记录再落新）——
+                # 只记首次会让首条超窗/被消费后，第二次入站的回声漏拦。
+                for _old in list(dq):
+                    if _old[0] == v:
+                        dq.remove(_old)
+                dq.append((v, now))
+            self._recent_user_inputs.move_to_end(cid)
+            while len(self._recent_user_inputs) > _ECHO_SESSION_CAP:
+                self._recent_user_inputs.popitem(last=False)
+        except Exception:
+            logger.debug("[FeishuChannel][P1-guard] inbound record failed", exc_info=True)
+
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """
         处理来自飞书的传入消息。
@@ -3618,6 +3997,16 @@ class FeishuChannel(BaseChannel):
             event = data.event
             message = event.message
             sender = event.sender
+
+            # JM-08 gets the raw event before the personal-only in-memory
+            # dedup, bot filter, and file download. A claimed or rejected
+            # event is terminal here and can never fall through to personal mode.
+            # P1 回显防护入站录制（前移）：位于持久化群认领分支之前——被本 bot
+            # 认领的消息同样要录制，否则企业持久化群形态下第二道防线形同虚设
+            # （atomgit gw49-3）。机器人自身消息不录制；会话级 LRU 淘汰；
+            # 解析态+原始态双源录制（atomgit gw49-4）。
+            if sender.sender_type != "bot":
+                self._record_inbound_user_input(message)
 
             # JM-08 gets the raw event before the personal-only in-memory
             # dedup, bot filter, and file download. A claimed or rejected
@@ -3651,7 +4040,6 @@ class FeishuChannel(BaseChannel):
             # 跳过机器人发送的消息
             if sender.sender_type == "bot":
                 return
-
             # 群聊数字分身模式下不自动点赞
             if not self.config.group_digital_avatar:
                 asyncio.create_task(self._add_reaction(message.message_id, "THUMBSUP"))
