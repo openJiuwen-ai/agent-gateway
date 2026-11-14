@@ -221,9 +221,11 @@ class HttpJsonOutbound(_HttpOutboundBase):
         req_id: str,
         *,
         timeout: float = 60.0,
+        result_event: str | None = None,
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        accepted_payload: dict[str, Any] = {}
         while True:
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -256,7 +258,26 @@ class HttpJsonOutbound(_HttpOutboundBase):
                     "payload": {},
                 }
             if frame.get("type") == "res" and frame.get("id") == req_id:
+                payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+                if (
+                    result_event and frame.get("ok", True)
+                    and payload.get("accepted") is True
+                    and payload.get("event_type") != result_event
+                ):
+                    # Keep the request outbound alive until the operation settles.
+                    accepted_payload = payload
+                    continue
                 return frame
+            if result_event and frame.get("type") == "event" and frame.get("event") == result_event:
+                payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+                if payload.get("session_id") != self.session_id:
+                    continue
+                # WebChannel only routes interrupt events to the originating
+                # JSON outbound, never via its session-broadcast fallback.
+                return {
+                    "type": "res", "id": req_id, "ok": True,
+                    "payload": {**accepted_payload, **payload, "event_type": result_event},
+                }
             # 单次请求若被收成 chat.error 事件，不能继续空等 res。
             if frame.get("type") == "event" and frame.get("event") == "chat.error":
                 payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
