@@ -70,7 +70,6 @@ from agent_gateway.common.config_panel.config_set_handlers import (
 )
 from agent_gateway.common.paths import (
     get_env_file,
-    get_root_dir,
 )
 from agent_gateway.common.protocol_methods import (
     SKILL_UPLOAD_FINALIZE,
@@ -160,7 +159,6 @@ _EXTERNAL_CLI_DEPENDENCY_INSTALL_REGISTRY_LOCK = threading.Lock()
 _EXTERNAL_CLI_PRUNE_PATH_HISTORIES_MAX_PATHS = 50
 
 
-_PROJECT_ROOT = get_root_dir()
 _ENV_FILE = get_env_file()
 load_dotenv_runtime(dotenv_path=_ENV_FILE, override=True)
 
@@ -1910,63 +1908,6 @@ _CONTAINER_FILE_API_METHODS = (
 def _supports_container_file_api(client: Any) -> bool:
     """True when *client* can back WebChannel ``/file-api`` (no extensions import)."""
     return all(callable(getattr(client, name, None)) for name in _CONTAINER_FILE_API_METHODS)
-
-
-def _project_info_payload(
-    proj: Any | None,
-    *,
-    default_id: str | None = None,
-    stats: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Serialize a project item consistently for project.list/info/create."""
-    st = stats or {"session_count": 0, "last_message_at": None, "last_user_message_at": None}
-    git = getattr(proj, "git", {}) if proj is not None else {}
-    git_defaults = {
-        "enabled": False,
-        "repo_root": "",
-        "initialized_by_jiuwenswarm": False,
-        "detected_at": 0,
-        "status": "disabled",
-        "branch": "",
-        "error": "",
-        "error_code": "",
-        "hint": "",
-        "is_dirty": False,
-    }
-    git_payload = {**git_defaults, **dict(git)} if isinstance(git, dict) and git else git_defaults
-    if default_id is not None:
-        work_mode = DEFAULT_TUI_WORK_MODE if default_id == DEFAULT_PROJECT_ID_CODE else DEFAULT_WEB_WORK_MODE
-        return {
-            "project_id": default_id,
-            "name": "默认项目",
-            "project_dir": "",
-            "pinned": False,
-            "pin_order": 0,
-            "is_default": True,
-            "work_mode": work_mode,
-            "git": git_payload,
-            "session_count": st["session_count"],
-            "last_message_at": st["last_message_at"],
-            "last_user_message_at": st["last_user_message_at"],
-            "created_at": 0,
-            "updated_at": 0,
-        }
-    work_mode = getattr(proj, "work_mode", "") or DEFAULT_WEB_WORK_MODE
-    return {
-        "project_id": proj.project_id,
-        "name": proj.name,
-        "project_dir": proj.project_dir,
-        "pinned": proj.pinned,
-        "pin_order": proj.pin_order,
-        "is_default": False,
-        "work_mode": work_mode,
-        "git": git_payload,
-        "session_count": st["session_count"],
-        "last_message_at": st["last_message_at"],
-        "last_user_message_at": st["last_user_message_at"],
-        "created_at": proj.created_at,
-        "updated_at": getattr(proj, "updated_at", 0),
-    }
 
 
 async def _upload_document_item_via_http(

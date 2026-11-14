@@ -61,7 +61,6 @@ _SEQUENCE_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_SEQUENCE_REQUEST = 200
 
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
-_MAX_CURSOR_LENGTH = 512
 # A blob pull terminates on the peer's ``done`` flag; these guards keep a
 # misbehaving peer (old AgentServer, broken blob read) from hanging the HTTP
 # request in a no-progress loop or streaming an unbounded "archive".
