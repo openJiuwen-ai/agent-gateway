@@ -125,6 +125,8 @@ _SINGLE_USER_CHANNEL_IDS = frozenset({
 })
 _TUI_DISCONNECT_CANCEL_GRACE_SECONDS = 60.0
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
+# 匹配消息文本中的 ``@path`` / ``@"quoted path"`` 文件引用，可带 ``#L10-20``
+# 行号后缀（当前实现忽略行号，按整文件读取）。
 _AT_FILE_REFERENCE_PATTERN = re.compile(
     r'(?P<prefix>(?:^|(?<=\s)))@(?:"(?P<quoted>[^"]+)"|(?P<plain>[^\s#]+))(?:#[^#\s]*)?'
 )
