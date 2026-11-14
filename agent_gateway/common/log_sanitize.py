@@ -17,6 +17,9 @@ from typing import Any
 
 # 统一敏感信息掩码值。
 _SENSITIVE_MASK = "******"
+# JSON 扫描起点与解码器在每次日志脱敏时复用，避免在热路径反复创建。
+_JSON_START_PATTERN = re.compile(r"[\{\[]")
+_JSON_DECODER = json.JSONDecoder()
 _DATA_IMAGE_PATTERN = re.compile(
     r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/=]+"
 )
@@ -198,8 +201,8 @@ def _sanitize_log_text(text: str) -> str:
     Metrics can contain 18 decimal digits; applying an identity-number regex to
     serialized JSON corrupts them. Plain text retains the existing redaction.
     """
-    decoder = json.JSONDecoder()
-    start_pattern = re.compile(r'[\{\[]')
+    decoder = _JSON_DECODER
+    start_pattern = _JSON_START_PATTERN
     chunks: list[str] = []
     copy_from = 0
     search_from = 0
