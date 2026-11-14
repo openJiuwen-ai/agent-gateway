@@ -57,7 +57,7 @@ from agent_gateway.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
-from agent_gateway.common.config_panel import config_set_handlers, models_handlers
+from agent_gateway.common.config_panel import models_handlers
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -2476,17 +2476,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await request_zen_warmup(_resolve(agent_client))
 
-    async def _config_set(ws, req_id, params, session_id):
-        """config.set 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_set_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=_resolve(agent_client),
-            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
-            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
-            on_free_models_toggled=_request_zen_warmup,
-        )
-
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
         """models/config 域实现已下沉 ``jiuwenswarm.common.config_panel.models_handlers``。"""
         await models_handlers.config_validate_model_handler(
@@ -2581,17 +2570,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             agent_client=_resolve(agent_client),
         )
 
-
-    async def _config_save_all(ws, req_id, params, session_id):
-        """config.save_all 实现已下沉 ``common.config_panel.config_set_handlers``。"""
-        await config_set_handlers.config_save_all_handler(
-            channel, ws, req_id, params, session_id,
-            on_config_saved=on_config_saved,
-            agent_client=_resolve(agent_client),
-            ensure_codex_dependency=_ensure_codex_dependency_available_or_start_install,
-            ensure_claude_dependency=_ensure_claude_dependency_available_or_start_install,
-            on_free_models_toggled=_request_zen_warmup,
-        )
 
     async def _models_validate(ws, req_id, params, session_id):
         """测试指定模型配置是否可用（复用 config.validate_model 逻辑）。"""
@@ -5859,9 +5837,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     channel.register_method("config.moa_status", _config_moa_status)
+    # config.get/set/save_all：本仓不携带本地 handler——企业版在
+    # invoke.is_enterprise_write_forbidden 统一拦截（配置由管理面下发）；
+    # 个人版不带本地 handler，经 E2A 代理到目标 AgentServer（ConfigAdapter）执行。
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
-    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
-    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
+    _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
+    _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.refresh_status", _ConfigReq.MODELS_REFRESH_STATUS)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
