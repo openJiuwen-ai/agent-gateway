@@ -20,7 +20,7 @@ def row_to_dict(row: Any) -> dict[str, Any]:
             dumped = to_dict()
             out = dumped if isinstance(dumped, dict) else {}
         elif hasattr(row, "keys"):
-            out = {k: row[k] for k in row.keys()}
+            out = dict(row)
         else:
             field_names = getattr(row, "__dataclass_fields__", None) or getattr(
                 row, "__annotations__", None
@@ -30,7 +30,7 @@ def row_to_dict(row: Any) -> dict[str, Any]:
             out = {k: getattr(row, k) for k in field_names if not k.startswith("_sa_")}
 
     cleaned = {k: v for k, v in out.items() if not k.startswith("_sa_")}
-    for key, value in list(cleaned.items()):
+    for key, value in cleaned.items():
         if isinstance(value, (datetime, date)):
             cleaned[key] = value.isoformat()
     return cleaned
