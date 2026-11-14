@@ -262,9 +262,8 @@ class WecomFileService:
             media_id，失败返回 None
         """
         try:
-            # 读取文件
-            with open(file_path, 'rb') as f:
-                file_data = f.read()
+            # 读取文件（在工作线程中执行，避免阻塞事件循环）
+            file_data = await asyncio.to_thread(Path(file_path).read_bytes)
 
             filename = os.path.basename(file_path)
 
