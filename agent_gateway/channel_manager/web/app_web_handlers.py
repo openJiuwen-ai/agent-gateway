@@ -6437,7 +6437,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
 
-    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
+    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method, user_id=None):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
         from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
         from openjiuwen_protocol.message import ReqMethod
@@ -6483,6 +6483,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         env = e2a_from_agent_fields(
             request_id=str(req_id) if req_id else "",
             channel_id="web",
+            user_id=user_id,
             session_id=session_id,
             req_method=req_method,
             params=dict(params) if isinstance(params, dict) else {},
@@ -6526,9 +6527,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     from openjiuwen_protocol.message import ReqMethod as _A4PReq
 
     def _register_a4p(method_name: str, req_method: Any) -> None:
-        async def _handler(ws, req_id, params, session_id):
+        async def _handler(ws, req_id, params, session_id, user_id=None):
             await _forward_a4p_to_agent(
-                ws, req_id, params, session_id, req_method=req_method
+                ws, req_id, params, session_id, req_method=req_method, user_id=user_id
             )
 
         channel.register_method(method_name, _handler)
