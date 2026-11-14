@@ -69,21 +69,18 @@ class IMOutboundPipeline:
             return True
 
         try:
-            from agent_gateway.common.config import get_config
-            cfg = get_config() or {}
-        except Exception:
-            cfg = {}
+            from agent_gateway.common.config import get_digital_avatar_model_config
 
-        react = cfg.get("react") or {}
-        mcc_raw = react.get("model_client_config") or {}
-        model_config_obj = react.get("model_config_obj") or {}
+            avatar_name, mcc_raw, model_config_obj = get_digital_avatar_model_config()
+        except Exception:
+            avatar_name, mcc_raw, model_config_obj = "", {}, {}
+
         api_key = (mcc_raw.get("api_key") or os.getenv("API_KEY") or "").strip()
         api_base = (mcc_raw.get("api_base") or os.getenv("API_BASE") or "").strip()
         if api_base.endswith("/chat/completions"):
             api_base = api_base.rsplit("/chat/completions", 1)[0]
         model_name = (
-            react.get("model_name")
-            or mcc_raw.get("model_name")
+            avatar_name
             or os.getenv("MODEL_NAME")
             or "gpt-4o"
         ).strip()

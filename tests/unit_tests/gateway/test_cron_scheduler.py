@@ -2483,63 +2483,6 @@ class TestTeamModeWake:
         # 提前收尾必须取消团队会话，否则 leader 停在中断点上继续占用后端。
         assert handler.cancel_calls
 
-    @pytest.mark.asyncio
-    async def test_team_stream_continues_after_auto_accepted_evolution_approval(self, tmp_path):
-        store = CronJobStore(path=tmp_path / "cron_jobs.json")
-
-        class AutoAcceptedTeamStreamClient(FakeAgentClient):
-            async def send_request_stream(self, envelope):
-                self.stream_requests.append(envelope)
-                for payload in (
-                    {
-                        "event_type": "chat.ask_user_question",
-                        "request_id": "skill_evolve_1",
-                        "source": "skill_evolution_approval",
-                    },
-                    {
-                        "event_type": "workflow.updated",
-                        "workflow": {"id": "wf-1", "status": "completed"},
-                    },
-                    {"event_type": "chat.final", "content": "team report"},
-                ):
-                    yield AgentResponseChunk(
-                        request_id=envelope.request_id or "",
-                        channel_id=envelope.channel or "",
-                        payload=payload,
-                        is_complete=False,
-                    )
-
-        class AutoAcceptingHandler(FakeMessageHandler):
-            def auto_accepts_evolution_approval(self, payload):
-                return payload.get("request_id") == "skill_evolve_1"
-
-            async def publish_stream_chunk(self, chunk, *, session_id, request_metadata=None):
-                if self.auto_accepts_evolution_approval(chunk.payload or {}):
-                    return False
-                return await super().publish_stream_chunk(
-                    chunk, session_id=session_id, request_metadata=request_metadata
-                )
-
-        handler = AutoAcceptingHandler()
-        svc = _make_scheduler(store, handler, agent_client=AutoAcceptedTeamStreamClient())
-        envelope = SimpleNamespace(
-            request_id="cron-team-auto-approval:1",
-            channel="tui",
-            channel_context={},
-            params={},
-        )
-
-        text, ok = await svc.run_team_stream_job(
-            envelope=envelope,
-            exec_session_id="cron_team_auto_approval",
-            cron_meta={"job_id": "job-1"},
-            mode="team",
-            timeout_seconds=0.5,
-        )
-
-        assert (text, ok) == ("team report", True)
-
-
 class TestResolveCronExecutionContext:
     @staticmethod
     def test_team_ignores_creator_session_on_tui():

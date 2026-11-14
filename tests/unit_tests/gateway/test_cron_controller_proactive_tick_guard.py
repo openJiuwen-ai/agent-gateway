@@ -16,10 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent_gateway.cron.controller import CronController
-from agent_gateway.cron.proactive_cron_sync import (
-    DEFAULT_CRON_EXPR,
-    PROACTIVE_JOB_ID,
-)
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from agent_gateway.cron.store import CronJobStore
 
 
@@ -59,14 +56,14 @@ async def test_create_job_rejects_proactive_tick_mode(tmp_path):
 async def test_create_job_allows_auto_registered_proactive_tick_job(
     tmp_path,
 ):
-    """proactive_cron_sync 的固定 id 注册不受影响（内部路径唯一合法入口）。"""
+    """系统内部路径（固定 id）注册不受影响。"""
     controller, store = _make_controller(tmp_path)
 
     job = await controller.create_job(
         _job_params(
             id=PROACTIVE_JOB_ID,
             name="主动推荐定时检查",
-            cron_expr=DEFAULT_CRON_EXPR,
+            cron_expr="20 0 * * * * *",
             mode="proactive.tick",
         ),
         internal_proactive_sync=True,
@@ -85,7 +82,7 @@ async def test_create_job_rejects_user_path_spoofing_fixed_proactive_id(tmp_path
         _job_params(
             id=PROACTIVE_JOB_ID,
             name="主动推荐定时检查",
-            cron_expr=DEFAULT_CRON_EXPR,
+            cron_expr="20 0 * * * * *",
             mode="proactive.tick",
         ),
         internal_proactive_sync=True,
@@ -118,19 +115,6 @@ async def test_create_job_rejects_user_path_reusing_fixed_proactive_id(tmp_path)
         )
 
     assert await store.list_jobs() == []
-
-
-@pytest.mark.asyncio
-async def test_proactive_sync_registers_builtin_job_via_internal_path(tmp_path):
-    """proactive_cron_sync 走内部关键字路径，开关打开时仍能注册内置任务。"""
-    from agent_gateway.cron.proactive_cron_sync import _ensure_present
-
-    controller, store = _make_controller(tmp_path)
-    await _ensure_present(controller)
-
-    stored = await store.get_job(PROACTIVE_JOB_ID)
-    assert stored is not None
-    assert stored.mode == "proactive.tick"
 
 
 @pytest.mark.asyncio

@@ -5455,7 +5455,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
+        # 历史遗留 proactive.tick 任务禁止面板删除。
         existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5463,7 +5463,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
             await channel.send_response(
                 ws, req_id, ok=False,
-                error="主动推荐定时任务由设置→主动推荐开关控制，不能在面板删除；请到设置关闭开关。",
+                error="主动推荐功能已移除，遗留定时任务不能在面板删除。",
                 code="BAD_REQUEST",
             )
             return
@@ -5497,7 +5497,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if enabled is None:
             await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
             return
-        # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
+        # 历史遗留 proactive.tick 任务禁止面板手动切换。
         existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
@@ -5505,7 +5505,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
             await channel.send_response(
                 ws, req_id, ok=False,
-                error="主动推荐定时任务由设置→主动推荐开关控制，不能在面板启停。",
+                error="主动推荐功能已移除，遗留定时任务不能在面板启停。",
                 code="BAD_REQUEST",
             )
             return
@@ -6574,49 +6574,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
-            return
-        try:
-            cfg = get_config() or {}
-            payload = cfg.get("memory", {}).get("forbidden_memory_definition", {})
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except Exception as e:
-            logger.exception("[memory.forbidden.get] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params={}, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
 
     async def _memory_forbidden_set(ws, req_id, params, session_id, user_id=None):
-        from agent_gateway.common.config import update_memory_forbidden_in_config
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
-            return
-        try:
-            update_memory_forbidden_in_config(params)
-            await channel.send_response(ws, req_id, ok=True, payload={"ok": True})
-        except Exception as e:
-            logger.exception("[memory.forbidden.set] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
+                                  params=params, session_id=session_id, user_id=user_id,
+                                  req_method=ReqMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
 
     channel.register_method("memory.forbidden.get", _memory_forbidden_get)
     channel.register_method("memory.forbidden.set", _memory_forbidden_set)

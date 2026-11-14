@@ -1218,7 +1218,7 @@ class CronSchedulerService:
                     # 这里故意不提前 continue 掉 disabled 的任务——一个单次任务如果在到期前
                     # 被手动暂停，同样需要能被检测到"已经没有下一次执行时间"从而转入过期态，
                     # 否则会永远卡在"已暂停"（见 2026-07-16 bugfix）。
-                    # proactive job 的 enabled 由 ConfigPanel 开关管，scheduler 不碰。
+                    # 历史遗留 proactive.tick 任务保留兼容，scheduler 不碰其 enabled。
                     # 幂等保护：已经是 expired+disabled 状态的任务不再重复写回——
                     # store.update_job 每次都会刷 updated_at 和 cron_jobs.json 的 mtime，
                     # 若对已过期任务每次 reload 都写一次，会形成"mtime 变 → _check_store_changed
@@ -3144,13 +3144,6 @@ class CronSchedulerService:
                     ):
                         self._publish_cron_execution_live(state, event_type, payload)
                     note_seen_event(event_type)
-                    auto_accepts = getattr(
-                        self._message_handler, "auto_accepts_evolution_approval", None
-                    )
-                    if event_type == "chat.ask_user_question" and published is False:
-                        if callable(auto_accepts) and auto_accepts(payload):
-                            # MessageHandler queued an automatic evolution answer.
-                            continue
                     if self._is_approval_pause_frame(event_type, payload):
                         if state is not None and self._should_park_manual_approval(state):
                             consume_meta["paused"] = True

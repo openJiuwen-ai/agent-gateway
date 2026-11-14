@@ -39,7 +39,6 @@ from agent_gateway.telemetry import (
     release_response_trace, retain_request_continuation, trace_stage,
 )
 from agent_gateway.channel_manager.base import ChannelType
-from agent_gateway.common.config import get_evolution_auto_save_enabled
 from agent_gateway.common.hooks_config import load_hooks_config
 from agent_gateway.common.host_services import (
     install_runtime_wake_handler,
@@ -421,7 +420,6 @@ class MessageHandler(ABC):
         self._evolution_approval = EvolutionApprovalCoordinator()
         # 配置仅在启动/成功热重载时解析；流式 chunk 热路径直接读取该内存值，
         # 避免每个审批事件重新读取磁盘配置。
-        self._evolution_auto_save_enabled = False
         self._session_last_user_query: dict[str, str] = {}
         # session_id -> 最近一次人类发起请求的 (channel_id, member_name)。
         # team 模式下 file msg 不携带发起者身份（rid 固定为建会话那轮），send_file 定向
@@ -520,25 +518,6 @@ class MessageHandler(ABC):
         setter = getattr(self.agent_client, "set_server_push_handler", None)
         if callable(setter):
             setter(self._handle_agent_server_push)
-
-    def update_evolution_auto_save(self, config_payload: dict[str, Any] | None) -> None:
-        """Refresh the in-memory evolution auto-save flag from a config snapshot.
-
-        Callers should invoke this at startup and after a successful config hot
-        reload.  The stream/chunk path intentionally does not call the config
-        resolver so it never performs a disk read.
-        """
-        self._evolution_auto_save_enabled = get_evolution_auto_save_enabled(
-            config_payload if isinstance(config_payload, dict) else {}
-        )
-
-    def auto_accepts_evolution_approval(self, payload: Any) -> bool:
-        """Whether this question is answered automatically by the gateway."""
-        return (
-            self._evolution_auto_save_enabled
-            and is_evolution_approval_payload(payload)
-            and not is_interrupt_evolution_approval_answer_payload(payload)
-        )
 
     def set_thinking_notice_handler(self, handler: Any | None) -> None:
         self._thinking_notice_handler = handler
@@ -5073,17 +5052,10 @@ class MessageHandler(ABC):
         在 process_stream 和 _handle_agent_server_push 两条路径中复用。
         返回 False 表示该 chunk 已被延后处理，不应继续发布给前端。
         """
-        payload = getattr(chunk, "payload", None)
-        auto_save_enabled = (
-            isinstance(payload, dict)
-            and payload.get("event_type") == "chat.ask_user_question"
-            and self.auto_accepts_evolution_approval(payload)
-        )
         decision = self._evolution_approval.handle_chunk(
             chunk,
             session_id,
             request_metadata,
-            auto_save_enabled=auto_save_enabled,
         )
         if decision.user_message is not None:
             self._user_messages.put_nowait(decision.user_message)
