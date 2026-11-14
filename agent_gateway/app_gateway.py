@@ -147,7 +147,13 @@ from agent_gateway.routing.agent_request_timeout import (
 )
 from agent_gateway.routing.route_binding import GatewayRouteBinding
 from agent_gateway.common.log_sanitize import mask_sensitive
-from agent_gateway.telemetry import configure_gateway_telemetry, shutdown_gateway_telemetry, trace_stage
+from agent_gateway.telemetry import (
+    attach_message_trace,
+    configure_gateway_telemetry,
+    get_message_trace,
+    shutdown_gateway_telemetry,
+    trace_stage,
+)
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
@@ -367,7 +373,6 @@ def _normalize_gateway_message(msg):
         metadata=msg.metadata,
         user_id=getattr(msg, "user_id", None),
     )
-    from agent_gateway.telemetry import attach_message_trace, get_message_trace
     attach_message_trace(normalized, get_message_trace(msg))
     return normalized
 
