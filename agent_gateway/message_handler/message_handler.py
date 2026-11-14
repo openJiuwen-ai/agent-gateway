@@ -55,6 +55,7 @@ from agent_gateway.common.mode_matrix import (
     NEW_AGENT_WORK_PLAN,
     NEW_CANONICAL_MODES,
     NEW_TEAM_CODE_NORMAL,
+    canonicalize_mode_text,
     deprecate_mode,
     is_team_mode,
 )
@@ -100,13 +101,17 @@ _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
-# + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）。
+# + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）+ auto。
+# auto 是 MACRO Auto 的一等模式，不属于上面三个集合，必须显式并入。
 # 单一事实源，前置校验与分发同源，避免和 ModeSubcommand/_VALID_MODE_LINES 漂移。
 # team.plan / team.code 不在 DEPRECATION_MAP 里（它们经 canonicalize_mode_text
 # 先归一到 team.plan.normal / code.team，再 deprecate_mode 映到新 canonical），
 # 故白名单必须显式并入 MODE_ALIASES.keys()，否则会被前置校验判「非法指令」。
 _VALID_MODE_INPUTS: frozenset[str] = frozenset(
-    NEW_CANONICAL_MODES | set(DEPRECATION_MAP.keys()) | set(MODE_ALIASES.keys())
+    NEW_CANONICAL_MODES
+    | set(DEPRECATION_MAP.keys())
+    | set(MODE_ALIASES.keys())
+    | {"auto"}
 )
 # issue #4168: an unknown "team.*" mode is refused with the valid values
 # listed. The gateway would treat it as a plain chat while the AgentServer
@@ -236,6 +241,7 @@ def normalize_legacy_health_check_relay_payload(
 
 class ChannelMode(str, Enum):
     AGENT = "agent"
+    AUTO = "auto"
     # 历史值：plan / fast 已合并为 agent，保留以兼容旧持久化 channel state。
     AGENT_PLAN = "agent.plan"
     AGENT_FAST = "agent.fast"
@@ -266,12 +272,17 @@ def channel_mode_from_str(mode_str: str) -> ChannelMode:
     """把任意 mode 字符串归一到 :class:`ChannelMode`。
 
     与 ``/mode`` 分发同源：``deprecate_mode`` 先把旧 canonical（含 team.plan 等
-    别名）静默映射到新 canonical，再用 ``ChannelMode`` 直接构造；不在
-    :data:`NEW_CANONICAL_MODES` 的串（如未知值、未迁移值）兜底为
-    :attr:`ChannelMode.AGENT`。集中此逻辑避免 ``_get_channel_default_state``、
-    ``handle_mode_switch``、``_external_session_aliases`` 等多处手抄。
+    别名）静默映射到新 canonical，再用 ``ChannelMode`` 直接构造。``auto`` 是
+    MACRO Auto 路由的一等模式，直接返回 :attr:`ChannelMode.AUTO`，不走
+    deprecate 和兜底链。其余不在 :data:`NEW_CANONICAL_MODES` 的串（如未知值、
+    未迁移值）兜底为 :attr:`ChannelMode.AGENT`。集中此逻辑避免
+    ``_get_channel_default_state``、``handle_mode_switch``、
+    ``_external_session_aliases`` 等多处手抄。
     """
-    new_mode_str = deprecate_mode(mode_str)
+    canonical_mode = canonicalize_mode_text(mode_str)
+    if canonical_mode == ChannelMode.AUTO.value:
+        return ChannelMode.AUTO
+    new_mode_str = deprecate_mode(canonical_mode)
     if new_mode_str in NEW_CANONICAL_MODES:
         try:
             return ChannelMode(new_mode_str)
@@ -2228,11 +2239,15 @@ class MessageHandler(ABC):
         把原内联在 MODE_OK 分支里的「前置白名单校验 + deprecate_mode 查表分发 +
         通知调度」三段集中到本方法，单一事实源::
 
-            _VALID_MODE_INPUTS = NEW_CANONICAL_MODES | DEPRECATION_MAP.keys()
+            _VALID_MODE_INPUTS = (
+                NEW_CANONICAL_MODES | DEPRECATION_MAP.keys()
+                | MODE_ALIASES.keys() | {"auto"}
+            )
 
         - 前置校验：mode_str 不在 ``_VALID_MODE_INPUTS`` 时下发「非法指令」通知并
           返回 True（消息已被消费，无需转发给 Agent）。
-        - 分发：``deprecate_mode(mode_str)`` 把旧 canonical 静默映射到新 canonical，
+        - 分发：``auto`` 直接得到 ``ChannelMode.AUTO``。其余输入由
+          ``deprecate_mode(mode_str)`` 把旧 canonical 静默映射到新 canonical，
           再用 ``ChannelMode(new_mode_str)`` 直接构造（P2 已加 8 个新成员）。新串
           不在 NEW_CANONICAL_MODES 时兜底为 ``ChannelMode.AGENT``。
         - 通知：mode 实际变更时调度 ``_mode_change_cancel_and_notice``（取消旧
@@ -2481,6 +2496,8 @@ class MessageHandler(ABC):
             # state.mode 经 handle_mode_switch 落定后必为新 canonical，故判据查新
             # canonical 字符串集合（与旧 ``in (ChannelMode.X, ...)`` 等价，见
             # ``_SWITCH_AGENT_WORK_MODES`` / ``_SWITCH_CODE_MODES``）。
+            # auto 不进入这两个集合：Agent 还是 Team 由 jiuwenswarm 按每条
+            # 查询决定，/switch 不能在网关里提前把它归到某一边。
             if switch_str == "plan":
                 # agent 下 plan / fast 已合并：/switch plan 保持 agent.work.normal。
                 if state.mode.value in _SWITCH_AGENT_WORK_MODES:
