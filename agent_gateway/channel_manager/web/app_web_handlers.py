@@ -4370,24 +4370,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
             proxy_unary_request,
         )
-
-        resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            try:
-                cfg = get_config()
-                lang = str(cfg.get("preferred_language") or "zh").strip().lower()
-                if lang not in ("zh", "en"):
-                    lang = "zh"
-                await channel.send_response(
-                    ws, req_id, ok=True, payload={"preferred_language": lang}
-                )
-            except Exception as e:
-                logger.exception("[locale.get_conf] %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-            return
 
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
@@ -4400,7 +4384,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
@@ -4422,15 +4405,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 error="preferred_language must be zh or en",
                 code="BAD_REQUEST"
             )
-            return
-        resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            try:
-                update_preferred_language_in_config(lang)
-                await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
-            except Exception as e:
-                logger.warning("[locale.set_conf] 写回 config.yaml 失败: %s", e)
-                await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
             return
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
