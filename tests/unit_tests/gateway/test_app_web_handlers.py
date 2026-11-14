@@ -297,8 +297,12 @@ class FakeReloadAgentClient:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.complete", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
+@pytest.mark.parametrize("method", [
+    "a4p.config.get", "a4p.config.update", "a4p.authorization.reprepare",
+    "a4p.authorization.complete", "a4p.authorization.reject", "a4p.authorization.pending",
+])
+@pytest.mark.parametrize("user_id", ["authenticated-user", None])
+async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
     class _AgentClient:
         server_ready = True
 
@@ -324,17 +328,19 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     await channel.methods[method](
         ws,
         "rpc-1",
-        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        {"requestId": "intent-1", "user_id": "untrusted", "agent_ref": {"mode": "agent", "id": "untrusted"}},
         "session-1",
+        user_id=user_id,
     )
 
+    assert agent_client.envelope.user_id == user_id
     assert channel.responses[-1]["ok"] is True
     assert agent_client.envelope.channel_context == {
         "ws_id": "ws-1",
         "app_id": "app-1",
         "agent_ref": {"mode": "team", "id": "research"},
     }
-    if method == "a4p.authorization.complete":
+    if method in {"a4p.authorization.complete", "a4p.authorization.reject"}:
         assert channel.rebounds == [("session-1", "ws-1")]
     else:
         assert channel.rebounds == []
