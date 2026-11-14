@@ -161,20 +161,12 @@ class IMConversationProcessor:
     def _load_model_config(model_name_override: str | None = None) -> tuple[str, dict, dict]:
         """与 react agent 一致的模型配置读取：config.yaml → 环境变量 → 默认值。"""
         try:
-            from agent_gateway.common.config import get_config
-            cfg = get_config() or {}
+            from agent_gateway.common.config import get_digital_avatar_model_config
+
+            name, mcc, mco = get_digital_avatar_model_config(model_name_override)
         except Exception:
-            cfg = {}
-        react = cfg.get("react") or {}
-        mcc = react.get("model_client_config") or {}
-        mco = react.get("model_config_obj") or {}
-        name = (
-            (model_name_override or "").strip()
-            or react.get("model_name", "")
-            or mcc.get("model_name", "")
-            or os.getenv("MODEL_NAME", "").strip()
-            or "gpt-4o"
-        )
+            name, mcc, mco = "", {}, {}
+        name = name or os.getenv("MODEL_NAME", "").strip() or "gpt-4o"
         return name, mcc, mco
 
     async def process(

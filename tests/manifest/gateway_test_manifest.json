@@ -2314,17 +2314,6 @@
   "reason": "split migrated: 21 gateway cron/model tests; server resolve_agent_cron_model/Zen assertions remain in jiuwenswarm"
  },
  {
-  "source_path": "tests/unit_tests/gateway/test_cron_proactive_sync.py",
-  "target_path": "tests/unit_tests/gateway/test_cron_proactive_sync.py",
-  "category": "A",
-  "owner": "gateway",
-  "enterprise": false,
-  "tier1": true,
-  "deps": [],
-  "status": "migrated",
-  "reason": ""
- },
- {
   "source_path": "tests/unit_tests/gateway/test_cron_safe_aclose.py",
   "target_path": "tests/unit_tests/gateway/test_cron_safe_aclose.py",
   "category": "A",

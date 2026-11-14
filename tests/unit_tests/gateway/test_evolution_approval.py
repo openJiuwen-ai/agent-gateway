@@ -75,20 +75,18 @@ def test_evolution_status_start_and_end_tracks_in_progress() -> None:
 
     coordinator.handle_chunk(
         _chunk({"event_type": "chat.evolution_status", "status": "start"}),
-        "sess-1",
-        auto_save_enabled=True,
+        "sess-1"
     )
     assert coordinator.is_session_in_progress("sess-1") is True
 
     coordinator.handle_chunk(
         _chunk({"event_type": "chat.evolution_status", "status": "end"}),
-        "sess-1",
-        auto_save_enabled=True,
+        "sess-1"
     )
     assert coordinator.is_session_in_progress("sess-1") is False
 
 
-def test_auto_save_false_incoming_approval_marks_pending() -> None:
+def test_incoming_approval_marks_pending() -> None:
     coordinator = EvolutionApprovalCoordinator()
 
     decision = coordinator.handle_chunk(
@@ -97,8 +95,7 @@ def test_auto_save_false_incoming_approval_marks_pending() -> None:
             source=SKILL_EVOLUTION_APPROVAL_SOURCE,
             approval_schema=SKILL_EVOLUTION_APPROVAL_SCHEMA,
         ),
-        "sess-1",
-        auto_save_enabled=False,
+        "sess-1"
     )
 
     assert decision.should_publish_chunk is True
@@ -106,94 +103,13 @@ def test_auto_save_false_incoming_approval_marks_pending() -> None:
     assert coordinator.pending_request_id("sess-1") == "call_123"
 
 
-def test_auto_save_true_auto_accepts_first_approval_and_suppresses_chunk() -> None:
-    coordinator = EvolutionApprovalCoordinator()
-
-    decision = coordinator.handle_chunk(
-        _approval_chunk("team_skill_evolve_new"),
-        "sess-1",
-        {"k": "v"},
-        auto_save_enabled=True,
-    )
-
-    assert decision.should_publish_chunk is False
-    assert coordinator.pending_request_id("sess-1") is None
-    assert decision.user_message is not None
-    auto_msg = decision.user_message
-    assert auto_msg.session_id == "sess-1"
-    assert auto_msg.channel_id == "web"
-    assert auto_msg.metadata == {"k": "v"}
-    assert auto_msg.params["request_id"] == "team_skill_evolve_new"
-    assert auto_msg.params["answers"] == [{"selected_options": ["接收"]}]
-
-
-def test_auto_save_true_auto_accepts_incoming_approval_with_existing_pending() -> None:
+def test_defers_replaced_approval_and_suppresses_chunk() -> None:
     coordinator = EvolutionApprovalCoordinator()
     coordinator.mark_pending("sess-1", "team_skill_evolve_old")
 
     decision = coordinator.handle_chunk(
         _approval_chunk("team_skill_evolve_new"),
-        "sess-1",
-        {"k": "v"},
-        auto_save_enabled=True,
-    )
-
-    assert decision.should_publish_chunk is False
-    assert coordinator.pending_request_id("sess-1") == "team_skill_evolve_old"
-    assert decision.user_message is not None
-    auto_msg = decision.user_message
-    assert auto_msg.session_id == "sess-1"
-    assert auto_msg.channel_id == "web"
-    assert auto_msg.metadata == {"k": "v"}
-    assert auto_msg.params["request_id"] == "team_skill_evolve_new"
-    assert auto_msg.params["answers"] == [{"selected_options": ["接收"]}]
-
-
-def test_auto_save_true_does_not_auto_accept_interrupt_approval() -> None:
-    coordinator = EvolutionApprovalCoordinator()
-
-    decision = coordinator.handle_chunk(
-        _approval_chunk(
-            "call_123",
-            source=SKILL_EVOLUTION_APPROVAL_SOURCE,
-            approval_schema=SKILL_EVOLUTION_APPROVAL_SCHEMA,
-        ),
-        "sess-1",
-        {"k": "v"},
-        auto_save_enabled=True,
-    )
-
-    assert decision.should_publish_chunk is True
-    assert decision.user_message is None
-    assert coordinator.pending_request_id("sess-1") == "call_123"
-
-
-def test_hidden_regular_auto_save_finish_clears_without_current_pending() -> None:
-    coordinator = EvolutionApprovalCoordinator()
-    decision = coordinator.handle_chunk(
-        _approval_chunk("team_skill_evolve_new"),
-        "sess-1",
-        auto_save_enabled=True,
-    )
-
-    assert decision.should_publish_chunk is False
-
-    result = coordinator.finish_if_current("sess-1", "team_skill_evolve_new")
-
-    assert result is not None
-    assert result.queued_supplement is None
-    assert result.promoted_approval is None
-    assert coordinator.pending_request_id("sess-1") is None
-
-
-def test_auto_save_false_defers_replaced_approval_and_suppresses_chunk() -> None:
-    coordinator = EvolutionApprovalCoordinator()
-    coordinator.mark_pending("sess-1", "team_skill_evolve_old")
-
-    decision = coordinator.handle_chunk(
-        _approval_chunk("team_skill_evolve_new"),
-        "sess-1",
-        auto_save_enabled=False,
+        "sess-1"
     )
 
     assert decision.should_publish_chunk is False
@@ -238,8 +154,7 @@ def test_finish_current_promotes_deferred_approval() -> None:
     coordinator.handle_chunk(
         _approval_chunk("team_skill_evolve_new", questions=[{"header": "deferred"}]),
         "sess-1",
-        {"k": "v"},
-        auto_save_enabled=False,
+        {"k": "v"}
     )
     coordinator.queue_supplement("sess-1", "继续补充")
 

@@ -20,12 +20,6 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 
-from agent_gateway.common.kv_cache_affinity_config import (
-    APPLICATION_KV_CACHE_CONFIG_KEY,
-    KV_CACHE_AFFINITY_ENABLED_KEY,
-    get_kv_cache_affinity_application_config,
-    validate_affinity_invariant,
-)
 from agent_gateway.common.paths import (
     get_bundled_resources_dir,
     get_config_dir,
@@ -143,22 +137,6 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
                 if isinstance(mcc, dict) and "custom_headers" in mcc:
                     mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
 
-    react = config.get("react", {})
-    if isinstance(react, dict):
-        mcc = react.get("model_client_config")
-        if isinstance(mcc, dict) and "custom_headers" in mcc:
-            mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-    kv_cfg = get_kv_cache_affinity_application_config(config)
-    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
-        valid, failures = validate_affinity_invariant(config)
-        if not valid:
-            logger.warning(
-                "KV cache affinity configuration failed closed: %s",
-                "; ".join(failures),
-            )
-            # Runtime-only normalization: preserve the user's file for
-            # diagnosis, but never activate an inconsistent configuration.
-            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels")
     if channels is None:
@@ -270,44 +248,6 @@ def get_config_raw():
     return _read_with_retry(CONFIG_YAML_PATH)
 
 
-def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
-    """Validate the persisted KVC invariant after a config write."""
-    raw = get_config_raw()
-    return validate_affinity_invariant(resolve_env_vars(raw))
-
-
-def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the canonical ``react.evolution`` mapping.
-
-    Evolution settings deliberately have one source of truth.  In particular,
-    the historical top-level ``evolution`` mapping and the old environment
-    overrides are not consulted here; this keeps a stale deployment variable
-    from changing a running agent's capability set.
-    """
-    if not isinstance(config, dict):
-        return {}
-    react_config = config.get("react")
-    if not isinstance(react_config, dict):
-        return {}
-    evolution_config = react_config.get("evolution")
-    return evolution_config if isinstance(evolution_config, dict) else {}
-
-
-def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return the canonical ``react.evolution.skill_evolution`` switch."""
-    return _get_evolution_config(config).get("skill_evolution") is True
-
-
-def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
-    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        data["progressive_tool_optimize"] = bool(enabled)
-        return data
-
-    update_config(mutator)
-
-
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
     """Return the user-configured ``api_base host -> endpoint_profile`` map.
 
@@ -328,29 +268,6 @@ def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict
         if host_key and profile_value:
             overrides[host_key] = profile_value
     return overrides
-
-
-def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
-    return _get_evolution_config(config).get("auto_save") is True
-
-
-def update_skill_evolution_enabled_in_config(enabled: bool) -> None:
-    """Atomically update the canonical evolution capability switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        react = data.get("react")
-        if not isinstance(react, dict):
-            react = {}
-            data["react"] = react
-        evolution = react.get("evolution")
-        if not isinstance(evolution, dict):
-            evolution = {}
-            react["evolution"] = evolution
-        evolution["skill_evolution"] = bool(enabled)
-        return data
-
-    update_config(mutator)
 
 
 def load_yaml_round_trip(config_path: Path):
@@ -464,35 +381,6 @@ def update_health_check_in_config(payload: dict[str, Any]) -> None:
         return data
 
     update_config(_mutate)
-
-
-def migrate_legacy_heartbeat_probe_config() -> bool:
-    """Move legacy probe keys to health_check without touching heartbeat.jobs."""
-    changed = False
-    probe_keys = ("every", "target", "active_hours")
-
-    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
-        nonlocal changed
-        legacy = data.get("heartbeat")
-        if not isinstance(legacy, dict):
-            return None
-        present = [key for key in probe_keys if key in legacy]
-        if not present:
-            return None
-        current = data.get("health_check")
-        if not isinstance(current, dict):
-            current = {}
-            data["health_check"] = current
-        for key in present:
-            current.setdefault(key, legacy[key])
-            legacy.pop(key, None)
-        if not legacy:
-            data.pop("heartbeat", None)
-        changed = True
-        return data
-
-    update_config(_mutate)
-    return changed
 
 
 def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
@@ -694,47 +582,6 @@ def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_context_engine_enabled_in_config(value: bool) -> None:
-    """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "context_engine_config" not in react:
-        react["context_engine_config"] = {}
-    react["context_engine_config"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
-    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-        if not isinstance(kv_config, dict):
-            kv_config = {}
-            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
-        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
-
-        react = data.get("react")
-        if isinstance(react, dict):
-            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-        return data
-
-    update_config(_mutate)
-
-
-def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
-    for key, value in patch.items():
-        if isinstance(value, dict):
-            child = target.get(key)
-            if not isinstance(child, dict):
-                child = {}
-                target[key] = child
-            _merge_config_dict(child, value)
-        else:
-            target[key] = value
-
-
 def update_permissions_enabled_in_config(value: bool) -> None:
     """Persist the legacy permission switch as a canonical manual profile."""
     update_permissions_profile_in_config("default" if value else "full_access")
@@ -762,76 +609,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
         return data
 
     update_config(_mutate)
-
-
-def update_a4p_in_config(updates: dict[str, Any]) -> None:
-    """更新 a4p 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "a4p" not in data or data["a4p"] is None:
-        data["a4p"] = {}
-    _merge_config_dict(data["a4p"], updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_auto_recap_enabled_in_config(value: bool) -> None:
-    """更新 auto_recap.enabled（自动回顾开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "auto_recap" not in data:
-        data["auto_recap"] = {}
-    data["auto_recap"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_setup_guide_enabled_in_config(value: bool) -> None:
-    """原子更新 setup_guide.enabled（Web 首次配置引导开关）。"""
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        section = data.get("setup_guide")
-        if not isinstance(section, dict):
-            section = {}
-            data["setup_guide"] = section
-        section["enabled"] = value
-        return data
-
-    update_config(mutator)
-
-
-def update_rsi_enabled_in_config(value: bool) -> None:
-    """原子更新 rsi.enabled（Web RSI 实验入口开关）。"""
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        section = data.get("rsi")
-        if not isinstance(section, dict):
-            section = {}
-            data["rsi"] = section
-        section["enabled"] = value
-        return data
-
-    update_config(mutator)
-
-
-def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
-    """Update the trajectory diagnosis feature switch and persist config.yaml.
-
-    The standalone trajectory UI switch and chat/trajectory tabs were removed;
-    the diagnosis switch drives the diagnosis entry and the data-plane
-    ``enabled`` flag so recording stays aligned with the single user-facing
-    control.
-    """
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
-        data["trajectory_ui"] = {}
-    flag = bool(enabled)
-    data["trajectory_ui"]["diagnosis_enabled"] = flag
-    data["trajectory_ui"]["enabled"] = flag
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_task_full_duplex_in_config(enabled: bool) -> None:
-    """Update the Task-chat Full-duplex entry switch in config.yaml."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "experimental" not in data or data["experimental"] is None:
-        data["experimental"] = {}
-    data["experimental"]["task_full_duplex_enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_updater_in_config(updates: dict[str, Any]) -> None:
@@ -1214,6 +991,47 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
 
     update_config(_mutate)
     return deleted
+
+
+def get_digital_avatar_model_config(
+    override: str | None = None,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Return the model used by the IM digital avatar.
+
+    ``gateway.digital_avatar.model`` selects a ``models.defaults`` entry by
+    model name / alias / id; empty means the default entry. Connection details
+    are taken from that entry and fall back to env vars at the call site.
+    """
+    cfg = get_config()
+    gateway = cfg.get("gateway") if isinstance(cfg, dict) else None
+    avatar = gateway.get("digital_avatar") if isinstance(gateway, dict) else None
+    wanted = str(override or (avatar or {}).get("model") or "").strip()
+    try:
+        entries = [e for e in get_default_models(cfg) if isinstance(e, dict)]
+    except Exception:
+        entries = []
+
+    picked = None
+    if wanted:
+        for entry in entries:
+            names = {
+                str(entry.get("model_name") or "").strip(),
+                str(entry.get("alias") or "").strip(),
+                str(entry.get("model_id") or "").strip(),
+                str((entry.get("model_client_config") or {}).get("model_name") or "").strip(),
+            }
+            if wanted in names:
+                picked = entry
+                break
+        if picked is None:
+            return wanted, {}, {}
+    else:
+        picked = next((e for e in entries if e.get("is_default")), entries[0] if entries else None)
+
+    mcc = dict(picked.get("model_client_config") or {}) if picked else {}
+    mco = dict(picked.get("model_config_obj") or {}) if picked else {}
+    name = wanted or str(mcc.get("model_name") or "").strip()
+    return name, mcc, mco
 
 
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -1662,250 +1480,8 @@ def update_swarmflow_budget_in_config(budget: str) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def get_mcp_servers() -> list[dict[str, Any]]:
-    """合并 config.yaml mcp.servers（command.mcp/TUI 手填）+ mcp/state.json（连接器）。
-
-    两套事实源永久并存（非迁移期重叠）：
-    - config.yaml mcp.servers 是 command.mcp（TUI channel）手动管理 MCP 的
-      事实源；add/remove/enable/disable 经 agent_ws_server 的 command.mcp
-      handler 直接读写 config.yaml。这条链路不动。
-    - mcp/state.json 是MCP（marketplace + custom）的事实源；
-      connect/disconnect/enable/disable 经 mcp handler 写 state.json。
-    """
-    # A. config.yaml — 手填 MCP（raw, no env resolve）.
-    data = get_config_raw()
-    mcp_cfg = data.get("mcp", {})
-    if not isinstance(mcp_cfg, dict):
-        servers_yaml: list[dict[str, Any]] = []
-    else:
-        servers_yaml = [item for item in mcp_cfg.get("servers", [])
-                        if isinstance(item, dict)]
-
-    # B. mcp/state.json — 已连接 MCP（state==connected）.
-    state_mcps: list[dict[str, Any]] = []
-    try:
-        from agent_gateway.common.external_providers import provider
-        from e2a.provider_domains import (
-            PROVIDER_DOMAIN_MCP_REGISTRY,
-            PROVIDER_DOMAIN_MCP_STATE,
-        )
-
-        mcp_state = provider(PROVIDER_DOMAIN_MCP_STATE)
-        mcp_registry = provider(PROVIDER_DOMAIN_MCP_REGISTRY)
-        for rec in mcp_state.list_connected_mcps():
-            name = rec.get("name", "")
-            if not name or mcp_registry.is_stale_marketplace_record(name, rec):
-                continue
-            entry = mcp_state.record_to_mcp_entry(name, rec)
-            # skill-only MCPs return None
-            if entry is not None:
-                state_mcps.append(entry)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[config] failed to merge mcp state.json: %s", exc)
-
-    # Merge: state.json wins on name conflict (dedup by name, state first).
-    state_names = {s["name"] for s in state_mcps}
-    merged = [s for s in servers_yaml if s.get("name") not in state_names]
-    merged.extend(state_mcps)
-    return merged
-
-
-def get_config_yaml_mcp_servers() -> list[dict[str, Any]]:
-    """只读 config.yaml 的 mcp.servers（TUI/command.mcp 手配）。"""
-    data = get_config_raw()
-    mcp_cfg = data.get("mcp", {})
-    if not isinstance(mcp_cfg, dict):
-        return []
-    return [item for item in mcp_cfg.get("servers", []) if isinstance(item, dict)]
-
-
-def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """新增或更新 mcp.servers 条目，返回（条目, 是否创建）。"""
-    name = str(server.get("name", "")).strip()
-    if not name:
-        raise ValueError("MCP server name is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "mcp" not in data or not isinstance(data["mcp"], dict):
-        data["mcp"] = {}
-    mcp_cfg = data["mcp"]
-    servers = mcp_cfg.get("servers")
-    if not isinstance(servers, list):
-        servers = []
-        mcp_cfg["servers"] = servers
-
-    created = True
-    for idx, item in enumerate(servers):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("name", "")).strip() != name:
-            continue
-        servers[idx] = server
-        created = False
-        break
-    else:
-        servers.append(server)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return server, created
-
-
-def set_mcp_server_enabled_in_config(name: str, enabled: bool) -> dict[str, Any]:
-    """切换 mcp.servers 指定 name 的 enabled 状态并返回更新后的条目。"""
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("MCP server name is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "mcp" not in data or not isinstance(data["mcp"], dict):
-        raise KeyError(f"MCP server '{target}' not found")
-    servers = data["mcp"].get("servers", [])
-    if not isinstance(servers, list):
-        raise KeyError(f"MCP server '{target}' not found")
-    for item in servers:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("name", "")).strip() != target:
-            continue
-        item["enabled"] = bool(enabled)
-        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-        return dict(item)
-    raise KeyError(f"MCP server '{target}' not found")
-
-
-def get_mcp_server_config(name: str) -> dict[str, Any] | None:
-    """按名称读取单个 mcp server 配置（原始结构）。"""
-    target = str(name or "").strip()
-    if not target:
-        return None
-    for item in get_mcp_servers():
-        if str(item.get("name", "")).strip() == target:
-            return item
-    return None
-
-
-def remove_mcp_server_in_config(name: str) -> dict[str, Any]:
-    """删除指定 mcp server 配置并返回被删除的条目。"""
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("MCP server name is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    mcp_cfg = data.get("mcp")
-    if not isinstance(mcp_cfg, dict):
-        raise KeyError(f"MCP server '{target}' not found")
-    servers = mcp_cfg.get("servers", [])
-    if not isinstance(servers, list):
-        raise KeyError(f"MCP server '{target}' not found")
-    for idx, item in enumerate(servers):
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("name", "")).strip() != target:
-            continue
-        removed = dict(item)
-        del servers[idx]
-        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-        return removed
-    raise KeyError(f"MCP server '{target}' not found")
-
-
-def _mcp_name_in_state(name: str) -> bool:
-    """Whether state.json has a record for ``name`` (any state)."""
-    try:
-        from agent_gateway.common.external_providers import provider
-        return provider("mcp_state").get_mcp_record(name) is not None
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _mcp_name_in_config_yaml(name: str) -> bool:
-    """Whether config.yaml mcp.servers has an entry for ``name``."""
-    return any(str(s.get("name", "")).strip() == name
-               for s in get_config_yaml_mcp_servers())
-
-
-def upsert_mcp_server(
-    server: dict[str, Any], *, state: str = "connected"
-) -> tuple[dict[str, Any], bool]:
-    """Upsert a TUI-managed MCP by source: config.yaml (legacy stock) is
-    updated in place; otherwise the record is created/updated in state.json.
-
-    ``state`` defaults to ``connected``; the command.mcp add/update handlers
-    pass ``"connecting"`` so a live-connect probe can validate reachability
-    before the record is flipped to ``connected``. Returns ``(entry, created)``.
-    Raises ``ValueError`` if no name.
-    """
-    name = str(server.get("name", "")).strip()
-    if not name:
-        raise ValueError("MCP server name is required")
-    # config.yaml entries carry no connection_state (treated as live when
-    # present), so ``state`` only routes through to state.json.
-    if _mcp_name_in_config_yaml(name):
-        return upsert_mcp_server_in_config(server)
-    # Else state.json is the creation/update home for TUI MCPs.
-    from agent_gateway.common.external_providers import provider
-    mcp_state = provider("mcp_state")
-    prior = _mcp_name_in_state(name)
-    enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = mcp_state.upsert_mcp_record(name, server, state=state,
-                            integration_type=_integration_type_for(server),
-                            enabled=enabled)
-    # Shape a config-like entry for the response (carries enabled through).
-    entry = dict(rec)
-    entry["name"] = name
-    if "enabled" not in entry:
-        entry["enabled"] = bool(server.get("enabled", True))
-    return entry, (not prior)
-
-
-def set_mcp_server_enabled(name: str, enabled: bool) -> dict[str, Any]:
-    """Flip a TUI-managed MCP's ``enabled`` flag, routing by source: state.json
-    first (TUI-created / web-connected), then config.yaml (legacy stock).
-
-    Only the TUI channel reads ``enabled``; web ignores it. Raises
-    ``KeyError`` if the name is in neither source.
-    """
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("MCP server name is required")
-    if _mcp_name_in_state(target):
-        from agent_gateway.common.external_providers import provider
-        mcp_state = provider("mcp_state")
-        mcp_state.set_mcp_enabled(target, enabled=enabled)
-        rec = mcp_state.get_mcp_record(target) or {}
-        entry = dict(rec)
-        entry["name"] = target
-        return entry
-    # Legacy stock in config.yaml.
-    return set_mcp_server_enabled_in_config(target, enabled)
-
-
-def remove_mcp_server(name: str) -> dict[str, Any]:
-    """Remove a TUI-managed MCP, routing by source: state.json first, then
-    config.yaml (legacy stock). Returns the removed entry. Raises
-    ``KeyError`` if the name is in neither source.
-    """
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("MCP server name is required")
-    if _mcp_name_in_state(target):
-        from agent_gateway.common.external_providers import provider
-        removed = provider("mcp_state").remove_mcp_record(target) or {}
-        entry = dict(removed)
-        entry["name"] = target
-        return entry
-    # Legacy stock in config.yaml.
-    return remove_mcp_server_in_config(target)
-
-
-def _integration_type_for(server: dict[str, Any]) -> str:
-    """Derive the state.json integration_type from a TUI payload's transport."""
-    t = str(server.get("transport", "")).strip().lower()
-    if t == "stdio":
-        return "stdio-mcp"
-    if t in {"sse", "http", "streamable-http", "streamable_http"}:
-        return "remote-mcp"
-    return "remote-mcp"
-
-
 # ---------------------------------------------------------------------------
-# react.subagents 段操作
+# memory 段操作
 # ---------------------------------------------------------------------------
 
 
@@ -2053,26 +1629,6 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
-def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
-    """Move the former ReAct-local KVC switch to Application scope."""
-    react = user_data.get("react")
-    if not isinstance(react, dict):
-        return
-    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-    if isinstance(canonical, dict):
-        if (
-            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
-            and isinstance(legacy, dict)
-            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
-        ):
-            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
-                KV_CACHE_AFFINITY_ENABLED_KEY
-            ]
-    elif isinstance(legacy, dict):
-        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
-
-
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2132,7 +1688,6 @@ def migrate_config_from_template(
         # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
-        _migrate_legacy_kv_cache_affinity_config(user_data)
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.

@@ -189,21 +189,11 @@ _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/a
 
 
 def _resolve_health_check_config(full_cfg: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Prefer health_check and read legacy heartbeat probe keys during migration."""
+    """Return the Gateway-owned health_check section."""
     if not isinstance(full_cfg, dict):
         return None
     current = full_cfg.get("health_check")
-    if isinstance(current, dict):
-        return current
-    legacy = full_cfg.get("heartbeat")
-    if not isinstance(legacy, dict):
-        return None
-    migrated = {
-        key: legacy[key]
-        for key in ("every", "target", "active_hours")
-        if key in legacy
-    }
-    return migrated or None
+    return current if isinstance(current, dict) else None
 
 
 def _load_gateway_runtime_config(
@@ -216,18 +206,6 @@ def _load_gateway_runtime_config(
     same reason: it may fail independently without changing the loaded config.
     """
     import agent_gateway.common.config as config_module
-
-    try:
-        if config_module.migrate_legacy_heartbeat_probe_config():
-            logger.info(
-                "[App] migrated legacy heartbeat probe config to health_check"
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to migrate legacy heartbeat probe config; "
-            "continuing with the existing config: %s",
-            exc,
-        )
 
     try:
         full_cfg = config_module.get_config()
@@ -244,24 +222,7 @@ def _load_gateway_runtime_config(
         )
         return {}, None, None
 
-    try:
-        message_handler.update_evolution_auto_save(full_cfg)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to apply evolution auto-save config; "
-            "continuing with channel config: %s",
-            exc,
-        )
-
     health_check_cfg = _resolve_health_check_config(full_cfg)
-    if (
-        isinstance(health_check_cfg, dict)
-        and not isinstance(full_cfg.get("health_check"), dict)
-    ):
-        logger.warning(
-            "[App] legacy heartbeat probe config detected; "
-            "migrate it to health_check"
-        )
     channels_cfg = full_cfg.get("channels")
     return (
         full_cfg,
@@ -2857,10 +2818,6 @@ async def _run(
                 )
                 return False
 
-            # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
-            # MessageHandler 的流式 chunk 热路径只读取该值，不重新读盘。
-            message_handler.update_evolution_auto_save(config_payload)
-
             # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
             _schedule_agent_prewarm_sync(
                 "agent-prewarm-sync-after-config",
@@ -2879,19 +2836,6 @@ async def _run(
                     await client.send_request(restart_env)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[App] browser runtime restart failed (non-fatal): %s", e)
-
-        # 主动推荐：enabled 变更时同步 proactive.tick job（创建/删除）
-        proactive_keys = {
-            "proactive_recommendation_enabled",
-        }
-        if updated_env_keys and (proactive_keys & set(updated_env_keys)):
-            try:
-                from agent_gateway.cron.proactive_cron_sync import (
-                    sync_proactive_tick_job,
-                )
-                await sync_proactive_tick_job(cron_controller, config_payload)
-            except Exception as e:  # noqa: BLE001  # 兜底：proactive 同步失败不阻断配置保存
-                logger.warning("[App] proactive.tick sync on config save failed: %s", e)
 
         # YAML is already on disk. Pool seed and model swap run on AgentServer.
         should_sync_topic = bool(
@@ -4003,7 +3947,7 @@ async def _run(
                         manager = WebPortManager(web_channel, wp_config)
                         web_channel.web_port_manager = manager
                         manager.start()
-                        from agent_gateway.cron.factory import (
+                        from agent_gateway.runtime.cron.factory import (
                             load_cron_store_settings,
                         )
                         from agent_gateway.extensions.agentos.registry_watcher.service import (
@@ -4043,12 +3987,6 @@ async def _run(
         else None
     )
 
-    # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
-    try:
-        from agent_gateway.cron.proactive_cron_sync import sync_proactive_tick_job
-        await sync_proactive_tick_job(cron_controller, get_config())
-    except Exception as e:  # noqa: BLE001  # 兜底：启动时 proactive job 注册失败不阻断 Gateway 启动
-        logger.warning("[App] proactive.tick auto-register failed (non-fatal): %s", e)
     # 先同步完成监听绑定，避免 IDE/ACP 子进程在端口尚未就绪时连接导致多次重试。
     await gateway_server.start()
     logger.info(

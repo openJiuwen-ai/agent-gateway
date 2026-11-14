@@ -201,9 +201,9 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 | `trajectory_ui.enabled`（config） | 关 | `/api/trajectory/*` 全部 503 `TRAJECTORY_DISABLED`（§9.3） |
 | `ASR_API_BASE` / `ASR_API_KEY` / `ASR_MODEL_NAME`（env） | 未配置 | `task.asr.transcribe` 未配置/非法 → `ASR_NOT_CONFIGURED` / `ASR_BAD_CONFIG`（§10.2） |
 | `HEALTH_CHECK_INTERVAL` / `HEARTBEAT_INTERVAL`（env）→ config `health_check.every` | 60s | 探活周期；`target` / `active_hours` 见 §8.4 |
-| `HEARTBEAT_JOBS_*`（env）→ config `heartbeat.jobs.*` | 每 session ≤5、全局 ≤100、interval ≥60s | heartbeat.job 资源限制（§8.2） |
+| `heartbeat.jobs.*`（config，AgentServer 拥有） | 每 session ≤5、全局 ≤100、interval ≥60s | Gateway 不读取；heartbeat.job 资源限制由 AgentServer 执行（§8.2） |
 | `gateway.cron.store_backend`（config） | `file`（`~/.jiuwenswarm/agent/home/cron_jobs.json`） | `etcd` 时 cron 任务改存 etcd（HA） |
-| `proactive_recommendation.enabled`（config） | — | 主动推荐；开关变化自动创建/删除内置 `proactive-tick-auto` cron 任务（§8.1.6 拒绝面板删除） |
+| `proactive_recommendation.enabled`（config） | — | 已随上游移除：Gateway 不再读取该配置，模板不再包含该段（面板不可创建 `proactive.tick` 任务） |
 | `JIUWENSWARM_TASK_TEXT_LIMIT`（env） | 4096 字符 | `team.snapshot` 与 `team.task` 事件的 title/content 截断上限 |
 | `GIT_PUSH_TIMEOUT_SEC`（env） | 60s | `project.git.push` 的命令超时 |
 | 登录开关（部署侧） | 未开启 | `/api/v1/auth/authorize` 等 → 404 `login_disabled`；登录模型凭据链路不可用 |
@@ -1509,7 +1509,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 | 参数 | 类型 | 必填 | 默认/校验 | 说明 |
 |------|------|------|----------|------|
 | `id` | string | 是 | `str()` 强转 | 任务 id |
-- **行为**：停用 → 取消在途执行（并发 CHAT_CANCEL）→ 经 E2A 删除该 job 的执行会话（失败抛带 code 的 RuntimeError，如 `SESSION_BUSY`；**企业版跳过会话级联**只删 store 记录）→ 删 store。`proactive.tick` 内置任务拒绝面板删除（`BAD_REQUEST`）。
+- **行为**：停用 → 取消在途执行（并发 CHAT_CANCEL）→ 经 E2A 删除该 job 的执行会话（失败抛带 code 的 RuntimeError，如 `SESSION_BUSY`；**企业版跳过会话级联**只删 store 记录）→ 删 store。`proactive.tick` 仅用于兼容遗留任务：面板不能创建或删除该模式（`BAD_REQUEST`）。
 - **响应**：`{deleted: true}`。
 
 #### 8.1.7 cron.job.toggle
@@ -2151,7 +2151,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 ← {"type": "res", "id": "req_x", "ok": true, "payload": {"rss_mb": 256.0, "total_mb": 16384.0, "available_mb": 8192.0}}
 ```
 
-| `memory.forbidden.get/set` **E2A 代理** | get 无参；set 透传 params（非对象 `BAD_REQUEST`） | 分流：AgentOS → E2A；legacy/无 client → 本地读写 config `memory.forbidden_memory_definition` 段 |
+| `memory.forbidden.get/set` **E2A 代理** | get 无参；set 透传 params（非对象 `BAD_REQUEST`） | 恒定 E2A 代理（无本地 YAML 兜底）；无可用 client → `AGENT_NOT_READY` |
 | `hooks.list` **纯本地** | 无（E2A 分支固定发 `{}`） | 分流：legacy/无 client → 本地读 config.yaml；其余 → E2A。本地响应 `{events:[{name, total_hooks, matchers:[...]}], disable_all_hooks, source:"config.yaml"}`（覆盖全部 17 个 HookEvent） |
 | `commands.list` **纯本地** | `work_mode`（string 可选——按命令 `available_modes` 过滤） | 纯本地静态元数据（刻意不转发）：`{commands:[{name, usage, example, kind:"built-in", takesArgs, scope, execution, requires_session, available_modes, description(中文), description_i18n:{zh,en}}]}` |
 
@@ -4264,7 +4264,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 | 处理位置 | 方法 |
 |---------|------|
 | 本地（纯本地逻辑） | `memory.compute`、`hooks.list`、`commands.list`、`path.*`、`updater.*`、`health_check.*`（+heartbeat 别名）、`channel.*` 配置族、`task.asr.transcribe`、`external_cli.*`、`openai_account.*`、`cron.job.*`（9 个）、`project.remove`（Gateway 编排）、`chat.send/interrupt/resume/user_answer/swarmflow_reply`（空 ack shell）、`history.get`（ack shell）、`connection.status`、`topic_starters.*`、`prompt_suggestion.*` |
-| E2A 代理（本地 handler + 转发） | `session.list/create/get_metadata/rename/pin/plan_status/message.continue_queued`、`session.selection.set`、`project.list/info/get_sessions/get_cron_sessions/create/rename/pin/restore/pinned_sessions`、`project.git.*`（11 个）、`media.persist/discard`、`document.persist/formats`、`heartbeat.job.*`（10 个，经 HeartbeatControllerProxy）、`permissions.*`（tools/rules/approval_overrides/owner_scopes）、`a4p.*`（6 个，含 authorization.pending）、`harness.*`、`rsi.*`、`designer.*`（13 个，§10.7）、`workspace.tree/preview/usage/entries.delete`、`file.import_url`、`file.upload_chunk`、`config.get/set/save_all`、`models.*`、`model_groups.*`、`vendors.*`、`channel.get`、`memory.forbidden.get/set`（分流） |
+| E2A 代理（本地 handler + 转发） | `session.list/create/get_metadata/rename/pin/plan_status/message.continue_queued`、`session.selection.set`、`project.list/info/get_sessions/get_cron_sessions/create/rename/pin/restore/pinned_sessions`、`project.git.*`（11 个）、`media.persist/discard`、`document.persist/formats`、`heartbeat.job.*`（10 个，经 HeartbeatControllerProxy）、`permissions.*`（tools/rules/approval_overrides/owner_scopes）、`a4p.*`（6 个，含 authorization.pending）、`harness.*`、`rsi.*`、`designer.*`（13 个，§10.7）、`workspace.tree/preview/usage/entries.delete`、`file.import_url`、`file.upload_chunk`、`config.get/set/save_all`、`models.*`、`model_groups.*`、`vendors.*`、`channel.get`、`memory.forbidden.get/set` |
 | 白名单转发（无本地 handler） | `initialize`、`session.switch/fork`、`session.assets.list/register/rename`、`team.*`（templates.list/bindings.list/binding.create/binding.generate/session.bind/delete/snapshot/history.get/mq.publish/list）、`group.*`、`org.snapshot`、`swarmflow.pause/resume/stop`、`command.goal/btw/compact/mcp/workflows`、`chat.*`（上述空 ack 之外的转发主体）、`history.get`（数据主体）、`schedule.*`、`issue.*`、`skills.*`（40+）、`assets.publish.*`、`mcp.*`、`agents.*`、`agent_groups.*`、`agent_templates.*`、`plugins.*`、`plugin_packages.*`、`extensions.*`、`personal_context.*`、`proactive.feedback` |
 
 `/ws/git` 封闭方法集（6 个）：`project.git.diff_watch/diff_files_watch/diff_detail_watch/diff_unwatch/discard_turn_changes/redo_turn_changes`（§7.3）。
@@ -4797,7 +4797,7 @@ ws.addEventListener('open', async () => {
 | 派发等同纯透传 | 13 | issue.\*（4）+ schedule.\*（9）——白名单在册但未列入 no-local 名单、无本地 handler | 无（ST 已验证 params 相等） |
 | 白名单 + 网关处理 | 6 | chat.send / chat.interrupt / chat.resume / chat.user_answer / chat.swarmflow_reply / history.get | 见 F.3 逐方法改写 |
 | E2A 代理 | 128 | session.\*、project.\*、project.git.\*、media.\*、document.\*、heartbeat.job.\*、permissions.\*、a4p.\*、harness.\*、rsi.\*、designer.\*（13）、config 面板（config.\*/models.\*/model_groups.\*）、session.selection.set、workspace.\*、file.import_url/upload_chunk 等（注册本地 handler 内构造 E2A 请求） | 见 F.4 网关侧处理点 |
-| 纯本地 | 68 | cron.job.\*（9）、updater.\*（7）、channel.get + 九渠道 get_conf/set_conf（19）+ wechat 登录/解绑（2）、path.\*（5）、external_cli.\*（8）、task.asr.transcribe、memory.compute、memory.forbidden.get/set、hooks.list、commands.list、locale.\*、openai_account.\*（6）、health_check/heartbeat.get_conf/set_conf（4）、connection.status、vendors.\*（2） | 网关内执行不触达 AgentServer；path.select_\*/path.get/set、hooks.list、memory.forbidden、locale 带 legacy 本地 / AgentOS→E2A 分流 |
+| 纯本地 | 66 | cron.job.\*（9）、updater.\*（7）、channel.get + 九渠道 get_conf/set_conf（19）+ wechat 登录/解绑（2）、path.\*（5）、external_cli.\*（8）、task.asr.transcribe、memory.compute、hooks.list、commands.list、locale.\*、openai_account.\*（6）、health_check/heartbeat.get_conf/set_conf（4）、connection.status、vendors.\*（2） | 网关内执行不触达 AgentServer；path.select_\*/path.get/set、hooks.list、locale 带 legacy 本地 / AgentOS→E2A 分流 |
 | 网关薄包装转发 | 10 | topic_starters.\*（8）、prompt_suggestion.\*（2） | RPC 名改写为 `action` 字段经 `recommendation.job` 转发（注入 auth_session）；与纯本地/纯透传均不同 |
 
 > **逐方法标注**：全量 489 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。

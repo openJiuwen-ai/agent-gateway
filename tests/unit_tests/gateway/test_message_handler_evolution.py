@@ -263,23 +263,6 @@ def _evolution_question_payload(
     return payload
 
 
-def _set_evolution_auto_save(
-    monkeypatch: pytest.MonkeyPatch,
-    enabled: bool,
-) -> None:
-    monkeypatch.setattr(
-        "agent_gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
-        lambda _config=None: enabled,
-    )
-    original_init = MessageHandler.__init__
-
-    def _init_with_cached_auto_save(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        self._evolution_auto_save_enabled = enabled
-
-    monkeypatch.setattr(MessageHandler, "__init__", _init_with_cached_auto_save)
-
-
 async def _deliver_evolution_question(
     handler: _TestMessageHandler,
     path: str,
@@ -387,52 +370,6 @@ def _control_message() -> Message:
     )
 
 
-@pytest.mark.parametrize("path", ["stream", "server_push"])
-@pytest.mark.asyncio
-async def test_regular_stream_chunks_do_not_read_evolution_auto_save_config(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-) -> None:
-    calls = 0
-
-    def count_auto_save_reads() -> bool:
-        nonlocal calls
-        calls += 1
-        return True
-
-    monkeypatch.setattr(
-        "agent_gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
-        count_auto_save_reads,
-    )
-    handler = _TestMessageHandler.create()
-
-    payload = {"event_type": "chat.delta", "content": "chunk"}
-    if path == "stream":
-        published = await handler.publish_stream_chunk(
-            SimpleNamespace(
-                channel_id="web",
-                request_id="stream-1",
-                payload=payload,
-                is_complete=False,
-            ),
-            session_id="sess-1",
-        )
-        assert published is True
-    else:
-        await handler.handle_agent_server_push(
-            {
-                "request_id": "stream-1",
-                "channel_id": "web",
-                "session_id": "sess-1",
-                "is_complete": False,
-                "payload": payload,
-                "metadata": {},
-            }
-        )
-
-    assert calls == 0
-
-
 @pytest.mark.asyncio
 async def test_terminal_stream_sentinel_is_not_published() -> None:
     handler = _TestMessageHandler.create()
@@ -450,41 +387,6 @@ async def test_terminal_stream_sentinel_is_not_published() -> None:
 
     assert published is False
     assert await handler.consume_robot_messages(timeout=0) is None
-
-
-@pytest.mark.asyncio
-async def test_interrupt_evolution_approval_does_not_read_auto_save_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = 0
-
-    def count_auto_save_reads() -> bool:
-        nonlocal calls
-        calls += 1
-        return True
-
-    monkeypatch.setattr(
-        "agent_gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
-        count_auto_save_reads,
-    )
-    handler = _TestMessageHandler.create()
-    chunk = _evolution_question_chunk("call_123", include_approval_context=True)
-    chunk.payload["evolution_meta"] = _interrupt_approval_meta()
-
-    should_publish = await handler.publish_stream_chunk(
-        chunk,
-        session_id="sess-1",
-        request_metadata={"k": "v"},
-    )
-
-    assert calls == 0
-    assert should_publish is True
-    assert handler.pending_evolution_approval("sess-1") == "call_123"
-    assert handler.user_message_queue_empty() is True
-    out = await handler.consume_robot_messages(timeout=0)
-    assert out is not None
-    assert out.payload["request_id"] == "call_123"
-    assert out.metadata == {"k": "v"}
 
 
 def test_processing_status_is_only_emitted_for_chat_streams() -> None:
@@ -707,7 +609,6 @@ def test_chat_send_query_context_is_remembered_for_supplement():
 async def test_resolved_approval_replays_deferred_approval_before_supplement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _set_evolution_auto_save(monkeypatch, False)
     handler = _TestMessageHandler.create()
     handler.seed_pending_evolution_approval("sess-1", "team_skill_evolve_old")
     handler.seed_session_evolution_in_progress("sess-1")
@@ -740,7 +641,6 @@ async def test_evolution_approval_paths_suppress_deferred_chunk(
     monkeypatch: pytest.MonkeyPatch,
     path: str,
 ) -> None:
-    _set_evolution_auto_save(monkeypatch, False)
     handler = _TestMessageHandler.create()
     handler.seed_pending_evolution_approval("sess-1", "team_skill_evolve_old")
 
@@ -752,56 +652,10 @@ async def test_evolution_approval_paths_suppress_deferred_chunk(
     assert handler.user_message_queue_empty() is True
 
 
-@pytest.mark.parametrize("path", ["stream", "server_push"])
-@pytest.mark.asyncio
-async def test_evolution_approval_paths_suppress_auto_saved_chunk(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-) -> None:
-    _set_evolution_auto_save(monkeypatch, True)
-    handler = _TestMessageHandler.create()
-
-    await _deliver_evolution_question(handler, path, "team_skill_evolve_new", {"k": "v"})
-
-    assert handler.pending_evolution_approval("sess-1") is None
-    assert await handler.consume_robot_messages(timeout=0) is None
-    auto_msg = handler.pop_user_message_nowait()
-    assert auto_msg.params["request_id"] == "team_skill_evolve_new"
-    assert auto_msg.params["answers"] == [{"selected_options": ["接收"]}]
-    assert auto_msg.params["approval_schema"] == _APPROVAL_SCHEMA
-    assert auto_msg.params["evolution_meta"]["rail_kind"] == "regular"
-    assert auto_msg.metadata == {"k": "v"}
-
-
-@pytest.mark.asyncio
-async def test_auto_save_regular_approval_preserves_pending_interrupt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_evolution_auto_save(monkeypatch, True)
-    handler = _TestMessageHandler.create()
-    handler.seed_pending_evolution_approval("sess-1", "call_123")
-
-    await handler.handle_evolution_chunk(
-        _evolution_question_chunk("skill_evolve_new"),
-        "sess-1",
-        {"k": "v"},
-    )
-
-    assert handler.pending_evolution_approval("sess-1") == "call_123"
-    auto_msg = handler.pop_user_message_nowait()
-    assert auto_msg.params["request_id"] == "skill_evolve_new"
-    assert auto_msg.params["source"] == _APPROVAL_SOURCE
-    assert auto_msg.params["approval_schema"] == _APPROVAL_SCHEMA
-    assert auto_msg.params["evolution_meta"]["rail_kind"] == "regular"
-    assert "approval_transport" not in auto_msg.params["evolution_meta"]
-    assert auto_msg.metadata == {"k": "v"}
-
-
 @pytest.mark.asyncio
 async def test_handle_evolution_chunk_tracks_regular_approval_without_request_prefix(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _set_evolution_auto_save(monkeypatch, False)
     handler = _TestMessageHandler.create()
 
     await handler.handle_evolution_chunk(
@@ -811,31 +665,6 @@ async def test_handle_evolution_chunk_tracks_regular_approval_without_request_pr
     )
 
     assert handler.pending_evolution_approval("sess-1") == "approval_123"
-
-
-@pytest.mark.asyncio
-async def test_regular_auto_save_answer_resolved_clears_processing_status(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_evolution_auto_save(monkeypatch, True)
-    handler = _TestMessageHandler.create()
-    old_response_payload = dict(_FakeAgentClient.response_payload)
-    _FakeAgentClient.response_payload = {"accepted": True, "resolved": True}
-    await handler.handle_evolution_chunk(
-        _evolution_question_chunk("team_skill_evolve_123"),
-        "sess-1",
-    )
-    await handler.start_forwarding()
-    try:
-        outputs = [
-            await handler.consume_robot_messages(timeout=2),
-            await handler.consume_robot_messages(timeout=2),
-        ]
-
-        assert _has_finished_processing_status(outputs)
-    finally:
-        _FakeAgentClient.response_payload = old_response_payload
-        await handler.stop_forwarding()
 
 
 @pytest.mark.asyncio
