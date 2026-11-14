@@ -35,9 +35,7 @@ import sys
 import time
 from typing import Any
 
-import yaml
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
-from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_config
 
 from agent_gateway.common.config import (
     get_config,
@@ -51,7 +49,6 @@ from agent_gateway.common.reasoning_config import (
     resolve_endpoint_profile_override,
     validate_reasoning_level_for_model,
 )
-from agent_gateway.common.paths import get_infra_data_dir, get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -83,130 +80,6 @@ def _get_crypto_provider() -> Any:
         return get_crypto_provider()
     except Exception:  # noqa: BLE001
         return None
-
-
-# --------------------------------------------------------------------------- #
-# Auto-Harness 配置（~/.jiuwenswarm/auto-harness/config.yaml，TUI config 域专属）
-# --------------------------------------------------------------------------- #
-_DEFAULT_REPO_URL = "https://gitcode.com/openJiuwen/agent-core.git"
-_AUTO_HARNESS_CONFIG_DIR = get_infra_data_dir() / "auto-harness"
-_AUTO_HARNESS_CONFIG_FILE = _AUTO_HARNESS_CONFIG_DIR / "config.yaml"
-_AUTO_HARNESS_LOCAL_REPO = _AUTO_HARNESS_CONFIG_DIR / "repo" / "openJiuwen--agent-core"
-
-# Default values for ci_gate config
-_DEFAULT_CI_GATE_PYTHON_EXECUTABLE = sys.executable
-_DEFAULT_CI_GATE_INSTALL_COMMAND = "uv sync --active --group dev --extra cli"
-
-
-def get_auto_harness_config() -> dict[str, Any]:
-    """Load auto-harness config.yaml with auto-fill for ci_gate defaults."""
-    config: dict[str, Any] = {}
-
-    if not _AUTO_HARNESS_CONFIG_FILE.exists():
-        load_auto_harness_config(str(_AUTO_HARNESS_CONFIG_FILE))
-
-    try:
-        config = yaml.safe_load(_AUTO_HARNESS_CONFIG_FILE.read_text(encoding="utf-8")) or {}
-    except Exception as e:
-        logger.warning("[auto-harness config] Failed to load: %s", e)
-        config = {}
-
-    # Auto-fill ci_gate defaults if missing
-    ci_gate = config.get("ci_gate") or {}
-    git_config = config.get("git") or {}
-    needs_save = False
-
-    git_remote = git_config.get("remote")
-    if not git_remote:
-        git_config["remote"] = "autoharness"
-
-    # Ensure local_repo is a string (not Path object which causes YAML serialization issues)
-    local_repo = config.get("local_repo")
-    repo_url = config.get("repo_url")
-    if not local_repo:
-        config["local_repo"] = str(_AUTO_HARNESS_LOCAL_REPO)
-        needs_save = True
-
-    if not repo_url:
-        config["repo_url"] = str(_DEFAULT_REPO_URL)
-        needs_save = True
-
-    elif hasattr(local_repo, "__fspath__"):  # Path-like object
-        config["local_repo"] = str(local_repo)
-        needs_save = True
-
-    if not ci_gate.get("python_executable"):
-        ci_gate["python_executable"] = str(_DEFAULT_CI_GATE_PYTHON_EXECUTABLE)
-        needs_save = True
-
-    if not ci_gate.get("install_command"):
-        ci_gate["install_command"] = _DEFAULT_CI_GATE_INSTALL_COMMAND
-        needs_save = True
-
-    budget = config.get("budget", {})
-    max_tasks_per_session = budget.get("max_tasks_per_session", 5)
-    if max_tasks_per_session > 5:
-        budget["max_tasks_per_session"] = 5
-        needs_save = True
-
-    if needs_save:
-        config["ci_gate"] = ci_gate
-        _save_auto_harness_config(config)
-        logger.info("[auto-harness config] Auto-filled ci_gate defaults: python_executable=%s, install_command=%s",
-                    ci_gate.get("python_executable"), ci_gate.get("install_command"))
-
-    return config
-
-
-def _save_auto_harness_config(config: dict[str, Any]) -> None:
-    """Save auto-harness config.yaml."""
-    _AUTO_HARNESS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    _AUTO_HARNESS_CONFIG_FILE.write_text(
-        yaml.dump(config, allow_unicode=True, sort_keys=False, default_flow_style=False),
-        encoding="utf-8"
-    )
-
-
-def _update_auto_harness_git_user_name(value: str) -> None:
-    """Update git.user_name, fork_owner, and gitcode.username in auto-harness config.
-    - git.user_name: 用于 git commit
-    - git.fork_owner: 用于创建 PR
-    - gitcode.username: GitCode 登录用户名
-    """
-    config = get_auto_harness_config()
-    if "git" not in config:
-        config["git"] = {}
-    config["git"]["user_name"] = value
-    config["git"]["fork_owner"] = value  # 合并：用户名同时作为 fork_owner
-    if "gitcode" not in config:
-        config["gitcode"] = {}
-    config["gitcode"]["username"] = value  # 合并：用户名同时作为 gitcode.username
-    _save_auto_harness_config(config)
-
-
-def _update_auto_harness_git_user_email(value: str) -> None:
-    """Update git.user_email in auto-harness config."""
-    config = get_auto_harness_config()
-    if "git" not in config:
-        config["git"] = {}
-    config["git"]["user_email"] = value
-    _save_auto_harness_config(config)
-
-
-def _update_auto_harness_gitcode_access_token(value: str) -> None:
-    """Update gitcode.access_token in auto-harness config."""
-    config = get_auto_harness_config()
-    if "gitcode" not in config:
-        config["gitcode"] = {}
-    config["gitcode"]["access_token"] = value
-    _save_auto_harness_config(config)
-
-
-# --------------------------------------------------------------------------- #
-# TUI config.set 键映射与工具
-# --------------------------------------------------------------------------- #
-
-
 # --------------------------------------------------------------------------- #
 # handler 实现（channel 语义与 tui_connect 原实现一致）
 # --------------------------------------------------------------------------- #
