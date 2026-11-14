@@ -106,7 +106,10 @@ def _add_template_crud(
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        # Expert-package allowlist is stamped from Gateway DB on the next
+        # request; AgentServer pods do not need a config_refresh for that.
+        if tag != "expert_package":
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, result)
         )
@@ -124,7 +127,8 @@ def _add_template_crud(
             )
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        if tag != "expert_package":
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
@@ -139,7 +143,8 @@ def _add_template_crud(
             await svc_factory().delete(template_id)
         except ValueError as exc:
             raise _http_exc(exc) from exc
-        trigger_runtime_config_update()
+        if tag != "expert_package":
+            trigger_runtime_config_update()
         return ResponseModel(
             code=200, message="success", data=sync_write_data(sync, None)
         )
