@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.util
 import sys
@@ -125,14 +126,16 @@ class ExtensionLoader:
             logger.info(f"[ExtensionLoader] 正在安装扩展 {extension_name} 的依赖: {package_name}")
             try:
                 if use_uv:
-                    subprocess.check_call(
+                    await asyncio.to_thread(
+                        subprocess.check_call,
                         [uv_path, "pip", "install", package_name],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
                         timeout=120,
                     )
                 else:
-                    subprocess.check_call(
+                    await asyncio.to_thread(
+                        subprocess.check_call,
                         [sys.executable, "-m", "pip", "install", package_name],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.PIPE,
