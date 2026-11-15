@@ -6562,7 +6562,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 return
             if route is None:
                 # HTTP Outbound 不进 _clients_by_key；回退去该 session 上已有逻辑路由。
-                # 多匹配时与上方取最近一条语义一致。
+                # 多匹配时取最近一条。
                 clients_by_key = getattr(channel, "_clients_by_key", None) or {}
                 for routing_key in reversed(list(clients_by_key)):
                     if getattr(routing_key, "session_id", None) == session_id:
@@ -6576,7 +6576,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 }
             elif getattr(ws, "is_http_outbound", False):
                 # 纯 HTTP Outbound：没有 WS routing key 时不要填假的 app_id/agent_ref。
-                # AS 侧 _route_matches 对空字段跳过该维度，仍要求同 session。
+                # AS 侧 _route_matches 对空字段跳过该维度，仍要求同 session，
+                # 避免默认值与发单时 agent_ref 不一致导致点授权失败，也避免
+                # 「同 session 即可」的跨 agent 放行。
                 # 真实 WebSocket 仍走下方 A4P_WEB_SESSION_REQUIRED，不得假造 route。
                 route_metadata["app_id"] = ""
                 route_metadata["agent_ref"] = {"mode": "", "id": ""}

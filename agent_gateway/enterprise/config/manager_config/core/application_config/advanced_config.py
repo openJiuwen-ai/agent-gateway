@@ -12,7 +12,7 @@ from agent_gateway.config.enterprise.tables.application_config_models import (
 )
 
 from ...infrastructure.repository_access import require_enterprise_repository
-from ...infrastructure.utils import format_ts, utc_now
+from ...infrastructure.utils import format_ts, parse_iso_datetime, utc_now
 
 _TABLE = ADVANCED_CONFIG_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "a4p_enabled": bool(row.get("a4p_enabled", False)),
         "auto_memory_enabled": bool(row.get("auto_memory_enabled", False)),
         "enable_kv_cache_affinity": bool(row.get("enable_kv_cache_affinity", False)),
-        "data": row.get("data") if isinstance(row.get("data"), dict) else row.get("data"),
+        "data": row.get("data"),
         "created_at": format_ts(row.get("created_at")),
         "updated_at": format_ts(row.get("updated_at")),
     }
@@ -102,25 +102,18 @@ async def _upsert_advanced_config_record(request: dict[str, Any]) -> dict[str, A
     now = utc_now()
     tid = normalized["agent_template_id"]
     existing = await repo.get({"agent_template_id": tid})
-    if existing is None:
-        created = await repo.create(
-            {
-                **normalized,
-                "created_at": now,
-                "updated_at": now,
-            }
-        )
-        return _row_to_dict(created)
-    updated = await repo.update(
-        {"agent_template_id": tid},
+    created_at = now
+    if existing is not None:
+        # update 分支沿用已有 created_at，避免 upsert 浅合并冲掉创建时间。
+        created_at = parse_iso_datetime(existing.get("created_at")) or now
+    saved = await repo.upsert(
         {
-            **{k: v for k, v in normalized.items() if k != "agent_template_id"},
+            **normalized,
+            "created_at": created_at,
             "updated_at": now,
-        },
+        }
     )
-    if updated is None:
-        raise ValueError("failed to update advanced_config")
-    return _row_to_dict(updated)
+    return _row_to_dict(saved)
 
 
 class AdvancedConfigService:

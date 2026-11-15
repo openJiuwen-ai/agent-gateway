@@ -379,6 +379,36 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
+async def test_a4p_rpc_http_outbound_allows_empty_agent_ref_without_route(method) -> None:
+    """HTTP Outbound 无 WS 路由时仍可转发，metadata 留空 app/agent 交给 AS 跳过匹配。"""
+
+    class _AgentClient:
+        server_ready = True
+
+        def __init__(self) -> None:
+            self.envelope = None
+
+        async def send_request(self, envelope):
+            self.envelope = envelope
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    agent_client = _AgentClient()
+    _bind(channel, agent_client=agent_client)
+    ws = SimpleNamespace(_jiuwen_ws_id="http-out-1", is_http_outbound=True)
+
+    await channel.methods[method](ws, "rpc-1", {}, "session-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert agent_client.envelope.channel_context == {
+        "ws_id": "http-out-1",
+        "app_id": "",
+        "agent_ref": {"mode": "", "id": ""},
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cli_agent", "package", "relative"),
     [("claude", "claude_agent_sdk", "_bundled/claude"), ("codex", "codex_cli_bin", "bin/codex")],
