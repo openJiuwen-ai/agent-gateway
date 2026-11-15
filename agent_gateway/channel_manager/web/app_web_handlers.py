@@ -6560,12 +6560,27 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     code="A4P_WEB_ROUTE_AMBIGUOUS",
                 )
                 return
+            if route is None:
+                # HTTP Outbound 不进 _clients_by_key；回退去该 session 上已有逻辑路由。
+                # 多匹配时与上方取最近一条语义一致。
+                clients_by_key = getattr(channel, "_clients_by_key", None) or {}
+                for routing_key in reversed(list(clients_by_key)):
+                    if getattr(routing_key, "session_id", None) == session_id:
+                        route = routing_key
+                        break
             if route is not None:
                 route_metadata["app_id"] = route.app_id
                 route_metadata["agent_ref"] = {
                     "mode": route.agent_ref.mode,
                     "id": route.agent_ref.id,
                 }
+            elif getattr(ws, "is_http_outbound", False):
+                # 纯 HTTP Outbound：没有 WS routing key 时不要填假的 app_id/agent_ref。
+                # AS 侧 _route_matches 对空字段跳过该维度，仍要求同 session。
+                # 真实 WebSocket 仍走下方 A4P_WEB_SESSION_REQUIRED，不得假造 route。
+                route_metadata["app_id"] = ""
+                route_metadata["agent_ref"] = {"mode": "", "id": ""}
+                route = True
         except Exception:
             logger.warning("[a4p] failed to resolve Web authorizer route", exc_info=True)
         if route is None:

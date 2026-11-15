@@ -223,6 +223,48 @@ _IM_HOSTING_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# settings — a4p.* (enterprise HTTP User Authorizer; WS methods already exist)
+# ---------------------------------------------------------------------------
+_A4P_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/a4p/config", "a4p.config.get",
+        "a4p", "读取 A4P 配置",
+        query_keys=("session_id",),
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/a4p/config", "a4p.config.update",
+        "a4p", "更新 A4P 配置",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/a4p/authorization/pending", "a4p.authorization.pending",
+        "a4p", "查询待授权请求",
+        query_keys=("session_id",),
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/complete", "a4p.authorization.complete",
+        "a4p", "完成 A4P 授权",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/reject", "a4p.authorization.reject",
+        "a4p", "拒绝 A4P 授权",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/reprepare", "a4p.authorization.reprepare",
+        "a4p", "调整 A4P 授权范围",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+)
+
 SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_CONFIG_ROUTES,
     *_A2A_INGRESS_ROUTES,
@@ -230,6 +272,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_LOCALE_ROUTES,
     *_CRON_ROUTES,
     *_IM_HOSTING_ROUTES,
+    *_A4P_ROUTES,
 )
 
 # ---------------------------------------------------------------------------
