@@ -234,7 +234,7 @@ _A4P_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
-        "PATCH", "/a4p/config", "a4p.config.update",
+        "PUT", "/a4p/config", "a4p.config.update",
         "a4p", "更新 A4P 配置",
         accept_body=True,
         bind_session_param=True,
