@@ -15,6 +15,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
 from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -88,6 +89,56 @@ def _bind(channel: FakeWebChannel | None = None, **kwargs) -> FakeWebChannel:
     channel = channel or FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, **kwargs))
     return channel
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("method", [
+    "multimodal.models.list",
+    "multimodal.models.get",
+    "multimodal.models.upsert",
+    "multimodal.models.delete",
+    "multimodal.tools.update",
+    "multimodal.config.apply",
+])
+async def test_multimodal_uses_existing_config_routing_and_preserves_payload(monkeypatch, method, enterprise):
+    from agent_gateway.routing import e2a_proxy
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"code": "MM_CONFIRM_REQUIRED", "affected_tools": ["vision"]}
+    send = AsyncMock(return_value=SimpleNamespace(ok=False, payload=payload))
+    monkeypatch.setattr(client, "send_request", send)
+    proxy = AsyncMock(wraps=e2a_proxy.proxy_unary_request)
+    monkeypatch.setattr(e2a_proxy, "proxy_unary_request", proxy)
+    channel = _bind(agent_client=client)
+    ws = SimpleNamespace(_jiuwen_auth_session="authenticated-session")
+    await channel.methods[method](ws, "multimodal-request", {E2A_AUTH_SESSION_PARAM_KEY: "spoofed"}, "settings", "user-42")
+    send.assert_awaited_once()
+    request = send.call_args.args[0]
+    assert request.method == method
+    assert request.user_id == "user-42"
+    assert request.params[E2A_AUTH_SESSION_PARAM_KEY] == "authenticated-session"
+    assert channel.responses[-1]["payload"] == payload
+    assert channel.responses[-1]["ok"] is False
+    assert "timeout_seconds" not in proxy.call_args.kwargs
+    assert proxy.call_args.kwargs["preserve_error_payload"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("method", [
+    "multimodal.models.list", "multimodal.models.get", "multimodal.models.upsert",
+    "multimodal.models.delete", "multimodal.tools.update", "multimodal.config.apply",
+])
+async def test_multimodal_without_agent_server_uses_existing_unavailable_error(monkeypatch, method, enterprise):
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
+    channel = _bind()
+    await channel.methods[method](object(), "unavailable-multimodal", {}, None)
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
 
 
 class _FakeModelsResponse:
@@ -1141,6 +1192,8 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
 async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 企业版 + legacy 共享目录：保留本地写回与 runtime 重启语义。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     agent_client = WebSocketAgentServerClient()
     saved_configs: list[dict] = []
     lifecycle_calls: list[tuple[str, object]] = []
@@ -1194,6 +1247,8 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
 async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 企业版 + legacy 共享目录：本地校验 hybrid 模式缺 key 时拒绝写回。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     agent_client = WebSocketAgentServerClient()
     writes: list[object] = []
     monkeypatch.delenv("TEST_JEV_UI_KEY", raising=False)
@@ -1220,6 +1275,8 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
 
 @pytest.mark.asyncio
 async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    # 企业版 + 无 client：本地写回 display_name 并回显。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     from agent_gateway.common import config as config_module
 
     current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
@@ -1247,6 +1304,174 @@ async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
     assert current["browser"]["decision"]["display_name"] == "My Jev"
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_path_get_proxies_to_agent_server(monkeypatch) -> None:
+    # 回归（A4g 对齐）：个人版 legacy 共享目录的 path.get 统一经目标
+    # AgentServer——config.save_all 已写 AgentServer 侧环境，读取跟随同一侧
+    # 才能看到已保存的 Jev key（修复保存成功后显示"未配置"）。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {
+        "chrome_path": "/usr/bin/chromium",
+        "headless": False,
+        "decision_mode": "hybrid",
+        "jev_key_configured": True,
+    }
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-path-get", {}, "sess-1")
+    send_request.assert_awaited_once()
+    assert send_request.call_args.args[0].method == "path.get"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+    assert channel.responses[-1]["payload"]["jev_key_configured"] is True
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_path_set_proxies_to_agent_server(monkeypatch) -> None:
+    # 个人版 legacy 共享目录的 path.set 同样经目标 AgentServer 写入；
+    # on_done 维护回调（清 AgentServer config 缓存、重启浏览器 runtime）
+    # 仍随成功响应触发。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"chrome_path": "/usr/bin/chromium", "headless": False, "jev_key_configured": True}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    cache_clear = AsyncMock()
+    runtime_restart = AsyncMock()
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", cache_clear)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", runtime_restart)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.set"](
+        object(),
+        "req-path-set",
+        {"chrome_path": "/usr/bin/chromium", "headless": False, "decision_mode": "hybrid"},
+        "sess-1",
+    )
+    proxied_methods = [call.args[0].method for call in send_request.await_args_list]
+    assert "path.get" in proxied_methods  # prev fetch for runtime identity
+    assert "path.set" in proxied_methods
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+    cache_clear.assert_awaited_once_with(client)
+    runtime_restart.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_personal_path_get_without_agent_server_is_unavailable(monkeypatch) -> None:
+    # 个人版无可用 AgentServer：与 A4g 后的 config.* 一致，返回
+    # SERVICE_UNAVAILABLE，不再回落读 Gateway 本地启动环境。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    channel = _bind()
+    await channel.methods["path.get"](object(), "req-path-noagent", {}, "sess-1")
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_personal_path_set_without_agent_server_is_unavailable(monkeypatch) -> None:
+    # 个人版无可用 AgentServer：path.set 同样返回 SERVICE_UNAVAILABLE，且绝不
+    # 回落 Gateway 本地写回——否则"保存成功但写错一侧"的故障将原样回归。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    writes: list[object] = []
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: writes.append(updates))
+
+    async def fail_if_touched(*_args, **_kwargs):
+        raise AssertionError("local maintenance path must not run")
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", fail_if_touched)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", fail_if_touched)
+    channel = _bind()
+    await channel.methods["path.set"](
+        object(),
+        "req-path-set-noagent",
+        {"chrome_path": "/usr/bin/chromium", "headless": False},
+        "sess-1",
+    )
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
+    assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_personal_unready_legacy_client_contract(monkeypatch) -> None:
+    # 个人版"有 client 但未 ready"（桌面启动窗口期）的契约随基线不同：
+    # - develop：_agent_unavailable 有 can_reconnect 契约（请求驱动重连），
+    #   可重连的未 ready client 仍走代理路径；
+    # - release/0.1.0：基线早于该契约，未 ready 一律视为不可用 →
+    #   SERVICE_UNAVAILABLE。两侧都与 config.* 的处理一致。
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()  # 未 _apply_connection_ack，server_ready=False
+    assert client.server_ready is False
+    has_reconnect_contract = hasattr(type(client), "can_reconnect")
+    if has_reconnect_contract:
+        monkeypatch.setattr(type(client), "can_reconnect", property(lambda self: True))
+    payload = {"chrome_path": "/usr/bin/chromium", "headless": True, "jev_key_configured": True}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-path-unready", {}, "sess-1")
+    resp = channel.responses[-1]
+    if has_reconnect_contract:
+        send_request.assert_awaited_once()
+        assert send_request.call_args.args[0].method == "path.get"
+        assert resp["ok"] is True
+        assert resp["payload"] == payload
+    else:
+        assert resp["ok"] is False
+        assert resp["code"] == "SERVICE_UNAVAILABLE"
+        assert resp["error"] == "AgentServer is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_enterprise_runtime_routed_path_uses_local_execution(monkeypatch) -> None:
+    # 企业版 + RuntimeRouted：与 config.*（_register_config_proxy）同判据走本地。
+    # 该判据下 config.set/save_all 本就是 Gateway 本地 handler（runtime HTTP 无
+    # config REST，企业配置读 Gateway Manager 库），path 读写保持同侧，避免
+    # "保存写 Gateway 侧、读取却代理到 Pod"的企业版读写分离。
+    class RuntimeRoutedAgentClient:
+        """只借用这个类名，测试不加载扩展包。"""
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    client = RuntimeRoutedAgentClient()
+    saved_configs: list[dict] = []
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda config: saved_configs.append(config))
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"browser": {"chrome_path": "", "headless": True}},
+    )
+    cache_clear = AsyncMock()
+    runtime_restart = AsyncMock()
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", cache_clear)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", runtime_restart)
+    channel = _bind(agent_client=client)
+    await channel.methods["path.get"](object(), "req-rr-path-get", {}, "sess-1")
+    get_resp = channel.responses[-1]
+    assert get_resp["ok"] is True
+    assert get_resp["payload"]["chrome_path"] == ""
+    await channel.methods["path.set"](
+        object(),
+        "req-rr-path-set",
+        {"chrome_path": "/usr/bin/chromium", "headless": False},
+        "sess-1",
+    )
+    set_resp = channel.responses[-1]
+    assert saved_configs == [{"chrome_path": "/usr/bin/chromium", "headless": False}]
+    assert set_resp["ok"] is True
+    assert set_resp["payload"]["chrome_path"] == "/usr/bin/chromium"
+    cache_clear.assert_awaited_once_with(client)
+    runtime_restart.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1506,10 +1731,22 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
 
 @pytest.mark.asyncio
 async def test_task_asr_rpc_returns_transcript(monkeypatch):
-    async def fake_transcribe(params):
+    from agent_gateway.routing import e2a_proxy
+
+    async def fetch_config(**kwargs):
+        assert kwargs['req_method'].value == 'config.get'
+        assert kwargs['timeout_seconds'] == 5
+        assert kwargs['session_id'] == 'session'
+        assert kwargs['user_id'] == 'user-1'
+        return True, {'asr_api_base': 'https://asr.example/v1', 'asr_api_key': 'saved-key', 'asr_model': 'saved-model'}
+
+    async def fake_transcribe(params, *, environ):
         assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        assert environ == {'ASR_API_BASE': 'https://asr.example/v1', 'ASR_API_KEY': 'saved-key', 'ASR_MODEL_NAME': 'saved-model'}
         return "transcribed speech"
 
+    monkeypatch.setattr(app_web_handlers, '_is_enterprise_edition', lambda: False)
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', fetch_config)
     monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
     channel = _bind()
     await channel.methods["task.asr.transcribe"](
@@ -1517,6 +1754,7 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         "req-task-asr",
         {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"},
         "session",
+        "user-1",
     )
     assert channel.responses[-1] == {
         "id": "req-task-asr",
@@ -1525,6 +1763,25 @@ async def test_task_asr_rpc_returns_transcript(monkeypatch):
         "error": None,
         "code": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_task_asr_config_failure_does_not_use_gateway_credentials(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    async def unavailable(**kwargs):
+        return False, {'error': 'AgentServer is unavailable', 'code': 'SERVICE_UNAVAILABLE'}
+
+    async def unexpected_transcribe(*args, **kwargs):
+        pytest.fail('must not use stale Gateway configuration')
+
+    monkeypatch.setattr(app_web_handlers, '_is_enterprise_edition', lambda: False)
+    monkeypatch.setattr(e2a_proxy, 'fetch_agent_unary', unavailable)
+    monkeypatch.setattr(app_web_handlers, 'transcribe_task_audio', unexpected_transcribe)
+    channel = _bind()
+    await channel.methods['task.asr.transcribe'](object(), 'asr-unavailable', {}, 'session')
+    assert channel.responses[-1]['ok'] is False
+    assert channel.responses[-1]['code'] == 'SERVICE_UNAVAILABLE'
 
 
 @pytest.mark.asyncio
@@ -2138,6 +2395,16 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
 ])
 def test_web_retains_mainline_group_and_session_asset_forwarding(method):
     channel = _bind()
+    assert method not in channel.methods
+    assert method in app_web_handlers._FORWARD_REQ_METHODS
+    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
+def test_employee_artifact_list_is_forwarded_to_agent_server():
+    method = "jiuwenmate.artifact.list"
+    channel = _bind()
+
+    assert ReqMethod(method) is ReqMethod.JIUWENMATE_ARTIFACT_LIST
     assert method not in channel.methods
     assert method in app_web_handlers._FORWARD_REQ_METHODS
     assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
@@ -3027,3 +3294,72 @@ async def test_run_notification_subscription_applies_access_checks(monkeypatch):
     web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
     endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
     assert await endpoint(SimpleNamespace()) is denied
+
+
+@pytest.mark.asyncio
+async def test_task_asr_enterprise_local_config_does_not_fetch(monkeypatch):
+    from agent_gateway.routing import e2a_proxy
+
+    async def unexpected_fetch(**kwargs):
+        pytest.fail("local enterprise ASR must not fetch remote configuration")
+
+    async def transcribe(params, *, environ=None):
+        assert environ is None
+        return "local transcript"
+
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", unexpected_fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", transcribe)
+    channel = _bind(agent_client=None)
+    await channel.methods["task.asr.transcribe"](object(), "local-asr", {}, "session")
+    assert channel.responses[-1]["payload"] == {"text": "local transcript"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("config, warns", [
+    ({}, True),
+    ({"asr_api_base": "", "asr_api_key": "", "asr_model": ""}, False),
+])
+async def test_task_asr_warns_only_for_missing_config_contract(monkeypatch, config, warns):
+    from agent_gateway.routing import e2a_proxy
+    from unittest.mock import Mock
+
+    async def fetch(**kwargs):
+        return True, config
+
+    async def transcribe(params, *, environ):
+        assert environ == {"ASR_API_BASE": "", "ASR_API_KEY": "", "ASR_MODEL_NAME": ""}
+        return ""
+
+    warning = Mock()
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", transcribe)
+    monkeypatch.setattr(app_web_handlers.logger, "warning", warning)
+    channel = _bind()
+    await channel.methods["task.asr.transcribe"](object(), "missing-asr", {}, "session")
+    assert warning.called is warns
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["invalid", [], 42, {"asr_api_key_decrypted": "true"}])
+async def test_task_asr_rejects_invalid_config_protocol(monkeypatch, payload):
+    from agent_gateway.routing import e2a_proxy
+
+    async def fetch(**kwargs):
+        assert kwargs["params"] == {"_jiuwen_auth_session": "login-session"}
+        return True, payload
+
+    async def unexpected_transcribe(*args, **kwargs):
+        pytest.fail("invalid protocol must not reach transcription")
+
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", unexpected_transcribe)
+    channel = _bind()
+    from types import SimpleNamespace
+    ws = SimpleNamespace(_jiuwen_auth_session="login-session")
+    await channel.methods["task.asr.transcribe"](ws, "invalid-config", {}, "session")
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "UPSTREAM_PROTOCOL_ERROR"

@@ -8,7 +8,7 @@
 - 非流式请求按 ``method`` 返回固定 payload；
 - ``chat.send`` 流式请求返回 delta + final 两帧。
 
-请求/响应线格式复用 openjiuwen-protocol，和真实 AgentServer 保持同一套编解码。
+请求/响应线格式复用 e2a 协议包，和真实 AgentServer 保持同一套编解码。
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ import logging
 import threading
 from typing import Any
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )

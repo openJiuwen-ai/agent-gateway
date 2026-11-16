@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
-from ..core.application_config.package_allowlist import PackageAllowlistService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
@@ -17,7 +16,6 @@ from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
     AuditLogUpsertRequest,
     CronPolicyUpsertRequest,
-    PackageAllowlistUpsertRequest,
     LoggingConfigUpsertRequest,
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
@@ -41,7 +39,6 @@ TaskMemorySyncBody = make_sync_body("TaskMemorySyncBody", TaskMemoryUpsertReques
 MemorySyncBody = make_sync_body("MemorySyncBody", MemoryConfigUpsertRequest)
 AuditLogSyncBody = make_sync_body("AuditLogSyncBody", AuditLogUpsertRequest)
 CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertRequest)
-PackageAllowlistSyncBody = make_sync_body("PackageAllowlistSyncBody", PackageAllowlistUpsertRequest)
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
 )
@@ -122,32 +119,10 @@ async def delete_memory(
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
-@application_config_router.put("/package-allowlists", response_model=ResponseModel)
-async def upsert_package_allowlist(
-    sync: Annotated[SyncContext, Depends(verify_sync(PackageAllowlistSyncBody))],
-):
-    try:
-        result = await PackageAllowlistService().upsert(sync.business)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
-
-
-@application_config_router.delete("/package-allowlists", response_model=ResponseModel)
-async def delete_package_allowlist(
-    sync: VerifySyncEnvelopeOnly,
-):
-    try:
-        await PackageAllowlistService().delete()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
-
-
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
 async def list_package_allowlist_catalog(request: Request):
     """Query the Server via E2A, preserving the management response contract."""
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
     channel = getattr(request.app.state, "manager_agent_channel", None)
@@ -172,7 +147,7 @@ async def list_package_allowlist_catalog(request: Request):
 
 def _without_hidden_hub_items(payload: dict[str, Any]) -> dict[str, Any]:
     """管理端目录去掉企业版不提供的 Hub 包。本路由只在企业版注册。"""
-    from openjiuwen_protocol.package_allowlist import HIDDEN_HUB_ASSET_IDS
+    from agent_gateway.common.expert_packages import HIDDEN_HUB_ASSET_IDS
 
     items = payload.get("items")
     if not isinstance(items, list):

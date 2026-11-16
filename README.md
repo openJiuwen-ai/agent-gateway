@@ -159,7 +159,7 @@ The gateway is stateless with respect to agent execution: everything that touche
 
 ### config.yaml
 
-The config file lives at `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`. It is optional for a first run — the gateway warns and uses defaults when it is missing. To start with every IM channel disabled:
+The config file lives at `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`. On a first standalone start, Gateway installs its bundled template when this file is missing; existing user configuration is preserved. To start with every IM channel disabled:
 
 ```yaml
 channels: {}

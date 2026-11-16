@@ -4,9 +4,8 @@
 
 from __future__ import annotations
 
-from openjiuwen_protocol.expert_http_routes import expert_http_routes
-
 from agent_gateway.channel_manager.web.http_routes.mapped import WebHttpMappedRoute
+from agent_gateway.common.expert_http_routes import expert_http_routes
 
 _TENANT_QUERY = ("group_id", "bot_id", "user_id", "service_id", "agent_id")
 
@@ -14,7 +13,10 @@ _TENANT_QUERY = ("group_id", "bot_id", "user_id", "service_id", "agent_id")
 _NORTHBOUND: dict[str, dict] = {
     "agent_templates.list": {
         "summary": "列出可见的专家包",
-        "query_keys": ("filter", "ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+        "query_keys": (
+            "filter", "query", "cache_mode", "refresh", "ui_language",
+            "organization_id", "department_id",
+        ) + _TENANT_QUERY,
         "path_to_param": {},
         "accept_body": False,
     },
@@ -44,6 +46,57 @@ _NORTHBOUND: dict[str, dict] = {
     },
     "agent_templates.uninstall": {
         "summary": "卸载专家包",
+        "query_keys": (),
+        "path_to_param": {"id": "id"},
+        "accept_body": True,
+    },
+    "agent_groups.list": {
+        "summary": "列出可见的专家团",
+        "query_keys": (
+            "filter", "query", "cache_mode", "refresh", "ui_language",
+            "organization_id", "department_id",
+        ) + _TENANT_QUERY,
+        "path_to_param": {},
+        "accept_body": False,
+    },
+    "agent_groups.create": {
+        "summary": "创建专家团",
+        "query_keys": (),
+        "path_to_param": {},
+        "accept_body": True,
+    },
+    "agent_groups.import_local": {
+        "summary": "从本地路径导入专家团",
+        "query_keys": (),
+        "path_to_param": {},
+        "accept_body": True,
+    },
+    "agent_groups.show": {
+        "summary": "专家团详情",
+        "query_keys": ("ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+        "path_to_param": {"id": "id"},
+        "accept_body": False,
+    },
+    "agent_groups.file.list": {
+        "summary": "专家团文件列表",
+        "query_keys": ("ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+        "path_to_param": {"id": "id"},
+        "accept_body": False,
+    },
+    "agent_groups.file.read": {
+        "summary": "读取专家团文本文件",
+        "query_keys": ("path", "ui_language", "organization_id", "department_id") + _TENANT_QUERY,
+        "path_to_param": {"id": "id"},
+        "accept_body": False,
+    },
+    "agent_groups.install": {
+        "summary": "安装专家团",
+        "query_keys": (),
+        "path_to_param": {"id": "id"},
+        "accept_body": True,
+    },
+    "agent_groups.uninstall": {
+        "summary": "卸载专家团",
         "query_keys": (),
         "path_to_param": {"id": "id"},
         "accept_body": True,

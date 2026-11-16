@@ -30,9 +30,9 @@ class AdxFileMixin:
     @asynccontextmanager
     async def _file_environment(self, user: str, agent_type: str | None, instance_id: str | None,
                                 session_id: str = ""):
-        key = None
+        held_runtime = None
         try:
-            environment, key = await self._resolve_file_runtime(
+            environment, held_runtime = await self._resolve_file_runtime(
                 user_id=user, agent_type=agent_type, session_id=session_id, acquire=True,
             )
             if instance_id and instance_id != environment:
@@ -47,8 +47,10 @@ class AdxFileMixin:
         except AdxControlError as exc:
             raise AgentOSFileTransferError(str(exc), code=exc.code) from exc
         finally:
-            if key is not None:
-                await self._agent_manager.release(key)
+            if held_runtime is not None:
+                await self._agent_manager.release(
+                    held_runtime.key, expected_agent_id=held_runtime.info.agent_id,
+                )
 
     async def _file_invoke(self, environment: str, action: str, args: dict) -> dict:
         try:

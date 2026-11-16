@@ -8,6 +8,15 @@ command.btw to CLI_FORWARD_REQ_METHODS and CLI_FORWARD_NO_LOCAL_HANDLER_METHODS.
 
 from __future__ import annotations
 
+import pytest
+
+try:  # pysbd 0.3.4 (latest on PyPI) ships invalid escape sequences that are a
+      # SyntaxError on newer interpreters; skip collection instead of reddening UT.
+    import pysbd  # noqa: F401
+except Exception:  # noqa: BLE001
+    pytest.skip("pysbd unusable on this interpreter (0.3.4 invalid escapes)",
+                allow_module_level=True)
+
 from agent_gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
     CLI_FORWARD_REQ_METHODS,

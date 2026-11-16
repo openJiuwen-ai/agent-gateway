@@ -23,7 +23,7 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from agent_gateway.channel_manager.base import (
@@ -33,6 +33,10 @@ from agent_gateway.channel_manager.base import (
 )
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
+)
+from agent_gateway.enterprise.capabilities.skill_upload.guard import (
+    GUARDED_METHODS,
+    schedule_pending_install_result,
 )
 from agent_gateway.common.paths import get_logs_dir
 from agent_gateway.common.protocol_ids import (
@@ -100,6 +104,42 @@ def _resolve_ws_auth_session(
         if value:
             return value
     return ""
+
+
+def _ws_header(ws: Any, name: str) -> str:
+    """Read a handshake header from the WS connection, if the server exposes it."""
+    value = get_header_value(getattr(ws, "request_headers", None), name)
+    return str(value).strip() if value else ""
+
+
+def _ws_cookie(ws: Any, name: str) -> str:
+    raw = _ws_header(ws, "cookie")
+    for part in raw.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
+    return ""
+
+
+# Manager 登录态会把 JWT 同步进这个 cookie，浏览器 new WebSocket 又无法设置
+# Authorization 头，所以 WS 握手只能靠它携带凭据。
+_WS_ACCESS_TOKEN_COOKIE = "openjiuwen_access_token"
+
+
+def _ws_authorization(ws: Any) -> str | None:
+    """Return the upload credential carried by the WS handshake.
+
+    Prefer a real ``Authorization`` header (native clients can set one). Browsers
+    cannot set headers on ``new WebSocket``, so fall back to the login cookie the
+    Manager session keeps in sync; otherwise an authorized browser would be
+    rejected as "permission check unavailable".
+    """
+    header = _ws_header(ws, "authorization")
+    if header:
+        return header
+    token = _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE)
+    return f"Bearer {token}" if token else None
+
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
@@ -1290,6 +1330,27 @@ class WebChannel(BaseWsChannel):
         # Maintain the session busy state before any routing branch can return.
         self._track_session_busy(msg)
 
+        # 企业版团队直播只交给登记了这个 session 的浏览器订阅。
+        # 没有订阅的网关丢掉，避免多台网关各画一遍。
+        live_metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+        if str(live_metadata.get("delivery_scope") or "") == "session_live":
+            peers = {
+                peer
+                for peer in self._peers_for_session(str(getattr(msg, "session_id", "") or ""))
+                if getattr(peer, "session_live", False) and not getattr(peer, "closed", False)
+            }
+            if peers:
+                frame = self._serialize_frame(msg, None)
+                for peer in peers:
+                    self._enqueue_send(peer, frame)
+            else:
+                logger.debug(
+                    "[WebChannel] session live has no subscriber session_id=%s id=%s",
+                    getattr(msg, "session_id", ""),
+                    getattr(msg, "id", ""),
+                )
+            return
+
         # ── health_check relay：临时 session_id（health_check_{ts}_{suffix}）
         # 不匹配任何前端连接，
         # 按常规 session_id 路由会被当作"无连接"丢弃。探活状态是全局的（非会话级），
@@ -1407,6 +1468,15 @@ class WebChannel(BaseWsChannel):
                 code_text = res_payload.get("code")
                 if isinstance(code_text, str) and code_text:
                     frame["code"] = code_text
+
+            # 企业版 finalize 结果回写：审批单是安装结果的权威账本，仅在
+            # 门禁登记过本次请求时触发；失败只记日志，不影响响应投递。
+            # 注意：send() 是 WS 和 HTTP 的共用出口，WS peer 和
+            # HttpJsonOutbound/HttpSseOutbound 都会经过这里，回写不区分传输。
+            # 回写排到后台任务，Manager 抖动不阻塞本次响应投递。
+            schedule_pending_install_result(
+                msg.id, ok=bool(msg.ok), payload=res_payload
+            )
 
             ws_set: set[Any] = set()
             metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
@@ -2214,6 +2284,30 @@ class WebChannel(BaseWsChannel):
                 )
                 return
 
+        # 企业版上传窄门禁：skills.import_upload 拒绝，skills.upload.finalize 走
+        # manager 复核；HTTP 与 WS 必须一致。
+        if method in GUARDED_METHODS:
+            from agent_gateway.channel_manager.web.invoke import (
+                enterprise_skill_upload_denial,
+            )
+
+            denial = await enterprise_skill_upload_denial(
+                method=method,
+                params=params,
+                request_id=req_id,
+                authorization=_ws_authorization(ws),
+                jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+            )
+            if denial is not None:
+                error, code = denial
+                logger.warning(
+                    "[WebChannel] skill upload denied via ws request_id=%s code=%s",
+                    req_id,
+                    code,
+                )
+                await self.send_response(ws, req_id, ok=False, error=error, code=code)
+                return
+
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。
         # 请求未带 session_id（如 memory.compute 心跳、updater.check、config.get
@@ -2403,7 +2497,7 @@ class WebChannel(BaseWsChannel):
     @staticmethod
     def _write_frontend_context_usage(serialized: str) -> None:
         """Append one serialized frontend usage frame from a worker thread."""
-        output_path = get_logs_dir() / _CONTEXT_USAGE_JSONL_FILENAME
+        output_path = get_logs_dir() / "agent" / _CONTEXT_USAGE_JSONL_FILENAME
         output_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         serialized_line = f"{serialized}\n"
         serialized_size = len(serialized_line.encode("utf-8"))

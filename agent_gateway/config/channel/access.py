@@ -146,12 +146,15 @@ async def edit_channel_body(channel_id: str, edit):
     from agent_gateway.common.config import update_config
 
     def replace(data):
-        channels = data.setdefault("channels", {})
+        channels = data.get("channels")
+        if channels is None:
+            channels = {}
         current = channels.get(channel_id) or {}
         result = edit(dict(current))
         if current == result:
             return None
         channels[channel_id] = result
+        data["channels"] = channels
         return data
 
     saved = await asyncio.to_thread(update_config, replace)

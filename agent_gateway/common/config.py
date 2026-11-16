@@ -27,6 +27,7 @@ from agent_gateway.common.kv_cache_affinity_config import (
     validate_affinity_invariant,
 )
 from agent_gateway.common.paths import (
+    get_bundled_resources_dir,
     get_config_dir,
     get_config_file,
 )
@@ -35,7 +36,7 @@ from agent_gateway.extensions.base_crypto import get_crypto_provider
 
 logger = logging.getLogger(__name__)
 
-_CONFIG_MODULE_DIR = Path(__file__).parent
+_CONFIG_MODULE_DIR = get_config_dir()
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
@@ -214,6 +215,8 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     Returns:
         解析后的字典；文件为空时返回空字典。
     """
+    if filepath == get_config_file() and not filepath.exists():
+        filepath = get_bundled_resources_dir() / "config.yaml"
     stamp = _yaml_file_stamp(filepath)
     cache_key = str(filepath)
     if stamp is not None:
@@ -1682,7 +1685,7 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     state_mcps: list[dict[str, Any]] = []
     try:
         from agent_gateway.common.external_providers import provider
-        from openjiuwen_protocol.provider_domains import (
+        from e2a.provider_domains import (
             PROVIDER_DOMAIN_MCP_REGISTRY,
             PROVIDER_DOMAIN_MCP_STATE,
         )
@@ -2477,50 +2480,11 @@ def _looks_like_bare_filename(value: str) -> bool:
     return "/" not in value and "\\" not in value and not Path(value).is_absolute()
 
 
-def _jiuwenbox_configs_dir() -> Path | None:
-    """探测仓库或安装位置上的 ``jiuwenbox/configs/`` 目录。
-
-    优先在仓库目录树里寻找 (开发场景, ``jiuwenbox/src/jiuwenbox/configs``);
-    失败再尝试已 ``pip install`` 的 jiuwenbox 包内 ``configs/``。
-    """
-    here = Path(__file__).resolve()
-
-    for ancestor in here.parents[1:7]:
-        for candidate in (
-            ancestor / "jiuwenbox" / "src" / "jiuwenbox" / "configs",
-            ancestor / "jiuwenbox" / "configs",
-        ):
-            if candidate.is_dir():
-                return candidate
-    try:
-        import jiuwenbox  # type: ignore[import-not-found]
-    except ImportError:
-        return None
-    try:
-        pkg_dir = Path(jiuwenbox.__file__).resolve().parent
-    except Exception:  # noqa: BLE001
-        return None
-    # wheel 安装版: policy 模板随包打入 ``<site-packages>/jiuwenbox/configs/``。
-    direct = pkg_dir / "configs"
-    if direct.is_dir():
-        return direct
-
-    for steps_up in (2, 3):
-        candidate = pkg_dir
-        for _ in range(steps_up):
-            candidate = candidate.parent
-        candidate = candidate / "configs"
-        if candidate.is_dir():
-            return candidate
-    return None
-
-
 def resolve_sandbox_policy_path(value: str | None) -> Path | None:
     r"""把 ``sandbox.policy_file`` 的取值解析为宿主机绝对路径。
 
     - ``None`` / 空字符串 → 返回 None, 由调用方决定是否落到 jiuwenbox 自身默认 policy;
-    - 仅文件名 (不含路径分隔符) → 在 ``jiuwenbox/configs/`` 下拼接;
-      ``configs/`` 探测不到时返回 None (调用方应当报错并提示给绝对路径);
+    - 仅文件名 (不含路径分隔符) → 在 Gateway 内置策略目录下拼接;
     - 含 ``/`` ``\\`` 或绝对路径 → 展开 ``~`` / ``$VAR`` 后按整路径返回 (不强校验是否存在,
       留给上游 ``_load_policy_file`` / jiuwenbox 自己做存在性检查并给出明确错误)。
     """
@@ -2531,10 +2495,7 @@ def resolve_sandbox_policy_path(value: str | None) -> Path | None:
         return None
     expanded = os.path.expandvars(os.path.expanduser(text))
     if _looks_like_bare_filename(expanded):
-        configs_dir = _jiuwenbox_configs_dir()
-        if configs_dir is None:
-            return None
-        return (configs_dir / expanded).resolve()
+        return (get_bundled_resources_dir() / "sandbox-policies" / expanded).resolve()
     return Path(expanded).resolve()
 
 
@@ -2748,6 +2709,123 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged
+
+
+def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a flat frontend-style model entry into the nested config format.
+
+    If the entry already has a ``model_client_config`` dict, assume it is already
+    normalized and return as-is.  Otherwise promote flat fields into the nested
+    structure the rest of the system expects.
+    """
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
+    if isinstance(saved.get("model_client_config"), dict):
+        return saved
+    mcc: dict[str, Any] = {}
+    mco: dict[str, Any] = {}
+    if "model_name" in saved:
+        mcc["model_name"] = str(saved.pop("model_name") or "")
+    if "api_base" in saved:
+        mcc["api_base"] = str(saved.pop("api_base") or "")
+    if "api_key" in saved:
+        mcc["api_key"] = saved.pop("api_key") or ""
+    # 两个扁平键都必须 pop 掉，但取值要回退：写成
+    # pop("model_provider", pop("client_provider", "")) 时默认参数会提前求值，
+    # client_provider 被删掉、值却只在 model_provider 缺键时才用得上，于是
+    # model_provider 为 null/空串时会把有效的 client_provider 一起丢掉。
+    model_provider = saved.pop("model_provider", None)
+    client_provider = saved.pop("client_provider", None)
+    provider = str(model_provider or client_provider or "")
+    if provider:
+        mcc["client_provider"] = provider
+    if "timeout" in saved:
+        mcc["timeout"] = saved.pop("timeout")
+    if "verify_ssl" in saved:
+        # 前端可能回传字符串（"false" 的裸 bool() 是 True，会把用户的关闭意图反转）
+        raw_verify_ssl = saved.pop("verify_ssl")
+        if isinstance(raw_verify_ssl, str):
+            raw_verify_ssl = raw_verify_ssl.strip().lower() not in {"", "0", "false", "no", "off"}
+        mcc["verify_ssl"] = bool(raw_verify_ssl)
+    if "endpoint_profile" in saved:
+        val = saved.pop("endpoint_profile")
+        if val:
+            mcc["endpoint_profile"] = str(val)
+    if "vendor_key" in saved:
+        val = saved.pop("vendor_key")
+        if val:
+            mcc["vendor_key"] = str(val)
+    if "plan" in saved:
+        val = saved.pop("plan")
+        if val:
+            mcc["plan"] = str(val)
+    temp = saved.pop("temperature", None)
+    if temp is not None:
+        mco["temperature"] = float(temp)
+    rl = saved.pop("reasoning_level", None)
+    if rl is not None and str(rl).strip():
+        mco["reasoning_level"] = str(rl).strip()
+    if mcc:
+        saved["model_client_config"] = mcc
+    if mco:
+        saved["model_config_obj"] = mco
+    return saved
+
+
+def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge an editable DTO while preserving omitted/write-only settings."""
+    merged = deepcopy(current)
+    for key, value in update.items():
+        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_model_update(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
+    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
+    client = update.get("model_client_config") or {}
+    if "api_key" not in client:
+        return
+    key = client["api_key"]
+    previous = (current.get("model_client_config") or {}).get("api_key")
+    if key == previous:
+        return
+    if not key:
+        # api_key 是 write-only 字段，空串按“未提交”处理：必须把旧密文写回，否则
+        # 随后的 _merge_model_update 会用空串覆盖已保存的凭据，模型立即鉴权失败。
+        if previous:
+            client["api_key"] = previous
+        else:
+            client.pop("api_key", None)
+        return
+    try:
+        crypto = get_crypto_provider()
+    except Exception:
+        # 与本文件 _decrypt_model_entries 保持一致：拿不到 provider 时降级为按提交值
+        # 落库，不能因为加密组件异常把整个模型保存流程打挂。
+        logger.warning(
+            "Crypto provider unavailable while protecting model api_key; "
+            "the submitted value will be stored as-is",
+            exc_info=True,
+        )
+        return
+    if crypto is not None:
+        resolved = _decrypt_model_entries([current])[0]
+        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
+        if previous and key == previous_plaintext:
+            client["api_key"] = previous
+        else:
+            client["api_key"] = crypto.encrypt(key)
 
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:

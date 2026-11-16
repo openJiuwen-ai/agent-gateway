@@ -151,8 +151,10 @@ MEMORY_CONFIG_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
-PACKAGE_ALLOWLIST_TABLE_DEF = TableDefinition(
-    table_name="package_allowlist",
+# 高级配置合集表：管理面下发的 agent 级开关/段配置（对应本地 config.yaml 同名键）。
+# 一行绑定一个 agent_template；复杂段用 JSON，扩展字段进 data。
+ADVANCED_CONFIG_TABLE_DEF = TableDefinition(
+    table_name="advanced_config",
     columns=[
         ColumnDefinition(
             "id",
@@ -161,11 +163,52 @@ PACKAGE_ALLOWLIST_TABLE_DEF = TableDefinition(
             autoincrement=True,
             nullable=False,
         ),
-        ColumnDefinition("packages", "json", nullable=False),
+        ColumnDefinition(
+            "agent_template_id",
+            "string",
+            length=100,
+            nullable=False,
+        ),
+        ColumnDefinition(
+            "progressive_tool_enabled",
+            "boolean",
+            nullable=False,
+            default=True,
+        ),
+        ColumnDefinition(
+            "progressive_tool_optimize",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        # 对应 config.yaml: a4p.enabled
+        ColumnDefinition(
+            "a4p_enabled",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        ColumnDefinition(
+            "auto_memory_enabled",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        # 对应 config.yaml: kv_cache_affinity_config.enable_kv_cache_affinity
+        ColumnDefinition(
+            "enable_kv_cache_affinity",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        # 预留扩展：后续高级配置可先塞进 data，再按需升列
+        ColumnDefinition("data", "json", nullable=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
-    indexes=[],
+    indexes=[
+        IndexDefinition(["agent_template_id"], unique=True),
+    ],
 )
 
 CRON_POLICY_TABLE_DEF = TableDefinition(

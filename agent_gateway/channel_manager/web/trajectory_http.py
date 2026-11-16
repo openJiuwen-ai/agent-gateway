@@ -22,7 +22,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from openjiuwen_protocol.message import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod
 
 from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
@@ -61,7 +61,6 @@ _SEQUENCE_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _MAX_SEQUENCE_REQUEST = 200
 
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
-_MAX_CURSOR_LENGTH = 512
 # A blob pull terminates on the peer's ``done`` flag; these guards keep a
 # misbehaving peer (old AgentServer, broken blob read) from hanging the HTTP
 # request in a no-progress loop or streaming an unbounded "archive".
@@ -818,7 +817,7 @@ async def _load_session_metadata(
     user_id: str | None = None,
 ) -> Mapping[str, Any]:
     from agent_gateway.common.external_providers import provider
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     return await provider(
         PROVIDER_DOMAIN_SESSION_METADATA

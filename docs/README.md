@@ -30,12 +30,14 @@
 | [cli-and-environment](zh/reference/cli-and-environment.md) | 命令行参数、环境变量、配置文件、运行时目录与退出行为 |
 | [logging](zh/reference/logging.md) | 日志文件、级别配置与热路径日志契约 |
 | [e2a-protocol](zh/reference/e2a-protocol.md) | Gateway 与 AgentServer 之间的 E2A 请求/响应协议 |
+| [gateway-web-api](zh/reference/gateway-web-api.md) | Web 前端 ⇄ Gateway 的 WS JSON-RPC 与 HTTP 接口契约（方法、事件、错误码与流式语义） |
 
 ## Explanation
 
 | 文档 | 说明 |
 | --- | --- |
 | [architecture](zh/explanation/architecture.md) | Gateway 的定位、数据流、模块划分、启动顺序与关键设计决策 |
+| [authentication](zh/explanation/authentication.md) | 认证与鉴权体系：登录会话、模型凭据链路、渠道接入鉴权与安全边界 |
 
 ## 英文文档
 
@@ -48,6 +50,7 @@
 - [Logging (EN)](en/reference/logging.md)
 - [E2A protocol (EN)](en/reference/e2a-protocol.md)
 - [Architecture (EN)](en/explanation/architecture.md)
+- [Authentication (EN)](en/explanation/authentication.md)
 
 ## 其他资料
 

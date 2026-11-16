@@ -619,6 +619,18 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-stage", "skills.upload.stage",
+        "skills", "企业版：暂存上传包并返回签名描述符",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-finalize", "skills.upload.finalize",
+        "skills", "企业版：按审批结果安装暂存包",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/{name}/files", "skills.files.list",
         "skills", "技能文件列表（工作副本）",
         path_to_param={"name": "name"},
@@ -803,6 +815,21 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         path_to_param={"session_id": "session_id"},
     ),
     WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/assets", "session.assets.list", "files",
+        "列会话素材", bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "POST", "/sessions/{session_id}/assets", "session.assets.register", "files",
+        "登记会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/sessions/{session_id}/assets/{asset_id}", "session.assets.rename", "files",
+        "重命名会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
+    ),
+    WebHttpMappedRoute(
         "POST", "/sessions/{session_id}/documents", "document.persist", "files",
         "保存会话文档", accept_body=True, bind_session_param=True,
         path_to_param={"session_id": "session_id"},
@@ -845,16 +872,124 @@ WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *WORKSPACE_FILE_ROUTES,
 )
 
+_TEAM_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/teams/templates", "team.templates.list",
+        "team", "列出团队模板",
+        query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/teams/bindings", "team.bindings.list",
+        "team", "列出团队绑定",
+        query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/bindings", "team.binding.create",
+        "team", "创建团队绑定",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/bindings/actions/generate", "team.binding.generate",
+        "team", "生成团队绑定",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/actions/bind-session", "team.session.bind",
+        "team", "将会话绑定到团队",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/teams/lookup", "team.get",
+        "team", "按 team_id / session_id / team_name 查询团队",
+        query_keys=("team_id", "session_id", "team_name") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/actions/stop", "team.stop",
+        "team", "停止团队",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/teams/memberships", "team.members.list",
+        "team", "列出团队成员",
+        query_keys=("team_id", "session_id", "team_name") + _TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/memberships/actions/join", "team.member.join",
+        "team", "加入团队",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams/memberships/actions/leave", "team.member.leave",
+        "team", "离开团队",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/teams/quota", "team.quota.get",
+        "team", "查询本人团队配额",
+        query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/team/history", "team.history.get",
+        "team", "读取团队面板历史",
+        path_to_param={"session_id": "session_id"},
+        query_keys=("cursor", "limit", "max_bytes", "member_name") + _TENANT_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/team/snapshot", "team.snapshot",
+        "team", "读取团队快照",
+        path_to_param={"session_id": "session_id"},
+        query_keys=("team_name",) + _TENANT_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/teams", "team.list",
+        "team", "列出本人团队",
+        query_keys=("include_deleted", "session_id") + _TENANT_QUERY,
+        bind_session_param=False,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/teams", "team.create",
+        "team", "创建团队",
+        accept_body=True, created=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "DELETE", "/teams/{team_name}", "team.delete",
+        "team", "删除团队",
+        accept_body=True,
+        path_to_param={"team_name": "team_name"},
+        query_keys=_TENANT_QUERY,
+    ),
+)
+
 # All table-driven routes. Core chat/session routes stay hand-written in web_http_routes.py.
 MAPPED_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *SETTINGS_ROUTES,
     *WORKSPACE_ROUTES,
+    *_TEAM_ROUTES,
 )
 
 
+# 个人版已有 team.list / team.delete 等旧方法。这 7 个是企业控制面新增协议。
+_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
+})
+
+
 def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, ...]:
+    routes = MAPPED_ROUTES
     if not enterprise:
-        return MAPPED_ROUTES
+        return tuple(
+            route
+            for route in routes
+            if route.rpc_method not in _ENTERPRISE_TEAM_CONTROL_METHODS
+        )
     from agent_gateway.enterprise.capabilities.experts.http_routes import northbound_routes
 
     ingress_route_keys = {
@@ -875,6 +1010,7 @@ CORE_ROUTE_CATALOG: tuple[tuple[str, str, str, str], ...] = (
     ("GET", "/sessions/{session_id}", "session.get_metadata", "会话元数据"),
     ("PATCH", "/sessions/{session_id}", "session.rename|session.pin", "重命名 / 置顶"),
     ("DELETE", "/sessions/{session_id}", "session.delete", "删除会话"),
+    ("POST", "/sessions/{session_id}/actions/switch", "session.switch", "切换会话"),
     ("GET", "/sessions/{session_id}/history", "history.get", "JSON；Accept:text/event-stream 时 SSE"),
     ("POST", "/chat/completions", "chat.send", "发消息 SSE（主路径）"),
     ("POST", "/chat/resume", "chat.resume", "恢复中断对话"),

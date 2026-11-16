@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""补齐 pinned ``openjiuwen-protocol`` 尚未发布的协议枚举成员。
+"""补齐 pinned ``e2a`` 尚未发布的协议枚举成员。
 
 拆仓前这些成员由宿主进程动态注册；Gateway 作为独立进程不再导入宿主，
 必须自行注册同值成员，否则消费对应 RPC 或事件时会抛 ``AttributeError``。
@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from enum import Enum
 
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.message import EventType, ReqMethod
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
+    ("MODE_SET", "mode.set"),
+    ("MODE_GET", "mode.get"),
     ("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound"),
     ("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound"),
     ("JIUWENMATE_DINGTALK_BINDING_CHECK", "jiuwenmate.dingtalk.binding_check"),
@@ -37,6 +39,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_MODELS_LIST", "jiuwenmate.models.list"),
     ("JIUWENMATE_CHAT_SEND", "jiuwenmate.chat.send"),
     ("JIUWENMATE_CHAT_HISTORY", "jiuwenmate.chat.history"),
+    ("JIUWENMATE_ARTIFACT_LIST", "jiuwenmate.artifact.list"),
     ("JIUWENMATE_REQUEST_GET", "jiuwenmate.request.get"),
     ("JIUWENMATE_REQUEST_ABORT", "jiuwenmate.request.abort"),
     ("JIUWENMATE_PERMISSION_DECIDE", "jiuwenmate.permission.decide"),
@@ -88,6 +91,9 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("CLIENT_LIST", "client.list"),
     ("CLIENT_CONVERSATION_MESSAGES", "client.conversation.messages"),
     ("CLIENT_CONVERSATIONS", "client.conversations"),
+    ("MCP_APP_LIST_TOOLS", "mcp_app.list_tools"),
+    ("MCP_APP_READ_RESOURCE", "mcp_app.read_resource"),
+    ("MCP_APP_CALL_TOOL", "mcp_app.call_tool"),
 )
 
 GATEWAY_EVENT_TYPES: tuple[tuple[str, str], ...] = (

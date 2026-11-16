@@ -2,6 +2,6 @@
 
 """Gateway 侧 E2A 兼容层。
 
-线协议类型直接从 ``openjiuwen_protocol.e2a`` 引入；本包只保留 Gateway 需要的
+线协议类型直接从 ``e2a`` 引入；本包只保留 Gateway 需要的
 转换函数（``agent_compat``）。
 """

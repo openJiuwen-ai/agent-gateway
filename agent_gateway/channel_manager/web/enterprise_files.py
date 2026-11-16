@@ -129,7 +129,7 @@ def register_enterprise_file_routes(app: FastAPI, channel) -> None:
     @app.api_route("/file-api/raw-file", methods=["GET", "HEAD"])
     async def raw_file(request: Request) -> Response:
         from agent_gateway.common.request_identity import apply_routing_metadata
-        from openjiuwen_protocol.message import ReqMethod
+        from agent_gateway.common.protocol_methods import ReqMethod
         from agent_gateway.channel_manager.web.container_file_http import (
             _decode_verified_chunk, _error_json, serve_file_chunks,
         )

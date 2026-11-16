@@ -36,6 +36,7 @@ This documentation covers installation, usage, reference, and design for Agent G
 | Document | Description |
 | --- | --- |
 | [architecture](en/explanation/architecture.md) | Gateway role, data flow, modules, startup sequence, and key design decisions |
+| [authentication](en/explanation/authentication.md) | Authentication and authorization: login sessions, the model-credential chain, channel access auth, and security boundaries |
 
 ## Chinese documentation
 
@@ -48,6 +49,7 @@ This documentation covers installation, usage, reference, and design for Agent G
 - [日志参考](zh/reference/logging.md)
 - [E2A 协议](zh/reference/e2a-protocol.md)
 - [架构说明](zh/explanation/architecture.md)
+- [认证与鉴权说明](zh/explanation/authentication.md)
 
 ## Other resources
 

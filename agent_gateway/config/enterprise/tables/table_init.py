@@ -15,10 +15,10 @@ from .a2a_models import (
     A2A_OUTBOUND_USER_STATE_TABLE_DEF,
 )
 from .application_config_models import (
+    ADVANCED_CONFIG_TABLE_DEF,
     AUDIT_LOG_CONFIG_TABLE_DEF,
     CHANNEL_CONFIG_TABLE_DEF,
     CRON_POLICY_TABLE_DEF,
-    PACKAGE_ALLOWLIST_TABLE_DEF,
     LOG_MASKING_RULE_TABLE_DEF,
     LOGGING_CONFIG_TABLE_DEF,
     MEMORY_CONFIG_TABLE_DEF,
@@ -43,9 +43,10 @@ from .template_models import (
     MODEL_TEMPLATE_TABLE_DEF,
     PERMISSIONS_TEMPLATE_TABLE_DEF,
     SKILL_PREBUILT_TEMPLATE_TABLE_DEF,
+    EXPERT_PACKAGE_TEMPLATE_TABLE_DEF,
 )
 
-# Team control and quota tables are created by TeamMysqlActor.start().
+# Team control and quota tables are created by TeamStoreActor.start().
 # Initializing them here as well takes a metadata lock while a chat
 # pre-reserve transaction is open on the same tables.
 ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
@@ -56,6 +57,7 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     EMBEDDING_TEMPLATE_TABLE_DEF,
     EXTENSION_CONFIG_TEMPLATE_TABLE_DEF,
     SKILL_PREBUILT_TEMPLATE_TABLE_DEF,
+    EXPERT_PACKAGE_TEMPLATE_TABLE_DEF,
     MCP_TEMPLATE_TABLE_DEF,
     PERMISSIONS_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
@@ -70,9 +72,9 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     LOGGING_CONFIG_TABLE_DEF,
     TASK_MEMORY_CONFIG_TABLE_DEF,
     MEMORY_CONFIG_TABLE_DEF,
+    ADVANCED_CONFIG_TABLE_DEF,
     AUDIT_LOG_CONFIG_TABLE_DEF,
     CRON_POLICY_TABLE_DEF,
-    PACKAGE_ALLOWLIST_TABLE_DEF,
     *QUOTA_TABLE_DEFINITIONS,
     CRON_JOB_TABLE_DEF,
     SESSION_MAP_TABLE_DEF,

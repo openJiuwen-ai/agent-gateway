@@ -159,7 +159,7 @@ Gateway 不承担 Agent 执行：所有涉及工作区、模型凭据与工具�
 
 ### config.yaml
 
-配置文件位于 `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。首次运行可以不创建——文件缺失时 Gateway 告警并使用默认值。如需显式关闭所有 IM 频道：
+配置文件位于 `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`。首次独立启动时，Gateway 会在文件缺失时安装自带模板，保留已有用户配置。如需显式关闭所有 IM 频道：
 
 ```yaml
 channels: {}

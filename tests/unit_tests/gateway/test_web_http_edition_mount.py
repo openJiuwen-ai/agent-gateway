@@ -266,3 +266,21 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     assert client.get("/api/v1/connection/status").status_code == 200
     assert client.post("/api/v1/sessions", json={}).status_code == 201
     assert [call.kwargs["method"] for call in dispatch.await_args_list] == ["connection.status", "session.create"]
+
+    dispatch.reset_mock()
+    searched = client.get(
+        "/api/v1/agent-templates",
+        params={"filter": "builtin+hub", "query": "英语", "cache_mode": "prefer_cache", "refresh": "true"},
+    )
+    assert searched.status_code == 200
+    forwarded = dispatch.await_args.kwargs["params"]
+    assert dispatch.await_args.kwargs["method"] == "agent_templates.list"
+    assert forwarded["filter"] == "builtin+hub"
+    assert forwarded["query"] == "英语"
+    assert forwarded["cache_mode"] == "prefer_cache"
+    assert forwarded["refresh"] is True
+
+    dispatch.reset_mock()
+    plain = client.get("/api/v1/agent-templates", params={"filter": "builtin+hub"})
+    assert plain.status_code == 200
+    assert "query" not in dispatch.await_args.kwargs["params"]

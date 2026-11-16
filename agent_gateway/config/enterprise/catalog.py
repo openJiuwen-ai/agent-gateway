@@ -29,6 +29,7 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "embedding_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "extension_config_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "skill_prebuilt_template": EnterpriseRecordSpec(key_fields=("template_id",)),
+    "expert_package_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "mcp_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "permissions_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "agent_template": EnterpriseRecordSpec(key_fields=("template_id",)),
@@ -47,8 +48,8 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     ),
     "cron_job": EnterpriseRecordSpec(key_fields=("job_id",)),
     "task_memory_config": EnterpriseRecordSpec(key_fields=()),
+    "advanced_config": EnterpriseRecordSpec(key_fields=("agent_template_id",)),
     "cron_policy": EnterpriseRecordSpec(key_fields=()),
-    "package_allowlist": EnterpriseRecordSpec(key_fields=()),
     "audit_log_config": EnterpriseRecordSpec(key_fields=()),
     "manager_sign_pubkey": EnterpriseRecordSpec(
         key_fields=("id",),
