@@ -51,6 +51,24 @@ Tests: `test_uvicorn_listener.py`, `test_websocket_listener.py`,
 `test_gateway_listener_lifecycle.py` and the corresponding process lifecycle ST.
 They cover archives, live connections, cancellation, bind failure and port reuse.
 
+## P2-B: protocol runtime
+
+`routing/protocol_runtime.py` owns ProtocolRuntime, ProtocolRuntimeConfig,
+RouteConfig, the ACP bridge and request/session/connection indexes. The old
+GatewayServer and GatewayServerConfig exports from `app_gateway` and
+`routing.gateway_server` remain aliases to the same classes.
+
+The latest develop TUI correlation, session switching, disconnection grace,
+reconnection and routing isolation remain intact. Client request IDs are mapped
+to unique internal upstream IDs and restored on replies; an old connection must
+not deliver a late result into a replacement window. New modules and tests use
+the current `e2a` package, not the retired `openjiuwen_protocol` import path.
+Cold imports do not initialize the legacy entrypoint or eagerly load ACP.
+
+Tests: `test_protocol_runtime_import_contract.py`,
+`test_tui_request_correlation.py`, `test_tui_lifecycle_routing.py` and the existing
+`test_app_gateway_acp.py` compatibility suite.
+
 ## Verification and rollback
 
 Use a fresh per-worktree `.venv` with develop's unchanged lockfile. Record the

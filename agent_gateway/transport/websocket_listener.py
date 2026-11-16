@@ -102,10 +102,10 @@ class WebSocketListener:
             self._server = server
             self._bound_addresses = tuple(
                 (
-                    str(socket.getsockname()[0]),
-                    int(socket.getsockname()[1]),
+                    str(sock.getsockname()[0]),
+                    int(sock.getsockname()[1]),
                 )
-                for socket in server.sockets or ()
+                for sock in server.sockets or ()
             )
             if self._stop_requested:
                 server.close()
