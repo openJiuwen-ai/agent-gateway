@@ -66,14 +66,14 @@ dependencies = [
 # A2A 协议端（代码内 try/except ImportError 降级）
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 # SSH 协议端（代码内 try/except ImportError 降级）
-ssh = ["asyncssh>=2.14.0,<2.24"]
+ssh = ["asyncssh>=2.24.0,<2.25"]
 test = [
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-mock>=3.14.0",
     "pytest-cov>=7.0.0",
     "a2a-sdk[http-server]==1.0.0",
-    "asyncssh>=2.14.0,<2.24",
+    "asyncssh>=2.24.0,<2.25",
 ]
 
 [dependency-groups]
