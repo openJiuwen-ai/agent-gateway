@@ -14,12 +14,10 @@ AGENTOS = yaml.safe_load(
 
 def test_agentos_template_is_gateway_only_plus_deploy_handoff_keys() -> None:
     b2_owned = {
-        "heartbeat", "kv_cache_affinity_config", "mcp", "permissions",
-        "experimental", "recommendation", "endpoint_profile_overrides",
-        "setup_guide", "auto_recap", "rsi", "a4p", "trajectory_ui",
-        "progressive_tool_enabled", "progressive_tool_optimize",
+        "heartbeat", "mcp", "permissions", "experimental", "recommendation",
+        "endpoint_profile_overrides", "rsi", "trajectory_ui",
     }
-    # B2/B3 仍待后续提交处理，AgentOS 模板先保持 Gateway-only。
+    # AgentOS 模板保持 Gateway-only，AS/B3 段不进入渲染模板。
     assert set(AGENTOS) == (set(BASE) - b2_owned - {"react", "memory"}) | {"code_graph", "sandbox"}
     for as_owned in (
         "react",
@@ -59,3 +57,11 @@ def test_agentos_template_can_be_rendered() -> None:
     parsed = yaml.safe_load(rendered)
     assert parsed
     assert "<<" not in rendered
+
+
+def test_gateway_base_drops_pr2_b2_safe_keys() -> None:
+    b2_safe = {
+        "progressive_tool_enabled", "progressive_tool_optimize",
+        "setup_guide", "auto_recap", "a4p", "kv_cache_affinity_config",
+    }
+    assert b2_safe.isdisjoint(BASE)

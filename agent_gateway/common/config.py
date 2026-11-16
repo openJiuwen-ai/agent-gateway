@@ -20,12 +20,6 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 
-from agent_gateway.common.kv_cache_affinity_config import (
-    APPLICATION_KV_CACHE_CONFIG_KEY,
-    KV_CACHE_AFFINITY_ENABLED_KEY,
-    get_kv_cache_affinity_application_config,
-    validate_affinity_invariant,
-)
 from agent_gateway.common.paths import (
     get_bundled_resources_dir,
     get_config_dir,
@@ -44,11 +38,6 @@ EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
-# Keep progressive tool search enabled by default for existing user workspaces
-# whose config.yaml predates this switch.
-# Opt-in gate for the tool_search retrieval layer: the layer mounts only when
-# progressive_tool_enabled (AbilityManager deferred assignment) and this switch
-# are both true.
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -148,17 +137,6 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
         mcc = react.get("model_client_config")
         if isinstance(mcc, dict) and "custom_headers" in mcc:
             mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-    kv_cfg = get_kv_cache_affinity_application_config(config)
-    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
-        valid, failures = validate_affinity_invariant(config)
-        if not valid:
-            logger.warning(
-                "KV cache affinity configuration failed closed: %s",
-                "; ".join(failures),
-            )
-            # Runtime-only normalization: preserve the user's file for
-            # diagnosis, but never activate an inconsistent configuration.
-            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels")
     if channels is None:
@@ -270,12 +248,6 @@ def get_config_raw():
     return _read_with_retry(CONFIG_YAML_PATH)
 
 
-def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
-    """Validate the persisted KVC invariant after a config write."""
-    raw = get_config_raw()
-    return validate_affinity_invariant(resolve_env_vars(raw))
-
-
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
     """Return the canonical ``react.evolution`` mapping.
 
@@ -296,16 +268,6 @@ def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
 def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return the canonical ``react.evolution.skill_evolution`` switch."""
     return _get_evolution_config(config).get("skill_evolution") is True
-
-
-def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
-    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        data["progressive_tool_optimize"] = bool(enabled)
-        return data
-
-    update_config(mutator)
 
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
@@ -706,35 +668,6 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
-    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-        if not isinstance(kv_config, dict):
-            kv_config = {}
-            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
-        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
-
-        react = data.get("react")
-        if isinstance(react, dict):
-            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-        return data
-
-    update_config(_mutate)
-
-
-def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
-    for key, value in patch.items():
-        if isinstance(value, dict):
-            child = target.get(key)
-            if not isinstance(child, dict):
-                child = {}
-                target[key] = child
-            _merge_config_dict(child, value)
-        else:
-            target[key] = value
-
-
 def update_permissions_enabled_in_config(value: bool) -> None:
     """Persist the legacy permission switch as a canonical manual profile."""
     update_permissions_profile_in_config("default" if value else "full_access")
@@ -762,37 +695,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
         return data
 
     update_config(_mutate)
-
-
-def update_a4p_in_config(updates: dict[str, Any]) -> None:
-    """更新 a4p 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "a4p" not in data or data["a4p"] is None:
-        data["a4p"] = {}
-    _merge_config_dict(data["a4p"], updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_auto_recap_enabled_in_config(value: bool) -> None:
-    """更新 auto_recap.enabled（自动回顾开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "auto_recap" not in data:
-        data["auto_recap"] = {}
-    data["auto_recap"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_setup_guide_enabled_in_config(value: bool) -> None:
-    """原子更新 setup_guide.enabled（Web 首次配置引导开关）。"""
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        section = data.get("setup_guide")
-        if not isinstance(section, dict):
-            section = {}
-            data["setup_guide"] = section
-        section["enabled"] = value
-        return data
-
-    update_config(mutator)
 
 
 def update_rsi_enabled_in_config(value: bool) -> None:
@@ -2053,26 +1955,6 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
-def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
-    """Move the former ReAct-local KVC switch to Application scope."""
-    react = user_data.get("react")
-    if not isinstance(react, dict):
-        return
-    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-    if isinstance(canonical, dict):
-        if (
-            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
-            and isinstance(legacy, dict)
-            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
-        ):
-            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
-                KV_CACHE_AFFINITY_ENABLED_KEY
-            ]
-    elif isinstance(legacy, dict):
-        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
-
-
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2132,7 +2014,6 @@ def migrate_config_from_template(
         # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
-        _migrate_legacy_kv_cache_affinity_config(user_data)
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
