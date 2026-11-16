@@ -221,11 +221,6 @@ class AssistantLink:
         self._socket: Any = None
         self._loop: Any = None
         self._on_mention: MentionHandler | None = None
-        self._connects = 0
-
-    @property
-    def connect_count(self) -> int:
-        return self._connects
 
     def start(self, loop: Any, on_mention: MentionHandler) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -305,7 +300,6 @@ class AssistantLink:
         nonce = str(uuid.uuid4())
         protocol = build_auth_protocol(self._credential_id, self._secret, ts=ts, nonce=nonce)
         socket = self._connect(ASSISTANT_WS_URL, subprotocols=[protocol], timeout=20)
-        self._connects += 1
         self._socket = socket
         try:
             self._send_raw(socket, build_register_frame())
