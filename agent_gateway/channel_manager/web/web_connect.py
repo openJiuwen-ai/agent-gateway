@@ -706,13 +706,8 @@ class WebChannel(BaseWsChannel):
         ws: Any,
         flat_query: dict[str, str],
         remote: Any,
-        *,
-        route_type: str = "ws",
     ) -> tuple[str | None, str]:
         """解析 ws 连接身份,供 /ws 和 /ws/git 共用(设计文档 §5.3.7)。
-
-        Args:
-            route_type: ``"ws"`` 主路由或 ``"git"`` /ws/git 路由,仅用于日志区分。
 
         Returns:
             ``(connection_user_id, routing_key_user_id)``
@@ -2033,7 +2028,7 @@ class WebChannel(BaseWsChannel):
             return
 
         connection_user_id, _user_id = self._resolve_ws_identity(
-            ws, _flat_query, remote, route_type="ws",
+            ws, _flat_query, remote,
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
         from agent_gateway.common.request_identity import normalize_routing_identity
@@ -2249,7 +2244,7 @@ class WebChannel(BaseWsChannel):
         handler = GitDiffWebSocketHandler(self, registry)
 
         connection_user_id, _user_id = self._resolve_ws_identity(
-            ws, flat_query, remote, route_type="git",
+            ws, flat_query, remote,
         )
         _app_id = flat_query.get("app_id", "default")
         _rk = RoutingKey(
