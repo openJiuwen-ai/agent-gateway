@@ -13,6 +13,7 @@ import time
 from abc import ABC
 from dataclasses import dataclass, replace
 from enum import Enum
+from html import escape
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Literal
@@ -76,6 +77,11 @@ from agent_gateway.message_handler.evolution_approval import (
     is_interrupt_evolution_approval_answer_payload,
 )
 from agent_gateway.message_handler.join_exit_handlers import JoinExitHandlers
+from agent_gateway.message_handler.inline_attachments import (
+    DEFAULT_TOTAL_INLINE_BYTES,
+    file_reference,
+    read_inline_file,
+)
 from agent_gateway.message_handler.prompts.review_prompt import build_review_prompt
 from agent_gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
@@ -3377,6 +3383,8 @@ class MessageHandler(ABC):
         content: str,
         cwd: str | None = None,
         max_file_size: int | None = _DEFAULT_INLINE_FILE_SIZE_LIMIT,
+        *,
+        max_total_inline_bytes: int = DEFAULT_TOTAL_INLINE_BYTES,
     ) -> str:
         """Parse ``@path`` references in *content* and inline the file text.
 
@@ -3385,19 +3393,23 @@ class MessageHandler(ABC):
         - ``@"path with spaces"`` — quoted paths
         - ``@path#L10-20`` — line-range suffix (ignored for now, whole file read)
 
-        Returns content with ``@path`` replaced by a ``<file-content>`` block
-        containing the actual text.  If a file cannot be read the original
-        ``@path`` is kept unchanged.
+        Only UTF-8 text is inlined, bounded by per-file and per-message byte
+        limits. Other files retain escaped absolute-path references for tools.
+        ``max_file_size=None`` disables only the per-file limit. If a file
+        cannot be read, the original ``@path`` is kept unchanged.
         """
         if not content:
             return content
 
         working_dir = cwd or os.getcwd()
+        remaining_bytes = max(0, max_total_inline_bytes)
+        seen_paths: dict[str, str] = {}
 
         # Match @path or @"quoted path", optionally followed by #L... line range
         pattern = _AT_FILE_REFERENCE_PATTERN
 
         def _replacer(m: re.Match[str]) -> str:
+            nonlocal remaining_bytes
             raw = m.group("quoted") or m.group("plain") or ""
             if not raw:
                 return m.group(0)
@@ -3416,27 +3428,34 @@ class MessageHandler(ABC):
                 resolved = os.path.join(working_dir, raw)
 
             try:
-                path = Path(resolved)
+                path = Path(resolved).resolve()
                 if not path.is_file():
                     return m.group(0)
-                size = path.stat().st_size
-                truncated = False
-                if max_file_size is None:
-                    text = path.read_text(encoding="utf-8", errors="replace")
-                else:
-                    with path.open("r", encoding="utf-8", errors="replace") as handle:
-                        text = handle.read(max_file_size + 1)
-                    if size > max_file_size or len(text) > max_file_size:
-                        truncated = True
-                    if len(text) > max_file_size:
-                        text = text[:max_file_size]
-                    if truncated:
-                        suffix = f"\n... (truncated, original_size={size} bytes)"
-                        text = f"{text}{suffix}"
+                path_key = os.path.normcase(str(path))
+                if path_key in seen_paths:
+                    return file_reference(path, seen_paths[path_key], "already_inlined")
+                file_limit = remaining_bytes if max_file_size is None else max(0, max_file_size)
+                limit = min(file_limit, remaining_bytes)
+                message_limited = remaining_bytes <= file_limit
+                result = read_inline_file(path, limit)
+                seen_paths[path_key] = result.file_type
+                if result.text is None:
+                    return file_reference(path, result.file_type, result.reason)
+                text = result.text
+                remaining_bytes -= len(text.encode("utf-8"))
+                reason = ""
+                if result.truncated:
+                    if message_limited:
+                        reason = ' reason="inline_budget_exhausted"'
+                    suffix = (
+                        f"\n... (truncated, original_size={result.original_size} bytes; "
+                        f"use a file reading tool to continue: {escape(str(path), quote=True)})"
+                    )
+                    text = f"{text}{suffix}"
                 return (
-                    f'\n<file-content path="{raw}">\n{text}\n</file-content>\n'
+                    f'\n<file-content path="{escape(raw, quote=True)}"{reason}>\n{text}\n</file-content>\n'
                 )
-            except (OSError, UnicodeDecodeError):
+            except (OSError, ValueError, RuntimeError):
                 return m.group(0)
 
         return pattern.sub(_replacer, content)
