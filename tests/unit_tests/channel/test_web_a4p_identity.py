@@ -267,3 +267,74 @@ async def test_anonymous_refresh_restores_only_local_host_session(monkeypatch, m
         assert fetch.await_count == int(local)
     finally:
         await channel.unregister_ws(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ambiguous", [False, True])
+@pytest.mark.parametrize("lookup", ["code", "missing", "failed", "exception"])
+async def test_metadata_precedes_default_route_but_failure_preserves_fallback(monkeypatch, lookup, ambiguous):
+    from agent_gateway.routing import e2a_proxy
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    ws = SimpleNamespace(_web_connection_user_id=None, _jiuwen_app_id="default")
+    # No remote_address attribute: HTTP-like adapters must also be supported.
+    channel.routing_keys_for_ws = AsyncMock(return_value=[route("agent")])
+    if ambiguous:
+        channel._a4p_request_routes[("alice", "default", "s", "old")] = route("agent")
+        channel._a4p_request_routes[("alice", "default", "s", "new")] = route("agent.code.normal")
+    fetch = AsyncMock(return_value=(lookup != "failed", {
+        "mode": "agent.code.normal"} if lookup == "code" else {}))
+    if lookup == "exception":
+        fetch.side_effect = TimeoutError()
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
+    await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s")
+    if ambiguous and lookup != "code":
+        client.send_request.assert_not_called()
+        assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_ROUTE_AMBIGUOUS"
+        return
+    assert client.send_request.call_args.args[0].channel_context["agent_ref"]["mode"] == (
+        "agent.code.normal" if lookup == "code" else "agent")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["complete", "reject", "reprepare"])
+@pytest.mark.parametrize("success", [True, False])
+async def test_request_cache_cleanup_requires_business_success(method, success):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"ok": success, "pending": {"requestId": "replacement"}})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    channel.on_message(lambda msg: None)
+    ws = Socket()
+    code = route("agent.code.normal")
+    key = (code.user_id, code.app_id, code.session_id, "approval")
+    channel._a4p_request_routes[key] = code
+    await channel.register_ws(ws, code)
+    try:
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "rpc", "method": f"a4p.authorization.{method}",
+            "params": {"session_id": "s", "requestId": "approval"},
+        }), {})
+        assert (key in channel._a4p_request_routes) is not success
+    finally:
+        await channel.unregister_ws(ws)
+
+
+def test_terminal_event_cleans_only_its_request_scope():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    code = route("agent.code.normal")
+    for user in ["alice", "bob"]:
+        channel._a4p_request_routes[(user, "default", "s", "approval")] = route("agent.code.normal", user)
+    channel._remember_a4p_route(Message(
+        id="event", type="event", channel_id="web", session_id="s", params={},
+        timestamp=0, ok=True, app_id="default", agent_ref=code.agent_ref,
+        metadata={"user_id": "alice"},
+        payload={"event_type": "a4p.authorization_terminated", "requestId": "approval"},
+    ))
+    assert ("alice", "default", "s", "approval") not in channel._a4p_request_routes
+    assert ("bob", "default", "s", "approval") in channel._a4p_request_routes
