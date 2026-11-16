@@ -1,6 +1,6 @@
 # Gateway single-process startup compatibility baseline
 
-P0/P1 protects the default single-process runtime, extracts explicit startup and lifecycle boundaries, and adds an explicit log directory option. This batch introduces Control, Acceptor or Worker processes or changes chat, login, Cron, or HTTP behavior.
+P0/P1 protects the default single-process runtime, extracts explicit startup and lifecycle boundaries, and adds an explicit log directory option. P2-A also separates the two listener adapters. Neither batch introduces Control, Acceptor or Worker processes or changes chat, login, Cron, or HTTP behavior.
 
 ## Source combinations
 
@@ -24,6 +24,15 @@ The current validation host is macOS arm64 with Python 3.12.14. Other platforms 
 - Supervised restart code 75, crash convention 70 and unsupervised restart behavior remain intact.
 - Default logging paths, mother-handler reuse, redaction and level updates remain intact.
 - Explicit `log_directory` is available for future role assembly. All file handlers use that directory, with no silent shared-directory fallback or in-process switch to another directory.
+
+## P2-A listener resource boundaries
+
+- `transport.uvicorn_listener.UvicornListener` owns the 19000 framework server and lifecycle; `transport.websocket_listener.WebSocketListener` owns the 19001 listener resources. Construction does not bind; start waits for actual readiness; stop waits for complete shutdown. Closed handles cannot restart.
+- WebChannel still builds the original FastAPI app and owns business state and cleanup. Its `start()` remains long-running. `ProtocolRuntime.start()` still returns after binding; the original class retains TUI/ACP ACKs and routing.
+- Orchestration uses public `WebChannel.wait_ready()` rather than Uvicorn internals. The existing five-second readiness boundary remains; cancelling an auxiliary waiter does not cancel the business owner.
+- Adapters do not own process signals. Normal shutdown awaits the framework; startup failures cannot publish false readiness or retain acquired listener resources. Business close code 1001 and the original guarded HTTP/WS configuration remain intact.
+- HTTP keep-alive, login, Cron, southbound routing and configuration/storage formats remain unchanged. P2-A is not the complete P2 phase and provides neither a Worker pool nor fd handoff.
+- Added regression tests exercise complete HTTP archives, active WebSockets, startup failure/cancellation, port rebinding and same-workspace restarts. Actual candidate results and review fixes are recorded separately in the mother's `F_20261112_1414_gateway-p2-a-listeners`, not in the P0/P1 historical results below.
 
 ## Validation
 

@@ -25,6 +25,15 @@ Python 3.12.14/macOS arm64 是本轮运行环境。Windows/Linux 和桌面冻结
 - `setup_gateway_logger()` 默认目录、母仓 handler 复用、脱敏和热更新语义不变。
 - 新的 `log_directory` 参数供后续角色装配使用：所有文件写入显式目录；不能静默回退共享目录，不能在同一进程内换到另一目录。
 
+## P2-A：监听资源边界
+
+- `transport.uvicorn_listener.UvicornListener`持有19000的框架server和生命周期；`transport.websocket_listener.WebSocketListener`持有19001的监听资源。构造不bind，start等待真实ready，stop等待关闭完成；同一handle关闭后不复活。
+- WebChannel仍构建原FastAPI应用、保留业务状态与清理，`start()`仍是长期协程。`ProtocolRuntime.start()`仍在绑定后返回，TUI/ACP的ACK和路由仍由原类处理。
+- 编排通过`WebChannel.wait_ready()`等待真实监听，不再读取Uvicorn私有字段；5秒ready边界保持。取消辅助等待不取消业务所有者。
+- 监听适配器不接管进程信号；正常停止等待框架shutdown，启动失败不假ready，已取得的监听资源必须收束。Web业务关闭码1001和原guarded HTTP/WS配置保持。
+- 原HTTP keep-alive、登录、Cron、南向路由及配置/存储格式不变。P2-A不是整个P2完成，也不支持多Worker或fd交接。
+- 新增回归覆盖真实HTTP完整归档、活WS、启动失败/取消、端口重绑及同workspace停启；实际结果、候选范围和审查修复见母仓`F_20261112_1414_gateway-p2-a-listeners`，与下文P0/P1历史结果分开记录。
+
 ## 回归入口
 
 定向门禁覆盖 dotenv/CLI 参数、锁、信号、启动 trace、日志热更新/脱敏和真实 Gateway 停启。业务保护复用原登录、取消、分享、Cron、ACP、Web binding 测试；逐项对照原版与候选版的用例及结果。
