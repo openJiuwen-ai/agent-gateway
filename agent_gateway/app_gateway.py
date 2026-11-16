@@ -49,7 +49,7 @@ from e2a.message import (
     Mode,
 )
 from agent_gateway.common.protocol_methods import ReqMethod
-from websockets.exceptions import ConnectionClosed, ConnectionClosedError
+from websockets.exceptions import ConnectionClosedError
 
 from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
@@ -1027,29 +1027,6 @@ class GatewayServer(BaseWebChannel):
     @staticmethod
     def _ws_is_open(ws: Any) -> bool:
         return ws is not None and not bool(getattr(ws, "closed", False))
-
-    async def _send_frame_to_ws(
-        self,
-        ws: Any,
-        frame: dict[str, Any],
-        *,
-        channel_id: str | None,
-        request_id: str | None,
-        session_id: str | None,
-    ) -> bool:
-        if not self._ws_is_open(ws):
-            return False
-        try:
-            await ws.send(json.dumps(frame, ensure_ascii=False))
-            return True
-        except ConnectionClosed:
-            logger.info(
-                "[GatewayServer] WebSocket closed while sending: channel_id=%s session_id=%s id=%s",
-                channel_id,
-                session_id,
-                request_id,
-            )
-            return False
 
     def on_message(self, callback) -> None:
         self._on_message_cb = callback
