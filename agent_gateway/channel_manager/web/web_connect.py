@@ -1695,6 +1695,18 @@ class WebChannel(BaseWsChannel):
                 matches.add(cached)
         return next(iter(matches)) if len(matches) == 1 else None
 
+    def a4p_pending_routes(
+        self, routes: list[RoutingKey], *, ws: Any, session_id: str,
+    ) -> set[RoutingKey]:
+        """Recover Host-provided identities without a request ID after refresh."""
+        scopes = {(r.user_id, r.app_id, r.session_id) for r in routes}
+        user_id = self.connection_user_id(ws)
+        app_id = getattr(ws, "_jiuwen_app_id", None)
+        if user_id and app_id and session_id:
+            scopes.add((user_id, app_id, session_id))
+        return {route for key, route in self._a4p_request_routes.items()
+                if key[:3] in scopes}
+
     def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
         """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
         sid = str(session_id or "").strip()

@@ -6486,6 +6486,55 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             resolver = getattr(channel, "a4p_request_route", None)
             if resolver is not None and isinstance(request_id, str):
                 route = resolver(routes, request_id, ws=ws, session_id=session_id)
+            if route is None and req_method == ReqMethod.A4P_AUTHORIZATION_PENDING:
+                cached_routes = channel.a4p_pending_routes(
+                    routes, ws=ws, session_id=session_id,
+                )
+                if len(cached_routes) > 1:
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error="Multiple Web authorizer identities match this session",
+                        code="A4P_WEB_ROUTE_AMBIGUOUS",
+                    )
+                    return
+                if cached_routes:
+                    route = next(iter(cached_routes))
+            # Anonymous local sockets use their ephemeral remote address as a
+            # routing key. Resolve the session on the single-user Host instead
+            # of trusting client mode fields or carrying that key across refresh.
+            from agent_gateway.routing.e2a_proxy import (
+                fetch_agent_unary, is_legacy_shared_directory_client,
+            )
+            if (
+                route is None and session_id
+                and channel.connection_user_id(ws) is None
+                and is_legacy_shared_directory_client(ac)
+            ):
+                from agent_gateway.routing.keys import AgentRef, RoutingKey
+
+                ok, meta = await fetch_agent_unary(
+                    agent_client=ac, req_method=ReqMethod.SESSION_GET_METADATA,
+                    params={"session_id": session_id}, session_id=session_id,
+                    user_id=user_id, channel_id="web",
+                    label="a4p.restore_session", timeout_seconds=10,
+                )
+                mode = meta.get("mode") if ok else None
+                if not isinstance(mode, str) or not mode.strip():
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error="Unable to restore Web authorizer session identity",
+                        code="A4P_WEB_SESSION_REQUIRED",
+                    )
+                    return
+                route = RoutingKey(
+                    user_id=channel._routing_key_user_id(None, ws.remote_address),
+                    channel_id="web",
+                    app_id=getattr(ws, "_jiuwen_app_id", None) or "default",
+                    session_id=session_id,
+                    agent_ref=AgentRef(mode=mode, id="default"),
+                )
+                logger.info("[a4p] restored local session route session=%s mode=%s",
+                            session_id, mode)
             if route is None and len(routes) == 1:
                 route = routes[0]
             if route is None and len(routes) > 1:

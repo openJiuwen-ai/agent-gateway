@@ -134,12 +134,13 @@ def test_request_hint_is_scoped_to_user_app_and_session():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["complete", "pending"])
 @pytest.mark.parametrize("user,app,session,allowed", [
     ("alice", "default", "s", True), ("bob", "default", "s", False),
     ("alice", "other", "s", False), ("alice", "default", "other", False),
     (None, "default", "s", False),
 ])
-async def test_fresh_connection_can_complete_only_its_cached_request(user, app, session, allowed):
+async def test_fresh_connection_can_complete_only_its_cached_request(user, app, session, allowed, method):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={})))
@@ -164,8 +165,8 @@ async def test_fresh_connection_can_complete_only_its_cached_request(user, app, 
                                          app_id=app, session_id="handshake"))
     try:
         await channel._handle_raw_message(ws, json.dumps({
-            "type": "req", "id": "rpc", "method": "a4p.authorization.complete",
-            "params": {"session_id": session, "requestId": "approval"},
+            "type": "req", "id": "rpc", "method": f"a4p.authorization.{method}",
+            "params": {"session_id": session, **({"requestId": "approval"} if method == "complete" else {})},
         }), {})
         if allowed:
             assert client.send_request.call_args.args[0].channel_context["agent_ref"]["mode"] == "agent.code.normal"
@@ -221,3 +222,48 @@ def test_missing_identity_without_source_is_logged(caplog):
         ))
     assert not channel._a4p_request_routes
     assert "route hint skipped requestId=approval session=s: missing=" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["pending", "complete", "reject", "reprepare"])
+@pytest.mark.parametrize("mode", ["agent.code.normal", "agent"])
+@pytest.mark.parametrize("local,found", [(True, True), (True, False), (False, True)])
+async def test_anonymous_refresh_restores_only_local_host_session(monkeypatch, method, mode, local, found):
+    from agent_gateway.routing import e2a_proxy
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    channel.on_message(lambda msg: None)
+    fetch = AsyncMock(return_value=(found, {"mode": mode} if found else {}))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: local)
+    old = Socket()
+    old._web_connection_user_id = None
+    await channel.register_ws(old, route(mode, user=str(old.remote_address)))
+    await channel.unregister_ws(old)
+    ws = Socket()
+    ws._web_connection_user_id = None
+    ws._web_routing = {}
+    ws.remote_address = ("127.0.0.1", 54321)
+    ws._jiuwen_app_id = "default"
+    # Refresh registers a new handshake session, with no target-session route.
+    from dataclasses import replace
+    await channel.register_ws(ws, replace(route("agent", user=str(ws.remote_address)),
+                                         session_id="handshake"))
+    try:
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "rpc", "method": f"a4p.authorization.{method}",
+            "params": {"session_id": "s", "mode": "untrusted", "requestId": "approval"},
+        }), {})
+        if local and found:
+            assert client.send_request.call_args.args[0].channel_context["agent_ref"] == {
+                "mode": mode, "id": "default"}
+        else:
+            client.send_request.assert_not_called()
+            assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_SESSION_REQUIRED"
+        assert fetch.await_count == int(local)
+    finally:
+        await channel.unregister_ws(ws)
