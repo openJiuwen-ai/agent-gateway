@@ -1,0 +1,64 @@
+# Gateway 单进程启动兼容基线
+
+P0/P1保护默认单进程行为，提取初始化与生命周期边界，并提供显式日志目录；P2-A进一步分离两个监听适配器。尚未增加 Control、Acceptor 或 Worker 进程，也未改变聊天、登录、Cron 或 HTTP 策略。
+
+## 基线与验证组合
+
+| 对象 | 提交 |
+| --- | --- |
+| agent-gateway 官方 develop | `cad980e61996d8e1d31bb3270a00af014f5bb8ea` |
+| jiuwenswarm 官方 develop | `d54c14d053dfd8578f516794ab481959816e28cc` |
+| 该 jiuwenswarm 锁定的 Gateway | `54e5330d3ea6be972aa38de4c42a898ea73fed37` |
+
+分别验证 Gateway 独立安装、jiuwenswarm 原锁定组合、jiuwenswarm 加候选 Gateway。候选组合用独立虚拟环境替换 Gateway，显式记录包来源；不改母仓依赖文件或 lock。
+
+Python 3.12.14/macOS arm64 是本轮运行环境。Windows/Linux 和桌面冻结安装包需在各自环境验收，不能由源码检查推断通过。
+
+## 保留的契约
+
+- `agent-gateway`、`python -m agent_gateway.app_gateway`、母仓 Gateway 入口保持原参数与默认值。
+- dotenv、第三方日志、Gateway 日志、工作区准备、运行环境应用的调用顺序保持不变。父进程 READY 标志仍跳过工作区重复准备。
+- `startup.bootstrap` 本身不执行初始化；旧入口仍在原阶段调用这些函数。
+- 唯一工作区锁仍使用原 `GatewayLock`，重复启动退出码为 1，生命周期结束后释放锁。
+- SIGINT/SIGTERM 转换为同一 shutdown event，退出时恢复旧 handler 并清理 telemetry。部分信号注册失败也恢复此前已注册 handler。
+- supervised restart 退出码 75、原 crash 约定 70 及原非托管 restart 行为保持。
+- `setup_gateway_logger()` 默认目录、母仓 handler 复用、脱敏和热更新语义不变。
+- 新的 `log_directory` 参数供后续角色装配使用：所有文件写入显式目录；不能静默回退共享目录，不能在同一进程内换到另一目录。
+
+## 回归入口
+
+定向门禁覆盖 dotenv/CLI 参数、锁、信号、启动 trace、日志热更新/脱敏和真实 Gateway 停启。业务保护复用原登录、取消、分享、Cron、ACP、Web binding 测试；逐项对照原版与候选版的用例及结果。
+
+```bash
+uv sync --frozen --extra test
+uv run --frozen --extra test python -m pytest tests/unit_tests/gateway tests/auth tests/integration/gateway --no-cov
+```
+
+运行 pytest 前将 `JIUWENSWARM_HOME` 和 `JIUWENSWARM_DATA_DIR` 指向本轮临时目录，防止 collection 阶段导入入口时操作真实用户数据。ST 显式选择当前 Python 和仓库 config 模板：
+
+```bash
+AGENT_GATEWAY_BIN="$PWD/.venv/bin/python -m agent_gateway.app_gateway" \
+ST_GATEWAY_CONFIG_SRC="$PWD/agent_gateway/resources/config.yaml" \
+.venv/bin/python -m pytest st_test/testcases_gateway --no-cov
+```
+
+真实母仓 ST 位于 `st_test/testcases_integration`；环境必须安装指定版本 workswarm，模型聊天默认跳过。必须记录实际运行的 AS/Gateway 来源，不以 skipped 作为功能通过。
+
+## 本轮环境限制
+
+- 原始广测在第三方 `pysbd` 导入时因 invalid escape 的 SyntaxWarning 被 pytest 的 error 规则升级而中止。后续前后对照命令追加 `-W 'ignore:invalid escape sequence:SyntaxWarning'`；生产依赖和 pytest 配置未更改。
+- 母仓 frozen 安装在 `openjiuwen-computeruse` 的原生构建失败。限定范围的集成环境使用 `uv sync --frozen --no-install-package openjiuwen-computeruse`；此结果不覆盖 Computer Use 或完整发行包验收。
+- 早期广测命令使用 `-o addopts=''` 时误清除了仓库的 `--asyncio-mode=auto`，产生 98 failed 和 58 errors。该结果属于执行配置错误，不能归因于旧业务代码。最终对照显式保留 `--asyncio-mode=auto`；原始记录保留用于追溯。
+- 母仓原 pin、Gateway develop 原版及入口改造版的真实 AS 契约均为 4 passed、1 模型聊天 skipped；母仓启动/端口/dotenv 为 34 passed。旧 pin→候选→旧 pin 同工作区停启和 `config.get` 回退探针通过。
+- 母仓新 develop 已改变部分 domain/infra 路径，Gateway develop 仍保留分区。依赖升级需单独验收实际配置/数据路径；简单连接测试通过不能证明所有部署配置兼容。
+
+## 证据与回退
+
+本轮 Gateway 单元/auth/集成目录对照：原版 2358 passed、2 skipped，候选 2385 passed、2 skipped；新增 27 项通过，无用例丢失、新增失败或新增跳过。独立转发 ST 两版各 274 passed；新增真实停启 ST 2 passed；最终 wheel 安装后转发冒烟 4 passed。各套件有重叠，数量不能相加作为去重后的覆盖总数。默认日志路径的全套转发对照在日志接口补丁前完成；补丁后补跑日志/热更新/启动 27 项、真实 AS 集成与 wheel 冒烟。
+
+每次结果应记录源码 SHA、依赖 lock 摘要、实际包来源、平台/Python、安装组合、命令、JUnit 结果和失败/跳过理由。日志及真实配置不入库。此次证据保存于执行报告指向的工作区外目录。
+
+P1 没有存储格式变更。回退按依赖顺序撤回入口接线与 helper，保留原数据；先停止当前 Gateway，再启动旧版本。维护窗口验证锁释放与工作区复用，不承诺运行任务或活连接在线迁移。
+
+代码合入、显式启用多进程和切换默认是三个独立门禁。P0/P1 完成不表示多进程业务或容量已经验收。
+

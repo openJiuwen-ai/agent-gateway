@@ -78,39 +78,19 @@ _TUI_FOREGROUND_METHODS = frozenset({
     "session.create", "session.switch", "history.get", "chat.send", "chat.resume",
 })
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from agent_gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
-
-parse_dotenv_early("agent-gateway")
-_mark_startup_import_phase("dotenv_parsed")
-
-# 日志引导：须先于任何可能创建 openjiwen logger 的导入执行。
-from agent_gateway.common.openjiuwen_logging import (
-    configure_openjiuwen_core_logging,
-    configure_openjiuwen_runtime_logging,
+from agent_gateway.startup.bootstrap import (
+    apply_group_environment,
+    configure_process_logging,
+    initialize_early_environment,
+    prepare_group_workspace,
 )
 
-configure_openjiuwen_runtime_logging()
-# 未自管 yaml 时压制 openjiwen 内部日志（保留 Gateway 自身日志）。
-configure_openjiuwen_core_logging(suppress_level=logging.CRITICAL)
-_mark_startup_import_phase("third_party_logging_pinned")
-
-# Gateway 自带日志初始化：共同安装时母仓已配置则复用，独立安装时按同一路径自建
-from agent_gateway.common.logging_setup import setup_gateway_logger
-
-setup_gateway_logger()
-_mark_startup_import_phase("logging_ready")
+initialize_early_environment(_mark_startup_import_phase)
+configure_process_logging(_mark_startup_import_phase)
 
 # Standalone entrypoints retain workspace preparation; Desktop/app already do
 # it before spawning us and pass the marker to avoid duplicate disk work.
-from agent_gateway.common.paths import (
-    cleanup_stale_openjiuwen_descs,
-    prepare_runtime_workspace,
-)
-
-cleanup_stale_openjiuwen_descs()
-if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
-    prepare_runtime_workspace(cleanup_stale_descs=False)
-_mark_startup_import_phase("runtime_workspace_ready")
+prepare_group_workspace(_mark_startup_import_phase)
 
 from agent_gateway.channel_manager.base import BaseWebChannel
 
@@ -159,10 +139,7 @@ _mark_startup_import_phase("gateway_core_imports_loaded")
 
 _mark_startup_import_phase("logging_configured")
 
-_env_file = get_env_file()
-load_dotenv_runtime(dotenv_path=_env_file, override=True)
-apply_free_search_runtime_defaults()
-_mark_startup_import_phase("runtime_environment_applied")
+apply_group_environment(_mark_startup_import_phase)
 
 logger = logging.getLogger("gateway")
 
@@ -4410,16 +4387,9 @@ async def _run_with_shutdown_signals(
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
-    loop = asyncio.get_running_loop()
-    shutdown_event = asyncio.Event()
-    previous_handlers: dict[signal.Signals, Any] = {}
+    from agent_gateway.startup.lifecycle import run_with_shutdown_signals
 
-    def request_shutdown(_signum: int, _frame: Any) -> None:
-        loop.call_soon_threadsafe(shutdown_event.set)
-
-    for signum in (signal.SIGINT, signal.SIGTERM):
-        previous_handlers[signum] = signal.signal(signum, request_shutdown)
-    try:
+    async def run(shutdown_event: asyncio.Event) -> None:
         await _run(
             agent_server_url=agent_server_url,
             web_host=web_host,
@@ -4428,10 +4398,8 @@ async def _run_with_shutdown_signals(
             shutdown_event=shutdown_event,
             web_ws_deflate=web_ws_deflate,
         )
-    finally:
-        for signum, handler in previous_handlers.items():
-            signal.signal(signum, handler)
-        await shutdown_gateway_telemetry()
+
+    await run_with_shutdown_signals(run, shutdown_gateway_telemetry)
 
 
 def main() -> None:
@@ -4527,17 +4495,9 @@ def main() -> None:
     # Per-workspace singleton lock: prevents a second Gateway process from
     # serving the same workspace (two CronSchedulerService instances over one
     # cron_jobs.json => duplicate cron executions).
-    from agent_gateway.gateway_lock import GatewayLock
+    from agent_gateway.startup.lifecycle import gateway_workspace_lock
 
-    gateway_lock = GatewayLock(get_infra_data_dir())
-    if not gateway_lock.acquire():
-        logger.error(
-            "[App] Another Gateway is already serving this workspace; "
-            "refusing duplicate instance (lock: %s)",
-            gateway_lock.lock_path,
-        )
-        raise SystemExit(1)
-    try:
+    with gateway_workspace_lock(get_infra_data_dir()):
         asyncio.run(
             _run_with_shutdown_signals(
                 agent_server_url=agent_server_url,
@@ -4547,8 +4507,6 @@ def main() -> None:
                 web_ws_deflate=web_ws_deflate,
             )
         )
-    finally:
-        gateway_lock.release()
 
 
 if __name__ == "__main__":
