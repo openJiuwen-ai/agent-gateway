@@ -78,6 +78,17 @@ class FakeWebChannel:
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
 
+    @staticmethod
+    def connection_user_id(ws):
+        return getattr(ws, "_web_connection_user_id", None)
+
+    def a4p_pending_routes(self, routes, *, ws, session_id):
+        # This handler fixture has no Host authorization-event cache.
+        return set()
+
+    def forget_a4p_route(self, route, request_id):
+        pass
+
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
 
@@ -323,7 +334,7 @@ async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
     )]
     agent_client = _AgentClient()
     _bind(channel, agent_client=agent_client)
-    ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
+    ws = SimpleNamespace(_jiuwen_ws_id="ws-1", _web_connection_user_id=user_id)
 
     params = {
         "requestId": "intent-1",

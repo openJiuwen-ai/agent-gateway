@@ -1613,7 +1613,8 @@ class WebChannel(BaseWsChannel):
 
     def _remember_a4p_route(self, msg: Message) -> None:
         """Remember only Host-provided request identity, never client parameters."""
-        if self._resolve_event_name(msg) != "a4p.authorization_request":
+        event = self._resolve_event_name(msg)
+        if event not in {"a4p.authorization_request", "a4p.authorization_terminated"}:
             return
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         request_id = payload.get("requestId")
@@ -1665,6 +1666,12 @@ class WebChannel(BaseWsChannel):
             )
             return
         key = (user_id, app_id, msg.session_id, request_id)
+        if event == "a4p.authorization_terminated":
+            self._a4p_request_routes.pop(key, None)
+            return
+        replaced = payload.get("replacesRequestId")
+        if isinstance(replaced, str) and replaced != request_id:
+            self._a4p_request_routes.pop((user_id, app_id, msg.session_id, replaced), None)
         self._a4p_request_routes[key] = RoutingKey(
             user_id=user_id, channel_id=self.channel_id, app_id=app_id,
             session_id=msg.session_id, agent_ref=AgentRef(mode=mode, id=agent_id),
@@ -1694,6 +1701,24 @@ class WebChannel(BaseWsChannel):
             if cached is not None:
                 matches.add(cached)
         return next(iter(matches)) if len(matches) == 1 else None
+
+    def forget_a4p_route(self, route: RoutingKey, request_id: str | None) -> None:
+        """Remove only a resolved request in its original identity scope."""
+        key = (route.user_id, route.app_id, route.session_id, request_id)
+        if self._a4p_request_routes.get(key) == route:
+            self._a4p_request_routes.pop(key, None)
+
+    def a4p_pending_routes(
+        self, routes: list[RoutingKey], *, ws: Any, session_id: str,
+    ) -> set[RoutingKey]:
+        """Recover Host-provided identities without a request ID after refresh."""
+        scopes = {(r.user_id, r.app_id, r.session_id) for r in routes}
+        user_id = self.connection_user_id(ws)
+        app_id = getattr(ws, "_jiuwen_app_id", None)
+        if user_id and app_id and session_id:
+            scopes.add((user_id, app_id, session_id))
+        return {route for key, route in self._a4p_request_routes.items()
+                if key[:3] in scopes}
 
     def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
         """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
