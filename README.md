@@ -40,6 +40,14 @@ The gateway builds and runs as its own Python package `agent-gateway` with two e
 | Health & heartbeat             | Periodic health checks and heartbeat keep the gateway/AgentServer pair observable and let the supervisor restart a stuck half                                                                   |
 | Multi-instance isolation       | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
 
+## Attachments and file references
+
+Structured attachments and `@path` mentions share the same expansion rules. PDF, Office, image, archive, and other non-text files retain only their filename, absolute path, type, and reason for not being expanded. Their raw bytes are never decoded into the model input. Agents should use document or media reading tools as needed; Gateway does not parse PDFs.
+
+UTF-8 text and source files may be inlined, up to 128 KiB of body text per file and 256 KiB across a message, measured in UTF-8 bytes. Each actual path is expanded only once. Truncated files and files deferred by the message budget retain a path and a notice for further tool reads. Invalid UTF-8 and binary control characters are not converted into replacement-character noise.
+
+`MessageHandler.resolve_at_file_references` retains `max_file_size` and adds the keyword-only `max_total_inline_bytes` parameter. `max_file_size=None` disables only the per-file limit, not the message budget. These byte limits do not guarantee a model token limit.
+
 ## Related Documents
 
 - [Documentation](docs/README_EN.md) — tutorial, how-to, reference, and explanation

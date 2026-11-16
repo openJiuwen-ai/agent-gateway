@@ -40,6 +40,14 @@ Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入�
 | 健康检查与心跳 | 周期性健康检查与心跳让 Gateway / AgentServer 状态可观测，便于守护进程拉起异常的一半 |
 | 多实例隔离 | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` 隔离工作区，工作区锁避免两个 Gateway 服务同一实例 |
 
+## 附件与文件引用
+
+结构化附件和消息里的 `@文件路径` 使用相同的展开规则。PDF、Office、图片、压缩包和其他非文本文件只保留文件名、绝对路径、类型与未展开原因，不会把原始文件按文本塞进模型输入。Agent 应按需使用文档或媒体读取工具；Gateway 本身不解析 PDF。
+
+UTF-8 文本和代码可直接展开：每个文件默认最多 128 KiB 正文，一条消息所有文件合计最多 256 KiB，均按 UTF-8 字节计算。同一实际路径只展开一次；截断或总预算耗尽时保留路径与提示，后续可用工具继续读取。无效 UTF-8 和含二进制控制字符的文件不会被替换成乱码。
+
+`MessageHandler.resolve_at_file_references` 保留 `max_file_size` 参数，并新增仅关键字参数 `max_total_inline_bytes`。`max_file_size=None` 仅取消单文件限制，消息总预算仍然有效。这些限制不是模型 token 上限保证。
+
 ## 相关文档
 
 - [文档导航](docs/README.md) —— 教程、操作指南、参考与架构说明
