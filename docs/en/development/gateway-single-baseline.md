@@ -104,3 +104,12 @@ The original `_on_config_saved` body remains discoverable in the legacy entrypoi
 
 `tests/unit_tests/gateway/test_application_assembly_contract.py` covers cold imports, explicit delegation, Web stage order/bind failure, single service instances, enterprise storage order, client selection, TUI subscription order, Web first-request gating and service shutdown. Normal shutdown does not imply transactional cleanup for every early startup failure.
 
+## P2-D optional-channel lifecycle
+
+`application/optional_channels.py::OptionalChannels` owns the existing IM, SSH, A2A and Web Proxy configuration, instance and task references. `single.py` supplies explicit dependencies and retains A2A startup, callback installation and deferred initial configuration at their original stages. Lazy SDK imports, per-channel failure isolation and revision-aware retries remain unchanged.
+
+Shutdown keeps three boundaries: configuration/retry tasks, A2A, then other optional channels after TUI/Web. Prewarming stays in the single host; WebChannel.stop remains the final owner of Web Proxy resources. Background DingTalk cancellation waiters are tracked and joined. No protocol, login, Cron or multi-Worker behavior is introduced.
+
+Behavior contracts are in `tests/unit_tests/gateway/test_optional_channels_lifecycle.py`. Real platform accounts and frozen distributions still require separate validation. The inherited AgentOS Web Proxy branch imports a missing settings helper; controlled ownership tests do not demonstrate successful real proxy startup.
+
+

@@ -106,3 +106,12 @@ site-packages 来源。ST 应设置 `ST_GATEWAY_CONFIG_SRC` 指向仓内配置�
 
 装配契约测试：`tests/unit_tests/gateway/test_application_assembly_contract.py`。包含冷导入、旧入口显式委托、Web启动顺序/绑定失败、单份服务接线、企业存储顺序、客户端选型、TUI订阅顺序、Web首次请求门闩及服务退出顺序。正常停启不代表任意早期启动失败均有事务式清理。
 
+## P2-D 可选渠道生命周期
+
+`application/optional_channels.py::OptionalChannels`收口原IM、SSH、A2A与Web Proxy的配置/实例/task管理。`single.py`通过显式依赖创建它，按原时点启动A2A、安装配置callback并延迟应用初始渠道配置；保留SDK惰性import、单渠道失败隔离及revision失效重试。
+
+退出分三阶段：配置初始化/retry → A2A → TUI/Web之后的其他渠道；prewarm仍由single协调，Web Proxy资源最终仍由WebChannel.stop释放。DingTalk后台取消等待task由组件跟踪并join。不改协议、登录或Cron，不引入多Worker。
+
+生命周期行为测试位于`tests/unit_tests/gateway/test_optional_channels_lifecycle.py`；真实平台账号与冻结发行包需单独验收。既有AgentOS Web Proxy分支导入缺失配置函数的问题仍遗留；替身重配置测试不等于真实启用验证。
+
+
