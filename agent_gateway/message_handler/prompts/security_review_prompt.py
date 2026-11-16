@@ -240,10 +240,12 @@ Begin your analysis now. Do this in 3 steps:
 Your final reply must contain the markdown report and nothing else."""
 
 
-def build_security_review_prompt(extra_arg: str = "", cwd: str | None = None) -> str:
+def build_security_review_prompt(
+    extra_arg: str = "", cwd: str | None = None, *, preferred_language: str | None = None,
+) -> str:
     """构建 /security-review 的 prompt。
 
-    输出语言来自 config ``preferred_language``；可选 args 原样透传为附加说明。
+    输出语言优先使用显式参数，否则读取本地配置；可选 args 原样透传为附加说明。
 
     当 ``cwd`` 指向仓库时，在 prompt 注入阶段**预执行** 4 条只读 git 命令
     并把输出**内联**进 prompt（不再让 LLM 自己跑 git）。任一命令非零退出抛
@@ -251,7 +253,7 @@ def build_security_review_prompt(extra_arg: str = "", cwd: str | None = None) ->
     ``cwd`` 为 None（如单测、无仓库上下文）时退回旧的“指令式” prompt，行为不变。
     """
     args = extra_arg.strip() if extra_arg else ""
-    lang_line = response_language_line()
+    lang_line = response_language_line(preferred_language)
     if cwd is None:
         intro = _SECURITY_REVIEW_INTRO_FALLBACK
     else:

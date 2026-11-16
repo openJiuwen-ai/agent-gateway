@@ -13,6 +13,7 @@ import time
 from abc import ABC
 from dataclasses import dataclass, replace
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Literal
@@ -95,6 +96,13 @@ from agent_gateway.runtime.session_input import (
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, InboundDisposition
 
 logger = logging.getLogger(__name__)
+
+
+class _ReviewLanguageError(RuntimeError):
+    """目标 AgentServer 未能提供评审语言，禁止使用 Gateway 本地旧值。"""
+
+    code = "SERVICE_UNAVAILABLE"
+
 
 _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
 _ACP_CHANNEL_ID = "acp"
@@ -2296,7 +2304,42 @@ class MessageHandler(ABC):
             )
         return True
 
-    async def _handle_channel_control(self, msg: "Message") -> bool:
+    async def _resolve_review_prompt_language(self, msg: "Message") -> str | None:
+        """企业版按当前消息路由查询语言；个人版沿用提示词构造器的本地配置。"""
+        from e2a.message import ReqMethod
+        from agent_gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return None
+
+        # 使用与评审消息相同的身份/会话转换，保留 app_id、agent_ref 及 metadata。
+        # 每次查询，不缓存不同用户或 AgentServer 的语言，也不写 Gateway 配置。
+        agent_msg = await self._prepare_agent_dispatch_message(msg)
+        params = agent_msg.params or {}
+        locale_msg = replace(
+            agent_msg,
+            id=f"review-locale-{secrets.token_hex(16)}",
+            req_method=ReqMethod.LOCALE_GET_CONF,
+            params={"agent_type": params["agent_type"]} if "agent_type" in params else {},
+            is_stream=False,
+        )
+        try:
+            response = await send_agent_request_with_timeout(
+                self.agent_client, self.message_to_e2a(locale_msg), label="review.locale.get_conf",
+            )
+        except Exception as exc:
+            raise _ReviewLanguageError(f"无法读取目标 AgentServer 的语言配置：{exc}") from exc
+
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if not response.ok:
+            error = payload.get("error") or "locale.get_conf failed"
+            raise _ReviewLanguageError(f"无法读取目标 AgentServer 的语言配置：{error}")
+        language = payload.get("preferred_language")
+        if not isinstance(language, str) or language.strip().lower() not in ("zh", "en"):
+            raise _ReviewLanguageError("目标 AgentServer 返回了无效的 preferred_language")
+        return language.strip().lower()
+
+    async def _handle_channel_control(self, msg: "Message", *, route_resolved: bool = False) -> bool:
         r"""处理 \new_session / \mode / \skills 指令.
 
         Returns:
@@ -2323,6 +2366,15 @@ class MessageHandler(ABC):
         parsed = parse_channel_control_text(text)
         if parsed.action is ParsedControlAction.NONE:
             return False
+
+        # 企业版评审需等待实际会话路由解析，再由下方 chat.send 分支统一构建。
+        # 个人版保持原来的受控通道处理顺序。
+        if parsed.action in (ParsedControlAction.REVIEW_OK, ParsedControlAction.SECURITY_REVIEW_OK):
+            from e2a.message import ReqMethod
+            from agent_gateway.enterprise import is_enterprise
+
+            if is_enterprise() and msg.req_method == ReqMethod.CHAT_SEND and not route_resolved:
+                return False
 
         logger.info(
             "[MessageHandler] _handle_channel_control channel=%s text=%s action=%s",
@@ -2645,7 +2697,9 @@ class MessageHandler(ABC):
         if parsed.action is ParsedControlAction.REVIEW_OK:
             # /review [args]：注入 review prompt，转发 Agent 执行 gh pr list/view/diff 并分析
             pr_arg = parsed.pr_arg or ""
-            review_prompt = build_review_prompt(pr_arg)
+            review_prompt = build_review_prompt(
+                pr_arg, preferred_language=await self._resolve_review_prompt_language(msg),
+            )
             if msg.params is None:
                 msg.params = {}
             msg.params["query"] = review_prompt
@@ -2679,8 +2733,9 @@ class MessageHandler(ABC):
                 # 任一命令非零退出（如 origin/HEAD 未设置 / 无共同历史）即中止，
                 # 不转发给 Agent。
                 # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
+                language = await self._resolve_review_prompt_language(msg)
                 security_prompt = await asyncio.get_event_loop().run_in_executor(
-                    None, build_security_review_prompt, extra_arg, cwd
+                    None, partial(build_security_review_prompt, extra_arg, cwd, preferred_language=language),
                 )
             except GitPreExecError as exc:
                 await self.send_channel_notice(
@@ -5507,6 +5562,19 @@ class MessageHandler(ABC):
                 self._apply_channel_state(msg)
                 await self._ensure_inbound_session(msg)
 
+                # 企业版受控渠道的评审在实际会话确定后、繁忙会话转为 steer 前构建。
+                # 保留个人版原顺序，也避免 steer 分支跳过评审语言注入。
+                from agent_gateway.enterprise import is_enterprise
+
+                if (is_enterprise() and msg.req_method == ReqMethod.CHAT_SEND
+                        and self._resolve_control_channel_type(msg) in self._control_channel_types):
+                    params = msg.params or {}
+                    text = str(params.get("query") or params.get("content") or "").strip()
+                    action = parse_channel_control_text(text).action
+                    if action in (ParsedControlAction.REVIEW_OK, ParsedControlAction.SECURITY_REVIEW_OK):
+                        if await self._handle_channel_control(msg, route_resolved=True):
+                            continue
+
                 # IM chat.send has no steer control. A message that arrives
                 # while this Session is processing joins that turn instead of
                 # cancelling it and starting another.
@@ -5856,7 +5924,9 @@ class MessageHandler(ABC):
                                 continue
                             if parsed.action is ParsedControlAction.REVIEW_OK:
                                 pr_arg = parsed.pr_arg or ""
-                                review_prompt = build_review_prompt(pr_arg)
+                                review_prompt = build_review_prompt(
+                                    pr_arg, preferred_language=await self._resolve_review_prompt_language(msg),
+                                )
                                 msg.params = dict(msg.params)
                                 msg.params["query"] = review_prompt
                                 if "content" in msg.params:
@@ -5887,12 +5957,12 @@ class MessageHandler(ABC):
                                     # 预执行只读 git 并内联输出；
                                     # 失败则发 notice 中止，不转发给 Agent。
                                     # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
+                                    language = await self._resolve_review_prompt_language(msg)
                                     security_prompt = (
                                         await asyncio.get_event_loop().run_in_executor(
                                             None,
-                                            build_security_review_prompt,
-                                            extra_arg,
-                                            cwd,
+                                            partial(build_security_review_prompt, extra_arg, cwd,
+                                                    preferred_language=language),
                                         )
                                     )
                                 except GitPreExecError as exc:
