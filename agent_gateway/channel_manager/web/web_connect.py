@@ -12,7 +12,6 @@ import asyncio
 import inspect
 import json
 import logging
-import secrets
 import threading
 import time
 import uuid
@@ -48,6 +47,7 @@ from agent_gateway.common.protocol_ids import (
 from agent_gateway.common.security.ws_origin import (
     get_header_value,
 )
+from agent_gateway.common.session_ids import make_session_id
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
@@ -2062,7 +2062,7 @@ class WebChannel(BaseWsChannel):
             _initial_sid = (
                 validate_session_id(_raw_initial_sid)
                 if _raw_initial_sid
-                else self._make_session_id()
+                else make_session_id()
             )
         except InvalidProtocolId as exc:
             logger.warning(
@@ -2439,7 +2439,7 @@ class WebChannel(BaseWsChannel):
             session_id = (
                 validate_session_id(_explicit_session_id)
                 if has_explicit_session
-                else self._make_session_id()
+                else make_session_id()
             )
             if method in _SWARMFLOW_CONTROL_METHODS:
                 run_id = params.get("run_id")
@@ -2734,10 +2734,3 @@ class WebChannel(BaseWsChannel):
         return Mode.from_raw(raw_mode, default=Mode.AGENT_WORK_NORMAL)
 
     parse_mode = _parse_mode
-
-    @staticmethod
-    def _make_session_id() -> str:
-        # 与前端 generateSessionId 保持一致：毫秒时间戳(16进制) + 6位随机16进制
-        ts = format(int(time.time() * 1000), "x")
-        suffix = secrets.token_hex(3)
-        return f"sess_{ts}_{suffix}"

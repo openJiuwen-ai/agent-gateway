@@ -71,6 +71,7 @@ from agent_gateway.common.config_panel.config_set_handlers import (
 from agent_gateway.common.paths import (
     get_env_file,
 )
+from agent_gateway.common.session_ids import make_session_id
 from agent_gateway.common.protocol_methods import (
     SKILL_UPLOAD_FINALIZE,
     SKILL_UPLOAD_STAGE,
@@ -1676,13 +1677,6 @@ async def _restart_agent_browser_runtime(
         raise RuntimeError(str(error))
 
 
-def _make_session_id() -> str:
-    # 与前端 generateSessionId 保持一致：毫秒时间戳(16进制) + 6位随机16进制
-    ts = format(int(time.time() * 1000), "x")
-    suffix = secrets.token_hex(3)
-    return f"sess_{ts}_{suffix}"
-
-
 # ---------------------------------------------------------------------------
 # 飞书 Feishu / 小艺 Xiaoyi 多应用配置 — 默认值 & 归一化函数
 # ---------------------------------------------------------------------------
@@ -2269,7 +2263,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # 原实现凭空生成 sid_B 与 ws 在 _clients_by_key 中注册的 sid_A 不一致，
         # 导致 send() 按 session_id 反查落空、ACK 被丢弃，前端收不到 connection.ack。
         # 复用 sid_A 后，ACK 走标准 send 流程即可命中本 ws，无需特殊路由兜底。
-        sid = getattr(ws, "_jiuwen_initial_sid", None) or _make_session_id()
+        sid = getattr(ws, "_jiuwen_initial_sid", None) or make_session_id()
 
         ack_msg = Message(
             id=f"ack-{sid}",
