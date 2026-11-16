@@ -69,10 +69,35 @@ Tests: `test_protocol_runtime_import_contract.py`,
 `test_tui_request_correlation.py`, `test_tui_lifecycle_routing.py` and the existing
 `test_app_gateway_acp.py` compatibility suite.
 
+## P2-C: single-process assembly
+
+`app_gateway._run()` delegates explicit save-factory, restart, preprocessing,
+connection and startup-timing inputs to `application/single.py`.
+
+- `services.py` constructs one client, MessageHandler, ChannelManager and shared
+  service graph, preserving extension selection, enterprise storage initialization
+  and teardown, provider binding and the AgentOS configuration updater.
+- `web.py` wires the original WebChannel, handlers, plugins, Git watcher,
+  recommendation callbacks and first-request gate without binding a listener.
+- `tui_acp.py` constructs TuiChannel, the ACP queue and one ProtocolRuntime after
+  Web readiness. Client subscription follows channel registration.
+- `inbound.py`, `connection.py` and `configuration.py` retain preprocessing,
+  retry/readiness and configuration helpers. Legacy helper imports remain
+  compatible; patch private globals at their defining modules.
+- `single.py` starts Web before dispatch/Cron and preserves configuration-updater
+  start/stop ordering and the existing yield before TUI/ACP assembly.
+
+Optional channels are extracted before single-process assembly. The legacy
+entrypoint owns them first; this stage transfers the same calls to single.
+Assembly tests are in
+`test_application_assembly_contract.py`; real process restart/lock tests are in
+`st_test/testcases_gateway/test_gateway_single_lifecycle.py`. Normal shutdown
+does not imply transactional cleanup for every early startup failure.
+
 ## P2-D: optional-channel lifecycle
 
 `application/optional_channels.py::OptionalChannels` owns IM, SSH, A2A and Web
-Proxy configuration, instances and tasks. The legacy entrypoint supplies explicit
+Proxy configuration, instances and tasks. The host supplies explicit
 dependencies and retains lazy SDK imports, per-channel failure isolation and
 revision-aware retries. Shutdown has three boundaries: configuration/retry work,
 A2A, then other channels after TUI/Web. Background cancellation waiters are

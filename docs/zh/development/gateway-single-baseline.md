@@ -51,10 +51,28 @@ GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名�
 测试包括 `test_protocol_runtime_import_contract.py`、`test_tui_request_correlation.py`、
 `test_tui_lifecycle_routing.py` 与原 `test_app_gateway_acp.py` 兼容测试。
 
+## P2-C：单进程装配
+
+`app_gateway._run()` 将配置保存工厂、重启动作、预处理、连接及启动计时依赖显式传给
+`application/single.py`。
+
+- `services.py` 创建同一份 client、MessageHandler、ChannelManager 和公共服务，保留扩展
+  选择、企业存储初始化与清理、provider 绑定及 AgentOS 配置轮询服务。
+- `web.py` 装配原 WebChannel、handler、插件、Git watcher、推荐回调和首次请求门闩，不绑定监听。
+- `tui_acp.py` 在 Web ready 后创建 TuiChannel、ACP 队列与唯一 ProtocolRuntime，通道注册后才订阅 client。
+- `inbound.py`、`connection.py`、`configuration.py` 保留预处理、重试/就绪和配置 helper；
+  旧导入兼容，patch 私有变量时应指向实际定义模块。
+- `single.py` 在 dispatch/Cron 前启动 Web，保留配置轮询启停顺序和 TUI/ACP 装配前的原让步阶段。
+
+可选渠道先于单进程装配抽取：先由旧入口完整调用，本阶段再将相同调用迁至 single。装配测试位于
+`test_application_assembly_contract.py`，真实进程停启/锁测试位于
+`st_test/testcases_gateway/test_gateway_single_lifecycle.py`。
+正常退出可清理不意味着任意早期启动失败都具备事务式清理。
+
 ## P2-D：可选渠道生命周期
 
 `application/optional_channels.py::OptionalChannels` 拥有 IM、SSH、A2A、Web Proxy 配置、
-实例和任务。旧入口显式传入依赖，保留 SDK 延迟导入、单渠道失败隔离及 revision 感知重试。
+实例和任务。host 显式传入依赖，保留 SDK 延迟导入、单渠道失败隔离及 revision 感知重试。
 退出分三段：配置/重试任务、A2A、TUI/Web 后的其他渠道；等待后台取消任务结束。
 预热仍属于 host，WebChannel.stop 仍拥有 Web Proxy 清理。
 
