@@ -136,6 +136,7 @@ async def test_selected_runtime_import_failure_is_fatal(monkeypatch):
 @pytest.mark.asyncio
 async def test_app_runtime_load_failure_never_constructs_websocket(monkeypatch):
     from agent_gateway import app_gateway
+    from agent_gateway.application import services
     from agent_gateway.routing import agent_client
 
     monkeypatch.setenv("GATEWAY_AGENT_CLIENT_MODE", "runtime")
@@ -148,7 +149,7 @@ async def test_app_runtime_load_failure_never_constructs_websocket(monkeypatch):
     monkeypatch.setattr(ExtensionManager, "_setup_search_paths", lambda self: None)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
     monkeypatch.setattr(ExtensionManager, "list_extensions", lambda self: [])
-    monkeypatch.setattr(app_gateway, "configure_gateway_telemetry", lambda *args, **kwargs: None)
+    monkeypatch.setattr(services, "configure_gateway_telemetry", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         agent_client, "WebSocketAgentServerClient",
         lambda **kwargs: pytest.fail("explicit runtime must not construct WebSocket"),
