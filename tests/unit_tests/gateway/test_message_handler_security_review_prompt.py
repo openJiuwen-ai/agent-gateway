@@ -17,22 +17,13 @@ from agent_gateway.message_handler.prompts.security_review_prompt import (
 _GIT = shutil.which("git") or "git"
 
 
-@pytest.fixture(autouse=True)
-def _english_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "agent_gateway.message_handler.prompts.get_config",
-        lambda: {"preferred_language": "en"},
-    )
-
-
-def test_build_security_review_prompt_runs_git_commands_in_english() -> None:
+def test_build_security_review_prompt_runs_git_commands() -> None:
     # cwd=None → 旧的“指令式” prompt（让 LLM 自己跑 git），行为不变。
     prompt = build_security_review_prompt("")
     assert "`git status`" in prompt
     assert "`git diff --name-only origin/HEAD...`" in prompt
     assert "`git log --no-decorate origin/HEAD...`" in prompt
     assert "`git diff origin/HEAD...`" in prompt
-    assert "Respond in English." in prompt
     assert "HIGH-CONFIDENCE security vulnerabilities" in prompt
     assert "FALSE POSITIVE FILTERING" in prompt
     assert "Additional instructions:" not in prompt
@@ -42,18 +33,16 @@ def test_build_security_review_prompt_runs_git_commands_in_english() -> None:
 def test_build_security_review_prompt_passes_through_args() -> None:
     prompt = build_security_review_prompt("focus on auth bypass")
     assert prompt.rstrip().endswith("Additional instructions: focus on auth bypass")
-    assert "Respond in English." in prompt
 
 
-def test_build_security_review_prompt_chinese_from_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "agent_gateway.message_handler.prompts.get_config",
-        lambda: {"preferred_language": "zh"},
-    )
+@pytest.mark.parametrize("local_language", ["zh", "en"])
+def test_security_review_prompt_does_not_force_gateway_language(monkeypatch, local_language):
+    from agent_gateway.common import config
+
+    monkeypatch.setattr(config, "get_config", lambda: {"preferred_language": local_language})
     prompt = build_security_review_prompt("")
-    assert "Respond in Chinese (simplified)." in prompt
+    assert "Respond in Chinese (simplified)." not in prompt
+    assert "Respond in English." not in prompt
 
 
 # ---- cwd 启用预执行 + 失败中止 ----
@@ -128,8 +117,7 @@ def test_build_security_review_prompt_inlines_git_outputs(tmp_path):
     assert "Run `git status`" not in prompt
     # diff 内容已内联
     assert "hello" in prompt
-    # 仍带语言行与分析正文
-    assert "Respond in English." in prompt
+    # 保留分析正文
     assert "FALSE POSITIVE FILTERING" in prompt
 
 

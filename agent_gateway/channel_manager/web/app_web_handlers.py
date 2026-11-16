@@ -54,7 +54,6 @@ from agent_gateway.common.config import (
     update_browser_in_config,
     update_channel_in_config,
     update_health_check_in_config,
-    update_preferred_language_in_config,
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import config_set_handlers, models_handlers
@@ -4331,9 +4330,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Return the selected AgentServer user's preferred language."""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
             channel=channel, agent_client=_resolve(agent_client), ws=ws,
@@ -4345,9 +4342,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Update preferred language in the selected AgentServer directory."""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")

@@ -236,7 +236,11 @@ def forbid_gateway_locale_config(monkeypatch):
         pytest.fail("Locale RPC accessed Gateway-local config")
 
     monkeypatch.setattr(app_web_handlers, "get_config", unexpected_access)
-    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", unexpected_access)
+    from agent_gateway.common import config
+
+    monkeypatch.setattr(config, "update_preferred_language_in_config", unexpected_access)
+    # Catch a future module-level import as well as direct config module calls.
+    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", unexpected_access, raising=False)
 
 
 @pytest.mark.asyncio

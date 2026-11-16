@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 
-from agent_gateway.message_handler.prompts import response_language_line
 
 
 class GitPreExecError(Exception):
@@ -243,7 +242,7 @@ Your final reply must contain the markdown report and nothing else."""
 def build_security_review_prompt(extra_arg: str = "", cwd: str | None = None) -> str:
     """构建 /security-review 的 prompt。
 
-    输出语言来自 config ``preferred_language``；可选 args 原样透传为附加说明。
+    输出语言由 AgentServer 的用户语言偏好决定；可选 args 原样透传为附加说明。
 
     当 ``cwd`` 指向仓库时，在 prompt 注入阶段**预执行** 4 条只读 git 命令
     并把输出**内联**进 prompt（不再让 LLM 自己跑 git）。任一命令非零退出抛
@@ -251,13 +250,12 @@ def build_security_review_prompt(extra_arg: str = "", cwd: str | None = None) ->
     ``cwd`` 为 None（如单测、无仓库上下文）时退回旧的“指令式” prompt，行为不变。
     """
     args = extra_arg.strip() if extra_arg else ""
-    lang_line = response_language_line()
     if cwd is None:
         intro = _SECURITY_REVIEW_INTRO_FALLBACK
     else:
         git_outputs = _run_security_review_git(cwd)  # 失败抛 GitPreExecError
         intro = _build_inlined_intro(git_outputs)
-    parts = [intro, "", _SECURITY_REVIEW_BODY_TAIL, "", lang_line]
+    parts = [intro, "", _SECURITY_REVIEW_BODY_TAIL]
     if args:
         parts.extend(["", f"Additional instructions: {args}"])
     return "\n".join(parts)
