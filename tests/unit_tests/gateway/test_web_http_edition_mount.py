@@ -118,7 +118,9 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
 
     channel_app = _load_module("jw_web_channel_app_edition_ut", CHANNEL_APP_PATH)
     app = FastAPI()
-    channel_app.register_http_routes(app, MagicMock())
+    channel_app.register_http_routes(
+        app, MagicMock(auth_service_provider=None, credential_update_sink=None),
+    )
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/share-api/jobs" in paths
     assert "/api/v1/chat/completions" not in paths

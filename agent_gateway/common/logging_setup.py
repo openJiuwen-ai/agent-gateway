@@ -288,6 +288,7 @@ def _reconfigure_stdio_utf8() -> None:
 
 
 _GATEWAY_LOGGING_CONFIGURED_ATTR = "_gateway_logging_configured"
+_EXPLICIT_LOG_DIRECTORY_ATTR = "_agent_gateway_explicit_log_directory"
 
 
 def _is_gateway_logging_configured(target: logging.Logger) -> bool:
@@ -299,7 +300,11 @@ def _mark_gateway_logging_configured(target: logging.Logger) -> None:
     setattr(target, _GATEWAY_LOGGING_CONFIGURED_ATTR, True)
 
 
-def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
+def setup_gateway_logger(
+    log_level: Optional[str] = None,
+    *,
+    log_directory: Path | None = None,
+) -> logging.Logger:
     """配置 ``gateway`` 根日志：控制台 + 分组件文件 + 汇总 full.log。
 
     文件、目录、级别语义与母仓 ``setup_logger`` 保持一致；区别是本函数只负责
@@ -310,16 +315,28 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     独立安装（无母仓 handler）时由本函数完成配置。
     """
     root = logging.getLogger("gateway")
-    if _is_gateway_logging_configured(root):
-        return root
+    if log_directory is not None:
+        requested_directory = log_directory.resolve()
+        configured_directory = getattr(root, _EXPLICIT_LOG_DIRECTORY_ATTR, None)
+        if configured_directory is not None:
+            if configured_directory == requested_directory:
+                return root
+            raise RuntimeError(
+                f"gateway logging already configured with log directory {configured_directory}"
+            )
+        if _is_gateway_logging_configured(root):
+            raise RuntimeError("gateway logging already configured; explicit log directory is not allowed")
+    else:
+        if _is_gateway_logging_configured(root):
+            return root
 
-    if logging.getLogger("jiuwenswarm").handlers:
-        _mark_gateway_logging_configured(root)
-        return root
+        if logging.getLogger("jiuwenswarm").handlers:
+            _mark_gateway_logging_configured(root)
+            return root
 
     install_runtime_log_filter()
     _reconfigure_stdio_utf8()
-    logs_root = get_logs_dir() / "agent"
+    logs_root = log_directory if log_directory is not None else get_logs_dir() / "agent"
     logs_root.mkdir(parents=True, exist_ok=True)
 
     levels = _resolve_logging_levels(log_level)
@@ -356,7 +373,7 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
         h.addFilter(privacy_filter)
         root.addHandler(h)
 
-    gateway_log_dir = get_gateway_log_dir()
+    gateway_log_dir = get_gateway_log_dir() if log_directory is None else None
     if gateway_log_dir is not None:
         try:
             gateway_log_dir.mkdir(parents=True, exist_ok=True)
@@ -393,6 +410,8 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     root.addHandler(stream_handler)
 
     install_source_record_masking()
+    if log_directory is not None:
+        setattr(root, _EXPLICIT_LOG_DIRECTORY_ATTR, requested_directory)
     _mark_gateway_logging_configured(root)
     return root
 _FILE_LEVEL_ATTR_BY_NAME: dict[str, str] = {

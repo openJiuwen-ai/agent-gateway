@@ -19,7 +19,7 @@ import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
@@ -60,6 +60,11 @@ from agent_gateway.common.ws_diagnostics import (
 from agent_gateway.routing.base_ws_channel import BaseWsChannel
 from agent_gateway.routing.keys import AgentRef, RoutingKey
 from agent_gateway.routing.session_sharing import RoutingTarget
+
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
 
 logger = logging.getLogger(__name__)
 
@@ -265,12 +270,21 @@ class WebChannel(BaseWsChannel):
     name = "web"
     channel_id = "web"
 
-    def __init__(self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None):
+    def __init__(
+        self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None,
+        *, auth_service_provider: Callable[[], AuthService] | None = None,
+        credential_update_sink: CredentialUpdateSink | None = None,
+    ):
         super().__init__(config, router)
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
-        self._uvicorn_server: Any = None
+        self.auth_service_provider = auth_service_provider
+        self.credential_update_sink = credential_update_sink
+        self._listener: UvicornListener | None = None
+        self._listener_available = asyncio.Event()
+        self._listener_start_error: Exception | None = None
+        self._starting = False
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
         self._local_only_methods: set[str] = set(_LOCAL_ONLY_METHODS)
@@ -904,65 +918,66 @@ class WebChannel(BaseWsChannel):
 
     async def start(self) -> None:
         """启动 WebSocket 服务并监听客户端连接."""
-        if self._running:
+        if self._running or self._starting:
             logger.warning("WebChannel 已在运行")
             return
         if not self.config.enabled:
             logger.warning("WebChannel 未启用（enabled=False）")
             return
 
+        self._starting = True
+        self._listener = None
+        self._listener_start_error = None
+        self._listener_available.clear()
         try:
             await self._start_uvicorn_server()
+        except asyncio.CancelledError:
+            self._listener_start_error = RuntimeError("WebChannel stopped before becoming ready")
+            self._listener_available.set()
+            raise
+        except Exception as error:
+            self._listener_start_error = error
+            self._listener_available.set()
+            raise
         finally:
+            self._starting = False
+            self._running = False
             self._stop_trajectory_hints()
+
+    async def wait_ready(self) -> None:
+        """Wait for the current listener or propagate its startup failure."""
+        await self._listener_available.wait()
+        if self._listener_start_error is not None:
+            raise self._listener_start_error
+        if self._listener is None:
+            raise RuntimeError("WebChannel stopped before becoming ready")
+        await self._listener.wait_ready()
 
     async def _start_uvicorn_server(self) -> None:
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
-        import uvicorn
-
-        from agent_gateway.channel_manager.web.transport_stall_guard import (
-            guarded_http_protocol,
-            guarded_websockets_protocol,
-        )
         from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
-        from agent_gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
+        from agent_gateway.transport.uvicorn_listener import UvicornListener
 
-        app = build_web_channel_app(self)
-        uv_cfg = uvicorn.Config(
-            app,
+        listener = UvicornListener(
+            build_web_channel_app(self),
             host=self.config.host,
             port=self.config.port,
-            log_level="info",
-            access_log=False,
-            ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
-            ws_ping_interval=20.0,
-            ws_ping_timeout=60.0,
-            # 停止读取的客户端会让 transport 写缓冲滞留，close() 永远等不到排空，
-            # socket 永久卡在 CLOSE-WAIT（issue #4946）；带看门狗的协议类在写停滞
-            # 超时后直接 abort，释放 fd 与缓冲。
-            http=guarded_http_protocol(),
-            ws=guarded_websockets_protocol(),
             ws_per_message_deflate=self.config.ws_permessage_deflate,
         )
-
-        class EmbeddedUvicornServer(uvicorn.Server):
-            @contextmanager
-            def capture_signals(self):
-                # The Gateway owns process signals and coordinates all of its
-                # component shutdowns. Re-raising a captured signal from this
-                # nested server would interrupt that cleanup and leave its task
-                # with an unobserved KeyboardInterrupt.
-                yield
-
-        self._uvicorn_server = EmbeddedUvicornServer(uv_cfg)
-        self._running = True
-        logger.info(
-            "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
-            self.config.host,
-            self.config.port,
-            self.config.path,
-        )
-        await self._uvicorn_server.serve()
+        self._listener = listener
+        self._listener_available.set()
+        try:
+            await listener.start()
+            self._running = True
+            logger.info(
+                "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
+                self.config.host,
+                self.config.port,
+                self.config.path,
+            )
+            await listener.wait_closed()
+        finally:
+            await listener.stop()
 
     async def ensure_web_proxy_session(self) -> aiohttp.ClientSession:
         """Return the shared aiohttp session, creating it once per channel.
@@ -1036,9 +1051,11 @@ class WebChannel(BaseWsChannel):
             except Exception:  # noqa: BLE001
                 pass
             setattr(self, attr, None)
-        if self._uvicorn_server is not None:
-            self._uvicorn_server.should_exit = True
-            self._uvicorn_server = None
+        if self._listener is not None:
+            await self._listener.stop()
+        else:
+            self._listener_start_error = RuntimeError("WebChannel stopped before becoming ready")
+            self._listener_available.set()
         # 兜底清理未走正常断连路径的 writer 协程（正常断连已由 unregister_ws 清理）
         await self._shutdown_all_writers()
         logger.info("WebChannel 已停止")

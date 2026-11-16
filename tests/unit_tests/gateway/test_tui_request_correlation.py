@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from agent_gateway import app_gateway
+from agent_gateway.routing import protocol_runtime as app_gateway
 from agent_gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
 from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
 from agent_gateway.channel_manager.tui.tui_connect import CliRouteBindParams, build_cli_route_binding
