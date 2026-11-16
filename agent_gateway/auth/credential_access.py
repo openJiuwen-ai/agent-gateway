@@ -44,6 +44,10 @@ class CredentialAccess(Protocol):
 
     async def credential_update_for_ref(self, credential_ref: str) -> CredentialUpdate | None: ...
 
+    async def credential_ref_for_login_session(self, auth_session: str | None) -> str | None: ...
+
+    async def model_auth_for_ref(self, credential_ref: str) -> ModelCredential | None: ...
+
 
 class CredentialUpdateSink(Protocol):
     """Send an update through the existing AgentServer transport."""

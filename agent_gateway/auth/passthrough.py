@@ -131,6 +131,31 @@ def refreshed_credential_for_ref(
 
 
 
+def _model_auth_for_ref(
+    credential_ref: str, *, service: AuthService | None = None,
+) -> dict[str, Any] | None:
+    """Resolve an already-bound account; never infer it from a model or user."""
+    from agent_gateway.auth.apig import resolve_apig_config
+    from agent_gateway.auth.login_credentials import is_credential_ref
+
+    if not credential_ref or not is_credential_ref(credential_ref):
+        return None
+    fresh = (refreshed_credential_for_ref(credential_ref) if service is None
+             else refreshed_credential_for_ref(credential_ref, service=service))
+    if (
+        not isinstance(fresh, dict)
+        or fresh.get("revoked")
+        or not str(fresh.get("api_key") or "").strip()
+    ):
+        return None
+    apig_config = resolve_apig_config(allow_refresh=False)
+    if apig_config is None:
+        return None
+    return {
+        "api_base": apig_config.invoke_base_url,
+        "api_key": str(fresh["api_key"]),
+        "credential_ref": credential_ref,
+    }
 
 
 def _is_login_model(

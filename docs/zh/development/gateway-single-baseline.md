@@ -124,3 +124,12 @@ site-packages 来源。ST 应设置 `ST_GATEWAY_CONFIG_SRC` 指向仓内配置�
 旧 `register_auth_routes(app)`、helper 与未注入对象仍兼容。本批不启用 IPC/RPC、Worker 池、fd 交接、亲和或改变 HTTP keep-alive；Cron/IM 消费者迁移及配置效果协调分别留 P3-B/C。测试见 `test_local_credential_access.py`、`test_credential_pipeline_contract.py`、`test_auth_dependency_injection.py`；真实第三方账号与模型仍需独立验收。
 
 
+## P3-B Cron 与会话续接凭据
+
+`CredentialAccess` 增加按登录会话取绑定句柄、按已有句柄取执行凭据。Cron创建/修改仍由模型来源决定是否绑定，只存句柄；执行仍由原Scheduler直发原AS，不改变任务存档、调度和渠道投递。无绑定的自配模型不能因为同名而使用登录账号。
+
+`SessionLoginBindings` 是原 `session_owners.json` 的本地访问口，不是Worker归属管理。保留原TTL/模型可用性校验、非Web续接范围和登录提示；Web不带登录凭据仍不会借原会话账号。服务图在MH转发前注入同provider的本地实现，Cron启调度前绑定同一凭据接口；旧未注入路径保留。
+
+仍为single，不启用Cron分片、IPC、Worker亲和或可靠撤销扇出。目录兼容查询暂保留本地实现，不可把它理解为Worker远程化已闭环。相关测试包括 `test_session_login_bindings.py`、`test_cron_credential_access.py` 以及网络凭据链；平台IM SDK与真实账号验收独立进行。
+
+

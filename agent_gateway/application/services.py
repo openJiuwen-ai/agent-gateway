@@ -15,6 +15,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from agent_gateway.auth.credential_access import CredentialAccess, CredentialUpdate, CredentialUpdateSink
     from agent_gateway.auth.service import AuthService
+    from agent_gateway.auth.session_login_bindings import SessionLoginBindings
 
 from agent_gateway.application.configuration import _load_gateway_runtime_config
 from agent_gateway.application.connection import _connect_with_retry
@@ -63,6 +64,7 @@ class GatewayServices:
     auth_service_provider: Callable[[], AuthService] | None = None
     credential_access: CredentialAccess | None = None
     credential_update_sink: CredentialUpdateSink | None = None
+    session_login_bindings: SessionLoginBindings | None = None
 
     async def stop(self) -> None:
         await self.cron_scheduler.stop()
@@ -199,11 +201,14 @@ async def assemble_services(
 
     from agent_gateway.auth.local_credential_access import LocalCredentialAccess
     from agent_gateway.auth.service import get_auth_service
+    from agent_gateway.auth.session_login_bindings import LocalSessionLoginBindings
 
     auth_service_provider = get_auth_service
     credential_access = LocalCredentialAccess(auth_service_provider)
+    session_login_bindings = LocalSessionLoginBindings(auth_service_provider)
     message_handler = MessageHandler(client)
     message_handler.set_credential_access(credential_access)
+    message_handler.set_session_login_bindings(session_login_bindings)
     credential_update_sink = MessageHandlerCredentialUpdateSink(message_handler)
     await message_handler.start_forwarding()
 
@@ -231,7 +236,9 @@ async def assemble_services(
         agent_client=client,
         message_handler=message_handler,
     )
+    cron_scheduler.set_credential_access(credential_access)
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.set_credential_access(credential_access)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
     # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
@@ -372,4 +379,5 @@ async def assemble_services(
         auth_service_provider=auth_service_provider,
         credential_access=credential_access,
         credential_update_sink=credential_update_sink,
+        session_login_bindings=session_login_bindings,
     )

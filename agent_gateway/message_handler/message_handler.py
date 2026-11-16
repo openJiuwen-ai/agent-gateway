@@ -344,6 +344,7 @@ class ModeChangeCancelParams:
 
 if TYPE_CHECKING:
     from agent_gateway.auth.credential_access import CredentialAccess
+    from agent_gateway.auth.session_login_bindings import SessionLoginBindings
     from e2a.agent_models import AgentResponse, AgentResponseChunk
     from e2a.models import E2AEnvelope
     from e2a.message import Message
@@ -390,6 +391,8 @@ class MessageHandler(ABC):
         self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._running = False
+        self._credential_access: CredentialAccess | None = None
+        self._session_login_bindings: SessionLoginBindings | None = None
         self._forward_task: asyncio.Task | None = None
         self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
@@ -5220,6 +5223,10 @@ class MessageHandler(ABC):
         stored = metadata.get("model") if isinstance(metadata, dict) else None
         return stored.strip() if isinstance(stored, str) else ""
 
+    def set_session_login_bindings(self, bindings: SessionLoginBindings) -> None:
+        """Bind the local session login port before forwarding starts."""
+        self._session_login_bindings = bindings
+
     async def _apply_session_login_owner(self, env: "E2AEnvelope") -> None:
         from e2a.constants import (
             E2A_LOGIN_REQUIRED_HINT_PARAM_KEY,
@@ -5239,11 +5246,19 @@ class MessageHandler(ABC):
             try:
                 from agent_gateway.auth import session_owners
 
-                session_owners.remember(
-                    session_id,
-                    str(auth.get("credential_ref") or ""),
-                    str(params.get("model_name") or ""),
-                )
+                bindings = getattr(self, "_session_login_bindings", None)
+                if bindings is None:
+                    session_owners.remember(
+                        session_id,
+                        str(auth.get("credential_ref") or ""),
+                        str(params.get("model_name") or ""),
+                    )
+                else:
+                    await bindings.remember(
+                        session_id,
+                        str(auth.get("credential_ref") or ""),
+                        str(params.get("model_name") or ""),
+                    )
             except Exception:  # noqa: BLE001
                 logger.warning("[MessageHandler] 记录会话主人失败 session=%s", session_id, exc_info=True)
             return
@@ -5254,7 +5269,9 @@ class MessageHandler(ABC):
             from agent_gateway.auth import session_owners
             from agent_gateway.auth.login_credentials import bare_model_name
 
-            owner = session_owners.lookup(session_id)
+            bindings = getattr(self, "_session_login_bindings", None)
+            owner = (session_owners.lookup(session_id) if bindings is None
+                     else await bindings.lookup(session_id))
             effective_model = await self._effective_session_model(
                 session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
             )
@@ -5266,10 +5283,16 @@ class MessageHandler(ABC):
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
-            auth = await asyncio.wait_for(
-                asyncio.to_thread(session_owners.login_auth_for_owner, owner),
-                timeout=_SESSION_OWNER_AUTH_WAIT_S,
-            )
+            if bindings is None:
+                auth = await asyncio.wait_for(
+                    asyncio.to_thread(session_owners.login_auth_for_owner, owner),
+                    timeout=_SESSION_OWNER_AUTH_WAIT_S,
+                )
+            else:
+                value = await asyncio.wait_for(
+                    bindings.model_auth_for_binding(owner), timeout=_SESSION_OWNER_AUTH_WAIT_S,
+                )
+                auth = value.to_params() if value is not None else None
         except asyncio.TimeoutError:
             logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY

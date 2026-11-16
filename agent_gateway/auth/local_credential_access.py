@@ -63,4 +63,31 @@ class LocalCredentialAccess:
         )
 
 
+    async def credential_ref_for_login_session(self, auth_session: str | None) -> str | None:
+        from agent_gateway.auth.login_credentials import credential_ref_for_user
+        from agent_gateway.auth.service import ModelAuthRequired, live_session
 
+        if not auth_session:
+            return None
+        try:
+            session = live_session(
+                auth_session, allow_refresh=False, service=self._auth_service_provider(),
+            )
+        except ModelAuthRequired:
+            return None
+        return credential_ref_for_user(session.user_id)
+
+    async def model_auth_for_ref(self, credential_ref: str) -> ModelCredential | None:
+        from agent_gateway.auth.login_credentials import is_credential_ref
+        from agent_gateway.auth.passthrough import _model_auth_for_ref
+
+        if not is_credential_ref(credential_ref):
+            return None
+        auth = await asyncio.to_thread(
+            _model_auth_for_ref, credential_ref, service=self._auth_service_provider(),
+        )
+        if auth is None:
+            return None
+        return ModelCredential(
+            api_base=auth['api_base'], api_key=auth['api_key'], credential_ref=auth['credential_ref'],
+        )

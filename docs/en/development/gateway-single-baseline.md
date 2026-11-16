@@ -122,3 +122,12 @@ The port returns request-scoped model credentials or updates for a credential re
 Legacy `register_auth_routes(app)`, helpers and unbound objects remain compatible. This batch does not enable IPC/RPC, Worker pools, fd handoff, affinity or a new HTTP keep-alive policy. Cron/IM consumers and configuration effects are deferred to P3-B/C. See `test_local_credential_access.py`, `test_credential_pipeline_contract.py` and `test_auth_dependency_injection.py`; external account and model validation remains separate.
 
 
+## P3-B: Cron and session continuation credentials
+
+`CredentialAccess` adds strict login-session-to-reference binding and credential lookup for an existing reference. Cron create/update still binds only login-sourced model selections and stores only the reference. Execution still uses the original scheduler and AS client; job formats, scheduling and delivery remain unchanged. An unbound configured model must not borrow login credentials merely because its name matches.
+
+`SessionLoginBindings` adapts the existing `session_owners.json`, not Worker ownership. It retains persistence/TTL, catalog availability checks, the original non-Web fallback scope and distinct login hints. A Web request without login credentials still cannot borrow the recorded account. The service graph binds the local adapter before MH forwarding and the shared credential port before Cron scheduling. Unbound legacy objects remain compatible.
+
+The runtime remains single-process: no Cron sharding, IPC, Worker affinity or reliable revocation fanout. Synchronous catalog compatibility helpers remain local and are not proof of remote Worker readiness. See `test_session_login_bindings.py`, `test_cron_credential_access.py` and the network credential contract; real IM SDK/account acceptance remains separate.
+
+

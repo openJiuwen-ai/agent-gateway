@@ -266,6 +266,11 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         session_bind.assert_called_once_with(value.client)
         mcp_bind.assert_called_once_with(value.client)
         assert events.index('credentials.bound') < events.index('forwarding')
+        assert events.index('bindings.bound') < events.index('forwarding')
+        handler.set_session_login_bindings.assert_called_once_with(value.session_login_bindings)
+        assert value.session_login_bindings._auth_service_provider is value.auth_service_provider
+        scheduler.set_credential_access.assert_called_once_with(value.credential_access)
+        controller.set_credential_access.assert_called_once_with(value.credential_access)
         handler.set_credential_access.assert_called_once_with(value.credential_access)
         assert value.credential_update_sink._message_handler is handler
         scheduler.start.assert_not_awaited()

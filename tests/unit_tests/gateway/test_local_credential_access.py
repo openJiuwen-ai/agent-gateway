@@ -139,9 +139,80 @@ def test_credential_modules_import_without_initializing_login(tmp_path):
     for key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR'):
         env[key] = str(tmp_path / key)
     result = subprocess.run(
-        [sys.executable, '-c', "import importlib, os, sys\nfrom pathlib import Path\nimportlib.import_module('agent_gateway.auth.credential_access')\nimportlib.import_module('agent_gateway.auth.local_credential_access')\nassert 'agent_gateway.auth.service' not in sys.modules\nassert 'agent_gateway.app_gateway' not in sys.modules\nfor key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR'):\n    assert not Path(os.environ[key]).exists(), key\n"],
+        [sys.executable, '-c', "import importlib, os, sys\nfrom pathlib import Path\nimportlib.import_module('agent_gateway.auth.credential_access')\nimportlib.import_module('agent_gateway.auth.local_credential_access')\nimportlib.import_module('agent_gateway.auth.session_login_bindings')\nassert 'agent_gateway.auth.service' not in sys.modules\nassert 'agent_gateway.app_gateway' not in sys.modules\nfor key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR'):\n    assert not Path(os.environ[key]).exists(), key\n"],
         env=env, capture_output=True, text=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
 
 
+async def test_login_session_binding_ref_is_strict_and_uses_explicit_service(monkeypatch):
+    access, service, session = _access(monkeypatch)
+    monkeypatch.setattr('agent_gateway.auth.service.get_auth_service', lambda: pytest.fail('global service used'))
+    expected = login_credentials.credential_ref_for_user(session.user_id)
+    assert await access.credential_ref_for_login_session(session.session_id) == expected
+    assert await access.credential_ref_for_login_session('missing-session') is None
+    assert await access.credential_ref_for_login_session(None) is None
+    service.logout(session.session_id)
+    assert await access.credential_ref_for_login_session(session.session_id) is None
+
+
+async def test_login_session_binding_does_not_block_for_expired_refresh(monkeypatch):
+    access, service, session = _access(monkeypatch, expired=True)
+    monkeypatch.setattr(service, '_refresh_in_background', lambda current: None)
+    monkeypatch.setattr(service, 'try_refresh', lambda *a, **k: pytest.fail('binding blocked for refresh'))
+    assert await access.credential_ref_for_login_session(session.session_id) is None
+
+
+async def test_model_auth_by_ref_reuses_only_bound_account_off_loop(monkeypatch):
+    import threading
+
+    access, service, session = _access(monkeypatch)
+    loop_thread = threading.get_ident()
+    threads = []
+    original = service.try_refresh
+
+    def refresh(current, **kwargs):
+        threads.append(threading.get_ident())
+        return original(current, **kwargs)
+
+    monkeypatch.setattr(service, 'try_refresh', refresh)
+    monkeypatch.setattr('agent_gateway.auth.service.get_auth_service', lambda: pytest.fail('global service used'))
+    ref = login_credentials.credential_ref_for_user(session.user_id)
+    auth = await access.model_auth_for_ref(ref)
+    assert auth.to_params() == {
+        'api_base': 'https://test.invalid/invoke', 'api_key': 'test-token-a', 'credential_ref': ref,
+    }
+    assert threads and all(value != loop_thread for value in threads)
+    service.logout(session.session_id)
+    assert await access.model_auth_for_ref(ref) is None
+
+
+async def test_model_auth_invalid_ref_does_not_initialize_login(monkeypatch):
+    from agent_gateway.auth.local_credential_access import LocalCredentialAccess
+
+    access = LocalCredentialAccess(lambda: pytest.fail('invalid ref initialized login'))
+    assert await access.model_auth_for_ref('') is None
+    assert await access.model_auth_for_ref('invalid') is None
+    assert await access.credential_ref_for_login_session(None) is None
+
+
+async def test_bound_ref_uses_usable_old_token_on_refresh_failure(monkeypatch):
+    access, service, session = _access(monkeypatch)
+    from agent_gateway.auth.login_credentials import REFRESH_AHEAD_S
+
+    service._store.update_credential(session.session_id, Credential(
+        id_token='still-usable-token', refresh_token='refresh', expires_at=time.time() + REFRESH_AHEAD_S / 2,
+    ))
+    monkeypatch.setattr(service._flow, 'refresh', lambda credential: None)
+    ref = login_credentials.credential_ref_for_user(session.user_id)
+    assert (await access.model_auth_for_ref(ref)).api_key == 'still-usable-token'
+    service._store.update_credential(session.session_id, Credential(
+        id_token='expired', refresh_token='refresh', expires_at=time.time() - 1,
+    ))
+    assert await access.model_auth_for_ref(ref) is None
+
+
+async def test_bound_ref_without_apig_does_not_return_credentials(monkeypatch):
+    access, service, session = _access(monkeypatch)
+    monkeypatch.setattr(apig, 'resolve_apig_config', lambda **kwargs: None)
+    assert await access.model_auth_for_ref(login_credentials.credential_ref_for_user(session.user_id)) is None
