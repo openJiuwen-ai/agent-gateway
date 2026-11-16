@@ -216,6 +216,9 @@ class ProviderInvocationContext:
     trace_id: str | None = None
     authorization_scope: str | None = None
     credential_ref: str | None = None
+    user_id: str | None = None
+    group_id: str | None = None
+    bot_id: str | None = None
 
 
 class SkillSourceProvider(ABC):
