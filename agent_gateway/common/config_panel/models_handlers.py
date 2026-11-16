@@ -106,20 +106,6 @@ def resolve_model_config_obj_for_validate(
     return model_config_obj
 
 
-def _get_crypto_provider() -> Any:
-    """经 common 钩子取 crypto provider（未注册/未就绪返回 None）。
-
-    gateway 进程由 ``extensions.registry`` 在 create_instance 时安装桥接；
-    AgentServer 进程无 crypto 扩展时 api_key 以明文落库（与原实现一致）。
-    """
-    try:
-        from agent_gateway.extensions.base_crypto import get_crypto_provider
-
-        return get_crypto_provider()
-    except Exception:  # noqa: BLE001
-        return None
-
-
 # --------------------------------------------------------------------------- #
 # handler 实现（channel 语义与 app_web_handlers 原实现一致）
 # --------------------------------------------------------------------------- #

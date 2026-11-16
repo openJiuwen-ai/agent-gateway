@@ -651,20 +651,6 @@ def build_external_cli_publish_url() -> str:
     return f"ws://{host}:{port}{EXTERNAL_CLI_PUBLISH_PATH}"
 
 
-def _get_crypto_provider() -> Any:
-    """经 common 钩子取 crypto provider（未注册/未就绪返回 None）。
-
-    gateway 进程由 ``extensions.registry`` 在 create_instance 时安装桥接；
-    AgentServer 进程无 crypto 扩展时 api_key 以明文落库（与原实现一致）。
-    """
-    try:
-        from agent_gateway.extensions.base_crypto import get_crypto_provider
-
-        return get_crypto_provider()
-    except Exception:  # noqa: BLE001
-        return None
-
-
 async def _clear_agent_config_cache(agent_client=None) -> None:
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     import uuid as _uuid
