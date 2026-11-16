@@ -86,6 +86,9 @@ class FakeWebChannel:
         # This handler fixture has no Host authorization-event cache.
         return set()
 
+    def forget_a4p_route(self, route, request_id):
+        pass
+
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
 
