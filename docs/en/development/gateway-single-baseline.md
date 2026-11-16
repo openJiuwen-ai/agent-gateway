@@ -69,6 +69,21 @@ Tests: `test_protocol_runtime_import_contract.py`,
 `test_tui_request_correlation.py`, `test_tui_lifecycle_routing.py` and the existing
 `test_app_gateway_acp.py` compatibility suite.
 
+## P2-D: optional-channel lifecycle
+
+`application/optional_channels.py::OptionalChannels` owns IM, SSH, A2A and Web
+Proxy configuration, instances and tasks. The legacy entrypoint supplies explicit
+dependencies and retains lazy SDK imports, per-channel failure isolation and
+revision-aware retries. Shutdown has three boundaries: configuration/retry work,
+A2A, then other channels after TUI/Web. Background cancellation waiters are
+joined. Prewarming remains in the host; WebChannel.stop owns Web Proxy cleanup.
+
+`test_optional_channels_lifecycle.py` checks ownership, retries and cleanup.
+The process test `test_gateway_optional_channels_lifecycle.py` checks the host's
+startup and shutdown boundaries before and after assembly extraction. AgentOS
+Web Proxy uses the current runtime Cron settings helper without a test-only
+replacement. Real accounts/SDKs and frozen packages still need separate acceptance.
+
 ## Verification and rollback
 
 Use a fresh per-worktree `.venv` with develop's unchanged lockfile. Record the
