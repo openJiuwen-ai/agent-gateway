@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import html
 import logging
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import Body, FastAPI, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
@@ -36,6 +36,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from agent_gateway.auth.account_kit import OAuthError
+from agent_gateway.auth.credential_access import CredentialUpdate, CredentialUpdateSink
 from agent_gateway.auth.model_catalog import (
     get_models,
     model_whitelist,
@@ -152,8 +153,32 @@ async def _revoke_agent_server_credential(user_id: str) -> None:
         logger.warning("[Auth] 登出后撤销 AgentServer 凭据失败", exc_info=True)
 
 
-def register_auth_routes(app: FastAPI) -> None:
+async def _publish_credential_revocation(
+    sink: CredentialUpdateSink,
+    user_id: str,
+) -> None:
+    try:
+        from agent_gateway.auth.login_credentials import credential_ref_for_user
+
+        update = CredentialUpdate(
+            credential_ref=credential_ref_for_user(user_id),
+            revoked=True,
+        )
+        if not await sink.publish(update):
+            logger.warning("[Auth] 登出后撤销 AgentServer 凭据失败：接收方未确认")
+    except Exception:  # noqa: BLE001
+        logger.warning("[Auth] 登出后撤销 AgentServer 凭据失败", exc_info=True)
+
+
+def register_auth_routes(
+    app: FastAPI,
+    *,
+    auth_service_provider: Callable[[], AuthService] | None = None,
+    credential_update_sink: CredentialUpdateSink | None = None,
+) -> None:
     from agent_gateway.auth.remote_config import warm_up_in_background
+
+    service_provider = auth_service_provider or get_auth_service
 
     # 启动时先在后台把官网配置拉下来：否则第一个请求要么等网络、要么拿到空配置
     warm_up_in_background()
@@ -167,7 +192,7 @@ def register_auth_routes(app: FastAPI) -> None:
         rejected = _reject_without_auth_header(request)
         if rejected is not None:
             return rejected
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
 
         def _authorize() -> Response:
             if not service.enabled:
@@ -190,7 +215,7 @@ def register_auth_routes(app: FastAPI) -> None:
         request: Request,
         query: Annotated[AuthCallbackQuery, Query()],
     ) -> Response:
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
         if not await run_in_threadpool(lambda: service.enabled):
             return _landing_page(False, "登录未开启", "请回到应用。", 404)
         if query.error:
@@ -227,7 +252,7 @@ def register_auth_routes(app: FastAPI) -> None:
         rejected = _reject_without_auth_header(request)
         if rejected is not None:
             return rejected
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
         if not await run_in_threadpool(lambda: service.enabled):
             return _error("登录未开启", "login_disabled", 404)
         try:
@@ -250,8 +275,9 @@ def register_auth_routes(app: FastAPI) -> None:
         rejected = _reject_without_auth_header(request)
         if rejected is not None:
             return rejected
+        service = await run_in_threadpool(service_provider)
         # 不区分state存不存在、对不对得上：不给探测留信号
-        get_auth_service().cancel(body.state.strip(), body.claimToken.strip())
+        await run_in_threadpool(service.cancel, body.state.strip(), body.claimToken.strip())
         return JSONResponse({"ok": True})
 
     @app.get(
@@ -260,7 +286,7 @@ def register_auth_routes(app: FastAPI) -> None:
         summary="当前登录状态（不含任何凭据）",
     )
     async def auth_status(request: Request) -> Response:
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
         return JSONResponse(await run_in_threadpool(service.status, resolve_session_id(request)))
 
     @app.post("/api/v1/auth/logout", tags=[_OPENAPI_TAG], summary="退出登录")
@@ -268,13 +294,16 @@ def register_auth_routes(app: FastAPI) -> None:
         rejected = _reject_without_auth_header(request)
         if rejected is not None:
             return rejected
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
         session_id = resolve_session_id(request)
         # 先取账号再登出：句柄按账号算，会话删了就查不到是谁了
-        session = service.resolve_session(session_id)
-        service.logout(session_id)
+        session = await run_in_threadpool(service.resolve_session, session_id)
+        await run_in_threadpool(service.logout, session_id)
         if session is not None:
-            await _revoke_agent_server_credential(session.user_id)
+            if credential_update_sink is None:
+                await _revoke_agent_server_credential(session.user_id)
+            else:
+                await _publish_credential_revocation(credential_update_sink, session.user_id)
         response = JSONResponse({"ok": True, "islogin": False})
         response.delete_cookie(AUTH_SESSION_COOKIE, path="/")
         return response
@@ -290,7 +319,7 @@ def register_auth_routes(app: FastAPI) -> None:
     )
     async def auth_models(request: Request) -> Response:
         session_id = resolve_session_id(request)
-        service = get_auth_service()
+        service = await run_in_threadpool(service_provider)
 
         def _load() -> tuple[list[dict[str, str]] | None, bool]:
             whitelist_applied = model_whitelist() is not None
@@ -299,7 +328,7 @@ def register_auth_routes(app: FastAPI) -> None:
             # 报出去会和 models.list（那边已经正确剔掉了）自相矛盾。
             if session is None or service.ensure_fresh(session) is None:
                 return None, whitelist_applied
-            return [model.to_dict() for model in get_models(session_id)], whitelist_applied
+            return [model.to_dict() for model in get_models(session_id, service=service)], whitelist_applied
 
         models, whitelist_applied = await run_in_threadpool(_load)
         return JSONResponse(
@@ -332,11 +361,12 @@ def register_auth_routes(app: FastAPI) -> None:
 
         # 严格按调用方的会话取：没带会话就是没登录，不能退回「本机唯一登录用户」
         session_id = resolve_session_id(request)
-        if get_auth_service().resolve_session(session_id) is None:
+        service = await run_in_threadpool(service_provider)
+        if await run_in_threadpool(service.resolve_session, session_id) is None:
             return _error("请先登录", "not_logged_in", 401)
         try:
             quota = await run_in_threadpool(
-                lambda: fetch_quota(resolve_id_token(session_id), config)
+                lambda: fetch_quota(resolve_id_token(session_id, service=service), config)
             )
         except ModelAuthRequired as error:
             return _error(str(error), error.reason, 401)

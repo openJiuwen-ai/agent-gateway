@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 
-@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single'])
+@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single', 'config_saved_effects'])
 def test_application_import_does_not_initialize_entrypoint(tmp_path: Path, module: str) -> None:
     env = os.environ.copy()
     for key, suffix in [('JIUWENSWARM_HOME', 'home'), ('JIUWENSWARM_DATA_DIR', 'data'), ('AGENTOS_GATEWAY_LOG_DIR', 'logs')]:
@@ -265,6 +265,14 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         scheduler_factory.assert_called_once_with(store=store, agent_client=value.client, message_handler=handler)
         session_bind.assert_called_once_with(value.client)
         mcp_bind.assert_called_once_with(value.client)
+        assert events.index('credentials.bound') < events.index('forwarding')
+        assert events.index('bindings.bound') < events.index('forwarding')
+        handler.set_session_login_bindings.assert_called_once_with(value.session_login_bindings)
+        assert value.session_login_bindings._auth_service_provider is value.auth_service_provider
+        scheduler.set_credential_access.assert_called_once_with(value.credential_access)
+        controller.set_credential_access.assert_called_once_with(value.credential_access)
+        handler.set_credential_access.assert_called_once_with(value.credential_access)
+        assert value.credential_update_sink._message_handler is handler
         scheduler.start.assert_not_awaited()
         cm.start_dispatch.assert_not_awaited()
         assert events.index('telemetry') < events.index('handler.created')
