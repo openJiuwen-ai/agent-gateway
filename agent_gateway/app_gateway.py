@@ -1457,9 +1457,6 @@ class GatewayServer(BaseWebChannel):
                 exc_info=True,
             )
 
-    def _get_message_handler(self):
-        return self.message_handler_ref
-
     def _install_default_route_hooks(self) -> None:
         for route in self.config.routes.values():
             if route.channel_id != "acp":
