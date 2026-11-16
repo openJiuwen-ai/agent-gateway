@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 
-@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single'])
+@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single', 'config_saved_effects'])
 def test_application_import_does_not_initialize_entrypoint(tmp_path: Path, module: str) -> None:
     env = os.environ.copy()
     for key, suffix in [('JIUWENSWARM_HOME', 'home'), ('JIUWENSWARM_DATA_DIR', 'data'), ('AGENTOS_GATEWAY_LOG_DIR', 'logs')]:

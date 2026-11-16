@@ -1,133 +1,173 @@
-# Gateway single-process startup compatibility baseline
+# Gateway single-process refactoring boundaries
 
-P0/P1 protects the default single-process runtime, extracts explicit startup and lifecycle boundaries, and adds an explicit log directory option. P2-A also separates the two listener adapters. Neither batch introduces Control, Acceptor or Worker processes or changes chat, login, Cron, or HTTP behavior.
+PR #108 is rebuilt from `a8f694a7fb8c1b60438bdbdc5807bd3d14cb63f6`
+on develop `84baf62290d8598fbcb9b8240c2035e64479da6d`. The default remains
+single-process. This refactoring does not enable Worker pools, Control/Acceptor
+processes, IPC, fd handoff, user affinity or Cron sharding, and does not change
+HTTP connection policy or persistent configuration formats.
 
-## Source combinations
+## P0/P1: startup and process lifecycle
 
-| Repository | Commit |
-| --- | --- |
-| agent-gateway official develop | `cad980e61996d8e1d31bb3270a00af014f5bb8ea` |
-| jiuwenswarm official develop | `d54c14d053dfd8578f516794ab481959816e28cc` |
-| Gateway pinned by that jiuwenswarm commit | `54e5330d3ea6be972aa38de4c42a898ea73fed37` |
+`startup/bootstrap.py` exposes explicit environment, third-party logging,
+Gateway logging and workspace preparation stages. Importing the helper does not
+run these stages; the entrypoint calls them in the original order. The parent's
+`JIUWENSWARM_RUNTIME_WORKSPACE_READY` marker still avoids duplicate preparation.
+The removed media-capability migration is not restored.
 
-Verify standalone Gateway, the mother's pinned combination, and the mother with the candidate Gateway in separate environments. Record the actual imported package locations and direct URLs. Do not change the mother's lockfile merely to run a candidate comparison.
+`startup/lifecycle.py` retains the authoritative workspace OS lock. Duplicate
+instances exit with code 1; normal and exceptional exits release the lock.
+SIGINT/SIGTERM request one shutdown event; installed handlers are restored and
+telemetry cleanup is awaited, including partial signal-installation failure.
+Supervised restart code 75 and unsupervised restart behavior remain unchanged.
+Logging retains default paths, mother-handler reuse, redaction and level updates;
+an explicit log directory cannot silently fall back or switch after initialization.
 
-The current validation host is macOS arm64 with Python 3.12.14. Other platforms and frozen desktop packages require their own validation.
+Tests: `test_startup_bootstrap.py`, `test_startup_lifecycle.py`,
+`test_logging_directory.py`, `test_gateway_main_contract.py` and
+`test_gateway_shutdown_contract.py` under `tests/unit_tests/gateway/`.
 
-## Preserved contracts
+## P2-A: listener lifecycle
 
-- Existing CLI/module/mother entrypoints, arguments and defaults remain compatible.
-- Environment loading, third-party logging, Gateway logging, workspace preparation and runtime environment application retain their original order. The parent's READY marker still skips duplicate workspace preparation.
-- Importing `startup.bootstrap` does not execute the stages. The legacy entrypoint still calls them at its original import boundaries.
-- The existing workspace OS lock remains authoritative. Duplicate instances exit with code 1; normal and exceptional exits release ownership.
-- SIGINT/SIGTERM request the same shutdown event; signal handlers are restored and telemetry cleanup runs. Partial signal installation also restores handlers already installed.
-- Supervised restart code 75, crash convention 70 and unsupervised restart behavior remain intact.
-- Default logging paths, mother-handler reuse, redaction and level updates remain intact.
-- Explicit `log_directory` is available for future role assembly. All file handlers use that directory, with no silent shared-directory fallback or in-process switch to another directory.
+`transport/uvicorn_listener.py` owns the Web HTTP/WebSocket framework server;
+`transport/websocket_listener.py` owns the TUI/ACP listener resources.
+Construction does not bind, start waits for readiness, and stop awaits closure.
+Closed handles cannot restart. Adapters do not own process signals.
 
-## P2-A listener resource boundaries
+WebChannel still builds the original FastAPI application and owns business
+state and cleanup. Its `start()` remains long-running; protocol start returns
+after binding. Orchestration uses `WebChannel.wait_ready()` with the existing
+five-second boundary, without cancelling the owner when a waiter is cancelled.
+Startup failure cannot publish false readiness. Close code 1001, guarded
+HTTP/WebSocket protocols and compression defaults are preserved.
 
-- `transport.uvicorn_listener.UvicornListener` owns the 19000 framework server and lifecycle; `transport.websocket_listener.WebSocketListener` owns the 19001 listener resources. Construction does not bind; start waits for actual readiness; stop waits for complete shutdown. Closed handles cannot restart.
-- WebChannel still builds the original FastAPI app and owns business state and cleanup. Its `start()` remains long-running. `ProtocolRuntime.start()` still returns after binding; the original class retains TUI/ACP ACKs and routing.
-- Orchestration uses public `WebChannel.wait_ready()` rather than Uvicorn internals. The existing five-second readiness boundary remains; cancelling an auxiliary waiter does not cancel the business owner.
-- Adapters do not own process signals. Normal shutdown awaits the framework; startup failures cannot publish false readiness or retain acquired listener resources. Business close code 1001 and the original guarded HTTP/WS configuration remain intact.
-- HTTP keep-alive, login, Cron, southbound routing and configuration/storage formats remain unchanged. P2-A is not the complete P2 phase and provides neither a Worker pool nor fd handoff.
-- Added regression tests exercise complete HTTP archives, active WebSockets, startup failure/cancellation, port rebinding and same-workspace restarts. Actual candidate results and review fixes are recorded separately in the mother's `F_20261112_1414_gateway-p2-a-listeners`, not in the P0/P1 historical results below.
+Tests: `test_uvicorn_listener.py`, `test_websocket_listener.py`,
+`test_gateway_listener_lifecycle.py` and the corresponding process lifecycle ST.
+They cover archives, live connections, cancellation, bind failure and port reuse.
 
-## Validation
+## P2-B: protocol runtime
+
+`routing/protocol_runtime.py` owns ProtocolRuntime, ProtocolRuntimeConfig,
+RouteConfig, the ACP bridge and request/session/connection indexes. The old
+GatewayServer and GatewayServerConfig exports from `app_gateway` and
+`routing.gateway_server` remain aliases to the same classes.
+
+The latest develop TUI correlation, session switching, disconnection grace,
+reconnection and routing isolation remain intact. Client request IDs are mapped
+to unique internal upstream IDs and restored on replies; an old connection must
+not deliver a late result into a replacement window. New modules and tests use
+the current `e2a` package, not the retired `openjiuwen_protocol` import path.
+Cold imports do not initialize the legacy entrypoint or eagerly load ACP.
+
+Tests: `test_protocol_runtime_import_contract.py`,
+`test_tui_request_correlation.py`, `test_tui_lifecycle_routing.py` and the existing
+`test_app_gateway_acp.py` compatibility suite.
+
+## P2-C: single-process assembly
+
+`app_gateway._run()` delegates explicit save-factory, restart, preprocessing,
+connection and startup-timing inputs to `application/single.py`.
+
+- `services.py` constructs one client, MessageHandler, ChannelManager and shared
+  service graph, preserving extension selection, enterprise storage initialization
+  and teardown, provider binding and the AgentOS configuration updater.
+- `web.py` wires the original WebChannel, handlers, plugins, Git watcher,
+  recommendation callbacks and first-request gate without binding a listener.
+- `tui_acp.py` constructs TuiChannel, the ACP queue and one ProtocolRuntime after
+  Web readiness. Client subscription follows channel registration.
+- `inbound.py`, `connection.py` and `configuration.py` retain preprocessing,
+  retry/readiness and configuration helpers. Legacy helper imports remain
+  compatible; patch private globals at their defining modules.
+- `single.py` starts Web before dispatch/Cron and preserves configuration-updater
+  start/stop ordering and the existing yield before TUI/ACP assembly.
+
+Optional-channel closures remain inline only in the P2-C intermediate commit;
+P2-D extracts them next. Assembly tests are in
+`test_application_assembly_contract.py`; real process restart/lock tests are in
+`st_test/testcases_gateway/test_gateway_single_lifecycle.py`. Normal shutdown
+does not imply transactional cleanup for every early startup failure.
+
+## P2-D: optional-channel lifecycle
+
+`application/optional_channels.py::OptionalChannels` owns IM, SSH, A2A and Web
+Proxy configuration, instances and tasks. Single assembly supplies explicit
+dependencies and retains lazy SDK imports, per-channel failure isolation and
+revision-aware retries. Shutdown has three boundaries: configuration/retry work,
+A2A, then other channels after TUI/Web. Background cancellation waiters are
+joined. Prewarming remains in the host; WebChannel.stop owns Web Proxy cleanup.
+
+`test_optional_channels_lifecycle.py` checks ownership, retries and cleanup.
+Real accounts/SDKs and frozen packages still need separate acceptance. The
+inherited AgentOS Web Proxy path references a missing settings helper; these
+controlled tests do not establish successful real proxy startup.
+
+## P3-A: local credential access
+
+`CredentialAccess` and `CredentialUpdateSink` expose minimal immutable values;
+tokens are excluded from repr. `assemble_services` injects a lazy AuthService
+provider, LocalCredentialAccess and a sink bound to its exact MessageHandler.
+Login HTTP handlers and Web/TUI/ACP preprocessing share these dependencies.
+Caller-supplied `_model_auth` is removed before lookup; the injected path must
+not subsequently use legacy global injection. The 20-second expired-token
+refresh wait, usable-token fallback and distinction between business user IDs
+and model login identities remain unchanged.
+
+Legacy unbound helpers and `register_auth_routes(app)` remain compatible.
+Logout deletes the local session before best-effort notification through the
+existing AS transport; this is not reliable multi-AS revocation.
+Tests: `test_local_credential_access.py`, `test_credential_pipeline_contract.py`
+and `test_auth_dependency_injection.py`.
+
+## P3-B: Cron and session credential bindings
+
+Login-sourced Cron selections bind a credential reference at create/update;
+execution resolves only that reference, not a matching model name. Existing job
+formats, scheduling and delivery are unchanged. `SessionLoginBindings` adapts
+the existing `session_owners.json` persistence/TTL and catalog checks. Non-Web
+fallback scope and login hints remain unchanged; an unauthenticated Web request
+cannot borrow the recorded account. Bindings precede MessageHandler forwarding,
+and the shared credential port precedes Cron scheduling. Unbound legacy objects
+remain compatible. These are account bindings, not Worker ownership.
+
+Tests: `test_session_login_bindings.py`, `test_cron_credential_access.py`,
+`test_credential_network_contract.py` and existing Cron/login regressions.
+
+## P3-C: saved-configuration effects
+
+`application/config_saved_effects.py::ConfigSavedEffectCoordinator` coordinates
+the original snapshot, AS reload, evolution cache, prewarm, browser restart,
+proactive Cron and topic synchronization effects. `_build_config_saved_callback`
+remains a compatible thin factory; `sync_saved_topic_recommendation` remains
+importable from the entrypoint. Retry timing, restart decisions, request context
+and background error handling remain unchanged.
+
+Personal Web/TUI saves still persist and reload inside the target AgentServer.
+A successful remote save must not call the coordinator or reload again. The
+coordinator does not write configuration or replace OptionalChannels/CM updates.
+Tests: `test_config_saved_effects.py` and the real-factory
+`test_config_save_legacy_worker.py`.
+
+## Verification and rollback
+
+Use a fresh per-worktree `.venv` with develop's unchanged lockfile. Record the
+baseline before rebuilding and verify each intermediate commit's relevant tests.
+Final commands, retaining the repository's pytest options, are:
 
 ```bash
 uv sync --frozen --extra test
-uv run --frozen --extra test python -m pytest tests/unit_tests/gateway tests/auth tests/integration/gateway --no-cov
-AGENT_GATEWAY_BIN="$PWD/.venv/bin/python -m agent_gateway.app_gateway" \
-ST_GATEWAY_CONFIG_SRC="$PWD/agent_gateway/resources/config.yaml" \
-.venv/bin/python -m pytest st_test/testcases_gateway --no-cov
+uv run --frozen pytest tests --no-cov
+uv run --frozen pytest st_test/testcases_gateway --no-cov
 ```
 
-Set `JIUWENSWARM_HOME` and `JIUWENSWARM_DATA_DIR` to temporary locations before starting pytest, including collection. Real mother compatibility cases live in `st_test/testcases_integration`; model chat is opt-in and a skip is not a passing capability.
+Set `JIUWENSWARM_HOME` and `JIUWENSWARM_DATA_DIR` to temporary directories before
+collection. Process ST should use the current Python and repository configuration
+via `AGENT_GATEWAY_BIN` and `ST_GATEWAY_CONFIG_SRC`. External accounts/models,
+real mother integration, frozen packages and non-macOS platforms are separate
+gates; skips do not establish those capabilities.
 
-The initial broad run stopped while importing third-party `pysbd`, whose invalid-escape SyntaxWarning is promoted to an error by the repository configuration. Comparative runs use command-local `-W 'ignore:invalid escape sequence:SyntaxWarning'`, without changing dependencies or pytest configuration.
-
-The mother's frozen installation failed building native `openjiuwen-computeruse` resources. Limited integration environments omit that package with `--no-install-package openjiuwen-computeruse`; they do not validate Computer Use or a complete distribution.
-
-An early broad command accidentally removed the repository's `--asyncio-mode=auto` when clearing `addopts`, producing 98 failures and 58 errors. This was a validation-command error, not evidence of existing business defects. Final comparisons explicitly retain `--asyncio-mode=auto`; the original records remain available for audit. The mother's develop has also changed parts of its domain/infra layout while Gateway develop retains the partitioned layout; dependency upgrades need explicit configuration/data-path validation.
-
-Real AS compatibility for the old pin, original Gateway develop, and refactored entrypoint each passed 4 cases with 1 model-chat skip. Mother startup/port/dotenv tests passed 34 cases. A same-workspace old-pin → candidate → old-pin sequence successfully started, served `config.get`, and stopped at each step.
-
-## Evidence and rollback
-
-The Gateway unit/auth/integration comparison passed 2358 cases with 2 skips on the original and 2385 cases with 2 skips on the candidate. All 27 added cases passed, with no missing tests, new failures or new skips. Standalone forwarding ST passed 274 cases on each version; the added process lifecycle ST passed 2 cases; the final installed wheel passed 4 forwarding smoke cases. Suites overlap and their counts must not be summed as unique coverage. The full forwarding comparison preceded the logging API patch; that patch was followed by 27 logging/hot-reload/startup cases, real AS integration and wheel smoke checks.
-
-Record source SHAs, lock hashes, imported package provenance, Python/platform, commands, JUnit outcomes and skip/failure reasons outside the repository. No logs, credentials or actual user configuration belong in a commit.
-
-P1 changes no storage schema. Revert entrypoint wiring and helpers in reverse dependency order. Stop the current process before starting the previous version; validate lock release and workspace reuse. This does not migrate live connections or running jobs.
-
-Merging code, enabling multiprocess mode and changing the default remain separate gates. P0/P1 validation does not establish multiprocess business correctness or capacity.
-
-## P2-B: extracting the 19001 protocol runtime
-
-`ProtocolRuntime`, `ProtocolRuntimeConfig`, `RouteConfig`, and their direct protocol helpers now live in
-`agent_gateway.routing.protocol_runtime`. The old `agent_gateway.app_gateway` path re-exports the same
-classes, not a second implementation. Request/session/client indexes, the ACP bridge and idle finalization,
-TUI registration/unregistration, ACKs, and message handling remain in the protocol object. The P2-A
-`WebSocketListener` still owns its listener lifecycle.
-
-Importing the new runtime does not run the application entrypoint, prepare a workspace, parse CLI dotenv,
-bind ports, or start Auth/Cron. The channel package loads `AcpChannel` and `AcpChannelConfig` exports on
-demand to isolate the existing ACP CLI import side effect; package-level imports remain supported. The old
-application still imports ACP after its original environment preparation stage. Tests patching the private idle
-constant must target the actual defining module rather than an unrelated entrypoint alias.
-
-`tests/unit_tests/gateway/test_protocol_runtime_import_contract.py` checks import compatibility and real random-port
-protocol behavior. The original ACP tests retain legacy imports. Validate wheels outside the source directory and
-check their site-packages provenance. Set `ST_GATEWAY_CONFIG_SRC` to the repository configuration template for ST
-instead of falling back to host configuration.
-
-This batch retains default single mode. It does not implement affinity, fd handoff, or a Worker pool, and does not
-change HTTP policy or login/Cron ownership.
-
-The old `GatewayServer` / `GatewayServerConfig` names remain compatibility aliases in
-`app_gateway` and `routing.gateway_server`; they reference the same classes, not wrappers.
-Internal assembly uses the canonical names.
-
-## P2-C: single-process composition boundaries
-
-`app_gateway._run()` delegates to `application/single.py` with explicit configuration-save, restart, preprocessing, and startup-timing inputs. The existing CLI, environment preparation, workspace lock, signal entrypoint, and default single mode remain unchanged. Application modules do not import the legacy entrypoint or construct live services at import time.
-
-- `application/services.py` assembles one original client, MessageHandler, ChannelManager, Cron and related service graph, retaining extension selection, enterprise storage ordering and provider binding.
-- `application/web.py` wires the original WebChannel, handlers, plugins, Git watcher, recommendation callbacks and first-request gate without binding a listener.
-- `application/tui_acp.py` wires TuiChannel, the original ACP inbound queue and one ProtocolRuntime after Web readiness. TUI outbound delegation is unchanged; the client subscribes only after Web/TUI registration.
-- `application/single.py` coordinates the original stages and shutdown. Existing optional-channel configuration/retry/lifecycle closures remain here temporarily; P2-D is not implemented.
-- `application/inbound.py`, `connection.py` and `configuration.py` own existing preprocessing, connection/readiness and configuration helpers. Legacy helper imports remain compatible; private module globals must be patched at their defining module.
-
-The original `_on_config_saved` body remains discoverable in the legacy entrypoint and is passed through a callback factory, not a new Control service. Web binds before dispatch/Cron startup, followed by the existing yield and TUI/ACP setup. No Worker pool, fd handoff or HTTP connection-policy change is enabled.
-
-`tests/unit_tests/gateway/test_application_assembly_contract.py` covers cold imports, explicit delegation, Web stage order/bind failure, single service instances, enterprise storage order, client selection, TUI subscription order, Web first-request gating and service shutdown. Normal shutdown does not imply transactional cleanup for every early startup failure.
-
-## P2-D optional-channel lifecycle
-
-`application/optional_channels.py::OptionalChannels` owns the existing IM, SSH, A2A and Web Proxy configuration, instance and task references. `single.py` supplies explicit dependencies and retains A2A startup, callback installation and deferred initial configuration at their original stages. Lazy SDK imports, per-channel failure isolation and revision-aware retries remain unchanged.
-
-Shutdown keeps three boundaries: configuration/retry tasks, A2A, then other optional channels after TUI/Web. Prewarming stays in the single host; WebChannel.stop remains the final owner of Web Proxy resources. Background DingTalk cancellation waiters are tracked and joined. No protocol, login, Cron or multi-Worker behavior is introduced.
-
-Behavior contracts are in `tests/unit_tests/gateway/test_optional_channels_lifecycle.py`. Real platform accounts and frozen distributions still require separate validation. The inherited AgentOS Web Proxy branch imports a missing settings helper; controlled ownership tests do not demonstrate successful real proxy startup.
-
-
-## P3-A: local login and main credential ports
-
-The runtime still owns one single-process service graph. `assemble_services` retains a lazy provider for the existing AuthService and constructs `LocalCredentialAccess` plus a `MessageHandlerCredentialUpdateSink` bound to that exact handler. Web/TUI/ACP preprocessing shares the port. Login HTTP routes receive the same provider/sink through WebChannel; catalog and quota helpers retain the injected service rather than resolving another global service.
-
-The port returns request-scoped model credentials or updates for a credential reference. Immutable values exclude tokens from repr. Caller-supplied `_model_auth` is removed before lookup; the new path must not subsequently run the legacy global credential injection. The existing 20-second expired-token refresh wait, fallback to currently usable credentials, and separation of business user IDs from model login identities remain intact. Logout deletes the local session before best-effort notification through the original AS transport; this is not reliable multi-AS revocation.
-
-Legacy `register_auth_routes(app)`, helpers and unbound objects remain compatible. This batch does not enable IPC/RPC, Worker pools, fd handoff, affinity or a new HTTP keep-alive policy. Cron/IM consumers and configuration effects are deferred to P3-B/C. See `test_local_credential_access.py`, `test_credential_pipeline_contract.py` and `test_auth_dependency_injection.py`; external account and model validation remains separate.
-
-
-## P3-B: Cron and session continuation credentials
-
-`CredentialAccess` adds strict login-session-to-reference binding and credential lookup for an existing reference. Cron create/update still binds only login-sourced model selections and stores only the reference. Execution still uses the original scheduler and AS client; job formats, scheduling and delivery remain unchanged. An unbound configured model must not borrow login credentials merely because its name matches.
-
-`SessionLoginBindings` adapts the existing `session_owners.json`, not Worker ownership. It retains persistence/TTL, catalog availability checks, the original non-Web fallback scope and distinct login hints. A Web request without login credentials still cannot borrow the recorded account. The service graph binds the local adapter before MH forwarding and the shared credential port before Cron scheduling. Unbound legacy objects remain compatible.
-
-The runtime remains single-process: no Cron sharding, IPC, Worker affinity or reliable revocation fanout. Synchronous catalog compatibility helpers remain local and are not proof of remote Worker readiness. See `test_session_login_bindings.py`, `test_cron_credential_access.py` and the network credential contract; real IM SDK/account acceptance remains separate.
-
-
+Record actual commands, outcomes, skip/failure reasons, source/lock identifiers
+and package provenance outside the repository; do not reuse historical counts.
+Verify the final tree against the validated reference tree and ensure the eight
+commits are linear, without the original large commit or extra merge commits.
+Stop the running process before rollback; revert in reverse dependency order
+and validate workspace lock/port reuse. No storage-schema or live-connection
+migration is introduced.
