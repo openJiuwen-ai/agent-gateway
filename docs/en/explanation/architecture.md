@@ -63,6 +63,7 @@ See the [E2A protocol reference](../reference/e2a-protocol.md) for field definit
 ## Key design decisions
 
 - **One downstream connection + request-id multiplexing**: all clients share one AgentServer WebSocket instead of opening a downstream connection per client; responses and stream chunks are demultiplexed by request id.
+- **Background auto-reconnect after drops (personal edition default)**: the default WS client restores the connection itself with exponential backoff, so server-push frames (cron results, interaction requests, and similar) are not lost while waiting for the next business request; an explicit `disconnect()` stops the recovery, and extension clients keep their own disconnect-cleanup semantics.
 - **Lazy channel loading**: only channels present under `channels` are initialized; unconfigured channels pull in no dependencies and hold no connections.
 - **Routing state lives in the gateway**: on reconnect or channel switch, the gateway preserves session, project, work mode, and channel bindings.
 - **Workspace singleton lock**: held by an OS file lock and released automatically if the process crashes; only one gateway may serve a workspace, which prevents duplicate cron scheduling.

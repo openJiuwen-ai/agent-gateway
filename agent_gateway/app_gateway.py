@@ -2488,7 +2488,15 @@ async def _run(
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
         client = agent_server_ext.get_client()
     else:
-        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
+        # 个人版默认 WS client：断连后由客户端后台自动重连（恢复期间
+        # server-push——cron 结果、交互请求等——依赖连接尽快恢复，不能等
+        # 下一个业务请求才触发懒重连）。扩展 client（agentos_router 等）
+        # 不受影响：它们各自管理断连清理。
+        client = WebSocketAgentServerClient(
+            ping_interval=20.0,
+            ping_timeout=600.0,
+            auto_reconnect=True,
+        )
 
     from agent_gateway.routing.third_agent import get_unsupported_third_agent
 

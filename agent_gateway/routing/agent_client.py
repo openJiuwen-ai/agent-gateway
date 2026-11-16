@@ -166,7 +166,13 @@ class WebSocketAgentServerClient(AgentServerClient):
     - 接收（流式）：多条 E2AResponse 线 JSON（或 legacy chunk），解析为 AgentResponseChunk。
     """
 
-    def __init__(self, *, ping_interval: float | None = 30.0, ping_timeout: float | None = 300.0) -> None:
+    def __init__(
+        self,
+        *,
+        ping_interval: float | None = 30.0,
+        ping_timeout: float | None = 300.0,
+        auto_reconnect: bool = False,
+    ) -> None:
         self._uri: str | None = None
         self._extra_headers: dict[str, str] = {}
         self._ws: Any = None
@@ -189,6 +195,11 @@ class WebSocketAgentServerClient(AgentServerClient):
         self._server_push_tails: dict[str, asyncio.Task] = {}
         # receiver 致命错误（连接断开 / ping 超时 / 发送失败）后的断连通知回调
         self._on_disconnect: Callable[[BaseException], Awaitable[None]] | None = None
+        # 断连后是否由客户端自身后台恢复连接。app_gateway 的默认 client 开启；
+        # agentos_router 等复用本类的场景必须保持 False——其断连语义由外层
+        # 清理逻辑（删沙箱/摘除缓存）接管，客户端擅自重连会破坏该约定。
+        self._auto_reconnect = auto_reconnect
+        self._auto_reconnect_task: asyncio.Task | None = None
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
@@ -518,6 +529,118 @@ class WebSocketAgentServerClient(AgentServerClient):
                 queue.put_nowait(failure)
         logger.info("[WebSocketAgentServerClient] 接收任务已停止并通知等待队列: %s", detail)
         self._fire_disconnect_handler(exc)
+        self._maybe_start_auto_reconnect()
+
+    def _maybe_start_auto_reconnect(self) -> None:
+        """连接意外断开后按需启动后台自动重连（构造参数 opt-in）.
+
+        断连后若无人恢复连接，server-push（cron 结果、交互请求、chat.file
+        推送等）会持续丢失，直到某个业务请求碰巧触发懒重连——个人版没有
+        外层守护者，客户端自身需要负责尽快恢复连接。显式 ``disconnect()``
+        置 ``_reconnect_enabled=False``，不会走到这里。
+        """
+        if not self._auto_reconnect:
+            return
+        if not self._reconnect_enabled or not self._uri:
+            # 显式断开之后，或从未成功建立过连接：不自动恢复
+            return
+        task = self._auto_reconnect_task
+        if task is not None and not task.done():
+            return
+        try:
+            self._auto_reconnect_task = asyncio.create_task(self._auto_reconnect_loop())
+            logger.info(
+                "[WebSocketAgentServerClient] 已启动后台自动重连: %s",
+                self._uri,
+            )
+        except RuntimeError:
+            # 无运行中的事件循环（同步关停路径）：无处派发，静默放弃
+            logger.warning(
+                "[WebSocketAgentServerClient] 无运行中的事件循环，后台自动重连未启动"
+            )
+
+    async def _auto_reconnect_loop(self) -> None:
+        """后台恢复南向连接：指数退避重试，成功或显式断开后退出.
+
+        与懒重连协同：连接尝试持有 ``_reconnect_lock``；业务请求的
+        ``_ensure_connected_for_request`` 若先行恢复连接，本循环在下一轮
+        检查时直接退出，反之亦然。
+        """
+        backoff = 0.2
+        max_backoff = 5.0
+        attempt = 0
+        while True:
+            if not self._reconnect_enabled or self._uri is None:
+                # 显式 disconnect()：停止重连
+                return
+            if self._ws is not None:
+                # 已由其它路径（懒重连/上层重建）恢复
+                return
+            uri = self._uri
+            headers = dict(self._extra_headers)
+            reconnect_enabled = self._reconnect_enabled
+            attempt += 1
+            try:
+                async with self._reconnect_lock:
+                    if self._ws is not None:
+                        return
+                    await self.connect(uri, extra_headers=headers)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # connect() 中途失败可能留下半更新状态（如 extra_headers 被
+                # 覆写）：复位现场并保留重试能力。不能调 disconnect()——它
+                # 会先取消本任务自身（等待自身结束即死锁），故复用不含任务
+                # 管理的 _teardown_connection（与懒重连路径同语义）。
+                await self._teardown_connection()
+                self._uri = uri
+                self._extra_headers = headers
+                self._reconnect_enabled = reconnect_enabled
+                # 节流日志：前 3 次逐次告警，之后每 10 次一条，避免长时间
+                # 不可达时刷屏
+                if attempt <= 3 or attempt % 10 == 0:
+                    logger.warning(
+                        "[WebSocketAgentServerClient] 后台自动重连失败（第 %d 次）: %s",
+                        attempt,
+                        describe_ws_exception(exc),
+                    )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+            else:
+                if self._ws is None or not self._running:
+                    # connect 期间并发 fatal（如请求发送失败触发
+                    # _stop_receiver_after_fatal_error）已把现场清掉，而
+                    # _maybe_start_auto_reconnect 因本任务未结束跳过了重调度：
+                    # 接续重试，别把后台重连丢在这一轮。
+                    logger.info(
+                        "[WebSocketAgentServerClient] 重连返回后连接已断开，继续后台重连"
+                    )
+                    continue
+                logger.info(
+                    "[WebSocketAgentServerClient] 后台自动重连成功: %s（第 %d 次尝试）",
+                    uri,
+                    attempt,
+                )
+                return
+
+    async def _cancel_auto_reconnect_task(self) -> None:
+        """取消并回收后台自动重连任务；已结束则仅清理引用."""
+        task = self._auto_reconnect_task
+        if task is None:
+            return
+        if task.done():
+            self._auto_reconnect_task = None
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning("[WebSocketAgentServerClient] 后台自动重连任务异常结束", exc_info=True)
+        finally:
+            if self._auto_reconnect_task is task:
+                self._auto_reconnect_task = None
 
     def _fire_disconnect_handler(self, exc: BaseException) -> None:
         """派发断连通知回调：fire-and-forget，不阻塞 receiver / 发送路径。"""
@@ -543,8 +666,14 @@ class WebSocketAgentServerClient(AgentServerClient):
                 type(exc).__name__,
             )
 
-    async def disconnect(self) -> None:
-        # 停止接收任务
+    async def _teardown_connection(self) -> None:
+        """停止接收任务、关闭 socket 并复位连接态.
+
+        不触碰等待队列与后台重连任务，也不清除 ``_uri``/``_extra_headers``
+        （保留给调用方决定——显式断开要清空，重连失败路径要保留）。
+        供 ``disconnect()``（显式断开）与自动重连失败路径复用——后者不能
+        走 ``disconnect()``，否则会取消自身所在任务造成死锁。
+        """
         self._running = False
         if self._receiver_task and not self._receiver_task.done():
             self._receiver_task.cancel()
@@ -552,10 +681,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                 await self._receiver_task
             except asyncio.CancelledError:
                 pass
-            self._receiver_task = None
-
-        # 清理所有队列
-        self._message_queues.clear()
+        self._receiver_task = None
 
         # 关闭 WebSocket
         try:
@@ -572,11 +698,24 @@ class WebSocketAgentServerClient(AgentServerClient):
         finally:
             self._ws = None
             self._reconnect_enabled = False
-            self._uri = None
-            self._extra_headers = {}
             self._server_ready = False
             self._agent_ready = False
             self._readiness_state = None
+
+    async def disconnect(self) -> None:
+        # 停止后台自动重连：显式断开后不再自动恢复
+        await self._cancel_auto_reconnect_task()
+        await self._teardown_connection()
+        self._uri = None
+        self._extra_headers = {}
+
+        # 等待者立即失败并清理队列。若只清注册不通知，等待者会拿着已注销的
+        # 队列一直空等到自身超时（unary 最长 600s）——断开就该快速失败。
+        failure = _ReceiverFailure(RuntimeError("AgentServer WebSocket disconnected"))
+        async with self._queue_lock:
+            for queue in self._message_queues.values():
+                queue.put_nowait(failure)
+        self._message_queues.clear()
         logger.info("[WebSocketAgentServerClient] 已断开")
 
     def _ensure_connected(self) -> None:
@@ -616,12 +755,13 @@ class WebSocketAgentServerClient(AgentServerClient):
                     self._reconnect_enabled = reconnect_enabled
                 raise
 
-    async def _send_wire_payload(self, payload: dict[str, Any]) -> None:
+    async def _send_wire_payload(self, payload_text: str, *, payload: dict[str, Any]) -> None:
+        """发送已序列化的 JSON 文本；``payload`` 仅供失败诊断取字段."""
         ws = self._ws
         if ws is None:
             raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
         try:
-            await ws.send(json.dumps(payload, ensure_ascii=False))
+            await ws.send(payload_text)
         except (ConnectionClosed, OSError) as exc:
             logger.warning(
                 "[WebSocketAgentServerClient] AgentServer WebSocket 发送失败，连接将重置: %s",
@@ -669,10 +809,13 @@ class WebSocketAgentServerClient(AgentServerClient):
             envelope.is_stream,
             extra={"session_id": sid} if sid else {},
         )
-        logger.debug(
-            "[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s",
-            _to_json(envelope.to_dict()),
-        )
+        # 全载荷序列化的 debug 日志必须惰性求值：logging 参数在 debug 关闭时
+        # 也会先求值，等于每个请求多付两次全量 to_dict + redact + dumps。
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s",
+                _to_json(envelope.to_dict()),
+            )
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -696,12 +839,20 @@ class WebSocketAgentServerClient(AgentServerClient):
             send_started = None
             send_outcome = "failed"
             try:
+                # JSON 序列化在发送锁外完成：锁内只保留 ws.send 这一个 await
+                # 点，大载荷的 CPU 序列化开销不再放大锁持有时间（不能用
+                # to_thread 兜底事件循环阻塞——json 的 C 编码器不释放 GIL）。
+                payload = _e2a_to_wire(wire_envelope)
+                payload_text = json.dumps(payload, ensure_ascii=False)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[WebSocketAgentServerClient] 发送请求(非流式) payload: %s",
+                        _to_json(payload),
+                    )
                 async with self._lock:
                     lock_wait_ms = (monotonic() - lock_started) * 1000
-                    payload = _e2a_to_wire(wire_envelope)
-                    logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
                     send_started = monotonic()
-                    await self._send_wire_payload(payload)
+                    await self._send_wire_payload(payload_text, payload=payload)
                     send_outcome = "written"
             finally:
                 if operation is not None:
@@ -821,10 +972,12 @@ class WebSocketAgentServerClient(AgentServerClient):
             envelope.is_stream,
             extra={"session_id": sid} if sid else {},
         )
-        logger.debug(
-            "[WebSocketAgentServerClient] 发送请求(流式) E2A: %s",
-            _to_json(envelope.to_dict()),
-        )
+        # 同非流式路径：全载荷 debug 日志惰性求值，避免每请求两次无谓序列化。
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[WebSocketAgentServerClient] 发送请求(流式) E2A: %s",
+                _to_json(envelope.to_dict()),
+            )
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -846,12 +999,18 @@ class WebSocketAgentServerClient(AgentServerClient):
             send_started = None
             send_outcome = "failed"
             try:
+                # 同非流式路径：序列化在发送锁外完成，锁内只留 ws.send。
+                payload = _e2a_to_wire(wire_envelope)
+                payload_text = json.dumps(payload, ensure_ascii=False)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[WebSocketAgentServerClient] 发送请求(流式) payload: %s",
+                        _to_json(payload),
+                    )
                 async with self._lock:
                     lock_wait_ms = (monotonic() - lock_started) * 1000
-                    payload = _e2a_to_wire(wire_envelope)
-                    logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
                     send_started = monotonic()
-                    await self._send_wire_payload(payload)
+                    await self._send_wire_payload(payload_text, payload=payload)
                     send_outcome = "written"
             finally:
                 if operation is not None:
