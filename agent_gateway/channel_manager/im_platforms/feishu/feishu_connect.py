@@ -15,6 +15,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Callable
 
 import requests
@@ -53,6 +54,17 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, InboundDisposition
 
 logger = logging.getLogger(__name__)
+_WORKSPACE_FILE_NAME_PATTERN = re.compile(
+    r"""['"'《]([^'"'》\n]+\."""
+    r"""(?:docx?|xlsx?|pptx?|pdf|csv|txt|md|zip|tar|gz|"""
+    r"""png|jpg|jpeg|gif|mp3|mp4|wav|opus))['"'》]""",
+    re.IGNORECASE,
+)  # noqa: E501
+
+
+@lru_cache(maxsize=16)
+def _workspace_path_pattern(workspace_dir: str) -> re.Pattern[str]:
+    return re.compile(re.escape(workspace_dir) + r"[^\s\[\]\"']+\.\w+")
 
 
 class _FeishuWebSocketLogHandler(logging.Handler):
@@ -2731,8 +2743,7 @@ class FeishuChannel(BaseChannel):
 
         # 模式1：完整路径 - 动态匹配当前 workspace 目录
         # 支持 Linux (/home/xxx/.jiuwenswarm/...) 和 Windows (C:\Users\xxx\.jiuwenswarm\...)
-        workspace_pattern = re.escape(workspace_dir) + r"[^\s\[\]\"']+\.\w+"
-        for m in re.findall(workspace_pattern, text):
+        for m in _workspace_path_pattern(workspace_dir).findall(text):
             m = m.rstrip(".,;:!?)")
             if m not in seen and os.path.isfile(m):
                 seen.add(m)
@@ -2740,12 +2751,7 @@ class FeishuChannel(BaseChannel):
 
         # 模式2：从引号或书名号中提取文件名，在 workspace 下查找
         # 匹配 '文件名.ext'、"文件名.ext"、《文件名.ext》
-        name_pattern = (
-            r"""['"'《]([^'"'》\n]+\."""
-            r"""(?:docx?|xlsx?|pptx?|pdf|csv|txt|md|zip|tar|gz|"""
-            r"""png|jpg|jpeg|gif|mp3|mp4|wav|opus))['"'》]"""
-        )  # noqa: E501
-        for fname in re.findall(name_pattern, text, re.IGNORECASE):
+        for fname in _WORKSPACE_FILE_NAME_PATTERN.findall(text):
             fpath = os.path.join(workspace_dir, fname)
             if fpath not in seen and os.path.isfile(fpath):
                 seen.add(fpath)
