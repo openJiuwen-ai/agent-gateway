@@ -6489,10 +6489,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         route = None
         try:
             routes = await channel.routing_keys_for_ws(ws)
-            route = next(
-                (item for item in reversed(routes) if item.session_id == session_id),
-                None,
-            )
+            routes = list(dict.fromkeys(
+                item for item in routes if item.session_id == session_id
+            ))
+            request_id = params.get("requestId") if isinstance(params, dict) else None
+            resolver = getattr(channel, "a4p_request_route", None)
+            if resolver is not None and isinstance(request_id, str):
+                route = resolver(routes, request_id)
+            if route is None and len(routes) == 1:
+                route = routes[0]
+            if route is None and len(routes) > 1:
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="Multiple Web authorizer identities match this session",
+                    code="A4P_WEB_ROUTE_AMBIGUOUS",
+                )
+                return
             if route is not None:
                 route_metadata["app_id"] = route.app_id
                 route_metadata["agent_ref"] = {
