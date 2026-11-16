@@ -1,3 +1,6 @@
+# Portions adapted from xiaoluolyg/god under Apache-2.0.
+# Portions Copyright (c) 2007 Pallets
+# Portions Copyright (c) 2026 GOD project authors
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """XiaoYi Media Utils - 媒体下载、处理和保存功能。
@@ -160,7 +163,6 @@ async def download_and_save_media(
     mime_type: str,
     file_name: str,
     options: MediaDownloadOptions | None = None,
-    save_dir: str | None = None
 ) -> DownloadedMedia:
     """
     下载并保存媒体文件到本地磁盘。
@@ -170,7 +172,6 @@ async def download_and_save_media(
         mime_type: MIME 类型
         file_name: 文件名
         options: 下载选项
-        save_dir: 保存目录 (如果 None，使用临时目录)
 
     Returns:
         DownloadedMedia: 已下载的媒体信息
