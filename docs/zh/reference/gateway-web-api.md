@@ -477,6 +477,8 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 **同步 res**：`{accepted:true, session_id, request_id?}`。转发为**非流式** E2A；AgentServer 按 request_id 前缀分派（技能演进审批、symphony 经验安装、计划审批等），最终 res `{accepted:true, resolved:bool}`（`interface_deep.py:15243-15299`）。演进审批中断型答案会被网关改道为 chat.send。
 
+**HTTP 最终回执（显式启用）**：`POST /api/v1/chat/{session_id}/actions/user_answer?wait_for_result=true`（兼容别名 `actions/answer`）等待当前 RPC 的业务回执；该查询参数不传入 Agent 业务参数。默认 `false` 保持首个接收 ACK 返回行为。启用后，成功 `res` 必须包含布尔型 `payload.resolved` 才结束等待，`false` 同样是终态；同 RPC 的失败 `res` 或 `chat.error` 立即返回。等待复用单个总期限，取现有 `GATEWAY_WEB_HTTP_UNARY_TIMEOUT` 与 120 秒的较小值；超时返回 `TIMEOUT`（HTTP 504），不表示业务取消或安装失败。回执等待结束、超时或取消后注销请求 outbound；其他 HTTP 方法及全局超时配置不变。
+
 ### 4.5 chat.swarmflow_reply
 
 > **网关处理**：**网关处理**——本地 handler 回 ack 后非流式转发原 params。
