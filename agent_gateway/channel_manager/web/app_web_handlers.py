@@ -4337,7 +4337,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
+        if not _is_enterprise_edition() and (
+            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
+        ):
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4386,7 +4388,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         resolved_client = _resolve(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
+        if not _is_enterprise_edition() and (
+            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
+        ):
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
