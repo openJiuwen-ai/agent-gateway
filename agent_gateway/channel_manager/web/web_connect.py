@@ -62,6 +62,8 @@ from agent_gateway.routing.keys import AgentRef, RoutingKey
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
     from agent_gateway.transport.uvicorn_listener import UvicornListener
 
 logger = logging.getLogger(__name__)
@@ -268,11 +270,17 @@ class WebChannel(BaseWsChannel):
     name = "web"
     channel_id = "web"
 
-    def __init__(self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None):
+    def __init__(
+        self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None,
+        *, auth_service_provider: Callable[[], AuthService] | None = None,
+        credential_update_sink: CredentialUpdateSink | None = None,
+    ):
         super().__init__(config, router)
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
+        self.auth_service_provider = auth_service_provider
+        self.credential_update_sink = credential_update_sink
         self._listener: UvicornListener | None = None
         self._listener_available = asyncio.Event()
         self._listener_start_error: Exception | None = None

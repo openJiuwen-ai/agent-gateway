@@ -265,6 +265,9 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         scheduler_factory.assert_called_once_with(store=store, agent_client=value.client, message_handler=handler)
         session_bind.assert_called_once_with(value.client)
         mcp_bind.assert_called_once_with(value.client)
+        assert events.index('credentials.bound') < events.index('forwarding')
+        handler.set_credential_access.assert_called_once_with(value.credential_access)
+        assert value.credential_update_sink._message_handler is handler
         scheduler.start.assert_not_awaited()
         cm.start_dispatch.assert_not_awaited()
         assert events.index('telemetry') < events.index('handler.created')

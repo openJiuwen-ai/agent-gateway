@@ -115,3 +115,12 @@ site-packages 来源。ST 应设置 `ST_GATEWAY_CONFIG_SRC` 指向仓内配置�
 生命周期行为测试位于`tests/unit_tests/gateway/test_optional_channels_lifecycle.py`；真实平台账号与冻结发行包需单独验收。既有AgentOS Web Proxy分支导入缺失配置函数的问题仍遗留；替身重配置测试不等于真实启用验证。
 
 
+## P3-A 登录与主凭据链本地接口
+
+当前仍运行一套 single 服务图。`assemble_services` 保存原 AuthService 的惰性 provider，创建 `LocalCredentialAccess` 与绑定当前 MH 的 `MessageHandlerCredentialUpdateSink`。Web/TUI/ACP 的实际预处理共用该 access；登录 HTTP 接口经 WebChannel 显式使用同一个 provider/sink，模型目录和 quota 的辅助查询也不退回另一全局服务。
+
+`CredentialAccess` 只暴露请求级模型凭据与 credential_ref 更新；不可变 DTO 的 token 不进 repr。先删除客户端伪造 `_model_auth`，再经接口领取，不能在新链之后又执行旧全局凭据注入。原过期刷新 20 秒等待、失败后可用 token 兜底、业务 user_id 与登录账号分离的语义不变。注销先删本地会话，再尽力通知原 AS transport；这不是多 AS 可靠撤销保证。
+
+旧 `register_auth_routes(app)`、helper 与未注入对象仍兼容。本批不启用 IPC/RPC、Worker 池、fd 交接、亲和或改变 HTTP keep-alive；Cron/IM 消费者迁移及配置效果协调分别留 P3-B/C。测试见 `test_local_credential_access.py`、`test_credential_pipeline_contract.py`、`test_auth_dependency_injection.py`；真实第三方账号与模型仍需独立验收。
+
+

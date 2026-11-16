@@ -12,6 +12,10 @@ import os
 import time
 from typing import Any, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess, CredentialUpdate, CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
+
 from agent_gateway.application.configuration import _load_gateway_runtime_config
 from agent_gateway.application.connection import _connect_with_retry
 from agent_gateway.common.log_sanitize import mask_sensitive
@@ -20,6 +24,14 @@ from agent_gateway.telemetry import configure_gateway_telemetry
 logger = logging.getLogger("gateway")
 
 
+class MessageHandlerCredentialUpdateSink:
+    """Publish through the exact handler owned by this service graph."""
+
+    def __init__(self, message_handler: Any) -> None:
+        self._message_handler = message_handler
+
+    async def publish(self, update: CredentialUpdate) -> bool:
+        return await self._message_handler.push_login_credential_update(update.to_params())
 
 
 @dataclass
@@ -48,6 +60,9 @@ class GatewayServices:
     full_cfg: Any
     _hold_release_task: Any
     _cleanup_task: Any
+    auth_service_provider: Callable[[], AuthService] | None = None
+    credential_access: CredentialAccess | None = None
+    credential_update_sink: CredentialUpdateSink | None = None
 
     async def stop(self) -> None:
         await self.cron_scheduler.stop()
@@ -182,8 +197,14 @@ async def assemble_services(
         await client.connect("")
     log_stage("agent_server_connected")
 
+    from agent_gateway.auth.local_credential_access import LocalCredentialAccess
+    from agent_gateway.auth.service import get_auth_service
 
+    auth_service_provider = get_auth_service
+    credential_access = LocalCredentialAccess(auth_service_provider)
     message_handler = MessageHandler(client)
+    message_handler.set_credential_access(credential_access)
+    credential_update_sink = MessageHandlerCredentialUpdateSink(message_handler)
     await message_handler.start_forwarding()
 
     # IM Pipeline 初始化（数字分身）
@@ -348,4 +369,7 @@ async def assemble_services(
         full_cfg=full_cfg,
         _hold_release_task=_hold_release_task,
         _cleanup_task=_cleanup_task,
+        auth_service_provider=auth_service_provider,
+        credential_access=credential_access,
+        credential_update_sink=credential_update_sink,
     )

@@ -10,6 +10,9 @@ from dataclasses import dataclass
 import logging
 from typing import Any, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess
+
 from e2a.message import Message
 from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.telemetry import trace_stage
@@ -217,11 +220,33 @@ class MessagePreprocessor:
     refresh_credentials: Callable[[Any], Awaitable[None]]
     normalize: Callable[[Any], Any]
     inject_work_mode: Callable[[Any], None]
+    credential_access: CredentialAccess | None = None
+
+    def with_credential_access(self, access: CredentialAccess) -> MessagePreprocessor:
+        """Bind one explicit local port without changing legacy callback users."""
+        return MessagePreprocessor(self.refresh_credentials, self.normalize, self.inject_work_mode, access)
 
     async def _prepare(self, msg: Any) -> Any:
+        if self.credential_access is None:
+            with trace_stage("preprocess.credentials"):
+                await self.refresh_credentials(msg)
+            return self.normalize(msg)
+        from agent_gateway.auth.passthrough import MODEL_AUTH_PARAM_KEY
+
+        # Never let caller-supplied credentials survive a failed lookup.
+        if isinstance(msg.params, dict):
+            msg.params.pop(MODEL_AUTH_PARAM_KEY, None)
+        normalized = _normalize_gateway_message(msg, apply_model_auth=False)
+        model_name = str(normalized.params.get('model_name') or '').strip()
         with trace_stage("preprocess.credentials"):
-            await self.refresh_credentials(msg)
-        return self.normalize(msg)
+            try:
+                auth = await self.credential_access.request_model_auth(_auth_session_id(msg), model_name)
+            except Exception:  # Login availability must not break request forwarding.
+                logger.debug('[App] Credential lookup failed; forwarding without login credentials', exc_info=True)
+                auth = None
+        if auth is not None:
+            normalized.params[MODEL_AUTH_PARAM_KEY] = auth.to_params()
+        return normalized
 
     async def forward(self, msg: Any, channel_manager: Any) -> bool:
         normalized = await self._prepare(msg)

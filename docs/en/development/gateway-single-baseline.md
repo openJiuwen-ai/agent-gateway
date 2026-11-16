@@ -113,3 +113,12 @@ Shutdown keeps three boundaries: configuration/retry tasks, A2A, then other opti
 Behavior contracts are in `tests/unit_tests/gateway/test_optional_channels_lifecycle.py`. Real platform accounts and frozen distributions still require separate validation. The inherited AgentOS Web Proxy branch imports a missing settings helper; controlled ownership tests do not demonstrate successful real proxy startup.
 
 
+## P3-A: local login and main credential ports
+
+The runtime still owns one single-process service graph. `assemble_services` retains a lazy provider for the existing AuthService and constructs `LocalCredentialAccess` plus a `MessageHandlerCredentialUpdateSink` bound to that exact handler. Web/TUI/ACP preprocessing shares the port. Login HTTP routes receive the same provider/sink through WebChannel; catalog and quota helpers retain the injected service rather than resolving another global service.
+
+The port returns request-scoped model credentials or updates for a credential reference. Immutable values exclude tokens from repr. Caller-supplied `_model_auth` is removed before lookup; the new path must not subsequently run the legacy global credential injection. The existing 20-second expired-token refresh wait, fallback to currently usable credentials, and separation of business user IDs from model login identities remain intact. Logout deletes the local session before best-effort notification through the original AS transport; this is not reliable multi-AS revocation.
+
+Legacy `register_auth_routes(app)`, helpers and unbound objects remain compatible. This batch does not enable IPC/RPC, Worker pools, fd handoff, affinity or a new HTTP keep-alive policy. Cron/IM consumers and configuration effects are deferred to P3-B/C. See `test_local_credential_access.py`, `test_credential_pipeline_contract.py` and `test_auth_dependency_injection.py`; external account and model validation remains separate.
+
+

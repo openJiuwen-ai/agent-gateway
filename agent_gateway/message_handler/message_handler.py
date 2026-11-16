@@ -343,6 +343,7 @@ class ModeChangeCancelParams:
 
 
 if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess
     from e2a.agent_models import AgentResponse, AgentResponseChunk
     from e2a.models import E2AEnvelope
     from e2a.message import Message
@@ -3715,6 +3716,10 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
+    def set_credential_access(self, credential_access: CredentialAccess) -> None:
+        """Bind the local credential port before forwarding starts."""
+        self._credential_access = credential_access
+
     async def _handle_login_credential_refresh_push(self, chunk: Any) -> bool:
         """AgentServer 请求给在用的登录模型凭据续期。是这类消息返回 ``True``。
 
@@ -3730,7 +3735,12 @@ class MessageHandler(ABC):
 
         credential_ref = str(payload.get("credential_ref") or "")
         try:
-            update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
+            access = getattr(self, '_credential_access', None)
+            if access is None:
+                update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
+            else:
+                result = await access.credential_update_for_ref(credential_ref)
+                update = result.to_params() if result is not None else None
         except Exception:  # noqa: BLE001 — 续期失败不能影响 push 通道上的其他消息
             logger.warning("[MessageHandler] 登录凭据续期失败", exc_info=True)
             return True

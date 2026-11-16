@@ -13,7 +13,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_gateway.auth.service import AuthService
 
 from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
@@ -52,7 +55,9 @@ def normalize_model_auth(params: dict[str, Any], session_id: str | None = None) 
         params[MODEL_AUTH_PARAM_KEY] = auth
 
 
-def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any] | None:
+def _build_model_auth(
+    model_name: str, session_id: str | None, *, service: AuthService | None = None,
+) -> dict[str, Any] | None:
     """登录模型 → ``{api_base, api_key, credential_ref}``（api_key 就是 id_token）；
     不是登录模型或拿不到凭据返回 ``None``。
 
@@ -68,12 +73,13 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     apig_config = resolve_apig_config(allow_refresh=False)
     if apig_config is None:
         return None
-    if not _is_login_model(model_name, session_id):
+    if not _is_login_model(model_name, session_id, service=service):
         return None
 
     try:
         # 不在这里同步续期：续期是同步 HTTP，会卡住事件循环。快过期的 token会在后台续好，这一次先用旧的。
-        session = live_session(session_id, allow_refresh=False)
+        session = (live_session(session_id, allow_refresh=False) if service is None
+                   else live_session(session_id, allow_refresh=False, service=service))
     except ModelAuthRequired as exc:
         # 拿不到凭据不在这里报错：AgentServer 侧解析模型时会走到同样的判断并给出
         # 面向用户的提示。这里硬失败只会把"登录过期"变成一个语焉不详的转发错误。
@@ -86,7 +92,9 @@ def _build_model_auth(model_name: str, session_id: str | None) -> dict[str, Any]
     }
 
 
-def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
+def refreshed_credential_for_ref(
+    credential_ref: str, *, service: AuthService | None = None,
+) -> dict[str, Any] | None:
     """AgentServer 请求续期时调用：按句柄找到登录会话，续期后返回要推回去的参数。
 
     - 续好了（或还没到需要续的时候）→ ``{credential_ref, api_key}``
@@ -109,19 +117,25 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
     revoked = {"credential_ref": credential_ref, "revoked": True}
     # 句柄是账号的单向 HMAC，只能逐个算出来比对。本机会话数量很少，代价可以忽略。
     # 同一账号重新登录过也能找到：句柄按账号算，找到的是它当前那个会话。
+    store = get_session_store() if service is None else service._store
     session = next(
-        (s for s in get_session_store().list_sessions() if credential_ref_for_user(s.user_id) == credential_ref),
+        (s for s in store.list_sessions() if credential_ref_for_user(s.user_id) == credential_ref),
         None,
     )
     if session is None:
         return revoked
-    fresh = get_auth_service().try_refresh(session, ahead_s=REFRESH_AHEAD_S)
+    fresh = (service if service is not None else get_auth_service()).try_refresh(session, ahead_s=REFRESH_AHEAD_S)
     if fresh is None or fresh.credential.is_expired():
         return revoked
     return {"credential_ref": credential_ref, "api_key": fresh.credential.id_token}
 
 
-def _is_login_model(model_name: str, session_id: str | None) -> bool:
+
+
+
+def _is_login_model(
+    model_name: str, session_id: str | None, *, service: AuthService | None = None,
+) -> bool:
     """请求的模型是不是登录来源。名字带 #index 后缀时取前半段（通道侧的全局序号）。"""
     from agent_gateway.auth.login_credentials import bare_model_name
     from agent_gateway.auth.model_catalog import get_models
@@ -129,14 +143,18 @@ def _is_login_model(model_name: str, session_id: str | None) -> bool:
     try:
         # allow_refresh=False：这里在 Gateway 的转发热路径上，不能为了刷模型目录
         # 去发一次同步 HTTP。缓存里没有就当作不是登录模型。
-        known = {model.model_name for model in get_models(session_id, allow_refresh=False)}
+        models = (get_models(session_id, allow_refresh=False) if service is None
+                  else get_models(session_id, allow_refresh=False, service=service))
+        known = {model.model_name for model in models}
     except Exception:  # noqa: BLE001 — 目录读不到就当作不是登录模型
         logger.debug("[ModelAuth] 读取登录模型目录失败", exc_info=True)
         return False
     return model_name in known or bare_model_name(model_name) in known
 
 
-def expired_login_session(params: dict[str, Any], session_id: str | None):
+def expired_login_session(
+    params: dict[str, Any], session_id: str | None, *, service: AuthService | None = None,
+):
     """这次请求要用登录模型、而调用方的凭据**已经过期**时返回该会话，否则 ``None``。
 
     转发热路径平时不同步续期（:meth:`AuthService.ensure_fresh` 的 ``blocking=False``）：
@@ -148,9 +166,9 @@ def expired_login_session(params: dict[str, Any], session_id: str | None):
 
     model_name = str(params.get("model_name") or "").strip()
     # 先判模型：自配模型的请求不碰会话存储，开销和改动前一样
-    if not model_name or not session_id or not _is_login_model(model_name, session_id):
+    if not model_name or not session_id or not _is_login_model(model_name, session_id, service=service):
         return None
-    session = get_auth_service().resolve_session(session_id)
+    session = (service if service is not None else get_auth_service()).resolve_session(session_id)
     if session is None or not session.credential.is_expired():
         return None
     return session
