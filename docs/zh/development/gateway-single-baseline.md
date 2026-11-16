@@ -51,6 +51,18 @@ GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名�
 测试包括 `test_protocol_runtime_import_contract.py`、`test_tui_request_correlation.py`、
 `test_tui_lifecycle_routing.py` 与原 `test_app_gateway_acp.py` 兼容测试。
 
+## P2-D：可选渠道生命周期
+
+`application/optional_channels.py::OptionalChannels` 拥有 IM、SSH、A2A、Web Proxy 配置、
+实例和任务。旧入口显式传入依赖，保留 SDK 延迟导入、单渠道失败隔离及 revision 感知重试。
+退出分三段：配置/重试任务、A2A、TUI/Web 后的其他渠道；等待后台取消任务结束。
+预热仍属于 host，WebChannel.stop 仍拥有 Web Proxy 清理。
+
+`test_optional_channels_lifecycle.py` 验证资源归属、重试与清理。
+`test_gateway_optional_channels_lifecycle.py` 通过真实进程验证装配抽取前后的 host 启停边界。
+AgentOS Web Proxy 使用当前 runtime Cron 配置 helper，测试不再替换缺失的导入。
+真实账号、SDK 和冻结包仍需单独验收。
+
 ## 验证与回退
 
 使用每个 worktree 独立的新 `.venv` 和 develop 未修改的锁文件。先记录基线，再验证每个

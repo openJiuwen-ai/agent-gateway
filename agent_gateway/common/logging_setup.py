@@ -289,6 +289,7 @@ def _reconfigure_stdio_utf8() -> None:
 
 _GATEWAY_LOGGING_CONFIGURED_ATTR = "_gateway_logging_configured"
 _EXPLICIT_LOG_DIRECTORY_ATTR = "_agent_gateway_explicit_log_directory"
+_CONFIGURED_LOG_DIRECTORY_ATTR = "_agent_gateway_configured_log_directory"
 
 
 def _is_gateway_logging_configured(target: logging.Logger) -> bool:
@@ -318,14 +319,21 @@ def setup_gateway_logger(
     if log_directory is not None:
         requested_directory = log_directory.resolve()
         configured_directory = getattr(root, _EXPLICIT_LOG_DIRECTORY_ATTR, None)
+        if configured_directory is None:
+            configured_directory = getattr(root, _CONFIGURED_LOG_DIRECTORY_ATTR, None)
         if configured_directory is not None:
             if configured_directory == requested_directory:
                 return root
             raise RuntimeError(
-                f"gateway logging already configured with log directory {configured_directory}"
+                "gateway logging already configured with log directory "
+                f"{configured_directory}; requested log directory {requested_directory}"
             )
         if _is_gateway_logging_configured(root):
-            raise RuntimeError("gateway logging already configured; explicit log directory is not allowed")
+            raise RuntimeError(
+                f"gateway logging already configured with log directory "
+                f"{configured_directory or 'managed by the parent process'}; "
+                f"requested log directory {requested_directory}"
+            )
     else:
         if _is_gateway_logging_configured(root):
             return root
@@ -410,6 +418,7 @@ def setup_gateway_logger(
     root.addHandler(stream_handler)
 
     install_source_record_masking()
+    setattr(root, _CONFIGURED_LOG_DIRECTORY_ATTR, logs_root.resolve())
     if log_directory is not None:
         setattr(root, _EXPLICIT_LOG_DIRECTORY_ATTR, requested_directory)
     _mark_gateway_logging_configured(root)

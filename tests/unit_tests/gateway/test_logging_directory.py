@@ -23,6 +23,7 @@ _EXPECTED_LOG_FILES = {
 }
 _CONFIGURED_ATTR = logging_setup._GATEWAY_LOGGING_CONFIGURED_ATTR
 _EXPLICIT_ATTR = "_agent_gateway_explicit_log_directory"
+_LOG_DIRECTORY_ATTR = "_agent_gateway_configured_log_directory"
 _MISSING = object()
 
 
@@ -44,12 +45,13 @@ def isolated_global_logger_state(monkeypatch, caplog):
             "disabled": logger.disabled,
             _CONFIGURED_ATTR: getattr(logger, _CONFIGURED_ATTR, _MISSING),
             _EXPLICIT_ATTR: getattr(logger, _EXPLICIT_ATTR, _MISSING),
+            _LOG_DIRECTORY_ATTR: getattr(logger, _LOG_DIRECTORY_ATTR, _MISSING),
         }
         logger.handlers = []
         logger.level = logging.INFO
         logger.propagate = False
         logger.disabled = False
-        for attr in (_CONFIGURED_ATTR, _EXPLICIT_ATTR):
+        for attr in (_CONFIGURED_ATTR, _EXPLICIT_ATTR, _LOG_DIRECTORY_ATTR):
             if hasattr(logger, attr):
                 delattr(logger, attr)
 
@@ -65,7 +67,7 @@ def isolated_global_logger_state(monkeypatch, caplog):
         logger.level = state["level"]
         logger.propagate = state["propagate"]
         logger.disabled = state["disabled"]
-        for attr in (_CONFIGURED_ATTR, _EXPLICIT_ATTR):
+        for attr in (_CONFIGURED_ATTR, _EXPLICIT_ATTR, _LOG_DIRECTORY_ATTR):
             value = state[attr]
             if value is _MISSING:
                 if hasattr(logger, attr):
@@ -201,8 +203,12 @@ def test_default_configuration_rejects_later_explicit_directory(tmp_path, monkey
     _patch_default_paths(monkeypatch, logs_root, None)
     logging_setup.setup_gateway_logger()
 
-    with pytest.raises(RuntimeError, match="already configured"):
+    with pytest.raises(RuntimeError) as error:
         logging_setup.setup_gateway_logger(log_directory=explicit_dir)
+    message = str(error.value)
+    assert "already configured" in message
+    assert str(logs_root.resolve()) in message
+    assert str(explicit_dir.resolve()) in message
 
 
 def test_explicit_directory_same_reuse_and_different_directory_rejected(tmp_path, monkeypatch):
@@ -218,8 +224,12 @@ def test_explicit_directory_same_reuse_and_different_directory_rejected(tmp_path
     assert logging_setup.setup_gateway_logger() is root
     assert _file_paths(root) == first_paths
 
-    with pytest.raises(RuntimeError, match="already configured"):
+    with pytest.raises(RuntimeError) as error:
         logging_setup.setup_gateway_logger(log_directory=second_dir)
+    message = str(error.value)
+    assert "already configured" in message
+    assert str(first_dir.resolve()) in message
+    assert str(second_dir.resolve()) in message
 
     assert not second_dir.exists()
 

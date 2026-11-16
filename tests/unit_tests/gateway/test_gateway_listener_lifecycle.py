@@ -163,6 +163,16 @@ async def test_web_app_construction_failure_wakes_ready_waiter() -> None:
             await asyncio.gather(task, ready, return_exceptions=True)
 
 
+@pytest.mark.asyncio
+async def test_web_wait_ready_fails_for_disabled_or_unstarted_channel() -> None:
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+
+    disabled = WebChannel(WebChannelConfig(enabled=False), RobotMessageRouter())
+    await disabled.start()
+    with pytest.raises(RuntimeError, match="disabled"):
+        await asyncio.wait_for(disabled.wait_ready(), 0.1)
+
+
 async def test_gateway_server_start_returns_and_closes_active_tui_connection() -> None:
     from agent_gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
 

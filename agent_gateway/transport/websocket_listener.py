@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+
+_STOP_TIMEOUT_SECONDS = 5.0
+_CANCEL_TIMEOUT_SECONDS = 1.0
+_logger = logging.getLogger("gateway")
 
 
 class WebSocketListener:
@@ -81,7 +87,28 @@ class WebSocketListener:
             return
         if self._server is not None:
             self._server.close()
-        await self._closed.wait()
+        try:
+            await asyncio.wait_for(asyncio.shield(run_task), _STOP_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            if not run_task.cancelled():
+                raise
+        except TimeoutError:
+            self._log_stop_timeout(run_task)
+            run_task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(run_task), _CANCEL_TIMEOUT_SECONDS)
+            except asyncio.CancelledError:
+                if not run_task.cancelled():
+                    raise
+            except TimeoutError:
+                _logger.warning(
+                    "[App] WebSocket listener did not finish after cancellation; "
+                    "abandoning listener task"
+                )
+            except BaseException:
+                pass
+        except BaseException:
+            pass
 
     async def _run(self) -> None:
         try:
@@ -131,9 +158,22 @@ class WebSocketListener:
         if server is not None:
             try:
                 server.close()
-                await server.wait_closed()
+                await asyncio.wait_for(server.wait_closed(), _STOP_TIMEOUT_SECONDS)
             except Exception:
                 pass
+
+    def _log_stop_timeout(self, run_task: asyncio.Task[None]) -> None:
+        stack = "".join(
+            f"  {frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}\n"
+            for frame in run_task.get_stack(limit=20)
+        )
+        _logger.warning(
+            "[App] WebSocket listener stop timed out after %.2fs; "
+            "cancelling listener task (bound_addresses=%s)\n%s",
+            _STOP_TIMEOUT_SECONDS,
+            self._bound_addresses,
+            stack.rstrip(),
+        )
 
     def _finish(self, run_task: asyncio.Task[None]) -> None:
         try:

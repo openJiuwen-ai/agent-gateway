@@ -978,6 +978,8 @@ class WebChannel(BaseWsChannel):
             return
         if not self.config.enabled:
             logger.warning("WebChannel 未启用（enabled=False）")
+            self._listener_start_error = RuntimeError("WebChannel is disabled")
+            self._listener_available.set()
             return
 
         self._starting = True
@@ -1002,6 +1004,10 @@ class WebChannel(BaseWsChannel):
 
     async def wait_ready(self) -> None:
         """Wait for the current listener or propagate its startup failure."""
+        if self._running:
+            if self._listener is None:
+                raise RuntimeError("WebChannel stopped before becoming ready")
+            return
         await self._listener_available.wait()
         if self._listener_start_error is not None:
             raise self._listener_start_error

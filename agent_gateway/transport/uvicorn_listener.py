@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from collections.abc import Iterator
+import logging
 import socket
 
 from starlette.types import ASGIApp
@@ -12,6 +13,9 @@ import uvicorn
 
 
 _GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_STOP_TIMEOUT_SECONDS = _GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS + 1.0
+_CANCEL_TIMEOUT_SECONDS = 1.0
+_logger = logging.getLogger("gateway")
 
 
 class _EmbeddedServer(uvicorn.Server):
@@ -101,14 +105,50 @@ class UvicornListener:
         try:
             if task is not None:
                 try:
-                    await asyncio.shield(task)
+                    await asyncio.wait_for(asyncio.shield(task), _STOP_TIMEOUT_SECONDS)
                 except asyncio.CancelledError:
                     if not task.cancelled():
                         raise
+                except TimeoutError:
+                    self._log_stop_timeout(task)
+                    self._close_bound_sockets()
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), _CANCEL_TIMEOUT_SECONDS)
+                    except asyncio.CancelledError:
+                        if not task.cancelled():
+                            raise
+                    except TimeoutError:
+                        _logger.warning(
+                            "[App] Uvicorn listener did not finish after cancellation; "
+                            "abandoning listener task"
+                        )
+                    except BaseException:
+                        pass
                 except BaseException:
                     pass
         finally:
             self._ready.set()
+
+    def _close_bound_sockets(self) -> None:
+        server = self._server
+        if server is None:
+            return
+        for bound_server in server.servers or ():
+            bound_server.close()
+
+    def _log_stop_timeout(self, task: asyncio.Task[None]) -> None:
+        stack = "".join(
+            f"  {frame.f_code.co_filename}:{frame.f_lineno} in {frame.f_code.co_name}\n"
+            for frame in task.get_stack(limit=20)
+        )
+        _logger.warning(
+            "[App] Uvicorn listener stop timed out after %.2fs; "
+            "cancelling listener task (bound_addresses=%s)\n%s",
+            _STOP_TIMEOUT_SECONDS,
+            self.bound_addresses,
+            stack.rstrip(),
+        )
 
     async def _serve(self) -> None:
         try:
