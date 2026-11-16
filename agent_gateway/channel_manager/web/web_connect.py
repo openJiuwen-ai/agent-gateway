@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -249,6 +250,8 @@ class WebChannel(BaseWsChannel):
         # 未登记时，原连接已断开的事件落到 session 桶，投给重连后的新连接。
         # turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
+        # Bounded, connection-independent hints; Host remains authorization authority.
+        self._a4p_request_routes: OrderedDict[tuple[str, str, str, str], RoutingKey] = OrderedDict()
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -1275,6 +1278,7 @@ class WebChannel(BaseWsChannel):
         V2: 当 routing_target 非空时，按其 routing_keys 精确路由（_clients_by_key）。
         否则回退到全量广播（向后兼容）。
         """
+        self._remember_a4p_route(msg)
         _pl = getattr(msg, "payload", None) or {}
         _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
         _has_fanout = bool((getattr(msg, "metadata", None) or {}).get("fan_out_targets"))
@@ -1606,6 +1610,51 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    def _remember_a4p_route(self, msg: Message) -> None:
+        """Remember only Host-provided request identity, never client parameters."""
+        if self._resolve_event_name(msg) != "a4p.authorization_request":
+            return
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        request_id = payload.get("requestId")
+        ref = getattr(msg, "agent_ref", None)
+        if isinstance(ref, dict):
+            mode, agent_id = ref.get("mode"), ref.get("id")
+        else:
+            mode, agent_id = getattr(ref, "mode", None), getattr(ref, "id", None)
+        app_id = getattr(msg, "app_id", None)
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        user_id = getattr(msg, "user_id", None) or metadata.get("user_id")
+        if not user_id:
+            source_ws = self._ws_by_id.get(metadata.get("ws_id"))
+            if source_ws is not None:
+                user_id = self._routing_key_user_id(
+                    self._connection_user_id(source_ws),
+                    getattr(source_ws, "remote_address", None),
+                )
+        if not all(isinstance(value, str) and value for value in
+                   (request_id, mode, agent_id, app_id, user_id, msg.session_id)):
+            return
+        key = (user_id, app_id, msg.session_id, request_id)
+        self._a4p_request_routes[key] = RoutingKey(
+            user_id=user_id, channel_id=self.channel_id, app_id=app_id,
+            session_id=msg.session_id, agent_ref=AgentRef(mode=mode, id=agent_id),
+        )
+        self._a4p_request_routes.move_to_end(key)
+        while len(self._a4p_request_routes) > 4096:
+            self._a4p_request_routes.popitem(last=False)
+
+    def a4p_request_route(
+        self, routes: list[RoutingKey], request_id: str,
+    ) -> RoutingKey | None:
+        """Scope hints to identities already registered on this connection."""
+        matches: set[RoutingKey] = set()
+        for route in routes:
+            key = (route.user_id, route.app_id, route.session_id, request_id)
+            cached = self._a4p_request_routes.get(key)
+            if cached is not None:
+                matches.add(cached)
+        return next(iter(matches)) if len(matches) == 1 else None
 
     def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
         """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
@@ -2289,7 +2338,7 @@ class WebChannel(BaseWsChannel):
         _agent_id = params.get("agent_id", "default")
         _app_id = _flat_query.get("app_id", "default")
         req_user_id = self._connection_user_id(ws)
-        if has_explicit_session:
+        if has_explicit_session and not method.startswith("a4p."):
             _rk = RoutingKey(
                 user_id=self._routing_key_user_id(req_user_id, getattr(ws, "remote_address", None)),
                 channel_id=self.channel_id,
