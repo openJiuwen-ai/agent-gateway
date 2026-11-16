@@ -71,3 +71,24 @@ P1 没有存储格式变更。回退按依赖顺序撤回入口接线与 helper�
 
 代码合入、显式启用多进程和切换默认是三个独立门禁。P0/P1 完成不表示多进程业务或容量已经验收。
 
+## P2-B：19001 协议运行时提取
+
+`ProtocolRuntime`、`ProtocolRuntimeConfig`、`RouteConfig` 及直接协议辅助逻辑现在定义在
+`agent_gateway.routing.protocol_runtime`。旧 `agent_gateway.app_gateway` 继续导出同一份类，
+不是另建一套协议实现。原请求/会话/连接索引、ACP bridge 与空闲收尾、TUI 注册/注销、
+ACK 和消息循环仍属于该协议对象；监听继续委托 P2-A 的 `WebSocketListener`。
+
+仅导入新协议模块不运行旧入口、不准备工作区、不解析 CLI dotenv、不绑定端口或启动 Auth/Cron。
+为隔离既有 ACP CLI 的导入副作用，渠道包的 `AcpChannel`、`AcpChannelConfig` 改为按需导出；
+原包级导入用法保留。旧应用入口仍在原环境准备阶段后加载 ACP。私有 idle 常量的测试 patch
+应定位实际定义模块，不能修改旧入口别名并期待新模块全局变量变化。
+
+新导入契约及真实随机端口测试位于 `tests/unit_tests/gateway/test_protocol_runtime_import_contract.py`；
+原 `test_app_gateway_acp.py` 继续从旧入口导入，验证消费者兼容。安装包需在源码目录外验证实际
+site-packages 来源。ST 应设置 `ST_GATEWAY_CONFIG_SRC` 指向仓内配置模板，避免宿主配置回退。
+
+本批仍是默认 single，不实现用户亲和、fd 交接或 Worker 池，不改变 HTTP 策略、登录和 Cron 归属。
+
+旧 `GatewayServer` / `GatewayServerConfig` 名称在 `app_gateway` 和
+`routing.gateway_server` 中仅作为兼容别名保留，与新类为同一对象；内部装配使用新名称。
+

@@ -64,3 +64,29 @@ P1 changes no storage schema. Revert entrypoint wiring and helpers in reverse de
 
 Merging code, enabling multiprocess mode and changing the default remain separate gates. P0/P1 validation does not establish multiprocess business correctness or capacity.
 
+## P2-B: extracting the 19001 protocol runtime
+
+`ProtocolRuntime`, `ProtocolRuntimeConfig`, `RouteConfig`, and their direct protocol helpers now live in
+`agent_gateway.routing.protocol_runtime`. The old `agent_gateway.app_gateway` path re-exports the same
+classes, not a second implementation. Request/session/client indexes, the ACP bridge and idle finalization,
+TUI registration/unregistration, ACKs, and message handling remain in the protocol object. The P2-A
+`WebSocketListener` still owns its listener lifecycle.
+
+Importing the new runtime does not run the application entrypoint, prepare a workspace, parse CLI dotenv,
+bind ports, or start Auth/Cron. The channel package loads `AcpChannel` and `AcpChannelConfig` exports on
+demand to isolate the existing ACP CLI import side effect; package-level imports remain supported. The old
+application still imports ACP after its original environment preparation stage. Tests patching the private idle
+constant must target the actual defining module rather than an unrelated entrypoint alias.
+
+`tests/unit_tests/gateway/test_protocol_runtime_import_contract.py` checks import compatibility and real random-port
+protocol behavior. The original ACP tests retain legacy imports. Validate wheels outside the source directory and
+check their site-packages provenance. Set `ST_GATEWAY_CONFIG_SRC` to the repository configuration template for ST
+instead of falling back to host configuration.
+
+This batch retains default single mode. It does not implement affinity, fd handoff, or a Worker pool, and does not
+change HTTP policy or login/Cron ownership.
+
+The old `GatewayServer` / `GatewayServerConfig` names remain compatibility aliases in
+`app_gateway` and `routing.gateway_server`; they reference the same classes, not wrappers.
+Internal assembly uses the canonical names.
+
