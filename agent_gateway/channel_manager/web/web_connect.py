@@ -40,6 +40,7 @@ from agent_gateway.enterprise.capabilities.skill_upload.guard import (
     schedule_pending_install_result,
 )
 from agent_gateway.common.paths import get_logs_dir
+from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
@@ -2731,10 +2732,7 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _parse_req_method(method: str) -> ReqMethod | None:
-        for item in ReqMethod:
-            if item.value == method:
-                return item
-        return None
+        return parse_request_method(method)
 
     # Public aliases for HTTP dispatch (G.CLS.11).
     parse_req_method = _parse_req_method

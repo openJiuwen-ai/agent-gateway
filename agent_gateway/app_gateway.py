@@ -49,7 +49,8 @@ from e2a.message import (
     Mode,
 )
 from agent_gateway.common.protocol_methods import ReqMethod
-from websockets.exceptions import ConnectionClosedError
+from agent_gateway.common.request_method import parse_request_method
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
@@ -2002,11 +2003,7 @@ class GatewayServer(BaseWebChannel):
 
         # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
         if method in route.forward_methods:
-            req_method = None
-            for item in ReqMethod:
-                if item.value == method:
-                    req_method = item
-                    break
+            req_method = parse_request_method(method)
 
             if req_method is None:
                 await ws.send(
