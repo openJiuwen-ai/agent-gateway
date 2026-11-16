@@ -105,16 +105,6 @@ def format_tool_call_message(payload: dict[str, Any]) -> str:
     return f"[{tool_name}] 调用中...\n{args_str}".strip()
 
 
-def format_tool_result_message(payload: dict[str, Any]) -> str:
-    tool_name = str(payload.get("tool_name") or payload.get("name") or "工具结果")
-    result = payload.get("result")
-    if isinstance(result, (dict, list)):
-        result_str = json.dumps(result, ensure_ascii=False)
-    else:
-        result_str = str(result or "")
-    return f"[{tool_name}] 结果\n{result_str}".strip()
-
-
 class WechatConfig(BaseModel):
     """个人微信（ClawBot iLink Bot API）通道配置。"""
 
