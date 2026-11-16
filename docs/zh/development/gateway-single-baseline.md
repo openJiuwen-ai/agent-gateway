@@ -92,3 +92,17 @@ site-packages 来源。ST 应设置 `ST_GATEWAY_CONFIG_SRC` 指向仓内配置�
 旧 `GatewayServer` / `GatewayServerConfig` 名称在 `app_gateway` 和
 `routing.gateway_server` 中仅作为兼容别名保留，与新类为同一对象；内部装配使用新名称。
 
+## P2-C：Single 装配边界
+
+`app_gateway._run()`委托`application/single.py`，显式传入配置保存factory、重启动作、消息预处理回调和启动时间信息。`main()`、CLI、环境初始化、组锁和信号入口不变。新模块不反向导入旧入口，也不在导入时创建运行服务。
+
+- `application/services.py`创建同一组南向client、MessageHandler、ChannelManager及原Cron/健康检查等引用，保留扩展选型、企业存储注入和provider绑定。
+- `application/web.py`创建原WebChannel，安装原handler、插件、git watcher、推荐推送及首次Web请求门闩，不绑定监听。
+- `application/tui_acp.py`在Web优先就绪之后创建TuiChannel、ACP入站队列和唯一ProtocolRuntime；保留TUI出站委托，client订阅发生在Web/TUI注册之后。
+- `application/single.py`协调原阶段和退出；可选渠道旧配置、重试和生命周期闭包暂留此处，P2-D尚未实施。
+- `application/inbound.py`、`connection.py`、`configuration.py`保存原消息预处理、重试/就绪及配置加载helper。旧helper保留兼容导出，私有模块变量需patch真实定义位置。
+
+原配置保存`_on_config_saved`仍在旧入口源码中，供已有消费者与后续管理接口分批迁移；不是新建Control服务。Web实际监听后才启动CM dispatch和Cron，再保留原让步阶段并装配TUI/ACP。仍默认single，没有Worker池、fd交接或HTTP连接策略变化。
+
+装配契约测试：`tests/unit_tests/gateway/test_application_assembly_contract.py`。包含冷导入、旧入口显式委托、Web启动顺序/绑定失败、单份服务接线、企业存储顺序、客户端选型、TUI订阅顺序、Web首次请求门闩及服务退出顺序。正常停启不代表任意早期启动失败均有事务式清理。
+

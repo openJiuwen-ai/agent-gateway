@@ -90,3 +90,17 @@ The old `GatewayServer` / `GatewayServerConfig` names remain compatibility alias
 `app_gateway` and `routing.gateway_server`; they reference the same classes, not wrappers.
 Internal assembly uses the canonical names.
 
+## P2-C: single-process composition boundaries
+
+`app_gateway._run()` delegates to `application/single.py` with explicit configuration-save, restart, preprocessing, and startup-timing inputs. The existing CLI, environment preparation, workspace lock, signal entrypoint, and default single mode remain unchanged. Application modules do not import the legacy entrypoint or construct live services at import time.
+
+- `application/services.py` assembles one original client, MessageHandler, ChannelManager, Cron and related service graph, retaining extension selection, enterprise storage ordering and provider binding.
+- `application/web.py` wires the original WebChannel, handlers, plugins, Git watcher, recommendation callbacks and first-request gate without binding a listener.
+- `application/tui_acp.py` wires TuiChannel, the original ACP inbound queue and one ProtocolRuntime after Web readiness. TUI outbound delegation is unchanged; the client subscribes only after Web/TUI registration.
+- `application/single.py` coordinates the original stages and shutdown. Existing optional-channel configuration/retry/lifecycle closures remain here temporarily; P2-D is not implemented.
+- `application/inbound.py`, `connection.py` and `configuration.py` own existing preprocessing, connection/readiness and configuration helpers. Legacy helper imports remain compatible; private module globals must be patched at their defining module.
+
+The original `_on_config_saved` body remains discoverable in the legacy entrypoint and is passed through a callback factory, not a new Control service. Web binds before dispatch/Cron startup, followed by the existing yield and TUI/ACP setup. No Worker pool, fd handoff or HTTP connection-policy change is enabled.
+
+`tests/unit_tests/gateway/test_application_assembly_contract.py` covers cold imports, explicit delegation, Web stage order/bind failure, single service instances, enterprise storage order, client selection, TUI subscription order, Web first-request gating and service shutdown. Normal shutdown does not imply transactional cleanup for every early startup failure.
+
