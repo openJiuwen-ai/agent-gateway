@@ -787,34 +787,25 @@ class XiaoyiChannel(BaseChannel):
             append = False
             last_chunk = True
             final = not hold_team_task
+            # 非流式：payload 即完整消息，没有需要续接的历史片段
+            previous_text = ""
         else:
-            # 流式模式：按事件类型计算增量与是否结束
-            is_delta = msg.event_type == EventType.CHAT_DELTA
+            # 流式模式：按事件类型计算是否结束
             last_chunk = msg.event_type == EventType.CHAT_FINAL
             is_final = msg.payload.get("is_complete", False)
             last_chunk = True if is_final else last_chunk
 
-            # 获取之前发送的文本
-            previous_text = self._accumulated_texts.get(session_id, "")
-
-            # 累积当前文本
-            self._accumulated_texts[session_id] = content
-
-            # 计算增量文本
-            if is_delta:
-                incremental_text = content[len(previous_text):]
-            else:
-                incremental_text = content
-
             # 在消息流中，总是使用 append=true, isFinal=false
             append = True
-            final = False
-            last_chunk = last_chunk
             final = bool(is_final and not hold_team_task)
 
-        # Get accumulated text for this session (for push notification)
-        accumulated_text = self._accumulated_texts.get(session_id, "")
-        self._accumulated_texts[session_id] = content
+            # 取上一段已发送的文本，必须在写回累积值之前读取
+            previous_text = self._accumulated_texts.get(session_id, "")
+
+        # payload.content 是本次的文本片段（与 _send_team、飞书 _cardkit_buffers
+        # 的增量拼接语义一致），按片段累积，供后台任务完成推送取摘要使用。
+        accumulated_text = previous_text + content if append else content
+        self._accumulated_texts[session_id] = accumulated_text
 
         # Send to all active connections
         for url_key, ws in self._ws_connections.items():
