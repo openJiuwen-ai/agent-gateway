@@ -6549,13 +6549,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
+        # Only the connection identity in envelope.user_id is authoritative.
+        forwarded_params = dict(params) if isinstance(params, dict) else {}
+        forwarded_params.pop("user_id", None)
         env = e2a_from_agent_fields(
             request_id=str(req_id) if req_id else "",
             channel_id="web",
             user_id=user_id,
             session_id=session_id,
             req_method=req_method,
-            params=dict(params) if isinstance(params, dict) else {},
+            params=forwarded_params,
             metadata=route_metadata,
         )
         authorize_completion = req_method in {
