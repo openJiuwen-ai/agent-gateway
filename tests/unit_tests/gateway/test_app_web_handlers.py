@@ -325,14 +325,24 @@ async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
     _bind(channel, agent_client=agent_client)
     ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
 
+    params = {
+        "requestId": "intent-1",
+        "user_id": "untrusted",
+        "agent_ref": {"mode": "agent", "id": "untrusted"},
+    }
+    original_params = dict(params)
     await channel.methods[method](
         ws,
         "rpc-1",
-        {"requestId": "intent-1", "user_id": "untrusted", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        params,
         "session-1",
         user_id=user_id,
     )
 
+    assert params == original_params
+    assert agent_client.envelope.params == {
+        key: value for key, value in original_params.items() if key != "user_id"
+    }
     assert agent_client.envelope.user_id == user_id
     assert channel.responses[-1]["ok"] is True
     assert agent_client.envelope.channel_context == {
