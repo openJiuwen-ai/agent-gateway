@@ -7,6 +7,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..core.application_config.a2ui_config import A2UIConfigService
 from ..core.application_config.advanced_config import AdvancedConfigService
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
@@ -15,6 +16,7 @@ from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
 from ..core.application_config.task_memory_config import TaskMemoryConfigService
 from ..schemas.application_config_schemas import (
+    A2UIConfigUpsertRequest,
     AdvancedConfigUpsertRequest,
     AuditLogUpsertRequest,
     CronPolicyUpsertRequest,
@@ -44,6 +46,7 @@ CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertReques
 AdvancedConfigSyncBody = make_sync_body(
     "AdvancedConfigSyncBody", AdvancedConfigUpsertRequest
 )
+A2UIConfigSyncBody = make_sync_body("A2UIConfigSyncBody", A2UIConfigUpsertRequest)
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
 )
@@ -208,6 +211,35 @@ async def delete_advanced_config(
 ):
     try:
         await AdvancedConfigService().delete(agent_template_id)
+    except ValueError as exc:
+        detail = str(exc)
+        status = 404 if "not found" in detail else 400
+        raise HTTPException(status_code=status, detail=detail) from exc
+    trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put("/a2ui-config", response_model=ResponseModel)
+async def upsert_a2ui_config(
+    sync: Annotated[SyncContext, Depends(verify_sync(A2UIConfigSyncBody))],
+):
+    try:
+        result = await A2UIConfigService().upsert(sync.business)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    trigger_runtime_config_update()
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
+
+
+@application_config_router.delete(
+    "/a2ui-config/{agent_template_id}", response_model=ResponseModel
+)
+async def delete_a2ui_config(
+    agent_template_id: str,
+    sync: VerifySyncEnvelopeOnly,
+):
+    try:
+        await A2UIConfigService().delete(agent_template_id)
     except ValueError as exc:
         detail = str(exc)
         status = 404 if "not found" in detail else 400
