@@ -88,7 +88,10 @@ def test_unsampled_context_still_propagates():
     with telemetry.bind_request_trace(operation):
         envelope = SimpleNamespace(request_id="r", channel_context={})
         telemetry.inject_request_trace(envelope)
-    assert envelope.traceparent.endswith("-00")
+    assert envelope.traceparent is not None
+    # otel >= 1.45 marks locally generated root trace ids with the W3C
+    # random-trace-id flag (0x02); only the sampled bit (0x01) may be asserted.
+    assert int(envelope.traceparent.rsplit("-", 1)[1], 16) & 0x01 == 0
     assert envelope.channel_context == {}
     provider.shutdown()
 
