@@ -1625,15 +1625,44 @@ class WebChannel(BaseWsChannel):
         app_id = getattr(msg, "app_id", None)
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         user_id = getattr(msg, "user_id", None) or metadata.get("user_id")
-        if not user_id:
-            source_ws = self._ws_by_id.get(metadata.get("ws_id"))
-            if source_ws is not None:
-                user_id = self._routing_key_user_id(
-                    self._connection_user_id(source_ws),
-                    getattr(source_ws, "remote_address", None),
+        source_ws = self._ws_by_id.get(metadata.get("ws_id"))
+        if not user_id and source_ws is not None:
+            user_id = self._routing_key_user_id(
+                self._connection_user_id(source_ws),
+                getattr(source_ws, "remote_address", None),
+            )
+        # A physical connection can carry several logical identities. Fill only
+        # missing fields, and only when all known fields select a unique route.
+        if not all((app_id, mode, agent_id)) and source_ws is not None:
+            candidates = {
+                rk for rk, clients in self._clients_by_key.items()
+                if source_ws in clients and rk.session_id == msg.session_id
+                and rk.agent_ref is not None
+                and (not user_id or rk.user_id == user_id)
+                and (not app_id or rk.app_id == app_id)
+                and (not mode or rk.agent_ref.mode == mode)
+                and (not agent_id or rk.agent_ref.id == agent_id)
+            }
+            if len(candidates) == 1:
+                original = next(iter(candidates))
+                app_id = app_id or original.app_id
+                mode = mode or original.agent_ref.mode
+                agent_id = agent_id or original.agent_ref.id
+            else:
+                logger.debug(
+                    "[a4p] route hint skipped requestId=%s session=%s: source candidates=%d",
+                    request_id, msg.session_id, len(candidates),
                 )
-        if not all(isinstance(value, str) and value for value in
-                   (request_id, mode, agent_id, app_id, user_id, msg.session_id)):
+                return
+        fields = dict(requestId=request_id, mode=mode, agent_id=agent_id,
+                      app_id=app_id, user_id=user_id, session_id=msg.session_id)
+        missing = [name for name, value in fields.items()
+                   if not isinstance(value, str) or not value]
+        if missing:
+            logger.debug(
+                "[a4p] route hint skipped requestId=%s session=%s: missing=%s",
+                request_id, msg.session_id, ",".join(missing),
+            )
             return
         key = (user_id, app_id, msg.session_id, request_id)
         self._a4p_request_routes[key] = RoutingKey(
@@ -1646,8 +1675,18 @@ class WebChannel(BaseWsChannel):
 
     def a4p_request_route(
         self, routes: list[RoutingKey], request_id: str,
+        *, ws: Any = None, session_id: str | None = None,
     ) -> RoutingKey | None:
-        """Scope hints to identities already registered on this connection."""
+        """Resolve a hint within the connection's user/app/session scope."""
+        if ws is not None:
+            user_id = self.connection_user_id(ws)
+            app_id = getattr(ws, "_jiuwen_app_id", None)
+            if user_id and app_id and session_id:
+                cached = self._a4p_request_routes.get(
+                    (user_id, app_id, session_id, request_id)
+                )
+                if cached is not None:
+                    return cached
         matches: set[RoutingKey] = set()
         for route in routes:
             key = (route.user_id, route.app_id, route.session_id, request_id)

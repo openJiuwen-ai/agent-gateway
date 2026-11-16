@@ -6485,7 +6485,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             request_id = params.get("requestId") if isinstance(params, dict) else None
             resolver = getattr(channel, "a4p_request_route", None)
             if resolver is not None and isinstance(request_id, str):
-                route = resolver(routes, request_id)
+                route = resolver(routes, request_id, ws=ws, session_id=session_id)
             if route is None and len(routes) == 1:
                 route = routes[0]
             if route is None and len(routes) > 1:
