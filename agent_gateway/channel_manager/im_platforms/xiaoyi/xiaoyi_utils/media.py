@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -50,32 +49,6 @@ class MediaFile:
 
 
 # ==================== MIME Type Detection ====================
-def is_image_mime_type(mime_type: str | None) -> bool:
-    """检查 MIME 类型是否为图片."""
-    if not mime_type:
-        return False
-
-    lower = mime_type.lower()
-
-    # 标准格式: image/jpeg, image/png 等
-    if lower.startswith("image/"):
-        return True
-
-    # 处理非标准格式，如 "jpeg" 而非 "image/jpeg"
-    if "/" in lower:
-        subtype = lower.split("/")[1]
-    else:
-        subtype = lower
-
-    image_subtypes = ["jpeg", "jpg", "png", "gif", "webp", "bmp", "svg+xml", "svg"]
-    return subtype in image_subtypes
-
-
-def is_pdf_mime_type(mime_type: str | None) -> bool:
-    """检查 MIME 类型是否为 PDF."""
-    return (mime_type or "").lower() == "application/pdf"
-
-
 def is_text_mime_type(mime_type: str | None) -> bool:
     """检查 MIME 类型是否为文本类型."""
     if not mime_type:
@@ -269,49 +242,6 @@ def build_xiaoyi_media_payload(media_list: list[DownloadedMedia]) -> dict[str, A
 
     files = [dict(path=str(media.path), type=media.content_type or "") for media in media_list]
     return files
-
-
-# ==================== Image Extraction ====================
-@dataclass
-class InputImageContent:
-    """用于 AI 处理的图片内容。"""
-    type: str = "image"
-    data: str = ""  # Base64 编码的图片数据
-    mime_type: str = ""
-
-
-@dataclass
-class ImageLimits:
-    """图片下载限制。"""
-    max_bytes: int = 10_000_000  # 10MB default
-    timeout_ms: int = 30_000  # 30 seconds default
-
-
-async def extract_image_from_url(url: str, limits: ImageLimits | None = None) -> InputImageContent:
-    """
-    从 URL 提取图片并返回 Base64 编码数据。
-
-    Args:
-        url: 图片 URL
-        limits: 下载限制
-
-    Returns:
-        InputImageContent: 包含 Base64 编码的图片内容
-    """
-    if limits is None:
-        limits = ImageLimits()
-
-    buffer, mime_type = await _fetch_from_url(url, limits.max_bytes, limits.timeout_ms)
-
-    # 验证是否为图片 MIME 类型
-    if not is_image_mime_type(mime_type):
-        raise ValueError(f"Unsupported image type: {mime_type}")
-
-    return InputImageContent(
-        type="image",
-        data=base64.b64encode(buffer).decode("utf-8"),
-        mime_type=mime_type,
-    )
 
 
 async def extract_text_from_url(
