@@ -15,6 +15,7 @@ from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from e2a.gateway_normalize import e2a_from_agent_fields
 from e2a.message import EventType, Message, ReqMethod
 
+from agent_gateway.auth.credential_access import CredentialAccess
 from agent_gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from agent_gateway.common.cron_events import CRON_RUN_UPDATED_EVENT, CRON_SESSION_STREAM_KEY, cron_notification_scope
@@ -176,28 +177,10 @@ def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
     拿不到凭据不在这里报错：AgentServer 对"登录模型没带凭据"有面向用户的
     ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
     """
-    from agent_gateway.auth.passthrough import refreshed_credential_for_ref
-    from agent_gateway.auth.apig import resolve_apig_config
-    from agent_gateway.auth.login_credentials import is_credential_ref
+    from agent_gateway.auth.passthrough import _model_auth_for_ref
 
     ref = str(getattr(job, "credential_ref", "") or "").strip()
-    if not ref or not is_credential_ref(ref):
-        return None
-    fresh = refreshed_credential_for_ref(ref)
-    if (
-        not isinstance(fresh, dict)
-        or fresh.get("revoked")
-        or not str(fresh.get("api_key") or "").strip()
-    ):
-        return None
-    apig_config = resolve_apig_config(allow_refresh=False)
-    if apig_config is None:
-        return None
-    return {
-        "api_base": apig_config.invoke_base_url,
-        "api_key": str(fresh["api_key"]),
-        "credential_ref": ref,
-    }
+    return _model_auth_for_ref(ref)
 
 
 def _resolve_cron_execution_context(
@@ -412,6 +395,7 @@ class CronSchedulerService:
         self._agent_client = agent_client
         self._message_handler = message_handler
         self._now_fn = now_fn
+        self._credential_access: CredentialAccess | None = None
 
         self._running = False
         self._task: asyncio.Task | None = None
@@ -444,6 +428,23 @@ class CronSchedulerService:
         # 任务编号 -> (到期时间, 还在等的会话)。人还没点完时，到点不再开一轮。
         # 三份网关同时在跑，本机这份记不住别的机器上停住的题，所以再抄一份到 Redis。
         self._permission_hold: dict[str, tuple[float, str]] = {}
+
+    def set_credential_access(self, access: CredentialAccess) -> None:
+        self._credential_access = access
+
+    async def _login_model_auth_for_bound_job(self, job: CronJob) -> dict[str, Any] | None:
+        from agent_gateway.auth.login_credentials import is_credential_ref
+
+        credential_ref = str(getattr(job, "credential_ref", "") or "").strip()
+        if not credential_ref or not is_credential_ref(credential_ref):
+            return None
+        access = self._credential_access
+        if access is None:
+            return await asyncio.to_thread(_login_model_auth_for_job, job)
+        credential = await access.model_auth_for_ref(credential_ref)
+        if credential is None:
+            return None
+        return credential.to_params()
 
     @staticmethod
     def _redis_hold_required() -> bool:
@@ -2410,9 +2411,7 @@ class CronSchedulerService:
                 # 执行——AgentServer 对"登录模型没带凭据"有 login_required
                 # 报错，任务以明确原因失败。
                 try:
-                    login_auth = await asyncio.to_thread(
-                        _login_model_auth_for_job, job
-                    )
+                    login_auth = await self._login_model_auth_for_bound_job(job)
                 except Exception:  # noqa: BLE001 — 凭据挂载失败不拦执行
                     login_auth = None
                     logger.warning(

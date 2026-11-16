@@ -23,6 +23,7 @@ from typing import Any, Mapping
 
 from agent_gateway.auth.remote_config import get_config as get_remote_config
 from agent_gateway.auth.service import (
+    AuthService,
     ModelAuthRequired,
     get_auth_service,
     resolve_id_token,
@@ -129,7 +130,7 @@ def clear_cache() -> None:
             logger.debug("[Auth] 删除 %s 失败: %s", path.name, exc)
 
 
-def discover_models(session_id: str | None = None) -> list[LoginModel]:
+def discover_models(session_id: str | None = None, *, service: AuthService | None = None) -> list[LoginModel]:
     """拿登录用户的 id_token 请求 APIG 模型列表"""
     from agent_gateway.auth.apig import ApigError, fetch_models, resolve_apig_config
 
@@ -137,7 +138,8 @@ def discover_models(session_id: str | None = None) -> list[LoginModel]:
     if config is None:
         return []
     try:
-        items = fetch_models(resolve_id_token(session_id), config)
+        token = resolve_id_token(session_id, service=service)
+        items = fetch_models(token, config)
     except ApigError as exc:
         logger.warning("[Auth] APIG 模型列表获取失败 code=%s: %s", exc.code, exc)
         return []
@@ -173,10 +175,10 @@ def _to_login_models(items: list[dict[str, Any]]) -> list[LoginModel]:
     return models
 
 
-def refresh(session_id: str | None = None) -> list[LoginModel]:
+def refresh(session_id: str | None = None, *, service: AuthService | None = None) -> list[LoginModel]:
     global _memo, _last_discovery_failure_at
     try:
-        models = discover_models(session_id)
+        models = discover_models(session_id, service=service)
     except ModelAuthRequired as error:
         # 没登录不算 APIG 失败：登录之后应该立刻能发现，不能被冷却挡住
         logger.info("[Auth] 跳过模型发现：%s（%s）", error, error.reason)
@@ -185,7 +187,8 @@ def refresh(session_id: str | None = None) -> list[LoginModel]:
         with _lock:
             _last_discovery_failure_at = time.time()
         return []
-    session = get_auth_service().resolve_session(session_id)
+    auth_service = service if service is not None else get_auth_service()
+    session = auth_service.resolve_session(session_id)
     with _lock:
         _last_discovery_failure_at = 0.0
         _write_cache(models, session.user_id if session else "")
@@ -197,7 +200,9 @@ def refresh(session_id: str | None = None) -> list[LoginModel]:
     return models
 
 
-def get_models(session_id: str | None = None, allow_refresh: bool = True) -> list[LoginModel]:
+def get_models(
+    session_id: str | None = None, allow_refresh: bool = True, *, service: AuthService | None = None,
+) -> list[LoginModel]:
     """当前可用的登录模型。缓存优先，过期后台式刷新（失败继续用旧的）。
 
     未登录时返回空列表——这个函数在很多热路径上被调用，不该抛异常。
@@ -246,7 +251,7 @@ def get_models(session_id: str | None = None, allow_refresh: bool = True) -> lis
     if cooling:
         return list(cached_models)
 
-    refreshed = refresh(session_id)
+    refreshed = refresh(session_id, service=service)
     if refreshed:
         return refreshed
     return list(cached_models)

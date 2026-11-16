@@ -33,6 +33,7 @@ from e2a.agent_models import AgentResponseChunk
 from e2a.message import Message, ReqMethod
 
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 SESSION_ID = "sess-issue-5448"
 TEAM_MODE = "team.work.normal"
@@ -86,7 +87,7 @@ class HangingClient:
 async def gateway(monkeypatch):
     monkeypatch.setattr(MessageHandler, "_instance", None)
     client = HangingClient()
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     handler._broadcast_task_global_running = AsyncMock()
     handler._trigger_before_chat_request_hook = AsyncMock()
     await handler.start_forwarding()
