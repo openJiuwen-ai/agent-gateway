@@ -57,7 +57,10 @@ from agent_gateway.common.config import (
     update_preferred_language_in_config,
     update_updater_in_config,
 )
-from agent_gateway.common.config_panel import models_handlers
+from agent_gateway.common.agent_config_cache import (
+    clear_agent_config_cache as _clear_agent_config_cache,
+)
+from agent_gateway.common.config_panel import config_set_handlers, models_handlers
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -1623,25 +1626,6 @@ def _build_optional_dependency_install_args(
         *reinstall_flags,
         *requirements,
     ]
-
-
-async def _clear_agent_config_cache(agent_client=None) -> None:
-    """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
-    try:
-        if agent_client is not None:
-            from e2a.gateway_normalize import e2a_from_agent_fields
-            from e2a.message import ReqMethod
-
-            env = e2a_from_agent_fields(
-                request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
-                channel_id="",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-            )
-            await agent_client.send_request(env)
-        else:
-            get_config()
-    except Exception:  # noqa: BLE001
-        pass
 
 
 async def _restart_agent_browser_runtime(
