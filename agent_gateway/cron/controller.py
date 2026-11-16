@@ -131,7 +131,7 @@ class CronController:
             )
 
     @property
-    def store(self) -> CronJobStore:
+    def store(self) -> CronJobStoreBackend:
         """The underlying cron job store."""
         return self._store
 

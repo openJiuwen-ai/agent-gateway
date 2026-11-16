@@ -146,6 +146,7 @@ from agent_gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
 )
 from agent_gateway.routing.route_binding import GatewayRouteBinding
+from agent_gateway.routing.session_sharing import RoutingTarget
 from agent_gateway.common.log_sanitize import mask_sensitive
 from agent_gateway.telemetry import (
     attach_message_trace,
@@ -1606,7 +1607,7 @@ class GatewayServer(BaseWebChannel):
         self._detached_tui_sessions.clear()
         logger.info("[App] Gateway server stopped")
 
-    async def send(self, msg, *, routing_target: "RoutingTarget | None" = None) -> None:
+    async def send(self, msg, *, routing_target: RoutingTarget | None = None) -> None:
         if await self._complete_tui_session_switch(msg):
             return
         # V2: 提取 agent_ref，优先 3 元组查找，2↔3 双向兜底（_lookup_client）。
@@ -3210,7 +3211,7 @@ async def _run(
 
     feishu_channel = None
     feishu_task = None
-    feishu_enterprise_channels: dict[str, FeishuChannel] = {}
+    feishu_enterprise_channels: dict[str, Any] = {}
     feishu_enterprise_tasks: dict[str, asyncio.Task] = {}
     xiaoyi_channel = None
     xiaoyi_task = None
