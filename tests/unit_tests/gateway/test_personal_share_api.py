@@ -209,7 +209,10 @@ async def test_personal_rejects_uploads_before_buffering_and_releases_capacity(c
     reader = AsyncMock(side_effect=read_upload)
     monkeypatch.setattr(api, '_read_upload', reader)
     transport = httpx.ASGITransport(app=client.app)
-    async with httpx.AsyncClient(transport=transport, base_url='http://testserver', cookies=client.cookies) as web:
+    # client.cookies belongs to the httpx2 fork used by starlette 1.x TestClient,
+    # which plain httpx cannot copy; pass a plain name/value mapping instead.
+    cookies = {cookie.name: cookie.value for cookie in client.cookies.jar}
+    async with httpx.AsyncClient(transport=transport, base_url='http://testserver', cookies=cookies) as web:
         async def upload(job):
             return await web.post(
                 f"/share-api/jobs/{job['job_id']}/browser-result?filename=share.png",
