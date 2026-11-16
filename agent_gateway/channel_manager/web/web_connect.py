@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -249,6 +250,8 @@ class WebChannel(BaseWsChannel):
         # 未登记时，原连接已断开的事件落到 session 桶，投给重连后的新连接。
         # turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
+        # Bounded, connection-independent hints; Host remains authorization authority.
+        self._a4p_request_routes: OrderedDict[tuple[str, str, str, str], RoutingKey] = OrderedDict()
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -1275,6 +1278,7 @@ class WebChannel(BaseWsChannel):
         V2: 当 routing_target 非空时，按其 routing_keys 精确路由（_clients_by_key）。
         否则回退到全量广播（向后兼容）。
         """
+        self._remember_a4p_route(msg)
         _pl = getattr(msg, "payload", None) or {}
         _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
         _has_fanout = bool((getattr(msg, "metadata", None) or {}).get("fan_out_targets"))
@@ -1606,6 +1610,90 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    def _remember_a4p_route(self, msg: Message) -> None:
+        """Remember only Host-provided request identity, never client parameters."""
+        if self._resolve_event_name(msg) != "a4p.authorization_request":
+            return
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        request_id = payload.get("requestId")
+        ref = getattr(msg, "agent_ref", None)
+        if isinstance(ref, dict):
+            mode, agent_id = ref.get("mode"), ref.get("id")
+        else:
+            mode, agent_id = getattr(ref, "mode", None), getattr(ref, "id", None)
+        app_id = getattr(msg, "app_id", None)
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        user_id = getattr(msg, "user_id", None) or metadata.get("user_id")
+        source_ws = self._ws_by_id.get(metadata.get("ws_id"))
+        if not user_id and source_ws is not None:
+            user_id = self._routing_key_user_id(
+                self._connection_user_id(source_ws),
+                getattr(source_ws, "remote_address", None),
+            )
+        # A physical connection can carry several logical identities. Fill only
+        # missing fields, and only when all known fields select a unique route.
+        if not all((app_id, mode, agent_id)) and source_ws is not None:
+            candidates = {
+                rk for rk, clients in self._clients_by_key.items()
+                if source_ws in clients and rk.session_id == msg.session_id
+                and rk.agent_ref is not None
+                and (not user_id or rk.user_id == user_id)
+                and (not app_id or rk.app_id == app_id)
+                and (not mode or rk.agent_ref.mode == mode)
+                and (not agent_id or rk.agent_ref.id == agent_id)
+            }
+            if len(candidates) == 1:
+                original = next(iter(candidates))
+                app_id = app_id or original.app_id
+                mode = mode or original.agent_ref.mode
+                agent_id = agent_id or original.agent_ref.id
+            else:
+                logger.debug(
+                    "[a4p] route hint skipped requestId=%s session=%s: source candidates=%d",
+                    request_id, msg.session_id, len(candidates),
+                )
+                return
+        fields = dict(requestId=request_id, mode=mode, agent_id=agent_id,
+                      app_id=app_id, user_id=user_id, session_id=msg.session_id)
+        missing = [name for name, value in fields.items()
+                   if not isinstance(value, str) or not value]
+        if missing:
+            logger.debug(
+                "[a4p] route hint skipped requestId=%s session=%s: missing=%s",
+                request_id, msg.session_id, ",".join(missing),
+            )
+            return
+        key = (user_id, app_id, msg.session_id, request_id)
+        self._a4p_request_routes[key] = RoutingKey(
+            user_id=user_id, channel_id=self.channel_id, app_id=app_id,
+            session_id=msg.session_id, agent_ref=AgentRef(mode=mode, id=agent_id),
+        )
+        self._a4p_request_routes.move_to_end(key)
+        while len(self._a4p_request_routes) > 4096:
+            self._a4p_request_routes.popitem(last=False)
+
+    def a4p_request_route(
+        self, routes: list[RoutingKey], request_id: str,
+        *, ws: Any = None, session_id: str | None = None,
+    ) -> RoutingKey | None:
+        """Resolve a hint within the connection's user/app/session scope."""
+        if ws is not None:
+            user_id = self.connection_user_id(ws)
+            app_id = getattr(ws, "_jiuwen_app_id", None)
+            if user_id and app_id and session_id:
+                cached = self._a4p_request_routes.get(
+                    (user_id, app_id, session_id, request_id)
+                )
+                if cached is not None:
+                    return cached
+        matches: set[RoutingKey] = set()
+        for route in routes:
+            key = (route.user_id, route.app_id, route.session_id, request_id)
+            cached = self._a4p_request_routes.get(key)
+            if cached is not None:
+                matches.add(cached)
+        return next(iter(matches)) if len(matches) == 1 else None
 
     def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
         """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
@@ -2289,7 +2377,7 @@ class WebChannel(BaseWsChannel):
         _agent_id = params.get("agent_id", "default")
         _app_id = _flat_query.get("app_id", "default")
         req_user_id = self._connection_user_id(ws)
-        if has_explicit_session:
+        if has_explicit_session and not method.startswith("a4p."):
             _rk = RoutingKey(
                 user_id=self._routing_key_user_id(req_user_id, getattr(ws, "remote_address", None)),
                 channel_id=self.channel_id,
