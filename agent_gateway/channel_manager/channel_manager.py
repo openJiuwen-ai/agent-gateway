@@ -22,7 +22,7 @@ from agent_gateway.routing.keys import ChannelKey
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     from agent_gateway.channel_manager.base import BaseChannel
     from agent_gateway.message_handler import MessageHandler
@@ -37,7 +37,7 @@ def _thinking_notice_message(
     idempotency_key: str,
 ):
     """A completed chat event any channel can send without a persistent-result method."""
-    from openjiuwen_protocol.message import EventType, Message
+    from e2a.message import EventType, Message
 
     return Message(
         id=idempotency_key,
@@ -586,7 +586,7 @@ class ChannelManager(ABC):
         async def _persist_hook(content: Any, category: str, filename: str) -> dict[str, Any]:
             import base64 as _base64
 
-            from openjiuwen_protocol.message import ReqMethod
+            from e2a.message import ReqMethod
 
             from agent_gateway.routing.agent_http_bridge import (
                 E2A_PAYLOAD_MAX_BYTES,
@@ -902,7 +902,7 @@ class ChannelManager(ABC):
                 # ── 企业飞书（feishu_enterprise:<app_id>）不进此分支：一 channel_id 一 bot 无需 fan-out，
                 # 且其 cron 推送的 feishu_chat_id 是创建任务时绑定的特定群（来自 routing_sid 的
                 # feishu::chat_id::bot_id::...，见 scheduler._push_to_targets），清掉会误投到 last_* 的群。
-                from openjiuwen_protocol.message import EventType as _EventType
+                from e2a.message import EventType as _EventType
                 _is_feishu_fanout = (
                     isinstance(msg.channel_id, str)
                     and msg.channel_id == "feishu"
@@ -1009,7 +1009,7 @@ class ChannelManager(ABC):
 
     async def _notify_cron_delivery_error(self, original_msg: "Message", error: Exception) -> None:
         """推送失败时，通过 web channel 发送 chat.error 通知前端。"""
-        from openjiuwen_protocol.message import EventType, Message
+        from e2a.message import EventType, Message
 
         cron_info = (original_msg.payload or {}).get("cron", {})
         job_name = cron_info.get("job_name", "")

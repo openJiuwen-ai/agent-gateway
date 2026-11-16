@@ -8,9 +8,9 @@ import json
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_models import AgentResponse
+from e2a.wire_codec import encode_agent_response_for_wire
+from e2a.message import ReqMethod
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
 

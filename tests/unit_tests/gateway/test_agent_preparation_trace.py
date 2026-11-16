@@ -17,8 +17,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from agent_gateway import telemetry
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse
 from agent_gateway.extensions.agentos.agentos_router import router_client
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient, RegistryConfig, RegistryValidationError
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient

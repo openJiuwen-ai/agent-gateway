@@ -619,6 +619,18 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-stage", "skills.upload.stage",
+        "skills", "企业版：暂存上传包并返回签名描述符",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-finalize", "skills.upload.finalize",
+        "skills", "企业版：按审批结果安装暂存包",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/{name}/files", "skills.files.list",
         "skills", "技能文件列表（工作副本）",
         path_to_param={"name": "name"},
@@ -801,6 +813,21 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "DELETE", "/sessions/{session_id}/media", "media.discard", "files",
         "删除未发送附件", accept_body=True, bind_session_param=True,
         path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/assets", "session.assets.list", "files",
+        "列会话素材", bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "POST", "/sessions/{session_id}/assets", "session.assets.register", "files",
+        "登记会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/sessions/{session_id}/assets/{asset_id}", "session.assets.rename", "files",
+        "重命名会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
     ),
     WebHttpMappedRoute(
         "POST", "/sessions/{session_id}/documents", "document.persist", "files",

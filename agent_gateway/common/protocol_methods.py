@@ -2,13 +2,13 @@
 
 from enum import Enum
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 
 def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
     """Register a member of a protocol enum the pinned protocol package does not ship yet.
 
-    ``openjiuwen-protocol`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
+    ``e2a`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
     待协议包提供同名同值成员后本函数与调用一并删除。
     """
     existing = enum_cls.__members__.get(name)
@@ -35,6 +35,12 @@ def _ensure_req_method(name: str, value: str) -> None:
     _ensure_protocol_member(ReqMethod, name, value)
 
 
+# 企业版 Skill 包上传审批：协议包尚未发布这两个方法，先在此登记。
+# 转发白名单、HTTP 路由、企业版门禁都从这里取值，避免同一方法名多处硬编码。
+SKILL_UPLOAD_STAGE = "skills.upload.stage"
+SKILL_UPLOAD_FINALIZE = "skills.upload.finalize"
+
+
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
 _ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
 _ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
@@ -47,6 +53,8 @@ _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
 _ensure_req_method("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk")
+_ensure_req_method("SKILLS_UPLOAD_STAGE", SKILL_UPLOAD_STAGE)
+_ensure_req_method("SKILLS_UPLOAD_FINALIZE", SKILL_UPLOAD_FINALIZE)
 _ensure_req_method("WORKSPACE_TREE", "workspace.tree")
 _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")

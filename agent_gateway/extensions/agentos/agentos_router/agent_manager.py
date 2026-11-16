@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.agentos.agentos_router.logutil import (
     format_agentos,

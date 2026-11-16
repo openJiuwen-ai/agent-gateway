@@ -1,0 +1,414 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""同步 Store 与 Gateway 主库之间的单线程连接。
+
+连接绑在创建它的 event loop 上。控制面和路由 Store 的方法仍是同步的，
+所以每个进程只开一条后台线程，所有 SQL 都投到这条线程上执行。
+不复用 Gateway 主 loop 上的 ``Database.current()``，避免跨 loop 用同一条连接。
+MySQL 族（含 MariaDB）和 PostgreSQL 都走这条连接，数据库类型由 ``team_store_db_type`` 决定。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import threading
+from typing import Any, Awaitable, Callable
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+logger = logging.getLogger(__name__)
+
+_START_TIMEOUT_SEC = 30.0
+_CANCEL_GRACE_SEC = 1.0
+
+_actor: "TeamStoreActor | None" = None
+_actor_lock = threading.Lock()
+
+
+def _gateway_db_kind() -> str:
+    import os
+
+    from agent_gateway.enterprise.db.settings import get_settings
+
+    # 只在读取团队库配置时丢掉空密码。集群 Secret 注入的空值会挡住仓库 .env，
+    # 不能放进所有 Gateway 连接共用的 load_env。
+    if os.environ.get("GATEWAY_DB_PASSWORD") == "":
+        os.environ.pop("GATEWAY_DB_PASSWORD", None)
+    return str(get_settings().gateway_db_type or "").strip().lower()
+
+
+def team_store_db_type() -> str:
+    """已支持的团队数据库类型：``mysql``（含 MariaDB）或 ``postgres``。
+
+    不是这两种数据库类型时直接失败，并写明当前 ``GATEWAY_DB_TYPE``。
+    """
+    from openjiuwen_runtime.foundation.db.utils import is_mysql, is_postgresql
+
+    kind = _gateway_db_kind()
+    if is_mysql(kind):
+        return "mysql"
+    if is_postgresql(kind):
+        return "postgres"
+    shown = kind or "(empty)"
+    raise RuntimeError(f"unsupported team store GATEWAY_DB_TYPE={shown}")
+
+
+def json_value_expr(param: str) -> str:
+    """SQL for a JSON text parameter.
+
+    PostgreSQL json columns need a cast. MariaDB rejects ``CAST(... AS json)``
+    and stores these columns as text, so the MySQL family binds the text as-is.
+    """
+    name = str(param or "").strip().lstrip(":")
+    if not name:
+        raise ValueError("json parameter name is required")
+    if team_store_db_type() == "postgres":
+        return f"CAST(:{name} AS json)"
+    return f":{name}"
+
+
+def policy_enabled_value(enabled: bool) -> bool | int:
+    """Bind ``enabled`` the way the shared team database stores booleans."""
+    if team_store_db_type() == "postgres":
+        return bool(enabled)
+    return 1 if enabled else 0
+
+
+def upsert_policy_sql() -> str:
+    """Insert or replace one ``team_quota_policy`` row for the shared database.
+
+    PostgreSQL rejects ``ON DUPLICATE KEY UPDATE`` and needs JSON casts.
+    MariaDB rejects ``CAST(... AS json)``, so the MySQL family keeps its upsert.
+    """
+    columns = (
+        "policy_id, policy_name, policy_desc, match_expr, priority, "
+        "max_teams_per_user, max_teammates_per_team, max_teams_per_org, enabled, source, data, "
+        "created_at, created_by, updated_at, updated_by"
+    )
+    values = (
+        ":policy_id, :policy_name, :policy_desc, "
+        f"{json_value_expr('match_expr')}, :priority, "
+        ":max_teams_per_user, :max_teammates_per_team, :max_teams_per_org, :enabled, :source, "
+        f"{json_value_expr('data')}, "
+        ":created_at, :created_by, :updated_at, :updated_by"
+    )
+    insert = f"INSERT INTO team_quota_policy ({columns}) VALUES ({values}) "
+    if team_store_db_type() == "postgres":
+        return insert + (
+            "ON CONFLICT (policy_id) DO UPDATE SET "
+            "policy_name=EXCLUDED.policy_name, policy_desc=EXCLUDED.policy_desc, "
+            "match_expr=EXCLUDED.match_expr, priority=EXCLUDED.priority, "
+            "max_teams_per_user=EXCLUDED.max_teams_per_user, "
+            "max_teammates_per_team=EXCLUDED.max_teammates_per_team, "
+            "max_teams_per_org=EXCLUDED.max_teams_per_org, "
+            "enabled=EXCLUDED.enabled, source=EXCLUDED.source, data=EXCLUDED.data, "
+            "updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by"
+        )
+    return insert + (
+        "ON DUPLICATE KEY UPDATE "
+        "policy_name=VALUES(policy_name), policy_desc=VALUES(policy_desc), "
+        "match_expr=VALUES(match_expr), priority=VALUES(priority), "
+        "max_teams_per_user=VALUES(max_teams_per_user), "
+        "max_teammates_per_team=VALUES(max_teammates_per_team), "
+        "max_teams_per_org=VALUES(max_teams_per_org), "
+        "enabled=VALUES(enabled), source=VALUES(source), data=VALUES(data), "
+        "updated_at=VALUES(updated_at), updated_by=VALUES(updated_by)"
+    )
+
+
+def use_shared_team_store() -> bool:
+    """企业版团队表是否跟 Gateway 主库走同一份库。
+
+    数据库类型支持主库就走主库。个人版和单测里未登记的类型仍走 SQLite。
+    企业版遇到未登记类型时失败，不再退回各进程自己的 SQLite。
+    """
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    try:
+        team_store_db_type()
+    except RuntimeError:
+        if is_enterprise():
+            raise
+        return False
+    return True
+
+
+class TeamStoreActor:
+    """进程内唯一的主库连接线程。"""
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._handler: Any = None
+        self._ready = False
+        self._start_lock = threading.Lock()
+        self._call_timeout = 35.0
+
+    def start(self) -> None:
+        """连上库并建好三张控制面表。失败时异常直接抛出。"""
+        if not use_shared_team_store():
+            raise RuntimeError("team control actor requires a shared team store")
+        if self._ready:
+            return
+        with self._start_lock:
+            if self._ready:
+                return
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=self._run_loop,
+                args=(loop,),
+                name="team-store",
+                daemon=True,
+            )
+            self._loop = loop
+            self._thread = thread
+            thread.start()
+            fut = asyncio.run_coroutine_threadsafe(self._init(), loop)
+            fut.result(timeout=_START_TIMEOUT_SEC)
+            self._ready = True
+
+    def call(self, coro_fn: Callable[[], Awaitable[Any]]) -> Any:
+        """在连接线程上执行协程并等结果。"""
+        if not self._ready or self._loop is None or self._thread is None:
+            raise RuntimeError("Team store actor is not started")
+        if threading.current_thread() is self._thread:
+            raise RuntimeError(
+                "TeamStoreActor.call cannot be reentered from the store thread"
+            )
+        task_box: dict[str, asyncio.Task[Any]] = {}
+
+        async def _wrapped() -> Any:
+            task_box["task"] = asyncio.current_task()
+            return await coro_fn()
+
+        fut = asyncio.run_coroutine_threadsafe(_wrapped(), self._loop)
+        try:
+            return fut.result(timeout=self._call_timeout)
+        except TimeoutError as exc:
+            self._abandon_timed_out_call(fut, task_box.get("task"))
+            raise TimeoutError(
+                f"TeamStoreActor.call timed out after {self._call_timeout:.0f}s"
+            ) from exc
+
+    def _abandon_timed_out_call(self, fut: Any, task: asyncio.Task[Any] | None) -> None:
+        """Cancel the in-flight query. Reconnect if it keeps the connection."""
+        if task is not None and self._loop is not None:
+            self._loop.call_soon_threadsafe(task.cancel)
+        else:
+            fut.cancel()
+        try:
+            fut.result(timeout=_CANCEL_GRACE_SEC)
+        except TimeoutError:
+            logger.warning("[TeamStore] timed out call did not cancel; reconnecting")
+            self._reconnect()
+        except (asyncio.CancelledError, Exception):
+            if task is not None and not task.done():
+                logger.warning("[TeamStore] timed out call still running; reconnecting")
+                self._reconnect()
+            else:
+                logger.debug("[TeamStore] timed out call cancelled", exc_info=True)
+
+    def _reconnect(self) -> None:
+        if self._loop is None:
+            return
+        reset = asyncio.run_coroutine_threadsafe(self._replace_handler(), self._loop)
+        try:
+            reset.result(timeout=_START_TIMEOUT_SEC)
+        except Exception:
+            logger.exception("[TeamStore] reconnect after abandoned call failed")
+
+    async def _replace_handler(self) -> None:
+        """Drop the connection a cancelled query may still hold, then connect again."""
+        old = self._handler
+        self._handler = None
+        if old is not None:
+            try:
+                await old.disconnect()
+            except Exception:
+                logger.exception("[TeamStore] disconnect abandoned handler failed")
+                engine = getattr(old, "engine", None)
+                if engine is not None:
+                    try:
+                        await engine.dispose()
+                    except Exception:
+                        logger.exception("[TeamStore] dispose abandoned engine failed")
+        await self._init()
+
+    def _run_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+
+    async def _init(self) -> None:
+        from openjiuwen_runtime.foundation.db.engine_options import get_command_timeout
+
+        from agent_gateway.config.enterprise.tables.team_control_models import (
+            TEAM_CONTROL_TABLES,
+        )
+        from agent_gateway.config.enterprise.tables.team_quota_models import (
+            TEAM_QUOTA_TABLES,
+            ensure_team_quota_org_column,
+        )
+        from agent_gateway.enterprise.db.settings import get_settings
+
+        cfg = get_settings()
+        self._call_timeout = float(get_command_timeout()) + 5.0
+        db_type = team_store_db_type()
+        if db_type == "postgres":
+            from openjiuwen_runtime.foundation.db.postgresql_handler import (
+                PostgreSQLHandler,
+            )
+
+            handler = PostgreSQLHandler(
+                host=str(cfg.gateway_db_host).strip(),
+                port=int(cfg.gateway_db_port),
+                database=str(cfg.gateway_db_name).strip(),
+                schema=str(cfg.gateway_pg_schema).strip(),
+                user=str(cfg.gateway_db_user).strip(),
+                password=str(cfg.gateway_db_password),
+            )
+        else:
+            from openjiuwen_runtime.foundation.db.mysql_handler import MySQLHandler
+
+            handler = MySQLHandler(
+                host=str(cfg.gateway_db_host).strip(),
+                port=int(cfg.gateway_db_port),
+                user=str(cfg.gateway_db_user).strip(),
+                password=str(cfg.gateway_db_password),
+                database=str(cfg.gateway_db_name).strip(),
+            )
+        await handler.init_database()
+        await handler.connect()
+        for table_def in (*TEAM_CONTROL_TABLES, *TEAM_QUOTA_TABLES):
+            await handler.init_table(table_def)
+        await ensure_team_quota_org_column(handler.get_engine())
+        self._handler = handler
+        logger.info(
+            "[TeamStore] connected %s:%s/%s",
+            cfg.gateway_db_host,
+            cfg.gateway_db_port,
+            cfg.gateway_db_name,
+        )
+
+    @property
+    def handler(self) -> Any:
+        if self._handler is None:
+            raise RuntimeError("Team store handler is not connected")
+        return self._handler
+
+
+async def run_team_store(fn: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
+    """Run one sync team-store call.
+
+    ``start`` and ``call`` wait with ``fut.result()``. On the HTTP event loop
+    that wait is moved to a worker thread so ``/health`` can still be served.
+    Personal SQLite and callers without a running loop stay on this thread.
+    """
+    if not use_shared_team_store():
+        return fn(*args, **kwargs)
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return fn(*args, **kwargs)
+    return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+def get_team_store_actor() -> TeamStoreActor:
+    """返回已连上库的 actor。第一次调用会阻塞到建表完成。"""
+    global _actor
+    if _actor is not None and _actor._ready:
+        return _actor
+    with _actor_lock:
+        if _actor is not None and _actor._ready:
+            return _actor
+        actor = TeamStoreActor()
+        actor.start()
+        _actor = actor
+        return actor
+
+
+def reset_team_store_actor() -> None:
+    """测试用：丢掉进程内 actor，下次 ``get_team_store_actor`` 重新连接。"""
+    global _actor
+    with _actor_lock:
+        _actor = None
+
+
+def is_unique_violation(exc: BaseException) -> bool:
+    orig = getattr(exc, "orig", exc)
+    args = getattr(orig, "args", ())
+    if args and args[0] in (1062, "1062"):
+        return True
+    if "Duplicate entry" in str(orig):
+        return True
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if sqlstate is None:
+        sqlstate = getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None)
+    return str(sqlstate or "") == "23505"
+
+
+_LIST_PAGE = 500
+
+
+def record_to_dict(record: Any) -> dict[str, Any]:
+    """Turn one handler row into the dict shape raw SQL used to return."""
+    table = getattr(record, "__table__", None)
+    if table is None:
+        raise TypeError("handler record has no table")
+    return {column.name: getattr(record, column.name) for column in table.columns}
+
+
+async def list_record_dicts(
+    handler: Any,
+    table_name: str,
+    *,
+    filters: dict[str, Any] | None = None,
+    order_by: list[tuple[str, bool]] | str | None = None,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Read rows through ``list_records``.
+
+    A set limit is passed through. Without one, pages are concatenated so a
+    list is not cut off at the handler default of 100.
+    """
+    if limit is not None:
+        records = await handler.list_records(
+            table_name,
+            filters=filters,
+            limit=limit,
+            order_by=order_by,
+        )
+        return [record_to_dict(record) for record in records]
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        records = await handler.list_records(
+            table_name,
+            filters=filters,
+            limit=_LIST_PAGE,
+            offset=offset,
+            order_by=order_by,
+        )
+        rows.extend(record_to_dict(record) for record in records)
+        if len(records) < _LIST_PAGE:
+            return rows
+        offset += _LIST_PAGE
+
+
+async def fetch_all(handler: Any, sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    engine = handler.get_engine()
+    async with engine.connect() as conn:
+        result = await conn.execute(text(sql), params)
+        return [dict(row) for row in result.mappings().all()]
+
+
+async def fetch_one(handler: Any, sql: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    rows = await fetch_all(handler, sql, params)
+    return rows[0] if rows else None
+
+
+async def run_tx(handler: Any, fn: Callable[[AsyncConnection], Awaitable[Any]]) -> Any:
+    engine = handler.get_engine()
+    async with engine.begin() as conn:
+        return await fn(conn)

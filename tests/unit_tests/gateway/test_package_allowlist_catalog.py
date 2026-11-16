@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytest.importorskip("a2a", reason="a2a-sdk is an optional extra (pyproject a2a group); skip when not installed")
+
 from agent_gateway.enterprise.config.manager_config.core.template import expert_package_template as templates
 
 

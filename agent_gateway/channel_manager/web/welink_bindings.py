@@ -101,7 +101,7 @@ def register_welink_bindings(channel, manager, request, colleague_lock, welink_a
 
     async def _save_welink_connection(config_id, account, patch, *, credential_source=None):
         """Commit either authorization step to the account's own agent, in order with deletion."""
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.message import ReqMethod
         from agent_gateway.channel_manager.im_platforms.welink.welink_binding import save_welink_authorization
 
         from agent_gateway.channel_manager.im_platforms.welink.facts import credential_dir_for, welink_connection_key

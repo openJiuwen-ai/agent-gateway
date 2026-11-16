@@ -1,0 +1,60 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
+ARG AGENT_CORE_COMMIT=f3f8f576164cc405c046e43079c8ad00ee17f0c4
+ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
+ARG AGENT_PROTOCOL_COMMIT=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677
+ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
+ARG AGENT_RUNTIME_BRANCH=develop
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+# 业务用户 app(1000)，组权限兼容 OpenShift 任意 UID
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app \
+    && mkdir -p /app/agent-gateway /app/config /opt/tiktoken-cache \
+    && chown 1000:0 /app/agent-gateway /app/config /opt/tiktoken-cache /home/app \
+    && chmod -R g+rwX /app/agent-gateway /app/config /opt/tiktoken-cache /home/app
+
+WORKDIR /app/agent-gateway
+COPY --chown=1000:0 . /app/agent-gateway/
+RUN chgrp -R 0 /app/agent-gateway && chmod -R g+rwX /app/agent-gateway
+
+# 上游 git 依赖由流水线构建参数安装，从 pyproject 移除对应声明避免重复解析：
+#   旧格式（URL 直接写进 dependencies）+ [tool.uv.sources] 新格式（uv 本地开发钉
+#   rev 用；不删会与流水线参数钉的 rev 构成同包双 URL 冲突，uv 直接解析失败）。
+#   sources 行匹配对缩进/引号/大括号内空格容忍；末尾断言兜底——任何残留
+#   git source（如 [tool.uv.sources.<pkg>] 子表写法）让构建显式失败而非静默漏删
+RUN sed -i '/"openjiuwen @ git+/d' pyproject.toml \
+    && sed -i '/"e2a @ git+/d' pyproject.toml \
+    && sed -i '/"openjiuwen-runtime-foundation",/d' pyproject.toml \
+    && sed -i -E '/^[[:space:]]*"?(openjiuwen|openjiuwen-runtime-foundation|e2a)"?[[:space:]]*=[[:space:]]*\{[[:space:]]*git[[:space:]]*=/d' pyproject.toml \
+    && if grep -Eq 'git[[:space:]]*=' pyproject.toml; then \
+         echo "[docker] pyproject 仍残留 git source：rev 须由流水线参数或 pyproject 单边钉定（避免同包双 URL 冲突）" >&2; \
+         exit 1; \
+       fi
+
+RUN uv pip install --system \
+    "openjiuwen @ git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT}" \
+    "e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=e2a" \
+    "openjiuwen-runtime-foundation @ git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation" \
+    -e . \
+    ${PIP_EXTRA_ARGS}
+
+# tiktoken BPE 预热（openjiuwen 传递依赖，缺失则跳过）
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" 2>/dev/null \
+    || echo "[docker] tiktoken not installed, skip BPE warmup"
+
+ENV HOME=/home/app \
+    PATH=/usr/local/bin:$PATH:/home/app/.local/bin \
+    PYTHONUNBUFFERED=1 \
+    WEB_HOST=0.0.0.0 \
+    GATEWAY_HOST=0.0.0.0
+
+# 端口：19000=WebChannel(uvicorn)，19001=gateway client face
+EXPOSE 19000 19001
+
+CMD ["/app/agent-gateway/docker/start.sh"]

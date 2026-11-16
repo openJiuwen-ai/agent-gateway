@@ -330,3 +330,44 @@ async def test_task_asr_empty_overlay_does_not_use_process_config(monkeypatch):
         assert await transcribe_task_audio({}) == ""
     finally:
         reset_task_env_overlay(token)
+
+
+@pytest.mark.asyncio
+async def test_asr_owner_decrypted_key_skips_gateway_crypto(monkeypatch):
+    from agent_gateway.extensions import base_crypto
+
+    class WrongCrypto:
+        def decrypt(self, value):
+            pytest.fail("owner-decrypted credentials must not be decrypted again")
+
+    monkeypatch.setattr(base_crypto, "_default_provider", WrongCrypto())
+
+    async def upstream(request):
+        assert request.headers["authorization"] == "Bearer owner-secret"
+        return httpx.Response(200, json={"text": "owner transcript"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(upstream)) as client:
+        result = await transcribe_task_audio(_WEBM, environ={
+            **_HTTP_ENV, "ASR_API_KEY": "owner-secret", "ASR_API_KEY_DECRYPTED": "true",
+        }, client=client)
+    assert result == "owner transcript"
+
+
+@pytest.mark.asyncio
+async def test_asr_decrypt_failure_never_reaches_upstream(monkeypatch):
+    from agent_gateway.extensions import base_crypto
+
+    class WrongCrypto:
+        def decrypt(self, value):
+            raise ValueError("private crypto diagnostic")
+
+    monkeypatch.setattr(base_crypto, "_default_provider", WrongCrypto())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda request: pytest.fail("ciphertext must not reach ASR")
+    )) as client:
+        with pytest.raises(TaskAsrError) as error:
+            await transcribe_task_audio(_WEBM, environ={
+                **_HTTP_ENV, "ASR_API_KEY": "opaque-ciphertext",
+            }, client=client)
+    assert error.value.code == "ASR_CREDENTIAL_DECRYPTION_FAILED"
+    assert "private crypto diagnostic" not in str(error.value)

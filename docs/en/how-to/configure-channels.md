@@ -85,3 +85,15 @@ App creation, permission requests, and credential acquisition differ per platfor
 - [Documentation home](../../README.md)
 - [Quick Start](../tutorial/01-quick-start.md)
 - [Local validation](local-validation.md)
+
+## Employee group lifecycle events
+
+Feishu apps bound to an `agent_id` should subscribe to bot joins, departures, chat updates and `im.chat.disbanded_v1`, then publish the subscriptions. Lifecycle callbacks succeed only after host confirmation. Missing routes, host failures or confirmation timeouts after three seconds fail the SDK callback so the platform can retry. Channels without an employee binding ignore these events.
+
+Feishu synchronous callbacks run on the shared SDK event loop for the same app. Waiting for confirmation delays that app's subsequent frames, including ordinary messages, and their ACKs for up to three seconds. Other apps have independent loops.
+
+Employee DingTalk apps use a Stream EVENT handler for subscribed `chat_add_member`, `chat_remove_member`, `chat_quit`, `chat_update_title` and `chat_disband` events, separately from robot message CALLBACKs. Configure subscriptions in the DingTalk app; adding a robot or completing user OAuth alone does not establish event delivery. Gateway validates app binding, event identity and timestamps, then forwards facts through the existing internal route. The host owns membership verification, registration and authorization revocation. A member change alone does not prove the robot left; unknown membership must not be treated as departure.
+
+DingTalk waits up to 120 seconds for host confirmation. Swarm's online membership check makes three sequential CLI calls for authorization status, the current profile and group bots, each with a 30-second timeout; the remaining budget allows local and E2A processing. A timeout cancels the wait and returns 500 so the platform can retry. Ignored events produce debug logs; invalid payloads and confirmation timeouts produce warning logs. These carry available event type, event ID and receiving app ID, without event bodies.
+
+These timeouts are Gateway host-wait budgets, not a platform guarantee against redelivery during that period. Both channels use an at-least-once delivery contract: timeout cancellation does not roll back changes already persisted by the host, and a platform retry may deliver the event again. The host must handle stable platform event IDs idempotently within the app/Agent scope; cancellation is not proof that the event never ran.

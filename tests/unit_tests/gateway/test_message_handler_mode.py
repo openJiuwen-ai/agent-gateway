@@ -16,7 +16,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.mode_matrix import (
     DEPRECATION_MAP,

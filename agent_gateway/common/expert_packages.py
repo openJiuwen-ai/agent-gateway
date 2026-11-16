@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""专家包名单的线上约定。
+"""专家包的线上约定。
 
 只规范化 kind、id、体积和报文。不读产品形态。
 """
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 METADATA_KEY = "expert_packages"
 HEADER_NAME = "X-Jiuwenswarm-Expert-Packages"
-MAX_ALLOWLIST_JSON_BYTES = 16 * 1024
+MAX_EXPERT_PACKAGES_JSON_BYTES = 16 * 1024
 
 # 企业版目录不展示的 Hub asset id。公共层只保留这一份，不判断产品形态。
 HIDDEN_HUB_ASSET_IDS = frozenset(
@@ -41,7 +41,7 @@ def canonical_kind(kind: str) -> str | None:
 
 
 def normalize_packages(raw: Any) -> list[dict[str, Any]]:
-    """收成 ``[{kind, id}]``。重复的 kind+id 去掉，非法结构拒绝。``match_expr`` 丢弃。"""
+    """收成 ``[{kind, id}]``。重复的 kind+id 去掉，非法结构拒绝。其余字段忽略。"""
     if raw is None:
         raw = []
     if not isinstance(raw, list):
@@ -81,17 +81,17 @@ def _packages_json(packages: list[dict[str, Any]]) -> bytes:
 
 
 def ensure_packages_fit(packages: list[dict[str, Any]]) -> None:
-    """名单 JSON 超过 16KiB 时拒绝。"""
-    if len(_packages_json(packages)) > MAX_ALLOWLIST_JSON_BYTES:
+    """专家包 JSON 超过 16KiB 时拒绝。"""
+    if len(_packages_json(packages)) > MAX_EXPERT_PACKAGES_JSON_BYTES:
         raise ValueError("expert packages exceed 16384 bytes")
 
 
 def encode_expert_packages_header(packages: list[dict[str, Any]]) -> str:
-    """把名单编成内部 HTTP 头。结构非法或过大时改发空名单。"""
+    """把专家包编成内部 HTTP 头。结构非法或过大时改发空列表。"""
     try:
         payload = normalize_packages(packages)
         raw = _packages_json(payload)
-        if len(raw) > MAX_ALLOWLIST_JSON_BYTES:
+        if len(raw) > MAX_EXPERT_PACKAGES_JSON_BYTES:
             raise ValueError("expert packages exceed 16384 bytes")
     except ValueError:
         logger.warning("[expert_packages] header encode failed, sending empty")
@@ -100,7 +100,7 @@ def encode_expert_packages_header(packages: list[dict[str, Any]]) -> str:
 
 
 def decode_expert_packages_header(value: str | None) -> list[dict[str, Any]]:
-    """还原内部 HTTP 头。缺失或结构损坏时为空名单。"""
+    """还原内部 HTTP 头。缺失或结构损坏时为空列表。"""
     if value is None or not str(value).strip():
         return []
     encoded = str(value).strip()
@@ -108,7 +108,7 @@ def decode_expert_packages_header(value: str | None) -> list[dict[str, Any]]:
         encoded_bytes = encoded.encode("ascii")
         padding = b"=" * (-len(encoded_bytes) % 4)
         raw = base64.b64decode(encoded_bytes + padding, altchars=b"-_", validate=True)
-        if len(raw) > MAX_ALLOWLIST_JSON_BYTES:
+        if len(raw) > MAX_EXPERT_PACKAGES_JSON_BYTES:
             raise ValueError("expert packages exceed 16384 bytes")
         decoded = json.loads(raw.decode("utf-8"))
         return normalize_packages(decoded)

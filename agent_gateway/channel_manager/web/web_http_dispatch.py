@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
@@ -42,6 +42,17 @@ def _get_header(headers: dict[str, str], name: str) -> str:
     for k, v in headers.items():
         if k.lower() == want:
             return str(v).strip()
+    return ""
+
+
+def _cookie_value(headers: dict[str, str], name: str) -> str:
+    raw = _get_header(headers, "cookie")
+    if not raw:
+        return ""
+    for chunk in raw.split(";"):
+        key, _, value = chunk.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
     return ""
 
 
@@ -224,5 +235,7 @@ async def dispatch_http_request(
         outbound=outbound,
         session_id=session_id,
         user_message=user_message,
+        authorization=_get_header(hdrs, "authorization") or None,
+        jiuwenclaw_id=_cookie_value(hdrs, "jiuwenclaw_id") or None,
     )
     return outbound, req_id, session_id

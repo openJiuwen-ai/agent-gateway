@@ -7,8 +7,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.e2a.acp.acp_tool_updates import is_reasoning_event
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.acp.acp_tool_updates import is_reasoning_event
+from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import BaseChannel
 from agent_gateway.routing.keys import DeliveryTarget

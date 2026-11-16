@@ -371,14 +371,16 @@ def get_team_route_binding_store() -> TeamRouteBindingStore:
     if _DEFAULT is None:
         with _DEFAULT_LOCK:
             if _DEFAULT is None:
-                from agent_gateway.enterprise.db.team_mysql_actor import use_team_mysql
+                from agent_gateway.enterprise.db.team_store_actor import (
+                    use_shared_team_store,
+                )
 
-                if use_team_mysql():
-                    from agent_gateway.enterprise.team.route_binding_mysql import (
-                        MysqlTeamRouteBindingStore,
+                if use_shared_team_store():
+                    from agent_gateway.enterprise.team.route_binding_shared import (
+                        SharedTeamRouteBindingStore,
                     )
 
-                    _DEFAULT = MysqlTeamRouteBindingStore()
+                    _DEFAULT = SharedTeamRouteBindingStore()
                 else:
                     _DEFAULT = SqliteTeamRouteBindingStore()
     return _DEFAULT

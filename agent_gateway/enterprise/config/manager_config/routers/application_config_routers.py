@@ -122,7 +122,7 @@ async def delete_memory(
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
 async def list_package_allowlist_catalog(request: Request):
     """Query the Server via E2A, preserving the management response contract."""
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
     channel = getattr(request.app.state, "manager_agent_channel", None)

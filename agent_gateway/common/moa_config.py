@@ -53,9 +53,11 @@ def flatten_moa_for_config_panel(
     result = {}
     for key, (path, default) in MOA_CONFIG_SPECS.items():
         value = _nested(experimental, path, default)
-        result[key] = (
-            "true" if value is True else "false"
-        ) if isinstance(default, bool) else str(value)
+        if isinstance(default, bool):
+            result[key] = "true" if value is True else "false"
+        else:
+            text = str(value).strip() if isinstance(value, (int, str)) else ""
+            result[key] = text if re.fullmatch(r"[0-9]+", text) and text.lstrip("0") else str(default)
     return result
 
 

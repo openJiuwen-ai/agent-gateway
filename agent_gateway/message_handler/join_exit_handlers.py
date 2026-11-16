@@ -24,7 +24,7 @@ from agent_gateway.routing.keys import AgentRef, RoutingKey, make_delivery_targe
 from agent_gateway.routing.session_sharing import LogicalTarget
 
 if TYPE_CHECKING:
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
     from agent_gateway.message_handler.command_parser.slash_command import (
         ParsedChannelControl,
     )
@@ -274,7 +274,7 @@ class JoinExitHandlers:
 
         action: "joined" | "left"，控制消息 ID 前缀、emoji/动词和 member_action 字段。
         """
-        from openjiuwen_protocol.message import Message, EventType
+        from e2a.message import Message, EventType
 
         # 根据动作类型设置不同的显示内容
         if action == "joined":
@@ -367,8 +367,8 @@ class JoinExitHandlers:
         timestamp < anchor_ts 的记录：anchor 之后的消息已走实时 fan_out 转发，
         不再进历史，避免同一条消息既实时又历史造成重复。
         """
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.message import ReqMethod
 
         channel_id = msg.channel_id
         reply_session_id = msg.session_id
@@ -458,8 +458,8 @@ class JoinExitHandlers:
         查到返回席位名列表，查不到（server ok=False / members 空 / RPC 异常）返回 None，
         由调用方统一拼"team 不存在"文案。channel_id 不参与业务查询，仅回填 E2A envelope。
         """
-        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-        from openjiuwen_protocol.message import ReqMethod
+        from e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.message import ReqMethod
 
         try:
             env = e2a_from_agent_fields(

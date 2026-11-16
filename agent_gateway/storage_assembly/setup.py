@@ -291,6 +291,16 @@ async def setup_gateway_storage_repositories(
 async def teardown_gateway_storage_repositories(ctx: StorageContext) -> None:
     from agent_gateway.routing.session_map_access import clear_session_map_repository
 
+    try:
+        from agent_gateway.config_poll import get_config_poll_scheduler
+
+        await get_config_poll_scheduler().stop()
+    except Exception:  # noqa: BLE001
+        # 停机路径兜底：调度器停不下来（如 interval_seconds 配置非法）也不阻断清理。
+        logger.warning(
+            "[StorageAssembly] config_poll scheduler stop failed",
+            exc_info=True,
+        )
     clear_session_map_repository()
     _clear_config_repositories()
     await ctx.shutdown()
@@ -327,6 +337,22 @@ async def start_gateway_storage(
             "[StorageAssembly] audit_log_config cold load skipped",
             exc_info=True,
         )
+
+    # 多副本共享库同步：仅当 overlay 仓库（channel/logging/memory）开启时才启动轮询，
+    # 让其它存活副本无需重建即可感知 logging / channel 等配置变更；repositories 关闭时
+    # 运维期望走文件配置，不应被共享库中的行覆盖进程日志级别等本地状态。
+    if is_storage_repositories_enabled(cfg):
+        try:
+            from agent_gateway.config_poll import get_config_poll_scheduler
+
+            await get_config_poll_scheduler().start()
+        except Exception:  # noqa: BLE001
+            # 轮询器是辅助子系统，配置错误（如 interval_seconds 非数字）不应阻断网关启动。
+            logger.warning(
+                "[StorageAssembly] config_poll scheduler start skipped",
+                exc_info=True,
+            )
+
     logger.info("[StorageAssembly] enterprise storage repositories wired")
     return ctx
 

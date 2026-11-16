@@ -11,8 +11,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.models import E2AEnvelope
 
 
 class AgentServerClient(ABC):
