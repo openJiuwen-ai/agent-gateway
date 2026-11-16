@@ -1174,7 +1174,7 @@ def _validate_model_candidate(candidate: dict[str, Any]) -> None:
     raise_if_invalid(candidate)
 
 
-def delete_model_resource(resource_type: str, resource_id: str, *, cron_references_checked: bool = False) -> bool:
+def delete_model_resource(resource_type: str, resource_id: str) -> bool:
     key = "groups" if resource_type == "model_group" else "defaults"
     id_key = "model_group_id" if resource_type == "model_group" else "model_id"
     deleted = False
@@ -1314,7 +1314,7 @@ def get_available_models(
 
 
 def update_default_models_in_config(
-    models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+    models_list: list[dict[str, Any]],
 ) -> None:
     def _mutate(data):
         models = _models_for_write(data)
