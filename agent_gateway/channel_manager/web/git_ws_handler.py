@@ -45,10 +45,9 @@ class GitDiffWebSocketHandler:
         self._channel = channel
         self._registry = registry
 
-    async def handle_connection(self, ws: Any, parsed_query: dict[str, str]) -> None:
+    async def handle_connection(self, ws: Any) -> None:
         """处理 /ws/git 连接的消息循环。
 
-        ``parsed_query`` 为已扁平化的 query dict(query 参数 → str)。
         断连清理由 ``WebChannel._connection_handler`` 的 ``finally`` 块负责
         (``unregister_ws`` + ``cleanup_ws``)。
         """

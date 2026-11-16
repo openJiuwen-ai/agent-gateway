@@ -2271,7 +2271,7 @@ class WebChannel(BaseWsChannel):
         )
 
         try:
-            await handler.handle_connection(ws, flat_query)
+            await handler.handle_connection(ws)
         except WebSocketConnectionClosed as e:
             logger.info(
                 "[WebChannel] /ws/git 连接关闭: %s",
