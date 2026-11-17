@@ -1756,33 +1756,6 @@ def _integration_type_for(server: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def update_memory_forbidden_enabled_in_config(value: bool) -> None:
-    """更新 memory.forbidden_memory_definition.enabled（记忆系统敏感信息过滤开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "memory" not in data:
-        data["memory"] = {}
-    if "forbidden_memory_definition" not in data["memory"]:
-        data["memory"]["forbidden_memory_definition"] = {}
-    data["memory"]["forbidden_memory_definition"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
-    """更新 memory.forbidden_memory_definition 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "memory" not in data:
-        data["memory"] = {}
-    if "forbidden_memory_definition" not in data["memory"]:
-        data["memory"]["forbidden_memory_definition"] = {}
-    section = data["memory"]["forbidden_memory_definition"]
-    for k, v in updates.items():
-        if k == "description" and isinstance(v, dict) and isinstance(section.get("description"), dict):
-            section["description"] = {**section["description"], **v}
-        else:
-            section[k] = v
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 # Recursion bound for :func:`_deep_merge`. This exists only to stop runaway
 # recursion on pathological input; it is deliberately far deeper than any real
 # config tree. The previous bound of 4 silently truncated *both* halves of the

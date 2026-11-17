@@ -1513,6 +1513,68 @@ async def test_personal_legacy_models_list_still_proxies_to_agent_server(monkeyp
     assert channel.responses[-1]["payload"]["models"][0]["model_name"] == "personal-from-yaml"
 
 
+@pytest.mark.asyncio
+async def test_personal_legacy_memory_forbidden_get_proxies_to_agent_server(monkeypatch) -> None:
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"enabled": True, "patterns": ["secret"], "description": {"zh": "x"}}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    await channel.methods["memory.forbidden.get"](object(), "req-memory-get", {}, "session-1")
+    send_request.assert_awaited_once()
+    assert send_request.call_args.args[0].method == "memory.forbidden.get"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_personal_legacy_memory_forbidden_set_proxies_to_agent_server(monkeypatch) -> None:
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"ok": True}
+    send_request = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send_request)
+    channel = _bind(agent_client=client)
+    params = {"enabled": True, "patterns": ["secret"]}
+    await channel.methods["memory.forbidden.set"](
+        object(), "req-memory-set", params, "session-1"
+    )
+    send_request.assert_awaited_once()
+    request = send_request.call_args.args[0]
+    assert request.method == "memory.forbidden.set"
+    assert request.params == params
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_memory_forbidden_without_agent_server_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    channel = _bind()
+    await channel.methods["memory.forbidden.get"](
+        object(), "req-memory-no-agent", {}, "session-1"
+    )
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_memory_forbidden_set_without_agent_server_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    channel = _bind()
+    await channel.methods["memory.forbidden.set"](
+        object(), "req-memory-set-no-agent", {"enabled": True}, "session-1"
+    )
+    resp = channel.responses[-1]
+    assert resp["ok"] is False
+    assert resp["code"] == "SERVICE_UNAVAILABLE"
+    assert resp["error"] == "AgentServer is unavailable"
+
+
 class FakeUpdaterService:
     def get_runtime_config(self):
         return {"release_api_type": "gitcode", "release_api_url": ""}

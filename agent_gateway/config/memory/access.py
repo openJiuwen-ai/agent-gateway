@@ -39,109 +39,48 @@ def schedule_memory_config(awaitable: Any) -> None:
     loop.create_task(awaitable)
 
 
-async def get_memory_body_in_config() -> dict[str, Any]:
+def _require_repository() -> MemoryConfigRepository:
     repo = get_memory_config_repository()
     if repo is None:
-        from agent_gateway.common.config import get_config
+        raise RuntimeError("MemoryConfigRepository is not wired")
+    return repo
 
-        raw = (get_config() or {}).get("memory")
-        return dict(raw) if isinstance(raw, dict) else {}
-    return await repo.get_body()
+
+async def get_memory_body_in_config() -> dict[str, Any]:
+    return await _require_repository().get_body()
 
 
 async def replace_memory_in_config(body: dict[str, Any]) -> None:
     """整段替换 ``memory``（EE Manager upsert 语义）。"""
     if not isinstance(body, dict):
         raise ValueError("memory body must be an object")
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import update_config
-
-        def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-            data["memory"] = dict(body)
-            return data
-
-        update_config(_mutate)
-        return
-    await repo.replace(body)
+    await _require_repository().replace(body)
 
 
 async def merge_memory_in_config(updates: dict[str, Any]) -> None:
     """浅合并 ``memory`` 顶层字段。"""
     if not isinstance(updates, dict):
         raise ValueError("memory updates must be an object")
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import update_config
-
-        def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-            section = data.get("memory")
-            if not isinstance(section, dict):
-                section = {}
-                data["memory"] = section
-            section.update(updates)
-            return data
-
-        update_config(_mutate)
-        return
-    await repo.merge(updates)
+    await _require_repository().merge(updates)
 
 
 async def delete_memory_in_config() -> bool:
     """删除 ``memory`` 段 / 企业行（EE Manager delete 语义）。"""
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import update_config
-
-        found = {"value": False}
-
-        def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-            if "memory" in data:
-                del data["memory"]
-                found["value"] = True
-            return data
-
-        update_config(_mutate)
-        return bool(found["value"])
-    return await repo.delete()
+    return await _require_repository().delete()
 
 
 async def update_memory_forbidden_enabled_in_config(value: bool) -> None:
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import (
-            update_memory_forbidden_enabled_in_config as _legacy,
-        )
-
-        _legacy(value)
-        return
-    await repo.set_forbidden_enabled(value)
+    await _require_repository().set_forbidden_enabled(value)
 
 
 async def update_memory_forbidden_description_in_config(
     description: dict[str, str],
 ) -> None:
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import (
-            update_memory_forbidden_description_in_config as _legacy,
-        )
-
-        _legacy(description)
-        return
-    await repo.merge_forbidden_description(description)
+    await _require_repository().merge_forbidden_description(description)
 
 
 async def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
-    repo = get_memory_config_repository()
-    if repo is None:
-        from agent_gateway.common.config import (
-            update_memory_forbidden_in_config as _legacy,
-        )
-
-        _legacy(updates)
-        return
-    await repo.merge_forbidden(updates)
+    await _require_repository().merge_forbidden(updates)
 
 
 __all__ = [

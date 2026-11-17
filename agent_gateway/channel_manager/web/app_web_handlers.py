@@ -6686,49 +6686,39 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params={},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.MEMORY_FORBIDDEN_GET,
+            label="memory.forbidden.get",
         )
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params={}, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_GET, label="memory.forbidden.get")
-            return
-        try:
-            cfg = get_config() or {}
-            payload = cfg.get("memory", {}).get("forbidden_memory_definition", {})
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except Exception as e:
-            logger.exception("[memory.forbidden.get] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
-
     async def _memory_forbidden_set(ws, req_id, params, session_id, user_id=None):
-        from agent_gateway.common.config import update_memory_forbidden_in_config
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
-        resolved_client = _resolve(agent_client)
-        if resolved_client is not None and not is_legacy_shared_directory_client(resolved_client):
-            await proxy_unary_request(channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                                      params=params, session_id=session_id, user_id=user_id,
-                                      req_method=ReqMethod.MEMORY_FORBIDDEN_SET, label="memory.forbidden.set")
-            return
-        try:
-            update_memory_forbidden_in_config(params)
-            await channel.send_response(ws, req_id, ok=True, payload={"ok": True})
-        except Exception as e:
-            logger.exception("[memory.forbidden.set] %s", e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.MEMORY_FORBIDDEN_SET,
+            label="memory.forbidden.set",
+        )
 
     channel.register_method("memory.forbidden.get", _memory_forbidden_get)
     channel.register_method("memory.forbidden.set", _memory_forbidden_set)

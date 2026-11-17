@@ -72,6 +72,11 @@ def test_gateway_templates_drop_auto_memory_enabled() -> None:
     assert "auto_memory_enabled" not in AGENTOS
 
 
+def test_gateway_templates_drop_memory_section() -> None:
+    assert "memory" not in BASE
+    assert "memory" not in AGENTOS
+
+
 def test_gateway_template_drops_evolution_auto_save() -> None:
     evolution = BASE["react"]["evolution"]
     assert "auto_save" not in evolution
