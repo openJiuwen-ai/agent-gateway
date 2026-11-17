@@ -4831,14 +4831,6 @@ class MessageHandler(ABC):
         # 那时连 target 是否合法都无从判断，维持原有的会话级行为）。
         return not owner_id or route["team_id"] != owner_id
 
-    @staticmethod
-    def _stream_method_value(msg: "Message") -> str:
-        """Normalize ``msg.req_method`` to its wire value string."""
-        req_method = getattr(msg, "req_method", None)
-        if req_method is None:
-            return ""
-        return str(getattr(req_method, "value", req_method) or "")
-
     async def _trigger_before_chat_request_hook(self, msg: "Message") -> None:
         if not self._should_trigger_before_chat_request_hook(msg):
             return
