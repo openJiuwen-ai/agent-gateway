@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 from agent_gateway import telemetry
 from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
@@ -76,7 +76,7 @@ class FakeAgentClient:
 async def test_proxy_preserves_authoritative_routing_metadata(method):
     from types import SimpleNamespace
 
-    from openjiuwen_protocol.identity import web_routing_identity
+    from e2a.identity import web_routing_identity
 
     client = FakeAgentClient()
     await proxy_unary_request(

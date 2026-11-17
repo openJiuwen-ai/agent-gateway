@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -788,6 +788,7 @@ class FeishuChannel(BaseChannel):
                     .register_p2_im_message_recalled_v1(lambda data: self._on_persistent_change_sync(data, "recalled"))
                     .register_p2_im_chat_member_bot_added_v1(lambda data: self._on_persistent_change_sync(data, "joined"))
                     .register_p2_im_chat_member_bot_deleted_v1(lambda data: self._on_persistent_change_sync(data, "left"))
+                    .register_p2_im_chat_disbanded_v1(lambda data: self._on_persistent_change_sync(data, "dissolved"))
                     .register_p2_im_chat_updated_v1(lambda data: self._on_persistent_change_sync(data, "group_updated")))
             event_handler = builder.build()
 
@@ -870,7 +871,7 @@ class FeishuChannel(BaseChannel):
             try:
                 await self._shutdown_ws_client()
             except Exception as e:
-                logger.warning("停止WebSocket客户端时发生异常: {}", e)
+                logger.warning("停止WebSocket客户端时发生异常: %s", e)
 
         loop = self._ws_thread_loop
         if loop is not None:
@@ -903,7 +904,7 @@ class FeishuChannel(BaseChannel):
                 try:
                     await conn.close(code=1000, reason="bye")
                 except Exception as e:
-                    logger.debug("飞书连接关闭时出现异常: {}", e)
+                    logger.debug("飞书连接关闭时出现异常: %s", e)
 
             await asyncio.sleep(0.05)
 
@@ -915,7 +916,7 @@ class FeishuChannel(BaseChannel):
         except asyncio.TimeoutError:
             logger.debug("飞书客户端清理超时，继续停止事件循环")
         except Exception as e:
-            logger.debug("飞书客户端清理任务异常: {}", e)
+            logger.debug("飞书客户端清理任务异常: %s", e)
 
     @staticmethod
     def _patch_ws_client_shutdown(ws_client: Any) -> None:
@@ -931,7 +932,7 @@ class FeishuChannel(BaseChannel):
                 return await original_disconnect()
             except RuntimeError as e:
                 if "Lock is not acquired" in str(e):
-                    logger.debug("忽略 lark_oapi 断连并发异常: {}", e)
+                    logger.debug("忽略 lark_oapi 断连并发异常: %s", e)
                     return None
                 raise
 
@@ -3049,19 +3050,6 @@ class FeishuChannel(BaseChannel):
             return text
         return text[:max_len].rstrip() + "..."
 
-    @staticmethod
-    def _stringify_value(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, (dict, list)):
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except Exception:
-                return str(value)
-        return str(value)
-
     _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp"})
 
     @staticmethod
@@ -3530,25 +3518,56 @@ class FeishuChannel(BaseChannel):
         )
 
     def _on_persistent_change_sync(self, data: Any, kind: str) -> None:
-        if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_persistent_change(data, kind), self._main_loop)
+        """Confirm before ACK on the shared per-app SDK loop; host effects must be idempotent.
+
+        The wait delays other frames and ACKs for this app by up to three seconds.
+        Cancellation after timeout does not undo host writes; redelivery may repeat an event.
+        """
+        if not getattr(self.config, "agent_id", None):
+            return
+        if not self._main_loop or not self._main_loop.is_running():
+            logger.warning("[FeishuChannel] Lifecycle route unavailable: app_id=%s kind=%s", self.config.app_id, kind)
+            raise RuntimeError("Feishu lifecycle route unavailable")
+        operation = self._on_persistent_change(data, kind)
+        try:
+            future = asyncio.run_coroutine_threadsafe(operation, self._main_loop)
+        except Exception:
+            operation.close()
+            raise RuntimeError("Feishu lifecycle scheduling failed") from None
+        try:
+            # The sync callback blocks this app's shared SDK loop; ACK follows its return.
+            future.result(timeout=3)
+        except Exception as exc:
+            future.cancel()
+            logger.warning("[FeishuChannel] Lifecycle not confirmed: app_id=%s kind=%s error_type=%s",
+                           self.config.app_id, kind, type(exc).__name__)
+            raise RuntimeError("Feishu lifecycle delivery not confirmed") from None
 
     async def _on_persistent_change(self, data: Any, kind: str) -> None:
         callback = getattr(self, "_persistent_group_fanout_callback", None)
-        if callback is None or not getattr(self.config, "agent_id", None):
+        if not getattr(self.config, "agent_id", None):
             return
+        if callback is None:
+            raise RuntimeError("Feishu lifecycle callback unavailable")
         value = self._persistent_event_value
         event, header = value(data, "event"), value(data, "header")
+        logger.info("[FeishuChannel] Lifecycle received: app_id=%s kind=%s event_id=%s chat_id=%s",
+                    self.config.app_id, kind, value(header, "event_id"), value(event, "chat_id"))
         changed_at = self._persistent_received_at(value(header, "create_time"))
         if changed_at is None:
-            return
+            raise RuntimeError("Invalid Feishu lifecycle event time")
         name = value(value(event, "after_change"), "name") or value(event, "name")
-        await callback(FeishuInboundEvent(
+        disposition = await callback(FeishuInboundEvent(
             receiving_app_id=self.config.app_id, expected_agent_id=self.config.agent_id,
             message_id=value(event, "message_id"), chat_id=value(event, "chat_id"), chat_type="group",
             sender_type=None, sender_id=None, sender_name=None, sender_app_id=None, received_at=changed_at,
             text=None, event_kind=kind, event_id=value(header, "event_id"), changed_at=changed_at, group_name=name,
         ))
+        status = getattr(disposition, "value", disposition)
+        logger.info("[FeishuChannel] Lifecycle handled: app_id=%s kind=%s event_id=%s disposition=%s",
+                    self.config.app_id, kind, value(header, "event_id"), status)
+        if status != InboundDisposition.HANDLED.value:
+            raise RuntimeError("Feishu lifecycle event not accepted")
 
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
@@ -4361,28 +4380,6 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error(f"处理视频消息失败: {e}")
             return "[视频]", None
-
-    def _extract_text_from_file(self, file_path: str, max_len: int = 50000) -> str | None:
-        """从文本文件中提取内容。"""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read(max_len + 1)
-            if len(content) > max_len:
-                content = content[:max_len] + "\n... [内容已截断]"
-            return content
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            try:
-                with open(file_path, "r", encoding="gbk") as f:
-                    content = f.read(max_len + 1)
-                if len(content) > max_len:
-                    content = content[:max_len] + "\n... [内容已截断]"
-                return content
-            except Exception:
-                return None
-        except Exception as e:
-            logger.warning(f"提取文件内容失败: {e}")
-            return None
 
     # ==================== 文件消息发送 ====================
 

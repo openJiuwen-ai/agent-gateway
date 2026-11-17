@@ -485,7 +485,7 @@ async def serve_verified_download(
     *, routing_identity: dict[str, str] | None = None,
 ) -> Response:
     """Stream the existing signed, sealed asset over any AgentServer transport."""
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
     from agent_gateway.common.request_identity import apply_routing_metadata
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 

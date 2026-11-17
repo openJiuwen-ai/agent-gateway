@@ -11,8 +11,8 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse
 
 from agent_gateway.extensions.adx.config import load_router_config
 from agent_gateway.extensions.adx.control_client import AdxControlClient

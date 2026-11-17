@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_compat import e2a_to_agent_request
+from e2a.models import E2AEnvelope
+from e2a.message import ReqMethod
 from agent_gateway.common.expert_packages import METADATA_KEY, HEADER_NAME, encode_expert_packages_header, decode_expert_packages_header
 from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot, packages_from_template_rows
 from agent_gateway.routing.agent_client import _stamp_expert_packages
@@ -162,5 +162,14 @@ async def test_personal_packages_for_bot_skips_repository(monkeypatch: pytest.Mo
         _missing,
     )
     assert await packages_for_bot("bot-1") == []
+
+
+def test_allowlist_module_forwards_outbound_names() -> None:
+    from agent_gateway.enterprise.capabilities.experts import allowlist, outbound_packages
+
+    assert allowlist.bind_outbound_allowlist is outbound_packages.bind_outbound_packages
+    assert allowlist.outbound_allowlist_packages is outbound_packages.outbound_packages
+    assert allowlist.apply_allowlist_to_envelope is outbound_packages.apply_packages_to_envelope
+    assert allowlist.attach_expert_packages_header is outbound_packages.attach_expert_packages_header
 
 

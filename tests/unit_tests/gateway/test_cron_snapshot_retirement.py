@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-pytest.importorskip("openjiuwen_protocol")
+pytest.importorskip("e2a")
 
 from agent_gateway.cron.controller import CronController
 from agent_gateway.message_handler import message_handler as mh

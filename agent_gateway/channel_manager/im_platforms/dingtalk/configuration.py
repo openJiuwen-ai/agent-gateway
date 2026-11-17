@@ -125,16 +125,6 @@ def dingtalk_channel_settings(raw: Any, *, api_base: str, oapi_base: str) -> lis
     return settings
 
 
-def dingtalk_section_view(raw: Any) -> dict[str, Any]:
-    """The section as the settings page edits it: shared keys plus the normalized app list."""
-    section = (
-        {key: value for key, value in raw.items() if key not in _APP_KEYS and key != "apps"}
-        if isinstance(raw, Mapping) else {}
-    )
-    section["apps"] = dingtalk_apps(raw)
-    return section
-
-
 def merge_dingtalk_config(current: Any, changes: Mapping[str, Any]) -> dict[str, Any]:
     """Apply an apps[] edit and return the whole channels.dingtalk section to save.
 

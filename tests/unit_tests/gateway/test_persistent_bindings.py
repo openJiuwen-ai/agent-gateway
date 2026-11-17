@@ -2,7 +2,7 @@
 import hashlib
 
 import pytest
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 
 def test_bound_dingtalk_apps_keep_separate_robot_and_employee():

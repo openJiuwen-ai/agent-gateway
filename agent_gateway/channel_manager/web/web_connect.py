@@ -12,10 +12,10 @@ import asyncio
 import inspect
 import json
 import logging
-import secrets
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -23,7 +23,7 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from agent_gateway.channel_manager.base import (
@@ -34,6 +34,10 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
+from agent_gateway.enterprise.capabilities.skill_upload.guard import (
+    GUARDED_METHODS,
+    schedule_pending_install_result,
+)
 from agent_gateway.common.paths import get_logs_dir
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
@@ -43,6 +47,7 @@ from agent_gateway.common.protocol_ids import (
 from agent_gateway.common.security.ws_origin import (
     get_header_value,
 )
+from agent_gateway.common.session_ids import make_session_id
 from agent_gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
@@ -100,6 +105,42 @@ def _resolve_ws_auth_session(
         if value:
             return value
     return ""
+
+
+def _ws_header(ws: Any, name: str) -> str:
+    """Read a handshake header from the WS connection, if the server exposes it."""
+    value = get_header_value(getattr(ws, "request_headers", None), name)
+    return str(value).strip() if value else ""
+
+
+def _ws_cookie(ws: Any, name: str) -> str:
+    raw = _ws_header(ws, "cookie")
+    for part in raw.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
+    return ""
+
+
+# Manager 登录态会把 JWT 同步进这个 cookie，浏览器 new WebSocket 又无法设置
+# Authorization 头，所以 WS 握手只能靠它携带凭据。
+_WS_ACCESS_TOKEN_COOKIE = "openjiuwen_access_token"
+
+
+def _ws_authorization(ws: Any) -> str | None:
+    """Return the upload credential carried by the WS handshake.
+
+    Prefer a real ``Authorization`` header (native clients can set one). Browsers
+    cannot set headers on ``new WebSocket``, so fall back to the login cookie the
+    Manager session keeps in sync; otherwise an authorized browser would be
+    rejected as "permission check unavailable".
+    """
+    header = _ws_header(ws, "authorization")
+    if header:
+        return header
+    token = _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE)
+    return f"Bearer {token}" if token else None
+
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
@@ -249,6 +290,8 @@ class WebChannel(BaseWsChannel):
         # 未登记时，原连接已断开的事件落到 session 桶，投给重连后的新连接。
         # turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
+        # Bounded, connection-independent hints; Host remains authorization authority.
+        self._a4p_request_routes: OrderedDict[tuple[str, str, str, str], RoutingKey] = OrderedDict()
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -663,13 +706,8 @@ class WebChannel(BaseWsChannel):
         ws: Any,
         flat_query: dict[str, str],
         remote: Any,
-        *,
-        route_type: str = "ws",
     ) -> tuple[str | None, str]:
         """解析 ws 连接身份,供 /ws 和 /ws/git 共用(设计文档 §5.3.7)。
-
-        Args:
-            route_type: ``"ws"`` 主路由或 ``"git"`` /ws/git 路由,仅用于日志区分。
 
         Returns:
             ``(connection_user_id, routing_key_user_id)``
@@ -730,7 +768,7 @@ class WebChannel(BaseWsChannel):
                 )
             except Exception as send_err:
                 logger.warning(
-                    "WebChannel failed to send handler error response ({}): {}",
+                    "WebChannel failed to send handler error response (%s): %s",
                     invocation.method, send_err,
                 )
             return False
@@ -1275,6 +1313,7 @@ class WebChannel(BaseWsChannel):
         V2: 当 routing_target 非空时，按其 routing_keys 精确路由（_clients_by_key）。
         否则回退到全量广播（向后兼容）。
         """
+        self._remember_a4p_route(msg)
         _pl = getattr(msg, "payload", None) or {}
         _et = _pl.get("event_type", "") if isinstance(_pl, dict) else ""
         _has_fanout = bool((getattr(msg, "metadata", None) or {}).get("fan_out_targets"))
@@ -1428,6 +1467,15 @@ class WebChannel(BaseWsChannel):
                 code_text = res_payload.get("code")
                 if isinstance(code_text, str) and code_text:
                     frame["code"] = code_text
+
+            # 企业版 finalize 结果回写：审批单是安装结果的权威账本，仅在
+            # 门禁登记过本次请求时触发；失败只记日志，不影响响应投递。
+            # 注意：send() 是 WS 和 HTTP 的共用出口，WS peer 和
+            # HttpJsonOutbound/HttpSseOutbound 都会经过这里，回写不区分传输。
+            # 回写排到后台任务，Manager 抖动不阻塞本次响应投递。
+            schedule_pending_install_result(
+                msg.id, ok=bool(msg.ok), payload=res_payload
+            )
 
             ws_set: set[Any] = set()
             metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
@@ -1627,6 +1675,115 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    def _remember_a4p_route(self, msg: Message) -> None:
+        """Remember only Host-provided request identity, never client parameters."""
+        event = self._resolve_event_name(msg)
+        if event not in {"a4p.authorization_request", "a4p.authorization_terminated"}:
+            return
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        request_id = payload.get("requestId")
+        ref = getattr(msg, "agent_ref", None)
+        if isinstance(ref, dict):
+            mode, agent_id = ref.get("mode"), ref.get("id")
+        else:
+            mode, agent_id = getattr(ref, "mode", None), getattr(ref, "id", None)
+        app_id = getattr(msg, "app_id", None)
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        user_id = getattr(msg, "user_id", None) or metadata.get("user_id")
+        source_ws = self._ws_by_id.get(metadata.get("ws_id"))
+        if not user_id and source_ws is not None:
+            user_id = self._routing_key_user_id(
+                self._connection_user_id(source_ws),
+                getattr(source_ws, "remote_address", None),
+            )
+        # A physical connection can carry several logical identities. Fill only
+        # missing fields, and only when all known fields select a unique route.
+        if not all((app_id, mode, agent_id)) and source_ws is not None:
+            candidates = {
+                rk for rk, clients in self._clients_by_key.items()
+                if source_ws in clients and rk.session_id == msg.session_id
+                and rk.agent_ref is not None
+                and (not user_id or rk.user_id == user_id)
+                and (not app_id or rk.app_id == app_id)
+                and (not mode or rk.agent_ref.mode == mode)
+                and (not agent_id or rk.agent_ref.id == agent_id)
+            }
+            if len(candidates) == 1:
+                original = next(iter(candidates))
+                app_id = app_id or original.app_id
+                mode = mode or original.agent_ref.mode
+                agent_id = agent_id or original.agent_ref.id
+            else:
+                logger.debug(
+                    "[a4p] route hint skipped requestId=%s session=%s: source candidates=%d",
+                    request_id, msg.session_id, len(candidates),
+                )
+                return
+        fields = dict(requestId=request_id, mode=mode, agent_id=agent_id,
+                      app_id=app_id, user_id=user_id, session_id=msg.session_id)
+        missing = [name for name, value in fields.items()
+                   if not isinstance(value, str) or not value]
+        if missing:
+            logger.debug(
+                "[a4p] route hint skipped requestId=%s session=%s: missing=%s",
+                request_id, msg.session_id, ",".join(missing),
+            )
+            return
+        key = (user_id, app_id, msg.session_id, request_id)
+        if event == "a4p.authorization_terminated":
+            self._a4p_request_routes.pop(key, None)
+            return
+        replaced = payload.get("replacesRequestId")
+        if isinstance(replaced, str) and replaced != request_id:
+            self._a4p_request_routes.pop((user_id, app_id, msg.session_id, replaced), None)
+        self._a4p_request_routes[key] = RoutingKey(
+            user_id=user_id, channel_id=self.channel_id, app_id=app_id,
+            session_id=msg.session_id, agent_ref=AgentRef(mode=mode, id=agent_id),
+        )
+        self._a4p_request_routes.move_to_end(key)
+        while len(self._a4p_request_routes) > 4096:
+            self._a4p_request_routes.popitem(last=False)
+
+    def a4p_request_route(
+        self, routes: list[RoutingKey], request_id: str,
+        *, ws: Any = None, session_id: str | None = None,
+    ) -> RoutingKey | None:
+        """Resolve a hint within the connection's user/app/session scope."""
+        if ws is not None:
+            user_id = self.connection_user_id(ws)
+            app_id = getattr(ws, "_jiuwen_app_id", None)
+            if user_id and app_id and session_id:
+                cached = self._a4p_request_routes.get(
+                    (user_id, app_id, session_id, request_id)
+                )
+                if cached is not None:
+                    return cached
+        matches: set[RoutingKey] = set()
+        for route in routes:
+            key = (route.user_id, route.app_id, route.session_id, request_id)
+            cached = self._a4p_request_routes.get(key)
+            if cached is not None:
+                matches.add(cached)
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    def forget_a4p_route(self, route: RoutingKey, request_id: str | None) -> None:
+        """Remove only a resolved request in its original identity scope."""
+        key = (route.user_id, route.app_id, route.session_id, request_id)
+        if self._a4p_request_routes.get(key) == route:
+            self._a4p_request_routes.pop(key, None)
+
+    def a4p_pending_routes(
+        self, routes: list[RoutingKey], *, ws: Any, session_id: str,
+    ) -> set[RoutingKey]:
+        """Recover Host-provided identities without a request ID after refresh."""
+        scopes = {(r.user_id, r.app_id, r.session_id) for r in routes}
+        user_id = self.connection_user_id(ws)
+        app_id = getattr(ws, "_jiuwen_app_id", None)
+        if user_id and app_id and session_id:
+            scopes.add((user_id, app_id, session_id))
+        return {route for key, route in self._a4p_request_routes.items()
+                if key[:3] in scopes}
 
     def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
         """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
@@ -1871,7 +2028,7 @@ class WebChannel(BaseWsChannel):
             return
 
         connection_user_id, _user_id = self._resolve_ws_identity(
-            ws, _flat_query, remote, route_type="ws",
+            ws, _flat_query, remote,
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
         from agent_gateway.common.request_identity import normalize_routing_identity
@@ -1900,7 +2057,7 @@ class WebChannel(BaseWsChannel):
             _initial_sid = (
                 validate_session_id(_raw_initial_sid)
                 if _raw_initial_sid
-                else self._make_session_id()
+                else make_session_id()
             )
         except InvalidProtocolId as exc:
             logger.warning(
@@ -2087,7 +2244,7 @@ class WebChannel(BaseWsChannel):
         handler = GitDiffWebSocketHandler(self, registry)
 
         connection_user_id, _user_id = self._resolve_ws_identity(
-            ws, flat_query, remote, route_type="git",
+            ws, flat_query, remote,
         )
         _app_id = flat_query.get("app_id", "default")
         _rk = RoutingKey(
@@ -2109,7 +2266,7 @@ class WebChannel(BaseWsChannel):
         )
 
         try:
-            await handler.handle_connection(ws, flat_query)
+            await handler.handle_connection(ws)
         except WebSocketConnectionClosed as e:
             logger.info(
                 "[WebChannel] /ws/git 连接关闭: %s",
@@ -2235,6 +2392,30 @@ class WebChannel(BaseWsChannel):
                 )
                 return
 
+        # 企业版上传窄门禁：skills.import_upload 拒绝，skills.upload.finalize 走
+        # manager 复核；HTTP 与 WS 必须一致。
+        if method in GUARDED_METHODS:
+            from agent_gateway.channel_manager.web.invoke import (
+                enterprise_skill_upload_denial,
+            )
+
+            denial = await enterprise_skill_upload_denial(
+                method=method,
+                params=params,
+                request_id=req_id,
+                authorization=_ws_authorization(ws),
+                jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+            )
+            if denial is not None:
+                error, code = denial
+                logger.warning(
+                    "[WebChannel] skill upload denied via ws request_id=%s code=%s",
+                    req_id,
+                    code,
+                )
+                await self.send_response(ws, req_id, ok=False, error=error, code=code)
+                return
+
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。
         # 请求未带 session_id（如 memory.compute 心跳、updater.check、config.get
@@ -2253,7 +2434,7 @@ class WebChannel(BaseWsChannel):
             session_id = (
                 validate_session_id(_explicit_session_id)
                 if has_explicit_session
-                else self._make_session_id()
+                else make_session_id()
             )
             if method in _SWARMFLOW_CONTROL_METHODS:
                 run_id = params.get("run_id")
@@ -2310,7 +2491,7 @@ class WebChannel(BaseWsChannel):
         _agent_id = params.get("agent_id", "default")
         _app_id = _flat_query.get("app_id", "default")
         req_user_id = self._connection_user_id(ws)
-        if has_explicit_session:
+        if has_explicit_session and not method.startswith("a4p."):
             _rk = RoutingKey(
                 user_id=self._routing_key_user_id(req_user_id, getattr(ws, "remote_address", None)),
                 channel_id=self.channel_id,
@@ -2368,6 +2549,21 @@ class WebChannel(BaseWsChannel):
         attach_message_trace(user_message)
 
         # 发布到 route 或回调
+        # WS 分发与 HTTP 共享企业拦截语义：HTTP 走 invoke.dispatch_web_request
+        # 已在入口检查；本内联分发此前漏检，企业版禁写方法（config.set 等）
+        # 会经 WS 旁路到达本地 handler。拦截响应对齐 HTTP 的 FORBIDDEN 文案。
+        from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="企业版配置由管理面统一下发",
+                code="FORBIDDEN",
+            )
+            return
+
         handler = self._method_handlers.get(method)
         if method in self._local_only_methods:
             if handler is None:
@@ -2548,10 +2744,3 @@ class WebChannel(BaseWsChannel):
         return Mode.from_raw(raw_mode, default=Mode.AGENT_WORK_NORMAL)
 
     parse_mode = _parse_mode
-
-    @staticmethod
-    def _make_session_id() -> str:
-        # 与前端 generateSessionId 保持一致：毫秒时间戳(16进制) + 6位随机16进制
-        ts = format(int(time.time() * 1000), "x")
-        suffix = secrets.token_hex(3)
-        return f"sess_{ts}_{suffix}"

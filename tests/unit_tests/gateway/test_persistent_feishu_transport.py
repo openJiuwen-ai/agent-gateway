@@ -761,8 +761,8 @@ async def test_channel_manager_keeps_delivery_pending_while_bound_app_is_disconn
     ("jiuwenmate.group.inspect", "jiuwenmate.group.response"),
 ])
 async def test_gateway_push_returns_correlated_platform_receipt(event_type, method):
-    from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
-    from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
+    from e2a.agent_models import AgentResponseChunk
+    from e2a.wire_codec import encode_agent_chunk_for_wire
 
     handler = object.__new__(MessageHandler)
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))

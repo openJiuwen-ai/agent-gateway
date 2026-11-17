@@ -223,6 +223,48 @@ _IM_HOSTING_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# settings — a4p.* (enterprise HTTP User Authorizer; WS methods already exist)
+# ---------------------------------------------------------------------------
+_A4P_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/a4p/config", "a4p.config.get",
+        "a4p", "读取 A4P 配置",
+        query_keys=("session_id",),
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "PUT", "/a4p/config", "a4p.config.update",
+        "a4p", "更新 A4P 配置",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/a4p/authorization/pending", "a4p.authorization.pending",
+        "a4p", "查询待授权请求",
+        query_keys=("session_id",),
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/complete", "a4p.authorization.complete",
+        "a4p", "完成 A4P 授权",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/reject", "a4p.authorization.reject",
+        "a4p", "拒绝 A4P 授权",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/a4p/authorization/actions/reprepare", "a4p.authorization.reprepare",
+        "a4p", "调整 A4P 授权范围",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+)
+
 SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_CONFIG_ROUTES,
     *_A2A_INGRESS_ROUTES,
@@ -230,6 +272,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_LOCALE_ROUTES,
     *_CRON_ROUTES,
     *_IM_HOSTING_ROUTES,
+    *_A4P_ROUTES,
 )
 
 # ---------------------------------------------------------------------------
@@ -619,6 +662,18 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-stage", "skills.upload.stage",
+        "skills", "企业版：暂存上传包并返回签名描述符",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/skills/actions/upload-finalize", "skills.upload.finalize",
+        "skills", "企业版：按审批结果安装暂存包",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/{name}/files", "skills.files.list",
         "skills", "技能文件列表（工作副本）",
         path_to_param={"name": "name"},
@@ -801,6 +856,21 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "DELETE", "/sessions/{session_id}/media", "media.discard", "files",
         "删除未发送附件", accept_body=True, bind_session_param=True,
         path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "GET", "/sessions/{session_id}/assets", "session.assets.list", "files",
+        "列会话素材", bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "POST", "/sessions/{session_id}/assets", "session.assets.register", "files",
+        "登记会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id"},
+    ),
+    WebHttpMappedRoute(
+        "PATCH", "/sessions/{session_id}/assets/{asset_id}", "session.assets.rename", "files",
+        "重命名会话素材", accept_body=True, bind_session_param=True,
+        path_to_param={"session_id": "session_id", "asset_id": "asset_id"},
     ),
     WebHttpMappedRoute(
         "POST", "/sessions/{session_id}/documents", "document.persist", "files",

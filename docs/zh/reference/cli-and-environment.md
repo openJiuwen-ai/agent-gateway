@@ -54,6 +54,7 @@
 | `JIUWENSWARM_HOME` | 用户主目录 | 用户主目录；实例根目录为其下的 `.jiuwenswarm` |
 | `JIUWENSWARM_DATA_DIR` | 未设置 | 直接指定实例根目录，优先级高于 `JIUWENSWARM_HOME` |
 | `JIUWENSWARM_RUNTIME_WORKSPACE_READY` | 未设置 | 内部标记；由桌面端等父进程设置，避免重复初始化工作区 |
+| `JIUWENSWARM_GATEWAY_CONFIG_DIR` | 未设置 | Gateway 专用配置目录；文件名固定为 `config.yaml`，未设置时使用 `<config_dir>/config.yaml`，相对路径按配置目录解析；必须在 Gateway 进程启动前设置 |
 | `BROWSER_PROFILE_NAME` | `jiuwenclaw` | 浏览器相关功能的 profile 名称 |
 
 ### 健康检查 / 心跳
@@ -67,6 +68,10 @@
 ## 配置文件
 
 默认路径：`$JIUWENSWARM_DATA_DIR/infra/config/config.yaml`；未设置 `JIUWENSWARM_DATA_DIR` 时为 `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`。
+
+Gateway 可用 `JIUWENSWARM_GATEWAY_CONFIG_DIR` 指定独立配置目录；文件名固定为 `config.yaml`，首次缺失时从内置 `config.yaml` 初始化，已存在文件不会被覆盖。`logging.yaml` 仍按配置目录读取，不跟随该变量。
+
+该变量必须在 Gateway 进程启动前注入（systemd/drop-in、启动命令或早期 `--dotenv`）。`agent_gateway.common.config` 会在导入时绑定配置路径，不支持在进程运行中动态修改该变量来切换配置文件；请勿在 import 之后再修改，否则可能出现读写路径不一致。
 
 文件缺失时，配置读取回退到 Gateway 自带模板；独立启动会安装该模板，已有配置不会被覆盖。常用配置项：
 

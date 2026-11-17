@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from openjiuwen_protocol.logging_config import LOGGING_LEVEL_FIELDS
+from e2a.logging_config import LOGGING_LEVEL_FIELDS
 
 from agent_gateway.config.section import (
     DbFlatSectionCodec,
