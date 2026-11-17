@@ -182,6 +182,10 @@ class GatewayRequestOutput:
     meta: Mapping[str, Any] | None = None
 ```
 
+> **信任边界**：`user_id` 来自 query 参数或 `X-User-Id` 请求头，由客户端自声明、可伪造，
+> 不得作为认证结果或授权依据；握手阶段解析出的登录会话不会进入本输入。
+> 包的准入判断必须自行校验凭据（见 5.4）。
+
 路由语义：
 
 | 路由 | 运行时动作 |
@@ -195,7 +199,8 @@ class GatewayRequestOutput:
 ### 5.4 扩展鉴权
 
 登录、凭据校验与撤销、匿名访问范围和拒绝应答由扩展包的 `gateway.request` USER handler 实现。
-宿主不再提供 BUILTIN 认证门禁，也不根据包标记维护登录要求；headers 仅是提供给包的请求上下文。
+宿主不再提供 BUILTIN 认证门禁，也不根据包标记维护登录要求；headers 与 `user_id` 仅是提供给包的请求上下文，
+均不代表已认证身份。
 USER handler 在允许请求后调用 `next_handler`，独立浏览器分派器才会处理 application 槽位交互。
 具体职责和迁移边界见 [S_01](../specs/S_01_gateway-extension-runtime.md#6-扩展鉴权职责) 与 [F_02](../features/F_02_gateway-request-and-auth-gate.md)。
 
