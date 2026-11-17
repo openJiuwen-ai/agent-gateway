@@ -4394,28 +4394,6 @@ class FeishuChannel(BaseChannel):
             logger.error(f"处理视频消息失败: {e}")
             return "[视频]", None
 
-    def _extract_text_from_file(self, file_path: str, max_len: int = 50000) -> str | None:
-        """从文本文件中提取内容。"""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read(max_len + 1)
-            if len(content) > max_len:
-                content = content[:max_len] + "\n... [内容已截断]"
-            return content
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            try:
-                with open(file_path, "r", encoding="gbk") as f:
-                    content = f.read(max_len + 1)
-                if len(content) > max_len:
-                    content = content[:max_len] + "\n... [内容已截断]"
-                return content
-            except Exception:
-                return None
-        except Exception as e:
-            logger.warning(f"提取文件内容失败: {e}")
-            return None
-
     # ==================== 文件消息发送 ====================
 
     async def _send_file_message(
