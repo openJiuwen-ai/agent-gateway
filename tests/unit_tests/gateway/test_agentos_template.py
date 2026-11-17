@@ -85,3 +85,26 @@ def test_gateway_template_drops_context_engine_enabled() -> None:
 def test_gateway_templates_drop_preferred_language() -> None:
     assert "preferred_language" not in BASE
     assert "preferred_language" not in AGENTOS
+
+
+def test_gateway_templates_drop_mcp_and_heartbeat() -> None:
+    for key in ("mcp", "heartbeat"):
+        assert key not in BASE
+        assert key not in AGENTOS
+
+
+def test_gateway_templates_drop_enterprise_confirmed_flags() -> None:
+    for key in (
+        "a2ui",
+        "symphony",
+        "rsi",
+        "trajectory_ui",
+        "experimental",
+        "recommendation",
+    ):
+        assert key not in BASE
+        assert key not in AGENTOS
+
+
+def test_gateway_template_drops_permissions() -> None:
+    assert "permissions" not in BASE

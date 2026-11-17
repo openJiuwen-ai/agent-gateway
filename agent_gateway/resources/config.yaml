@@ -2,16 +2,6 @@
 # 启动时自动同步；保留 WHL 完整版本后缀，旧包或源码无日期时仅写版本号。
 config_version: ""
 
-
-a2ui:
-  enabled: false
-
-rsi:
-  enabled: true
-
-symphony:
-  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
-
 logging:
   level: INFO
   console_level: INFO
@@ -436,26 +426,6 @@ session_cleanup:
 # Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
 # auto_harness 不向 Web 暴露轨迹。
 # ============================================================
-trajectory_ui:
-  enabled: false                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
-  diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
-  db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
-  retention_days: 7                 # SQLite retention in days; 0 disables record expiry and database sweeping.
-  queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
-  batch_size: 64                    # writer 单事务最大记录数
-  flush_interval_ms: 200            # writer 最大合批等待时间
-  detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
-  # 流式帧只在 Span 未结束期间充当"尚未写完的输出"；Span 终态记录落库后，
-  # 记录本身即权威输出，前端会丢弃帧、详情查询不读帧、归档导出也不含帧。
-  # 置 true 时随终态记录一并删除这些帧（实测可省约 20% 轨迹库体积）；
-  # 若将来要做"逐帧回放已完成回答"，改为 false 可让帧保留至所属 turn 页被淘汰。
-  discard_final_span_frames: true
-
-experimental:
-  team_organization_ui_enabled: false # Team Organization 多团队视图；关闭后新建团队不挂载 org 工具
-  comfyui_workflow_enabled: false
-  task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
-  task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 
 react:
   agent_name: main_agent
@@ -725,19 +695,6 @@ gateway:
     # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
     auth_enabled: false
 
-heartbeat:
-  jobs:
-    min_interval_seconds: 60
-    max_active_jobs_per_session: 5
-    max_active_jobs_global: 100
-    default_max_runs: 12
-    default_concurrency_policy: skip
-    default_session_deleted_policy: disable
-    # 单次心跳任务的最长执行时间；超时后取消并记录 failed。
-    execution_timeout_seconds: 300
-    # 用户请求抢占心跳时，等待精确取消和清理完成的最长时间。
-    user_preemption_timeout_seconds: 10
-
 health_check:
   # 业务探活间隔（秒），默认 3600
   every: 3600
@@ -952,271 +909,6 @@ channels:
 # 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
 #
 # 三种动作: allow / ask / deny
-permissions:
-  enabled: false
-  schema: tiered_policy
-  permission_mode: normal
-  # Host-only. Inject agent-core package builtin_rules.yaml (command rules +
-  # sensitive_paths + net_urls). Default true; User/Session cannot override.
-  package_builtin_rules: true
-  # 缺省两项为 true。产品关闭结构地板与解释器汇点；危险命令仍走 builtin / rules。
-  shell_guard:
-    unknown_structure: false
-    interpreter_sink: false
-  # manual keeps the existing approval flow; auto enables Smart Approval.
-  mode: manual
-
-  defaults:
-    "*": "allow"
-
-  tools:
-    bash: allow
-    powershell: allow
-    mcp_exec_command: allow
-    create_terminal: allow
-    write: allow
-    write_file: allow
-    edit_file: allow
-    search_replace: allow
-    # ask_user 只向用户提问，不修改系统，自动放行避免权限中断阻塞问题选项呈现
-    ask_user: allow
-    write_memory: allow
-    edit_memory: allow
-    read_memory: allow
-    memory_search: allow
-    memory_get: allow
-    todo_create: allow
-    todo_insert: allow
-    todo_complete: allow
-    todo_remove: allow
-    todo_list: allow
-    # Coding Memory 工具权限
-    coding_memory_write: allow
-    coding_memory_edit: allow
-    coding_memory_read: allow
-    # 外接记忆工具（External Memory — OpenJiuwen / Mem0 / OpenViking）
-    ltm_search: allow
-    ltm_search_summary: allow
-    mem0_profile: allow
-    mem0_search: allow
-    mem0_conclude: allow
-    viking_search: allow
-    viking_read: allow
-    viking_browse: allow
-    viking_remember: allow
-    viking_add_resource: allow
-    mcp_free_search: allow
-    mcp_paid_search: allow
-    mcp_fetch_webpage: allow
-    cron_list_jobs: allow
-    cron_get_job: allow
-    cron_create_job: allow
-    cron_update_job: allow
-    cron_delete_job: allow
-    cron_toggle_job: allow
-    cron_preview_job: allow
-    # Heartbeat 任务工具，与 cron_* 同级；两份分布式 team 配置已在发布，
-    # 这里补齐后默认实例才有同样的条目可供覆盖。
-    heartbeat_list_jobs: allow
-    heartbeat_get_job: allow
-    heartbeat_create_job: allow
-    heartbeat_update_job: allow
-    heartbeat_delete_job: allow
-    heartbeat_toggle_job: allow
-    heartbeat_preview_job: allow
-    heartbeat_run_now: allow
-    heartbeat_cancel_run: allow
-    acp_chat: ask
-
-  rules:
-    - id: shell_allow_dir
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "dir *"
-      severity: LOW
-    - id: shell_allow_ls
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "ls *"
-      severity: LOW
-    - id: shell_allow_pwd
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "pwd *"
-      severity: LOW
-    - id: shell_allow_cd
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "cd *"
-      severity: LOW
-    - id: shell_allow_echo
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "echo *"
-      severity: LOW
-    - id: shell_allow_cat
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "cat *"
-      severity: LOW
-    - id: shell_allow_type
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "type *"
-      severity: LOW
-    - id: shell_allow_head
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "head *"
-      severity: LOW
-    - id: shell_allow_tail
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "tail *"
-      severity: LOW
-    - id: shell_allow_git_status
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "git status *"
-      severity: LOW
-    - id: shell_allow_git_log
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "git log *"
-      severity: LOW
-    - id: shell_allow_git_diff
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "git diff *"
-      severity: LOW
-    - id: shell_allow_git_branch
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "git branch *"
-      severity: LOW
-    # PowerShell cmdlet / alias counterparts of cd, pwd, ls/dir, cat/type, echo, head/tail
-    - id: shell_allow_set_location
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Set-Location *"
-      severity: LOW
-    - id: shell_allow_push_location
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Push-Location *"
-      severity: LOW
-    - id: shell_allow_pop_location
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Pop-Location *"
-      severity: LOW
-    - id: shell_allow_sl
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "sl *"
-      severity: LOW
-    - id: shell_allow_chdir
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chdir *"
-      severity: LOW
-    - id: shell_allow_get_location
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Get-Location *"
-      severity: LOW
-    - id: shell_allow_gl
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "gl *"
-      severity: LOW
-    - id: shell_allow_get_childitem
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Get-ChildItem *"
-      severity: LOW
-    - id: shell_allow_gci
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "gci *"
-      severity: LOW
-    - id: shell_allow_get_item
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Get-Item *"
-      severity: LOW
-    - id: shell_allow_gi
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "gi *"
-      severity: LOW
-    - id: shell_allow_get_content
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Get-Content *"
-      severity: LOW
-    - id: shell_allow_gc
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "gc *"
-      severity: LOW
-    - id: shell_allow_write_output
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Write-Output *"
-      severity: LOW
-    - id: shell_allow_write_host
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Write-Host *"
-      severity: LOW
-    - id: shell_allow_select_object
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: 're:(?i)^Select-Object\b'
-      severity: LOW
-    - id: shell_ask_rm
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "rm *"
-      severity: HIGH
-    - id: shell_ask_del
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "del *"
-      severity: HIGH
-    - id: shell_ask_rd
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "rd *"
-      severity: HIGH
-    - id: shell_ask_remove_item
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "Remove-Item *"
-      severity: HIGH
-    - id: shell_ask_ri
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "ri *"
-      severity: HIGH
-    - id: shell_ask_rmdir
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "rmdir *"
-      severity: HIGH
-    - id: shell_ask_erase
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "erase *"
-      severity: HIGH
-    - id: shell_ask_sensitive_file_reads
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: 're:(?i)(^|[\s;&|()])((cat|type|less|more|head|tail|grep|find|Get-Content|Select-String)\b[^;&|]*(id_rsa|id_ed25519|\.pem\b|\.pfx\b|\.key\b|\.kube/config|\.aws/(credentials|config)|\.npmrc\b|\.env(\.[A-Za-z0-9_-]+)?\b|authorized_keys|\.ssh/))'
-      severity: HIGH
-    # path_ask_* 已迁到 file_guard.paths（match: glob）；Pipeline A 不再重复匹配。
-    # - id: path_ask_ssh / path_ask_env → 见下方 file_guard.paths
-
-  # 数字分身 owner-scoped 权限（默认空，不生效）。键是 channel_id，由操作员或
-  # Web 设置页写入，本模板无从预知。留空而不是 {}：模板同时充当升级时的键
-  # 白名单，写成映射会被当作允许的子键全集，写进去的授权会被 _deep_merge
-  # 一并删掉——包括设置页刚刚保存的那一份。
-  owner_scopes:
-  deny_guidance_message: ""
-
-  # Native 路径层（agent-core FileGuard）。P1 起包内 sensitive_paths 在 file_guard.enabled
-  # 时注入（.ssh / .env / 私钥为 deny，家目录凭证为 ask）；下面 glob 可与目录重复，更严者胜。
-  file_guard:
-    enabled: true
-    defaults:
-      read: ask
-      write: ask
-      exec: ask
-    workspace:
-      read: allow
-      write: allow
-      exec: ask
-    paths:
-      - path: "**/.ssh/**"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
-      - path: "**/.env*"
-        match: glob
-        read: ask
-        write: ask
-        exec: ask
-
-  # Legacy external_directory：仅作兼容；启用上方 Native file_guard 后 "*" 不再驱动路径层。
-  # 新信任目录写入 file_guard.paths（/add-dir），勿再写本键具名 allow。
-  external_directory:
-    "*": "ask"
-
 browser:
   # Browser-only decisions. Existing LLM still handles fallback and final answers.
   decision:
@@ -1323,27 +1015,6 @@ hooks:
   #     hooks:
   #       - type: command
   #         command: "echo 'agent stopping'"
-
-
-mcp:
-  servers: []
-  # 示例：
-  # servers:
-  #   - name: playwright
-  #     enabled: true
-  #     transport: stdio
-  #     command: python
-  #     args: ["path/to/server.py", "--transport", "stdio"]
-  #     cwd: .
-  #     env:
-  #       LOG_LEVEL: INFO
-  #   - name: local-sse
-  #     enabled: false
-  #     transport: sse
-  #     url: http://127.0.0.1:9000/sse
-  #     headers:
-  #       Authorization: Bearer ${MCP_TOKEN}
-  #     timeout_s: 30
 
 
 modes:
@@ -1576,10 +1247,3 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
-recommendation:
-  # null = 跟随程序默认；用户切换后保存 true/false
-  topic_enabled: null
-  prompt_enabled: null
-  # 话题推荐模型：models 中某个模型的 model_id。
-  # 未配置时为空，不自动使用聊天模型。
-  model: ""
