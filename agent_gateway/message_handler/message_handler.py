@@ -3445,7 +3445,7 @@ class MessageHandler(ABC):
                     reason = "inline_budget_exhausted" if message_limited else "truncated_empty"
                     return file_reference(path, "text", reason)
                 text = result.text
-                remaining_bytes -= len(text.encode("utf-8"))
+                suffix = ""
                 reason = ""
                 if result.truncated:
                     if message_limited:
@@ -3454,7 +3454,9 @@ class MessageHandler(ABC):
                         f"\n... (truncated, original_size={result.original_size} bytes; "
                         f"use a file reading tool to continue: {escape(str(path), quote=True)})"
                     )
-                    text = f"{text}{suffix}"
+                inline_bytes = len(text.encode("utf-8")) + len(suffix.encode("utf-8"))
+                remaining_bytes = max(0, remaining_bytes - inline_bytes)
+                text = f"{text}{suffix}"
                 return (
                     f'\n<file-content path="{escape(raw, quote=True)}"{reason}>\n{text}\n</file-content>\n'
                 )
