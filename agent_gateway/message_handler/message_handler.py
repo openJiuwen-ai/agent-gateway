@@ -130,22 +130,6 @@ _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
 _AT_FILE_REFERENCE_PATTERN = re.compile(
     r'(?P<prefix>(?:^|(?<=\s)))@(?:"(?P<quoted>[^"]+)"|(?P<plain>[^\s#]+))(?:#[^#\s]*)?'
 )
-_KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
-    "sess_",
-    "web_",
-    "tui_",
-    "acp_",
-    "cron_",
-    "feishu_",
-    "wechat_",
-    "xiaoyi_",
-    "dingtalk_",
-    "wecom_",
-    "telegram_",
-    "discord_",
-    "slack_",
-    "whatsapp_",
-)
 # 定时任务会话里点允许之后，如果这一轮又冒出新的提问，纸条先留着。
 _CRON_RESUME_PAUSE_EVENTS = frozenset({
     "chat.ask_user_question",
@@ -3256,22 +3240,6 @@ class MessageHandler(ABC):
             return await asyncio.wait_for(self._robot_messages.get(), timeout=timeout)
         except asyncio.TimeoutError:
             return None
-
-    @staticmethod
-    def _is_session_map_style_session_id(session_id: str) -> bool:
-        parts = [part.strip() for part in str(session_id or "").split("::")]
-        if len(parts) not in (5, 6):
-            return False
-        return all(parts)
-
-    @classmethod
-    def _is_known_jiuwenswarm_session_id(cls, session_id: str | None) -> bool:
-        sid = str(session_id or "").strip()
-        if not sid:
-            return False
-        if sid.startswith(_KNOWN_JIUWENSWARM_SESSION_PREFIXES):
-            return True
-        return cls._is_session_map_style_session_id(sid)
 
     async def _ensure_acp_agent_session(self) -> str:
         from e2a.gateway_normalize import e2a_from_agent_fields
