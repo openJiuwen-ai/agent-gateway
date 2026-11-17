@@ -3050,19 +3050,6 @@ class FeishuChannel(BaseChannel):
             return text
         return text[:max_len].rstrip() + "..."
 
-    @staticmethod
-    def _stringify_value(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, (dict, list)):
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except Exception:
-                return str(value)
-        return str(value)
-
     _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp"})
 
     @staticmethod
