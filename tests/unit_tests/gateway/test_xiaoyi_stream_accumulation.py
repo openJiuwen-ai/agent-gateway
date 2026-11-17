@@ -129,3 +129,67 @@ async def test_next_turn_does_not_inherit_previous_text() -> None:
     await channel._send_legacy(_event("第二轮", msg_id="delta-2"))
 
     assert channel._accumulated_texts[_PHYSICAL_SESSION_ID] == "第二轮"
+
+
+async def test_empty_session_id_does_not_leak_accumulation() -> None:
+    """没有回发地址的消息不写累积缓冲：空 key 永远走不到 final 清理。"""
+
+    channel = _channel()
+    msg = _event("片段", msg_id="")
+    msg.metadata = {"im_sender_user_id": _AGENT_ID}
+
+    await channel._send_legacy(msg)
+
+    assert "" not in channel._accumulated_texts
+    assert channel._accumulated_texts == {}
+
+
+async def test_cancel_releases_accumulated_text() -> None:
+    """取消的轮次不再有 final / error，取消入口必须释放累积缓冲。"""
+
+    channel = _channel()
+    channel._send_agent_response = AsyncMock()
+
+    await channel._send_legacy(_event("半截", msg_id="delta-1"))
+    assert channel._accumulated_texts[_PHYSICAL_SESSION_ID] == "半截"
+
+    await channel._handle_tasks_cancel(
+        {"sessionId": _PHYSICAL_SESSION_ID, "params": {"id": _TASK_ID}}
+    )
+
+    assert _PHYSICAL_SESSION_ID not in channel._accumulated_texts
+
+
+def test_force_cleanup_releases_accumulated_text() -> None:
+    """强制清理会话时同步释放累积缓冲。"""
+
+    channel = _channel()
+    channel._accumulated_texts[_PHYSICAL_SESSION_ID] = "残留"
+
+    channel._force_cleanup_session(_PHYSICAL_SESSION_ID)
+
+    assert _PHYSICAL_SESSION_ID not in channel._accumulated_texts
+
+
+async def test_new_platform_request_resets_stale_accumulation() -> None:
+    """新一轮请求丢弃上一轮残留：否则后台推送摘要取到的是上一轮开头。"""
+
+    channel = _channel()
+    channel._accumulated_texts[_PHYSICAL_SESSION_ID] = "上一轮被中断的残留文本"
+
+    # 拦截 /mode team 的早退分支，只考察新请求入口的状态重置。
+    await channel._handle_message_stream(
+        {
+            "sessionId": _PHYSICAL_SESSION_ID,
+            "conversationId": _LOGICAL_SESSION_ID,
+            "agentId": _AGENT_ID,
+            "params": {
+                "id": _TASK_ID,
+                "message": {"parts": [{"kind": "text", "text": "/mode team"}]},
+            },
+        }
+    )
+
+    assert _PHYSICAL_SESSION_ID not in channel._accumulated_texts
+    assert _LOGICAL_SESSION_ID not in channel._accumulated_texts
+
