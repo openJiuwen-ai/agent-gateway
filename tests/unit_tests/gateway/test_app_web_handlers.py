@@ -375,7 +375,7 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
         SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", {}, "session-1"
     )
     assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
+    assert channel.responses[-1]["code"] == "A4P_SESSION_IDENTITY_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
