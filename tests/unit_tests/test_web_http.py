@@ -10,7 +10,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -119,8 +119,9 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     )
 
     web_http_routes = _load_module("jw_web_http_api_routes_under_test", HTTP_PATH)
-    channel = object()
+    channel = SimpleNamespace(unregister_request_outbound=AsyncMock())
     app = FastAPI()
+    app.state.test_channel = channel
     web_http_routes.register_web_http_api_routes(app, channel)
     return app, dispatch_mock
 
@@ -1257,3 +1258,183 @@ def test_mapped_routes_dispatch_rpc_method(app_with_mock):
                 f"method={got_method!r} want {expect}/{route.rpc_method} body={resp.text[:200]}"
             )
     assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("alias", ["user_answer", "answer"])
+@pytest.mark.parametrize("receipt", [
+    {"accepted": False, "resolved": False, "installed": False, "reason": "skill_already_exists"},
+    {"accepted": True, "resolved": True, "installed": True},
+    {"accepted": True, "resolved": True, "deferred": True},
+])
+def test_user_answer_waits_for_matching_final_result(app_with_mock, alias, receipt):
+    app, dispatch = app_with_mock
+    peers = []
+
+    async def _dispatch(*args, **kwargs):
+        peer = outbound_mod.HttpJsonOutbound()
+        peers.append(peer)
+        rid = kwargs["request_id"]
+        for frame in [
+            {"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}},
+            {"type": "res", "id": "other-rpc", "ok": True, "payload": {"resolved": True}},
+            {"type": "event", "event": "chat.error", "payload": {"request_id": "other-rpc", "error": "unrelated"}},
+            {"type": "res", "id": rid, "ok": True, "payload": receipt},
+        ]:
+            peer.accept_frame(frame)
+        return peer, rid, "session-result"
+
+    dispatch.side_effect = _dispatch
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/v1/chat/session-result/actions/{alias}?wait_for_result=true",
+            json={"request_id": "symphony_experience_recipe_1", "answers": []},
+        )
+    assert response.status_code == 200
+    assert response.json()["data"] == receipt
+    assert "wait_for_result" not in dispatch.await_args.kwargs["params"]
+    app.state.test_channel.unregister_request_outbound.assert_awaited_once_with(peers[0])
+
+
+@pytest.mark.parametrize("query", ["", "?wait_for_result=false"])
+def test_user_answer_default_returns_acceptance_ack(app_with_mock, query):
+    app, dispatch = app_with_mock
+
+    async def _dispatch(*args, **kwargs):
+        peer = outbound_mod.HttpJsonOutbound()
+        rid = kwargs["request_id"]
+        peer.accept_frame({"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}})
+        return peer, rid, "session-result"
+
+    dispatch.side_effect = _dispatch
+    with TestClient(app) as client:
+        response = client.post(f"/api/v1/chat/session-result/actions/user_answer{query}", json={})
+    assert response.status_code == 200
+    assert response.json()["data"] == {"accepted": True}
+    app.state.test_channel.unregister_request_outbound.assert_awaited_once()
+
+
+@pytest.mark.parametrize("error_kind", ["response", "event"])
+def test_user_answer_final_wait_ends_on_matching_error(app_with_mock, error_kind):
+    app, dispatch = app_with_mock
+
+    async def _dispatch(*args, **kwargs):
+        peer = outbound_mod.HttpJsonOutbound()
+        rid = kwargs["request_id"]
+        peer.accept_frame({"type": "res", "id": rid, "ok": True, "payload": {"accepted": True}})
+        if error_kind == "response":
+            peer.accept_frame({"type": "res", "id": rid, "ok": False, "code": "BAD_REQUEST", "error": "failed"})
+        else:
+            peer.accept_frame({"type": "event", "event": "chat.error", "payload": {"request_id": rid, "code": "BAD_REQUEST", "error": "failed"}})
+        return peer, rid, "session-result"
+
+    dispatch.side_effect = _dispatch
+    with TestClient(app) as client:
+        response = client.post("/api/v1/chat/session-result/actions/answer?wait_for_result=true", json={})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+    app.state.test_channel.unregister_request_outbound.assert_awaited_once()
+
+
+@pytest.mark.parametrize("configured, expected", [("15", 15.0), ("180", 120.0)])
+def test_user_answer_result_wait_caps_existing_timeout(app_with_mock, monkeypatch, configured, expected):
+    app, dispatch = app_with_mock
+    monkeypatch.setenv("GATEWAY_WEB_HTTP_UNARY_TIMEOUT", configured)
+    peer = SimpleNamespace(wait_response=AsyncMock(return_value={
+        "type": "res", "id": "fixed-result", "ok": False, "code": "TIMEOUT", "error": "request timeout",
+    }))
+    dispatch.return_value = peer, "fixed-result", "session-result"
+    with TestClient(app) as client:
+        response = client.post("/api/v1/chat/session-result/actions/answer?wait_for_result=true", json={})
+    assert response.status_code == 504
+    peer.wait_response.assert_awaited_once_with("fixed-result", timeout=expected, await_user_answer_result=True)
+    app.state.test_channel.unregister_request_outbound.assert_awaited_once_with(peer)
+
+
+def test_user_answer_wait_option_does_not_change_other_actions(app_with_mock, monkeypatch):
+    app, dispatch = app_with_mock
+    monkeypatch.setenv("GATEWAY_WEB_HTTP_UNARY_TIMEOUT", "180")
+    peer = SimpleNamespace(wait_response=AsyncMock(return_value={
+        "type": "res", "id": "fixed-result", "ok": True, "payload": {"accepted": True},
+    }))
+    dispatch.return_value = peer, "fixed-result", "session-result"
+    with TestClient(app) as client:
+        response = client.post("/api/v1/chat/session-result/actions/interrupt?wait_for_result=true", json={})
+    assert response.status_code == 200
+    peer.wait_response.assert_awaited_once_with("fixed-result", timeout=180.0)
+
+
+def test_user_answer_final_wait_has_one_deadline_and_handles_close():
+    async def _run():
+        peer = outbound_mod.HttpJsonOutbound()
+        async def acknowledgements():
+            while not peer.closed:
+                peer.accept_frame({"type": "res", "id": "r1", "ok": True, "payload": {"accepted": True}})
+                await asyncio.sleep(0.005)
+        sender = asyncio.create_task(acknowledgements())
+        try:
+            result = await asyncio.wait_for(peer.wait_response("r1", timeout=0.05, await_user_answer_result=True), timeout=0.5)
+            assert result["code"] == "TIMEOUT"
+        finally:
+            await peer.close()
+            await sender
+        closed = outbound_mod.HttpJsonOutbound()
+        await closed.close()
+        result = await closed.wait_response("r1", timeout=1, await_user_answer_result=True)
+        assert result["error"] == "connection closed"
+    asyncio.run(_run())
+
+
+def test_user_answer_result_wait_unregisters_after_cancellation(app_with_mock):
+    import httpx
+    app, dispatch = app_with_mock
+    peers = []
+
+    async def _run():
+        started = asyncio.Event()
+        async def _dispatch(*args, **kwargs):
+            peer = outbound_mod.HttpJsonOutbound()
+            peers.append(peer)
+            started.set()
+            return peer, kwargs["request_id"], "session-result"
+        dispatch.side_effect = _dispatch
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            request = asyncio.create_task(client.post("/api/v1/chat/session-result/actions/answer?wait_for_result=true", json={}))
+            await started.wait()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+        app.state.test_channel.unregister_request_outbound.assert_awaited_once_with(peers[0])
+    asyncio.run(_run())
+
+
+def test_user_answer_result_route_uses_real_dispatch_and_releases_outbound():
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+
+    # Other route tests cache the canonical module with a stub dispatcher.
+    # Load the production routes afresh so this test uses the real dispatcher.
+    web_http = _load_module("jw_web_http_real_dispatch_under_test", HTTP_PATH)
+
+    channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
+    seen = []
+    receipt = {"accepted": False, "resolved": False, "installed": False, "reason": "skill_already_exists"}
+
+    async def _handler(outbound, req_id, params, session_id, **kwargs):
+        seen.append(outbound)
+        assert outbound.outbound_id in channel.delivery.request_outbounds
+        await channel.send_response(outbound, req_id, ok=True, payload={"accepted": True})
+        await channel.send_response(outbound, req_id, ok=True, payload=receipt)
+
+    channel.register_method("chat.user_answer", _handler)
+    app = FastAPI()
+    web_http.register_web_http_api_routes(app, channel)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/chat/session-result/actions/user_answer?wait_for_result=true",
+            json={"request_id": "symphony_experience_recipe_1", "answers": []},
+        )
+    assert response.status_code == 200
+    assert response.json()["data"] == receipt
+    assert len(seen) == 1
+    assert seen[0].closed
+    assert seen[0].outbound_id not in channel.delivery.request_outbounds

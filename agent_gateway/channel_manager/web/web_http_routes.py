@@ -459,10 +459,14 @@ def register_web_http_api_routes(
     )
     async def chat_user_answer(
         session_id: str, request: Request, body: ChatActionBody | None = None,
+        wait_for_result: bool = Query(False, description="Wait for the final user-answer result, not its acceptance ACK."),
     ) -> Response:
         payload = _body_dict(body)
         payload["session_id"] = session_id
-        return await _unary(request, channel, "chat.user_answer", payload, is_stream=True)
+        return await _unary(
+            request, channel, "chat.user_answer", payload, is_stream=True,
+            wait_for_result=wait_for_result,
+        )
 
     @app.get(
         "/api/v1/catalog",
@@ -675,6 +679,7 @@ async def _unary(
     created: bool = False,
     is_stream: bool = False,
     bind_session_param: bool = True,
+    wait_for_result: bool = False,
 ) -> JSONResponse:
     outbound = None
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex
@@ -693,10 +698,14 @@ async def _unary(
             bind_session_param=bind_session_param,
             client_host=_request_client_host(request),
         )
-        # For forwarded stream methods without SSE Accept, wait for first res (accepted).
-        frame = await outbound.wait_response(
-            req_id, timeout=resolve_web_http_unary_timeout(),
-        )
+        # Only explicit user-answer callers wait beyond the transport ACK.
+        timeout = resolve_web_http_unary_timeout()
+        if method == "chat.user_answer" and wait_for_result:
+            frame = await outbound.wait_response(
+                req_id, timeout=min(timeout, 120.0), await_user_answer_result=True,
+            )
+        else:
+            frame = await outbound.wait_response(req_id, timeout=timeout)
         body, status = _envelope_from_res(frame, req_id, rpc_method=method)
         if created and body.get("ok"):
             status = 201
