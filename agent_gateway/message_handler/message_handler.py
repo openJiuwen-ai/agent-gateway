@@ -1225,19 +1225,6 @@ class MessageHandler(ABC):
         self._channel_states[key] = state
         return state
 
-    def _save_channel_state_to_config(self, channel_id: str) -> None:
-        """将指定 Channel 的默认 session_id / mode 写回 config.yaml."""
-        state = self._channel_states.get(channel_id)
-        if not state:
-            return
-        self._update_channel_in_config(
-            channel_id,
-            {
-                "default_session_id": state.session_id or "",
-                "default_mode": state.mode.value if hasattr(state.mode, 'value') else str(state.mode),
-            },
-        )
-
     async def _allocate_channel_session(
         self,
         msg: "Message",
