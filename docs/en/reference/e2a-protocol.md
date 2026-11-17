@@ -24,6 +24,15 @@
 - **`channel_context`**: optional; transitional or residual keys that do not fit normalized fields; `from_dict` may migrate legacy `metadata` for compatibility.
 - E2A **does not** specify the transport (WebSocket, HTTP, etc.).
 
+### Method ownership and dispatch
+
+- The business `method` in an E2A envelope is a wire string. The protocol package does not define `ReqMethod` or resolve in-project RPC names.
+- `ReqMethod` and its business validation belong to AgentServer / JiuwenSwarm; the single implementation is `jiuwenswarm/common/schema/message.py`.
+- The Gateway does not maintain the Swarm method vocabulary or a forwarding allowlist. Actually registered local handlers run first; Web core handlers plus TUI, plugin, channel-binding, and all other real local handlers remain local.
+- Methods without a local handler are forwarded to Swarm as strings without rewriting business `params`. Swarm Front returns `METHOD_NOT_FOUND` for unknown methods.
+- ACK methods such as `chat.send`, `chat.interrupt`, and `history.get` retain Gateway acknowledgement and are also forwarded.
+- The generic HTTP entry is `POST /api/v1/rpc` with `method`, `params`, and `is_stream`. A local handler executes locally when present; otherwise the request is forwarded. Generic streams reuse the existing SSE channel and terminal rules and do not define custom terminal semantics for arbitrary business events.
+
 `config.moa_status` always runs on the target AgentServer through E2A, including
 single-user WebSocket deployments and AgentOS routing. The Gateway forwards
 `params.model_selection` and the authenticated user identity without reading local

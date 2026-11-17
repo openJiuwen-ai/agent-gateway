@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
 from agent_gateway.extensions.registry import ExtensionRegistry
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -29,7 +29,7 @@ def _chat_send_message(params: dict[str, object]) -> Message:
         params=params,
         timestamp=0,
         ok=True,
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         is_stream=True,
     )
 
@@ -138,7 +138,7 @@ async def test_non_chat_method_skips_hook_and_update(monkeypatch):  # noqa: ANN0
         p["query"] = "改写"
 
     msg = _chat_send_message({"query": "hello"})
-    msg.req_method = ReqMethod.HISTORY_GET
+    msg.req_method = 'history.get'
 
     out = await _trigger_hook_and_collect(msg, monkeypatch, mutate)
 

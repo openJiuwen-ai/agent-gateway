@@ -2,7 +2,7 @@
 import hashlib
 
 import pytest
-from e2a.message import ReqMethod
+
 
 
 def test_bound_dingtalk_apps_keep_separate_robot_and_employee():
@@ -19,7 +19,8 @@ def test_bound_dingtalk_apps_keep_separate_robot_and_employee():
                                     "jiuwenmate.group.response"])
 def test_gateway_wire_method_decodes(method):
     import agent_gateway  # noqa: F401 -- registers supported transport methods
-    assert ReqMethod(method).value == method
+    from e2a.models import E2AEnvelope
+    assert E2AEnvelope(method=method).method == method
 
 
 def test_only_matching_original_session_file_can_be_delivered(tmp_path, monkeypatch):

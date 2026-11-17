@@ -839,12 +839,12 @@ async def test_ws_entry_runs_upload_gate(monkeypatch: pytest.MonkeyPatch) -> Non
     assert send_response.await_args.kwargs["code"] == "SKILL_UPLOAD_NOT_APPROVED"
 
 
-def test_upload_methods_are_forwarded_to_agentserver() -> None:
-    from agent_gateway.channel_manager.web.app_web_handlers import (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS,
-        _FORWARD_REQ_METHODS,
-    )
+def test_upload_methods_are_guarded_instead_of_using_a_forward_allowlist() -> None:
+    from agent_gateway.channel_manager.base import RobotMessageRouter
+    from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     for method in ("skills.upload.stage", "skills.upload.finalize"):
-        assert method in _FORWARD_REQ_METHODS
-        assert method in _FORWARD_NO_LOCAL_HANDLER_METHODS
+        assert method in guard.GUARDED_METHODS
+        assert method not in channel._method_handlers
+        assert method not in channel._local_only_methods

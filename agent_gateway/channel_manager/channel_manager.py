@@ -586,7 +586,6 @@ class ChannelManager(ABC):
         async def _persist_hook(content: Any, category: str, filename: str) -> dict[str, Any]:
             import base64 as _base64
 
-            from e2a.message import ReqMethod
 
             from agent_gateway.routing.agent_http_bridge import (
                 E2A_PAYLOAD_MAX_BYTES,
@@ -643,7 +642,7 @@ class ChannelManager(ABC):
 
             ok, payload = await fetch_agent_unary(
                 agent_client=agent_client,
-                req_method=ReqMethod.IM_FILE_PERSIST,
+                req_method="im.file_persist",
                 params={
                     "platform": storage_platform,
                     "category": category,

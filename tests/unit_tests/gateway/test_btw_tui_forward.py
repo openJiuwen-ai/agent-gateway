@@ -1,12 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Tests that command.btw is correctly wired in TUI connection forwarding sets.
+"""TUI forwards unregistered methods and preserves registered local handlers."""
 
-Verifies the changes from c44c8864 (add /btw command) that added
-command.btw to CLI_FORWARD_REQ_METHODS and CLI_FORWARD_NO_LOCAL_HANDLER_METHODS.
-"""
-
-from __future__ import annotations
+import json
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,108 +14,51 @@ except Exception:  # noqa: BLE001
     pytest.skip("pysbd unusable on this interpreter (0.3.4 invalid escapes)",
                 allow_module_level=True)
 
-from agent_gateway.channel_manager.tui.tui_connect import (
-    CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
-    CLI_FORWARD_REQ_METHODS,
-    CliHandlersBindParams,
-    build_cli_route_binding,
-    register_cli_handlers,
-)
+from tests.unit_tests.gateway.test_app_gateway_acp import build_server, FakeWebSocket
 
 
-class FakeGatewayServer:
-    """Fake GatewayServer for testing CLI handler registration."""
-
-    def __init__(self) -> None:
-        self.local_handlers: dict[str, dict] = {}  # path -> {method: handler}
-        self.responses: list[dict] = []
-
-    def register_local_handler(self, path: str, method: str, handler) -> None:
-        if path not in self.local_handlers:
-            self.local_handlers[path] = {}
-        self.local_handlers[path][method] = handler
-
-    async def send_response(
-        self, ws, req_id, *, ok=True, payload=None, error=None, code=None
-    ) -> None:
-        self.responses.append(
-            {
-                "id": req_id,
-                "ok": ok,
-                "payload": payload or {},
-                "error": error,
-                "code": code,
-            }
-        )
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["command.btw", "command.compact", "future.capability.execute"])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_tui_default_forward(method, stream):
+    server = build_server()
+    ws = FakeWebSocket()
+    upstream = AsyncMock()
+    server.on_message(upstream)
+    params = {"session_id": "s1", "content": {"nested": [False, None, 1]}}
+    await server.handle_raw_message_public(ws, json.dumps({
+        "type": "req", "id": "r1", "method": method, "params": params, "is_stream": stream,
+    }), path="/tui")
+    upstream.assert_awaited_once()
+    message = upstream.await_args.args[0]
+    assert type(message.req_method) is str
+    assert message.req_method == method
+    assert message.params == params
+    assert message.is_stream is stream
+    assert not ws.sent_frames
 
 
-class TestBtwInForwardSets:
-    """Verify command.btw is registered in the required forward sets."""
-
-    @staticmethod
-    def test_command_btw_in_cli_forward_req_methods():
-        """command.btw must be in CLI_FORWARD_REQ_METHODS."""
-        assert "command.btw" in CLI_FORWARD_REQ_METHODS
-
-    @staticmethod
-    def test_command_btw_in_cli_forward_no_local_handler_methods():
-        """command.btw must be in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS."""
-        assert "command.btw" in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
-
-    @staticmethod
-    def test_route_binding_includes_command_btw():
-        """build_cli_route_binding must include command.btw in forward methods."""
-        from agent_gateway.channel_manager.tui.tui_connect import CliRouteBindParams
-
-        bind_params = CliRouteBindParams(path="/tui")
-        binding = build_cli_route_binding(bind_params)
-        assert "command.btw" in binding.forward_methods
-
-    @staticmethod
-    def test_register_cli_handlers_does_not_create_local_handler_for_btw():
-        """command.btw has no local handler — it is forwarded to agent server."""
-        server = FakeGatewayServer()
-        register_cli_handlers(
-            CliHandlersBindParams(
-                channel=server,
-                agent_client=None,
-                message_handler=None,
-                on_config_saved=None,
-                path="/tui",
-            )
-        )
-
-        cli_handlers = server.local_handlers.get("/tui", {})
-        # command.btw should NOT have a local handler
-        assert "command.btw" not in cli_handlers
-
-    @staticmethod
-    def test_all_cli_forward_methods_are_strings():
-        """All entries in CLI_FORWARD_REQ_METHODS should be strings."""
-        for method in CLI_FORWARD_REQ_METHODS:
-            assert isinstance(method, str), f"Expected str, got {type(method)}: {method}"
-
-    @staticmethod
-    def test_btw_not_in_both_local_and_forward():
-        """command.btw in NO_LOCAL_HANDLER means no local handler registered."""
-        assert "command.btw" in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
-        assert "command.btw" in CLI_FORWARD_REQ_METHODS
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["tui.disconnect", "plugin.local.action"])
+async def test_tui_registered_handler_stays_local(method):
+    server = build_server()
+    local = AsyncMock()
+    upstream = AsyncMock()
+    server.register_local_handler("/tui", method, local)
+    server.on_message(upstream)
+    await server.handle_raw_message_public(FakeWebSocket(), json.dumps({
+        "type": "req", "id": "local", "method": method, "params": {},
+    }), path="/tui")
+    local.assert_awaited_once()
+    upstream.assert_not_awaited()
 
 
-class TestBtwVsOtherCommands:
-    """Compare command.btw with sibling commands to verify consistency."""
-
-    @staticmethod
-    def test_command_btw_like_command_recap():
-        """command.btw should follow the same pattern as command.compact (forward, no local)."""
-        assert "command.compact" in CLI_FORWARD_REQ_METHODS
-        assert "command.compact" in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
-        # btw should match the pattern
-        assert "command.btw" in CLI_FORWARD_REQ_METHODS
-        assert "command.btw" in CLI_FORWARD_NO_LOCAL_HANDLER_METHODS
-
-    @staticmethod
-    def test_command_btw_is_frozenset():
-        """CLI_FORWARD_REQ_METHODS is a frozenset, so membership checks are O(1)."""
-        assert isinstance(CLI_FORWARD_REQ_METHODS, frozenset)
-        assert isinstance(CLI_FORWARD_NO_LOCAL_HANDLER_METHODS, frozenset)
+@pytest.mark.asyncio
+async def test_tui_missing_transport_reports_unavailable():
+    server = build_server()
+    ws = FakeWebSocket()
+    await server.handle_raw_message_public(ws, json.dumps({
+        "type": "req", "id": "offline", "method": "future.execute", "params": {},
+    }), path="/tui")
+    assert len(ws.sent_frames) == 1
+    assert ws.sent_frames[0]["code"] == "SERVICE_UNAVAILABLE"

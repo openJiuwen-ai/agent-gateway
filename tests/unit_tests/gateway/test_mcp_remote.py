@@ -55,7 +55,7 @@ async def test_remote_callback_returns_result_and_shapes_request(fake_unary) -> 
     )
 
     assert result is True
-    assert fake_unary.captured["req_method"].value == "command.mcp"
+    assert fake_unary.captured["req_method"] == "command.mcp"
     assert fake_unary.captured["params"] == {
         "action": "oauth_callback",
         "query": {"code": "abc", "state": "s1"},

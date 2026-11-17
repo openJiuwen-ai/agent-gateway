@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import inspect
 import json
@@ -12,7 +13,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.channel_manager.base import (
     BaseChannel,
@@ -299,7 +299,7 @@ class WhatsAppChannel(BaseChannel):
             params={"content": text, "query": text},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             metadata={
                 "whatsapp_jid": jid,
                 "whatsapp_sender": sender,

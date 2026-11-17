@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from e2a.message import ReqMethod
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ async def fetch_zen_free_model_rows(agent_client: Any) -> list[dict[str, Any]]:
     """Return public Zen rows from AgentServer, or ``[]`` when it is unreachable."""
     ok, payload = await fetch_agent_unary(
         agent_client=agent_client,
-        req_method=ReqMethod.MODELS_ZEN_ENTRIES,
+        req_method="models.zen_entries",
         params={},
         session_id=None,
         user_id=None,
@@ -36,7 +35,7 @@ async def request_zen_warmup(agent_client: Any) -> None:
     """Ask AgentServer to refresh its Zen cache after a free-model toggle."""
     ok, payload = await fetch_agent_unary(
         agent_client=agent_client,
-        req_method=ReqMethod.MODELS_ZEN_WARM,
+        req_method="models.zen_warm",
         params={},
         session_id=None,
         user_id=None,

@@ -56,7 +56,7 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
 
     assert result == {"team_name": "remote-team"}
     assert fake_unary.captured["agent_client"] is not None
-    assert fake_unary.captured["req_method"].value == "session.get_metadata"
+    assert fake_unary.captured["req_method"] == "session.get_metadata"
     assert fake_unary.captured["params"] == {
         "session_id": "sess-1",
         "enable_writeback": True,
