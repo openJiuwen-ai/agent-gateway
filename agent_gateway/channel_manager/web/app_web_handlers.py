@@ -2410,11 +2410,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         await channel.send_response(ws, req_id, ok=True, payload={"cli_agent": cli_agent})
 
-    async def _request_zen_warmup() -> None:
-        from agent_gateway.zen_query import request_zen_warmup
-
-        await request_zen_warmup(_resolve(agent_client))
-
     async def _config_validate_model(ws, req_id, params, session_id, max_tokens_bounds=None):
         """models/config 域实现已下沉 ``jiuwenswarm.common.config_panel.models_handlers``。"""
         await models_handlers.config_validate_model_handler(
