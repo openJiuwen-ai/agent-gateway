@@ -6404,38 +6404,6 @@ class MessageHandler(ABC):
                         session_id,
                     )
 
-    async def _send_stream_cancelled_notification(
-        self, request_id: str | None, channel_id: str, session_id: str | None
-    ) -> None:
-        """发送流式任务被取消的通知到客户端."""
-        if not request_id:
-            return
-
-        from e2a.message import EventType, Message
-
-        cancel_msg = Message(
-            id=request_id,
-            type="event",
-            channel_id=channel_id,
-            session_id=session_id,
-            params={},
-            timestamp=time.time(),
-            ok=True,
-            payload={
-                "event_type": "chat.interrupt_result",
-                "intent": "cancel",
-                "success": True,
-                "message": "任务已取消",
-            },
-            event_type=EventType.CHAT_INTERRUPT_RESULT,
-            metadata=None,
-        )
-        await self.publish_robot_messages(cancel_msg)
-        logger.debug(
-            "[MessageHandler] 已发送流式任务取消通知: request_id=%s",
-            request_id,
-        )
-
     def _register_stream_consumer(
         self, env: "E2AEnvelope", session_id: str | None, task: asyncio.Task,
         *, metadata: dict | None, app_id: str, emit_processing_status: bool,
