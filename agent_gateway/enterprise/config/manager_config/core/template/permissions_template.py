@@ -123,28 +123,6 @@ async def _upsert_permissions_template_from_sync(
     await repo.update({"template_id": tid}, updates)
 
 
-async def _sync_permissions_templates_records(
-    repo: EnterpriseRecordRepository,
-    templates: list[dict[str, Any]],
-) -> dict[str, Any]:
-    incoming_ids: set[str] = set()
-    synced = 0
-    for item in templates:
-        if not isinstance(item, dict):
-            raise ValueError("permissions_templates.sync templates must be objects")
-        tid = _normalize_template_id(item.get("template_id"))
-        incoming_ids.add(tid)
-        await _upsert_permissions_template_from_sync(repo, item)
-        synced += 1
-    deleted = 0
-    for row in await repo.list():
-        tid = str(row.get("template_id") or "")
-        if tid and tid not in incoming_ids:
-            if await delete_permissions_template(repo, tid):
-                deleted += 1
-    return {"synced_count": synced, "deleted_count": deleted}
-
-
 class PermissionsTemplateService:
 
     async def create(
