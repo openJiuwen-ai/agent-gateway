@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from typing import Any
 
-from agent_gateway.common.protocol_methods import (
+from agent_gateway.common.gateway_methods import (
     SKILL_UPLOAD_FINALIZE,
     SKILL_UPLOAD_STAGE,
 )

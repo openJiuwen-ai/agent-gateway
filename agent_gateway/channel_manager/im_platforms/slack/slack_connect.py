@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import logging
 import re
@@ -10,7 +11,6 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from e2a.message import EventType, Message, ReqMethod
 from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
@@ -228,7 +228,7 @@ class SlackChannel(BaseChannel):
             provider="slack",
             chat_id=channel_id,
             user_id=user_id,
-            req_method=ReqMethod.CHAT_SEND,
+            req_method="chat.send",
             metadata={
                 "user_id": user_id,
                 "slack_event_id": event_id,

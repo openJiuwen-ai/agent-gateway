@@ -4,12 +4,12 @@
 
 from __future__ import annotations
 
+from e2a.message import Message
 import secrets
 import time
 from typing import Any
 
 from e2a.gateway_normalize import message_to_e2a_or_fallback
-from e2a.message import Message, ReqMethod
 
 
 class HeartbeatServiceUnavailableError(Exception):
@@ -37,7 +37,7 @@ class HeartbeatControllerProxy:
             type="req",
             channel_id=channel_id or "web",
             session_id=session_id,
-            req_method=ReqMethod.HEARTBEAT_JOB,
+            req_method="heartbeat.job",
             params={"action": action, "data": dict(data or {})},
             timestamp=time.time(),
             ok=True,

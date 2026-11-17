@@ -65,8 +65,6 @@ async def pair(request):
     binding = build_cli_route_binding(CliRouteBindParams(ws_channel=channel, message_handler=handler))
     route = RouteConfig(
         path="/tui", channel_id="tui", ws_channel=channel,
-        forward_methods=binding.forward_methods,
-        forward_no_local_handler_methods=binding.forward_no_local_handler_methods,
         session_bind_handler=binding.session_bind_handler,
         disconnect_handler=binding.disconnect_handler,
     )
@@ -204,7 +202,7 @@ async def test_switch_completion_does_not_wait_for_lifecycle_membership_lookup(p
     release_lookup = asyncio.Event()
 
     async def slow_metadata(**kwargs):
-        assert kwargs["req_method"].value == "session.get_metadata"
+        assert kwargs["req_method"] == "session.get_metadata"
         lookup_started.set()
         await release_lookup.wait()
         return False, {"code": "NOT_FOUND"}

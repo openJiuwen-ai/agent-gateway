@@ -368,7 +368,6 @@ class JoinExitHandlers:
         不再进历史，避免同一条消息既实时又历史造成重复。
         """
         from e2a.gateway_normalize import e2a_from_agent_fields
-        from e2a.message import ReqMethod
 
         channel_id = msg.channel_id
         reply_session_id = msg.session_id
@@ -377,7 +376,7 @@ class JoinExitHandlers:
                 request_id=f"join-history-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                 channel_id=channel_id,
                 session_id=session_id,
-                req_method=ReqMethod.TEAM_HISTORY_GET,
+                req_method="team.history.get",
                 params={
                     "session_id": session_id,
                     "member_name": member_name,
@@ -459,14 +458,13 @@ class JoinExitHandlers:
         由调用方统一拼"team 不存在"文案。channel_id 不参与业务查询，仅回填 E2A envelope。
         """
         from e2a.gateway_normalize import e2a_from_agent_fields
-        from e2a.message import ReqMethod
 
         try:
             env = e2a_from_agent_fields(
                 request_id=f"join-members-{int(time.time() * 1000):x}-{secrets.token_hex(3)}",
                 channel_id=channel_id,
                 session_id=session_id,
-                req_method=ReqMethod.TEAM_MEMBERS_GET,
+                req_method="team.members.get",
                 params={"session_id": session_id, "team_name": team_name},
             )
             resp = await self._h.agent_client.send_request(env)

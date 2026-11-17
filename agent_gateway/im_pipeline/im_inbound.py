@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from e2a.message import Message
 import json
 import os
 from dataclasses import dataclass, field
@@ -16,7 +17,6 @@ from openjiuwen.core.foundation.llm.schema.config import (
     ModelClientConfig,
     ModelRequestConfig,
 )
-from e2a.message import Message, ReqMethod
 
 from agent_gateway.common.config import _parse_custom_headers
 from agent_gateway.common.paths import get_deepagent_user_md_path, logger
@@ -184,7 +184,7 @@ class IMConversationProcessor:
         *,
         pending_context: str | None = None,
     ) -> InboundProcessResult:
-        if msg.req_method != ReqMethod.CHAT_SEND:
+        if msg.req_method != "chat.send":
             return InboundProcessResult(reason="non-chat-send")
 
         text = self._extract_text(msg)

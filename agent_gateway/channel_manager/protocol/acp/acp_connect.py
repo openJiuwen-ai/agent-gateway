@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from e2a.message import EventType, Message, Mode
 import argparse
 import asyncio
 import json
@@ -39,7 +40,6 @@ from e2a.models import (
     E2AResponse,
     utc_now_iso,
 )
-from e2a.message import EventType, Message, Mode, ReqMethod
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import parse_dotenv_early
@@ -49,7 +49,6 @@ parse_dotenv_early("agent-gateway-acp")
 # --- Now safe to import jiuwenswarm modules ---
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from agent_gateway.common.version import get_runtime_version
-from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -66,7 +65,7 @@ def _acp_tool_response_message_factory(
 ) -> Message:
     """为协议包 ``build_acp_tool_response_message`` 构造本仓 ``Message`` 实例。
 
-    协议包不依赖 jiuwenswarm 的 Message/ReqMethod（拆分边界），调用方注入
+    协议包不依赖 jiuwenswarm 的方法词汇表，调用方注入
     本工厂保持 ``_dispatch_message`` 收到的仍是 Message 对象（与迁移前一致）。
     """
     return Message(
@@ -77,7 +76,7 @@ def _acp_tool_response_message_factory(
         params=params,
         timestamp=time.time(),
         ok=True,
-        req_method=ReqMethod.ACP_TOOL_RESPONSE,
+        req_method="acp.tool_response",
         is_stream=False,
         metadata=metadata,
     )
@@ -326,7 +325,7 @@ class AcpGatewayBridge:
                         },
                         timestamp=time.time(),
                         ok=True,
-                        req_method=ReqMethod.CHAT_SEND,
+                        req_method="chat.send",
                         mode=Mode.AGENT,
                         metadata={"acp": {"jsonrpc_id": rpc_id, "method": method}},
                     )
@@ -898,16 +897,16 @@ class AcpChannel(BaseChannel):
             or self.config.default_session_id
         )
 
-        req_method = parse_request_method(method)
+        req_method = self._parse_req_method(method)
         if method == "session/prompt":
             text = self._extract_prompt_text(params)
             params.setdefault("content", text)
             params.setdefault("query", text)
-            req_method = ReqMethod.CHAT_SEND
+            req_method = "chat.send"
         if req_method is None:
             raise ValueError(f"unsupported ACP/E2A method: {method or '<empty>'}")
 
-        if req_method == ReqMethod.CHAT_SEND:
+        if req_method == "chat.send":
             params.setdefault("query", params.get("content", ""))
 
         return Message(
@@ -919,7 +918,7 @@ class AcpChannel(BaseChannel):
             timestamp=time.time(),
             ok=True,
             req_method=req_method,
-            is_stream=bool(env.is_stream or req_method == ReqMethod.CHAT_SEND),
+            is_stream=bool(env.is_stream or req_method == "chat.send"),
             metadata={
                 "acp": {
                     "jsonrpc_id": env.jsonrpc_id,
@@ -1146,7 +1145,7 @@ class AcpChannel(BaseChannel):
             params=dict(params),
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.INITIALIZE,
+            req_method="initialize",
             is_stream=False,
             metadata={"acp": {"method": "initialize"}},
         )
@@ -1232,7 +1231,7 @@ class AcpChannel(BaseChannel):
             params={"session_id": session_id},
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method="chat.interrupt",
             is_stream=False,
             metadata={"acp": {"jsonrpc_id": rpc_id, "method": "session/cancel"}},
         )
@@ -1561,6 +1560,16 @@ class AcpChannel(BaseChannel):
         return ""
 
     @staticmethod
+    def _parse_req_method(method: str) -> str | None:
+        """ACP 对外只暴露有限方法集，未知方法返回 ``None`` 由调用方拒绝。
+
+        值仍是线上字符串，不做枚举解析。
+        """
+        from agent_gateway.common.gateway_methods import ACP_METHODS
+
+        return method if method in ACP_METHODS else None
+
+    @staticmethod
     def _provenance(kind: str) -> E2AProvenance:
         return E2AProvenance(
             source_protocol=E2A_SOURCE_PROTOCOL_E2A,
@@ -1642,7 +1651,7 @@ class AcpChannel(BaseChannel):
         if msg.mode is not None:
             params.setdefault("mode", msg.mode.to_runtime_mode())
 
-        req_method = getattr(msg.req_method, "value", None)
+        req_method = msg.req_method
         if not isinstance(req_method, str) or not req_method:
             raise ValueError("gateway forward requires req_method")
 

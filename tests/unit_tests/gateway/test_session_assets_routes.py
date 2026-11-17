@@ -12,7 +12,6 @@ from agent_gateway.channel_manager.web.http_routes.mapped import (
     mapped_routes_for_edition,
 )
 from agent_gateway.channel_manager.web.web_http_routes import _params_from_mapped_route
-from agent_gateway.common.request_method import parse_request_method
 
 _ASSET_ROUTES = (
     ("GET", "/sessions/{session_id}/assets", "session.assets.list"),
@@ -92,10 +91,10 @@ async def test_rename_params_keep_name_and_path_ids() -> None:
     assert params["session_id"] == "sess-1"
 
 
-def test_workspace_file_routes_parse_to_req_method() -> None:
+def test_workspace_file_routes_have_nonempty_rpc_methods() -> None:
     missing = [
         route.rpc_method
         for route in WORKSPACE_FILE_ROUTES
-        if parse_request_method(route.rpc_method) is None
+        if not isinstance(route.rpc_method, str) or not route.rpc_method.strip()
     ]
     assert missing == []

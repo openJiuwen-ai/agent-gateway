@@ -101,7 +101,6 @@ def register_welink_bindings(channel, manager, request, colleague_lock, welink_a
 
     async def _save_welink_connection(config_id, account, patch, *, credential_source=None):
         """Commit either authorization step to the account's own agent, in order with deletion."""
-        from e2a.message import ReqMethod
         from agent_gateway.channel_manager.im_platforms.welink.welink_binding import save_welink_authorization
 
         from agent_gateway.channel_manager.im_platforms.welink.facts import credential_dir_for, welink_connection_key
@@ -112,7 +111,7 @@ def register_welink_bindings(channel, manager, request, colleague_lock, welink_a
 
         async with colleague_lock(config_id):
             listed, failure = await _connection_request(
-                ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
+                "jiuwenmate.colleague.connections", {"config_id": config_id},
             )
             if failure is not None:
                 raise BindingError(*failure)
@@ -131,7 +130,7 @@ def register_welink_bindings(channel, manager, request, colleague_lock, welink_a
                                    if existing and item.get("agent_id") == existing["persistent_agent_id"]),
                                   welink_connection_key(account, config_id))
             connected, failure = await _connection_request(
-                ReqMethod.JIUWENMATE_CONNECTION_ATTACH,
+                "jiuwenmate.connection.attach",
                 {"config_id": config_id, "channel": "welink", "connection_key": connection_key},
             )
             if failure is not None:

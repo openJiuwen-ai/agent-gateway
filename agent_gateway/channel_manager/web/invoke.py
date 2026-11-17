@@ -9,8 +9,8 @@ import logging
 from typing import Any
 
 from e2a.message import Message
-
-from agent_gateway.common.protocol_methods import (
+from agent_gateway.common.gateway_methods import (
+    ACK_METHODS,
     SKILL_UPLOAD_FINALIZE,
     SKILL_UPLOAD_STAGE,
 )
@@ -42,6 +42,15 @@ _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "updater.upgrade", "updater.reset_source", "updater.set_conf",
     "multimodal.models.upsert", "multimodal.models.delete",
     "multimodal.tools.update", "multimodal.config.apply",
+})
+_ENTERPRISE_ONLY_METHODS = frozenset({
+    "team.create",
+    "team.get",
+    "team.stop",
+    "team.member.join",
+    "team.member.leave",
+    "team.members.list",
+    "team.quota.get",
 })
 _ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.", "mcp.server.")
 _ENTERPRISE_SKILL_ALLOWED = frozenset({
@@ -75,7 +84,7 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
 def is_enterprise_write_forbidden(method: str) -> bool:
     """Central guard shared by WS and HTTP; Cron and locale remain user-writable."""
     if not is_enterprise():
-        return False
+        return method in _ENTERPRISE_ONLY_METHODS
     if method in _ENTERPRISE_BLOCKED_EXACT or method.startswith(_ENTERPRISE_BLOCKED_PREFIXES):
         return True
     if method.startswith("a2a."):
@@ -142,7 +151,7 @@ async def dispatch_web_request(
     authorization: str | None = None,
     jiuwenclaw_id: str | None = None,
 ) -> None:
-    """Run HANDLER_BEFORE → on_message (or bus) → local handler / METHOD_NOT_FOUND.
+    """Run local handlers, otherwise forward the unrecognized method upstream.
 
     ``outbound`` is the reply target: a real WebSocket peer or request-scoped
     HTTP Outbound (``HttpJsonOutbound`` / ``HttpSseOutbound``).
@@ -214,6 +223,12 @@ async def dispatch_web_request(
             override=True,
         )
     handler_already_called = False
+    if handler is not None and method not in ACK_METHODS:
+        await _invoke_handler(
+            channel, outbound=outbound, method=method, request_id=request_id,
+            params=handler_params, session_id=session_id, handler=handler,
+        )
+        return
     if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
         handler_already_called = await _invoke_handler(
             channel,
@@ -236,10 +251,11 @@ async def dispatch_web_request(
         handled_by_callback = bool(result)
     else:
         bus = getattr(channel, "bus", None)
-        if bus is not None and hasattr(bus, "publish_user_messages"):
-            await bus.publish_user_messages(user_message)
+        if bus is not None and hasattr(bus, "route_user_message"):
+            await bus.route_user_message(user_message)
+            handled_by_callback = True
 
-    if handled_by_callback:
+    if handled_by_callback and (handler is None or handler_already_called):
         return
     if handler_already_called:
         return
@@ -259,6 +275,6 @@ async def dispatch_web_request(
             outbound,
             request_id,
             ok=False,
-            error=f"unknown method: {method}",
-            code="METHOD_NOT_FOUND",
+            error="upstream transport is unavailable",
+            code="SERVICE_UNAVAILABLE",
         )

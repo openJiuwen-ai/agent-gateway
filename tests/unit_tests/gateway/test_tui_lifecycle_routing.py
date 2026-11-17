@@ -79,7 +79,7 @@ async def test_tui_project_replay_isolates_real_connections_and_deduplicates(mon
     async def fake_call(**kwargs):
         routing = kwargs["metadata"].get("routing", {})
         scope = routing.get("group_id", "")
-        if kwargs["req_method"].value == "session.get_metadata":
+        if kwargs["req_method"] == "session.get_metadata":
             metadata_calls.append(kwargs)
             sid = kwargs["params"]["session_id"]
             pause = metadata_pauses.pop(sid, None)
@@ -91,9 +91,9 @@ async def test_tui_project_replay_isolates_real_connections_and_deduplicates(mon
                 return False, {"code": "SERVICE_UNAVAILABLE"}
             project_id = project_by_session.get(sid)
             return (True, {"project_id": project_id}) if project_id else (False, {"code": "NOT_FOUND"})
-        if kwargs["req_method"].value == "session.unarchive":
+        if kwargs["req_method"] == "session.unarchive":
             return True, {"results": [{"session_id": "s1", "project_id": "p1", "ok": True, "restored": True}]}
-        assert kwargs["req_method"].value == "project.lifecycle"
+        assert kwargs["req_method"] == "project.lifecycle"
         await ready.wait()
         return True, {"events": await snapshots[scope].get()}
 
@@ -114,8 +114,6 @@ async def test_tui_project_replay_isolates_real_connections_and_deduplicates(mon
     ))
     route = RouteConfig(
         path="/tui", channel_id="tui", session_bind_handler=binding.session_bind_handler,
-        forward_methods=frozenset({"session.switch", "chat.send"}),
-        forward_no_local_handler_methods=frozenset({"session.switch"}),
         ws_channel=binding.ws_channel,
     )
     server = GatewayServer(GatewayServerConfig(routes={"/tui": route}), SimpleNamespace())
@@ -123,11 +121,13 @@ async def test_tui_project_replay_isolates_real_connections_and_deduplicates(mon
 
     async def switched(msg):
         forwarded.append(msg)
+        if msg.req_method == "history.get":
+            return
         assert msg.metadata["user_id"] == "u1"
         assert msg.metadata.get("routing", {}) == {
             key: value for key, value in first._web_routing.items() if key != "user_id"
         }
-        if msg.req_method.value == "chat.send":
+        if msg.req_method == "chat.send":
             return
         if delegated:
             assert msg.metadata["ws_id"] == first._jiuwen_ws_id
@@ -383,7 +383,7 @@ async def test_tui_deletion_before_first_poll_preserves_project_membership(
     delivered = asyncio.Event()
 
     async def fake_call(**kwargs):
-        method = kwargs["req_method"].value
+        method = kwargs["req_method"]
         sid = kwargs["params"].get("session_id")
         if method == "session.get_metadata":
             project_id = projects.get(sid)
@@ -440,7 +440,7 @@ async def test_tui_lifecycle_frame_targets_session_ids_not_the_ambient_session_i
     forwarded = []
 
     async def fake_call(**kwargs):
-        name = kwargs["req_method"].value
+        name = kwargs["req_method"]
         if name == "session.get_metadata":
             return False, {"code": "NOT_FOUND"}
         if name == "project.lifecycle":
@@ -484,14 +484,14 @@ async def _watched_window(monkeypatch, projects, failing=frozenset()):
     original_sleep = asyncio.sleep
 
     async def fake_call(**kwargs):
-        if kwargs["req_method"].value == "session.get_metadata":
+        if kwargs["req_method"] == "session.get_metadata":
             sid = kwargs["params"]["session_id"]
             metadata_calls.append(sid)
             if sid in failing:
                 return False, {"code": "SERVICE_UNAVAILABLE"}
             project_id = projects.get(sid)
             return (True, {"project_id": project_id}) if project_id else (False, {"code": "NOT_FOUND"})
-        assert kwargs["req_method"].value == "project.lifecycle"
+        assert kwargs["req_method"] == "project.lifecycle"
         return True, {"events": await snapshots.get()}
 
     async def poll_again(delay):
@@ -594,7 +594,7 @@ async def test_bind_hook_finds_a_window_bound_under_a_three_part_key(monkeypatch
     """Binding keys may carry an agent_ref part. The hook must still keep one
     active Session per window and resolve its project membership."""
     async def fake_call(**kwargs):
-        if kwargs["req_method"].value == "session.get_metadata":
+        if kwargs["req_method"] == "session.get_metadata":
             return True, {"project_id": "p1"}
         await asyncio.Event().wait()
 
@@ -639,7 +639,7 @@ async def test_overlapping_membership_lookups_share_the_project_cache(monkeypatc
     gates = []
 
     async def fake_call(**kwargs):
-        assert kwargs["req_method"].value == "session.get_metadata"
+        assert kwargs["req_method"] == "session.get_metadata"
         gate = asyncio.Event()
         gates.append(gate)
         await gate.wait()

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from e2a.message import Message, ReqMethod
+from e2a.message import Message
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
@@ -49,7 +49,7 @@ async def test_multimodal_dispatch_respects_enterprise_write_policy(monkeypatch,
     else:
         message = Message(
             id="multimodal-policy", type="req", channel_id="web", session_id="settings",
-            params={}, timestamp=1.0, ok=True, req_method=ReqMethod(method),
+            params={}, timestamp=1.0, ok=True, req_method=method,
             metadata={"routing": {"bot_id": "bot"}},
         )
         await dispatch_web_request(
@@ -68,4 +68,4 @@ async def test_multimodal_dispatch_respects_enterprise_write_policy(monkeypatch,
         assert result["payload"] == {"forwarded": True}
         send.assert_awaited_once()
         assert send.await_args.args[0].method == method
-        callback.assert_awaited_once()
+        callback.assert_not_awaited()

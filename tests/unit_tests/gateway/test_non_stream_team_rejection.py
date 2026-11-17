@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
 from agent_gateway.message_handler.message_handler import (
     _NON_STREAM_TEAM_NOTICE,
     MessageHandler,
@@ -19,7 +19,7 @@ def _chat_send(*, mode: str, enable_streaming: bool) -> Message:
         type="request",
         channel_id="feishu",
         session_id="sess-team",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method='chat.send',
         params={"content": "拆解一下这个需求", "mode": mode},
         timestamp=0.0,
         ok=True,
@@ -65,7 +65,7 @@ def test_non_streaming_single_agent_send_is_allowed():
 
 def test_non_streaming_non_chat_request_is_untouched():
     msg = _chat_send(mode="team", enable_streaming=False)
-    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.req_method = 'chat.interrupt'
 
     assert MessageHandler._is_unsupported_non_stream_team_send(msg) is False
 

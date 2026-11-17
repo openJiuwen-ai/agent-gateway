@@ -24,6 +24,15 @@
 - **`channel_context`**：可选；仅过渡或无法落入规范化字段的残余键；`from_dict` 可将旧 `metadata` 迁入以兼容历史。
 - E2A **不规定**传输层（WebSocket、HTTP 等）。
 
+### 方法归属与分发
+
+- E2A 信封中的业务 `method` 是线协议字符串；协议包不定义 `ReqMethod`，也不解析项目 RPC 方法名。
+- `ReqMethod` 及其业务校验归属 AgentServer / JiuwenSwarm，单一实现位于 `jiuwenswarm/common/schema/message.py`。
+- Gateway 不维护 Swarm 方法全集或转发白名单。实际注册的本地 handler 优先执行；Web 核心 handler、TUI、插件、通道绑定等所有本地 handler 都保留。
+- 未命中本地 handler 的 method 默认按字符串原样转发给 Swarm，业务 `params` 不额外改写；Swarm 未知方法由 Swarm Front 返回 `METHOD_NOT_FOUND`。
+- ACK 类方法（如 `chat.send`、`chat.interrupt`、`history.get`）保留 Gateway 本地确认，同时继续转发。
+- HTTP 通用入口为 `POST /api/v1/rpc`，请求体携带 `method`、`params`、`is_stream`；本地 handler 命中则本地执行，否则转发。通用流沿用现有 SSE 通道与终态规则，不为任意业务事件定义自定义终态。
+
 `config.moa_status` 始终经 E2A 在目标 AgentServer 执行，包括单用户 WebSocket
 部署和 AgentOS 路由。Gateway 转发 `params.model_selection` 和已认证用户身份，
 不读取本地 MoA 配置。成功响应包含 `configured`，配置就绪时还包含

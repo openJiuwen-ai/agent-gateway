@@ -24,6 +24,10 @@ from agent_gateway.channel_manager.web.http_routes.mapped import (
     catalog_entries,
     mapped_routes_for_edition,
 )
+from agent_gateway.channel_manager.web.request_validation import (
+    normalize_web_method,
+    validate_swarmflow_request,
+)
 from agent_gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
 from agent_gateway.channel_manager.web.web_http_timeouts import (
     resolve_web_http_history_timeout,
@@ -32,6 +36,7 @@ from agent_gateway.channel_manager.web.web_http_timeouts import (
     resolve_web_http_sse_timeout,
     resolve_web_http_unary_timeout,
 )
+from agent_gateway.common.protocol_ids import InvalidProtocolId
 
 _HEADER_TO_PARAM = {
     "x-user-id": "user_id",
@@ -114,6 +119,12 @@ class ChatSendBody(_ExtraAllow):
 
 class ChatActionBody(_ExtraAllow):
     pass
+
+
+class RpcBody(BaseModel):
+    method: str = Field(min_length=1)
+    params: dict[str, Any] = Field(default_factory=dict)
+    is_stream: bool = False
 
 
 def _body_dict(body: BaseModel | dict[str, Any] | None) -> dict[str, Any]:
@@ -242,6 +253,19 @@ def register_web_http_api_routes(
     )
 
     register_share_job_routes(app)
+
+    @app.post("/api/v1/rpc", tags=["rpc"], summary="Invoke a method by wire name")
+    async def invoke_method(request: Request, body: RpcBody) -> Response:
+        try:
+            method = normalize_web_method(body.method)
+        except InvalidProtocolId as exc:
+            return JSONResponse(
+                {"ok": False, "error": {"code": "BAD_REQUEST", "message": str(exc)}},
+                status_code=400,
+            )
+        if body.is_stream:
+            return await _stream(request, channel, method, body.params)
+        return await _unary(request, channel, method, body.params, bind_session_param=False)
 
     @app.get("/api/v1/health", tags=["health"], summary="探活")
     async def health(request: Request) -> JSONResponse:
@@ -713,6 +737,7 @@ async def _unary(
     if error is not None:
         return error
     try:
+        validate_swarmflow_request(method, params)
         outbound, req_id, _sid = await dispatch_http_request(
             channel,
             method=method,
@@ -737,6 +762,17 @@ async def _unary(
             status = 201
         return JSONResponse(
             body, status_code=status, headers=_response_headers(req_id, method),
+        )
+    except InvalidProtocolId as exc:
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {"code": "BAD_REQUEST", "message": str(exc), "details": {}},
+                "metadata": _web_http_metadata(method),
+            },
+            status_code=400,
+            headers=_response_headers(req_id, method),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)
@@ -849,6 +885,19 @@ async def _stream(
     error = _chat_identity_error(request, method, params, req_id)
     if error is not None:
         return error
+    try:
+        validate_swarmflow_request(method, params)
+    except InvalidProtocolId as exc:
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {"code": "BAD_REQUEST", "message": str(exc), "details": {}},
+                "metadata": _web_http_metadata(method),
+            },
+            status_code=400,
+            headers=_response_headers(req_id, method),
+        )
 
     async def gen() -> AsyncIterator[str]:
         outbound = None

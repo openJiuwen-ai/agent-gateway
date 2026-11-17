@@ -499,7 +499,7 @@ async def test_failed_membership_lookup_does_not_fail_the_lifecycle_request(monk
     forwarded = []
 
     async def fake_call(**kwargs):
-        name = kwargs["req_method"].value
+        name = kwargs["req_method"]
         if name == "project.lifecycle":
             return False, {}
         forwarded.append(name)

@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import FastAPI
-from e2a.message import ReqMethod
+
 
 pytest.importorskip("a2a", reason="a2a-sdk is an optional extra (pyproject a2a group); skip when not installed")
 
@@ -56,7 +56,7 @@ async def test_catalog_gateway_rpc_without_session_or_agent(hub_failed):
     )
     send_request.assert_awaited_once()
     envelope = send_request.await_args.args[0]
-    assert envelope.method == ReqMethod.HUB_EXPERT_PACKAGES_CATALOG.value
+    assert envelope.method == 'hub.expert_packages.catalog'
     assert envelope.params == {}
     assert envelope.session_id is None
     assert envelope.user_id is None
@@ -90,8 +90,8 @@ def test_hub_catalog_method_available_without_application_imports():
     """A standalone Gateway can use the pinned protocol without Server shims."""
     script = (
         "import sys; "
-        "from e2a.message import ReqMethod; "
-        "assert ReqMethod('hub.expert_packages.catalog') is ReqMethod.HUB_EXPERT_PACKAGES_CATALOG; "
+        "from e2a.models import E2AEnvelope; "
+        "assert E2AEnvelope(method='hub.expert_packages.catalog').method == 'hub.expert_packages.catalog'; "
         "assert not any(name.split('.')[0] in ('jiuwenswarm', 'gateway', 'agent_gateway') "
         "for name in sys.modules)"
     )

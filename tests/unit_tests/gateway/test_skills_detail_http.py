@@ -4,17 +4,20 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+from unittest.mock import AsyncMock
+
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
 
 import agent_gateway
 
 _GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
-_INVOKE = _GATEWAY_ROOT / "channel_manager" / "web" / "invoke.py"
 _MAPPED = _GATEWAY_ROOT / "channel_manager" / "web" / "http_routes" / "mapped.py"
 
 _SKILL_DETAIL_READ_METHODS: dict[str, tuple[str, str]] = {
@@ -33,23 +36,6 @@ def _load_mapped():
     return module
 
 
-def _enterprise_skill_allowed() -> set[str]:
-    tree = ast.parse(_INVOKE.read_text(encoding="utf-8"))
-    for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "_ENTERPRISE_SKILL_ALLOWED" for t in node.targets):
-            continue
-        assert isinstance(node.value, ast.Call)
-        assert node.value.args and isinstance(node.value.args[0], (ast.Set, ast.Tuple, ast.List))
-        out: set[str] = set()
-        for elt in node.value.args[0].elts:
-            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
-                out.add(elt.value)
-        return out
-    raise AssertionError("_ENTERPRISE_SKILL_ALLOWED not found in invoke.py")
-
-
 @pytest.mark.parametrize("method,expected", sorted(_SKILL_DETAIL_READ_METHODS.items()))
 def test_skill_detail_read_methods_have_gateway_mapped_routes(
     method: str, expected: tuple[str, str]
@@ -65,5 +51,19 @@ def test_skill_detail_read_methods_have_gateway_mapped_routes(
 
 
 @pytest.mark.parametrize("method", sorted(_SKILL_DETAIL_READ_METHODS))
-def test_skill_detail_read_methods_allowed_in_enterprise(method: str) -> None:
-    assert method in _enterprise_skill_allowed()
+@pytest.mark.asyncio
+async def test_skill_detail_read_methods_forwarded_in_enterprise(method, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    upstream = AsyncMock(return_value=True)
+    channel.on_message(upstream)
+    outbound, _, _ = await dispatch_http_request(
+        channel, method=method, params={"name": "example"}, bind_session_param=False,
+    )
+    try:
+        upstream.assert_awaited_once()
+        assert upstream.await_args.args[0].req_method == method
+        assert upstream.await_args.args[0].params == {"name": "example"}
+    finally:
+        channel.unregister_request_outbound(outbound)
+        await outbound.close()

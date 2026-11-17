@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from e2a.message import EventType, Message
 import asyncio
 import heapq
 import json
@@ -13,7 +14,6 @@ from zoneinfo import ZoneInfo
 
 from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from e2a.gateway_normalize import e2a_from_agent_fields
-from e2a.message import EventType, Message, ReqMethod
 
 from agent_gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
@@ -979,7 +979,7 @@ class CronSchedulerService:
                 request_id=f"cron-cancel-{state.run_id}",
                 channel_id=channel_id,
                 session_id=target_session_id,
-                req_method=ReqMethod.CHAT_CANCEL,
+                req_method="chat.interrupt",
                 params=cancel_params,
                 is_stream=False,
                 timestamp=self._now_fn(),
@@ -1346,7 +1346,7 @@ class CronSchedulerService:
         gate_timeout_s = 60.0 if is_enterprise() else 10.0
         # 三个身份一起带上，Agent 才打开这个用户的工作区，而不是 default 空目录。
         ok, payload = await fetch_agent_unary(
-            agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
+            agent_client=self._agent_client, req_method="project.lifecycle",
             params={"project_id": project_id}, session_id=None, user_id=user_id,
             channel_id="__cron__", timeout_seconds=gate_timeout_s,
             metadata=apply_routing_metadata(
@@ -1451,7 +1451,7 @@ class CronSchedulerService:
 
         ok, result = await fetch_agent_unary(
             agent_client=self._agent_client,
-            req_method=ReqMethod.CRON_SESSIONS_DELETE,
+            req_method="cron.sessions.delete",
             params={"cron_id": job_id},
             session_id=None,
             user_id=user_id,
@@ -1633,7 +1633,7 @@ class CronSchedulerService:
         env = e2a_from_agent_fields(
             request_id=f"cron-session-create-{run_id}",
             channel_id="web" if _is_web_cron_job(job) else "__cron__",
-            req_method=ReqMethod.SESSION_CREATE,
+            req_method="session.create",
             params={
                 "create_token": f"cron:{run_id}",
                 "mode": mode,
@@ -2038,7 +2038,7 @@ class CronSchedulerService:
                     request_id=f"proactive-tick-{ev.run_id}",
                     channel_id="__cron__",
                     session_id=f"cron_{job.id}",
-                    req_method=ReqMethod.PROACTIVE_TICK,
+                    req_method="proactive.tick",
                     params={"target_channel": job.targets or None},
                     is_stream=False,
                     timestamp=self._now_fn(),
@@ -2431,7 +2431,7 @@ class CronSchedulerService:
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,
                     session_id=exec_session_id,
-                    req_method=ReqMethod.CHAT_SEND,
+                    req_method="chat.send",
                     params=params,
                     is_stream=is_team_cron_mode(mode),
                     timestamp=self._now_fn(),
@@ -2621,7 +2621,7 @@ class CronSchedulerService:
             request_id=f"cron-history-{request_id or int(self._now_fn() * 1000)}",
             channel_id="__cron__",
             session_id=session_id,
-            req_method=ReqMethod.HISTORY_APPEND_RECORD,
+            req_method="history.append_record",
             params={
                 "request_id": request_id,
                 "channel_id": channel_id,
@@ -2828,7 +2828,7 @@ class CronSchedulerService:
                 params["expected_execution_id"] = expected_execution_id
             response = e2a_from_agent_fields(
                 request_id=f"cron-cancel-{envelope.request_id}", channel_id="web",
-                session_id=exec_session_id, req_method=ReqMethod.CHAT_CANCEL,
+                session_id=exec_session_id, req_method="chat.interrupt",
                 params=params,
                 is_stream=False, timestamp=self._now_fn(), user_id=envelope.user_id,
                 metadata=dict(envelope.channel_context or {}),
@@ -2868,7 +2868,7 @@ class CronSchedulerService:
             channel_id=channel_id,
             session_id=exec_session_id,
             params=cancel_params,
-            req_method=ReqMethod.CHAT_CANCEL,
+            req_method="chat.interrupt",
             timestamp=self._now_fn(),
             ok=True,
         )

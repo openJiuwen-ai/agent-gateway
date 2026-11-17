@@ -8,7 +8,7 @@ import types
 from collections import deque
 
 import pytest
-from e2a.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.protocol.acp.acp_connect import AcpChannel, AcpChannelConfig
 
@@ -352,7 +352,7 @@ async def test_jsonrpc_session_prompt_emits_updates_and_final_result(monkeypatch
 
     assert len(seen) == 1
     req = seen[0]
-    assert req.req_method == ReqMethod.CHAT_SEND
+    assert req.req_method == 'chat.send'
     assert req.session_id == "sess-2"
     assert req.params.get("query") == "hello"
 
@@ -512,7 +512,7 @@ async def test_jsonrpc_session_prompt_accepts_text_param(monkeypatch):
     await channel.start()
 
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.CHAT_SEND
+    assert seen[0].req_method == 'chat.send'
     assert seen[0].session_id == "sess-text"
     assert seen[0].params.get("query") == "hello from text"
 
@@ -879,7 +879,7 @@ async def test_jsonrpc_session_cancel_finalizes_active_prompt(monkeypatch):
     monkeypatch.setattr("agent_gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
 
     async def _on_message(msg):
-        if msg.req_method == ReqMethod.CHAT_SEND:
+        if msg.req_method == 'chat.send':
             await channel.send(
                 Message(
                     id=msg.id,
@@ -939,7 +939,7 @@ async def test_jsonrpc_response_is_forwarded_as_acp_tool_response(monkeypatch):
 
     assert len(seen) == 1
     msg = seen[0]
-    assert msg.req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert msg.req_method == 'acp.tool_response'
     assert msg.session_id == "sess-tool"
     assert msg.params["jsonrpc_id"] == "tool-1"
     assert msg.params["response"]["result"] == {"content": "from client"}
@@ -1058,7 +1058,7 @@ async def test_processing_idle_defers_end_turn_until_pending_client_rpc_resolves
     }
     assert channel.has_request_context_for_test(request_id) is False
     assert len(seen) == 1
-    assert seen[0].req_method == ReqMethod.ACP_TOOL_RESPONSE
+    assert seen[0].req_method == 'acp.tool_response'
     assert seen[0].session_id == session_id
 
 

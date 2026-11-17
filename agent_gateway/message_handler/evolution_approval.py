@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
+from e2a.message import Message
 import logging
 import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
 
-from e2a.message import Message, ReqMethod
 from agent_gateway.runtime.evolution import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,
@@ -311,7 +311,7 @@ class EvolutionApprovalCoordinator:
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=ReqMethod.CHAT_ANSWER,
+            req_method="chat.user_answer",
             is_stream=False,
             metadata=metadata,
         )
