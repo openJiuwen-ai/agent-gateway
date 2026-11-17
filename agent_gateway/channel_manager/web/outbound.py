@@ -218,6 +218,7 @@ class HttpJsonOutbound(_HttpOutboundBase):
         req_id: str,
         *,
         timeout: float = 60.0,
+        await_user_answer_result: bool = False,
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -253,6 +254,10 @@ class HttpJsonOutbound(_HttpOutboundBase):
                     "payload": {},
                 }
             if frame.get("type") == "res" and frame.get("id") == req_id:
+                payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+                if (await_user_answer_result and frame.get("ok") is True
+                        and not isinstance(payload.get("resolved"), bool)):
+                    continue
                 return frame
             # 单次请求若被收成 chat.error 事件，不能继续空等 res。
             if frame.get("type") == "event" and frame.get("event") == "chat.error":

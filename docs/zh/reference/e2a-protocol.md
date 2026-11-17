@@ -32,6 +32,12 @@
 
 ---
 
+### HTTP 用户答复的最终回执
+
+`POST /api/v1/chat/{session_id}/actions/user_answer?wait_for_result=true`（兼容别名 `actions/answer`）可显式等待当前 `chat.user_answer` RPC 的业务回执。默认 `false` 仍返回首个接收 ACK；查询参数不进入 Agent 业务参数。启用后，同 RPC 的成功 `res` 必须包含布尔型 `payload.resolved` 才结束等待，`false` 同样是终态；失败 `res` 或 `chat.error` 立即返回。
+
+等待复用单个总期限，取现有 `GATEWAY_WEB_HTTP_UNARY_TIMEOUT` 与 120 秒的较小值。超时返回 `TIMEOUT`（HTTP 504），不表示业务取消或安装失败；回执等待结束、超时或取消后注销请求 outbound。其他 HTTP 方法及全局超时配置不变。
+
 ## 2. 易混点：`method` 的两种含义（必读）
 
 同一字段 **`method`** 在不同来源下含义不同，**不是**两套字段，也**不要**与 `request_id` / `message_id` 混用。
