@@ -898,7 +898,7 @@ class AcpChannel(BaseChannel):
             or self.config.default_session_id
         )
 
-        req_method = self._parse_req_method(method)
+        req_method = parse_request_method(method)
         if method == "session/prompt":
             text = self._extract_prompt_text(params)
             params.setdefault("content", text)
@@ -1559,10 +1559,6 @@ class AcpChannel(BaseChannel):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return ""
-
-    @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
-        return parse_request_method(method)
 
     @staticmethod
     def _provenance(kind: str) -> E2AProvenance:

@@ -11,8 +11,8 @@ from agent_gateway.channel_manager.web.http_routes.mapped import (
     WORKSPACE_FILE_ROUTES,
     mapped_routes_for_edition,
 )
-from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.channel_manager.web.web_http_routes import _params_from_mapped_route
+from agent_gateway.common.request_method import parse_request_method
 
 _ASSET_ROUTES = (
     ("GET", "/sessions/{session_id}/assets", "session.assets.list"),
@@ -96,6 +96,6 @@ def test_workspace_file_routes_parse_to_req_method() -> None:
     missing = [
         route.rpc_method
         for route in WORKSPACE_FILE_ROUTES
-        if WebChannel.parse_req_method(route.rpc_method) is None
+        if parse_request_method(route.rpc_method) is None
     ]
     assert missing == []

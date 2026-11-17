@@ -2537,7 +2537,7 @@ class WebChannel(BaseWsChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=self._parse_req_method(method),
+            req_method=parse_request_method(method),
             mode=self._parse_mode(params.get("mode")),
             is_stream=bool(data.get("is_stream", False)),
             app_id=_app_id,
@@ -2731,16 +2731,10 @@ class WebChannel(BaseWsChannel):
         return frame
 
     @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
-        return parse_request_method(method)
-
-    # Public aliases for HTTP dispatch (G.CLS.11).
-    parse_req_method = _parse_req_method
-
-    @staticmethod
     def _parse_mode(raw_mode: Any) -> Mode:
         return Mode.from_raw(raw_mode, default=Mode.AGENT_WORK_NORMAL)
 
+    # Public alias for HTTP dispatch (G.CLS.11).
     parse_mode = _parse_mode
 
     @staticmethod
