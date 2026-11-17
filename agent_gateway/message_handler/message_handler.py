@@ -39,7 +39,6 @@ from agent_gateway.telemetry import (
     release_response_trace, retain_request_continuation, trace_stage,
 )
 from agent_gateway.channel_manager.base import ChannelType
-from agent_gateway.common.config import get_evolution_auto_save_enabled
 from agent_gateway.common.hooks_config import load_hooks_config
 from agent_gateway.common.host_services import (
     install_runtime_wake_handler,
@@ -79,6 +78,7 @@ from agent_gateway.message_handler.join_exit_handlers import JoinExitHandlers
 from agent_gateway.message_handler.prompts.review_prompt import build_review_prompt
 from agent_gateway.message_handler.prompts.security_review_prompt import (
     GitPreExecError,
+    _run_security_review_git,
     build_security_review_prompt,
 )
 from agent_gateway.routing.agent_request_timeout import (
@@ -419,9 +419,6 @@ class MessageHandler(ABC):
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
         self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
-        # 配置仅在启动/成功热重载时解析；流式 chunk 热路径直接读取该内存值，
-        # 避免每个审批事件重新读取磁盘配置。
-        self._evolution_auto_save_enabled = False
         self._session_last_user_query: dict[str, str] = {}
         # session_id -> 最近一次人类发起请求的 (channel_id, member_name)。
         # team 模式下 file msg 不携带发起者身份（rid 固定为建会话那轮），send_file 定向
@@ -521,31 +518,72 @@ class MessageHandler(ABC):
         if callable(setter):
             setter(self._handle_agent_server_push)
 
-    def update_evolution_auto_save(self, config_payload: dict[str, Any] | None) -> None:
-        """Refresh the in-memory evolution auto-save flag from a config snapshot.
-
-        Callers should invoke this at startup and after a successful config hot
-        reload.  The stream/chunk path intentionally does not call the config
-        resolver so it never performs a disk read.
-        """
-        self._evolution_auto_save_enabled = get_evolution_auto_save_enabled(
-            config_payload if isinstance(config_payload, dict) else {}
-        )
-
-    def auto_accepts_evolution_approval(self, payload: Any) -> bool:
-        """Whether this question is answered automatically by the gateway."""
-        return (
-            self._evolution_auto_save_enabled
-            and is_evolution_approval_payload(payload)
-            and not is_interrupt_evolution_approval_answer_payload(payload)
-        )
-
     def set_thinking_notice_handler(self, handler: Any | None) -> None:
         self._thinking_notice_handler = handler
 
     def set_result_delivery_handler(self, handler: Any | None) -> None:
         """Inject the Gateway's exact-app JM-09 delivery route."""
         self._result_delivery_handler = handler
+
+    async def _resolve_response_language(self, msg: Any) -> str | None:
+        """Read preferred language from the routed AgentServer via E2A.
+
+        The local config remains a fallback for no-client/legacy deployments.
+        """
+        try:
+            from e2a.gateway_normalize import e2a_from_agent_fields
+            from e2a.message import ReqMethod
+
+            env = e2a_from_agent_fields(
+                request_id=f"locale-get-{secrets.token_hex(6)}",
+                channel_id=str(getattr(msg, "channel_id", "") or ""),
+                req_method=ReqMethod.LOCALE_GET_CONF,
+                params={},
+                is_stream=False,
+                timestamp=time.time(),
+                user_id=getattr(msg, "user_id", None),
+                session_id=getattr(msg, "session_id", None),
+            )
+            response = await send_agent_request_with_timeout(
+                self.agent_client,
+                env,
+                label="locale.get_conf",
+                timeout_seconds=5.0,
+            )
+            payload = getattr(response, "payload", None)
+            if not getattr(response, "ok", False) or not isinstance(payload, dict):
+                return None
+            language = str(payload.get("preferred_language") or "").strip().lower()
+            return language if language in {"zh", "en"} else None
+        except Exception as exc:  # noqa: BLE001 - prompt falls back to local config
+            logger.warning("[MessageHandler] locale.get_conf failed: %s", exc)
+            return None
+
+    async def _build_security_review_prompt(
+        self,
+        msg: Any,
+        extra_arg: str,
+        cwd: str | None,
+    ) -> str:
+        """Build the security-review prompt without serializing git and locale RPC."""
+        if cwd is None:
+            language = await self._resolve_response_language(msg)
+            return build_security_review_prompt(extra_arg, cwd, language=language)
+
+        loop = asyncio.get_running_loop()
+        language_task = asyncio.create_task(self._resolve_response_language(msg))
+        git_task = loop.run_in_executor(None, _run_security_review_git, cwd)
+        try:
+            language, git_outputs = await asyncio.gather(language_task, git_task)
+        except GitPreExecError:
+            language_task.cancel()
+            raise
+        return build_security_review_prompt(
+            extra_arg,
+            cwd,
+            language=language,
+            git_outputs=git_outputs,
+        )
 
     def set_feishu_group_handler(self, handler: Any | None) -> None:
         self._feishu_group_handler = handler
@@ -2645,7 +2683,8 @@ class MessageHandler(ABC):
         if parsed.action is ParsedControlAction.REVIEW_OK:
             # /review [args]：注入 review prompt，转发 Agent 执行 gh pr list/view/diff 并分析
             pr_arg = parsed.pr_arg or ""
-            review_prompt = build_review_prompt(pr_arg)
+            language = await self._resolve_response_language(msg)
+            review_prompt = build_review_prompt(pr_arg, language=language)
             if msg.params is None:
                 msg.params = {}
             msg.params["query"] = review_prompt
@@ -2677,10 +2716,9 @@ class MessageHandler(ABC):
             try:
                 # 在注入阶段预执行只读 git 命令并把输出内联进 prompt；
                 # 任一命令非零退出（如 origin/HEAD 未设置 / 无共同历史）即中止，
-                # 不转发给 Agent。
-                # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
-                security_prompt = await asyncio.get_event_loop().run_in_executor(
-                    None, build_security_review_prompt, extra_arg, cwd
+                # 不转发给 Agent。git 与语言查询并发，避免 5s E2A 阻塞预执行。
+                security_prompt = await self._build_security_review_prompt(
+                    msg, extra_arg, cwd,
                 )
             except GitPreExecError as exc:
                 await self.send_channel_notice(
@@ -5073,20 +5111,11 @@ class MessageHandler(ABC):
         在 process_stream 和 _handle_agent_server_push 两条路径中复用。
         返回 False 表示该 chunk 已被延后处理，不应继续发布给前端。
         """
-        payload = getattr(chunk, "payload", None)
-        auto_save_enabled = (
-            isinstance(payload, dict)
-            and payload.get("event_type") == "chat.ask_user_question"
-            and self.auto_accepts_evolution_approval(payload)
-        )
         decision = self._evolution_approval.handle_chunk(
             chunk,
             session_id,
             request_metadata,
-            auto_save_enabled=auto_save_enabled,
         )
-        if decision.user_message is not None:
-            self._user_messages.put_nowait(decision.user_message)
         return decision.should_publish_chunk
 
     def _clear_session_evolution_states(self, session_id: str | None) -> None:
@@ -5856,7 +5885,8 @@ class MessageHandler(ABC):
                                 continue
                             if parsed.action is ParsedControlAction.REVIEW_OK:
                                 pr_arg = parsed.pr_arg or ""
-                                review_prompt = build_review_prompt(pr_arg)
+                                language = await self._resolve_response_language(msg)
+                                review_prompt = build_review_prompt(pr_arg, language=language)
                                 msg.params = dict(msg.params)
                                 msg.params["query"] = review_prompt
                                 if "content" in msg.params:
@@ -5886,14 +5916,9 @@ class MessageHandler(ABC):
                                 try:
                                     # 预执行只读 git 并内联输出；
                                     # 失败则发 notice 中止，不转发给 Agent。
-                                    # 跑在 executor 里，避免 4×30s 同步 subprocess 阻塞转发循环。
-                                    security_prompt = (
-                                        await asyncio.get_event_loop().run_in_executor(
-                                            None,
-                                            build_security_review_prompt,
-                                            extra_arg,
-                                            cwd,
-                                        )
+                                    # git 与语言查询并发，避免 5s E2A 阻塞预执行。
+                                    security_prompt = await self._build_security_review_prompt(
+                                        msg, extra_arg, cwd,
                                     )
                                 except GitPreExecError as exc:
                                     operation = get_message_trace(msg)

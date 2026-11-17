@@ -240,23 +240,31 @@ Begin your analysis now. Do this in 3 steps:
 Your final reply must contain the markdown report and nothing else."""
 
 
-def build_security_review_prompt(extra_arg: str = "", cwd: str | None = None) -> str:
+def build_security_review_prompt(
+    extra_arg: str = "",
+    cwd: str | None = None,
+    *,
+    language: str | None = None,
+    git_outputs: dict[str, str] | None = None,
+) -> str:
     """构建 /security-review 的 prompt。
 
-    输出语言来自 config ``preferred_language``；可选 args 原样透传为附加说明。
+    ``language`` 由 Gateway 经 E2A 从 AgentServer 读取；缺失时回退本地值。
+    可选 args 原样透传为附加说明。
 
     当 ``cwd`` 指向仓库时，在 prompt 注入阶段**预执行** 4 条只读 git 命令
     并把输出**内联**进 prompt（不再让 LLM 自己跑 git）。任一命令非零退出抛
     :class:`GitPreExecError`，由调用方中止本次 /security-review（不转发给 Agent）。
+    ``git_outputs`` 可由调用方并发预执行后传入，避免与语言查询串行。
     ``cwd`` 为 None（如单测、无仓库上下文）时退回旧的“指令式” prompt，行为不变。
     """
     args = extra_arg.strip() if extra_arg else ""
-    lang_line = response_language_line()
+    lang_line = response_language_line(language)
     if cwd is None:
         intro = _SECURITY_REVIEW_INTRO_FALLBACK
     else:
-        git_outputs = _run_security_review_git(cwd)  # 失败抛 GitPreExecError
-        intro = _build_inlined_intro(git_outputs)
+        outputs = git_outputs if git_outputs is not None else _run_security_review_git(cwd)
+        intro = _build_inlined_intro(outputs)
     parts = [intro, "", _SECURITY_REVIEW_BODY_TAIL, "", lang_line]
     if args:
         parts.extend(["", f"Additional instructions: {args}"])

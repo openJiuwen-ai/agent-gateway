@@ -41,3 +41,8 @@ def test_build_review_prompt_chinese_from_config(monkeypatch: pytest.MonkeyPatch
     prompt = build_review_prompt("42")
     assert "Respond in Chinese (simplified)." in prompt
     assert prompt.rstrip().endswith("PR number: 42")
+
+
+def test_build_review_prompt_prefers_explicit_e2a_language() -> None:
+    prompt = build_review_prompt("42", language="zh")
+    assert "Respond in Chinese (simplified)." in prompt

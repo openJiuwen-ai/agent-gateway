@@ -7,14 +7,14 @@ from __future__ import annotations
 from agent_gateway.message_handler.prompts import response_language_line
 
 
-def build_review_prompt(pr_arg: str) -> str:
+def build_review_prompt(pr_arg: str, *, language: str | None = None) -> str:
     """构建 /review 的 prompt，指示 Agent 使用 gh CLI 审查 PR。
 
     gh-only、args 原样透传、始终包含 ``PR number:`` 行；无 git/gh 预检。
-    输出语言来自 config ``preferred_language``。
+    ``language`` 由 Gateway 经 E2A 从 AgentServer 读取；缺失时回退本地值。
     """
     args = pr_arg.strip() if pr_arg else ""
-    lang_line = response_language_line()
+    lang_line = response_language_line(language)
     return f"""You are an expert code reviewer. Follow these steps:
 
 1. If no PR number is provided in the args, run `gh pr list` to show open PRs

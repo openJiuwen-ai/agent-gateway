@@ -148,3 +148,8 @@ def test_build_security_review_prompt_inlined_passes_through_args(tmp_path):
     prompt = build_security_review_prompt("focus on auth bypass", cwd=repo)
     assert prompt.rstrip().endswith("Additional instructions: focus on auth bypass")
     assert "GIT STATUS:" in prompt
+
+
+def test_build_security_review_prompt_prefers_explicit_e2a_language() -> None:
+    prompt = build_security_review_prompt("", language="zh")
+    assert "Respond in Chinese (simplified)." in prompt

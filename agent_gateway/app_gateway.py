@@ -244,15 +244,6 @@ def _load_gateway_runtime_config(
         )
         return {}, None, None
 
-    try:
-        message_handler.update_evolution_auto_save(full_cfg)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "[App] failed to apply evolution auto-save config; "
-            "continuing with channel config: %s",
-            exc,
-        )
-
     health_check_cfg = _resolve_health_check_config(full_cfg)
     if (
         isinstance(health_check_cfg, dict)
@@ -2830,10 +2821,6 @@ async def _run(
                     last_error,
                 )
                 return False
-
-            # AgentServer 已确认热重载成功后，再刷新 Gateway 内存中的值。
-            # MessageHandler 的流式 chunk 热路径只读取该值，不重新读盘。
-            message_handler.update_evolution_auto_save(config_payload)
 
             # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
             _schedule_agent_prewarm_sync(

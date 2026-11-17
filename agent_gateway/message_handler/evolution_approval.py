@@ -5,12 +5,9 @@
 from __future__ import annotations
 
 import logging
-import secrets
-import time
 from dataclasses import dataclass
 from typing import Any
 
-from e2a.message import Message, ReqMethod
 from agent_gateway.runtime.evolution import (
     SKILL_EVOLUTION_APPROVAL_SCHEMA as SKILL_EVOLUTION_APPROVAL_SCHEMA,
     SKILL_EVOLUTION_APPROVAL_SOURCE as SKILL_EVOLUTION_APPROVAL_SOURCE,
@@ -26,7 +23,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EvolutionApprovalChunkDecision:
     should_publish_chunk: bool = True
-    user_message: Message | None = None
 
 
 @dataclass
@@ -49,7 +45,6 @@ class EvolutionApprovalCoordinator:
 
     def __init__(self) -> None:
         self._pending_evolution_approval: dict[str, str] = {}
-        self._hidden_auto_saved_regular_approvals: dict[str, set[str]] = {}
         self._deferred_evolution_approvals: dict[str, list[DeferredEvolutionApproval]] = {}
         self._queued_supplement_input: dict[str, dict[str, Any]] = {}
         self._session_evolution_in_progress: set[str] = set()
@@ -136,21 +131,6 @@ class EvolutionApprovalCoordinator:
 
         current_request_id = self._pending_evolution_approval.get(session_id)
         if current_request_id != answered_request_id:
-            hidden = self._hidden_auto_saved_regular_approvals.get(session_id)
-            if hidden and answered_request_id in hidden:
-                hidden.discard(answered_request_id)
-                if not hidden:
-                    self._hidden_auto_saved_regular_approvals.pop(session_id, None)
-                if current_request_id is None:
-                    self.clear_session_in_progress(session_id)
-                logger.info(
-                    "[MessageHandler] hidden regular evolution approval resolved: "
-                    "session_id=%s answered=%s current=%s",
-                    session_id,
-                    answered_request_id,
-                    current_request_id,
-                )
-                return EvolutionApprovalFinishResult()
             logger.info(
                 "[MessageHandler] stale evolution approval resolved, "
                 "keep current pending: session_id=%s answered=%s current=%s",
@@ -174,14 +154,12 @@ class EvolutionApprovalCoordinator:
             return
         self._session_evolution_in_progress.discard(session_id)
         self._pending_evolution_approval.pop(session_id, None)
-        self._hidden_auto_saved_regular_approvals.pop(session_id, None)
         self._deferred_evolution_approvals.pop(session_id, None)
         self._queued_supplement_input.pop(session_id, None)
 
     def clear_all(self) -> None:
         self._session_evolution_in_progress.clear()
         self._pending_evolution_approval.clear()
-        self._hidden_auto_saved_regular_approvals.clear()
         self._deferred_evolution_approvals.clear()
         self._queued_supplement_input.clear()
 
@@ -190,8 +168,6 @@ class EvolutionApprovalCoordinator:
         chunk: Any,
         session_id: str | None,
         request_metadata: dict[str, Any] | None = None,
-        *,
-        auto_save_enabled: bool,
     ) -> EvolutionApprovalChunkDecision:
         if not isinstance(chunk.payload, dict):
             return EvolutionApprovalChunkDecision()
@@ -205,15 +181,11 @@ class EvolutionApprovalCoordinator:
             return EvolutionApprovalChunkDecision()
 
         incoming_request_id = str(approval_request_id)
-        is_interrupt_approval = is_interrupt_evolution_approval_answer_payload(chunk.payload)
         decision = self._decide_approval_chunk(
             chunk=chunk,
             session_id=session_id,
             incoming_request_id=incoming_request_id,
-            channel_id=str(getattr(chunk, "channel_id", "") or ""),
             metadata=request_metadata,
-            auto_save_enabled=auto_save_enabled,
-            is_interrupt_approval=is_interrupt_approval,
         )
         if not decision.should_publish_chunk:
             return decision
@@ -250,33 +222,10 @@ class EvolutionApprovalCoordinator:
         chunk: Any,
         session_id: str | None,
         incoming_request_id: str,
-        channel_id: str,
         metadata: dict[str, Any] | None,
-        auto_save_enabled: bool,
-        is_interrupt_approval: bool,
     ) -> EvolutionApprovalChunkDecision:
         if not session_id or not incoming_request_id:
             return EvolutionApprovalChunkDecision()
-
-        if auto_save_enabled and not is_interrupt_approval:
-            self._hidden_auto_saved_regular_approvals.setdefault(session_id, set()).add(
-                incoming_request_id
-            )
-            auto_answer = self._build_auto_accept_answer(
-                channel_id=channel_id,
-                session_id=session_id,
-                request_id=incoming_request_id,
-                metadata=metadata,
-            )
-            logger.info(
-                "[MessageHandler] auto-accept evolution approval: session_id=%s request_id=%s",
-                session_id,
-                incoming_request_id,
-            )
-            return EvolutionApprovalChunkDecision(
-                should_publish_chunk=False,
-                user_message=auto_answer,
-            )
 
         previous_request_id = self._pending_evolution_approval.get(session_id)
         if previous_request_id and previous_request_id != incoming_request_id:
@@ -289,32 +238,6 @@ class EvolutionApprovalCoordinator:
             return EvolutionApprovalChunkDecision(should_publish_chunk=False)
 
         return EvolutionApprovalChunkDecision()
-
-    @staticmethod
-    def _build_auto_accept_answer(
-        *,
-        channel_id: str,
-        session_id: str,
-        request_id: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> Message:
-        params = ensure_regular_evolution_approval_metadata({
-            "request_id": request_id,
-            "answers": [{"selected_options": ["接收"]}],
-        })
-
-        return Message(
-            id=f"auto_evolve_answer_{int(time.time() * 1000):x}_{secrets.token_hex(3)}",
-            type="req",
-            channel_id=channel_id,
-            session_id=session_id,
-            params=params,
-            timestamp=time.time(),
-            ok=True,
-            req_method=ReqMethod.CHAT_ANSWER,
-            is_stream=False,
-            metadata=metadata,
-        )
 
     def _defer(
         self,

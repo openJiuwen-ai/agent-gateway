@@ -3144,13 +3144,6 @@ class CronSchedulerService:
                     ):
                         self._publish_cron_execution_live(state, event_type, payload)
                     note_seen_event(event_type)
-                    auto_accepts = getattr(
-                        self._message_handler, "auto_accepts_evolution_approval", None
-                    )
-                    if event_type == "chat.ask_user_question" and published is False:
-                        if callable(auto_accepts) and auto_accepts(payload):
-                            # MessageHandler queued an automatic evolution answer.
-                            continue
                     if self._is_approval_pause_frame(event_type, payload):
                         if state is not None and self._should_park_manual_approval(state):
                             consume_meta["paused"] = True

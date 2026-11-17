@@ -248,27 +248,6 @@ def get_config_raw():
     return _read_with_retry(CONFIG_YAML_PATH)
 
 
-def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the canonical ``react.evolution`` mapping.
-
-    Evolution settings deliberately have one source of truth.  In particular,
-    the historical top-level ``evolution`` mapping and the old environment
-    overrides are not consulted here; this keeps a stale deployment variable
-    from changing a running agent's capability set.
-    """
-    if not isinstance(config, dict):
-        return {}
-    react_config = config.get("react")
-    if not isinstance(react_config, dict):
-        return {}
-    evolution_config = react_config.get("evolution")
-    return evolution_config if isinstance(evolution_config, dict) else {}
-
-
-def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return the canonical ``react.evolution.skill_evolution`` switch."""
-    return _get_evolution_config(config).get("skill_evolution") is True
-
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
     """Return the user-configured ``api_base host -> endpoint_profile`` map.
@@ -290,29 +269,6 @@ def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict
         if host_key and profile_value:
             overrides[host_key] = profile_value
     return overrides
-
-
-def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
-    return _get_evolution_config(config).get("auto_save") is True
-
-
-def update_skill_evolution_enabled_in_config(enabled: bool) -> None:
-    """Atomically update the canonical evolution capability switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        react = data.get("react")
-        if not isinstance(react, dict):
-            react = {}
-            data["react"] = react
-        evolution = react.get("evolution")
-        if not isinstance(evolution, dict):
-            evolution = {}
-            react["evolution"] = evolution
-        evolution["skill_evolution"] = bool(enabled)
-        return data
-
-    update_config(mutator)
 
 
 def load_yaml_round_trip(config_path: Path):
@@ -655,17 +611,6 @@ def update_browser_decision_in_config(updates: dict[str, Any]) -> None:
         data["browser"]["decision"][key] = value
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
-
-def update_context_engine_enabled_in_config(value: bool) -> None:
-    """更新 react.context_engine_config.enabled（上下文压缩开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "context_engine_config" not in react:
-        react["context_engine_config"] = {}
-    react["context_engine_config"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
