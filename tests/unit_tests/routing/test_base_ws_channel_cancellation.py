@@ -63,18 +63,24 @@ async def test_shutdown_all_writers_propagates_caller_cancellation() -> None:
 
     channel = _Channel(None, None)
     release = asyncio.Event()
+    cancel_seen = asyncio.Event()
 
     async def _stubborn() -> None:
         try:
             await asyncio.sleep(3600)
         except asyncio.CancelledError:
+            cancel_seen.set()
             await release.wait()
 
     writer = asyncio.create_task(_stubborn())
     _install_writer(channel, "ws-1", writer)
 
     shutdown = asyncio.create_task(channel._shutdown_all_writers())
-    await asyncio.sleep(0.05)
+    # 等 writer 真正收到取消，而不是固定 sleep：_shutdown_all_writers 在 cancel() 与
+    # `await asyncio.gather(...)` 之间没有 await 点，所以 writer 观测到取消时，调用方
+    # 协程必定已经停在 gather 等待上——取消注入才真正打在目标路径上。
+    await asyncio.wait_for(cancel_seen.wait(), timeout=5)
+
     shutdown.cancel()
 
     with pytest.raises(asyncio.CancelledError):
@@ -90,10 +96,19 @@ async def test_drain_and_cleanup_writer_pops_state() -> None:
 
     channel = _Channel(None, None)
     ws = _FakeWs()
-    writer = asyncio.create_task(asyncio.sleep(0.01))
+    drained = asyncio.Event()
+
+    async def _writer_until_sentinel() -> None:
+        # 队列哨兵（None）由 _drain_and_cleanup_writer 投递，不依赖固定延时
+        await channel._send_queues["ws-1"].get()
+        drained.set()
+
+    writer = asyncio.create_task(_writer_until_sentinel())
     _install_writer(channel, "ws-1", writer)
 
     await channel._drain_and_cleanup_writer(ws, "ws-1")
 
+    assert drained.is_set()
     assert "ws-1" not in channel._writers
     assert "ws-1" not in channel._send_queues
+
