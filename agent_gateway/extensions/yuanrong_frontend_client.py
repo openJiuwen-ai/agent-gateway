@@ -1608,18 +1608,6 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         return parsed
 
     @staticmethod
-    def _agent_api_not_found(status: int, body: str) -> bool:
-        if int(status) == 404:
-            return True
-        try:
-            parsed = json.loads(body) if body else {}
-        except Exception:
-            return False
-        if not isinstance(parsed, dict):
-            return False
-        return parsed.get("code") in (404, "404")
-
-    @staticmethod
     def _agent_instance_not_found(status: int, body: str, instance_id: str) -> bool:
         """Recognize an instance absence, excluding a missing HTTP route."""
         if status != 404:
