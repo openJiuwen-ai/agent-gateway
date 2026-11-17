@@ -171,8 +171,13 @@ async def test_fresh_connection_can_complete_only_its_cached_request(user, app, 
         if allowed:
             assert client.send_request.call_args.args[0].channel_context["agent_ref"]["mode"] == "agent.code.normal"
         else:
-            client.send_request.assert_not_called()
-            assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_SESSION_REQUIRED"
+            # A scoped metadata lookup is allowed, but no authorization RPC
+            # may be sent using a different user's/app's cached identity.
+            assert all(call.args[0].method == "session.get_metadata"
+                       for call in client.send_request.call_args_list)
+            assert channel.send_response.call_args.kwargs["code"] == (
+                "A4P_SESSION_IDENTITY_UNAVAILABLE" if method == "pending" and not allowed
+                else "A4P_WEB_SESSION_REQUIRED")
     finally:
         await channel.unregister_ws(ws)
 
@@ -262,7 +267,10 @@ async def test_anonymous_refresh_restores_only_local_host_session(monkeypatch, m
             assert client.send_request.call_args.args[0].channel_context["agent_ref"] == {
                 "mode": mode, "id": "default"}
         else:
-            client.send_request.assert_not_called()
+            # A scoped metadata lookup is allowed, but no authorization RPC
+            # may be sent using a different user's/app's cached identity.
+            assert all(call.args[0].method == "session.get_metadata"
+                       for call in client.send_request.call_args_list)
             assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_SESSION_REQUIRED"
         assert fetch.await_count == int(local)
     finally:
@@ -272,7 +280,7 @@ async def test_anonymous_refresh_restores_only_local_host_session(monkeypatch, m
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ambiguous", [False, True])
 @pytest.mark.parametrize("lookup", ["code", "missing", "failed", "exception"])
-async def test_metadata_precedes_default_route_but_failure_preserves_fallback(monkeypatch, lookup, ambiguous):
+async def test_pending_metadata_failure_never_uses_default_route(monkeypatch, lookup, ambiguous):
     from agent_gateway.routing import e2a_proxy
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
@@ -292,9 +300,9 @@ async def test_metadata_precedes_default_route_but_failure_preserves_fallback(mo
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
     monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
     await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s")
-    if ambiguous and lookup != "code":
+    if lookup != "code":
         client.send_request.assert_not_called()
-        assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_ROUTE_AMBIGUOUS"
+        assert channel.send_response.call_args.kwargs["code"] == "A4P_SESSION_IDENTITY_UNAVAILABLE"
         return
     assert client.send_request.call_args.args[0].channel_context["agent_ref"]["mode"] == (
         "agent.code.normal" if lookup == "code" else "agent")
@@ -338,3 +346,152 @@ def test_terminal_event_cleans_only_its_request_scope():
     ))
     assert ("alice", "default", "s", "approval") not in channel._a4p_request_routes
     assert ("bob", "default", "s", "approval") in channel._a4p_request_routes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
+@pytest.mark.parametrize("existing_routes", [[], ["agent", "agent.code.normal"]])
+async def test_session_queries_restore_host_identity_without_request_hint(monkeypatch, method, existing_routes):
+    from agent_gateway.routing import e2a_proxy
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"pending": []})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    channel.on_message(lambda msg: None)
+    ws = Socket()
+    ws._jiuwen_app_id = "default"
+    fetch = AsyncMock(return_value=(True, {
+        "mode": "agent.code.normal", "work_mode": "code",
+        "agent_ref": {"mode": "agent.code.normal", "id": "special-coder"},
+    }))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: False)
+    try:
+        for mode in existing_routes:
+            await channel.register_ws(ws, route(mode))
+        # Keep legacy registration: returning to S through session.switch adds
+        # a default Work subscription. A4P must resolve identity independently.
+        channel.register_method("session.switch", AsyncMock())
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "switch", "method": "session.switch",
+            "params": {"session_id": "s"},
+        }), {})
+        subscriptions = set(await channel.routing_keys_for_ws(ws))
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "rpc", "method": method,
+            "params": {"session_id": "s"},
+        }), {})
+        envelope = client.send_request.call_args.args[0]
+        assert envelope.channel_context["agent_ref"] == {
+            "mode": "agent.code.normal", "id": "special-coder"}
+        assert set(await channel.routing_keys_for_ws(ws)) == subscriptions
+        assert fetch.call_args.kwargs["user_id"] == "alice"
+        assert fetch.call_args.kwargs["metadata"]["app_id"] == "default"
+    finally:
+        await channel.unregister_ws(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["session.get_metadata", "history.get", "session.switch"])
+async def test_reading_code_session_keeps_legacy_registration(method):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.on_message(lambda msg: None)
+    channel.register_method(method, AsyncMock())
+    ws = Socket()
+    code = route("agent.code.normal")
+    try:
+        await channel.register_ws(ws, code)
+        # Switch to another session, then read S again with SID only.
+        from dataclasses import replace
+        await channel.register_ws(ws, replace(route("agent"), session_id="other"))
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "read", "method": method,
+            "params": {"session_id": "s"},
+        }), {})
+        refs = {rk.agent_ref.mode for rk in await channel.routing_keys_for_ws(ws) if rk.session_id == "s"}
+        assert refs == {"agent.code.normal", "agent"}
+    finally:
+        await channel.unregister_ws(ws)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["pending", "config.get", "config.update"])
+@pytest.mark.parametrize("ids,host_id,expected", [
+    ([], None, "default"), (["coder-a"], None, "coder-a"),
+    (["coder-a", "coder-b"], None, None),
+    (["coder-a", "coder-b"], "host-coder", "host-coder"),
+])
+@pytest.mark.parametrize("http", [False, True])
+async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, method, ids, host_id, expected, http):
+    from dataclasses import replace
+    from agent_gateway.routing import e2a_proxy
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    ws = Socket()
+    ws._jiuwen_app_id = "default"
+    ws.is_http_outbound = http
+    code = route("agent.code.normal")
+    # Other users, apps and modes must not contribute to agent-ID ambiguity.
+    candidates = [replace(code, agent_ref=AgentRef(mode=code.agent_ref.mode, id=value)) for value in ids]
+    candidates += [replace(code, user_id="bob"), replace(code, app_id="other"), route("agent")]
+    channel.routing_keys_for_ws = AsyncMock(return_value=candidates + candidates)
+    meta = {"mode": "agent.code.normal"}
+    if host_id:
+        meta["agent_id"] = host_id
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", AsyncMock(return_value=(True, meta)))
+    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
+    name = "a4p.authorization.pending" if method == "pending" else f"a4p.{method}"
+    await channel._method_handlers[name](ws, "rpc", {}, "s", user_id="alice")
+    if expected is None:
+        client.send_request.assert_not_called()
+        assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_ROUTE_AMBIGUOUS"
+    else:
+        assert client.send_request.call_args.args[0].channel_context["agent_ref"] == {
+            "mode": "agent.code.normal", "id": expected}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cached_ids,host_id,expected", [
+    (["original-coder"], None, "original-coder"),
+    (["coder-a", "coder-b"], None, None),
+    ([], None, "default"),
+    (["coder-a", "coder-b"], "host-coder", "host-coder"),
+])
+async def test_pending_uses_cached_mode_identity_before_default(monkeypatch, cached_ids, host_id, expected):
+    from dataclasses import replace
+    from agent_gateway.routing import e2a_proxy
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    ws = Socket()
+    ws._jiuwen_app_id = "default"
+    # Current connection has no Code subscription. Multiple pending identities
+    # force metadata recovery rather than the single cached-route shortcut.
+    work = route("agent")
+    channel.routing_keys_for_ws = AsyncMock(return_value=[work])
+    cached = [work, route("team")]
+    cached += [replace(route("agent.code.normal"), agent_ref=AgentRef(
+        mode="agent.code.normal", id=agent_id)) for agent_id in cached_ids]
+    for i, candidate in enumerate(cached):
+        channel._a4p_request_routes[("alice", "default", "s", str(i))] = candidate
+    meta = {"mode": "agent.code.normal"}
+    if host_id:
+        meta["agent_id"] = host_id
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", AsyncMock(return_value=(True, meta)))
+    monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
+    await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s", user_id="alice")
+    if expected is None:
+        client.send_request.assert_not_called()
+        assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_ROUTE_AMBIGUOUS"
+    else:
+        assert client.send_request.call_args.args[0].channel_context["agent_ref"] == {
+            "mode": "agent.code.normal", "id": expected}
