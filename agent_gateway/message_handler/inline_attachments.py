@@ -111,6 +111,8 @@ def file_reference(path: Path, file_type: str, reason: str) -> str:
         notice = "This file was already included or referenced earlier in this message."
     elif reason == "inline_budget_exhausted":
         notice = "Content not inlined: the message inline byte budget is exhausted. Use a file reading tool as needed."
+    elif reason == "truncated_empty":
+        notice = "Content not inlined: the byte limit removed all text at the truncation boundary. Use a file reading tool to read the file."
     elif file_type == "PDF":
         notice = "Content not inlined. Use a document reading tool to read PDF text by page as needed."
     else:

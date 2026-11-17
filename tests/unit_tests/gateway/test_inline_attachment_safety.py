@@ -203,7 +203,7 @@ def test_internal_invalid_utf8_before_truncation_is_not_dropped(tmp_path: Path) 
     assert "\ufffd" not in result
 
 
-def test_remaining_budget_after_multibyte_truncation_supports_ascii(
+def test_multibyte_truncation_to_empty_uses_file_reference(
     tmp_path: Path,
 ) -> None:
     first = tmp_path / "first.txt"
@@ -218,7 +218,8 @@ def test_remaining_budget_after_multibyte_truncation_supports_ascii(
         max_total_inline_bytes=5,
     )
 
-    assert result.count("<file-content") == 2
+    assert result.count("<file-content") == 1
+    assert 'reason="truncated_empty"' in result
     assert "🎉" not in result
     assert "AB" in result
 
