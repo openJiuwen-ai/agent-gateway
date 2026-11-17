@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from e2a.message import EventType, ReqMethod
@@ -101,6 +102,24 @@ GATEWAY_EVENT_TYPES: tuple[tuple[str, str], ...] = (
     ("CLIENT_ATTACHMENTS_CHANGED", "client.attachments_changed"),
 )
 
+#: WebUI 扩展上行协议与扩展包管理协议（S_10/S_17），由 Gateway 扩展层消费。
+EXTENSION_REQ_METHODS: tuple[tuple[str, str], ...] = (
+    ("WEBUI_DISPATCH", "webui.dispatch"),
+    ("WEBUI_SETTINGS_CATALOG", "webui.settings.catalog"),
+    ("WEBUI_RESOURCE_READ", "webui.resource.read"),
+    ("WEBUI_CONNECTION_CLOSED", "webui.connection.closed"),
+    ("EXTENSIONS_V2_QUERY", "extensions.v2.query"),
+    ("EXTENSIONS_V2_CATALOG", "extensions.v2.catalog"),
+    ("EXTENSIONS_V2_SHOW", "extensions.v2.show"),
+    ("EXTENSIONS_V2_IMPORT", "extensions.v2.import"),
+    ("EXTENSIONS_V2_INSTALL", "extensions.v2.install"),
+    ("EXTENSIONS_V2_UNINSTALL", "extensions.v2.uninstall"),
+    ("EXTENSIONS_V2_RELOAD", "extensions.v2.reload"),
+    ("EXTENSIONS_V2_SET_ENABLED", "extensions.v2.set_enabled"),
+    ("EXTENSIONS_V2_FILE_LIST", "extensions.v2.file.list"),
+    ("EXTENSIONS_V2_FILE_READ", "extensions.v2.file.read"),
+)
+
 
 def ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
     """注册协议包缺失的枚举成员；已有同值成员时幂等返回。"""
@@ -124,7 +143,7 @@ def ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
 
 
 def ensure_gateway_req_methods() -> None:
-    for name, value in GATEWAY_REQ_METHODS:
+    for name, value in (*GATEWAY_REQ_METHODS, *EXTENSION_REQ_METHODS):
         ensure_protocol_member(ReqMethod, name, value)
 
 
@@ -133,10 +152,44 @@ def ensure_gateway_event_types() -> None:
         ensure_protocol_member(EventType, name, value)
 
 
+def ensure_req_method(value: str) -> ReqMethod | None:
+    """按协议值查找 ``ReqMethod``；缺失时运行时补齐并返回该成员。
+
+    新增业务方法不再要求网关随协议包升级：请求先由 Web 通道解析成枚举，
+    再按“本地白名单 + 默认透传”决定是否转发。值非法或无法生成合法成员名
+    时返回 ``None``，调用方保持未知方法语义。
+    """
+    if not isinstance(value, str) or not value or len(value) > 128:
+        return None
+    for item in ReqMethod:
+        if item.value == value:
+            return item
+    base = re.sub(r"[^0-9A-Za-z]+", "_", value).strip("_").upper()
+    if not base:
+        return None
+    if base[0].isdigit():
+        base = f"REQ_{base}"
+    name = base
+    suffix = 1
+    while name in ReqMethod.__members__:
+        existing = ReqMethod.__members__[name]
+        if existing.value == value:
+            return existing
+        suffix += 1
+        name = f"{base}_{suffix}"
+    try:
+        ensure_protocol_member(ReqMethod, name, value)
+    except RuntimeError:
+        return None
+    return ReqMethod.__members__.get(name)
+
+
 __all__ = [
+    "EXTENSION_REQ_METHODS",
     "GATEWAY_EVENT_TYPES",
     "GATEWAY_REQ_METHODS",
     "ensure_gateway_event_types",
     "ensure_gateway_req_methods",
     "ensure_protocol_member",
+    "ensure_req_method",
 ]

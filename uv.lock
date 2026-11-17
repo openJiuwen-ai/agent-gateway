@@ -133,7 +133,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3,<0.8" },
     { name = "minio", specifier = ">=7.2,<8" },
     { name = "openai", specifier = ">=1.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" },
+    { name = "openjiuwen", specifier = ">=0.1.20.post3" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0" },
@@ -3207,8 +3207,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=2f4bedb9c5d85ab70d7c79d36183e6a98799e94e#2f4bedb9c5d85ab70d7c79d36183e6a98799e94e" }
+version = "0.1.20.post3"
+source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -3227,7 +3227,6 @@ dependencies = [
     { name = "intelli-router" },
     { name = "json-repair" },
     { name = "loguru" },
-    { name = "markdown-it-py" },
     { name = "matplotlib" },
     { name = "mcp" },
     { name = "mermaid-py" },
@@ -3258,6 +3257,10 @@ dependencies = [
     { name = "tiktoken" },
     { name = "trafilatura" },
     { name = "transformers" },
+]
+sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/4d/9d/f4b364365813f5293012df8d330148a66d3d32d7eecf154421f243e9681f/openjiuwen-0.1.20.post3.tar.gz", hash = "sha256:da8ac0ef91b61377bcb1e640287263e01edb5540283c861724dac9838fccdf7f" }
+wheels = [
+    { url = "https://repo.huaweicloud.com/repository/pypi/packages/4c/40/cce048afcd61bd7b00c3e7e3d1ebefb22e64b635cbfed8f0dfd39df5993c/openjiuwen-0.1.20.post3-py3-none-any.whl", hash = "sha256:bda4b1b785c3fb871eaf89e82c12209eb17806f618b710ce5a090fa7632b3627" },
 ]
 
 [[package]]
