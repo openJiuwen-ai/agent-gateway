@@ -6453,6 +6453,77 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
 
+    def _a4p_candidate_ids(candidates, user_id, app_id, session_id, mode):
+        """Distinct agent IDs within one complete user/app/session/mode scope."""
+        return {
+            item.agent_ref.id for item in candidates
+            if item.user_id == user_id and item.app_id == app_id
+            and item.session_id == session_id and item.agent_ref is not None
+            and item.agent_ref.mode == mode and item.agent_ref.id
+        }
+
+    async def _restore_a4p_session_route(ac, ws, session_id, user_id, routes, cached_routes):
+        """Return (route, ambiguous), preserving Host/subscription/cache/default order."""
+        from agent_gateway.routing.keys import AgentRef, RoutingKey
+        from e2a.message import ReqMethod
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary, is_legacy_shared_directory_client
+
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
+        route = None
+        try:
+            ok, meta = await fetch_agent_unary(
+                agent_client=ac, req_method=ReqMethod.SESSION_GET_METADATA,
+                params={"session_id": session_id}, session_id=session_id,
+                user_id=user_id, channel_id="web",
+                label="a4p.restore_session", timeout_seconds=10,
+                metadata=apply_routing_metadata(
+                    {"app_id": getattr(ws, "_jiuwen_app_id", None) or "default"},
+                    getattr(ws, "_web_routing", None),
+                ),
+            )
+        except Exception:
+            logger.warning("[a4p] session metadata lookup failed session=%s", session_id, exc_info=True)
+            ok, meta = False, {}
+        ref = meta.get("agent_ref") if ok else None
+        ref = ref if isinstance(ref, dict) else {}
+        mode = ref.get("mode") or (meta.get("mode") if ok else None)
+        agent_id = ref.get("id") or (meta.get("agent_id") if ok else None)
+        if not agent_id:
+            scope_user = channel._routing_key_user_id(
+                channel.connection_user_id(ws), getattr(ws, "remote_address", None),
+            )
+            scope_app = getattr(ws, "_jiuwen_app_id", None) or "default"
+            matches = _a4p_candidate_ids(routes, scope_user, scope_app, session_id, mode)
+            if not matches:
+                # A restored connection may have no subscription for the
+                # Host's mode. Retain the original pending agent identity
+                # before considering the legacy default-agent fallback.
+                matches = _a4p_candidate_ids(cached_routes, scope_user, scope_app, session_id, mode)
+            if len(matches) > 1:
+                # Do not let later WS/HTTP fallbacks override real ambiguity.
+                return None, True
+            if len(matches) == 1:
+                agent_id = next(iter(matches))
+            elif is_legacy_shared_directory_client(ac):
+                # Preserve legacy local compatibility only with no candidate.
+                agent_id = "default"
+        if isinstance(mode, str) and mode.strip() and isinstance(agent_id, str) and agent_id.strip():
+            route = RoutingKey(
+                user_id=channel._routing_key_user_id(
+                    channel.connection_user_id(ws), getattr(ws, "remote_address", None),
+                ),
+                channel_id="web",
+                app_id=getattr(ws, "_jiuwen_app_id", None) or "default",
+                session_id=session_id,
+                agent_ref=AgentRef(mode=mode, id=agent_id),
+            )
+            logger.info("[a4p] restored local session route session=%s mode=%s",
+                        session_id, mode)
+        else:
+            logger.debug("[a4p] session metadata unavailable session=%s", session_id)
+        return route, False
+
     async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method, user_id=None):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
         from e2a.gateway_normalize import e2a_from_agent_fields
@@ -6481,54 +6552,40 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             resolver = getattr(channel, "a4p_request_route", None)
             if resolver is not None and isinstance(request_id, str):
                 route = resolver(routes, request_id, ws=ws, session_id=session_id)
+            session_query = not request_id and req_method in {
+                ReqMethod.A4P_AUTHORIZATION_PENDING,
+                ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE,
+            }
             cached_routes = set()
             if route is None and req_method == ReqMethod.A4P_AUTHORIZATION_PENDING:
                 cached_routes = channel.a4p_pending_routes(routes, ws=ws, session_id=session_id)
                 if len(cached_routes) == 1:
                     route = next(iter(cached_routes))
-            # Anonymous local sockets use their ephemeral remote address as a
-            # routing key. Resolve the session on the single-user Host instead
-            # of trusting client mode fields or carrying that key across refresh.
-            from agent_gateway.routing.e2a_proxy import (
-                fetch_agent_unary, is_legacy_shared_directory_client,
-            )
-            if (
-                route is None and session_id
-                and (channel.connection_user_id(ws) is None or len(cached_routes) > 1)
-                and is_legacy_shared_directory_client(ac)
-            ):
-                from agent_gateway.routing.keys import AgentRef, RoutingKey
+            from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
-                try:
-                    ok, meta = await fetch_agent_unary(
-                        agent_client=ac, req_method=ReqMethod.SESSION_GET_METADATA,
-                        params={"session_id": session_id}, session_id=session_id,
-                        user_id=user_id, channel_id="web",
-                        label="a4p.restore_session", timeout_seconds=10,
+            is_local = is_legacy_shared_directory_client(ac)
+            is_anonymous = channel.connection_user_id(ws) is None
+            restore_session_query = session_query and (not is_anonymous or is_local)
+            restore_legacy_session = is_local and (is_anonymous or len(cached_routes) > 1)
+            needs_host_identity = route is None and bool(session_id)
+            if needs_host_identity and (restore_session_query or restore_legacy_session):
+                route, ambiguous = await _restore_a4p_session_route(
+                    ac, ws, session_id, user_id, routes, cached_routes,
+                )
+                if ambiguous:
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error="Multiple Web authorizer identities match this session",
+                        code="A4P_WEB_ROUTE_AMBIGUOUS",
                     )
-                except Exception:
-                    logger.warning("[a4p] session metadata lookup failed session=%s", session_id, exc_info=True)
-                    ok, meta = False, {}
-                mode = meta.get("mode") if ok else None
-                if isinstance(mode, str) and mode.strip():
-                    route = RoutingKey(
-                        user_id=channel._routing_key_user_id(
-                            channel.connection_user_id(ws), getattr(ws, "remote_address", None),
-                        ),
-                        channel_id="web",
-                        app_id=getattr(ws, "_jiuwen_app_id", None) or "default",
-                        session_id=session_id,
-                        agent_ref=AgentRef(mode=mode, id="default"),
-                    )
-                    if len(cached_routes) > 1:
-                        candidates = {candidate for candidate in cached_routes
-                                      if candidate.agent_ref.mode == mode
-                                      and candidate.app_id == route.app_id}
-                        route = next(iter(candidates)) if len(candidates) == 1 else None
-                    logger.info("[a4p] restored local session route session=%s mode=%s",
-                                session_id, mode)
-                else:
-                    logger.debug("[a4p] session metadata unavailable; using registered route session=%s", session_id)
+                    return
+            if route is None and session_query and not getattr(ws, "is_http_outbound", False):
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="Unable to resolve A4P session identity from Host metadata",
+                    code="A4P_SESSION_IDENTITY_UNAVAILABLE",
+                )
+                return
             if route is None and len(cached_routes) > 1:
                 await channel.send_response(
                     ws, req_id, ok=False,
