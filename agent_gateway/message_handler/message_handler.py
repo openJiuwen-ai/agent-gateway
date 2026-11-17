@@ -3441,6 +3441,9 @@ class MessageHandler(ABC):
                 seen_paths[path_key] = result.file_type
                 if result.text is None:
                     return file_reference(path, result.file_type, result.reason)
+                if result.truncated and not result.text:
+                    reason = "inline_budget_exhausted" if message_limited else "truncated_empty"
+                    return file_reference(path, "text", reason)
                 text = result.text
                 remaining_bytes -= len(text.encode("utf-8"))
                 reason = ""
