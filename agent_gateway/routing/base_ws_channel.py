@@ -110,6 +110,33 @@ class BaseWsChannel(BaseWebChannel):
 
     # ── ws 池管理 ──
 
+    def ws_by_id(self, ws_id: str) -> Any | None:
+        """按物理连接 ID 反查 ws，供扩展运行时判断连接是否存活。"""
+        return self._ws_by_id.get(ws_id)
+
+    async def ensure_ws_id(self, ws: Any) -> str:
+        """返回 ws 的物理连接 ID；未注册时补一个稳定 ID。
+
+        扩展运行时在请求拦截阶段可能早于 ``register_ws`` 使用连接 ID
+        （如 webui.dispatch 的 metadata.ws_id），这里保证同一 ws 始终得到
+        同一个值。
+        """
+        ws_id = getattr(ws, "_jiuwen_ws_id", "")
+        if isinstance(ws_id, str) and ws_id:
+            return ws_id
+        async with self._lock:
+            ws_id = getattr(ws, "_jiuwen_ws_id", "")
+            if isinstance(ws_id, str) and ws_id:
+                return ws_id
+            ws_id = self._id_by_ws.get(id(ws))
+            if ws_id is not None:
+                return ws_id
+            ws_id = uuid.uuid4().hex
+            setattr(ws, "_jiuwen_ws_id", ws_id)
+            self._ws_by_id[ws_id] = ws
+            self._id_by_ws[id(ws)] = ws_id
+            return ws_id
+
     async def register_ws(
         self,
         ws: Any,

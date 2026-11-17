@@ -28,7 +28,7 @@ import sys
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable
+from typing import AbstractSet, Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 # Include entry-module import/configuration work in later startup phase logs.
@@ -51,6 +51,13 @@ from e2a.message import (
 from agent_gateway.common.protocol_methods import ReqMethod
 from agent_gateway.common.request_method import parse_request_method
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
+
+from agent_gateway.channel_manager.web.req_method_routing import (
+    ROUTE_DENIED,
+    ROUTE_FORWARD_UNKNOWN,
+    ROUTE_LOCAL,
+    route_req_method,
+)
 
 from agent_gateway.common.ws_diagnostics import (
     describe_ws_exception,
@@ -2975,10 +2982,23 @@ async def _run(
             forward_methods: set[str] | frozenset[str],
             no_local_methods: set[str] | frozenset[str],
             source_label: str,
+            local_methods: AbstractSet[str] | None = None,
     ):
         async def _norm_and_forward(msg: Message) -> bool:
-            method_val = getattr(getattr(msg, "req_method", None), "value", None) or ""
-            if method_val not in forward_methods:
+            req_method = getattr(msg, "req_method", None)
+            if req_method is None:
+                # 无法解析的方法不能进入 _normalize_gateway_message（那里会回退
+                # 成 CHAT_SEND），交给本地查找返回 METHOD_NOT_FOUND。
+                return False
+            method_val = getattr(req_method, "value", None) or ""
+            route = route_req_method(
+                method_val,
+                forward_methods=forward_methods,
+                local_methods=local_methods,
+            )
+            if route in (ROUTE_LOCAL, ROUTE_DENIED):
+                # 本地方法不转发；命中拒绝前缀时也不外发，交由本地 handler
+                # 查找统一返回 METHOD_NOT_FOUND。
                 return False
             with trace_stage("preprocess.credentials"):
                 await _refresh_expired_login_credential(msg)
@@ -2993,7 +3013,7 @@ async def _run(
                 _inject_session_work_mode(normalized)
             await channel_manager.deliver_to_message_handler(normalized)
             logger.debug("[App] %s 入站 -> MessageHandler: id=%s channel_id=%s", source_label, msg.id, msg.channel_id)
-            if method_val in no_local_methods:
+            if route == ROUTE_FORWARD_UNKNOWN or method_val in no_local_methods:
                 return True
             return False
 
@@ -3004,6 +3024,9 @@ async def _run(
         _FORWARD_REQ_METHODS,
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         "Web",
+        # 本地 handler 注册表即本地白名单：不在转发表内的已注册方法留在本地，
+        # 其余未知方法默认透传给 AgentServer。视图是实时的，后注册方法同样生效。
+        local_methods=web_channel.registered_methods(),
     )
     channel_manager.register_channel_with_inbound(web_channel, web_norm_and_forward)
 

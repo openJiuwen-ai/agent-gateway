@@ -246,7 +246,12 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     app = FastAPI()
     from types import SimpleNamespace
     channel_app.register_http_routes(app, SimpleNamespace(config=SimpleNamespace(path="/ws")))
-    assert not app.user_middleware
+    # The extension HTTP interception is the only middleware the Web channel adds;
+    # the authentication gate upstream removed must not come back.
+    assert all(
+        getattr(middleware.kwargs.get("dispatch"), "__name__", "") == "extension_http"
+        for middleware in app.user_middleware
+    ), app.user_middleware
     client = TestClient(app)
     assert client.get("/api/v1/health").status_code == 200
     catalog = client.get("/api/v1/catalog").json()

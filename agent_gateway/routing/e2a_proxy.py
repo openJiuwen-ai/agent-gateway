@@ -172,6 +172,8 @@ async def proxy_unary_request(
     on_done: Callable[[bool, dict[str, Any]], Awaitable[None] | None] | None = None,
     preserve_error_payload: bool = False,
     default_error_code: str = "BAD_REQUEST",
+    metadata: dict[str, Any] | None = None,
+    transform_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> bool:
     """向目标 AgentServer 发起一次 unary E2A 请求并按原外部协议返回。
 
@@ -192,6 +194,9 @@ async def proxy_unary_request(
             Git、多模态配置等已定义结构化错误明细的外部协议。
         default_error_code: AgentServer 失败响应未携带 code 时回写的默认错误码
             （保持各入口迁移前的外部协议 code 不变）。
+        metadata: 显式覆盖 envelope 元数据；为空时沿用本侧路由元数据。
+        transform_payload: 仅在 AgentServer 成功应答时调用，用于在原应答上
+            追加 Gateway 侧数据（如 Gateway 域扩展的设置声明）。
 
     Returns:
         True 表示已向通道回写响应（调用方无需再 send_response）。
@@ -235,10 +240,15 @@ async def proxy_unary_request(
             is_stream=False,
             timestamp=time.time(),
             user_id=user_id or None,
-            metadata=apply_routing_metadata(
-                {"app_id": str(ws_app_id) or "default"}
-                if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
-                getattr(ws, "_web_routing", None),
+            metadata=(
+                metadata
+                if metadata is not None
+                else apply_routing_metadata(
+                    {"app_id": str(ws_app_id) or "default"}
+                    if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None
+                    else None,
+                    getattr(ws, "_web_routing", None),
+                )
             ),
         )
         try:
@@ -292,6 +302,8 @@ async def proxy_unary_request(
                     await callback_result
             except Exception as exc:  # noqa: BLE001 - maintenance must not fail the RPC
                 logger.warning("[%s] %s done callback failed: %s", label, req_method.value, exc)
+        if response.ok and transform_payload is not None:
+            payload = transform_payload(payload)
         await channel.send_response(
             ws,
             req_id,
