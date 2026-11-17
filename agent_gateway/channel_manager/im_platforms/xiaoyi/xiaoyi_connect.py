@@ -1804,10 +1804,6 @@ class XiaoyiChannel(BaseChannel):
         if self._sessions_waiting_for_push.get(session_id) == task_id:
             self._sessions_waiting_for_push.pop(session_id, None)
 
-    def _is_session_pending_cleanup(self, session_id: str) -> bool:
-        """检查会话是否待清理."""
-        return session_id in self._sessions_marked_for_cleanup
-
     def _mark_session_for_cleanup(self, session_id: str, reason: str = "unknown") -> None:
         """标记会话待清理."""
         self._sessions_marked_for_cleanup[session_id] = {
