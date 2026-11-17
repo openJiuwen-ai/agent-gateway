@@ -179,6 +179,10 @@ Gateway 的浏览器桥接把“应用级界面”与“浏览器请求绑定”
 环境：macOS（arm64），Python 3.11.17，独立虚拟环境；仓库基线 `f38242f`；agent-core `31fee3a`
 （锁定版本 `86990bd` 缺少当前导入的模块，见计划第 6 节）。命令在仓库根目录执行，未生成覆盖率报告：
 
+> **可复现性**：本节的验证结论只在 agent-core `31fee3a` 及以上成立。开发分支已把依赖提升为 PyPI
+> `openjiuwen>=0.1.20.post3`（对应 tag `v0.1.20.post3`），在该版本下可复现；若仍使用旧锁定 rev，
+> 扩展运行时的导入会失败，并按降级约定表现为“扩展整体不可用”，而非本节的通过结果。
+
 ```text
 python -m pytest -q -o addopts= --asyncio-mode=auto --strict-markers tests/unit_tests/gateway/extensions_v2
 python -m pytest -q -o addopts= --asyncio-mode=auto --strict-markers tests/unit_tests/channels/web \
@@ -212,5 +216,5 @@ python -m pytest -q -o addopts= --asyncio-mode=auto --strict-markers tests/unit_
 
 - `application.sidebar.footer` 容量在三处不一致，未在本特性处理。
 - 素材路径受其他插件的请求策略约束：拒绝匿名 HTTP 的鉴权插件须放行 `/extension-assets/`，否则登录前的应用级界面取不到素材（D-03）。
-- agent-core 锁定版本缺少当前导入的模块，开发验证使用 `31fee3a`，见计划第 6 节。
+- 开发验证使用 agent-core `31fee3a`；仓库依赖已提升为 `openjiuwen>=0.1.20.post3`，复现条件见 8.2，见计划第 6 节。
 - 真实桌面打包版中的素材读取尚待 GW-09 之后联调验证。
