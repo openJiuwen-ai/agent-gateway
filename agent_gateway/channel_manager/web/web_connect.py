@@ -194,6 +194,10 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.session_result",
         "chat.usage_metadata",
         "chat.usage_summary",
+        # App 角色 NPC 成员阶段事件。npc 命名空间目前仅有 npc.member 一种，
+        # 故用精确匹配而非前缀；若未来新增 npc.* 事件，需同时补
+        # _should_backfill_request_id 的回填判断。
+        "npc.member",
         "chat.file",
         "chat.retract",
         "security.alert",
@@ -1203,6 +1207,9 @@ class WebChannel(BaseWsChannel):
         # payload 判断会自动跳过它，不会重复赋值。
         return (
             event_name.startswith("chat.")
+            # npc 命名空间目前仅有 npc.member 一种事件，精确匹配；
+            # 扩展时与 _WEB_FULL_PAYLOAD_EVENT_TYPES 白名单同步补充。
+            or event_name == "npc.member"
             or event_name.startswith("goal.")
             or event_name == "execution.error"
         )
