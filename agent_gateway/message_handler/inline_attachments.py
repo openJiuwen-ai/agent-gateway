@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import codecs
 import os
+import re
+import unicodedata
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
 
 DEFAULT_TOTAL_INLINE_BYTES = 256 * 1024
 _SNIFF_BYTES = 1024
+_PDF_HEADER_LENGTH = len(b"%PDF-1.0")
+_PDF_HEADER_PATTERN = re.compile(rb"%PDF-[0-9]\.[0-9]")
 _NON_TEXT_SUFFIXES = {
     **dict.fromkeys((".pdf",), "PDF"),
     **dict.fromkeys(
@@ -65,7 +69,8 @@ class InlineFile:
 
 
 def _non_text_type(path: Path, prefix: bytes) -> str | None:
-    if prefix.startswith(b"%PDF-"):
+    pdf_header = _PDF_HEADER_PATTERN.search(prefix)
+    if prefix.startswith(b"%PDF-") or (pdf_header is not None and pdf_header.start() < _SNIFF_BYTES):
         return "PDF"
     suffix_type = _NON_TEXT_SUFFIXES.get(path.suffix.lower())
     if suffix_type:
@@ -88,7 +93,7 @@ def read_inline_file(path: Path, max_bytes: int) -> InlineFile:
     """
     with path.open("rb") as handle:
         original_size = os.fstat(handle.fileno()).st_size
-        prefix = handle.read(_SNIFF_BYTES)
+        prefix = handle.read(_SNIFF_BYTES + _PDF_HEADER_LENGTH - 1)
         file_type = _non_text_type(path, prefix)
         if file_type:
             return InlineFile(file_type, original_size, reason="non_text")
@@ -101,7 +106,7 @@ def read_inline_file(path: Path, max_bytes: int) -> InlineFile:
         text = decoder.decode(data[:max_bytes], final=not truncated)
     except UnicodeDecodeError:
         return InlineFile("binary", original_size, reason="invalid_utf8")
-    if any((ord(char) < 32 and char not in "\t\n\r") or ord(char) == 127 for char in text):
+    if any(unicodedata.category(char) == "Cc" and char not in "\t\n\r" for char in text):
         return InlineFile("binary", original_size, reason="non_text")
     return InlineFile("text", original_size, text=text, truncated=truncated)
 

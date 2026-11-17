@@ -3393,6 +3393,9 @@ class MessageHandler(ABC):
 
         Only UTF-8 text is inlined, bounded by per-file and per-message byte
         limits. Other files retain escaped absolute-path references for tools.
+        The message budget bounds file body text; truncation notices also
+        consume the remaining budget. XML wrappers, path attributes and
+        deferred file references are excluded, so rendered output may be larger.
         ``max_file_size=None`` disables only the per-file limit. If a file
         cannot be read, the original ``@path`` is kept unchanged.
         """
@@ -3429,6 +3432,11 @@ class MessageHandler(ABC):
 
             try:
                 path = Path(resolved).resolve()
+            except (OSError, ValueError, RuntimeError) as exc:
+                logger.warning("Failed to resolve file reference %r: %s", raw, exc)
+                return m.group(0)
+
+            try:
                 if not path.is_file():
                     return m.group(0)
                 path_key = os.path.normcase(str(path))
@@ -3460,7 +3468,7 @@ class MessageHandler(ABC):
                 return (
                     f'\n<file-content path="{escape(raw, quote=True)}"{reason}>\n{text}\n</file-content>\n'
                 )
-            except (OSError, ValueError, RuntimeError):
+            except (OSError, ValueError):
                 return m.group(0)
 
         return pattern.sub(_replacer, content)

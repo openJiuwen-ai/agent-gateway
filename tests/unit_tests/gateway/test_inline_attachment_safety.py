@@ -63,6 +63,35 @@ def test_pdf_disguised_as_txt_is_not_inlined(tmp_path: Path) -> None:
     assert "Issue 6122" not in result
 
 
+@pytest.mark.parametrize("header_offset", [1, 512, 1016, 1023])
+def test_pdf_header_with_leading_bytes_is_not_inlined(
+    tmp_path: Path,
+    header_offset: int,
+) -> None:
+    path = tmp_path / "prefixed.txt"
+    path.write_bytes(b" " * header_offset + PDF_BYTES)
+
+    result = MessageHandler.resolve_at_file_references(
+        f'@"{path.name}"',
+        cwd=str(tmp_path),
+    )
+
+    assert "<file-content" not in result
+    assert 'type="PDF"' in result
+    assert 'reason="non_text"' in result
+    assert "%PDF-1.4" not in result
+    assert "Issue 6122" not in result
+
+
+def test_prefixed_pdf_fixture_is_readable(tmp_path: Path) -> None:
+    pdfplumber = pytest.importorskip("pdfplumber")
+    path = tmp_path / "prefixed.pdf"
+    path.write_bytes(b" " * 512 + PDF_BYTES)
+
+    with pdfplumber.open(path) as document:
+        assert document.pages[0].extract_text() == "Issue 6122"
+
+
 @pytest.mark.parametrize(
     ("filename", "payload"),
     [
@@ -373,6 +402,45 @@ def test_symlink_path_normalization_deduplicates_references(tmp_path: Path) -> N
     assert result.count("symlink duplicate") == 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks are required")
+def test_symlink_loop_is_logged_and_other_files_still_inline(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    loop = tmp_path / "loop.txt"
+    loop.symlink_to(loop)
+    readable = tmp_path / "readable.txt"
+    readable.write_text("readable after loop", encoding="utf-8")
+    content = f'@"{loop.name}" @"{readable.name}"'
+
+    result = MessageHandler.resolve_at_file_references(content, cwd=str(tmp_path))
+
+    assert f'@"{loop.name}"' in result
+    assert "readable after loop" in result
+    assert result.count("<file-content") == 1
+    assert "Failed to resolve file reference" in caplog.text
+    assert "loop.txt" in caplog.text
+
+
+def test_unexpected_runtime_error_from_file_read_is_not_hidden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "readable.txt"
+    path.write_text("readable", encoding="utf-8")
+
+    def failing_read(file_path: Path, max_bytes: int) -> None:
+        raise RuntimeError("unexpected attachment reader failure")
+
+    monkeypatch.setattr(
+        "agent_gateway.message_handler.message_handler.read_inline_file",
+        failing_read,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected attachment reader failure"):
+        MessageHandler.resolve_at_file_references(f'@"{path.name}"', cwd=str(tmp_path))
+
+
 def test_file_content_path_is_escaped_and_preserved(tmp_path: Path) -> None:
     path = tmp_path / "safe & name.txt"
     path.write_text("escaped content", encoding="utf-8")
@@ -409,6 +477,11 @@ def test_file_reference_path_is_resolved_and_escaped(tmp_path: Path) -> None:
         (b"abc\xffdef", "invalid_utf8"),
         (b"abc\x00def", "non_text"),
         (b"abc\x01\x02\x03def", "non_text"),
+        (b"page one\x0cpage two", "non_text"),
+        (b"line one\x0bline two", "non_text"),
+        ("abc\u0080def".encode("utf-8"), "non_text"),
+        ("abc\u0085def".encode("utf-8"), "non_text"),
+        ("abc\u009fdef".encode("utf-8"), "non_text"),
     ],
 )
 def test_unsafe_text_payloads_use_safe_file_references(
@@ -429,6 +502,29 @@ def test_unsafe_text_payloads_use_safe_file_references(
     assert 'type="binary"' in result
     assert f'reason="{reason}"' in result
     assert "\ufffd" not in result
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "中文\tMarkdown\r\n👩\u200d💻",
+        "فارسی می\u200cروم",
+        "\ufeffUTF-8 text with a BOM",
+        "formatting \u202etext\u202c and zero\u200bwidth",
+    ],
+)
+def test_unicode_format_characters_in_valid_text_are_preserved(
+    tmp_path: Path,
+    text: str,
+) -> None:
+    path = tmp_path / "unicode.txt"
+    path.write_text(text, encoding="utf-8")
+
+    result = MessageHandler.resolve_at_file_references(f'@"{path.name}"', cwd=str(tmp_path))
+
+    assert "<file-content" in result
+    assert "<file-reference" not in result
+    assert text in result
 
 
 @pytest.mark.skipif(
