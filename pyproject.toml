@@ -46,10 +46,10 @@ dependencies = [
     # 企业版 OBS 对象存储（common/obs_files.py 顶层 import）
     "minio>=7.2,<8",
     # openjiuwen observability 运行时依赖（openjiuwen 自身未声明为硬依赖）
-    "opentelemetry-api>=1.28.0,<1.42",
-    "opentelemetry-sdk>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0",
     # IM / 渠道适配
     "lark-oapi>=1.5.3,<2",
     "dingtalk-stream>=0.24.3,<0.25",
