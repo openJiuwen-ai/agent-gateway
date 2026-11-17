@@ -39,8 +39,17 @@ def test_text_mode_subprocess_calls_pin_encoding_and_errors() -> None:
             text_kw = _keyword(node, "text") or _keyword(node, "universal_newlines")
             if not (isinstance(text_kw, ast.Constant) and text_kw.value is True):
                 continue
-            if _keyword(node, "encoding") is None:
-                offenders.append(f"{rel}:{node.lineno} (missing encoding=)")
+            # Treat an explicit ``encoding=None`` (or any non-string /
+            # non-literal value) exactly like a missing keyword: ``None``
+            # falls back to ``io.text_encoding(None)``, the unpinned decode
+            # this guard exists to forbid. Require a non-empty string literal.
+            encoding_kw = _keyword(node, "encoding")
+            if not (
+                isinstance(encoding_kw, ast.Constant)
+                and isinstance(encoding_kw.value, str)
+                and encoding_kw.value
+            ):
+                offenders.append(f"{rel}:{node.lineno} (missing or non-literal encoding=)")
             elif getattr(_keyword(node, "errors"), "value", None) not in SAFE_ERROR_HANDLERS:
                 offenders.append(f"{rel}:{node.lineno} (tolerant errors= missing)")
 
