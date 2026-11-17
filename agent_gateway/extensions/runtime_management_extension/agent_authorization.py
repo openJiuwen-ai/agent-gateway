@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone
 
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.runtime_management_extension.invoke_ids import (
     routing_triple_from_envelope,

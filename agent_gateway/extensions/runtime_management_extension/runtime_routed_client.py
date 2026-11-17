@@ -15,8 +15,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.models import E2AEnvelope
 
 from agent_gateway.common.request_identity import web_routing_identity
 from agent_gateway.extensions.runtime_management_extension.agent_authorization import (
@@ -247,7 +247,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._on_server_push = handler
 
     async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
-        from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
+        from e2a.wire_codec import parse_agent_server_wire_chunk
 
         handler = self._on_server_push
         if handler is None:

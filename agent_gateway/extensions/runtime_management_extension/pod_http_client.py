@@ -14,13 +14,13 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.constants import (
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.wire_codec import parse_agent_server_wire_chunk
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import parse_agent_server_wire_chunk
 
 from agent_gateway.common.security.link_mtls import LinkMTLSConfig
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
