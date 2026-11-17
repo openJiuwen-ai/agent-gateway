@@ -259,6 +259,24 @@ def test_total_budget_is_byte_based_and_sequential(tmp_path: Path) -> None:
     assert 'reason="inline_budget_exhausted"' in result
 
 
+def test_truncation_notice_consumes_total_budget(tmp_path: Path) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("A" * 20, encoding="utf-8")
+    second.write_text("B" * 20, encoding="utf-8")
+
+    result = MessageHandler.resolve_at_file_references(
+        f'@"{first.name}" @"{second.name}"',
+        cwd=str(tmp_path),
+        max_file_size=10,
+        max_total_inline_bytes=20,
+    )
+
+    assert "A" * 10 in result
+    assert "B" * 10 not in result
+    assert result.count('reason="inline_budget_exhausted"') == 1
+
+
 def test_max_total_inline_bytes_is_keyword_only_with_256_kib_default() -> None:
     parameter = inspect.signature(
         MessageHandler.resolve_at_file_references
@@ -278,7 +296,8 @@ def test_unlimited_single_file_does_not_bypass_total_budget(tmp_path: Path) -> N
         max_file_size=None,
     )
 
-    assert result.count("C") == 256 * 1024
+    assert "C" * (256 * 1024) in result
+    assert "C" * (256 * 1024 + 1) not in result
     assert 'reason="inline_budget_exhausted"' in result
 
 

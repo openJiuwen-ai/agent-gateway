@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import codecs
+import os
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -86,7 +87,7 @@ def read_inline_file(path: Path, max_bytes: int) -> InlineFile:
     truncation boundary, which the incremental decoder leaves unread.
     """
     with path.open("rb") as handle:
-        original_size = path.stat().st_size
+        original_size = os.fstat(handle.fileno()).st_size
         prefix = handle.read(_SNIFF_BYTES)
         file_type = _non_text_type(path, prefix)
         if file_type:
