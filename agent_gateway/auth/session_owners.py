@@ -23,6 +23,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_gateway.auth.service import AuthService
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +125,7 @@ def lookup(session_id: str) -> SessionOwner | None:
     return SessionOwner(credential_ref=ref, model_name=model) if ref and model else None
 
 
-def login_auth_for_owner(owner: SessionOwner) -> dict | None:
+def login_auth_for_owner(owner: SessionOwner, *, service: AuthService | None = None) -> dict | None:
     from agent_gateway.auth.apig import resolve_apig_config
     from agent_gateway.auth.model_catalog import get_models
     from agent_gateway.auth.passthrough import refreshed_credential_for_ref
@@ -131,7 +135,8 @@ def login_auth_for_owner(owner: SessionOwner) -> dict | None:
     apig_config = resolve_apig_config(allow_refresh=False)
     if apig_config is None:
         return None
-    fresh = refreshed_credential_for_ref(owner.credential_ref)
+    fresh = (refreshed_credential_for_ref(owner.credential_ref) if service is None
+             else refreshed_credential_for_ref(owner.credential_ref, service=service))
     if not fresh or fresh.get("revoked") or not fresh.get("api_key"):
         return None
     return {
