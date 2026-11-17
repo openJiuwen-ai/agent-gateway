@@ -173,6 +173,7 @@ async def proxy_unary_request(
     preserve_error_payload: bool = False,
     default_error_code: str = "BAD_REQUEST",
     metadata: dict[str, Any] | None = None,
+    transform_payload: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> bool:
     """向目标 AgentServer 发起一次 unary E2A 请求并按原外部协议返回。
 
@@ -194,6 +195,8 @@ async def proxy_unary_request(
         default_error_code: AgentServer 失败响应未携带 code 时回写的默认错误码
             （保持各入口迁移前的外部协议 code 不变）。
         metadata: Gateway 提供的请求上下文，路由身份仍以入口解析结果为准。
+        transform_payload: 仅在 AgentServer 成功应答时调用，用于在原应答上
+            追加 Gateway 侧数据（如 Gateway 域扩展的设置声明）。
 
     Returns:
         True 表示已向通道回写响应（调用方无需再 send_response）。
@@ -295,6 +298,8 @@ async def proxy_unary_request(
                     await callback_result
             except Exception as exc:  # noqa: BLE001 - maintenance must not fail the RPC
                 logger.warning("[%s] %s done callback failed: %s", label, req_method.value, exc)
+        if response.ok and transform_payload is not None:
+            payload = transform_payload(payload)
         await channel.send_response(
             ws,
             req_id,

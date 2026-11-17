@@ -132,7 +132,15 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
         attach_mcp_oauth_routes,
     )
     from agent_gateway.channel_manager.web.web_http_auth import register_auth_routes
+    from agent_gateway.channel_manager.web.webui_resource_http import (
+        attach_webui_resource_routes,
+    )
+    from agent_gateway.extensions_v2.webui.http import attach_browser_routes
 
+    # 必须先于扩展包静态资源挂载：/extension-assets 的读取、下载与上传
+    # 统一由扩展层代理，回落到 Gateway 包自身的静态目录。
+    attach_webui_resource_routes(app, channel)
+    attach_browser_routes(app)
     attach_container_file_routes(app, channel)
     attach_trajectory_routes(app, channel)
     # 个人版与企业版均需挂载：OAuth 回调不属于企业平面增量能力。

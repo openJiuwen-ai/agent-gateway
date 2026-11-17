@@ -53,7 +53,7 @@ class FakeWebChannel:
         self.methods: dict[str, object] = {}
         self.responses: list[dict] = []
         self.connect_handler = None
-        self.disconnect_handler = None
+        self.disconnect_handlers: list = []
         self.routing_keys: list[RoutingKey] = []
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
@@ -65,7 +65,8 @@ class FakeWebChannel:
         self.connect_handler = handler
 
     def on_disconnect(self, handler):
-        self.disconnect_handler = handler
+        # The real WebChannel keeps every hook; a single slot would hide later registrations.
+        self.disconnect_handlers.append(handler)
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append({
@@ -776,7 +777,8 @@ async def test_web_disconnect_unregisters_physical_subscriptions() -> None:
     message_handler = FakeMessageHandler()
     channel = _bind(message_handler=message_handler)
     ws = SimpleNamespace(_jiuwen_ws_id="web-ws-dead")
-    await channel.disconnect_handler(ws, {"sess-web"})
+    for handler in channel.disconnect_handlers:
+        await handler(ws, {"sess-web"})
     assert message_handler.disconnected_websockets == [("web", "web-ws-dead")]
 
 
