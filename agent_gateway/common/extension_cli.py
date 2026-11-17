@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 METHODS = frozenset({"install", "query", "reload", "uninstall"})
 MAX_FRAME = 8 * 1024 * 1024
 ENV_PREFIX = "JIUWENSWARM_EXTENSION_CLI_"
+#: manifest ``package.domain`` 空间的取值；与 ``context_path`` 的传输域
+#: （``agent_server`` / ``gateway``）不是同一套命名，不可互相传入。
+MANIFEST_DOMAIN_AGENT_SERVER = "agentserver"
 Handler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -93,7 +96,12 @@ async def request(context: Mapping[str, Any], action: str, params: dict[str, Any
             writer.write(json.dumps(frame, ensure_ascii=False).encode("utf-8") + b"\n")
             await writer.drain()
             raw = await reader.readline()
-            response = json.loads(raw)
+            if not raw:
+                raise ControlError("本机管理入口未返回响应。")
+            try:
+                response = json.loads(raw)
+            except ValueError:
+                raise ControlError("本机管理响应不合法。") from None
             if not isinstance(response, dict) or response.get("id") != request_id:
                 raise ControlError("本机管理响应与请求不匹配。")
             return response
@@ -224,7 +232,11 @@ class LocalControl:
 
 
 def source_domain(path: Path) -> str:
-    """Read the declared host without importing package code."""
+    """Read the declared host without importing package code.
+
+    Returns a value in the manifest ``package.domain`` space (``gateway`` /
+    ``agentserver``), not the transport domain accepted by ``context_path``.
+    """
     import json
     from zipfile import BadZipFile, ZipFile
 
@@ -245,4 +257,6 @@ def source_domain(path: Path) -> str:
         raise ValueError("Cannot read package manifest") from error
     package = manifest.get("package") if isinstance(manifest, dict) else None
     domain = package.get("domain") if isinstance(package, dict) else None
-    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else "agentserver"
+    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else (
+        MANIFEST_DOMAIN_AGENT_SERVER
+    )

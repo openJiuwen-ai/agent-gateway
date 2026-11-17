@@ -95,10 +95,14 @@ def resolve_install_report_path(config: Mapping[str, Any] | None = None) -> Path
 def resolve_install_report_settings(config: Mapping[str, Any] | None = None) -> InstallReportSettings:
     """Read and validate ``extensions.install_report`` timing values."""
     source = config if config is not None else _read_config()
-    extensions = source.get("extensions", {})
+    extensions = source.get("extensions")
+    if extensions is None:  # YAML 中 ``extensions:`` 空段解析为 null
+        extensions = {}
     if not isinstance(extensions, Mapping):
         raise ValueError("extensions must be a mapping")
-    report = extensions.get("install_report", {})
+    report = extensions.get("install_report")
+    if report is None:  # YAML 中 ``install_report:`` 空段解析为 null
+        report = {}
     if not isinstance(report, Mapping):
         raise ValueError("extensions.install_report must be a mapping")
 

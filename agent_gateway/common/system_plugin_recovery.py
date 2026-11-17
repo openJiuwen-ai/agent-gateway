@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping
+from urllib.parse import urlsplit
 
 import portalocker
 
@@ -36,6 +37,25 @@ _DATA_DIR_DEFAULT = "extension"
 
 class RecoveryRecordNotFound(LookupError):
     """Raised when a requested history record is no longer retained."""
+
+
+def _loopback_http_url(value: str) -> bool:
+    """Return whether ``value`` is an ``http`` URL whose host is loopback.
+
+    A plain prefix check is unsafe: ``http://127.0.0.1:1@evil.example`` starts
+    with the prefix but resolves to a remote host, so parse the URL instead and
+    reject any userinfo component.
+    """
+    try:
+        parts = urlsplit(value)
+        if parts.scheme != "http" or parts.hostname != "127.0.0.1":
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        parts.port  # noqa: B018 - raises ValueError for a malformed port
+    except ValueError:
+        return False
+    return True
 
 
 class SystemPluginRecovery:
@@ -180,11 +200,11 @@ class SystemPluginRecovery:
         except (OSError, UnicodeError, json.JSONDecodeError):
             return None
         value = document.get("url") if isinstance(document, Mapping) else None
-        return value if isinstance(value, str) and value.startswith("http://127.0.0.1:") else None
+        return value if isinstance(value, str) and _loopback_http_url(value) else None
 
     def publish_endpoint(self, url: str, session_id: str) -> None:
         """Atomically publish the current sidecar URL for the regular settings page."""
-        if not url.startswith("http://127.0.0.1:") or not _valid_session_id(session_id):
+        if not isinstance(url, str) or not _loopback_http_url(url) or not _valid_session_id(session_id):
             raise ValueError("recovery endpoint is invalid")
         self.data_dir.mkdir(parents=True, exist_ok=True)
         _write_json(self.endpoint_path, {"url": url, "session_id": session_id})

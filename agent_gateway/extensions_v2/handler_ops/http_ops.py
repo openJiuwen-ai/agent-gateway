@@ -10,6 +10,7 @@ code instead of being truncated.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -115,7 +116,7 @@ async def _fetch(
             ) as response:
                 location = response.headers.get("location", "")
                 if not follow or not response.is_redirect or not location or hops >= MAX_REDIRECTS:
-                    return await _output(response, policy, started)
+                    return await _output(response, policy, started, deadline)
                 next_url = urljoin(url, location)
                 if not policy.host_allowed(next_url):
                     return HttpFetchOutput(
@@ -132,20 +133,36 @@ async def _fetch(
                 hops += 1
 
 
-async def _output(response: httpx.Response, policy: HttpPolicy, started: float) -> HttpFetchOutput:
+async def _output(
+    response: httpx.Response,
+    policy: HttpPolicy,
+    started: float,
+    deadline: float,
+) -> HttpFetchOutput:
     headers = {str(key).lower(): str(value) for key, value in response.headers.items()}
     chunks: list[bytes] = []
     total = 0
-    async for chunk in response.aiter_bytes():
-        total += len(chunk)
-        if total > policy.max_body_bytes:
-            return HttpFetchOutput(
-                status=response.status_code,
-                headers=headers,
-                code=CODE_BODY_TOO_LARGE,
-                elapsed_ms=_elapsed(started),
-            )
-        chunks.append(chunk)
+    try:
+        # Apply the request deadline to body streaming too: a trickling peer must
+        # not hold the package handler open past ``timeout_ms``.
+        async with asyncio.timeout(max(deadline - time.monotonic(), 0)):
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > policy.max_body_bytes:
+                    return HttpFetchOutput(
+                        status=response.status_code,
+                        headers=headers,
+                        code=CODE_BODY_TOO_LARGE,
+                        elapsed_ms=_elapsed(started),
+                    )
+                chunks.append(chunk)
+    except TimeoutError:
+        return HttpFetchOutput(
+            status=response.status_code,
+            headers=headers,
+            code=CODE_TIMEOUT,
+            elapsed_ms=_elapsed(started),
+        )
     return HttpFetchOutput(
         status=response.status_code,
         headers=headers,

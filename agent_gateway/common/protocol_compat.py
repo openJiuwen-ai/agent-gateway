@@ -121,6 +121,12 @@ EXTENSION_REQ_METHODS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: ``ensure_req_method`` 动态补齐的上限；防止任意客户端无限枚举导致进程内存增长。
+MAX_DYNAMIC_REQ_METHODS = 64
+
+_dynamic_req_methods: set[str] = set()
+
+
 def ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
     """注册协议包缺失的枚举成员；已有同值成员时幂等返回。"""
     existing = enum_cls.__members__.get(name)
@@ -156,14 +162,17 @@ def ensure_req_method(value: str) -> ReqMethod | None:
     """按协议值查找 ``ReqMethod``；缺失时运行时补齐并返回该成员。
 
     新增业务方法不再要求网关随协议包升级：请求先由 Web 通道解析成枚举，
-    再按“本地白名单 + 默认透传”决定是否转发。值非法或无法生成合法成员名
-    时返回 ``None``，调用方保持未知方法语义。
+    再按“本地白名单 + 默认透传”决定是否转发。值非法、无法生成合法成员名，
+    或动态成员已达 ``MAX_DYNAMIC_REQ_METHODS`` 时返回 ``None``，调用方保持
+    未知方法语义。
     """
     if not isinstance(value, str) or not value or len(value) > 128:
         return None
     for item in ReqMethod:
         if item.value == value:
             return item
+    if len(_dynamic_req_methods) >= MAX_DYNAMIC_REQ_METHODS:
+        return None
     base = re.sub(r"[^0-9A-Za-z]+", "_", value).strip("_").upper()
     if not base:
         return None
@@ -181,6 +190,7 @@ def ensure_req_method(value: str) -> ReqMethod | None:
         ensure_protocol_member(ReqMethod, name, value)
     except RuntimeError:
         return None
+    _dynamic_req_methods.add(value)
     return ReqMethod.__members__.get(name)
 
 
@@ -188,6 +198,7 @@ __all__ = [
     "EXTENSION_REQ_METHODS",
     "GATEWAY_EVENT_TYPES",
     "GATEWAY_REQ_METHODS",
+    "MAX_DYNAMIC_REQ_METHODS",
     "ensure_gateway_event_types",
     "ensure_gateway_req_methods",
     "ensure_protocol_member",

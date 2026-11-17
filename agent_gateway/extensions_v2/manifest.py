@@ -42,10 +42,11 @@ def read_manifest_document(root: Path) -> dict[str, Any]:
 
 
 def package_domain(document: Mapping[str, Any]) -> str:
-    """Return ``package.domain``; a missing value means AgentServer."""
+    """Return the normalized ``package.domain``; a missing value means AgentServer."""
 
     package = document.get("package")
     raw = package.get("domain") if isinstance(package, Mapping) else None
     if isinstance(raw, str) and raw.strip():
-        return raw
+        # Normalize like the loader, so " Gateway " and "gateway" agree.
+        return raw.strip().lower()
     return DOMAIN_AGENT_SERVER

@@ -42,8 +42,16 @@ def resource_path(value: str) -> str:
 
 
 def encode_resource_route(user_id: str, session_id: str, connection_id: str) -> str:
-    """Encode routing facts; the separate random resource ID grants access."""
-    raw = json.dumps([user_id, session_id, connection_id], ensure_ascii=False, separators=(",", ":")).encode()
+    """Encode routing facts; the separate random resource ID grants access.
+
+    Applies the same constraints as ``decode_resource_route`` so this function
+    cannot emit a route that decoding always rejects.
+    """
+    parts = (user_id, session_id, connection_id)
+    if (any(not isinstance(part, str) or len(part) > 512 for part in parts)
+            or bool(session_id) == bool(connection_id)):
+        raise ValueError("Invalid WebUI resource route")
+    raw = json.dumps(list(parts), ensure_ascii=False, separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 

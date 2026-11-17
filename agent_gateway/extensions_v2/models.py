@@ -116,7 +116,8 @@ class HttpFetchInput:
     method: str = "GET"
     headers: Mapping[str, str] = field(default_factory=_empty_headers)
     body: Any = None
-    timeout_ms: int = 3000
+    #: ``0`` means "use ``HttpPolicy.timeout_ms``"; a positive value overrides it.
+    timeout_ms: int = 0
     follow_redirects: bool = False
 
 

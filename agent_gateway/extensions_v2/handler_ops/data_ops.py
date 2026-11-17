@@ -10,18 +10,30 @@ Files a package places under ``public/`` can be addressed with
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilder, EventNext
 from openjiuwen.core.extension.data.files import run_file_operation
 
-if TYPE_CHECKING:
-    from agent_gateway.extensions_v2.runtime import GatewayRuntime
+
+class _Runtime(Protocol):
+    """The slice of the Gateway runtime that ``ops.data`` depends on."""
+
+    def is_active_package(self, package_id: str) -> bool: ...
+
+    def package_data_call(
+        self,
+        package_id: str,
+        ops: EventHandlerOps,
+    ) -> AbstractContextManager[None]: ...
+
+    def package_data_dir(self, package_id: str) -> Path: ...
 
 
-def build_data_ops_build_handler(runtime: GatewayRuntime):
+def build_data_ops_build_handler(runtime: _Runtime):
     """Return the ``ops.build`` BUILTIN that registers ``ops.data.root``."""
 
     async def data_root(ops: EventHandlerOps) -> Path:
