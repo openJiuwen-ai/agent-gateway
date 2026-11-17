@@ -2470,7 +2470,7 @@ async def _run(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    # 如果是 WebSocket 客户端，需要连接；扩展客户端（agentos_router 等）自行处理 connect
     if isinstance(client, WebSocketAgentServerClient):
         await _connect_with_retry(
             client,
@@ -2479,7 +2479,6 @@ async def _run(
             interval=retry_interval,
         )
     else:
-        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
         await client.connect("")
     log_startup_stage("agent_server_connected")
 

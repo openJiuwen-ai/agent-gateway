@@ -11,7 +11,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions import yuanrong_frontend_client as yuanrong_mod
 from agent_gateway.extensions.yuanrong_frontend_client import (
@@ -87,23 +86,6 @@ def _fake_agent_get_urlopen(
 class YuanrongFrontendAgentClientProbe(YuanrongFrontendAgentClient):
     """Subclass exposing protected helpers for unit tests (G.CLS.11)."""
 
-    def invoke_headers(
-        self,
-        session_id: str,
-        *,
-        user_id: str | None = None,
-        req_method: str | None = None,
-        stream: bool = False,
-        request_id: str | None = None,
-    ) -> dict[str, str]:
-        return self._invoke_headers(
-            session_id,
-            user_id=user_id,
-            req_method=req_method,
-            stream=stream,
-            request_id=request_id,
-        )
-
     def parse_agent_file_list_response(
         self,
         body: str,
@@ -125,7 +107,6 @@ def client() -> YuanrongFrontendAgentClientProbe:
     return YuanrongFrontendAgentClientProbe(
         frontend_endpoint="http://127.0.0.1:8080",
         function_version_urn="urn:test:function:1",
-        concurrency=2,
     )
 
 
@@ -148,92 +129,6 @@ def test_bind_southbound_trace_id_is_task_local():
     assert current_southbound_trace_id() == "t-ws-2"
     clear_southbound_trace_id()
     assert current_southbound_trace_id() == ""
-
-
-def test_invoke_headers_without_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1", request_id="req-1")
-
-    assert "X-Session-Context" not in headers
-    instance = json.loads(headers["X-Instance-Session"])
-    assert instance == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
-    assert headers[TRACE_ID_HEADER] == "req-1"
-
-
-def test_invoke_headers_with_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1", user_id="alice", request_id="req-2")
-
-    assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "alice"}
-    assert json.loads(headers["X-Instance-Session"]) == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
-    assert headers[TRACE_ID_HEADER] == "req-2"
-
-
-def test_invoke_headers_stream_accepts_sse(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1", user_id="bob", stream=True)
-
-    assert headers["Accept"] == "text/event-stream"
-    assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "bob"}
-    assert headers[TRACE_ID_HEADER]
-
-
-@pytest.mark.asyncio
-async def test_send_request_passes_user_id_in_session_context(client: YuanrongFrontendAgentClientProbe):
-    await client.connect("http://127.0.0.1:8080")
-
-    captured: dict[str, str] = {}
-
-    def fake_urlopen(req, timeout=0):
-        captured.update(dict(req.header_items()))
-        resp = MagicMock()
-        resp.status = 200
-        resp.read.return_value = b'{"ok": true}'
-        resp.__enter__ = MagicMock(return_value=resp)
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
-
-    envelope = E2AEnvelope(
-        request_id="req-1",
-        channel="tui",
-        session_id="sess-1",
-        method="chat.send",
-        user_id="alice",
-    )
-
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        response = await client.send_request(envelope)
-
-    assert response.ok is True
-    assert json.loads(captured["X-session-context"]) == {"sessionCtx": "alice"}
-    minted = _header(captured, TRACE_ID_HEADER)
-    assert minted
-    assert minted != "req-1"
-
-
-@pytest.mark.asyncio
-async def test_send_request_omits_session_context_without_user_id(client: YuanrongFrontendAgentClientProbe):
-    await client.connect("http://127.0.0.1:8080")
-
-    captured: dict[str, str] = {}
-
-    def fake_urlopen(req, timeout=0):
-        captured.update(dict(req.header_items()))
-        resp = MagicMock()
-        resp.status = 200
-        resp.read.return_value = b'{}'
-        resp.__enter__ = MagicMock(return_value=resp)
-        resp.__exit__ = MagicMock(return_value=False)
-        return resp
-
-    envelope = E2AEnvelope(
-        request_id="req-2",
-        channel="tui",
-        session_id="sess-2",
-        method="chat.send",
-    )
-
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        await client.send_request(envelope)
-
-    assert "X-session-context" not in {k.lower() for k in captured}
 
 
 @pytest.mark.asyncio
@@ -491,7 +386,6 @@ async def test_create_sandbox_uses_agent_timeout():
     client = YuanrongFrontendAgentClientProbe(
         frontend_endpoint="http://127.0.0.1:8080",
         function_version_urn="urn:test:function:1",
-        invoke_timeout_s=60.0,
         agent_timeout_s=300.0,
     )
     await client.connect("http://127.0.0.1:8080")

@@ -3170,10 +3170,9 @@ async def test_create_uses_configured_workspace_root(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_agentos_extension_is_selected_independently(
+async def test_agentos_extension_registers_when_selected(
     monkeypatch,
 ) -> None:
-    from agent_gateway.extensions.agent_client import extension as plain_extension
     from agent_gateway.extensions.agentos import extension as agentos_extension
     from agent_gateway.extensions.agentos.agentos_router import (
         extension as agentos_router_impl,
@@ -3189,7 +3188,6 @@ async def test_agentos_extension_is_selected_independently(
         }
     }
     monkeypatch.setattr(agentos_router_impl, "get_config", lambda: config)
-    monkeypatch.setattr(plain_extension, "get_config", lambda: config)
 
     class Registry:
         registered = None
@@ -3202,7 +3200,6 @@ async def test_agentos_extension_is_selected_independently(
             self.third_agent = extension
 
     registry = Registry()
-    assert await plain_extension.register_extensions(registry) == []
     registered = await agentos_extension.register_extensions(registry)
 
     assert len(registered) == 1

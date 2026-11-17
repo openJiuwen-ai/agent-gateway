@@ -33,8 +33,6 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
         self._yuanrong_client = YuanrongFrontendAgentClient(
             frontend_endpoint=config.frontend_endpoint,
             function_version_urn=config.function_version_urn,
-            concurrency=config.concurrency,
-            invoke_timeout_s=config.invoke_timeout_s,
             agent_timeout_s=config.agent_timeout_s,
             agent_namespace=config.agent_namespace,
             probe_settings=config.probes,

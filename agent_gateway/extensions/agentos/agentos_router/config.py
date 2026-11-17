@@ -68,8 +68,6 @@ class SshChannelEndpoint:
 class RouterConfig:
     frontend_endpoint: str
     function_version_urn: str
-    concurrency: int
-    invoke_timeout_s: float
     registry: RegistryConfig
     agent_namespace: str = "default"
     agent_timeout_s: float = 300.0
@@ -432,8 +430,6 @@ def load_router_config(
     return RouterConfig(
         frontend_endpoint=frontend_endpoint,
         function_version_urn=function_version_urn,
-        concurrency=int(agent_client.get("concurrency") or 1),
-        invoke_timeout_s=float(agent_client.get("invoke_timeout_s") or 60.0),
         agent_namespace=str(agent_client.get("agent_namespace") or "default").strip() or "default",
         agent_timeout_s=float(agent_client.get("agent_timeout_s") or 300.0),
         registry=RegistryConfig(

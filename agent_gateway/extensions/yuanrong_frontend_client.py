@@ -2,9 +2,10 @@
 
 """YuanrongFrontendAgentClient - openYuanRong Frontend HTTP 客户端.
 
-通过 HTTP POST 调用 openYuanRong Frontend 的函数 invocation 接口。
-另经 POST/DELETE /api/agent 管理常驻 agent 实例（create_sandbox / delete_sandbox）。
-保留无 service_id 设计，使用 session_id 进行并发控制。
+经 POST/DELETE/GET /api/agent 管理常驻 agent 实例
+（create_sandbox / delete_sandbox / get_agent_info / wait_until_running），
+并提供 /api/agent/:id/files/* 文件接口（upload/download/list/mkdir）。
+消息数据面由 AgentOS Router 经 frontend WS 代理直连实例，不经本客户端。
 """
 
 from __future__ import annotations
@@ -20,9 +21,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import aclosing, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Mapping, TypedDict
+from typing import Any, Mapping, TypedDict
 
 TRACE_ID_HEADER = "X-Trace-Id"
 AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
@@ -93,24 +94,9 @@ def apply_trace_header(
         if str(key).lower() != "x-trace-id"
     } | {TRACE_ID_HEADER: resolved}
 
-from e2a.agent_models import (
-    AgentRequest,
-    AgentResponse,
-    AgentResponseChunk,
-)
-from e2a.models import E2AEnvelope
-from e2a.wire_codec import (
-    parse_agent_server_wire_chunk,
-    parse_agent_server_wire_unary,
-)
-from e2a.agent_compat import e2a_to_agent_request
-
-from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.routing.container_files import AgentFileDownloadChunk
 from agent_gateway.telemetry import (
-    bind_agent_request_trace,
     current_request_trace,
-    get_message_trace,
     inject_request_headers,
     record_cleanup_result,
     trace_operation,
@@ -130,11 +116,6 @@ _AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
 _AGENT_FAILED_STATUSES = frozenset(
     {"failed", "error", "deleted", "stopped", "killed"}
 )
-
-
-def _is_inactive_trace(trace: object | None) -> bool:
-    """Whether a trace is absent or already finished."""
-    return trace is None or trace.finished
 
 
 @dataclass(frozen=True)
@@ -439,18 +420,6 @@ class _AgentFileRequest:
     trace_id: str | None = None
 
 
-@dataclass(frozen=True)
-class _InvokeStreamCall:
-    """Inputs for one threaded stream invoke (G.FNM.03)."""
-
-    payload: dict[str, Any]
-    session_id: str
-    out_queue: asyncio.Queue[tuple[str, str | None]]
-    loop: asyncio.AbstractEventLoop
-    user_id: str | None = None
-    request_id: str | None = None
-
-
 class YuanrongAgentFileError(RuntimeError):
     """Raised when YuanRong agent file upload/download/list/mkdir fails."""
 
@@ -460,12 +429,13 @@ class YuanrongAgentFileError(RuntimeError):
         self.error_code = str(error_code)
 
 
-class YuanrongFrontendAgentClient(AgentServerClient):
+class YuanrongFrontendAgentClient:
     """openYuanRong Frontend HTTP 客户端.
 
-    通过 HTTP POST 调用 openYuanRong frontend 的函数 invocation 接口。
-    使用 session_id 进行并发控制，不使用 service_id/agent_id。
-    另提供 create_sandbox / delete_sandbox，经 /api/agent 管理常驻 agent 实例。
+    经 /api/agent 管理常驻 agent 实例（create_sandbox / delete_sandbox /
+    get_agent_info / wait_until_running），并提供 /api/agent/:id/files/*
+    文件接口。消息数据面由 AgentOS Router 经 frontend WS 代理直连实例，
+    不经本客户端（历史 FaaS invoke 链路已删除）。
     """
 
     def __init__(
@@ -473,19 +443,14 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         *,
         frontend_endpoint: str,
         function_version_urn: str,
-        concurrency: int = 1,
-        invoke_timeout_s: float = 60.0,
         agent_timeout_s: float = 300.0,
         agent_namespace: str = "default",
-        session_ttl_s: int = 900,
         probe_settings: RuntimeProbeSettings | None = None,
         wait_running_timeout_s: float | None = None,
         wait_running_interval_s: float | None = None,
     ) -> None:
         self._frontend_endpoint = (frontend_endpoint or "").rstrip("/")
         self._function_version_urn = (function_version_urn or "").strip()
-        self._concurrency = max(int(concurrency), 1)
-        self._invoke_timeout_s = float(invoke_timeout_s)
         self._agent_timeout_s = float(agent_timeout_s)
         self._agent_namespace = str(agent_namespace or "default").strip() or "default"
         self._probe_settings = probe_settings or DEFAULT_RUNTIME_PROBE_SETTINGS
@@ -493,9 +458,6 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         # monkeypatch ``_AGENT_RUNNING_TIMEOUT_SECONDS``).
         self._wait_running_timeout_s = wait_running_timeout_s
         self._wait_running_interval_s = wait_running_interval_s
-        # yuanrong X-Instance-Session.sessionTTL，单位：秒；0 = 立即解绑。
-        # 默认 900s（15 分钟），保证会话对实例的亲和性，避免每次调用重建实例。
-        self._session_ttl_s = max(int(session_ttl_s), 0)
         self._connected = False
         self._server_ready = False
 
@@ -1626,7 +1588,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         classify_not_sent: bool = False,
     ) -> tuple[int, str]:
         resolved_timeout = (
-            self._invoke_timeout_s if timeout is None else float(timeout)
+            self._agent_timeout_s if timeout is None else float(timeout)
         )
         response_started = False
         try:
@@ -1753,21 +1715,6 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             preparation_trace=True,
         )
 
-    def _invoke_url(self) -> str:
-        urn = urllib.parse.quote(self._function_version_urn, safe="")
-        return f"{self._frontend_endpoint}/serverless/v1/functions/{urn}/invocations"
-
-    def _build_invoke_payload(self, envelope: E2AEnvelope, *, stream: bool) -> dict[str, Any]:
-        """构造 faas invocation 请求体（E2AEnvelope 形状，与 ws 入站完全一致）.
-
-        直接用 envelope.to_dict() 发送，透传完整 channel_context（含
-        gateway 已注入的 permission_context/enable_memory），不丢字段。
-        仅覆盖 is_stream 以区分非流式/流式。
-        """
-        payload = envelope.to_dict()
-        payload["is_stream"] = stream
-        return payload
-
     @staticmethod
     def _is_faas_envelope(parsed: Any) -> bool:
         """是否为 faas executor 的外层封装形状.
@@ -1790,11 +1737,12 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         faas executor 把 clawee 返回值包成
         {"body": <result>, "innerCode": "0", "traceId":..., ...} 再 to_json_string，
         clawee.handler 返回 response_to_payload(resp) = json.dumps(asdict(resp)) 即 str，
-        故 body 字段常是内层 JSON 字符串。本函数取出内层 body 并二次解析为 AgentResponse dict。
+        故 body 字段常是内层 JSON 字符串。本函数取出内层 body 并二次解析。
 
-        非流式整体 body 与流式单个 chunk 共用此规范化，保证两条路径解析逻辑一致。
-        仅当确实识别到 faas 外层形状（有 body+innerCode 且非 AgentResponse 形状）时剥离，
-        避免误吞 websocket 直连等其它路径返回的普通 dict。
+        GET /files/list 与 POST /files/mkdir 响应共用此规范化，保证两条
+        解析路径逻辑一致。仅当确实识别到 faas 外层形状（有 body+innerCode
+        且非 AgentResponse 形状）时剥离，避免误吞 websocket 直连等其它
+        路径返回的普通 dict。
 
         Returns:
             (normalized, faas_error_code):faas_error_code 非 None 表示 faas 层错误（innerCode != "0"）。
@@ -1826,493 +1774,3 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 parsed = {"content": parsed}
 
         return parsed, None
-
-    @staticmethod
-    def _is_agent_response_shape(parsed: Any) -> bool:
-        """是否为标准 AgentResponse 形状（与 websocket parse_agent_server_wire_unary 透传语义对齐）."""
-        return (
-            isinstance(parsed, dict)
-            and "payload" in parsed
-            and "ok" in parsed
-            and isinstance(parsed.get("payload"), dict)
-        )
-
-    def _parse_invoke_response(
-        self,
-        body: str,
-        status: int,
-        request: AgentRequest,
-    ) -> AgentResponse:
-        """faas 非流式 body → AgentResponse.
-
-        复用 parse_agent_server_wire_unary（与 ws client 同款反解），补齐
-        agent_ref/metadata 透传。faas executor 外层 {body, innerCode} 由
-        _normalize_faas_body 剥离，内层 body 是 E2A wire 形状。
-        """
-        try:
-            parsed = json.loads(body) if body else {}
-        except Exception:
-            parsed = {"content": body}
-
-        parsed, faas_err = self._normalize_faas_body(parsed)
-
-        # 尝试用 wire_codec 反解（与 ws client 完全相同的反解函数）
-        try:
-            resp = parse_agent_server_wire_unary(parsed)
-            meta = dict(resp.metadata or {})
-            meta["http_status"] = status
-            if faas_err:
-                meta["_faas_error_code"] = faas_err
-            return AgentResponse(
-                request_id=resp.request_id or request.request_id,
-                channel_id=resp.channel_id or request.channel_id,
-                ok=(200 <= status < 300) and resp.ok,
-                payload=resp.payload,
-                metadata=meta,
-                agent_ref=resp.agent_ref,
-            )
-        except Exception as parse_err:
-            logger.debug(
-                "[YuanrongFrontendAgentClient] wire_codec unary parse failed, "
-                "falling back to legacy shape: %s",
-                parse_err,
-            )
-
-        # 兜底：标准 AgentResponse 形状（非 E2A wire）
-        if self._is_agent_response_shape(parsed):
-            meta = dict(parsed.get("metadata") or {})
-            meta["http_status"] = status
-            if faas_err:
-                meta["_faas_error_code"] = faas_err
-            return AgentResponse(
-                request_id=str(parsed.get("request_id") or request.request_id),
-                channel_id=str(parsed.get("channel_id") or request.channel_id),
-                ok=(200 <= status < 300) and bool(parsed.get("ok", True)),
-                payload=parsed.get("payload", {}),
-                metadata=meta,
-                agent_ref=parsed.get("agent_ref"),
-            )
-
-        return AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=200 <= status < 300,
-            payload={"content": parsed},
-            metadata={"http_status": status},
-        )
-
-    @staticmethod
-    def _normalize_invoke_chunk(text: str) -> dict[str, Any]:
-        """faas 流式 chunk data 内容 → 规范化 dict.
-
-        复用 parse_agent_server_wire_chunk（与 ws client 同款反解），补齐
-        agent_ref/metadata 透传。faas executor 外层 {body, innerCode} 由
-        _normalize_faas_body 剥离，内层 body 是 E2A wire 形状。
-        """
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = {"content": text}
-        parsed, _ = YuanrongFrontendAgentClient._normalize_faas_body(parsed)
-
-        # 尝试用 wire_codec 反解（与 ws client 完全相同的反解函数）
-        try:
-            chunk = parse_agent_server_wire_chunk(parsed)
-            result: dict[str, Any] = {
-                "request_id": chunk.request_id,
-                "channel_id": chunk.channel_id,
-                "payload": chunk.payload,
-                "is_complete": chunk.is_complete,
-                "agent_ref": chunk.agent_ref,
-                "metadata": chunk.metadata,
-            }
-            return result
-        except Exception as parse_err:
-            logger.debug(
-                "[YuanrongFrontendAgentClient] wire_codec chunk parse failed, "
-                "falling back to legacy shape: %s",
-                parse_err,
-            )
-
-        return parsed if isinstance(parsed, dict) else {"content": parsed}
-
-    def _invoke_headers(
-        self,
-        session_id: str,
-        *,
-        user_id: str | None = None,
-        req_method: str | None = None,
-        stream: bool = False,
-        request_id: str | None = None,
-    ) -> dict[str, str]:
-        """构造 faas invocation 请求头.
-
-        除了 X-Instance-Session（会话并发控制）外，当 user_id 非空时附加
-        X-Session-Context: {"sessionCtx": <uid>}，faas 据此为 CreateSandbox
-        绑定用户标识（function_agent 日志 "Create sandbox for <uid>"）。
-        user_id 为空时只记一条 uid_empty=yes 告警，不附加该 header。
-        """
-        headers = {
-            "Content-Type": "application/json",
-            "X-Instance-Session": json.dumps(
-                {
-                    "sessionID": session_id,
-                    "sessionTTL": self._session_ttl_s,
-                    "concurrency": self._concurrency,
-                },
-                ensure_ascii=False,
-            ),
-        }
-        if stream:
-            headers["Accept"] = "text/event-stream"
-        uid = str(user_id or "").strip()
-        if uid:
-            session_context = json.dumps({"sessionCtx": uid}, ensure_ascii=False)
-            headers["X-Session-Context"] = session_context
-        bound = apply_trace_header(headers, request_id)
-        bound = inject_request_headers(bound)
-        resolved_trace_id = extract_trace_id(bound)
-        if uid:
-            logger.debug(
-                "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s user_id=%s "
-                "X-Session-Context=%s stream=%s trace_id=%s",
-                req_method,
-                session_id,
-                uid,
-                session_context,
-                stream,
-                resolved_trace_id,
-            )
-        else:
-            logger.info(
-                "[YuanrongFrontendAgentClient] invoke headers: method=%s session_id=%s "
-                "uid_empty=yes X-Session-Context omitted stream=%s trace_id=%s",
-                req_method,
-                session_id,
-                stream,
-                resolved_trace_id,
-            )
-        return bound
-
-    def _do_invoke(
-        self,
-        payload: dict[str, Any],
-        session_id: str,
-        user_id: str | None = None,
-        request_id: str | None = None,
-    ) -> tuple[int, str]:
-        headers = self._invoke_headers(
-            session_id,
-            user_id=user_id,
-            req_method=payload.get("method"),
-            request_id=request_id,
-        )
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
-        return self._urlopen_request(req, raise_on_timeout=True, trace_response=True)
-
-    async def send_request(
-        self, envelope: E2AEnvelope, *, timeout: float | None = None,
-    ) -> AgentResponse:
-        with bind_agent_request_trace(envelope):
-            return await self._send_request_scoped(envelope, timeout=timeout)
-
-    async def _send_request_scoped(
-        self,
-        envelope: E2AEnvelope,
-        *,
-        timeout: float | None = None,
-    ) -> AgentResponse:
-        """发送非流式请求.
-
-        Args:
-            envelope: E2A 信封
-            timeout: 等待上限（秒），由接口约定保留；当前 HTTP invoke 路径
-                自带超时语义，此处不额外截断，保持原有行为.
-
-        Returns:
-            AgentResponse 响应
-        """
-        self._ensure_connected()
-        payload = self._build_invoke_payload(envelope, stream=False)
-        session_id = envelope.session_id or ""
-        try:
-            status, body = await asyncio.to_thread(
-                self._do_invoke,
-                payload,
-                session_id,
-                envelope.user_id,
-            )
-        except YuanrongAgentApiError as e:
-            operation = current_request_trace()
-            if operation is not None:
-                operation.record_outcome("timeout" if isinstance(e, YuanrongAgentTimeoutError) else "failed",
-                                         reason=type(e).__name__)
-            logger.warning(
-                "[YuanrongFrontendAgentClient] invoke failed: %s trace_id=%s",
-                e,
-                current_southbound_trace_id() or "-",
-            )
-            return AgentResponse(
-                request_id=envelope.request_id,
-                channel_id=envelope.channel,
-                ok=False,
-                payload={"error": str(e)},
-            )
-        # 仍需 AgentRequest 形状供 _parse_invoke_response 填充 request_id/channel_id 兜底
-        request = e2a_to_agent_request(envelope)
-        response = self._parse_invoke_response(body, status, request)
-        operation = current_request_trace()
-        if operation is not None and not response.ok:
-            operation.record_outcome("failed", reason="agent_response")
-        return response
-
-    async def send_request_stream(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
-        # Preserve the original flow when no tracing operation is associated.
-        current = current_request_trace()
-        attached = get_message_trace(envelope)
-        if _is_inactive_trace(current) and _is_inactive_trace(attached):
-            async with aclosing(self._send_request_stream_scoped(envelope)) as stream:
-                async for chunk in stream:
-                    yield chunk
-            return
-        # Run the scope in its own task so yielding does not leak its context to the caller.
-        queue: asyncio.Queue = asyncio.Queue(maxsize=1)
-        consumed = asyncio.Event()
-
-        async def produce() -> None:
-            try:
-                with bind_agent_request_trace(envelope):
-                    async with aclosing(self._send_request_stream_scoped(envelope)) as stream:
-                        async for chunk in stream:
-                            await queue.put(("chunk", chunk))
-                            await consumed.wait()
-                            consumed.clear()
-            except asyncio.CancelledError as exc:
-                if asyncio.current_task().cancelling():
-                    raise
-                await queue.put(("error", exc))
-            except Exception as exc:
-                await queue.put(("error", exc))
-            else:
-                await queue.put(("done", None))
-
-        task = asyncio.create_task(produce())
-        try:
-            while True:
-                kind, value = await queue.get()
-                if kind == "done":
-                    break
-                if kind == "error":
-                    raise value
-                yield value
-                consumed.set()
-        finally:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-    async def _send_request_stream_scoped(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
-        """发送流式请求.
-
-        Args:
-            envelope: E2A 信封
-
-        Yields:
-            AgentResponseChunk 响应块
-        """
-        self._ensure_connected()
-        payload = self._build_invoke_payload(envelope, stream=True)
-        # 仍需 AgentRequest 形状供 chunk 兜底填充 request_id/channel_id
-        request = e2a_to_agent_request(envelope)
-
-        loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
-        session_id = envelope.session_id or ""
-        reader_task = asyncio.create_task(
-            asyncio.to_thread(
-                self._do_invoke_stream,
-                _InvokeStreamCall(
-                    payload=payload,
-                    session_id=session_id,
-                    out_queue=queue,
-                    loop=loop,
-                    user_id=envelope.user_id,
-                ),
-            )
-        )
-        try:
-            first_response = True
-            while True:
-                item_type, text = await queue.get()
-                if item_type == "chunk" and text:
-                    if first_response:
-                        operation = current_request_trace()
-                        if operation is not None:
-                            operation.event("response.first", {"outcome": "success"})
-                            operation.event("response.received", {"outcome": "success"})
-                        first_response = False
-                    # SSE 解析已完成，复用 wire_codec 反解 chunk body
-                    parsed_obj = self._normalize_invoke_chunk(text)
-                    yield AgentResponseChunk(
-                        request_id=str(parsed_obj.get("request_id") or request.request_id),
-                        channel_id=str(parsed_obj.get("channel_id") or request.channel_id),
-                        payload=parsed_obj.get("payload", parsed_obj.get("content")),
-                        is_complete=bool(parsed_obj.get("is_complete", False)),
-                        agent_ref=parsed_obj.get("agent_ref"),
-                        metadata=dict(parsed_obj.get("metadata") or {}),
-                    )
-                elif item_type == "error":
-                    operation = current_request_trace()
-                    if operation is not None:
-                        operation.event("response.first", {"outcome": "failed"})
-                        operation.record_outcome("failed", reason="http_error")
-                    yield AgentResponseChunk(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        payload={"error": text or "invoke stream failed"},
-                        is_complete=False,
-                    )
-                elif item_type == "exception":
-                    raise RuntimeError(f"invoke stream failed: {text}")
-                elif item_type == "done":
-                    break
-
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload=None,
-                is_complete=True,
-            )
-        finally:
-            reader_task.cancel()
-            try:
-                await reader_task
-            except asyncio.CancelledError:
-                pass
-
-    def _do_invoke_stream(self, call: _InvokeStreamCall) -> None:
-        """执行流式 HTTP 调用（在线程中运行）.
-
-        Args:
-            call: 流式调用的请求负载、会话上下文与输出通道
-        """
-        headers = self._invoke_headers(
-            call.session_id,
-            user_id=call.user_id,
-            req_method=call.payload.get("method"),
-            stream=True,
-            request_id=call.request_id,
-        )
-        data = json.dumps(call.payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(self._invoke_url(), data=data, headers=headers, method="POST")
-
-        try:
-            with urllib.request.urlopen(req, timeout=self._invoke_timeout_s) as resp:
-                status = int(getattr(resp, "status", 200))
-                operation = current_request_trace()
-                if operation is not None:
-                    operation.event("http.response_headers", {"status_code": status})
-
-                if not (200 <= status < 300):
-                    text = resp.read().decode("utf-8", errors="replace")
-                    logger.error("[YuanrontFrontendAgentClient] HTTP错误状态码: %d, 响应: %s", status, text[:500])
-                    call.loop.call_soon_threadsafe(
-                        call.out_queue.put_nowait,
-                        ("error", json.dumps({"http_status": status, "body": text}, ensure_ascii=False)),
-                    )
-                    return
-
-                # SSE 解析：按行处理
-                chunk_count = 0
-                total_bytes = 0
-                sse_line_buffer = ""
-                while True:
-                    chunk = resp.read(1024)
-                    if not chunk:
-                        # 处理缓冲区中剩余的数据
-                        if sse_line_buffer.strip():
-                            self._process_sse_chunk(
-                                sse_line_buffer, call.out_queue, call.loop
-                            )
-                        if operation is not None:
-                            operation.event("http.response.completed", {"status_code": status})
-                        break
-
-                    chunk_text = chunk.decode("utf-8", errors="replace")
-                    total_bytes += len(chunk)
-                    chunk_count += 1
-
-                    # SSE 解析：按行处理
-                    sse_line_buffer += chunk_text
-                    lines = sse_line_buffer.split('\n')
-                    # 保留最后一个可能不完整的行
-                    sse_line_buffer = lines[-1] if lines else ""
-
-                    for line in lines[:-1]:
-                        line_stripped = line.strip()
-                        if line_stripped.startswith('data: '):
-                            data_content = line_stripped[6:]  # 去掉 "data: " 前缀
-                            self._process_sse_chunk(
-                                data_content, call.out_queue, call.loop
-                            )
-        except urllib.error.HTTPError as err:
-            operation = current_request_trace()
-            if operation is not None:
-                operation.event("http.response_headers", {"status_code": int(err.code)})
-            text = err.read().decode("utf-8", errors="replace") if err.fp else str(err)
-            if operation is not None:
-                operation.event("http.response.completed", {"status_code": int(err.code)})
-            logger.error(
-                "[YuanrontFrontendAgentClient] stream HTTP error: session_id=%s, code=%d",
-                call.session_id,
-                getattr(err, "code", 500),
-            )
-            call.loop.call_soon_threadsafe(
-                call.out_queue.put_nowait,
-                (
-                    "error",
-                    json.dumps({
-                        "http_status": int(getattr(err, "code", 500) or 500),
-                        "body": text
-                    }, ensure_ascii=False),
-                ),
-            )
-        except Exception as err:
-            logger.error(
-                "[YuanrontFrontendAgentClient] stream request failed: session_id=%s, error=%s",
-                call.session_id,
-                str(err),
-            )
-            call.loop.call_soon_threadsafe(
-                call.out_queue.put_nowait, ("exception", str(err))
-            )
-        finally:
-            call.loop.call_soon_threadsafe(
-                call.out_queue.put_nowait, ("done", None)
-            )
-
-    def _process_sse_chunk(
-        self,
-        data_content: str,
-        out_queue: asyncio.Queue,
-        loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        """处理 SSE 数据块.
-
-        Args:
-            data_content: data: 后的内容（已去掉前缀）
-            out_queue: 输出队列
-            loop: 事件循环
-        """
-        data_content_stripped = data_content.strip()
-
-        # 检查是否是结束标记
-        if data_content_stripped == "[DONE]":
-            loop.call_soon_threadsafe(out_queue.put_nowait, ("done", None))
-            return
-
-        # 发送 JSON 数据
-        loop.call_soon_threadsafe(out_queue.put_nowait, ("chunk", data_content_stripped))

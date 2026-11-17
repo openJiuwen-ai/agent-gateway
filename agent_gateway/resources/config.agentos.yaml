@@ -307,15 +307,13 @@ gateway:
     etcd_prefix: /jiuwenswarm/cron/jobs/
 
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
-  # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
+  # type: websocket（默认） | agentos_router（AgentOS 扩展）
   agent_client:
-    type: agentos_router # websocket | yuanrong | agentos_router
-    # yuanrong 函数模式配置下面参数
+    type: agentos_router # websocket | agentos_router
+    # agentos_router 模式配置下面参数
     frontend_endpoint: http://<<MASTER_NODE_IP>>:<<FRONTEND_PORT>>
     function_version_urn: <<FUNCTION_ID>>
-    concurrency: <<GATEWAY_CONCURRENCY>>
-    invoke_timeout_s: <<GATEWAY_INVOKE_TIMEOUT>>
-    # POST/DELETE /api/agent 超时（秒）；create 含镜像拉取/容器启动，建议明显大于 invoke_timeout_s
+    # POST/DELETE /api/agent 超时（秒）；create 含镜像拉取/容器启动
     agent_timeout_s: 300
     # create 请求的 namespace，默认 default
     agent_namespace: default
