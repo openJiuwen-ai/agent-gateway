@@ -21,6 +21,7 @@ from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
     RobotMessageRouter,
+    is_web_only_telemetry_event,
 )
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -467,6 +468,11 @@ class WechatChannel(BaseChannel):
         """delta 聚合；enable_streaming 时与原先一致：工具调用/结果会即时下发并在边界冲刷 delta；关闭时仅 chat.final / interrupt 等完结事件合并下发（对齐飞书非流式）。"""
         if not self._http or not self.config.bot_token:
             logger.warning("WechatChannel 未就绪，跳过发送")
+            return
+
+        # 跳过只给 Web/TUI 的运行时遥测，避免通用内容提取把其渲染成重复正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[WechatChannel] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
             return
 
         streaming = bool(self.config.enable_streaming)

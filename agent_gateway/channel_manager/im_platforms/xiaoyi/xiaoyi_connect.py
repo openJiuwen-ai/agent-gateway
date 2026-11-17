@@ -28,6 +28,7 @@ from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
     RobotMessageRouter,
+    is_web_only_telemetry_event,
 )
 from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.formatter import (
     get_status_state_for_event,
@@ -637,6 +638,11 @@ class XiaoyiChannel(BaseChannel):
         - routing_target 非空（team 模式）→ 双通道投递：
           活跃会话走 ws 流式，非活跃走 push webhook 全文 final
         """
+        # 跳过只给 Web/TUI 的运行时遥测，避免通用内容提取把其渲染成重复正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[XiaoyiChannel] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
+            return
+
         # ── team 模式：双通道投递 ──
         if routing_target is not None:
             await self._send_team(msg, routing_target)

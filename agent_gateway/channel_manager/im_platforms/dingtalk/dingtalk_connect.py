@@ -14,7 +14,11 @@ import httpx
 from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
-from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from agent_gateway.channel_manager.base import (
+    BaseChannel,
+    RobotMessageRouter,
+    is_web_only_telemetry_event,
+)
 from agent_gateway.channel_manager.persistent_events import InboundDisposition
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import (
     DingTalkFileService,
@@ -931,6 +935,11 @@ class DingTalkChannel(BaseChannel):
         *, routing_target: RoutingTarget | None = None,
     ) -> None:
         """通过钉钉发送消息"""
+        # 跳过只给 Web/TUI 的运行时遥测，避免通用内容提取把其渲染成重复正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[DingTalk] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
+            return
+
         # 提取事件类型
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         event_type = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
