@@ -18,6 +18,7 @@ from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
     RobotMessageRouter,
+    is_web_only_telemetry_event,
 )
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -114,6 +115,10 @@ class WhatsAppChannel(BaseChannel):
             return
         if not self._whatsapp_connected:
             logger.warning("WhatsAppChannel send skipped: WhatsApp not connected (state=%s)", self._bridge_state)
+            return
+        # 跳过只给 Web/TUI 的运行时遥测，避免通用内容提取把其渲染成重复正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[WhatsApp] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
             return
         if (
                 not self.config.enable_streaming
