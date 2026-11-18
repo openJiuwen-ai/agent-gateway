@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
@@ -363,6 +364,21 @@ async def test_unclaimed_human_continues_personal_path_and_keeps_local_dedup():
     assert calls == ["route", "route"]
     channel._parse_message_content_with_file.assert_awaited_once()
     channel._process_batched_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback_available", [True, False])
+async def test_bound_feishu_never_falls_back_to_personal_mode(callback_available):
+    channel = _feishu_channel(agent_id="employee")
+    channel.config.bot_open_id = "ou_employee"
+    if callback_available:
+        callback = AsyncMock(return_value=InboundDisposition.UNCLAIMED)
+        channel.set_persistent_group_fanout_callback(callback)
+    await channel._on_message(_raw_feishu_event())
+    if callback_available:
+        callback.assert_awaited_once()
+    channel._parse_message_content_with_file.assert_not_awaited()
+    channel._process_batched_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -823,3 +839,33 @@ async def test_gateway_feishu_file_reaches_real_sender(tmp_path, share_mode, upl
         channel._upload_file.assert_not_called()
     else:
         channel._upload_file.assert_called_once_with(str(source))
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_id", ["cron-push-job", "ordinary-response"])
+async def test_personal_feishu_push_does_not_use_employee_bots(event_id):
+    message = Message(
+        id=event_id, type="event", channel_id="feishu", session_id=None, params={}, timestamp=0,
+        ok=True, payload={"content": "reminder"}, event_type=EventType.CHAT_FINAL,
+    )
+    consumed = asyncio.Event()
+
+    async def consume(timeout):
+        if not consumed.is_set():
+            consumed.set()
+            return message
+        manager._running = False
+        return None
+
+    handler = SimpleNamespace(consume_robot_messages=consume, resolve_app_id=lambda msg: "")
+    manager = ChannelManager(handler)
+    for app_id, owner in (("employee", "mate"), ("personal", "")):
+        channel = FeishuChannel(FeishuConfig(app_id=app_id, agent_id=owner, channel_id="feishu"), MagicMock())
+        channel.send = AsyncMock()
+        manager.register_channel(channel)
+    await manager.start_dispatch()
+    try:
+        await asyncio.wait_for(manager._dispatch_task, timeout=2)
+    finally:
+        await manager.stop_dispatch()
+    employee, personal = manager.get_channels_by_id("feishu")
+    employee.send.assert_not_awaited()
+    personal.send.assert_awaited_once()

@@ -10,7 +10,7 @@ import yaml
 
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.web import persistent_bindings
-from agent_gateway.channel_manager.web.persistent_bindings import register_persistent_bindings
+from agent_gateway.channel_manager.web.persistent_bindings import BindingError, register_persistent_bindings
 from agent_gateway.channel_manager.web.app_web_handlers import _normalize_feishu_conf
 from agent_gateway.common import config
 
@@ -88,7 +88,8 @@ async def test_owner_bind_settings_unbind(owner, platform, id_key, secret_key):
     assert stored == owner.cm.get_conf(platform)
     assert stored["apps"][0][secret_key] == "secret"
     assert stored["apps"][0]["persistent_agent_id"] == "mate"
-    await owner.settings(owner.cm, platform, {"apps": [{id_key: "bot", "name": "renamed"}]})
+    view = await owner.settings(owner.cm, platform, {"apps": []})
+    assert view["apps"] == []
     assert owner.cm.get_conf(platform)["apps"][0][secret_key] == "secret"
     if platform == "feishu":
         assert owner.service.send_request.await_args.args[0].method == "jiuwenmate.feishu.prepare"
@@ -110,7 +111,10 @@ async def test_feishu_settings_reload_resolves_saved_app_credentials(owner, monk
     monkeypatch.setenv("SWARM_TEST_OTHER_FEISHU_ID", "other-bot")
     monkeypatch.setenv("SWARM_TEST_OTHER_FEISHU_SECRET", "other-secret")
     apps = [
-        {"app_id": "bot", "app_secret": "${SWARM_TEST_FEISHU_SECRET}", "persistent_agent_id": "mate"},
+        {
+            "app_id": "bot", "app_secret": "${SWARM_TEST_FEISHU_SECRET}",
+            **({"persistent_agent_id": "mate"} if operation == "revoke" else {}),
+        },
         {
             "app_id": "${SWARM_TEST_OTHER_FEISHU_ID}",
             "app_secret": "${SWARM_TEST_OTHER_FEISHU_SECRET}",
@@ -126,7 +130,7 @@ async def test_feishu_settings_reload_resolves_saved_app_credentials(owner, monk
         assert result == {"ok": True, "payload": {"revoked": True}}
     else:
         await owner.settings(owner.cm, "feishu", {
-            "apps": [{"app_id": apps[0]["app_id"], "name": "renamed"}, {"app_id": apps[1]["app_id"]}],
+            "apps": [{"app_id": apps[0]["app_id"], "name": "renamed"}],
         })
 
     owner.cm._on_config_updated.assert_awaited_once()
@@ -140,7 +144,76 @@ async def test_feishu_settings_reload_resolves_saved_app_credentials(owner, monk
     stored = yaml.safe_load(owner.path.read_text())["channels"]["feishu"]["apps"]
     assert [app["app_id"] for app in stored] == [app["app_id"] for app in apps]
     assert [app["app_secret"] for app in stored] == [app["app_secret"] for app in apps]
-    assert [call.args[0].params for call in owner.service.send_request.await_args_list] == [{"agent_id": "mate"}]
+    assert [call.args[0].params for call in owner.service.send_request.await_args_list] == (
+        [{"agent_id": "mate"}] if operation == "revoke" else []
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_personal_and_employee_settings_reject_each_others_app(owner, monkeypatch, platform, id_key, secret_key):
+    monkeypatch.setenv("SWARM_TEST_PERSONAL_BOT", "personal")
+    personal = {id_key: "${SWARM_TEST_PERSONAL_BOT}", secret_key: "personal-secret", "allow_from": []}
+    await owner.settings(owner.cm, platform, {"apps": [personal]})
+    before = owner.path.read_bytes()
+    result = await owner.invoke(platform + ".bind_agent", {
+        "config_id": "mate", id_key: "personal", secret_key: "other-secret",
+    })
+    assert result["code"] == "CHANNEL_USED_IN_PERSONAL_EDITION"
+    assert owner.path.read_bytes() == before
+    assert (await owner.invoke(platform + ".bind_agent", {
+        "config_id": "mate", id_key: "employee", secret_key: "employee-secret",
+    }))["ok"]
+    before = owner.path.read_bytes()
+    with pytest.raises(BindingError) as error:
+        await owner.settings(owner.cm, platform, {
+            "apps": [{id_key: "employee", secret_key: "other-secret", "allow_from": []}],
+        })
+    assert error.value.code == "CHANNEL_BOUND_TO_EMPLOYEE"
+    assert owner.path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_personal_replacement_and_employee_unbind_keep_the_other_app(owner, platform, id_key, secret_key):
+    binding = {"config_id": "mate", id_key: "employee", secret_key: "employee-secret"}
+    personal = {id_key: "personal", secret_key: "personal-secret", "allow_from": []}
+    assert (await owner.invoke(platform + ".bind_agent", binding))["ok"]
+    view = await owner.settings(owner.cm, platform, {"apps": [personal]})
+    assert [app[id_key] for app in view["apps"]] == ["personal"]
+    assert {app[id_key] for app in owner.cm.get_conf(platform)["apps"]} == {"personal", "employee"}
+    assert (await owner.invoke(platform + ".unbind_agent", {
+        id_key: "employee", "persistent_agent_id": "previous-owner",
+    }))["ok"]
+    assert {app[id_key] for app in owner.cm.get_conf(platform)["apps"]} == {"personal", "employee"}
+    assert (await owner.invoke(platform + ".unbind_agent", {
+        id_key: "employee", "persistent_agent_id": "mate",
+    }))["ok"]
+    assert [app[id_key] for app in owner.cm.get_conf(platform)["apps"]] == ["personal"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform,id_key,secret_key", BINDING_PLATFORMS)
+async def test_concurrent_personal_save_and_employee_bind_have_one_owner(owner, platform, id_key, secret_key):
+    personal = {id_key: "shared", secret_key: "personal-secret", "allow_from": []}
+    employee = {"config_id": "mate", id_key: "shared", secret_key: "employee-secret"}
+    save_result, bind_result = await asyncio.gather(
+        owner.settings(owner.cm, platform, {"apps": [personal]}),
+        owner.invoke(platform + ".bind_agent", employee),
+        return_exceptions=True,
+    )
+    apps = yaml.safe_load(owner.path.read_text())["channels"][platform]["apps"]
+    assert apps == owner.cm.get_conf(platform)["apps"]
+    assert len(apps) == 1
+    if bind_result["ok"]:
+        assert isinstance(save_result, BindingError) and save_result.code == "CHANNEL_BOUND_TO_EMPLOYEE"
+        assert apps[0]["persistent_agent_id"] == "mate"
+        assert apps[0][secret_key] == "employee-secret"
+    else:
+        assert isinstance(save_result, dict)
+        assert bind_result["code"] == "CHANNEL_USED_IN_PERSONAL_EDITION"
+        assert not apps[0].get("persistent_agent_id")
+        assert apps[0][secret_key] == "personal-secret"
 
 
 @pytest.mark.asyncio
