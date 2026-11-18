@@ -12,6 +12,10 @@ These tests pin three layers of defence:
   boundary, covering configs that bypass the loader.
 """
 
+from urllib.parse import urljoin
+
+import pytest
+
 from agent_gateway.common._build_config import PACKAGE_NAME
 from agent_gateway.common.updater import (
     DEFAULT_SOURCE_CONFIG,
@@ -98,6 +102,37 @@ class TestPyPIVersionSource:
         mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
         source = PyPIVersionSource(package="workswarm", mirror=mirror)
         assert source._api_url == f"{mirror}/workswarm/"
+
+    @pytest.mark.parametrize(
+        "mirror,expected_candidate",
+        [
+            # Publish-time JSON candidates keep the mirror's path prefix so
+            # mirrors exposing the JSON API under the same subtree keep
+            # working; the upstream default stays at the domain root
+            # (https://pypi.org/pypi/<pkg>/<ver>/json).
+            (
+                "https://pypi.tuna.tsinghua.edu.cn/simple",
+                "https://pypi.tuna.tsinghua.edu.cn/simple/pypi/workswarm/0.2.8/json",
+            ),
+            (
+                "https://mirror.test/packages/pypi/simple/",
+                "https://mirror.test/packages/pypi/simple/pypi/workswarm/0.2.8/json",
+            ),
+            ("", "https://pypi.org/pypi/workswarm/0.2.8/json"),
+            (
+                LEGACY_MIRROR,
+                "https://mirrors.aliyun.com/pypi/simple/pypi/workswarm/0.2.8/json",
+            ),
+        ],
+    )
+    def test_publish_time_candidate_keeps_mirror_path_prefix(
+        self, mirror, expected_candidate
+    ):
+        source = PyPIVersionSource(package="workswarm", mirror=mirror)
+        candidate = urljoin(
+            source._base_url + "/", "pypi/workswarm/0.2.8/json"
+        )
+        assert candidate == expected_candidate
 
 
 class TestDefaultSourceConfig:
