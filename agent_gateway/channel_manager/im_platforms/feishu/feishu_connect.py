@@ -963,10 +963,17 @@ class FeishuChannel(BaseChannel):
 
             if not response.success():
                 logger.warning(
-                    f"添加消息反应失败: 错误码={response.code}, 消息={response.msg}"
+                    f"添加消息反应失败: message_id={message_id}, emoji={emoji_type}, "
+                    f"错误码={response.code}, 消息={response.msg}"
                 )
             else:
-                logger.debug("已为消息 %s 添加 %s 表情", message_id, emoji_type)
+                reaction_id = getattr(getattr(response, "data", None), "reaction_id", None)
+                logger.info(
+                    "emoji ack 成功: message_id=%s, emoji=%s, reaction_id=%s",
+                    message_id,
+                    emoji_type,
+                    reaction_id,
+                )
         except Exception as e:
             logger.warning(f"添加消息反应时发生异常: {e}")
 
@@ -3643,8 +3650,9 @@ class FeishuChannel(BaseChannel):
             if sender.sender_type == "bot":
                 return
 
-            # 群聊数字分身模式下不自动点赞
-            if not self.config.group_digital_avatar:
+            # 群聊数字分身模式下群聊不自动点赞；p2p 的 ack 不受该开关抑制（issue #125）
+            is_group_chat = str(getattr(message, "chat_type", "") or "").strip() == "group"
+            if (not self.config.group_digital_avatar) or not is_group_chat:
                 asyncio.create_task(self._add_reaction(message.message_id, "THUMBSUP"))
 
             # 解析消息内容（支持文件类型）
