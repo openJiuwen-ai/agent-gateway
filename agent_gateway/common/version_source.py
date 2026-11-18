@@ -23,7 +23,7 @@ RELEASES_PER_PAGE = 100
 MAX_RELEASE_PAGES = 100
 GITHUB_API = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
 GITCODE_API = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
-PYPI_SIMPLE_API = "https://pypi.org/simple/{package}/"
+PYPI_INDEX_URL = "https://pypi.org/simple/"
 PYPI_VERSION_JSON_API = "https://pypi.org/pypi/{package}/{version}/json"
 
 #: Total budget for the best-effort publish-time lookup in
@@ -559,6 +559,29 @@ class GitCodeReleasesSource(VersionSource):
         return headers
 
 
+def normalize_pypi_index_url(mirror: str) -> str:
+    """Migrate the old Aliyun mirror base and preserve explicit index URLs."""
+    mirror = mirror.strip()
+    if not mirror:
+        return ""
+
+    parts = urlsplit(mirror)
+    if (
+        parts.scheme in {"http", "https"}
+        and parts.netloc.lower() == "mirrors.aliyun.com"
+        and parts.path in {"/pypi", "/pypi/"}
+    ):
+        return urlunsplit(parts._replace(path="/pypi/simple/"))
+    return mirror
+
+
+def pypi_project_url(index_url: str, package: str) -> str:
+    """Append the package to the configured index path."""
+    parts = urlsplit(index_url)
+    path = f"{parts.path.removesuffix('/')}/{package}/"
+    return urlunsplit(parts._replace(path=path))
+
+
 class PyPIVersionSource(VersionSource):
     def __init__(
         self,
@@ -566,13 +589,30 @@ class PyPIVersionSource(VersionSource):
         mirror: str = "",
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
+        """Resolve releases from a PEP 503 simple index.
+
+        ``mirror`` must be a complete simple-index root (for example
+        ``https://mirrors.aliyun.com/pypi/simple/``), not a bare mirror base:
+        only the legacy Aliyun base (``.../pypi`` and ``.../pypi/``) is
+        migrated automatically (issue 6288). Any other base-style value is
+        kept verbatim and will not resolve, so callers that read the user's
+        config must normalize first (``UpdaterService._load_config`` does).
+        ``_base_url`` keeps the index path prefix so the publish-time JSON
+        candidates stay under the same subtree as the configured mirror.
+        """
         super().__init__(name=package, timeout_seconds=timeout_seconds)
-        if mirror:
-            self._base_url = mirror.rstrip("/")
-            self._api_url = urljoin(self._base_url + "/", f"simple/{package}/")
-        else:
-            self._base_url = "https://pypi.org"
-            self._api_url = PYPI_SIMPLE_API.format(package=package)
+        index_url = normalize_pypi_index_url(mirror) or PYPI_INDEX_URL
+        self._api_url = pypi_project_url(index_url, package)
+        # Keep the mirror's path prefix for the publish-time JSON candidates
+        # (mirrors may expose the JSON API under the same subtree, e.g.
+        # https://host/simple/pypi/<pkg>/<ver>/json), but fall back to the
+        # domain root for the upstream default so pypi.org keeps its
+        # canonical https://pypi.org/pypi/<pkg>/<ver>/json endpoint.
+        self._base_url = (
+            normalize_pypi_index_url(mirror).rstrip("/")
+            if mirror.strip()
+            else "https://pypi.org"
+        )
 
     def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
         del current_version
