@@ -17,7 +17,6 @@ from typing import Any
 
 from agent_gateway.common.protocol_methods import (
     SKILL_UPLOAD_FINALIZE,
-    SKILL_UPLOAD_STAGE,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,10 +24,6 @@ logger = logging.getLogger(__name__)
 RETIRED_CODE = "SKILL_UPLOAD_FEATURE_RETIRED"
 IMPORT_UPLOAD_METHOD = "skills.import_upload"
 FINALIZE_METHOD = SKILL_UPLOAD_FINALIZE
-# 门禁覆盖的方法集合：WS 与 HTTP 两个入口都按它决定是否调用本门禁。
-GUARDED_METHODS = frozenset(
-    {IMPORT_UPLOAD_METHOD, SKILL_UPLOAD_STAGE, SKILL_UPLOAD_FINALIZE}
-)
 
 # Manager 的单据号是 ``apr_<upload_id>``，``upload_id`` 为 uuid4 的 32 位 hex。
 # 两者都会被拼进 Manager URL，客户端可伪造，必须按该契约校验后再拼接。

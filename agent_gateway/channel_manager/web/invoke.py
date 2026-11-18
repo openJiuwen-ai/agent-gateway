@@ -195,7 +195,7 @@ async def dispatch_web_request(
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None
     )
-    if not routing.get("bot_id"):
+    if is_enterprise() and not routing.get("bot_id"):
         logger.warning(
             "[WebChannel] missing bot_id in metadata.routing method=%s request_id=%s routing=%s",
             method,
