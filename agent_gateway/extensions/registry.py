@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from agent_gateway.extensions.sdk.application_plugin import (
         ApplicationPluginExtension,
     )
+    from agent_gateway.extensions.sdk.connector_source import ConnectorSourceExtension
     from agent_gateway.extensions.sdk.skill_source import SkillSourceExtension
     from agent_gateway.extensions.sdk.third_agent import ThirdAgentExtension
 else:
@@ -29,8 +30,9 @@ else:
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
-    # Skill Source SPI 与上方扩展基类同属 gateway，运行期仍不导入扩展框架。
+    # Skill / Connector Source SPI 与上方扩展基类同属 gateway，运行期仍不导入扩展框架。
     SkillSourceExtension = Any
+    ConnectorSourceExtension = Any
 
 
 class _RegistryCryptoBridge:
@@ -100,6 +102,8 @@ class ExtensionRegistry:
         self._application_plugins: dict[str, ApplicationPluginExtension] = {}
         # provider_type → SkillSourceExtension factory (Skill Source SPI v2)
         self._skill_source_extensions: dict[str, SkillSourceExtension] = {}
+        # provider_type → ConnectorSourceExtension factory (Connector Source SPI)
+        self._connector_source_extensions: dict[str, ConnectorSourceExtension] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -181,6 +185,33 @@ class ExtensionRegistry:
         if not key:
             return None
         return self._skill_source_extensions.get(key)
+
+    def register_connector_source_extension(
+        self,
+        extension: ConnectorSourceExtension,
+    ) -> None:
+        """Register a Connector Source factory keyed by ``provider_type``."""
+        provider_type = str(getattr(extension, "provider_type", "") or "").strip()
+        if not provider_type:
+            raise ValueError("connector source provider_type must not be empty")
+        if provider_type in self._connector_source_extensions:
+            raise ValueError(
+                f"connector source provider_type already registered: {provider_type}"
+            )
+        self._connector_source_extensions[provider_type] = extension
+
+    def list_connector_source_extensions(self) -> list[ConnectorSourceExtension]:
+        """Return registered Connector Source factories (order is insertion order)."""
+        return list(self._connector_source_extensions.values())
+
+    def get_connector_source_extension(
+        self,
+        provider_type: str,
+    ) -> ConnectorSourceExtension | None:
+        key = str(provider_type or "").strip()
+        if not key:
+            return None
+        return self._connector_source_extensions.get(key)
 
     def get_application_plugins(self) -> tuple[ApplicationPluginExtension, ...]:
         return tuple(self._application_plugins.values())

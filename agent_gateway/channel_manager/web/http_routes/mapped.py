@@ -906,11 +906,76 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+# Connector marketplace (enterprise HTTP northbound; aligns with pod_rest_map).
+_MCP_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/list", "mcp.list",
+        "mcp", "连接器广场 / 我的列表",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/sources-providers", "mcp.sources.providers",
+        "mcp", "连接器远端源列表",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/show", "mcp.show",
+        "mcp", "连接器详情",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/install", "mcp.install",
+        "mcp", "安装 Hub 连接器",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/uninstall", "mcp.uninstall",
+        "mcp", "卸载 Hub 连接器",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/connect", "mcp.connect",
+        "mcp", "连接 MCP",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/wait-auth", "mcp.wait_auth",
+        "mcp", "等待 MCP 授权完成",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/cancel-connect", "mcp.cancel_connect",
+        "mcp", "取消 MCP 连接",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/disconnect", "mcp.disconnect",
+        "mcp", "断开 MCP",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/register-custom", "mcp.register_custom",
+        "mcp", "注册自定义 MCP",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/delete-custom", "mcp.delete_custom",
+        "mcp", "删除自定义 MCP",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/mcp/actions/save-credentials", "mcp.save_credentials",
+        "mcp", "保存 MCP 凭证",
+        accept_body=True, query_keys=_TENANT_QUERY,
+    ),
+)
+
 WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_PERMISSIONS_ROUTES,
     *_SESSION_LIFECYCLE_ROUTES,
     *_PROJECT_ROUTES,
     *_SKILLS_ROUTES,
+    *_MCP_ROUTES,
     *_HARNESS_ROUTES,
     *WORKSPACE_FILE_ROUTES,
 )
