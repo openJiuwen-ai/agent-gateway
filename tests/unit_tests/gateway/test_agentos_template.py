@@ -98,6 +98,12 @@ def test_gateway_templates_drop_mcp_and_heartbeat() -> None:
         assert key not in AGENTOS
 
 
+def test_gateway_templates_drop_as_only_channel_keys() -> None:
+    for template in (BASE, AGENTOS):
+        for app in template["channels"]["xiaoyi"]["apps"]:
+            assert "phone_tools_enabled" not in app
+
+
 def test_gateway_templates_drop_enterprise_confirmed_flags() -> None:
     for key in (
         "a2ui",
