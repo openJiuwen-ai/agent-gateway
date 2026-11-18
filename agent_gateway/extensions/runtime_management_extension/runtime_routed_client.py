@@ -190,8 +190,22 @@ def identity_from_envelope(
         group_id = "default"
     if not bot_id:
         bot_id = "default"
+    # 企业模式所有会话入口共用可信三元组；params/agent_ref 不能改变路由租户。
+    from agent_gateway.enterprise.edition import is_enterprise
+    from agent_gateway.extensions.runtime_management_extension.invoke_ids import (
+        routing_triple_from_envelope,
+    )
+
+    if is_enterprise():
+        group_id, bot_id, user_id = (
+            authorized_identity
+            if authorized_identity is not None
+            else routing_triple_from_envelope(envelope)
+        )
+        if not all((group_id, bot_id, user_id)):
+            raise FatalRouteError("Agent routing identity is required", code="FORBIDDEN")
     # 授权身份必须在合成 session key 前生效，不能仅覆盖最终路由参数。
-    if authorized_identity is not None:
+    elif authorized_identity is not None:
         group_id, bot_id, user_id = authorized_identity
     session_id = _first_text(envelope.session_id, params.get("session_id"))
     if not session_id and group_id and bot_id:
@@ -213,6 +227,8 @@ def _is_http_retryable(exc: BaseException) -> bool:
 
 class RuntimeRoutedAgentClient(AgentServerClient):
     """查 Runtime Manager 路由，再用 HTTP 客户端把信封发到对应 Pod。"""
+
+    agent_client_mode = "runtime"
 
     def __init__(
         self,
@@ -433,10 +449,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                     matches = [
                         k for k in self._rpc_origins if k[1] == jsonrpc_id
                     ]
-                    if matches:
-                        for stale in matches[1:]:
-                            self._rpc_origins.pop(stale, None)
+                    if len(matches) == 1:
                         base_url = self._rpc_origins.pop(matches[0])
+                    elif matches:
+                        # JSON-RPC IDs are only unique within their session.
+                        # An ambiguous reply must not select an arbitrary tenant
+                        # or discard another session's pending response.
+                        raise RuntimeError("Reverse RPC origin Pod is ambiguous")
             if base_url is None:
                 raise RuntimeError("Reverse RPC origin Pod is unavailable")
             return await self._http.send_request(

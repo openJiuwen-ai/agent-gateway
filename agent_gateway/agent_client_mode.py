@@ -19,6 +19,21 @@ def read_agent_client_mode(env: dict[str, str] | None = None) -> str:
     return str(source.get("GATEWAY_AGENT_CLIENT_MODE") or "").strip().lower()
 
 
+def is_runtime_agent_client(client: Any) -> bool:
+    """显式客户端能力标记；不依赖实现类名，允许子类和装饰适配。"""
+    return getattr(client, "agent_client_mode", None) == "runtime"
+
+
+def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) -> None:
+    """在扩展加载前拒绝 Runtime 与配置选择的其他路由器冲突。"""
+    gateway = config.get("gateway") or {}
+    selected = str((gateway.get("agent_client") or {}).get("type") or "").strip().lower()
+    if mode == "runtime" and selected in {"agentos_router", "adx_router"}:
+        raise AgentClientModeError(
+            f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
+        )
+
+
 def resolve_agent_server_client(
     extension: Any,
     *,
@@ -28,7 +43,7 @@ def resolve_agent_server_client(
     """按环境变量选出往 Agent 发消息的客户端。
 
     没写、websocket，以及其他不是 http / runtime 的值：有扩展就用扩展，否则用 WebSocket。
-    runtime：注册表里的客户端必须是 RuntimeRoutedAgentClient，否则启动失败。
+    runtime：注册表里的客户端必须显式声明 agent_client_mode="runtime"，否则启动失败。
     http：没有单独的 HTTP 客户端，启动失败。
     """
     if mode == "http":
@@ -38,7 +53,7 @@ def resolve_agent_server_client(
         )
     if mode == "runtime":
         client = extension.get_client() if extension is not None else None
-        if type(client).__name__ != "RuntimeRoutedAgentClient":
+        if not is_runtime_agent_client(client):
             raise AgentClientModeError(
                 "GATEWAY_AGENT_CLIENT_MODE=runtime，但没有加载 runtime 扩展包，启动失败。"
                 "请确认 runtime_management_extension 已放在扩展搜索目录里。"

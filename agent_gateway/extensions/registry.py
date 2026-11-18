@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
+from agent_gateway.agent_client_mode import AgentClientModeError
 from agent_gateway.extensions.callback_compat import unregister_callback_sync
 from agent_gateway.extensions.sdk.crypto_utility import CryptoUtility
 from agent_gateway.extensions.types import ExtensionConfig
@@ -138,6 +139,16 @@ class ExtensionRegistry:
         base_crypto.set_crypto_provider(None)
 
     def register_agent_server_client(self, extension: AgentServerClientExtension) -> None:
+        if self._agent_server_client is not None:
+            def label(item: Any) -> str:
+                metadata = getattr(item, "metadata", None)
+                return str(getattr(metadata, "id", None) or type(item).__name__)
+
+            raise AgentClientModeError(
+                "AgentServerClient already registered: "
+                f"{label(self._agent_server_client)}; cannot register {label(extension)}. "
+                "Select exactly one southbound client extension."
+            )
         self._agent_server_client = extension
 
     def register_crypto_utility(self, extension: CryptoUtility) -> None:

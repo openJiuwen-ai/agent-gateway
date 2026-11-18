@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.agent_client_mode import AgentClientModeError, read_agent_client_mode
 from agent_gateway.common.config import get_config
 from agent_gateway.common.paths import get_root_dir, logger
 from agent_gateway.extensions.loader import ExtensionLoader
@@ -113,6 +114,7 @@ class ExtensionManager:
         enabled = _enabled_extension_filter(get_config())
         logger.info("[ExtensionManager] 发现扩展路径: %s", roots)
         for path in roots:
+            manifest = {}
             try:
                 manifest = self.loader.load_manifest(path)
                 if enabled is not None:
@@ -140,7 +142,17 @@ class ExtensionManager:
                         self._loaded_extensions.extend(loaded)
                     else:
                         self._loaded_extensions.append(loaded)
+            except AgentClientModeError:
+                # 南向客户端冲突不是可选扩展故障，不能吞掉后继续启动。
+                raise
             except Exception as e:
+                if read_agent_client_mode() == "runtime" and (
+                    path.name == "runtime_management_extension"
+                    or manifest.get("id") == "openjiuwen_runtime_management"
+                ):
+                    raise AgentClientModeError(
+                        f"Selected runtime extension failed to load: {path}"
+                    ) from e
                 logger.error("[ExtensionManager] 加载扩展 %s 失败: %s", path, e)
 
     async def shutdown_all_extensions(self) -> None:

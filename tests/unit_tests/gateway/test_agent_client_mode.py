@@ -15,8 +15,12 @@ from agent_gateway.agent_client_mode import (
 )
 
 
-class RuntimeRoutedAgentClient:
-    """只借用这个类名。测试不加载扩展包。"""
+class _RenamedRuntimeClient:
+    agent_client_mode = "runtime"
+
+
+class _RuntimeSubclass(_RenamedRuntimeClient):
+    pass
 
 
 class _OtherClient:
@@ -58,8 +62,9 @@ def test_unset_or_websocket_keeps_the_current_choice() -> None:
     assert created == ["ws", "ws"]
 
 
-def test_runtime_requires_the_runtime_client() -> None:
-    client = RuntimeRoutedAgentClient()
+@pytest.mark.parametrize("client_type", [_RenamedRuntimeClient, _RuntimeSubclass])
+def test_runtime_requires_the_runtime_client(client_type) -> None:
+    client = client_type()
     assert (
         resolve_agent_server_client(
             _Extension(client),

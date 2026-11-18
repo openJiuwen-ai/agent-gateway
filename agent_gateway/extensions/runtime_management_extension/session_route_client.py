@@ -305,7 +305,11 @@ def _json_object(response: httpx.Response) -> dict:
 def _error_from_response(response: httpx.Response, body: dict) -> RouteError:
     code = str(body.get("error_code") or "").strip()
     if not code:
-        code = "TRANSPORT" if response.status_code >= 500 else "VALIDATION"
+        code = (
+            "TRANSPORT"
+            if response.status_code >= 500 or response.status_code == 429
+            else "VALIDATION"
+        )
     message = str(body.get("error_message") or body.get("message") or "").strip()
     if not message:
         message = f"request failed: http={response.status_code} code={code}"

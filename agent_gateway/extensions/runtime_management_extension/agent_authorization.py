@@ -23,10 +23,10 @@ CHAT_METHODS = frozenset({
 
 
 def _enterprise_checkers():
-    """企业准入模块缺失时返回空并告警；企业版/个人版判定由 is_enterprise() 把关。
+    """Load enterprise admission dependencies; missing modules deny execution.
 
-    只兜 ModuleNotFoundError（打包裁剪/可选依赖未装），其余导入异常向上抛，
-    避免准入校验因内部依赖错误被静默整体关闭。
+    Only ModuleNotFoundError is translated here. Other import failures still
+    propagate instead of silently disabling admission.
     """
     global _enterprise_absent_logged
     try:
@@ -37,11 +37,13 @@ def _enterprise_checkers():
     except ModuleNotFoundError as exc:
         if not _enterprise_absent_logged:
             _enterprise_absent_logged = True
-            logger.warning(
-                "[RuntimeManagement] 企业准入模块缺失，chat.* 跳过 Agent 资源校验: %s",
+            logger.error(
+                "[RuntimeManagement] 企业准入模块缺失，拒绝 Agent 执行: %s",
                 exc,
             )
-        return None
+        raise FatalRouteError(
+            "Agent admission dependencies are unavailable", code="SERVICE_UNAVAILABLE",
+        ) from exc
     return get_enterprise_record_repository, matches
 
 
@@ -55,27 +57,21 @@ async def authorize_agent(envelope: E2AEnvelope) -> tuple[str, str, str] | None:
         return None
     if envelope.method not in CHAT_METHODS:
         return None
-    checkers = _enterprise_checkers()
-    if checkers is None:
-        return None
-    get_enterprise_record_repository, matches = checkers
+    get_enterprise_record_repository, matches = _enterprise_checkers()
     group_id, bot_id, user_id = routing_triple_from_envelope(envelope)
     identity = {"group_id": group_id, "bot_id": bot_id, "user_id": user_id}
-    # 刻意的安全边界：聊天准入必须三身份齐全才做 match_expr 判定（路由侧
-    # identity_from_envelope 的 "default" 兜底不适用于本函数）。与路由兜底
-    # 的口径差异是有意的——缺身份的聊天请求宁可拒绝也不落 wildcard scope。
+    # 聊天准入必须三身份齐全；业务 params 不参与可信身份判定。
     if not all(identity.values()):
         raise FatalRouteError("Agent routing identity is required", code="FORBIDDEN")
     repo = get_enterprise_record_repository("instance_agent_resource")
     if repo is None:
-        # 企业版但仓储未装配（storage 启动失败/时序早于注入）：与
-        # capabilities/workspace/quota.py 的既有约定一致——按未装配放行，
-        # 不把每个聊天请求打成 500；装配问题由启动期日志暴露。
-        logger.warning(
-            "[RuntimeManagement] instance_agent_resource repository unavailable, "
-            "chat.* admission skipped"
+        logger.error(
+            "[RuntimeManagement] instance_agent_resource repository unavailable; "
+            "Agent admission denied"
         )
-        return group_id, bot_id, user_id
+        raise FatalRouteError(
+            "Agent admission repository is unavailable", code="SERVICE_UNAVAILABLE",
+        )
     # Do not cache admission: revocation and expiry apply to the next request.
     row = await repo.get(resource_id=bot_id)
     allowed = False

@@ -42,6 +42,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
@@ -2576,7 +2577,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             resolved_client = _resolve(agent_client)
             use_local_config = _is_enterprise_edition() and (
                 resolved_client is None
-                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_runtime_agent_client(resolved_client)
                 or is_legacy_shared_directory_client(resolved_client)
             )
             if use_local_config:
@@ -3743,7 +3744,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # legacy 共享目录）。
         use_local_path = is_enterprise() and (
             resolved_client is None
-            or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+            or is_runtime_agent_client(resolved_client)
             or is_legacy_shared_directory_client(resolved_client)
         )
         if not use_local_path:
@@ -3824,7 +3825,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # （RuntimeRouted / 无 client / legacy 共享目录）保留本地写回语义。
         use_local_path = is_enterprise() and (
             resolved_client is None
-            or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+            or is_runtime_agent_client(resolved_client)
             or is_legacy_shared_directory_client(resolved_client)
         )
         if not use_local_path:
@@ -5763,7 +5764,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
             use_local_handler = (
                 resolved_client is None
-                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_runtime_agent_client(resolved_client)
                 or is_legacy_shared_directory_client(resolved_client)
             )
             if local_handler is not None and is_enterprise() and use_local_handler:

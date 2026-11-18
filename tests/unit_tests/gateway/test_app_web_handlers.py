@@ -1557,12 +1557,13 @@ async def test_enterprise_runtime_routed_path_uses_local_execution(monkeypatch) 
     # 该判据下 config.set/save_all 本就是 Gateway 本地 handler（runtime HTTP 无
     # config REST，企业配置读 Gateway Manager 库），path 读写保持同侧，避免
     # "保存写 Gateway 侧、读取却代理到 Pod"的企业版读写分离。
-    class RuntimeRoutedAgentClient:
-        """只借用这个类名，测试不加载扩展包。"""
+    class RenamedRuntimeClient:
+        """显式声明 runtime 能力，不依赖实现类名。"""
+        agent_client_mode = "runtime"
 
     monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    client = RuntimeRoutedAgentClient()
+    client = RenamedRuntimeClient()
     saved_configs: list[dict] = []
     monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda config: saved_configs.append(config))
     monkeypatch.setattr(
