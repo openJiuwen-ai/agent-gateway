@@ -8,9 +8,9 @@ import ssl
 from typing import Any
 from urllib.parse import urlsplit
 
-from agent_gateway.extensions.adx.config import AdxRouterConfig
+from agent_gateway.extensions.agentos.agentos_router.adx.config import AdxRouterConfig
 from agent_gateway.extensions.agentos.agentos_router.ssh_relay import (
-    YuanrongSshRelay,
+    SshRelay,
     _import_asyncssh,
     _is_ssh_connect_retryable,
 )
@@ -46,9 +46,9 @@ class _ConnectedSsh:
                                  return_exceptions=True)
 
 
-class AdxSshRelay(YuanrongSshRelay):
+class AdxSshRelay(SshRelay):
     def __init__(self, config: AdxRouterConfig) -> None:
-        super().__init__(config.router.ssh, frontend_endpoint=config.ingress_url)
+        super().__init__(config.router.ssh, endpoint=config.ingress_url)
         self._adx = config
 
     async def _connect_until_ready(self, instance_id: str, *, user_id: str = '',
@@ -77,17 +77,21 @@ class AdxSshRelay(YuanrongSshRelay):
         asyncssh = _import_asyncssh()
         keys = self._resolve_client_keys(user_id)
         origin = urlsplit(self._adx.ingress_url)
-        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or 443,
-            ssl=ssl.create_default_context(), server_hostname=origin.hostname)
+        tls = origin.scheme == 'https'
+        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or (443 if tls else 80),
+            ssl=ssl.create_default_context() if tls else None,
+            server_hostname=origin.hostname if tls else None)
         peer_writer = None
         client_socket = None
         bridge_socket = None
         pumps = []
         try:
             authority = f'{instance_id}:{self._settings.port}'
+            from agent_gateway.extensions.agentos.agentos_router.adx.control_client import trace_headers
+            context_headers = ''.join(f'{key}: {value}\r\n' for key, value in trace_headers({}).items())
             request = (f'CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n'
                        f'Authorization: Bearer {self._adx.token}\r\n'
-                       'X-Adx-Access-Kind: ssh\r\n\r\n')
+                       f'X-Adx-Access-Kind: ssh\r\n{context_headers}\r\n')
             writer.write(request.encode('ascii'))
             await writer.drain()
             headers = await reader.readuntil(b'\r\n\r\n')
