@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from e2a.models import E2AEnvelope
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.protocol.ssh.ssh_connect import SshRelaySession
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager

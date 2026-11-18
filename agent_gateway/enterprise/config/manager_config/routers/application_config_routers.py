@@ -147,7 +147,7 @@ async def delete_package_allowlist(
 @application_config_router.get("/package-allowlists/catalog", response_model=ResponseModel)
 async def list_package_allowlist_catalog(request: Request):
     """Query the Server via E2A, preserving the management response contract."""
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.message import ReqMethod
     from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
     channel = getattr(request.app.state, "manager_agent_channel", None)
@@ -172,7 +172,7 @@ async def list_package_allowlist_catalog(request: Request):
 
 def _without_hidden_hub_items(payload: dict[str, Any]) -> dict[str, Any]:
     """管理端目录去掉企业版不提供的 Hub 包。本路由只在企业版注册。"""
-    from openjiuwen_protocol.package_allowlist import HIDDEN_HUB_ASSET_IDS
+    from e2a.package_allowlist import HIDDEN_HUB_ASSET_IDS
 
     items = payload.get("items")
     if not isinstance(items, list):

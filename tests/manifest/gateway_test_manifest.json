@@ -2419,7 +2419,7 @@
    "jiuwenswarm.extensions.runtime_management_extension.pod_rest_map"
   ],
   "status": "migrated",
-  "reason": "routing assertion via openjiuwen_protocol identity; dropped server lookup patch"
+  "reason": "routing assertion via e2a identity; dropped server lookup patch"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_enterprise_files.py",
@@ -2765,7 +2765,7 @@
    "jiuwenswarm.common.schema"
   ],
   "status": "migrated",
-  "reason": "replaced jiuwenswarm schema imports with openjiuwen_protocol"
+  "reason": "replaced jiuwenswarm schema imports with e2a"
  },
  {
   "source_path": "tests/unit_tests/gateway/test_message_handler_hook_params_update.py",

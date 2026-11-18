@@ -8,7 +8,7 @@ import inspect
 import logging
 from typing import Any
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.request_identity import (
     merge_routing_into_params,

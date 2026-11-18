@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Any
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
