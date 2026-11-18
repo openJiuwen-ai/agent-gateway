@@ -316,6 +316,7 @@ class CronController:
         user_id: str | None,
         group_id: str | None,
         bot_id: str | None,
+        personal_app_ids: set[str] | None = None,
     ) -> bool:
         """用户、群、机器人都要比。项目编号可以不比。
 
@@ -331,6 +332,15 @@ class CronController:
             wanted_project = CronController._normalize_project_filter(project_id)
             if current_project != wanted_project:
                 return False
+        if personal_app_ids and (
+            not user_id
+            or normalize_tenant_id(getattr(job, "user_id", None)) == normalize_tenant_id(user_id)
+        ):
+            source_id = normalize_tenant_id(getattr(job, "bot_id", None)) or normalize_tenant_id(
+                getattr(job, "app_id", None)
+            )
+            if source_id in personal_app_ids:
+                return True
         return CronController._matches_tenant(
             job, user_id=user_id, group_id=group_id, bot_id=bot_id
         )
@@ -392,12 +402,12 @@ class CronController:
         user_id: str | None = "",
         group_id: str | None = "",
         bot_id: str | None = "",
+        personal_app_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """按用户、群、机器人筛选。项目编号可以再收窄。
 
         身份空串就是空串，不收成 ``default``。默认 ``user_id=""``（严格匹配空用户）。
-        显式 ``user_id=None`` 才跳过用户维，仅留给确定需要全量列表的内部路径，
-        对外入口（网页 / 对话工具）不要传 None，避免跨用户可见。
+        显式 ``user_id=None`` 才跳过用户维。本机个人版 Web 可额外查询服务端选定的个人 IM 应用任务。
         ``project_id`` 不传表示这个人的全部项目；传空字符串才只要默认项目。
         筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
         同一个项目、同一个用户只问一次。
@@ -410,6 +420,7 @@ class CronController:
                 user_id=user_id,
                 group_id=group_id,
                 bot_id=bot_id,
+                personal_app_ids=personal_app_ids,
             ):
                 jobs.append(job)
         # project_execution_allowed 是一次跨进程询问。同项目同用户共享一次判定，
