@@ -589,10 +589,30 @@ class PyPIVersionSource(VersionSource):
         mirror: str = "",
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
+        """Resolve releases from a PEP 503 simple index.
+
+        ``mirror`` must be a complete simple-index root (for example
+        ``https://mirrors.aliyun.com/pypi/simple/``), not a bare mirror base:
+        only the legacy Aliyun base (``.../pypi`` and ``.../pypi/``) is
+        migrated automatically (issue 6288). Any other base-style value is
+        kept verbatim and will not resolve, so callers that read the user's
+        config must normalize first (``UpdaterService._load_config`` does).
+        ``_base_url`` keeps the index path prefix so the publish-time JSON
+        candidates stay under the same subtree as the configured mirror.
+        """
         super().__init__(name=package, timeout_seconds=timeout_seconds)
         index_url = normalize_pypi_index_url(mirror) or PYPI_INDEX_URL
         self._api_url = pypi_project_url(index_url, package)
-        self._base_url = urljoin(self._api_url, "../../")
+        # Keep the mirror's path prefix for the publish-time JSON candidates
+        # (mirrors may expose the JSON API under the same subtree, e.g.
+        # https://host/simple/pypi/<pkg>/<ver>/json), but fall back to the
+        # domain root for the upstream default so pypi.org keeps its
+        # canonical https://pypi.org/pypi/<pkg>/<ver>/json endpoint.
+        self._base_url = (
+            normalize_pypi_index_url(mirror).rstrip("/")
+            if mirror.strip()
+            else "https://pypi.org"
+        )
 
     def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
         del current_version
