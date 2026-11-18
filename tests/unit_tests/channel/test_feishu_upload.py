@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import MagicMock, AsyncMock
 
 import pytest
-from openjiuwen_protocol.message import Message, EventType
+from e2a.message import Message, EventType
 
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from agent_gateway.channel_manager.base import RobotMessageRouter

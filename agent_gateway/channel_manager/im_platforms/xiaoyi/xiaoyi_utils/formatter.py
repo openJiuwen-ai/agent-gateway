@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 
 # ==================== Data Classes ====================

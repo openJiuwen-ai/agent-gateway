@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import httpx
-from openjiuwen_protocol.message import Message, EventType
+from e2a.message import Message, EventType
 
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,

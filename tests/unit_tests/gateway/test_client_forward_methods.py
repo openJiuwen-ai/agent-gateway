@@ -2,7 +2,7 @@
 
 """A client attachment's requests (client.*) are forwarded to AgentServer by the standalone gateway."""
 
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 import agent_gateway  # noqa: F401  registers the methods the pinned protocol has not published
 from agent_gateway.channel_manager.web.app_web_handlers import (

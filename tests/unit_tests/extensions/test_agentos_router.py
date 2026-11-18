@@ -9,9 +9,9 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import ReqMethod
+from e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import _proxy_http
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (

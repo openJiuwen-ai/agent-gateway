@@ -7,12 +7,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.agent_models import AgentResponse
+from e2a.wire_codec import (
     encode_agent_response_for_wire,
     parse_agent_server_wire_chunk,
 )
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.web.web_connect import WebChannel
 from agent_gateway.message_handler import MessageHandler

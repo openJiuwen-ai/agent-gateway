@@ -23,7 +23,7 @@ from logging.handlers import BaseRotatingHandler, QueueHandler
 from pathlib import Path
 from typing import Any, Optional
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
     LOGGING_LEVEL_FIELDS,
@@ -475,7 +475,7 @@ def update_gateway_log_levels(
 
 
 def logging_config_row_to_dict(obj: dict[str, Any] | Any) -> dict[str, Any]:
-    """DB 行 / WS payload → logging 配置字典（字段名收口在 openjiuwen_protocol）。"""
+    """DB 行 / WS payload → logging 配置字典（字段名收口在 e2a）。"""
     if isinstance(obj, dict):
         get = obj.get
     else:

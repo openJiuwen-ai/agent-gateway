@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
@@ -777,8 +777,8 @@ async def test_channel_manager_keeps_delivery_pending_while_bound_app_is_disconn
     ("jiuwenmate.group.inspect", "jiuwenmate.group.response"),
 ])
 async def test_gateway_push_returns_correlated_platform_receipt(event_type, method):
-    from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
-    from openjiuwen_protocol.e2a.wire_codec import encode_agent_chunk_for_wire
+    from e2a.agent_models import AgentResponseChunk
+    from e2a.wire_codec import encode_agent_chunk_for_wire
 
     handler = object.__new__(MessageHandler)
     handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))

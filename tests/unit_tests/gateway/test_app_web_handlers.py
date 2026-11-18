@@ -15,7 +15,7 @@ import pytest
 import yaml
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.web import app_web_handlers, web_http_routes
 from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -115,7 +115,7 @@ def _bind(channel: FakeWebChannel | None = None, **kwargs) -> FakeWebChannel:
 ])
 async def test_multimodal_uses_existing_config_routing_and_preserves_payload(monkeypatch, method, enterprise):
     from agent_gateway.routing import e2a_proxy
-    from openjiuwen_protocol.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 
     monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
     client = WebSocketAgentServerClient()

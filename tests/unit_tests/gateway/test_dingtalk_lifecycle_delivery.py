@@ -255,8 +255,8 @@ async def test_lifecycle_host_timeout_cancels_delivery_and_returns_retryable_ack
 
 @pytest.mark.asyncio
 async def test_timeout_cleans_real_agent_request_and_redelivery_keeps_host_contract(monkeypatch):
-    from openjiuwen_protocol.e2a.agent_models import AgentResponse
-    from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire
+    from e2a.agent_models import AgentResponse
+    from e2a.wire_codec import encode_agent_response_for_wire
     from agent_gateway.channel_manager.im_platforms.dingtalk import dingtalk_connect
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 

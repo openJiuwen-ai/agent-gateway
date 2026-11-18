@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
-from openjiuwen_protocol.package_allowlist import (
+from e2a.package_allowlist import (
     PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
     apply_allowlist_to_envelope,  # noqa: F401 — re-export，供 agent_client 使用
     encode_package_allowlist_header,
