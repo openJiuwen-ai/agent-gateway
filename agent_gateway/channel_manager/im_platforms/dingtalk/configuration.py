@@ -50,17 +50,10 @@ def _normalize_app(raw: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _choose_default(apps: list[dict[str, Any]]) -> None:
-    """The ordinary app is the default; otherwise only an app already marked as default stays default.
-
-    Messages without an app identity, such as cron pushes, use the default app. A JM app
-    never becomes the default by position, so deleting the ordinary app cannot silently
-    move those messages to another robot.
-    """
+    """Only a personal app can receive messages addressed to the default app."""
     ordinary = next((index for index, app in enumerate(apps) if not app["persistent_agent_id"]), None)
-    marked = next((index for index, app in enumerate(apps) if app["is_default"]), None)
-    default = ordinary if ordinary is not None else marked
     for index, app in enumerate(apps):
-        app["is_default"] = index == default
+        app["is_default"] = index == ordinary
 
 
 def dingtalk_apps(raw: Any) -> list[dict[str, Any]]:

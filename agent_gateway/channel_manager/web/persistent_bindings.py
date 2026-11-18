@@ -14,6 +14,7 @@ from openjiuwen_protocol.message import ReqMethod
 
 from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
     dingtalk_apps,
+    dingtalk_section_view,
     merge_dingtalk_config,
 )
 from agent_gateway.common.config import get_config_raw, resolve_env_vars
@@ -40,6 +41,20 @@ def _binding_identity(app, key):
     return str(resolve_env_vars(app.get(key) or "")).strip()
 
 
+def personal_channel_config(platform, conf, normalize_feishu):
+    """Return the settings view without any employee-owned applications."""
+    if platform == "feishu":
+        view = {"apps": normalize_feishu(conf)["apps"]}
+        if "send_file_allowed" in conf:
+            view["send_file_allowed"] = conf["send_file_allowed"]
+    else:
+        view = dingtalk_section_view(conf)
+    return {
+        **view,
+        "apps": [app for app in view["apps"] if not _binding_identity(app, "persistent_agent_id")],
+    }
+
+
 def register_persistent_bindings(channel, manager, client, normalize_feishu, clear_cache):
     """Register local owner operations. The server resolves the canonical agent ID before each bind."""
     lock = asyncio.Lock()
@@ -59,7 +74,9 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
     def section(platform, current, apps):
         if platform == "dingtalk":
             return merge_dingtalk_config(current, {"apps": apps})
-        result = {"apps": apps}
+        personal = [app for app in apps if not _binding_identity(app, "persistent_agent_id")]
+        default = next((app for app in personal if app.get("is_default")), personal[0] if personal else None)
+        result = {"apps": [{**app, "is_default": app is default} for app in apps]}
         if "send_file_allowed" in current:
             result["send_file_allowed"] = current["send_file_allowed"]
         return result
@@ -176,9 +193,14 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
         if not app_id:
             raise ValueError(f"{id_key} is required")
         method = f"channel.{platform}.{op}"
+        expected_owner = (
+            _required(params, "persistent_agent_id")
+            if op == "unbind_agent" and "persistent_agent_id" in params else None
+        )
 
         def unbind(app):
-            return _binding_identity(app, id_key) == app_id and bool(_binding_identity(app, "persistent_agent_id"))
+            owner = _binding_identity(app, "persistent_agent_id")
+            return _binding_identity(app, id_key) == app_id and bool(owner) and expected_owner in (None, owner)
 
         def edit(current):
             matched = False
@@ -186,7 +208,12 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             for app in apps_for(platform, current):
                 owner = _binding_identity(app, "persistent_agent_id")
                 if _binding_identity(app, id_key) == app_id:
-                    if owner and owner not in owners:
+                    if not owner:
+                        raise BindingError(
+                            "CHANNEL_USED_IN_PERSONAL_EDITION",
+                            "This bot is already configured in the personal edition. Remove that configuration first.",
+                        )
+                    if owner not in owners:
                         raise BindingError(
                             "CHANNEL_ALREADY_BOUND",
                             "This channel is already bound to another colleague; unbind it first.",
@@ -199,9 +226,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
                     apps.append({id_key: app[id_key]} if platform == "dingtalk" else app)
             if not matched:
                 if platform == "feishu":
-                    apps.append(normalize_feishu({"apps": [{
-                        **binding, "is_default": not any(app.get("is_default") for app in apps),
-                    }]})["apps"][0])
+                    apps.append(normalize_feishu({"apps": [binding]})["apps"][0])
                 else:
                     apps.append({**binding, "allow_from": []})
             return section(platform, current, apps)
@@ -312,23 +337,59 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             await channel.send_response(ws, req_id, ok=True, payload=result)
 
     async def save_apps(cm, platform, changes):
-        """Use the same lock and merge rules for binding and owner settings edits."""
+        """Replace only personal apps, using the on-disk state to check ownership."""
+        id_key = "app_id" if platform == "feishu" else "client_id"
+        legacy = platform == "dingtalk" and "apps" not in changes
+        if legacy:
+            _required(changes, id_key)
+            apps = [changes]
+        else:
+            apps = changes.get("apps")
+        if not isinstance(apps, list) or not all(isinstance(app, dict) for app in apps):
+            raise ValueError("apps must be a list of applications")
         async with lock:
             before = cm.get_conf(platform)
 
             def edit(current):
+                team, personal = [], {}
+                for app in apps_for(platform, current):
+                    if _binding_identity(app, "persistent_agent_id"):
+                        team.append(app)
+                    else:
+                        personal[_binding_identity(app, id_key)] = app
+                occupied = {_binding_identity(app, id_key) for app in team}
+                updated = []
+                seen = set()
+                for app in apps:
+                    app_id = _binding_identity(app, id_key)
+                    if app_id in occupied:
+                        raise BindingError(
+                            "CHANNEL_BOUND_TO_EMPLOYEE",
+                            "This bot is already bound to an employee. Unbind it first.",
+                        )
+                    if _binding_identity(app, "persistent_agent_id"):
+                        raise ValueError("employee bindings cannot be set in personal channel settings")
+                    if app_id and app_id in seen:
+                        raise ValueError(f"duplicate {id_key}")
+                    seen.add(app_id)
+                    existing = personal.get(app_id)
+                    fields = {**app, id_key: existing[id_key]} if existing else dict(app)
+                    if legacy and not existing:
+                        fields.setdefault("allow_from", [])
+                    updated.append({**(existing or {}), **fields} if platform == "feishu" else fields)
                 if platform == "dingtalk":
-                    return merge_dingtalk_config(current, changes)
-                apps = changes["apps"]
-                if not isinstance(apps, list) or not all(isinstance(app, dict) for app in apps):
-                    raise ValueError("apps must be a list of applications")
-                old = {app["app_id"]: app for app in feishu_apps(current)}
-                merged = [{**old.get(app.get("app_id"), {}), **app} for app in apps]
-                return section(platform, current, normalize_feishu({"apps": merged})["apps"])
+                    # Do not revalidate or rewrite unchanged employee allowlists.
+                    untouched = [{id_key: app[id_key]} for app in team]
+                    return merge_dingtalk_config(current, {"apps": [*updated, *untouched]})
+                runtime_apps = normalize_feishu({"apps": [*updated, *team]})["apps"]
+                return section(platform, current, runtime_apps)
 
             saved = await edit_channel_body(platform, edit)
             await apply(cm, platform, saved, f"channel.{platform}.set_conf", before)
-            return saved
+            view = personal_channel_config(platform, saved, normalize_feishu)
+            if legacy and view["apps"]:
+                return {**view, **view["apps"][0]}
+            return view
 
     for platform in ("feishu", "dingtalk"):
         for op in ("bind_agent", "unbind_agent"):
