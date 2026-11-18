@@ -494,6 +494,23 @@ class _InboundGatewayServer:
                 logger.exception("[App] Gateway inbound handling failed: id=%s", getattr(msg, "id", None))
 
 
+# 已删除的南向客户端 type。存量配置升级后若仍在使用，启动即报错并给出
+# 迁移指引，避免静默回落 WebSocketAgentServerClient 后反复重连，产生与
+# 真实原因无关的连接失败（排除困难）。type=yuanrong 的 FaaS invoke 链路
+# 与 extensions/agent_client 注册入口已随 MR 删除。
+_REMOVED_AGENT_CLIENT_TYPES = frozenset({"yuanrong"})
+
+
+def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> None:
+    """已移除的 ``gateway.agent_client.type`` 直接拒绝，不静默回落 WebSocket."""
+    client_type = str(agent_client_config.get("type") or "").strip().lower()
+    if client_type in _REMOVED_AGENT_CLIENT_TYPES:
+        raise RuntimeError(
+            f"gateway.agent_client.type={client_type} 已移除（FaaS invoke 链路已删除），"
+            "请改用 agentos_router（YuanRong 部署）或 websocket（本地 AgentServer）"
+        )
+
+
 async def _connect_with_retry(
         client,
         uri: str,
@@ -2451,6 +2468,7 @@ async def _run(
     )
     gateway_config = full_cfg.get("gateway") or {}
     agent_client_config = gateway_config.get("agent_client") or {}
+    _reject_removed_agent_client_type(agent_client_config)
     using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
     if using_adx_router:
         if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
@@ -2470,7 +2488,8 @@ async def _run(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # 如果是 WebSocket 客户端，需要连接；扩展客户端（agentos_router 等）自行处理 connect
+    # WebSocket 客户端经 _connect_with_retry 重试连接；扩展客户端（agentos_router
+    # 等）由网关直接调用一次 connect()，不走重试
     if isinstance(client, WebSocketAgentServerClient):
         await _connect_with_retry(
             client,
