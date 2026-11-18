@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.message import EventType, ReqMethod
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.message import EventType, ReqMethod
 from agent_gateway.cron.models import CronJob, CronRunState
 from agent_gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
@@ -3910,7 +3910,7 @@ def test_mirror_exec_session_live_event_forwards_chat_file(tmp_path):
 def test_message_handler_mirrors_cron_chat_file_push(tmp_path):
     """MessageHandler 收到 cron 会话上的 chat.file push 时抄进 live。"""
     from agent_gateway.cron.live_bus import cron_live_bus
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     session_id = "__cron___mh_file"
     cron_live_bus.clear_session(session_id)
@@ -3960,7 +3960,7 @@ def test_message_handler_mirrors_cron_chat_file_push(tmp_path):
 def test_message_handler_mirrors_web_uuid_exec_session_chat_file(tmp_path):
     """web 立即执行：AgentServer 返回的 UUID session_id 也要能抄进 live。"""
     from agent_gateway.cron.live_bus import cron_live_bus
-    from openjiuwen_protocol.message import Message
+    from e2a.message import Message
 
     session_id = "550e8400-e29b-41d4-a716-446655440000"
     cron_live_bus.clear_session(session_id)

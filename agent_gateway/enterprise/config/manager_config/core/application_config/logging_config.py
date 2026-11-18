@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,

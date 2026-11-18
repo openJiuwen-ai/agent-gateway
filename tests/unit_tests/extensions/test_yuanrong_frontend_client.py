@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions import yuanrong_frontend_client as yuanrong_mod
 from agent_gateway.extensions.yuanrong_frontend_client import (

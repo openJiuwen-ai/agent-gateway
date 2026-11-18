@@ -222,6 +222,7 @@ class HttpJsonOutbound(_HttpOutboundBase):
         *,
         timeout: float = 60.0,
         result_event: str | None = None,
+        await_user_answer_result: bool = False,
     ) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -259,6 +260,9 @@ class HttpJsonOutbound(_HttpOutboundBase):
                 }
             if frame.get("type") == "res" and frame.get("id") == req_id:
                 payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+                if (await_user_answer_result and frame.get("ok") is True
+                        and not isinstance(payload.get("resolved"), bool)):
+                    continue
                 if (
                     result_event and frame.get("ok", True)
                     and payload.get("accepted") is True

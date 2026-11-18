@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 from agent_gateway.routing.keys import AgentRef, ChannelKey, RoutingKey, make_delivery_target
 from agent_gateway.routing.session_sharing import (
     LogicalTarget,

@@ -11,19 +11,19 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from openjiuwen_protocol.e2a.acp.protocol import (
+from e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
     build_acp_session_list_result,
     build_acp_session_new_result,
 )
-from openjiuwen_protocol.e2a.acp.session_updates import (
+from e2a.acp.session_updates import (
     build_acp_final_text_update,
     build_acp_session_update,
     build_acp_usage_update,
 )
-from openjiuwen_protocol.e2a.adapters import envelope_from_acp_jsonrpc
-from openjiuwen_protocol.e2a.constants import (
+from e2a.adapters import envelope_from_acp_jsonrpc
+from e2a.constants import (
     E2A_RESPONSE_KIND_ACP_JSONRPC_ERROR,
     E2A_RESPONSE_KIND_ACP_PROMPT_RESULT,
     E2A_RESPONSE_KIND_ACP_SESSION_UPDATE,
@@ -33,13 +33,13 @@ from openjiuwen_protocol.e2a.constants import (
     E2A_RESPONSE_STATUS_SUCCEEDED,
     E2A_SOURCE_PROTOCOL_E2A,
 )
-from openjiuwen_protocol.e2a.models import (
+from e2a.models import (
     E2AEnvelope,
     E2AProvenance,
     E2AResponse,
     utc_now_iso,
 )
-from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+from e2a.message import EventType, Message, Mode, ReqMethod
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from agent_gateway.dotenv_early import parse_dotenv_early
@@ -49,6 +49,7 @@ parse_dotenv_early("agent-gateway-acp")
 # --- Now safe to import jiuwenswarm modules ---
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from agent_gateway.common.version import get_runtime_version
+from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -192,7 +193,7 @@ class AcpGatewayBridge:
         ):
             return False
 
-        from openjiuwen_protocol.e2a.adapters import build_acp_tool_response_message
+        from e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         pending = self._pending_client_rpc_session_by_id.pop(jsonrpc_id, None)
@@ -855,7 +856,7 @@ class AcpChannel(BaseChannel):
         await self._dispatch_message(msg)
 
     async def _handle_jsonrpc_response(self, data: dict[str, Any]) -> None:
-        from openjiuwen_protocol.e2a.adapters import build_acp_tool_response_message
+        from e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         if not jsonrpc_id:
@@ -897,7 +898,7 @@ class AcpChannel(BaseChannel):
             or self.config.default_session_id
         )
 
-        req_method = self._parse_req_method(method)
+        req_method = parse_request_method(method)
         if method == "session/prompt":
             text = self._extract_prompt_text(params)
             params.setdefault("content", text)
@@ -1558,13 +1559,6 @@ class AcpChannel(BaseChannel):
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return ""
-
-    @staticmethod
-    def _parse_req_method(method: str) -> ReqMethod | None:
-        for item in ReqMethod:
-            if item.value == method:
-                return item
-        return None
 
     @staticmethod
     def _provenance(kind: str) -> E2AProvenance:

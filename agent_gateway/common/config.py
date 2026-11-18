@@ -20,12 +20,6 @@ import yaml
 from ruamel.yaml import YAML
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 
-from agent_gateway.common.kv_cache_affinity_config import (
-    APPLICATION_KV_CACHE_CONFIG_KEY,
-    KV_CACHE_AFFINITY_ENABLED_KEY,
-    get_kv_cache_affinity_application_config,
-    validate_affinity_invariant,
-)
 from agent_gateway.common.paths import (
     get_bundled_resources_dir,
     get_config_dir,
@@ -44,11 +38,6 @@ EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
-# Keep progressive tool search enabled by default for existing user workspaces
-# whose config.yaml predates this switch.
-# Opt-in gate for the tool_search retrieval layer: the layer mounts only when
-# progressive_tool_enabled (AbilityManager deferred assignment) and this switch
-# are both true.
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -148,17 +137,6 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
         mcc = react.get("model_client_config")
         if isinstance(mcc, dict) and "custom_headers" in mcc:
             mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-    kv_cfg = get_kv_cache_affinity_application_config(config)
-    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
-        valid, failures = validate_affinity_invariant(config)
-        if not valid:
-            logger.warning(
-                "KV cache affinity configuration failed closed: %s",
-                "; ".join(failures),
-            )
-            # Runtime-only normalization: preserve the user's file for
-            # diagnosis, but never activate an inconsistent configuration.
-            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels")
     if channels is None:
@@ -270,12 +248,6 @@ def get_config_raw():
     return _read_with_retry(CONFIG_YAML_PATH)
 
 
-def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
-    """Validate the persisted KVC invariant after a config write."""
-    raw = get_config_raw()
-    return validate_affinity_invariant(resolve_env_vars(raw))
-
-
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
     """Return the canonical ``react.evolution`` mapping.
 
@@ -296,16 +268,6 @@ def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
 def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return the canonical ``react.evolution.skill_evolution`` switch."""
     return _get_evolution_config(config).get("skill_evolution") is True
-
-
-def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
-    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        data["progressive_tool_optimize"] = bool(enabled)
-        return data
-
-    update_config(mutator)
 
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
@@ -706,35 +668,6 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
-    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-        if not isinstance(kv_config, dict):
-            kv_config = {}
-            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
-        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
-
-        react = data.get("react")
-        if isinstance(react, dict):
-            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-        return data
-
-    update_config(_mutate)
-
-
-def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
-    for key, value in patch.items():
-        if isinstance(value, dict):
-            child = target.get(key)
-            if not isinstance(child, dict):
-                child = {}
-                target[key] = child
-            _merge_config_dict(child, value)
-        else:
-            target[key] = value
-
-
 def update_permissions_enabled_in_config(value: bool) -> None:
     """Persist the legacy permission switch as a canonical manual profile."""
     update_permissions_profile_in_config("default" if value else "full_access")
@@ -762,37 +695,6 @@ def update_permissions_profile_in_config(profile: str) -> None:
         return data
 
     update_config(_mutate)
-
-
-def update_a4p_in_config(updates: dict[str, Any]) -> None:
-    """更新 a4p 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "a4p" not in data or data["a4p"] is None:
-        data["a4p"] = {}
-    _merge_config_dict(data["a4p"], updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_auto_recap_enabled_in_config(value: bool) -> None:
-    """更新 auto_recap.enabled（自动回顾开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "auto_recap" not in data:
-        data["auto_recap"] = {}
-    data["auto_recap"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_setup_guide_enabled_in_config(value: bool) -> None:
-    """原子更新 setup_guide.enabled（Web 首次配置引导开关）。"""
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        section = data.get("setup_guide")
-        if not isinstance(section, dict):
-            section = {}
-            data["setup_guide"] = section
-        section["enabled"] = value
-        return data
-
-    update_config(mutator)
 
 
 def update_rsi_enabled_in_config(value: bool) -> None:
@@ -1174,7 +1076,7 @@ def _validate_model_candidate(candidate: dict[str, Any]) -> None:
     raise_if_invalid(candidate)
 
 
-def delete_model_resource(resource_type: str, resource_id: str, *, cron_references_checked: bool = False) -> bool:
+def delete_model_resource(resource_type: str, resource_id: str) -> bool:
     key = "groups" if resource_type == "model_group" else "defaults"
     id_key = "model_group_id" if resource_type == "model_group" else "model_id"
     deleted = False
@@ -1314,7 +1216,7 @@ def get_available_models(
 
 
 def update_default_models_in_config(
-    models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
+    models_list: list[dict[str, Any]],
 ) -> None:
     def _mutate(data):
         models = _models_for_write(data)
@@ -1685,7 +1587,7 @@ def get_mcp_servers() -> list[dict[str, Any]]:
     state_mcps: list[dict[str, Any]] = []
     try:
         from agent_gateway.common.external_providers import provider
-        from openjiuwen_protocol.provider_domains import (
+        from e2a.provider_domains import (
             PROVIDER_DOMAIN_MCP_REGISTRY,
             PROVIDER_DOMAIN_MCP_STATE,
         )
@@ -2053,26 +1955,6 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
-def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
-    """Move the former ReAct-local KVC switch to Application scope."""
-    react = user_data.get("react")
-    if not isinstance(react, dict):
-        return
-    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
-    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
-    if isinstance(canonical, dict):
-        if (
-            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
-            and isinstance(legacy, dict)
-            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
-        ):
-            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
-                KV_CACHE_AFFINITY_ENABLED_KEY
-            ]
-    elif isinstance(legacy, dict):
-        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
-
-
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2132,7 +2014,6 @@ def migrate_config_from_template(
         # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
-        _migrate_legacy_kv_cache_affinity_config(user_data)
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
@@ -2709,6 +2590,123 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged
+
+
+def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a flat frontend-style model entry into the nested config format.
+
+    If the entry already has a ``model_client_config`` dict, assume it is already
+    normalized and return as-is.  Otherwise promote flat fields into the nested
+    structure the rest of the system expects.
+    """
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
+    if isinstance(saved.get("model_client_config"), dict):
+        return saved
+    mcc: dict[str, Any] = {}
+    mco: dict[str, Any] = {}
+    if "model_name" in saved:
+        mcc["model_name"] = str(saved.pop("model_name") or "")
+    if "api_base" in saved:
+        mcc["api_base"] = str(saved.pop("api_base") or "")
+    if "api_key" in saved:
+        mcc["api_key"] = saved.pop("api_key") or ""
+    # 两个扁平键都必须 pop 掉，但取值要回退：写成
+    # pop("model_provider", pop("client_provider", "")) 时默认参数会提前求值，
+    # client_provider 被删掉、值却只在 model_provider 缺键时才用得上，于是
+    # model_provider 为 null/空串时会把有效的 client_provider 一起丢掉。
+    model_provider = saved.pop("model_provider", None)
+    client_provider = saved.pop("client_provider", None)
+    provider = str(model_provider or client_provider or "")
+    if provider:
+        mcc["client_provider"] = provider
+    if "timeout" in saved:
+        mcc["timeout"] = saved.pop("timeout")
+    if "verify_ssl" in saved:
+        # 前端可能回传字符串（"false" 的裸 bool() 是 True，会把用户的关闭意图反转）
+        raw_verify_ssl = saved.pop("verify_ssl")
+        if isinstance(raw_verify_ssl, str):
+            raw_verify_ssl = raw_verify_ssl.strip().lower() not in {"", "0", "false", "no", "off"}
+        mcc["verify_ssl"] = bool(raw_verify_ssl)
+    if "endpoint_profile" in saved:
+        val = saved.pop("endpoint_profile")
+        if val:
+            mcc["endpoint_profile"] = str(val)
+    if "vendor_key" in saved:
+        val = saved.pop("vendor_key")
+        if val:
+            mcc["vendor_key"] = str(val)
+    if "plan" in saved:
+        val = saved.pop("plan")
+        if val:
+            mcc["plan"] = str(val)
+    temp = saved.pop("temperature", None)
+    if temp is not None:
+        mco["temperature"] = float(temp)
+    rl = saved.pop("reasoning_level", None)
+    if rl is not None and str(rl).strip():
+        mco["reasoning_level"] = str(rl).strip()
+    if mcc:
+        saved["model_client_config"] = mcc
+    if mco:
+        saved["model_config_obj"] = mco
+    return saved
+
+
+def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge an editable DTO while preserving omitted/write-only settings."""
+    merged = deepcopy(current)
+    for key, value in update.items():
+        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_model_update(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
+def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
+    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
+    client = update.get("model_client_config") or {}
+    if "api_key" not in client:
+        return
+    key = client["api_key"]
+    previous = (current.get("model_client_config") or {}).get("api_key")
+    if key == previous:
+        return
+    if not key:
+        # api_key 是 write-only 字段，空串按“未提交”处理：必须把旧密文写回，否则
+        # 随后的 _merge_model_update 会用空串覆盖已保存的凭据，模型立即鉴权失败。
+        if previous:
+            client["api_key"] = previous
+        else:
+            client.pop("api_key", None)
+        return
+    try:
+        crypto = get_crypto_provider()
+    except Exception:
+        # 与本文件 _decrypt_model_entries 保持一致：拿不到 provider 时降级为按提交值
+        # 落库，不能因为加密组件异常把整个模型保存流程打挂。
+        logger.warning(
+            "Crypto provider unavailable while protecting model api_key; "
+            "the submitted value will be stored as-is",
+            exc_info=True,
+        )
+        return
+    if crypto is not None:
+        resolved = _decrypt_model_entries([current])[0]
+        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
+        if previous and key == previous_plaintext:
+            client["api_key"] = previous
+        else:
+            client["api_key"] = crypto.encrypt(key)
 
 
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:

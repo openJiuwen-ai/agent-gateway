@@ -12,14 +12,17 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
 ]
 dependencies = [
-    # 协议层与 Agent 内核（rev 与 jiuwenswarm 母仓保持一致，避免同环境双版本）
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f3f8f576164cc405c046e43079c8ad00ee17f0c4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@4c5f3e9eb41bd33d34d012b06a3e364e8497ac11#subdirectory=openjiuwen-protocol",
+    # 内核依赖在 wheel 元数据里只写版本区间，不写 git URL：同一环境由母仓
+    # （jiuwenswarm）用 git URL 钉死具体 rev，若这里再写 URL，pip 会因
+    # “同一个包出现两个直接 URL”直接 ResolutionImpossible（pip 没有 override）。
+    # uv 环境的具体 rev 由下方 [tool.uv.sources] 固定。
+    "openjiuwen>=0.1.20.post3",
+    "e2a @ git+https://gitcode.com/openJiuwen/agent-protocol.git@defa6d8d8904eb3272a58fa0ad13f94f7adb4a51#subdirectory=e2a",
     # 企业版审计与 DB 表定义（config/enterprise/tables 顶层 import）
     "openjiuwen-runtime-foundation",
     # Web / HTTP / WebSocket 服务面
     "fastapi>=0.115,<1.0",
-    "starlette>=0.49.1,<1",
+    "starlette>=0.49.1,<2",
     "uvicorn[standard]>=0.52.1,<1.0",  # 0.50.0-0.52.0 websockets-sansio sends duplicate Content-Length in WS denial responses
     "websocket-client>=1.8,<2",
     "websockets>=12.0,<16",
@@ -46,10 +49,10 @@ dependencies = [
     # 企业版 OBS 对象存储（common/obs_files.py 顶层 import）
     "minio>=7.2,<8",
     # openjiuwen observability 运行时依赖（openjiuwen 自身未声明为硬依赖）
-    "opentelemetry-api>=1.28.0,<1.42",
-    "opentelemetry-sdk>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<1.42",
-    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<1.42",
+    "opentelemetry-api>=1.28.0",
+    "opentelemetry-sdk>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0",
     # IM / 渠道适配
     "lark-oapi>=1.5.3,<2",
     "dingtalk-stream>=0.24.3,<0.25",
@@ -86,6 +89,7 @@ agent-gateway = "agent_gateway.app_gateway:main"
 agent-gateway-acp = "agent_gateway.channel_manager.protocol.acp.acp_connect:main"
 
 [tool.uv.sources]
+e2a = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "defa6d8d8904eb3272a58fa0ad13f94f7adb4a51", subdirectory = "e2a" }
 openjiuwen-runtime-foundation = { git = "https://gitcode.com/openJiuwen/agent-runtime.git", branch = "develop", subdirectory = "foundation" }
 
 [tool.setuptools]

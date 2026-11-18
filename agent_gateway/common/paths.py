@@ -135,7 +135,19 @@ def get_root_dir() -> Path:
 
 
 def get_config_file() -> Path:
-    """获取 ``config.yaml`` 路径。"""
+    """获取 Gateway 配置文件路径。
+
+    默认 ``<config_dir>/config.yaml``；拆分部署时可用
+    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config.yaml``。
+
+    该环境变量必须在 Gateway 进程启动、config 模块导入前设置，运行中修改不受支持。
+    """
+    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = get_config_dir() / path
+        return path / "config.yaml"
     return get_config_dir() / "config.yaml"
 
 

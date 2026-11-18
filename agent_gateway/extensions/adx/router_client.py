@@ -7,8 +7,8 @@ import logging
 from collections.abc import Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse
-from openjiuwen_protocol.e2a.models import E2AEnvelope
+from e2a.agent_models import AgentResponse
+from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType

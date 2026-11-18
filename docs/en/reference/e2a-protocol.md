@@ -1,6 +1,6 @@
 # E2A (Everything-to-Agent) Protocol
 
-> **Implementation**: `openjiuwen_protocol.e2a`（`models.py`, `adapters.py`, `constants.py`, `__init__.py`）. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
+> **Implementation**: `e2a`（`models.py`, `adapters.py`, `constants.py`, `__init__.py`）. **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.
 > **Chinese**: [../../zh/reference/e2a-protocol.md](../../zh/reference/e2a-protocol.md)
 
 ---
@@ -11,10 +11,10 @@
 |----------|------|
 | **docs/zh/reference/e2a-protocol.md** | Same specification in Chinese |
 | **docs/en/reference/e2a-protocol.md** (this file) | Normative description, pitfalls, examples (English) |
-| `openjiuwen_protocol/e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
-| `openjiuwen_protocol/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
-| `openjiuwen_protocol/e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
-| `openjiuwen_protocol/e2a/__init__.py` | Public exports |
+| `e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
+| `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
+| `e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
+| `e2a/__init__.py` | Public exports |
 
 ---
 
@@ -46,6 +46,68 @@ connection. Explicit `disconnect()` clears the reconnect configuration.
 Business requests already sent are never replayed automatically, avoiding side
 effects such as duplicate session creation. This is Gateway transport behavior;
 it changes neither the E2A wire protocol nor Agent Runtime readiness semantics.
+
+---
+
+## 1.1 TUI session interface contract
+
+A successful TUI `session.list` response contains these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `sessions` | Sessions after local validity, channel, project, and current-session filtering, sorted and truncated to `limit` |
+| `total` | The upstream total returned by AgentServer, or `null` when omitted upstream |
+| `page_count` | Raw row count in the upstream `sessions` array for this response, before local filtering or truncation, including invalid rows later discarded; **not the number of pages** |
+| `current_branch` | The current project's Git branch, or `HEAD` when unavailable |
+
+Compare `page_count` with the requested page size to detect a full source page;
+the filtered `sessions` length cannot determine this. Before an AgentServer client
+exists, the response is
+`{"sessions": [], "total": 0, "page_count": 0, "current_branch": "HEAD"}`.
+
+For `session.archive`, `session.unarchive`, and `session.delete`, targets come only
+from `params`: `session_ids` (1 to 100 IDs) or one nonblank `session_id`.
+`session_ids` takes precedence. A `session_id` sent with it is request context (TUI
+clients attach their active Session to every request): it is not validated, is never
+a target, and is not forwarded. Without `session_ids`, archive and unarchive forward a
+single `session_id` as `session_ids: [session_id]`. Invalid targets return
+`BAD_REQUEST`: `session_ids must contain 1 to 100 IDs`, `invalid resource ID`,
+`invalid session_id`, or `session_ids is required` (archive/unarchive) /
+`session_id is required` (delete).
+
+TUI connections take `group_id`, `bot_id`, and `gateway_id` from handshake headers
+(`X-Group-Id`, `X-Bot-Id`, `X-Gateway-Id`, preferred) or URL query parameters, and the
+user from the authenticated connection. Requests, lifecycle polling, and event
+delivery use this routing scope.
+
+Each forwarded TUI request gets a unique upstream ID. Replies and stream events go to
+the originating socket with the client's ID restored, and request references resolve
+within that socket. Only foreground requests (`session.create`, `session.switch`,
+`history.get`, `chat.send`, `chat.resume`) change a window's bound Session.
+
+Reconnects are the one exception. When a TUI socket drops without an explicit exit,
+Gateway holds its bound Session and in-flight request correlations for 55 seconds.
+The same user's next socket in the same routing scope takes them back with a
+foreground request, or with any other request carrying that `session_id` while the
+socket holds no Session. `session.*` requests never re-attach, because their
+`session_id` can name another Session. Stream events of the interrupted turn then
+continue on the new socket with the client's own request IDs; replies (`res`) to
+requests sent on the dropped socket are not delivered.
+`session.switch` binds only after AgentServer accepts it; a reply that fails origin or
+target validation ends the switch with `ok: false` and code `INTERNAL_ERROR`. If no
+reply reaches Gateway within its unary timeout plus a short margin, the switch ends
+with `ok: false` and code `AGENT_SERVER_TIMEOUT`, the target is released, and a later
+reply is discarded.
+
+Project lifecycle events reach only windows whose bound Session belongs to the
+project, as resolved from AgentServer metadata. A deleted Session keeps its last known
+project; unknown membership is retried on the next poll. Resolved membership is
+reused for up to 30 seconds while no project revision changes, so a Session moved to
+another project is noticed within that interval. Session events reach the
+windows bound to that Session, and a request's own results also reach its caller. A
+window's first snapshot replays project events, their completion events, and
+execution-blocked Session state once per revision; reconnects replay again, so clients
+must handle these events idempotently.
 
 ---
 
@@ -150,7 +212,7 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 ## 6. ACP strings in `constants.py` (bridge reference)
 
-For ACP bridging and doc cross-check only; **at runtime** use tuples in `openjiuwen_protocol.e2a.constants`:
+For ACP bridging and doc cross-check only; **at runtime** use tuples in `e2a.constants`:
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**: client → Agent JSON-RPC method names
 - **`ACP_AGENT_TO_CLIENT_METHODS`**, **`ACP_NOTIFICATION_NAMES`**: downstream / notifications
@@ -163,7 +225,7 @@ For ACP bridging and doc cross-check only; **at runtime** use tuples in `openjiu
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python: `openjiuwen_protocol.e2a.merge_params_to_acp_prompt(envelope)`.
+Python: `e2a.merge_params_to_acp_prompt(envelope)`.
 
 If and only if **`method == "session/prompt"`**:
 
@@ -476,7 +538,7 @@ as cancellation rather than being classified as a `chat.error`.
 
 ---
 
-*Maintained in sync with `openjiuwen_protocol/e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
+*Maintained in sync with `e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
 
 ## Changelog
 

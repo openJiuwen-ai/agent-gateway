@@ -10,10 +10,11 @@ import time
 import uuid
 from typing import Any
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
+from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from agent_gateway.channel_manager.web.outbound import (
@@ -42,6 +43,17 @@ def _get_header(headers: dict[str, str], name: str) -> str:
     for k, v in headers.items():
         if k.lower() == want:
             return str(v).strip()
+    return ""
+
+
+def _cookie_value(headers: dict[str, str], name: str) -> str:
+    raw = _get_header(headers, "cookie")
+    if not raw:
+        return ""
+    for chunk in raw.split(";"):
+        key, _, value = chunk.strip().partition("=")
+        if key == name and value:
+            return value.strip().strip('"')
     return ""
 
 
@@ -196,7 +208,6 @@ async def dispatch_http_request(
 
     from agent_gateway.channel_manager.web.web_connect import WebChannel
 
-    parse_req = getattr(channel, "parse_req_method", None) or WebChannel.parse_req_method
     parse_mode = getattr(channel, "parse_mode", None) or WebChannel.parse_mode
 
     user_message = Message(
@@ -207,7 +218,7 @@ async def dispatch_http_request(
         params=params,
         timestamp=time.time(),
         ok=True,
-        req_method=parse_req(method),
+        req_method=parse_request_method(method),
         mode=parse_mode(params.get("mode")),
         is_stream=bool(is_stream),
         app_id=app_id,
@@ -224,5 +235,7 @@ async def dispatch_http_request(
         outbound=outbound,
         session_id=session_id,
         user_message=user_message,
+        authorization=_get_header(hdrs, "authorization") or None,
+        jiuwenclaw_id=_cookie_value(hdrs, "jiuwenclaw_id") or None,
     )
     return outbound, req_id, session_id

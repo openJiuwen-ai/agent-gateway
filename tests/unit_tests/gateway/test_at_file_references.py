@@ -247,7 +247,7 @@ class TestStructuredAttachmentsIntegration:
         try:
             content = f'@"{fname}" review @"{fname}" this'
             result = MessageHandler.resolve_at_file_references(content)
-            assert result.count("<file-content") == 2
+            assert result.count("<file-content") == 1
             assert "dedup" in result
         finally:
             os.unlink(fname)

@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
@@ -871,7 +871,7 @@ class FeishuChannel(BaseChannel):
             try:
                 await self._shutdown_ws_client()
             except Exception as e:
-                logger.warning("停止WebSocket客户端时发生异常: {}", e)
+                logger.warning("停止WebSocket客户端时发生异常: %s", e)
 
         loop = self._ws_thread_loop
         if loop is not None:
@@ -904,7 +904,7 @@ class FeishuChannel(BaseChannel):
                 try:
                     await conn.close(code=1000, reason="bye")
                 except Exception as e:
-                    logger.debug("飞书连接关闭时出现异常: {}", e)
+                    logger.debug("飞书连接关闭时出现异常: %s", e)
 
             await asyncio.sleep(0.05)
 
@@ -916,7 +916,7 @@ class FeishuChannel(BaseChannel):
         except asyncio.TimeoutError:
             logger.debug("飞书客户端清理超时，继续停止事件循环")
         except Exception as e:
-            logger.debug("飞书客户端清理任务异常: {}", e)
+            logger.debug("飞书客户端清理任务异常: %s", e)
 
     @staticmethod
     def _patch_ws_client_shutdown(ws_client: Any) -> None:
@@ -932,7 +932,7 @@ class FeishuChannel(BaseChannel):
                 return await original_disconnect()
             except RuntimeError as e:
                 if "Lock is not acquired" in str(e):
-                    logger.debug("忽略 lark_oapi 断连并发异常: {}", e)
+                    logger.debug("忽略 lark_oapi 断连并发异常: %s", e)
                     return None
                 raise
 
@@ -3050,19 +3050,6 @@ class FeishuChannel(BaseChannel):
             return text
         return text[:max_len].rstrip() + "..."
 
-    @staticmethod
-    def _stringify_value(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value
-        if isinstance(value, (dict, list)):
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except Exception:
-                return str(value)
-        return str(value)
-
     _IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp"})
 
     @staticmethod
@@ -4393,28 +4380,6 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error(f"处理视频消息失败: {e}")
             return "[视频]", None
-
-    def _extract_text_from_file(self, file_path: str, max_len: int = 50000) -> str | None:
-        """从文本文件中提取内容。"""
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read(max_len + 1)
-            if len(content) > max_len:
-                content = content[:max_len] + "\n... [内容已截断]"
-            return content
-        except UnicodeDecodeError:
-            # 尝试其他编码
-            try:
-                with open(file_path, "r", encoding="gbk") as f:
-                    content = f.read(max_len + 1)
-                if len(content) > max_len:
-                    content = content[:max_len] + "\n... [内容已截断]"
-                return content
-            except Exception:
-                return None
-        except Exception as e:
-            logger.warning(f"提取文件内容失败: {e}")
-            return None
 
     # ==================== 文件消息发送 ====================
 

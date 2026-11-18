@@ -204,6 +204,18 @@ def _envelope_from_res(
         "TIMEOUT": 504,
         "SERVICE_UNAVAILABLE": 503,
         "WORKSPACE_QUOTA_EXCEEDED": 403,
+        "SKILL_UPLOAD_FEATURE_RETIRED": 403,
+        "SKILL_UPLOAD_PACKAGE_INVALID": 400,
+        "SKILL_UPLOAD_PACKAGE_TOO_LARGE": 413,
+        "SKILL_FILE_TOO_LARGE": 413,
+        "SKILL_UPLOAD_STAGE_EXPIRED": 410,
+        "SKILL_UPLOAD_STAGE_NOT_FOUND": 404,
+        "SKILL_UPLOAD_DIGEST_MISMATCH": 409,
+        "SKILL_UPLOAD_NOT_APPROVED": 403,
+        "SKILL_UPLOAD_CHECK_UNAVAILABLE": 503,
+        "SKILL_UPLOAD_NAME_CONFLICT": 409,
+        "SKILL_UPLOAD_BUILTIN_READ_ONLY": 403,
+        "SKILL_UPLOAD_FEATURE_DISABLED": 403,
     }.get(err_code, 500)
     return body, status
 
@@ -473,10 +485,14 @@ def register_web_http_api_routes(
     )
     async def chat_user_answer(
         session_id: str, request: Request, body: ChatActionBody | None = None,
+        wait_for_result: bool = Query(False, description="Wait for the final user-answer result, not its acceptance ACK."),
     ) -> Response:
         payload = _body_dict(body)
         payload["session_id"] = session_id
-        return await _unary(request, channel, "chat.user_answer", payload, is_stream=True)
+        return await _unary(
+            request, channel, "chat.user_answer", payload, is_stream=True,
+            wait_for_result=wait_for_result,
+        )
 
     @app.get(
         "/api/v1/catalog",
@@ -689,6 +705,7 @@ async def _unary(
     created: bool = False,
     is_stream: bool = False,
     bind_session_param: bool = True,
+    wait_for_result: bool = False,
 ) -> JSONResponse:
     outbound = None
     req_id = request.headers.get("x-request-id") or uuid.uuid4().hex
@@ -707,11 +724,18 @@ async def _unary(
             bind_session_param=bind_session_param,
             client_host=_request_client_host(request),
         )
-        # Interrupt needs its final result after ACK, including authoritative Todos.
-        frame = await outbound.wait_response(
-            req_id, timeout=resolve_web_http_unary_timeout(),
-            result_event="chat.interrupt_result" if method == "chat.interrupt" else None,
-        )
+        timeout = resolve_web_http_unary_timeout()
+        if method == "chat.interrupt":
+            # Interrupt needs its final result after ACK, including authoritative Todos.
+            frame = await outbound.wait_response(
+                req_id, timeout=timeout, result_event="chat.interrupt_result",
+            )
+        elif method == "chat.user_answer" and wait_for_result:
+            frame = await outbound.wait_response(
+                req_id, timeout=min(timeout, 120.0), await_user_answer_result=True,
+            )
+        else:
+            frame = await outbound.wait_response(req_id, timeout=timeout)
         body, status = _envelope_from_res(frame, req_id, rpc_method=method)
         if method == "chat.interrupt":
             result = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}

@@ -257,7 +257,6 @@ _PRESETS: list[VendorPreset] = [
         models_needs_key=True,  # 实测无 key 返回 401;带 Bearer 才 200
         anthropic_base="https://qianfan.baidubce.com/anthropic/coding",
     ),
-
     # ── 自定义API (通用Token / 按量计费) ────────────────────────────────────
     VendorPreset(
         vendor_key="alibaba", display_name="阿里云百炼", plan=PlanKind.CUSTOM_API,
@@ -466,6 +465,21 @@ _PRESETS: list[VendorPreset] = [
         models_endpoint="https://api.xiaomimimo.com/v1/models",
         models_needs_key=True,
         anthropic_base="https://api.xiaomimimo.com/anthropic",
+    ),
+    # OpenCode Go 归入自定义 API：契约要求不预置 api_base / default_model /
+    # model_options，基址与模型全部由用户自填。models_endpoint 仍然保留，
+    # 让用户填完 Key 后可以主动"拉取最新"；不预置候选列表不等于禁用远端拉取。
+    VendorPreset(
+        vendor_key="opencode-go", display_name="OpenCode Go", plan=PlanKind.CUSTOM_API,
+        client_provider="OpenAI",
+        api_base="",
+        default_model="",
+        model_options=(),
+        icon_key="opencode-go",
+        models_endpoint="https://opencode.ai/zen/go/v1/models",
+        models_needs_key=True,
+        # zen/go 仅提供 OpenAI 兼容端点,无 Anthropic 格式。
+        anthropic_base=None,
     ),
     # 自部署 vLLM-Omni 推理服务:没有固定地址,api_base 只是默认提示,由用户在设置里改。
     VendorPreset(
