@@ -901,19 +901,49 @@ def test_chat_interrupt(app_with_mock, success):
     assert r.json()["data"]["todos"] == todos
 
 
-def test_interrupt_ack_without_result_times_out():
+@pytest.mark.parametrize("mismatched_session", [False, True])
+@pytest.mark.parametrize("final_result", [False, True])
+def test_interrupt_result_session_validation(caplog, mismatched_session, final_result):
     async def run():
         peer = outbound_mod.HttpJsonOutbound(session_id="s1")
         peer.accept_frame({"type": "res", "id": "r1", "ok": True, "payload": {"accepted": True}})
-        peer.accept_frame({
-            "type": "event", "event": "chat.interrupt_result",
-            "payload": {"session_id": "another-session", "success": True},
-        })
+        if mismatched_session:
+            peer.accept_frame({
+                "type": "event", "event": "chat.interrupt_result",
+                "payload": {
+                    "request_id": "wrong-event", "session_id": "another-session",
+                    "success": True, "todos": [{"id": "private-todo", "status": "cancelled"}],
+                },
+            })
+        if final_result:
+            peer.accept_frame({
+                "type": "event", "event": "chat.interrupt_result",
+                "payload": {
+                    "request_id": "correct-event", "session_id": "s1", "success": True,
+                    "todos": [],
+                },
+            })
         result = await peer.wait_response("r1", timeout=0.01, result_event="chat.interrupt_result")
-        assert result["ok"] is False
-        assert result["code"] == "TIMEOUT"
+        if final_result:
+            assert result["ok"] is True
+            assert result["payload"]["request_id"] == "correct-event"
+            assert result["payload"]["todos"] == []
+        else:
+            assert result["ok"] is False
+            assert result["code"] == "TIMEOUT"
 
     asyncio.run(run())
+    warnings = [record for record in caplog.records if "mismatched session" in record.getMessage()]
+    assert len(warnings) == int(mismatched_session)
+    if mismatched_session:
+        assert warnings[0].levelname == "WARNING"
+        message = warnings[0].getMessage()
+        for field in (
+            "request_id=r1", "event=chat.interrupt_result", "event_id=wrong-event",
+            "expected_session_id=s1", "actual_session_id=another-session",
+        ):
+            assert field in message
+        assert "private-todo" not in message
 
 
 def test_interrupt_rejection_does_not_wait_for_result():

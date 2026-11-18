@@ -271,6 +271,12 @@ class HttpJsonOutbound(_HttpOutboundBase):
             if result_event and frame.get("type") == "event" and frame.get("event") == result_event:
                 payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
                 if payload.get("session_id") != self.session_id:
+                    logger.warning(
+                        "[WebHTTP] Ignoring final event with mismatched session: "
+                        "request_id=%s event=%s event_id=%s expected_session_id=%s actual_session_id=%s",
+                        req_id, result_event, frame.get("id") or payload.get("request_id"),
+                        self.session_id, payload.get("session_id"),
+                    )
                     continue
                 # WebChannel only routes interrupt events to the originating
                 # JSON outbound, never via its session-broadcast fallback.
