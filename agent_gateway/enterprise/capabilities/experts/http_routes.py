@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from openjiuwen_protocol.expert_http_routes import expert_http_routes
+from e2a.expert_http_routes import expert_http_routes
 
 from agent_gateway.channel_manager.web.http_routes.mapped import WebHttpMappedRoute
 

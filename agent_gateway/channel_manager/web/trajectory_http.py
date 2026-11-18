@@ -22,7 +22,7 @@ from urllib.parse import SplitResult, urlsplit
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from openjiuwen_protocol.message import ReqMethod
+from e2a.message import ReqMethod
 
 from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
@@ -818,7 +818,7 @@ async def _load_session_metadata(
     user_id: str | None = None,
 ) -> Mapping[str, Any]:
     from agent_gateway.common.external_providers import provider
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
+    from e2a.provider_domains import PROVIDER_DOMAIN_SESSION_METADATA
 
     return await provider(
         PROVIDER_DOMAIN_SESSION_METADATA

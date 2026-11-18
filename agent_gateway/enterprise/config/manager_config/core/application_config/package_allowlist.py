@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen_protocol.package_allowlist import (
+from e2a.package_allowlist import (
     ensure_packages_fit,
     normalize_packages,
 )

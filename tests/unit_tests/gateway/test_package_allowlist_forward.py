@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 import pytest
-from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_compat import e2a_to_agent_request
+from e2a.models import E2AEnvelope
+from e2a.message import ReqMethod
 
 from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
     PackageAllowlistService,

@@ -9,9 +9,9 @@ import logging
 
 import pytest
 
-pytest.importorskip("openjiuwen_protocol")
+pytest.importorskip("e2a")
 
-from openjiuwen_protocol.e2a.agent_models import AgentRef
+from e2a.agent_models import AgentRef
 
 # Load the package first so web_connect -> base_ws_channel resolve in the same
 # order the runtime uses; importing base_ws_channel directly hits a pre-existing

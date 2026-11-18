@@ -1,5 +1,5 @@
-# Gateway 侧薄封装：异常类型取自 ``openjiuwen_protocol.mcp_oauth``，provider 域名
-# 统一取自 ``openjiuwen_protocol.provider_domains``（跨进程契约单一来源）；
+# Gateway 侧薄封装：异常类型取自 ``e2a.mcp_oauth``，provider 域名
+# 统一取自 ``e2a.provider_domains``（跨进程契约单一来源）；
 # 本文件只绑定 gateway 进程自己的 provider 注册表。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from openjiuwen_protocol.mcp_oauth import McpOAuthError  # noqa: F401 — 旧 import 路径兼容
-from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_MCP_REGISTRY
+from e2a.mcp_oauth import McpOAuthError  # noqa: F401 — 旧 import 路径兼容
+from e2a.provider_domains import PROVIDER_DOMAIN_MCP_REGISTRY
 
 from agent_gateway.common.external_providers import provider
 

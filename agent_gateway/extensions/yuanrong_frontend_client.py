@@ -93,17 +93,17 @@ def apply_trace_header(
         if str(key).lower() != "x-trace-id"
     } | {TRACE_ID_HEADER: resolved}
 
-from openjiuwen_protocol.e2a.agent_models import (
+from e2a.agent_models import (
     AgentRequest,
     AgentResponse,
     AgentResponseChunk,
 )
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.e2a.wire_codec import (
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
+from e2a.agent_compat import e2a_to_agent_request
 
 from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.routing.container_files import AgentFileDownloadChunk

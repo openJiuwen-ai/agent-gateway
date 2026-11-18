@@ -16,9 +16,9 @@ from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Coroutine, Mapping
 
-from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
-from openjiuwen_protocol.e2a.models import E2AEnvelope
-from openjiuwen_protocol.message import ReqMethod
+from e2a.agent_models import AgentResponse, AgentResponseChunk
+from e2a.models import E2AEnvelope
+from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager

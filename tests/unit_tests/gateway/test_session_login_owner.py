@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen_protocol.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
+from e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
 
 from agent_gateway.auth import session_owners
 from agent_gateway.message_handler.message_handler import (
