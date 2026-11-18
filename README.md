@@ -40,6 +40,18 @@ The gateway builds and runs as its own Python package `agent-gateway` with two e
 | Health & heartbeat             | Periodic health checks and heartbeat keep the gateway/AgentServer pair observable and let the supervisor restart a stuck half                                                                   |
 | Multi-instance isolation       | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
 
+## Attachments and file references
+
+Structured attachments and `@path` mentions share the same expansion rules. PDF, Office, image, archive, and other non-text files retain only their filename, absolute path, type, and reason for not being expanded. Their raw bytes are never decoded into the model input. Agents should use document or media reading tools as needed; Gateway does not parse PDFs.
+
+PDF detection also scans for a versioned header (`%PDF-1.7`, for example) starting within the first 1024 bytes, including when the extension has been changed. Text or source files containing a literal versioned PDF header in this region may conservatively retain only a file reference; a mention of `%PDF-` without a version is not sufficient on its own.
+
+UTF-8 text and source files may be inlined, up to 128 KiB of body text per file and 256 KiB of body text across a message, measured in UTF-8 bytes. Truncation notices also consume the remaining message budget. XML wrappers, path attributes and deferred file references are excluded, so the final rendered message can exceed 256 KiB. Each actual path is expanded only once. Truncated files and files deferred by the message budget retain a path and a notice for further tool reads. Invalid UTF-8 and binary control characters are not converted into replacement-character noise.
+
+The binary-text check rejects Unicode control characters (`Cc`, including C0, DEL and C1), except tab, newline and carriage return. Text containing form feed (`U+000C`) or vertical tab (`U+000B`) therefore also retains only a file reference and requires a file reading tool. Unicode format characters (`Cf`, including bidirectional controls, zero-width characters and BOM) are preserved as text to support emoji sequences and multilingual content. This check identifies non-text files; it does not sanitize document content.
+
+`MessageHandler.resolve_at_file_references` retains `max_file_size` and adds the keyword-only `max_total_inline_bytes` parameter. `max_file_size=None` disables only the per-file limit, not the message budget. These byte limits do not guarantee a model token limit.
+
 ## Related Documents
 
 - [Documentation](docs/README_EN.md) — tutorial, how-to, reference, and explanation
