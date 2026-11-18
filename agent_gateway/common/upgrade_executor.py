@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 
 from agent_gateway.common.paths import get_user_workspace_dir
 from agent_gateway.common.version import __version__
+from agent_gateway.common.version_source import normalize_pypi_index_url
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +326,9 @@ class PipExecutor(UpgradeExecutor):
         return PipExecutor._find_uv_binary()
 
     def _build_install_args(self, package: str, timeout: int) -> list[str]:
-        pypi_mirror = self._config.get("pypi_mirror", "").strip()
+        # Migrate the legacy Aliyun mirror base (issue 6288) at the final pip
+        # boundary, so configs saved by older builds still upgrade correctly.
+        pypi_mirror = normalize_pypi_index_url(self._config.get("pypi_mirror", ""))
 
         uv_cmd = self._resolve_uv_command()
         if uv_cmd:

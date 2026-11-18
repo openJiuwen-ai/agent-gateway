@@ -9,7 +9,6 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
 from agent_gateway.common._build_config import PACKAGE_NAME
 from agent_gateway.common.config import get_config_raw
@@ -21,17 +20,19 @@ from agent_gateway.common.version import (
     get_runtime_version,
 )
 from agent_gateway.common.version_source import (
+    PYPI_INDEX_URL,
     GitCodeReleasesSource,
     GitHubReleasesSource,
     PyPIVersionSource,
     ReleaseAsset,
     ReleaseInfo,
+    normalize_pypi_index_url,
+    pypi_project_url,
     release_timestamp_key,
 )
 
 DEFAULT_RELEASE_API_GITCODE = "https://api.gitcode.com/api/v5/repos/{owner}/{repo}/releases/latest"
 DEFAULT_RELEASE_API_GITHUB = "https://api.github.com/repos/{owner}/{repo}/releases/latest"
-DEFAULT_RELEASE_API_PYPI = "https://pypi.org/simple/{package}/"
 DEFAULT_ASSET_PATTERN_LINUX = "JiuwenSwarm-{version}.tar.gz"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_TEXT = "WbrW92Yn6jif-4Ks3kvzhWVv"
@@ -44,7 +45,7 @@ DEFAULT_SOURCE_CONFIG: dict[str, Any] = {
     "repo_name": "jiuwenswarm",
     "package_name": PACKAGE_NAME,
     "release_api_url": "",
-    "pypi_mirror": "https://mirrors.aliyun.com/pypi",
+    "pypi_mirror": "https://mirrors.aliyun.com/pypi/simple/",
     "asset_name_pattern": "",
     "asset_name_pattern_windows": "",
     "asset_name_pattern_macos": "",
@@ -523,16 +524,15 @@ class UpdaterService:
         owner = str(updater.get("repo_owner") or "openJiuwen").strip()
         repo = str(updater.get("repo_name") or "jiuwenswarm").strip()
         package = PACKAGE_NAME
+        pypi_mirror = str(updater.get("pypi_mirror") or "").strip()
+        if api_type == "pypi":
+            pypi_mirror = normalize_pypi_index_url(pypi_mirror)
         release_api_url = str(updater.get("release_api_url") or "").strip()
         if not release_api_url:
             if api_type == "github":
                 release_api_url = DEFAULT_RELEASE_API_GITHUB.format(owner=owner, repo=repo)
             elif api_type == "pypi":
-                pypi_mirror = str(updater.get("pypi_mirror") or "").strip()
-                if pypi_mirror:
-                    release_api_url = urljoin(pypi_mirror, f"simple/{package}/")
-                else:
-                    release_api_url = DEFAULT_RELEASE_API_PYPI.format(package=package)
+                release_api_url = pypi_project_url(pypi_mirror or PYPI_INDEX_URL, package)
             else:
                 release_api_url = DEFAULT_RELEASE_API_GITCODE.format(owner=owner, repo=repo)
         timeout_seconds = updater.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS)
@@ -569,7 +569,7 @@ class UpdaterService:
             ),
             "timeout_seconds": timeout_seconds,
             "access_token": get_access_token(),
-            "pypi_mirror": str(updater.get("pypi_mirror") or "").strip(),
+            "pypi_mirror": pypi_mirror,
         }
 
     def _update_status(self, **updates: Any) -> None:
