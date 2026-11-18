@@ -1026,6 +1026,10 @@ async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch,
     ("edition", "user_id", "params", "routing", "browser", "expected"),
     [
         ("personal", None, {}, None, "local", ["web", "feishu", "feishu-to-web", "other-project"]),
+        ("personal", None, {}, None, "wildcard-local", ["web", "feishu", "feishu-to-web", "other-project"]),
+        ("personal", None, {}, None, "wildcard-nonlocal", ["web", "other-project"]),
+        ("personal", None, {}, None, "local-forwarded", ["web", "other-project"]),
+        ("personal", None, {}, None, "local-http", ["web", "feishu", "feishu-to-web", "other-project"]),
         ("personal", None, {}, None, "remote", ["web", "other-project"]),
         ("personal", None, {"user_id": "ou_sender"}, None, "remote", ["web", "other-project"]),
         ("personal", None, {"project_id": "default"}, None, "local", ["web", "feishu", "feishu-to-web"]),
@@ -1084,7 +1088,7 @@ async def test_cron_job_list_scopes_identity_by_edition(monkeypatch, edition, us
         ),
     )
     channel = FakeWebChannel()
-    channel.config = SimpleNamespace(host="localhost")
+    channel.config = SimpleNamespace(host="" if browser.startswith("wildcard-") else "localhost")
     manager = FakeChannelManager()
     manager.configs["feishu"] = {"apps": [{"app_id": "bot"}, {"app_id": "team-bot", "persistent_agent_id": "team"}]}
     client = (
@@ -1092,13 +1096,20 @@ async def test_cron_job_list_scopes_identity_by_edition(monkeypatch, edition, us
         if browser in {"verified", "iam-username"} else WebSocketAgentServerClient()
     )
     _bind(channel=channel, agent_client=client, channel_manager=manager, cron_controller=controller)
-    origin_host = "localhost" if browser == "local" else "remote.example.invalid"
+    remote_host = "remote.example.invalid"
+    local_origin = browser in {"local", "wildcard-local", "wildcard-nonlocal", "local-forwarded", "local-http"}
+    origin_host = "localhost" if local_origin else remote_host
+    request_headers = {"origin": f"http://{origin_host}:5173"}
+    if browser == "local-forwarded":
+        request_headers["X-Forwarded-For"] = remote_host
     ws = SimpleNamespace(
         _web_routing=routing,
         remote_address=("localhost", 12000),
-        request_headers={"origin": f"http://{origin_host}:5173"},
+        request_headers=request_headers,
         authenticated_user_id=user_id if browser == "verified" else "iam-id",
     )
+    if browser != "local-http":
+        ws.local_address = (remote_host if browser == "wildcard-nonlocal" else "localhost", 5173)
     await channel.methods["cron.job.list"](ws, "list-cron", params, None, user_id)
     response = channel.responses[-1]
     assert response["ok"] is True

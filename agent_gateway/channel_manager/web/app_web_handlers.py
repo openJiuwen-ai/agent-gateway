@@ -5171,7 +5171,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         peer = getattr(ws, "remote_address", None)
         if not is_legacy_shared_directory_client(client) or not peer or peer[0] not in loopback:
             return False
-        if channel.config.host not in loopback:
+        local_address = getattr(ws, "local_address", None)
+        # HTTP outbounds do not carry the accepted socket address.
+        local_host = local_address[0] if local_address else channel.config.host
+        if local_host not in loopback:
             return False
         headers = getattr(ws, "request_headers", None)
         if any(get_header_value(headers, key) for key in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")):

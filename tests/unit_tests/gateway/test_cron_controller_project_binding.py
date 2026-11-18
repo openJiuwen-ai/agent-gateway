@@ -146,6 +146,23 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("user_id", "expected"), [(" alice ", ["alice-im"]), (" ", [])])
+async def test_list_jobs_normalizes_personal_app_user_filter(user_id, expected) -> None:
+    jobs = [
+        _listed_job("alice-im", project_id="", user_id="alice", group_id="chat", bot_id="personal"),
+        _listed_job("bob-im", project_id="", user_id="bob", group_id="chat", bot_id="personal"),
+    ]
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=jobs)),
+        scheduler=_FakeScheduler(),
+    )
+
+    listed = await controller.list_jobs(user_id=user_id, personal_app_ids={"personal"})
+
+    assert [job["id"] for job in listed] == expected
+
+
+@pytest.mark.asyncio
 async def test_list_jobs_none_user_id_skips_user_filter() -> None:
     """显式 user_id=None 才跳过用户维；默认值必须是 ""，不能是 None。
 
