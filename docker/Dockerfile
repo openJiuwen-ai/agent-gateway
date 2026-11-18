@@ -22,12 +22,13 @@ WORKDIR /app/agent-gateway
 COPY --chown=1000:0 . /app/agent-gateway/
 RUN chgrp -R 0 /app/agent-gateway && chmod -R g+rwX /app/agent-gateway
 
-# 上游 git 依赖由流水线构建参数安装，从 pyproject 移除对应声明避免重复解析：
-#   旧格式（URL 直接写进 dependencies）+ [tool.uv.sources] 新格式（uv 本地开发钉
-#   rev 用；不删会与流水线参数钉的 rev 构成同包双 URL 冲突，uv 直接解析失败）。
-#   sources 行匹配对缩进/引号/大括号内空格容忍；末尾断言兜底——任何残留
-#   git source（如 [tool.uv.sources.<pkg>] 子表写法）让构建显式失败而非静默漏删
-RUN sed -i '/"openjiuwen @ git+/d' pyproject.toml \
+# 上游依赖由流水线构建参数安装，从 pyproject 移除对应声明避免重复解析：
+#   dependencies 可能是旧 git URL（"openjiuwen @ git+..."）或版本区间
+#   （"openjiuwen>=0.1.20.post3"）；只删 git 行会漏掉区间约束，与流水线
+#   钉的 commit（包版本常仍为 0.1.20）打架导致 uv ResolutionImpossible。
+#   因此 openjiuwen 不论有无 git 都删；[tool.uv.sources] git 行同样清掉。
+#   末尾断言兜底——任何残留 git source 让构建显式失败而非静默漏删。
+RUN sed -i -E '/^[[:space:]]*"openjiuwen([>=<!~=]| @ |")/d' pyproject.toml \
     && sed -i '/"e2a @ git+/d' pyproject.toml \
     && sed -i '/"openjiuwen-runtime-foundation",/d' pyproject.toml \
     && sed -i -E '/^[[:space:]]*"?(openjiuwen|openjiuwen-runtime-foundation|e2a)"?[[:space:]]*=[[:space:]]*\{[[:space:]]*git[[:space:]]*=/d' pyproject.toml \
