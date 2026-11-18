@@ -92,51 +92,6 @@ models:
   # 缺席的键会被 _deep_merge 从用户配置里删除，而写成映射/列表又会连同
   # 用户手工添加的条目一起被覆盖。留空值即"未配置"，用户填什么保留什么。
   agentos:
-  video:
-    model_client_config:
-      api_base: ${VIDEO_API_BASE}
-      api_key: ${VIDEO_API_KEY}
-      model_name: ${VIDEO_MODEL_NAME}
-      client_provider: ${VIDEO_PROVIDER}
-        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
-      timeout: 1800
-      verify_ssl: true
-    model_config_obj: {}
-  audio:
-    model_client_config:
-      api_base: ${AUDIO_API_BASE}
-      api_key: ${AUDIO_API_KEY}
-      model_name: ${AUDIO_MODEL_NAME}
-      client_provider: ${AUDIO_PROVIDER}
-        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
-  vision:
-    model_client_config:
-      api_base: ${VISION_API_BASE}
-      api_key: ${VISION_API_KEY}
-      model_name: ${VISION_MODEL_NAME}
-      client_provider: ${VISION_PROVIDER}
-        # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
-  image_gen:
-    model_client_config:
-      api_base: ${IMAGE_GEN_API_BASE}
-      api_key: ${IMAGE_GEN_API_KEY}
-      model_name: ${IMAGE_GEN_MODEL_NAME}
-      client_provider: ${IMAGE_GEN_PROVIDER}
-        # 多模态生成(生图)走 DashScope SDK 必须带 endpoint_profile=dashscope，
-        # 否则 OpenAIModelClient 拒绝该操作。client_provider 仍为 OpenAI。
-      endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。
@@ -685,53 +640,6 @@ hooks:
   #         command: "echo 'agent stopping'"
 
 modes:
-  # 一级模式 agent / code / team
-  agent:
-    # plan / fast 已合并为单一 agent 模式：记忆固定被动（is_proactive 开关已下线）。
-    memory:
-      enabled: true
-    rails:
-    tools:
-  code:
-    # 记忆开关 — 控制 CodingMemoryRail 和 ProjectMemoryRail 加载
-    # 关闭后，coding_memory_read/write/edit 工具不可用，项目记忆文件不自动加载
-    memory:
-      enabled: true
-
-    # SDD 开关 — 控制 DesignRail 加载（wave1：需求分析与设计阶段）
-    # 开启后对 Agent 说"需求分析"即进入 SDD 流程，按阶段产出 RAS/RDS
-    # 关闭（默认）时 Agent 行为与未引入 SDD 旧版本完全一致（NFR-001）
-    sdd:
-      enabled: false
-
-    # 动态 Rails — 列表中出现的 = 启用；不出现的 = 不启用
-    # 固定 Rails（以下 Rails 已在代码中固定挂载，无需在此配置）：
-    #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
-    #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
-    #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
-    # 注意：ProjectMemoryRail, CodingMemoryRail 受 memory.enabled 开关控制，
-    #       开关关闭时不加载，开关开启时固定挂载。
-    #       TTSERail 受 react.ttse.enabled 控制（与 agent 模式同一开关），
-    #       开启后挂载 FACT/TIP 双轨自演进；不要放进下方动态 rails 列表。
-    rails:
-    - SkillUseRail
-    - WorktreeRail
-
-    # 动态 Tools — 列表中出现的 = 启用
-    # send_file_to_user 由运行时 _update_session_tools 注册，不在此配置
-    # coding_memory_read/write/edit 由 CodingMemoryRail 在 subagent 内部注册，不在此配置
-    tools:
-    - web_free_search
-    - web_fetch_webpage
-    - web_paid_search
-    - user_todos
-    - skill_toolkit
-    - skill_retrieval
-
-    embedding_config:
-      model_name:
-      base_url:
-      api_key:
   team:
     jiuwen_team:
       team_name: jiuwen_team

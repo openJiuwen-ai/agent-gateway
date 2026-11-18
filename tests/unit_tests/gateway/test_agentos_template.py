@@ -77,14 +77,16 @@ def test_gateway_templates_drop_memory_section() -> None:
     assert "memory" not in AGENTOS
 
 
-def test_gateway_template_drops_evolution_auto_save() -> None:
-    evolution = BASE["react"]["evolution"]
-    assert "auto_save" not in evolution
-    assert "skill_evolution" not in evolution
+def test_gateway_template_drops_as_only_react_keys() -> None:
+    assert BASE["react"] == {"model_name": "${MODEL_NAME}"}
+    assert "react" not in AGENTOS
 
 
-def test_gateway_template_drops_context_engine_enabled() -> None:
-    assert "enabled" not in BASE["react"]["context_engine_config"]
+def test_gateway_templates_drop_as_only_models() -> None:
+    for template in (BASE, AGENTOS):
+        assert {
+            "video", "audio", "vision", "image_gen", "embed",
+        }.isdisjoint(template["models"])
 
 
 def test_gateway_templates_drop_preferred_language() -> None:
@@ -119,3 +121,10 @@ def test_gateway_templates_drop_enterprise_confirmed_flags() -> None:
 
 def test_gateway_template_drops_permissions() -> None:
     assert "permissions" not in BASE
+
+
+def test_gateway_templates_drop_as_only_modes() -> None:
+    for template in (BASE, AGENTOS):
+        assert set(template["modes"]) == {"team"}
+        assert "agent" not in template["modes"]
+        assert "code" not in template["modes"]
