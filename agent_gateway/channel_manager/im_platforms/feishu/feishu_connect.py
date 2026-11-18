@@ -3664,6 +3664,10 @@ class FeishuChannel(BaseChannel):
                     return
                 if disposition is not InboundDisposition.UNCLAIMED:
                     return
+            # A bound app must never enter personal command handling, even if
+            # its employee route is temporarily unavailable or unclaimed.
+            if self.config.agent_id:
+                return
 
             # 消息去重检查
             if self._is_duplicate_message(message.message_id):

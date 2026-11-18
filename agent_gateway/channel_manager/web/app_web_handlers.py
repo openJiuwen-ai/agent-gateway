@@ -23,6 +23,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 try:
     import psutil as _psutil
@@ -72,6 +73,7 @@ from agent_gateway.common.paths import (
     get_env_file,
     get_root_dir,
 )
+from agent_gateway.common.security.ws_origin import get_header_value
 from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
@@ -4551,7 +4553,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             raw = cm.get_conf("feishu")
-            conf = _normalize_feishu_conf(raw)
+            conf = personal_channel_config("feishu", raw, _normalize_feishu_conf)
             apps = conf.get("apps", [])
             app_names = [a.get("name", "?") for a in apps]
             logger.debug(
@@ -4591,6 +4593,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             saved = await save_persistent_apps(cm, "feishu", params)
             await channel.send_response(ws, req_id, ok=True, payload={"config": saved})
+        except BindingError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code=e.code)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.feishu.set_conf] 异常, req_id=%s: %s", req_id, e)
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
@@ -4737,7 +4743,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            conf = cm.get_conf("dingtalk")
+            raw = cm.get_conf("dingtalk")
+            conf = personal_channel_config("dingtalk", raw, _normalize_feishu_conf)
+            if "apps" not in raw and conf["apps"]:
+                conf = {**conf, **conf["apps"][0]}
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.dingtalk.get_conf] %s", e)
@@ -4764,23 +4773,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            if "apps" in params:
-                saved = await save_persistent_apps(cm, "dingtalk", params)
-                await channel.send_response(ws, req_id, ok=True, payload={"config": saved})
-                return
-            await cm.set_conf("dingtalk", params)
-            conf = cm.get_conf("dingtalk")
-            should_clear_agent_config_cache = False
-            try:
-                update_channel_in_config("dingtalk", conf)
-                should_clear_agent_config_cache = True
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[channel.dingtalk.set_conf] 写回 config.yaml 失败: %s", e)
-            try:
-                await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
-            finally:
-                if should_clear_agent_config_cache:
-                    _schedule_clear_agent_config_cache("channel.dingtalk.set_conf")
+            saved = await save_persistent_apps(cm, "dingtalk", params)
+            await channel.send_response(ws, req_id, ok=True, payload={"config": saved})
+        except BindingError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code=e.code)
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:  # noqa: BLE001
@@ -5208,6 +5204,37 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return None
         return job
 
+    def _is_local_cron_browser(ws, client) -> bool:
+        from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        peer = getattr(ws, "remote_address", None)
+        if not is_legacy_shared_directory_client(client) or not peer or peer[0] not in loopback:
+            return False
+        if channel.config.host not in loopback:
+            return False
+        headers = getattr(ws, "request_headers", None)
+        if any(get_header_value(headers, key) for key in ("Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP")):
+            return False
+        try:
+            origin = urlsplit(get_header_value(headers, "Origin") or "")
+            return origin.scheme in {"http", "https"} and origin.hostname in loopback
+        except ValueError:
+            return False
+
+    def _personal_cron_app_ids() -> set[str]:
+        cm = _resolve(channel_manager)
+        if cm is None:
+            return set()
+        app_ids = set()
+        for platform, id_key in (("feishu", "app_id"), ("dingtalk", "client_id")):
+            view = personal_channel_config(platform, cm.get_conf(platform), _normalize_feishu_conf)
+            for app in view["apps"]:
+                app_id = str(_resolve_env_vars(app.get(id_key)) or "").strip()
+                if app_id:
+                    app_ids.add(app_id)
+        return app_ids
+
     async def _cron_job_list(ws, req_id, params, session_id, user_id=None):
         cc = _get_cron()
         if cc is None:
@@ -5216,15 +5243,33 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         raw = params if isinstance(params, dict) else {}
         # 总表和侧边栏不带项目编号，要这个人在每个项目下的任务。
         # 显式带了 project_id（含空串）才按那一个项目收窄。
+        identity = _cron_owner_ids(user_id, raw)
+        uid_str = str(user_id or "").strip()
+        if not _is_enterprise_edition():
+            identity["user_id"] = uid_str
+            # Keep the connection scope for personal listings on this release branch.
+            routing = getattr(ws, "_web_routing", None)
+            if isinstance(routing, dict):
+                for key in ("group_id", "bot_id"):
+                    routed = str(routing.get(key) or "").strip()
+                    if routed:
+                        identity[key] = routed
+            if all(key not in raw and not identity[key] for key in ("group_id", "bot_id")):
+                client = _resolve(agent_client)
+                local_browser = _is_local_cron_browser(ws, client)
+                verified_owner = (
+                    getattr(client, "auth_enabled", False) is True
+                    and getattr(ws, "authenticated_user_id", None) == uid_str
+                )
+                if local_browser or (uid_str and verified_owner):
+                    app_ids = _personal_cron_app_ids()
+                    if app_ids:
+                        identity["personal_app_ids"] = app_ids
         jobs = await cc.list_jobs(
             project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-            user_id=str(user_id or ""),
-            group_id=str(raw.get("group_id") or ""),
-            bot_id=str(raw.get("bot_id") or ""),
+            **identity,
         )
         # 连接上带了用户时再对一下，避免列表里混进别的用户。
-        # 没带用户时，list_jobs 按空身份筛（个人版旧任务三格都是空）。
-        uid_str = str(user_id or "").strip()
         if uid_str:
             jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
@@ -6018,7 +6063,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # Deprecated aliases for clients upgrading from the pre-split probe API.
     channel.register_method("heartbeat.get_conf", _health_check_get_conf)
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
-    from agent_gateway.channel_manager.web.persistent_bindings import register_persistent_bindings
+    from agent_gateway.channel_manager.web.persistent_bindings import (
+        BindingError,
+        personal_channel_config,
+        register_persistent_bindings,
+    )
 
     save_persistent_apps = register_persistent_bindings(
         channel, lambda: _resolve(channel_manager), lambda: _resolve(agent_client),

@@ -28,6 +28,7 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from agent_gateway.common.config_panel import config_set_handlers as _gw_config_set_handlers
+from agent_gateway.cron.controller import CronController
 from agent_gateway.heartbeat import HeartbeatServiceUnavailableError
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.keys import AgentRef, RoutingKey
@@ -376,6 +377,64 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
     )
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "A4P_SESSION_IDENTITY_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "id_key", "legacy"),
+    [("feishu", "app_id", False), ("dingtalk", "client_id", False), ("dingtalk", "client_id", True)],
+)
+async def test_personal_channel_rpcs_hide_employee_apps_and_reject_conflicts(channel_store, platform, id_key, legacy):
+    cm = FakeChannelManager()
+    team_app = {id_key: "team", "persistent_agent_id": "mate", "is_default": True}
+    personal_app = {id_key: "personal"}
+    mixed = {"apps": [team_app, personal_app]}
+    await cm.set_conf(platform, mixed)
+    channel_store[platform] = mixed
+    channel = _bind(channel_manager=cm)
+    get_conf = channel.methods[f"channel.{platform}.get_conf"]
+    set_conf = channel.methods[f"channel.{platform}.set_conf"]
+
+    await get_conf(object(), "get-personal", {}, "session")
+    assert [app[id_key] for app in channel.responses[-1]["payload"]["config"]["apps"]] == ["personal"]
+
+    conflict = {id_key: "team"}
+    await set_conf(object(), "conflict", conflict if legacy else {"apps": [conflict]}, "session")
+    assert channel.responses[-1]["code"] == "CHANNEL_BOUND_TO_EMPLOYEE"
+    assert channel_store[platform] == mixed
+
+    await set_conf(object(), "remove-personal", {"apps": []}, "session")
+    assert channel.responses[-1]["payload"]["config"]["apps"] == []
+    assert [app[id_key] for app in channel_store[platform]["apps"]] == ["team"]
+    assert not channel_store[platform]["apps"][0]["is_default"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params", [{}, {"enabled": False}, {"client_id": None}, {"client_id": ""}, {"client_id": "  "}, {"client_id": 123}],
+)
+async def test_legacy_dingtalk_save_requires_client_id_without_clearing_config(channel_store, params):
+    config = {
+        "apps": [
+            {"client_id": "personal", "enabled": True},
+            {"client_id": "team", "persistent_agent_id": "mate"},
+        ],
+        "last_sender_id": "sender",
+        "last_conversation_id": "conversation",
+        "last_conversation_type": "2",
+    }
+    cm = FakeChannelManager()
+    await cm.set_conf("dingtalk", config)
+    cm.set_conf = AsyncMock(wraps=cm.set_conf)
+    channel_store["dingtalk"] = config
+    channel = _bind(channel_manager=cm)
+
+    await channel.methods["channel.dingtalk.set_conf"](object(), "invalid-personal", params, "session")
+
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+    assert channel_store["dingtalk"] == config
+    assert cm.get_conf("dingtalk") == config
+    cm.set_conf.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -896,6 +955,86 @@ async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch,
     assert response["ok"] is False
     assert response["code"] == ("NOT_FOUND" if failure == "server-error" else "SERVICE_UNAVAILABLE")
     assert response["error"] == ("session not found" if failure == "server-error" else "disconnected")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("edition", "user_id", "params", "routing", "browser", "expected"),
+    [
+        ("personal", None, {}, None, "local", ["web", "feishu", "feishu-to-web", "other-project"]),
+        ("personal", None, {}, None, "remote", ["web", "other-project"]),
+        ("personal", None, {"user_id": "ou_sender"}, None, "remote", ["web", "other-project"]),
+        ("personal", None, {"project_id": "default"}, None, "local", ["web", "feishu", "feishu-to-web"]),
+        ("personal", None, {"project_id": "project-two"}, None, "local", ["other-project"]),
+        ("personal", None, {"group_id": "", "bot_id": ""}, None, "local", ["web", "other-project"]),
+        ("personal", "ou_sender", {}, None, "local", ["feishu", "feishu-to-web", "sender-web"]),
+        ("personal", "ou_sender", {}, None, "remote", ["sender-web"]),
+        ("personal", "ou_sender", {}, None, "verified", ["feishu", "feishu-to-web", "sender-web"]),
+        ("personal", "ou_sender", {}, None, "iam-username", ["sender-web"]),
+        ("personal", "ou_sender", {"bot_id": ""}, None, "local", ["sender-web"]),
+        ("enterprise", None, {}, None, "remote", ["web", "other-project"]),
+        ("enterprise", "ou_sender", {}, None, "remote", ["sender-web"]),
+        ("enterprise", "other-user", {"user_id": "ou_sender", "group_id": "oc_chat", "bot_id": "bot"}, None, "remote", []),
+        ("enterprise", "ou_sender", {"group_id": "wrong-group", "bot_id": "bot"}, None, "remote", []),
+        ("enterprise", "ou_sender", {"group_id": "oc_chat", "bot_id": "wrong-bot"}, None, "remote", []),
+        (
+            "enterprise", "ou_sender", {"group_id": "oc_chat", "bot_id": "bot"}, None, "remote",
+            ["feishu", "feishu-to-web"],
+        ),
+        ("personal", "ou_sender", {}, {"group_id": "wrong-group", "bot_id": "bot"}, "local", []),
+    ],
+)
+async def test_cron_job_list_scopes_identity_by_edition(monkeypatch, edition, user_id, params, routing, browser, expected):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
+
+    def job(job_id, project_id, user="", group="", bot="", *, targets="web"):
+        fields = {
+            "id": job_id, "project_id": project_id, "user_id": user,
+            "group_id": group, "bot_id": bot, "targets": targets,
+        }
+        return SimpleNamespace(**fields, to_dict=lambda: dict(fields))
+
+    rows = [
+        job("web", "default"),
+        job("feishu", "default", "ou_sender", "oc_chat", "bot", targets="feishu"),
+        job("feishu-to-web", "default", "ou_sender", "oc_chat", "bot"),
+        job("sender-web", "default", "ou_sender"),
+        job("employee", "default", "other-user", "oc_chat", "team-bot"),
+        job("sender-employee", "default", "ou_sender", "oc_chat", "team-bot"),
+        job("other-project", "project-two"),
+        job("hidden-feishu", "hidden", "ou_sender", "oc_chat", "bot"),
+    ]
+
+    async def project_allowed(project_id, *_):
+        return project_id != "hidden"
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=rows)),
+        scheduler=SimpleNamespace(
+            project_execution_allowed=project_allowed,
+            collect_active_exec_sessions=AsyncMock(return_value={}),
+        ),
+    )
+    channel = FakeWebChannel()
+    channel.config = SimpleNamespace(host="localhost")
+    manager = FakeChannelManager()
+    manager.configs["feishu"] = {"apps": [{"app_id": "bot"}, {"app_id": "team-bot", "persistent_agent_id": "team"}]}
+    client = (
+        SimpleNamespace(auth_enabled=True)
+        if browser in {"verified", "iam-username"} else WebSocketAgentServerClient()
+    )
+    _bind(channel=channel, agent_client=client, channel_manager=manager, cron_controller=controller)
+    origin_host = "localhost" if browser == "local" else "remote.example.invalid"
+    ws = SimpleNamespace(
+        _web_routing=routing,
+        remote_address=("localhost", 12000),
+        request_headers={"origin": f"http://{origin_host}:5173"},
+        authenticated_user_id=user_id if browser == "verified" else "iam-id",
+    )
+    await channel.methods["cron.job.list"](ws, "list-cron", params, None, user_id)
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert [item["id"] for item in response["payload"]["jobs"]] == expected
 
 
 @pytest.mark.asyncio
@@ -1621,7 +1760,10 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
     task = asyncio.create_task(channel.methods[method](object(), "req-save", params, "sess-1"))
     try:
         await asyncio.wait_for(agent_client.reload_started.wait(), timeout=0.5)
-        assert channel_store.get("feishu") if method == "channel.feishu.set_conf" else persisted
+        if method.startswith("channel."):
+            assert channel_store.get(method.split(".")[1])
+        else:
+            assert persisted
         assert channel.responses[-1]["id"] == "req-save"
         assert channel.responses[-1]["ok"] is True
     finally:

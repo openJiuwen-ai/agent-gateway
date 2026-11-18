@@ -482,6 +482,12 @@ class ChannelManager(ABC):
                 return ch
         return None
 
+    def _personal_feishu_channels(self) -> list["BaseChannel"]:
+        return [
+            channel for channel in self.get_channels_by_id("feishu")
+            if not str(getattr(getattr(channel, "config", None), "agent_id", "") or "").strip()
+        ]
+
     def mark_channel_restart_pending(self, channel_id: str) -> None:
         """请求在下次 set_conf / set_config 触发配置应用时，无论配置快照是否变化都重启该 channel。"""
         if channel_id:
@@ -894,7 +900,7 @@ class ChannelManager(ABC):
                             )
                         continue
 
-                # ── 飞书 cron 推送 / 心跳 relay fan-out：同 channel_id 全部 app 各自投递（各用各的 last_*）。
+                # ── 飞书 cron 推送 / 心跳 relay fan-out：个人渠道 app 各自投递（各用各的 last_*）。
                 # 仅普通飞书（channel_id == "feishu"）：多 app 共享同一 channel_id，精确路由只到创建 app
                 # （cron-push 的 app_id）或第一个实例（心跳 relay 无 app_id → resolve_app_id='default'），
                 # 其余 app 收不到。fan-out 前清掉 metadata 里创建 app 的 feishu_chat_id，使各 app 走
@@ -912,7 +918,7 @@ class ChannelManager(ABC):
                     )
                 )
                 if _is_feishu_fanout:
-                    targets = self.get_channels_by_id(msg.channel_id)
+                    targets = self._personal_feishu_channels()
                     if not targets:
                         delivery_reason = "no_channel"
                         logger.warning(
@@ -957,8 +963,19 @@ class ChannelManager(ABC):
                             "[ChannelManager] 精确路由 ChannelKey(%s, %s) -> %s",
                             msg.channel_id, app_id, getattr(channel, "channel_id", type(channel).__name__),
                         )
-                # Multiple DingTalk apps share the channel ID; only the exact key is safe.
-                if channel is None and msg.channel_id != "dingtalk":
+                if channel is None and msg.channel_id == "feishu":
+                    personal = self._personal_feishu_channels()
+                    default_id = next((
+                        app.get("app_id")
+                        for app in self.get_conf("feishu").get("apps", [])
+                        if app.get("is_default")
+                    ), None)
+                    channel = next(
+                        (app for app in personal if self._resolve_app_id(app) == default_id),
+                        personal[0] if personal else None,
+                    )
+                elif channel is None and msg.channel_id != "dingtalk":
+                    # Multiple DingTalk apps share the channel ID; only the exact key is safe.
                     channel = self._get_channel_by_id(msg.channel_id)
                 # 出站派发节点：定位"队列堆积/前端无输出"时，开启 DEBUG 可确认 chunk 是否
                 # 被消费、命中哪个 channel 实例（tui 走 GatewayServer、web 走 WebChannel）。
