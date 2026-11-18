@@ -332,7 +332,10 @@ class CronController:
             wanted_project = CronController._normalize_project_filter(project_id)
             if current_project != wanted_project:
                 return False
-        if personal_app_ids and (not user_id or normalize_tenant_id(getattr(job, "user_id", None)) == user_id):
+        if personal_app_ids and (
+            not user_id
+            or normalize_tenant_id(getattr(job, "user_id", None)) == normalize_tenant_id(user_id)
+        ):
             source_id = normalize_tenant_id(getattr(job, "bot_id", None)) or normalize_tenant_id(
                 getattr(job, "app_id", None)
             )
