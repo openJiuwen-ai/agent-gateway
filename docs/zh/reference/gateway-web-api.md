@@ -8,7 +8,7 @@
 
 ## 目录与覆盖范围
 
-**本文档覆盖**：Web 前端（浏览器 ⇄ `/ws`、`/ws/git` 与同端口 HTTP）可触达的主要接口——489 个 WS 方法（其中 7 个企业版专用）、13 组 HTTP 路由、50 个推送事件类型；含参数校验、错误码、权限与流式契约。
+**本文档覆盖**：Web 前端（浏览器 ⇄ `/ws`、`/ws/git` 与同端口 HTTP）可触达的主要接口——495 个 WS 方法（其中 7 个企业版专用）、13 组 HTTP 路由、50 个推送事件类型；含参数校验、错误码、权限与流式契约。
 
 **明确不在范围内**（避免误判为遗漏）：
 
@@ -244,7 +244,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 | AgentServer 返回失败 | `error=payload.error 或 "<method> failed"`；`code=payload.code` 或该方法配置的 `default_error_code`（缺省 `BAD_REQUEST`，如 session.create 用 `SESSION_CREATE_FAILED`） |
 | AgentServer 返回成功 | `ok:true, payload` 原样透传 |
 
-`preserve_error_payload=True` 的方法（Git 域、harness.import/export）失败时 payload 整体回写，供前端读取结构化错误明细。
+`preserve_error_payload=True` 的方法（Git 域、harness.import/export、multimodal.* 六个）失败时 payload 整体回写，供前端读取结构化错误明细（multimodal 的 `MM_*` 错误码与 `field_errors`/`affected_tools` 明细即依赖此机制，§10.1）。
 
 ### 3.2.1 网关回复的透传分级
 
@@ -252,12 +252,12 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 | 档 | 载体 | 行为 |
 |----|------|------|
-| 完全透传 | 白名单转发 res（**含失败**——payload 整体保留，另把 error/message/code 提取到帧顶层，`web_connect.py:1166-1190`）；E2A 代理成功 res；`preserve_error_payload=True` 域（Git、harness.import/export）的失败 res；全量白名单事件（§3.3 名单） | payload 原样，仅自动补 `session_id`/`request_id` |
+| 完全透传 | 白名单转发 res（**含失败**——payload 整体保留，另把 error/message/code 提取到帧顶层，`web_connect.py:1166-1190`）；E2A 代理成功 res；`preserve_error_payload=True` 域（Git、harness.import/export、multimodal.*）的失败 res；全量白名单事件（§3.3 名单） | payload 原样，仅自动补 `session_id`/`request_id` |
 | 字段提取 | E2A 代理失败 res——只取 `error`（回退 `"<method> failed"`）与 `code`（回退 default_error_code），**其余失败 payload 字段丢弃**；白名单 res 失败的顶层 error 链 `payload.error` → `payload.message` | 外壳网关构造 |
 | 投影改造 | 裁剪档事件（`chat.delta`/`reasoning`/`final` 压成 `{session_id, content}`+白名单键，§3.3） | 内容经改造 |
 | 网关合成 | ack shell；本地 handler（cron/heartbeat/updater/config/task.asr/path）；帧级校验错误与 `INTERNAL_ERROR` 兜底；传输层错误；合成事件（cancel 的 `interrupt_result`+`processing_status`、cancelled_tools 转 `tool_result`、`chat.error` 投影 `AGENT_SERVER_*` 族、`connection.ack`、cron 占位推送） | 与 AgentServer 无关 |
 
-> ⚠️ 前端实践：需要读失败响应的**结构化字段**（如 Git 的 `detail`、装备安装的 `pending_connectors`）时，注意区分两类方法——Git/harness 走 preserve_error_payload（payload 在），其余 E2A 代理域失败只有顶层 `error`/`code`。
+> ⚠️ 前端实践：需要读失败响应的**结构化字段**（如 Git 的 `detail`、装备安装的 `pending_connectors`、multimodal 的 `MM_CONFIRM_REQUIRED.affected_tools`）时，注意区分两类方法——Git/harness/multimodal 走 preserve_error_payload（payload 在），其余 E2A 代理域失败只有顶层 `error`/`code`。
 
 ### 3.3 事件 payload 投影规则
 
@@ -1778,7 +1778,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.1 配置与模型
 
-**分发契约（A4g/A5）**：`config.get/set/save_all/validate_model`、`models.*`、`model_groups.*`、`session.selection.set` 经 `_register_config_proxy` 注册——**个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地**；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler（`app_web_handlers.py:5714-5759`）。`config.moa_status` 与 `models.refresh_status` **恒 E2A**（无本地 handler）。`vendors.*`、`openai_account.*`、`connection.status`、`locale.*` 为网关本地 handler。转发前删客户端传入的 `_auth_session` 键、改注入连接登录会话（`:5735-5746`）。企业版写保护（仅 HTTP 入口）：`config.set/save_all`、`models.replace_all/save/remove/set_active` 等 → `FORBIDDEN "企业版配置由管理面统一下发"`。
+**分发契约（A4g/A5）**：`config.get/set/save_all/validate_model`、`models.*`、`model_groups.*`、`multimodal.*`（6 个，§10.1）、`session.selection.set` 经 `_register_config_proxy` 注册——**个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地**；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler（`app_web_handlers.py:5714-5759`）。`config.moa_status` 与 `models.refresh_status` **恒 E2A**（无本地 handler）。`vendors.*`、`openai_account.*`、`connection.status`、`locale.*` 为网关本地 handler。转发前删客户端传入的 `_auth_session` 键、改注入连接登录会话（`:5735-5746`）。企业版写保护（WS 与 HTTP 双入口共用 `invoke.is_enterprise_write_forbidden` 统一 guard，`invoke.py:79`）：`config.set/save_all`、`models.replace_all/save/remove/set_active`、`multimodal.models.upsert/delete`、`multimodal.tools.update`、`multimodal.config.apply` → `FORBIDDEN "企业版配置由管理面统一下发"`（multimodal 读接口 list/get 放行）。
 
 #### config.get
 
@@ -1850,6 +1850,24 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 - **upsert**：`group`（dict；`model_group_id` 缺省生成 `mgp_`、route_id 缺省 `rte_`）；**enabled 组须含至少一条 enabled 路由**否则 `MODEL_GROUP_INVALID`；候选整体校验。
 - **delete**：`model_group_id` 必填；引用检查同 models.delete。
 - 错误外壳：`ModelSelectionError` → `error+code+payload`；其余 `BAD_REQUEST`。
+
+#### multimodal.models.list / get / upsert / delete、multimodal.tools.update、multimodal.config.apply（多模态模型目录，E2A 代理）
+
+> **网关处理**：**E2A 代理**——_register_config_proxy(MULTIMODAL_*，`app_web_handlers.py:5789-5796`)，**preserve_error_payload=True**：失败时 AgentServer 的 `MM_*` 结构化错误 payload 整体回写（`MM_CONFIRM_REQUIRED` 的 `affected_tools` → 前端列出受影响工具、确认后带 `confirmed_tools` 重发的闭环依赖此机制）；转发前删客户端 _auth_session 键、注入连接登录会话。企业版写保护：upsert/delete/tools.update/config.apply 四写方法 → `FORBIDDEN`（§10.1 分发契约）；list/get 放行。服务端为 MultimodalConfigAdapter：保存锁串行化写、config_write_lock 落盘，成功后经 on_config_saved 按 `reload_scopes=["multimodal"]` 热重载——写响应的 `applied_without_restart` 即热重载结果，false 时前端以 config.apply 重试。
+- **数据模型**：五项能力 `vision`/`audio`/`video`（理解类 understanding）与 `visual_gen`/`video_gen`（生成类 generation）；模型条目 `{model_id("mm_"+uuid4), display_name, purpose, capabilities, connection{provider, protocol, api_base, api_key, model_name(+理解类 endpoint_profile, vendor_key, plan, context_window_tokens)}}`；工具绑定 `tools[<capability>] = {model_id|null, enabled}`。api_key 服务端加密落盘；list 快照只回 `api_key_configured` 布尔，get 下发明文（与 models.get 同理）。
+
+| 方法 | 参数 | 行为 |
+|------|------|------|
+| `multimodal.models.list` | 无 | 公共快照 `{schema_version:1, models:[{model_id, display_name, purpose, capabilities, references, provider, protocol, api_base, model_name, api_key_configured}], tools:{<capability>:{model_id, enabled}}}` |
+| `multimodal.models.get` | `model_id`（必填非空 str） | `{model:{完整可编辑模型（含 connection.api_key 明文，无 legacy_options）}, references:[capability]}`；不存在 → `MM_MODEL_NOT_FOUND` |
+| `multimodal.models.upsert` | `model`（dict）、`mode`（`create\|update`）、`confirmed_tools?`（list） | 校验失败 `MM_VALIDATION_FAILED`+`field_errors`；update 不存在 `MM_MODEL_NOT_FOUND`；create 撞不同内容的同 ID `MM_MODEL_ID_CONFLICT`；能力收缩影响已绑工具且 `confirmed_tools` ≠ 受影响集合 → `MM_CONFIRM_REQUIRED`+`affected_tools`；新勾选能力自动接管未绑定工具并开启 |
+| `multimodal.models.delete` | `model_id`、`confirmed_tools?` | 被绑工具须确认（`MM_CONFIRM_REQUIRED`+`affected_tools`）；确认后级联重绑：绑定工具切换到其余匹配模型（目录顺序首个），无匹配则清空选择并关闭 |
+| `multimodal.tools.update` | `tool_id`（五能力之一）+ `model_id` / `enabled` 至少其一 | `model_id` 须存在（`MM_MODEL_NOT_FOUND`）且具备该能力（`MM_CAPABILITY_MISMATCH`）；`enabled:true` 须已绑模型（`MM_MODEL_REQUIRED`） |
+| `multimodal.config.apply` | 无 | 重放已落盘配置（"已保存，应用失败"后的重试入口），不改动目录内容 |
+
+- **写响应统一**：`{saved:true, changed, changed_tools:[capability], snapshot:公共快照, applied_without_restart:bool}`（config.apply 恒提交）。
+- **错误码**（payload=`{code, message_key:"settingsPanel.multimodal.errors.<code>", ...}`，经 preserve_error_payload 整体透传）：`MM_VALIDATION_FAILED`（参数/表单校验，附 `field_errors`）、`MM_CONFIRM_REQUIRED`（附 `affected_tools`）、`MM_MODEL_NOT_FOUND`、`MM_MODEL_ID_CONFLICT`、`MM_CAPABILITY_MISMATCH`、`MM_MODEL_REQUIRED`、`MM_STORAGE_FAILED`（落盘 OSError）、`MM_CONFIG_READ_FAILED`（目录读取/解密失败）、`MM_UNSUPPORTED_SCHEMA`（schema_version≠1）；E2A 外壳错误（AgentServer 断链/超时）仍为 `SERVICE_UNAVAILABLE`/`AGENT_SERVER_TIMEOUT`。
+- **upsert 表单校验摘要**：`model_id` 须 `mm_`+小写 uuid4；`display_name` strip 后 1–100（UTF-16 码元）；`capabilities` 非空、无重复、须全部匹配 `purpose`；理解类 `protocol` 固定 `openai`（endpoint_profile/vendor_key/plan 可空 str、`context_window_tokens` 正整数默认 262144）；生成类 `vllm-omni` 可免 api_key/model_name、`modelark` 的 api_base 须 `https://ark.*.(volces|bytepluses).com(/api/v3)?`；api_base 须 `http(s)://` 开头；长度上限 provider/protocol/model_name 100、api_base 512、api_key 2048。
 
 #### vendors.list / vendors.fetch_models（网关本地）
 
@@ -4266,14 +4284,14 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 | 处理位置 | 方法 |
 |---------|------|
 | 本地（纯本地逻辑） | `memory.compute`、`hooks.list`、`commands.list`、`path.*`、`updater.*`、`health_check.*`（+heartbeat 别名）、`channel.*` 配置族、`task.asr.transcribe`、`external_cli.*`、`openai_account.*`、`cron.job.*`（9 个）、`project.remove`（Gateway 编排）、`chat.send/interrupt/resume/user_answer/swarmflow_reply`（空 ack shell）、`history.get`（ack shell）、`connection.status`、`topic_starters.*`、`prompt_suggestion.*` |
-| E2A 代理（本地 handler + 转发） | `session.list/create/get_metadata/rename/pin/plan_status/message.continue_queued`、`session.selection.set`、`project.list/info/get_sessions/get_cron_sessions/create/rename/pin/restore/pinned_sessions`、`project.git.*`（11 个）、`media.persist/discard`、`document.persist/formats`、`heartbeat.job.*`（10 个，经 HeartbeatControllerProxy）、`permissions.*`（tools/rules/approval_overrides/owner_scopes）、`a4p.*`（6 个，含 authorization.pending）、`harness.*`、`rsi.*`、`designer.*`（13 个，§10.7）、`workspace.tree/preview/usage/entries.delete`、`file.import_url`、`file.upload_chunk`、`config.get/set/save_all`、`models.*`、`model_groups.*`、`vendors.*`、`channel.get`、`memory.forbidden.get/set`（分流） |
+| E2A 代理（本地 handler + 转发） | `session.list/create/get_metadata/rename/pin/plan_status/message.continue_queued`、`session.selection.set`、`project.list/info/get_sessions/get_cron_sessions/create/rename/pin/restore/pinned_sessions`、`project.git.*`（11 个）、`media.persist/discard`、`document.persist/formats`、`heartbeat.job.*`（10 个，经 HeartbeatControllerProxy）、`permissions.*`（tools/rules/approval_overrides/owner_scopes）、`a4p.*`（6 个，含 authorization.pending）、`harness.*`、`rsi.*`、`designer.*`（13 个，§10.7）、`workspace.tree/preview/usage/entries.delete`、`file.import_url`、`file.upload_chunk`、`config.get/set/save_all`、`models.*`、`model_groups.*`、`multimodal.*`（6 个，§10.1）、`vendors.*`、`channel.get`、`memory.forbidden.get/set`（分流） |
 | 白名单转发（无本地 handler） | `initialize`、`session.switch/fork`、`session.assets.list/register/rename`、`team.*`（templates.list/bindings.list/binding.create/binding.generate/session.bind/delete/snapshot/history.get/mq.publish/list）、`group.*`、`org.snapshot`、`swarmflow.pause/resume/stop`、`command.goal/btw/compact/mcp/workflows`、`chat.*`（上述空 ack 之外的转发主体）、`history.get`（数据主体）、`schedule.*`、`issue.*`、`skills.*`（40+）、`assets.publish.*`、`mcp.*`、`agents.*`、`agent_groups.*`、`agent_templates.*`、`plugins.*`、`plugin_packages.*`、`extensions.*`、`personal_context.*`、`proactive.feedback` |
 
 `/ws/git` 封闭方法集（6 个）：`project.git.diff_watch/diff_files_watch/diff_detail_watch/diff_unwatch/discard_turn_changes/redo_turn_changes`（§7.3）。
 
 > 方法级「透传 / 网关处理 / 不可达」标注与自动化透传验证见**附录 F**。
 
-当前全集 489 个 WS 方法（个人版 482；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
+当前全集 495 个 WS 方法（个人版 488；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`multimodal.*`（6 个，E2A 代理 + preserve_error_payload，§10.1）、`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
 
 ## 附录 B. 事件类型总表（EventType，协议包 `e2a/message.py` + 网关 shim `common/protocol_compat.py`，共 50 个）
 
@@ -4788,7 +4806,7 @@ ws.addEventListener('open', async () => {
 ## 附录 F. 方法级网关处理标注总表（透传 vs 网关处理）
 
 > 依据网关 `upstream/develop@0d50e02b0` 的转发注册表、帧级校验与归一化实现汇总。**全量透传结论由 `st_test/testcases_gateway/test_gateway_forward_passthrough.py`（267 个用例，真实网关进程 + Stub AgentServer）逐方法验证**：纯透传方法按本文档参数约束调用后，E2A 信封 `params` 逐键原样到达 AgentServer。
-> 形态说明：个人版 WS 方法全集 **482**（企业版另注册 team 控制面 7 个 = 489）；`/ws/git` 封闭协议 6 个另计（§7.3）。
+> 形态说明：个人版 WS 方法全集 **488**（企业版另注册 team 控制面 7 个 = 495）；`/ws/git` 封闭协议 6 个另计（§7.3）。
 
 ### F.1 分发类别与网关处理一览（个人版）
 
@@ -4798,11 +4816,11 @@ ws.addEventListener('open', async () => {
 | 网关注册、AgentServer 未实现 | 7 | group.execution.list/get、group.file.rename/delete、group.history.clear（含于纯透传 231）；client.conversations（含于纯透传）；models.refresh_status（E2A 代理） | 网关经 `protocol_compat` 注入枚举，帧级可解析、正常转发（网关侧透传已由 ST 验证）；**AgentServer 当前版本无对应成员与 handler**，南向落通用 fall-through——业务契约未定义 |
 | 派发等同纯透传 | 13 | issue.\*（4）+ schedule.\*（9）——白名单在册但未列入 no-local 名单、无本地 handler | 无（ST 已验证 params 相等） |
 | 白名单 + 网关处理 | 6 | chat.send / chat.interrupt / chat.resume / chat.user_answer / chat.swarmflow_reply / history.get | 见 F.3 逐方法改写 |
-| E2A 代理 | 128 | session.\*、project.\*、project.git.\*、media.\*、document.\*、heartbeat.job.\*、permissions.\*、a4p.\*、harness.\*、rsi.\*、designer.\*（13）、config 面板（config.\*/models.\*/model_groups.\*）、session.selection.set、workspace.\*、file.import_url/upload_chunk 等（注册本地 handler 内构造 E2A 请求） | 见 F.4 网关侧处理点 |
+| E2A 代理 | 134 | session.\*、project.\*、project.git.\*、media.\*、document.\*、heartbeat.job.\*、permissions.\*、a4p.\*、harness.\*、rsi.\*、designer.\*（13）、config 面板（config.\*/models.\*/model_groups.\*）、multimodal.\*（6）、session.selection.set、workspace.\*、file.import_url/upload_chunk 等（注册本地 handler 内构造 E2A 请求） | 见 F.4 网关侧处理点 |
 | 纯本地 | 68 | cron.job.\*（9）、updater.\*（7）、channel.get + 九渠道 get_conf/set_conf（19）+ wechat 登录/解绑（2）、path.\*（5）、external_cli.\*（8）、task.asr.transcribe、memory.compute、memory.forbidden.get/set、hooks.list、commands.list、locale.\*、openai_account.\*（6）、health_check/heartbeat.get_conf/set_conf（4）、connection.status、vendors.\*（2） | 网关内执行不触达 AgentServer；path.select_\*/path.get/set、hooks.list、memory.forbidden、locale 带 legacy 本地 / AgentOS→E2A 分流 |
 | 网关薄包装转发 | 10 | topic_starters.\*（8）、prompt_suggestion.\*（2） | RPC 名改写为 `action` 字段经 `recommendation.job` 转发（注入 auth_session）；与纯本地/纯透传均不同 |
 
-> **逐方法标注**：全量 489 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。
+> **逐方法标注**：全量 495 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。
 | **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
 | 企业版专用 | 7 | team.create / team.get / team.stop / team.member.join / leave / team.members.list / team.quota.get | 个人版从白名单与注册表双双剔除 → `METHOD_NOT_FOUND`；HTTP 路由同步过滤 |
 | /ws/git 封闭协议 | 6 | project.git.diff_watch / diff_files_watch / diff_detail_watch / diff_unwatch / discard_turn_changes / redo_turn_changes | 独立分发：网关 busy 预检 + 转发 + `preserve_error_payload` |
@@ -4846,7 +4864,7 @@ ws.addEventListener('open', async () => {
 
 运行：`python -m pytest st_test/testcases_gateway --no-cov`。
 
-### F.6 逐方法标注总表（全量 489 个，程序化生成）
+### F.6 逐方法标注总表（全量 495 个，程序化生成）
 
 > 由网关转发注册表 + 协议枚举 + 注册方法清单程序化生成（与 ST 同口径）；分类口径与 F.1 一致，要点列为该方法**特有**的处理（通用归一化见 F.2）。`模型 M 属多类时按最高优先级归类：不可达 > 企业专用 > AgentServer 未实现 > 网关处理 > 透传 > local_only > 薄包装 > 纯本地 > E2A 代理`。
 
@@ -5509,6 +5527,12 @@ ws.addEventListener('open', async () => {
 | `models.replace_all` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
 | `models.upsert` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
 | `models.validate` | E2A 代理（本地 handler 构造请求） | A4g：个人版恒 E2A；登录会话 id 随请求注入 |
+| `multimodal.config.apply` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；企业版写保护 FORBIDDEN |
+| `multimodal.models.delete` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；企业版写保护 FORBIDDEN |
+| `multimodal.models.get` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；读接口企业版放行 |
+| `multimodal.models.list` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；读接口企业版放行 |
+| `multimodal.models.upsert` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；企业版写保护 FORBIDDEN |
+| `multimodal.tools.update` | E2A 代理（本地 handler 构造请求） | preserve_error_payload；企业版写保护 FORBIDDEN |
 | `openai_account.auth.logout` | 纯本地 | 网关内执行，不触达 AgentServer |
 
 
