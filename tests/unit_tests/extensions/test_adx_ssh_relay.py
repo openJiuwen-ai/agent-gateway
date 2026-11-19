@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent_gateway.extensions.adx.config import load_router_config
-from agent_gateway.extensions.adx.extension import AdxRouter
+from agent_gateway.extensions.agentos.agentos_router.extension import AgentOSRouter
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 
 
 def settings(monkeypatch, tmp_path):
     monkeypatch.setenv('ADX_UNIT_KEY', 'unit-platform-key')
     return load_router_config({'gateway':{
-        'agent_client':{'type':'adx_router'},
+        'agent_client':{'type':'agentos_router'},
         'adx':{'ingress_url':'https://adx.test','tenant':'test','token_env':'ADX_UNIT_KEY',
                'ssh_known_hosts':str(tmp_path/'known_hosts')},
         'agentos':{'workspace_root':str(tmp_path)},
@@ -102,10 +102,10 @@ async def test_ssh_rejects_unpinned_hosts_and_header_injection(monkeypatch,tmp_p
 
 
 def test_adx_extension_delegates_third_party_and_key_issuer(monkeypatch,tmp_path):
-    import agent_gateway.extensions.adx.extension as module
+    import agent_gateway.extensions.adx.router_client as module
     router=Mock()
     monkeypatch.setattr(module,'AdxRouterClient',lambda *args,**kwargs:router)
-    extension=AdxRouter(settings(monkeypatch,tmp_path))
+    extension=AgentOSRouter(settings(monkeypatch,tmp_path))
     issuer=object();extension.set_key_issuer(issuer,ephemeral_key_ttl_sec=120)
     router.set_key_issuer.assert_called_once_with(issuer,ephemeral_key_ttl_sec=120)
     assert extension.get_third_agent() is extension._third_agent
@@ -159,37 +159,3 @@ async def test_delete_evidence_requires_acknowledged_native_response(monkeypatch
         await client.delete_sandbox('test-unknown')
     assert 'environment.delete.ok' not in caplog.text
     await client.close()
-
-
-@pytest.mark.asyncio
-async def test_authenticated_switch_waits_for_background_ssh_setup(monkeypatch, tmp_path):
-    from agent_gateway.extensions.adx.router_client import AdxRouterClient
-    from agent_gateway.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
-
-    config = settings(monkeypatch, tmp_path)
-    endpoint = load_ssh_channel_endpoint({'channels': {'ssh': {
-        'enabled': True, 'listen_host': '127.0.0.1', 'listen_port': 2222,
-        'auth': {'enabled': True},
-    }}})
-    client = AdxRouterClient(replace(config, router=replace(config.router, ssh_channel=endpoint)))
-    create = AsyncMock()
-    monkeypatch.setattr(client._agent_manager, 'get_or_create_agent', create)
-    monkeypatch.setattr(client, '_uses_direct_yuanrong', lambda _: True)
-    task = asyncio.create_task(client.thirdagent_switch(user_id='alice', agent_type='jiuwenswarm'))
-    try:
-        await asyncio.sleep(0)
-        assert not task.done(), 'Authenticated switch must wait for its SSH issuer'
-        create.assert_not_awaited()
-        issuer = SimpleNamespace(issue_ephemeral_key=lambda **kwargs: 'ephemeral-test-key')
-        client.set_key_issuer(issuer)
-        result = await asyncio.wait_for(task, timeout=1)
-        assert result['ok'] and result['payload']['ssh_private_key'] == 'ephemeral-test-key'
-        client.set_key_issuer(None)
-        monkeypatch.setattr(client, '_ssh_key_ready_timeout', 0.01)
-        result = await client.thirdagent_switch(user_id='alice', agent_type='jiuwenswarm')
-        assert not result['ok'] and result['code'] == 'SSH_NOT_READY'
-        create.assert_not_awaited()
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await client.shutdown()

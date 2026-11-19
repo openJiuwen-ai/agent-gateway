@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import ssl
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -17,19 +18,19 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from tests.unit_tests.extensions.test_adx_router import EnvironmentAPI, _config
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.legacy.client import connect
 from websockets.legacy.server import serve
+
+from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.router_client import AdxRouterClient
 from e2a.models import E2AEnvelope
 from e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
 from e2a.agent_models import AgentResponse, AgentResponseChunk
-
-from tests.unit_tests.extensions.test_adx_router import EnvironmentAPI, _config
-from agent_gateway.extensions.adx.control_client import AdxControlClient
-from agent_gateway.extensions.adx.router_client import AdxRouterClient
 
 
 def _certificate(tmp_path):
@@ -54,13 +55,10 @@ def _certificate(tmp_path):
 
 
 @asynccontextmanager
-async def _network(tmp_path, monkeypatch):
+async def _network(tmp_path, monkeypatch, *, restart_policy='default'):
     monkeypatch.setattr(
         'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
     )
-    monkeypatch.setenv("DISCONNECT_CLEANUP_TIMEOUT_SECONDS", "0.05")
-    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_TIMEOUT_SECONDS", "0.2")
-    monkeypatch.setenv("AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS", "0.01")
     tls, ca_path = _certificate(tmp_path)
     monkeypatch.setenv("SSL_CERT_FILE", ca_path)
     requests, handshakes, targets = [], [], []
@@ -135,6 +133,8 @@ async def _network(tmp_path, monkeypatch):
             port = proxy.sockets[0].getsockname()[1]
             monkeypatch.setenv("ADX_TEST_PLATFORM", expected_key)
             config = _config(monkeypatch, ingress_url=f"https://localhost:{port}")
+            if restart_policy != 'default':
+                config = replace(config, restart_policy=restart_policy)
             api = EnvironmentAPI(config.tenant)
             control = AdxControlClient(config, transport=httpx.MockTransport(api.handle))
             router = AdxRouterClient(config, control_client=control)
@@ -150,6 +150,7 @@ def _request(user="alice", rid="request", action=""):
     return E2AEnvelope(request_id=rid, user_id=user, channel="web", method="chat.send", params={"action": action})
 
 
+@pytest.mark.asyncio
 async def test_wss_proxy_isolates_users_reuses_connections_and_multiplexes_streams(tmp_path, monkeypatch):
     async with _network(tmp_path, monkeypatch) as (router, requests, handshakes, targets):
         responses = await asyncio.gather(*[
@@ -170,21 +171,29 @@ async def test_wss_proxy_isolates_users_reuses_connections_and_multiplexes_strea
         assert len(requests) == 6
 
 
-async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthenticates(tmp_path, monkeypatch):
-    async with _network(tmp_path, monkeypatch) as (router, requests, handshakes, targets):
+@pytest.mark.asyncio
+@pytest.mark.parametrize('restart_policy', [None])
+async def test_real_stream_disconnect_is_not_replayed_and_next_call_reauthenticates(tmp_path, monkeypatch, restart_policy):
+    async with _network(tmp_path, monkeypatch, restart_policy=restart_policy) as (router, requests, handshakes, targets):
         stream = router.send_request_stream(_request(rid="lost", action="drop"))
         assert (await anext(stream)).payload["index"] == 0
         failure = await asyncio.wait_for(anext(stream), timeout=3)
         assert failure.is_complete and failure.payload.get("error")
+        await stream.aclose()
         assert [request["request_id"] for request in requests] == ["lost"]
-        assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
+        current = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        assert (current is None) == (restart_policy is None)
         assert (await router.send_request(_request(rid="next"))).ok
-        assert len(router.test_api.creates) == 2
-        assert len(handshakes) == 2 and targets[0] != targets[1]
+        assert len(router.test_api.creates) == (2 if restart_policy is None else 1)
+        assert len(handshakes) == 2
+        assert (targets[0] != targets[1]) == (restart_policy is None)
+        if restart_policy is None:
+            assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
         assert all(headers["authorization"] == "Bearer platform-secret" for _, headers in handshakes)
 
 
 @pytest.mark.parametrize("failure", ["untrusted_ca", "invalid_key"])
+@pytest.mark.asyncio
 async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_path, monkeypatch, failure):
     async with _network(tmp_path, monkeypatch) as (router, requests, _handshakes, targets):
         if failure == "untrusted_ca":
@@ -207,3 +216,7 @@ async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_pat
             assert not requests and not targets
         finally:
             await rejected.disconnect()
+
+@pytest.fixture(autouse=True)
+def gateway_without_adx_sdk(monkeypatch):
+    monkeypatch.setitem(sys.modules, 'adx_environment', None)

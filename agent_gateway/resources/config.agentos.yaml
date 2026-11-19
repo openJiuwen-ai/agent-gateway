@@ -98,14 +98,14 @@ gateway:
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
   # type: websocket（默认） | agentos_router（AgentOS 扩展）
   agent_client:
-    type: agentos_router # websocket | agentos_router
-    # agentos_router 模式配置下面参数
-    frontend_endpoint: http://<<MASTER_NODE_IP>>:<<FRONTEND_PORT>>
-    function_version_urn: <<FUNCTION_ID>>
-    # POST/DELETE /api/agent 超时（秒）；create 含镜像拉取/容器启动
-    agent_timeout_s: 300
-    # create 请求的 namespace，默认 default
+    type: agentos_router
     agent_namespace: default
+  adx:
+    ingress_url: <<ADX_INGRESS_URL>>
+    tenant: <<ADX_TENANT>>
+    token_env: ADX_TOKEN
+    builtin_image: <<ADX_AGENTSERVER_IMAGE>>
+    runtime_class: <<ADX_AGENTSERVER_RUNTIME>>
 
   # AgentOS Router Extension 配置；agent_client.type=agentos_router 时生效。
   agentos:
@@ -118,7 +118,7 @@ gateway:
     wait_running_timeout_seconds: 90
     # GET 轮询间隔（秒）。环境变量 AGENTOS_WAIT_RUNNING_INTERVAL_SECONDS 可覆盖。
     wait_running_interval_seconds: 1
-    # YuanRong runtime_spec.probes。builtin 用这些时序打 18092；3rdagent 在
+    # ADX runtime_spec.probes。builtin 用这些时序打 18092；3rdagent 在
     # registry 未带 probes 时：未改本节/环境变量则用 delay=2/failure=8，
     # 有改动则与 builtin 共用配置打 SSH 2222。环境变量
     # AGENTOS_PROBE_STARTUP_* / AGENTOS_PROBE_LIVENESS_* 可覆盖对应字段。
@@ -160,13 +160,10 @@ gateway:
       request_timeout_s: 10
       # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
       node: <<MASTER_NODE_IP>>
-    # SSH 南向接入 YuanRong 实例（配合 channels.ssh 北向使用）：
-    # ssh -p <port> 'yr:instance:<instance_id>:port=2222'@<frontend-host>
-    # 主机取自 agent_client.frontend_endpoint；<instance_id> 为 create agent 返回的实例 id。
+    # SSH 南向接入 ADX 实例（配合 channels.ssh 北向使用）。
     # 客户端私钥目录（默认 /root/.ssh；若模板含 {user_id} 则按用户替换）。
     ssh:
       port: 2222
-      user_template: "yr:instance:{instance}:port=2222"
       connect_timeout_s: 30
       client_keys_dir: "/root/.ssh"
     auth_service_url: <<AGENTOS_AUTH_SERVICE_URL>>
@@ -343,8 +340,7 @@ channels:
     enable_memory: false
   ssh:
     # SSH channel -> MessageHandler（北向）；南向经 agent_gateway.agent_client
-    # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
-    # 以 yr:instance:<instance_id>:port=2222 中继到 frontend）。
+    # （type=agentos_router 时由 AgentOS Router 中继到 ADX 实例）。
     # 启用前请安装可选依赖: pip install "workswarm[ssh]" 或 uv sync --extra ssh
     # 客户端: ssh -p <listen_port> user@<gateway-host>
     # 南向连接参数见 agent_gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
