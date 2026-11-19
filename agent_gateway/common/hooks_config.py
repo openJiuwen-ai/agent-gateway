@@ -36,8 +36,69 @@ class HookEvent(str, Enum):
 
 
 # 需要在 AgentServer Rail 层执行的事件（工具/Agent 生命周期）
+AGENT_HOOK_EVENTS: frozenset[str] = frozenset({
+    HookEvent.PRE_TOOL_USE.value,
+    HookEvent.POST_TOOL_USE.value,
+    HookEvent.POST_TOOL_USE_FAILURE.value,
+    HookEvent.STOP.value,
+    HookEvent.PERMISSION_REQUEST.value,
+    HookEvent.PERMISSION_DENIED.value,
+    HookEvent.SUBAGENT_START.value,
+    HookEvent.SUBAGENT_STOP.value,
+    HookEvent.BEFORE_MODEL_CALL.value,
+    HookEvent.AFTER_MODEL_CALL.value,
+})
 
 # 需要在 Gateway 层执行的事件（session/用户交互）
+GATEWAY_HOOK_EVENTS: frozenset[str] = frozenset({
+    HookEvent.USER_PROMPT_SUBMIT.value,
+    HookEvent.SESSION_START.value,
+    HookEvent.SESSION_END.value,
+    HookEvent.NOTIFICATION.value,
+    HookEvent.CONFIG_CHANGE.value,
+    HookEvent.INSTRUCTIONS_LOADED.value,
+    HookEvent.SETUP.value,
+})
+
+
+def merge_hook_summaries(
+    *,
+    gateway_summary: list[dict],
+    agent_summary: list[dict],
+    gateway_disable_all_hooks: bool,
+    agent_disable_all_hooks: bool,
+    degraded: bool = False,
+) -> dict:
+    """Merge Gateway-owned and AgentServer-owned hook events for hooks.list."""
+    gateway_by_name = {
+        str(item.get("name") or ""): item
+        for item in gateway_summary
+        if isinstance(item, dict) and item.get("name") in GATEWAY_HOOK_EVENTS
+    }
+    agent_by_name = {
+        str(item.get("name") or ""): item
+        for item in agent_summary
+        if isinstance(item, dict) and item.get("name") in AGENT_HOOK_EVENTS
+    }
+
+    events: list[dict] = []
+    for event in HookEvent:
+        name = event.value
+        source = gateway_by_name if name in GATEWAY_HOOK_EVENTS else agent_by_name
+        item = source.get(name)
+        if item is None:
+            continue
+        events.append({**item, "owner": "gateway" if name in GATEWAY_HOOK_EVENTS else "agent"})
+
+    return {
+        "events": events,
+        "gateway_disable_all_hooks": bool(gateway_disable_all_hooks),
+        "agent_disable_all_hooks": bool(agent_disable_all_hooks),
+        # Backward-compatible single switch: either side disabling all
+        # session/tool hooks is displayed as globally disabled.
+        "disable_all_hooks": bool(gateway_disable_all_hooks or agent_disable_all_hooks),
+        "degraded": bool(degraded),
+    }
 
 
 @dataclass

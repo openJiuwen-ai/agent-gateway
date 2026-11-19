@@ -1865,44 +1865,52 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     # ── Hooks RPC handlers ─────────────────────────────────────────────
     async def _hooks_list(ws, req_id, params, session_id, user_id=None):
-        # 单用户共享目录：本地读取 config.yaml（hooks 属用户态配置，共享目录等价；
-        # AgentServer 未启动/断连时保持可用）。AgentOS：经 E2A 在目标注入目录执行。
-        from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
-
-        resolved_client = _resolve_agent_client(agent_client)
-        if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            from agent_gateway.common.hooks_config import load_hooks_config
-
-            try:
-                hooks_config = load_hooks_config(get_config())
-                summary = hooks_config.get_event_summary()
-                await channel.send_response(
-                    ws, req_id, ok=True,
-                    payload={
-                        "events": summary,
-                        "disable_all_hooks": hooks_config.disable_all_hooks,
-                        "source": "config.yaml",
-                    },
-                )
-            except Exception as exc:
-                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
-            return
-
+        """Return Gateway session hooks plus AgentServer tool hooks."""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
+        from agent_gateway.common.hooks_config import (
+            load_hooks_config,
+            merge_hook_summaries,
+        )
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve_agent_client(agent_client),
-            ws=ws,
-            req_id=req_id,
+        try:
+            gateway_hooks = load_hooks_config(get_config())
+            gateway_summary = gateway_hooks.get_event_summary()
+        except Exception as exc:  # noqa: BLE001
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            return
+
+        resolved_client = _resolve_agent_client(agent_client)
+        ok, agent_payload = await fetch_agent_unary(
+            agent_client=resolved_client,
+            req_method=ReqMethod.HOOKS_LIST,
             params={},
             session_id=session_id,
             user_id=user_id or getattr(ws, "_gateway_user_id", None),
-            req_method=ReqMethod.HOOKS_LIST,
+            channel_id=channel.channel_id,
             label="hooks.list",
         )
+        if not isinstance(agent_payload, dict):
+            agent_payload = {}
+            ok = False
+        agent_summary = (
+            agent_payload.get("events")
+            if ok and isinstance(agent_payload.get("events"), list)
+            else []
+        )
+        agent_disable_all_hooks = (
+            bool(agent_payload.get("disable_all_hooks", False)) if ok else False
+        )
+        payload = merge_hook_summaries(
+            gateway_summary=gateway_summary,
+            agent_summary=agent_summary,
+            gateway_disable_all_hooks=gateway_hooks.disable_all_hooks,
+            agent_disable_all_hooks=agent_disable_all_hooks,
+            degraded=not ok,
+        )
+        payload["source"] = "merged" if ok else "gateway"
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     channel.register_local_handler(path, "hooks.list", _hooks_list)
 
