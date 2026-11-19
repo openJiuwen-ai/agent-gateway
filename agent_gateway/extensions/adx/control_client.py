@@ -209,7 +209,9 @@ class AdxControlClient:
                         await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
                         continue
                     observed = True
-                    terminal = value.get('status') in ('failed', 'deleted', 'deleting')
+                    terminal = value.get('status') in ('deleted', 'deleting') or (
+                        value.get('status') == 'failed' and not value.get('restart_pending')
+                    )
                     if expected_generation is not None:
                         generation_pending = True
                         actual = await self._instance_generation(instance_id, value, trace_id=trace_id)
