@@ -9,6 +9,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import time
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
@@ -162,6 +163,61 @@ async def test_stop_still_propagates_caller_cancellation() -> None:
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_stop_bounds_shutdown_with_inflight_streaming_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.responses import StreamingResponse
+
+    from agent_gateway.transport import uvicorn_listener
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    monkeypatch.setattr(uvicorn_listener, "_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS", 0.2)
+    stalled = asyncio.Event()
+    app = FastAPI()
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        async def body() -> Any:
+            yield b"tick\n"
+            await stalled.wait()
+            yield b"done\n"
+
+        return StreamingResponse(body())
+
+    listener = UvicornListener(app, host="127.0.0.1", port=0, ws_per_message_deflate=False)
+    writer: asyncio.StreamWriter | None = None
+    try:
+        await asyncio.wait_for(listener.start(), 5)
+        host, port = listener.bound_addresses[0]
+        reader, writer = await asyncio.open_connection(host, port)
+        writer.write(b"GET /stream HTTP/1.1\r\nHost: gateway\r\n\r\n")
+        await writer.drain()
+        received = b""
+        while b"tick\n" not in received:
+            chunk = await asyncio.wait_for(reader.read(1024), 5)
+            assert chunk, "stream closed before the first chunk"
+            received += chunk
+        assert received.startswith(b"HTTP/1.1 200")
+
+        started = time.monotonic()
+        await asyncio.wait_for(listener.stop(), 5)
+        assert time.monotonic() - started < 3
+        await listener.wait_closed()
+
+        rebound = await asyncio.start_server(lambda reader, writer: writer.close(), host, port)
+        rebound.close()
+        await rebound.wait_closed()
+    finally:
+        stalled.set()
+        if writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        await listener.stop()
 
 
 async def test_cancelled_ready_and_closed_waiters_do_not_stop_listener() -> None:

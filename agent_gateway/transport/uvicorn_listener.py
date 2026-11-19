@@ -11,6 +11,9 @@ from starlette.types import ASGIApp
 import uvicorn
 
 
+_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
 class _EmbeddedServer(uvicorn.Server):
     """Leave process signals with the Gateway and publish actual readiness."""
 
@@ -124,6 +127,7 @@ class UvicornListener:
                 ws_max_size=WEB_WS_MAX_MESSAGE_BYTES,
                 ws_ping_interval=20.0,
                 ws_ping_timeout=60.0,
+                timeout_graceful_shutdown=_GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
                 http=guarded_http_protocol(),
                 ws=guarded_websockets_protocol(),
                 ws_per_message_deflate=self._ws_per_message_deflate,
