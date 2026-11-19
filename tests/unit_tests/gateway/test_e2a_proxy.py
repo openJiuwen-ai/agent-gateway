@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from opentelemetry import trace
@@ -16,6 +17,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from e2a.message import ReqMethod
 from agent_gateway import telemetry
+from agent_gateway.app_gateway import _normalize_gateway_message
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
@@ -94,21 +99,46 @@ async def test_proxy_preserves_authoritative_routing_metadata(method):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("app_id", "expected"),
-    [("web-app", "web-app"), ("", "default")],
+    [(None, "default"), ("", "default"), ("web-app", "web-app")],
 )
-async def test_metadata_proxy_preserves_web_application_for_runtime_replay(app_id, expected):
-    # 与 app_web_handlers 创建 cron 任务时的口径一致：空 app_id 归一为
-    # default，恢复请求与首轮执行身份保持同一 app 作用域。
+async def test_chat_send_and_runtime_replay_use_same_web_application(app_id, expected):
     from types import SimpleNamespace
+
+    web_channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    chat_envelopes = []
+
+    def forward_chat(message):
+        chat_envelopes.append(MessageHandler.message_to_e2a(_normalize_gateway_message(message)))
+        return True
+
+    class ChatSocket:
+        remote_address = ("127.0.0.1", 12345)
+
+    web_channel.on_message(forward_chat)
+    chat_ws = ChatSocket()
+    try:
+        await web_channel._handle_raw_message(
+            chat_ws,
+            json.dumps({
+                "type": "req", "id": "chat", "method": "chat.send",
+                "params": {"session_id": "session", "content": "hi"},
+            }),
+            {} if app_id is None else {"app_id": [app_id]},
+        )
+    finally:
+        await web_channel.unregister_ws(chat_ws)
 
     channel = FakeChannel()
     client = FakeAgentClient()
     await proxy_unary_request(
-        channel=channel, agent_client=client, ws=SimpleNamespace(_jiuwen_app_id=app_id),
-        req_id="metadata", params={"session_id": "session"}, session_id="session",
+        channel=channel, agent_client=client,
+        ws=SimpleNamespace(_jiuwen_app_id="default" if app_id is None else app_id),
+        req_id="metadata", params={"session_id": "session", "runtime_resume": {"after": 0}},
+        session_id="session",
         user_id="owner", req_method=ReqMethod.SESSION_GET_METADATA,
     )
     assert client.envelopes[0].channel_context["app_id"] == expected
+    assert chat_envelopes[0].channel_context.get("app_id") == expected
     assert client.envelopes[0].user_id == "owner"
 
 
