@@ -2066,6 +2066,11 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.4 更新与维护
 
+> **装配来源**：`updater.*` 七方法不再由 Gateway 内置装配，改由 Swarm 随包的
+> `app_updater` 应用扩展经 `--app-extension` 注入点注册（组合运行时由
+> WorkSwarm 启动入口显式装配）。独立 Gateway 未注册这些方法，调用返回
+> `METHOD_NOT_FOUND` 属正常状态；方法契约、错误语义与企业版拦截不变。
+
 **公共**：`path.set` 与 `updater.download/upgrade/reset_source/set_conf` 命中企业版写保护（HTTP 入口 invoke 拦截 → `FORBIDDEN "企业版配置由管理面统一下发"`）。
 
 **UpdateStatus 字段**（`common/updater.py:97-135`，四个状态方法共用）：`current_version`、`current_build_date`、`latest_version`、`state`、`has_update`、`install_mode`、`release_notes`、`published_at`、`source_type`、`asset_name`、`matched_asset`、`download_url`、`downloaded_path`、`downloaded_bytes/total_bytes`、`error`、`checked_at`、`installing`、`restart_command`；`get_status` 附加 `platform`/`platform_supported`。**state 十值枚举**：`idle / checking / downloading / upgrading / error / disabled / up_to_date / update_available / downloaded / restarting`。

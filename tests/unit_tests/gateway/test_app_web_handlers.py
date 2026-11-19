@@ -1707,11 +1707,6 @@ async def test_memory_forbidden_set_without_agent_server_is_unavailable(monkeypa
     assert resp["error"] == "AgentServer is unavailable"
 
 
-class FakeUpdaterService:
-    def get_runtime_config(self):
-        return {"release_api_type": "gitcode", "release_api_url": ""}
-
-
 @pytest.fixture
 def cleared_openai_account_login_jobs():
     with app_web_handlers._OPENAI_ACCOUNT_LOGIN_JOBS_LOCK:
@@ -1801,18 +1796,21 @@ async def test_openai_account_models_list_returns_refreshed_auth_status(
 
 
 @pytest.mark.asyncio
-async def test_updater_reset_source_registered_and_restores_defaults(monkeypatch):
-    captured: dict[str, object] = {}
-
-    def fake_update_updater_in_config(updates):
-        captured.update(updates)
-
-    monkeypatch.setattr(app_web_handlers, "update_updater_in_config", fake_update_updater_in_config)
-    channel = _bind(updater_service=FakeUpdaterService())
-    await channel.methods["updater.reset_source"](object(), "req-reset", {}, "sess-1")
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"] == {"release_api_type": "gitcode", "release_api_url": ""}
-    assert captured == app_web_handlers.DEFAULT_SOURCE_CONFIG
+async def test_updater_methods_not_registered_without_swarm_extension():
+    # 应用更新实现已迁回 Swarm（随包扩展经 --app-extension 装配）。独立
+    # Gateway 不再注册 updater.* 方法：Web 分发对它们返回 METHOD_NOT_FOUND，
+    # 不回落转发，更新页提示功能不可用属正常状态。
+    channel = _bind()
+    for method in (
+        "updater.get_status",
+        "updater.check",
+        "updater.download",
+        "updater.upgrade",
+        "updater.get_conf",
+        "updater.set_conf",
+        "updater.reset_source",
+    ):
+        assert method not in channel.methods
 
 
 @pytest.mark.asyncio

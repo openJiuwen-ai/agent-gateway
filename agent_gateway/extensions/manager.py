@@ -105,6 +105,50 @@ class ExtensionManager:
                 seen.add(key)
                 self.loader.add_search_path(p)
 
+    async def load_explicit_extensions(self, module_paths: list[str]) -> None:
+        """Import bundled app extensions by dotted module path.
+
+        Parent launchers (e.g. WorkSwarm spawning the Gateway subprocess) use
+        this assembly point for extensions that must ship with the package:
+        loading must not depend on the working directory, user extension dirs
+        or the ``extensions.enabled`` allowlist. A missing or broken module is
+        logged and skipped so the rest of Gateway startup continues.
+        """
+        from agent_gateway.extensions.sdk.application_plugin import (
+            ApplicationPluginExtension,
+        )
+
+        for module_path in module_paths:
+            name = str(module_path).strip()
+            if not name:
+                continue
+            try:
+                module = importlib.import_module(name)
+                registered = None
+                if hasattr(module, "register_extensions"):
+                    registered = await module.register_extensions(self.registry)
+                if not registered:
+                    logger.warning(
+                        "[ExtensionManager] 显式扩展未注册任何扩展: %s", name
+                    )
+                    continue
+                items = registered if isinstance(registered, list) else [registered]
+                for ext in items:
+                    if isinstance(ext, ApplicationPluginExtension):
+                        await ext.initialize(self.registry.config)
+                self._loaded_extensions.extend(items)
+                logger.info("[ExtensionManager] 显式扩展加载: %s", name)
+            except AgentClientModeError:
+                # 南向客户端冲突不是可选扩展故障，不能吞掉后继续启动。
+                raise
+            except Exception as e:
+                logger.error(
+                    "[ExtensionManager] 显式扩展 %s 加载失败: %s (%s)",
+                    name,
+                    e,
+                    type(e).__name__,
+                )
+
     async def load_all_extensions(
         self,
         *,

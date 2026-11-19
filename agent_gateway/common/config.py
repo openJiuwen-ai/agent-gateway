@@ -681,17 +681,6 @@ def update_task_full_duplex_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_updater_in_config(updates: dict[str, Any]) -> None:
-    """只更新 updater 段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "updater" not in data:
-        data["updater"] = {}
-    section = data["updater"]
-    for key, value in updates.items():
-        section[key] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 # ---------- 数字分身相关配置 ----------
 
 

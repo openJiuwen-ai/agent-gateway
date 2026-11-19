@@ -54,6 +54,7 @@ class _RunCall:
     web_port: int
     web_path: str
     web_ws_deflate: bool
+    app_extensions: list[str] | None = None
 
 
 def _isolated_python_env(tmp_path: Path) -> dict[str, str]:
@@ -129,6 +130,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -137,6 +139,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                app_extensions=app_extensions,
             )
         )
 
@@ -154,6 +157,8 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
             "19001",
             "--web-path",
             "/gateway-ws",
+            "--app-extension",
+            "demo.bundled.extension",
         ],
     )
     monkeypatch.setenv("AGENT_SERVER_URL", "ws://ignored:1")
@@ -170,6 +175,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
             web_port=19001,
             web_path="/gateway-ws",
             web_ws_deflate=False,
+            app_extensions=["demo.bundled.extension"],
         )
     ]
     _assert_lock_is_released(tmp_path)
@@ -190,6 +196,7 @@ def test_main_passes_environment_defaults_and_releases_workspace_lock(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -237,6 +244,7 @@ def test_main_uses_fallback_defaults_when_environment_is_absent(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -290,6 +298,7 @@ def test_main_releases_workspace_lock_when_startup_fails(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -336,6 +345,7 @@ def test_main_rejects_a_lock_held_by_another_process_without_releasing_it(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         calls.append(
             _RunCall(

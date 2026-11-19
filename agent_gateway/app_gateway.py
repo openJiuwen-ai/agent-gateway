@@ -2342,6 +2342,7 @@ async def _run(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool = False,
+        app_extensions: list[str] | None = None,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
@@ -2373,7 +2374,6 @@ async def _run(
     from agent_gateway.cleanup import start_background_cleanup
     from agent_gateway.common.config import get_config
     from agent_gateway.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
-    from agent_gateway.common.updater import UpdaterService
     from agent_gateway.cron import (
         CronController,
         CronSchedulerService,
@@ -2427,6 +2427,10 @@ async def _run(
     validate_agent_client_configuration(get_config() or {}, mode=agent_client_mode)
     extension_manager = ExtensionManager(registry=extension_registry)
     log_startup_stage("extension_manager_created")
+    # 显式注入的随包应用扩展（如 Swarm 的应用更新扩展）先于目录发现加载，
+    # 不受 extensions.enabled 启用清单与搜索目录影响；缺失或加载失败仅记录
+    # 明确原因，不阻断 Gateway 其余服务。
+    await extension_manager.load_explicit_extensions(app_extensions or [])
     await extension_manager.load_all_extensions()
     logger.info(
         "[App] extensions loaded: %d (elapsed %.2fs)",
@@ -2645,7 +2649,6 @@ async def _run(
     # 回填引用：MessageHandler 实例化早于 ChannelManager，广播全局事件时需经它取 web channel。
     message_handler.set_channel_manager(channel_manager)
 
-    updater_service = UpdaterService()
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
@@ -2971,7 +2974,6 @@ async def _run(
             heartbeat_service=heartbeat_service,
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
-            updater_service=updater_service,
         )
     )
 
@@ -4404,6 +4406,7 @@ async def _run_with_shutdown_signals(
     web_port: int,
     web_path: str,
     web_ws_deflate: bool = False,
+    app_extensions: list[str] | None = None,
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
@@ -4417,6 +4420,7 @@ async def _run_with_shutdown_signals(
             web_path=web_path,
             shutdown_event=shutdown_event,
             web_ws_deflate=web_ws_deflate,
+            app_extensions=app_extensions,
         )
 
     await run_with_shutdown_signals(run, shutdown_gateway_telemetry)
@@ -4466,6 +4470,18 @@ def main() -> None:
         "--dotenv",
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
+    )
+    parser.add_argument(
+        "--app-extension",
+        action="append",
+        default=None,
+        metavar="MODULE",
+        help=(
+            "Import MODULE and register its extensions at startup "
+            "(repeatable). Bundled app extensions (e.g. the Swarm app "
+            "updater) are assembled by the parent launcher and bypass "
+            "extension_dirs / extensions.enabled discovery."
+        ),
     )
     args = parser.parse_args()
 
@@ -4525,6 +4541,7 @@ def main() -> None:
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                app_extensions=args.app_extension,
             )
         )
 

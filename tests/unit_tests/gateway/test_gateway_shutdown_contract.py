@@ -31,6 +31,7 @@ async def test_shutdown_request_is_idempotent_and_restores_handlers(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         assert agent_server_url == "ws://127.0.0.1:18092"
         assert web_host == "127.0.0.1"
@@ -79,6 +80,7 @@ async def test_run_failure_restores_handlers_and_awaits_cleanup(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool,
+        app_extensions: list[str] | None = None,
     ) -> None:
         assert agent_server_url == "ws://127.0.0.1:18092"
         assert web_host == "127.0.0.1"
