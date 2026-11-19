@@ -68,7 +68,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 3. **入站回调（白名单转发）**：`_FORWARD_REQ_METHODS`（`app_web_handlers.py:459-696`）内的方法经 `_norm_and_forward`（`app_gateway.py:2522-2548`）归一化后交 MessageHandler → E2A → AgentServer。其中 `_FORWARD_NO_LOCAL_HANDLER_METHODS`（`app_web_handlers.py:709-924`，如 `team.*`、`skills.*`、`session.switch`）转发后即结束（响应由 AgentServer 异步回写）；其余（如 `chat.interrupt`）转发后本地 handler 仍会补发 ack。
 4. **未注册方法**：回 `METHOD_NOT_FOUND`（`web_connect.py:2419-2422`）。
 
-> 2026-11 起 HTTP 入口（企业 `/api/v1` 与 mapped 路由）与 WS 共用统一入站管道 `channel_manager/web/invoke.py`（`dispatch_web_request`）。企业版在该管道前置写保护 `is_enterprise_write_forbidden`（config/models/agents/extensions/plugins/mcp.server/a2a 前缀、`channel.*.set_conf|unbind`、skills 白名单外 → `FORBIDDEN "企业版配置由管理面统一下发"`）；**该写保护当前仅接入 HTTP 入口，WS 主路径未接入**。企业版另将 team 控制面 7 方法从转发白名单剔除（见 §5.2）。
+> 2026-11 起 HTTP 入口（企业 `/api/v1` 与 mapped 路由）与 WS 共用统一入站管道 `channel_manager/web/invoke.py`（`dispatch_web_request`）。企业版在该管道前置写保护 `is_enterprise_write_forbidden`（`config.set/save_all`、`models.*` 写方法、`multimodal.*` 四写方法与 agents/teams/extensions/plugins/mcp.server/a2a 前缀、`channel.*.set_conf|unbind`、skills 白名单外 → `FORBIDDEN "企业版配置由管理面统一下发"`）；**该写保护 WS 与 HTTP 双入口共用**——WS 内联分发（`web_connect.py:2574-2576`）接入同一 guard（!65/6a2f245f2 起）。企业版另将 team 控制面 7 方法从转发白名单剔除（见 §5.2）。
 
 ### 1.4 归一化规则（网关改写请求）
 
@@ -2017,7 +2017,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.3 IM 渠道配置
 
-**公共契约**：`channel.*` 配置族均为**网关本地 handler**（不经转发）；set_conf 链路 = `cm.set_conf`（内存整体替换 + 热重建 Channel 实例，失败回滚并标记重启待定）→ 合并写 config.yaml → 清 Agent 配置缓存；**写盘失败仅告警、响应仍成功**。企业版写保护：`channel.*.set_conf`/`unbind` 在 **HTTP 入口**经 invoke 拦截；绑定方法另有 **handler 内自检**（WS/HTTP 均拦）：feishu/dingtalk 的 bind/unbind/revoke 与 **welink 全部 7 个方法（含 get_bindings）** → `FORBIDDEN "企业版配置由管理面统一下发"`；`channel.feishu.get_bindings` 企业版放行。
+**公共契约**：`channel.*` 配置族均为**网关本地 handler**（不经转发）；set_conf 链路 = `cm.set_conf`（内存整体替换 + 热重建 Channel 实例，失败回滚并标记重启待定）→ 合并写 config.yaml → 清 Agent 配置缓存；**写盘失败仅告警、响应仍成功**。企业版写保护：`channel.*.set_conf`/`unbind` 经 invoke 统一 guard 拦截（**WS/HTTP 双入口**，§1.3）；绑定方法另有 **handler 内自检**（WS/HTTP 均拦）：feishu/dingtalk 的 bind/unbind/revoke 与 **welink 全部 7 个方法（含 get_bindings）** → `FORBIDDEN "企业版配置由管理面统一下发"`；`channel.feishu.get_bindings` 企业版放行。
 
 #### channel.get
 
@@ -2064,7 +2064,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 ```
 
 - **get_login_ui**：无参数 → `{phase, message, qr, credentials, credentials_source, error, updated_at}`（qr 为二维码结构或 null）。
-- **unbind**：无参数 → 删本地凭据文件 + 置空 bot_token/ilink_bot_id/ilink_user_id → `{config}`；企业版 HTTP 入口 FORBIDDEN。
+- **unbind**：无参数 → 删本地凭据文件 + 置空 bot_token/ilink_bot_id/ilink_user_id → `{config}`；企业版 FORBIDDEN（invoke 统一 guard，WS/HTTP 双入口）。
 
 #### 绑定方法（local_only，不经转发）
 
@@ -2084,7 +2084,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.4 更新与维护
 
-**公共**：`path.set` 与 `updater.download/upgrade/reset_source/set_conf` 命中企业版写保护（HTTP 入口 invoke 拦截 → `FORBIDDEN "企业版配置由管理面统一下发"`）。
+**公共**：`path.set` 与 `updater.download/upgrade/reset_source/set_conf` 命中企业版写保护（invoke 统一 guard，WS/HTTP 双入口 → `FORBIDDEN "企业版配置由管理面统一下发"`）。
 
 **UpdateStatus 字段**（`common/updater.py:97-135`，四个状态方法共用）：`current_version`、`current_build_date`、`latest_version`、`state`、`has_update`、`install_mode`、`release_notes`、`published_at`、`source_type`、`asset_name`、`matched_asset`、`download_url`、`downloaded_path`、`downloaded_bytes/total_bytes`、`error`、`checked_at`、`installing`、`restart_command`；`get_status` 附加 `platform`/`platform_supported`。**state 十值枚举**：`idle / checking / downloading / upgrading / error / disabled / up_to_date / update_available / downloaded / restarting`。
 
@@ -4824,7 +4824,7 @@ ws.addEventListener('open', async () => {
 | **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
 | 企业版专用 | 7 | team.create / team.get / team.stop / team.member.join / leave / team.members.list / team.quota.get | 个人版从白名单与注册表双双剔除 → `METHOD_NOT_FOUND`；HTTP 路由同步过滤 |
 | /ws/git 封闭协议 | 6 | project.git.diff_watch / diff_files_watch / diff_detail_watch / diff_unwatch / discard_turn_changes / redo_turn_changes | 独立分发：网关 busy 预检 + 转发 + `preserve_error_payload` |
-| local_only（注册但不转发） | 14 | channel.feishu/dingtalk.bind_agent/unbind_agent、channel.feishu.get_bindings/revoke、channel.welink.\*（7）、jiuwenmate.colleague.delete | 网关本地执行；企业版拦截为 **handler 内自检**（WS/HTTP 均拦，区别于 invoke 的 HTTP-only 写保护）：绑定/撤销与 welink 全部方法 → FORBIDDEN（feishu.get_bindings 放行） |
+| local_only（注册但不转发） | 14 | channel.feishu/dingtalk.bind_agent/unbind_agent、channel.feishu.get_bindings/revoke、channel.welink.\*（7）、jiuwenmate.colleague.delete | 网关本地执行；企业版拦截为 **handler 内自检**（区别于 invoke 管道统一写保护的拦截位置——两者同为 WS/HTTP 双入口，§1.3）：绑定/撤销与 welink 全部方法 → FORBIDDEN（feishu.get_bindings 放行） |
 
 ### F.2 全部转发方法共用的网关归一化（帧进网关即发生）
 
