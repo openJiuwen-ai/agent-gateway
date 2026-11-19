@@ -6,7 +6,9 @@ USER root
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
 ARG AGENT_CORE_COMMIT=f3f8f576164cc405c046e43079c8ad00ee17f0c4
 ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
-ARG AGENT_PROTOCOL_COMMIT=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677
+# 2bc6e46：协议仓把 e2a/ 迁到 openjiuwen-e2a/，并带上 MULTIMODAL_* 枚举；
+# 旧 d3d1681 + subdirectory=e2a 缺这些字段，gateway 启动会 AttributeError。
+ARG AGENT_PROTOCOL_COMMIT=2bc6e46dedd0336e550a44be39303a2b7650959e
 ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
@@ -27,11 +29,12 @@ RUN chgrp -R 0 /app/agent-gateway && chmod -R g+rwX /app/agent-gateway
 #   （"openjiuwen>=0.1.20.post3"）；只删 git 行会漏掉区间约束，与流水线
 #   钉的 commit（包版本常仍为 0.1.20）打架导致 uv ResolutionImpossible。
 #   因此 openjiuwen 不论有无 git 都删；[tool.uv.sources] git 行同样清掉。
+#   e2a / openjiuwen-e2a：协议仓改名前后两种声明都要删，避免与下方 ARG 双装。
 #   末尾断言兜底——任何残留 git source 让构建显式失败而非静默漏删。
 RUN sed -i -E '/^[[:space:]]*"openjiuwen([>=<!~=]| @ |")/d' pyproject.toml \
-    && sed -i '/"e2a @ git+/d' pyproject.toml \
+    && sed -i -E '/^[[:space:]]*"(e2a|openjiuwen-e2a) @ git+/d' pyproject.toml \
     && sed -i '/"openjiuwen-runtime-foundation",/d' pyproject.toml \
-    && sed -i -E '/^[[:space:]]*"?(openjiuwen|openjiuwen-runtime-foundation|e2a)"?[[:space:]]*=[[:space:]]*\{[[:space:]]*git[[:space:]]*=/d' pyproject.toml \
+    && sed -i -E '/^[[:space:]]*"?(openjiuwen|openjiuwen-runtime-foundation|e2a|openjiuwen-e2a)"?[[:space:]]*=[[:space:]]*\{[[:space:]]*git[[:space:]]*=/d' pyproject.toml \
     && if grep -Eq 'git[[:space:]]*=' pyproject.toml; then \
          echo "[docker] pyproject 仍残留 git source：rev 须由流水线参数或 pyproject 单边钉定（避免同包双 URL 冲突）" >&2; \
          exit 1; \
@@ -39,9 +42,10 @@ RUN sed -i -E '/^[[:space:]]*"openjiuwen([>=<!~=]| @ |")/d' pyproject.toml \
 
 # .[a2a]：装入 optional extra a2a-sdk，否则企业 manager_config 因缺 a2a
 # 跳过挂载，管理面探活 /api/health 会 404。
+# 协议包 PyPI 名已是 openjiuwen-e2a，import 名仍是 e2a（packages.find include e2a*）。
 RUN uv pip install --system \
     "openjiuwen @ git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT}" \
-    "e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=e2a" \
+    "openjiuwen-e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=openjiuwen-e2a" \
     "openjiuwen-runtime-foundation @ git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation" \
     -e ".[a2a]" \
     ${PIP_EXTRA_ARGS}
