@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from agent_gateway.agent_client_mode import (
+    ROUTER_CLIENT_TYPES,
     AgentClientModeError,
+    is_router_client_type,
     is_runtime_agent_client,
     resolve_agent_server_client,
     validate_agent_client_configuration,
@@ -23,6 +25,23 @@ def test_runtime_conflicting_configuration_fails(selected):
         validate_agent_client_configuration(
             {"gateway": {"agent_client": {"type": selected}}}, mode="runtime",
         )
+
+
+@pytest.mark.parametrize("configured", ["agentos_router", "adx_router"])
+def test_conflict_check_and_channel_admission_share_router_types(configured):
+    """冲突校验与渠道准入共用 ROUTER_CLIENT_TYPES，避免两处口径漂移。"""
+    assert configured in ROUTER_CLIENT_TYPES
+    assert is_router_client_type(configured)
+    assert is_router_client_type(f" {configured.upper()} ")
+    with pytest.raises(AgentClientModeError):
+        validate_agent_client_configuration(
+            {"gateway": {"agent_client": {"type": configured}}}, mode="runtime",
+        )
+
+
+@pytest.mark.parametrize("selected", ["", "websocket", "runtime", None])
+def test_non_router_types_are_not_treated_as_router_clients(selected):
+    assert not is_router_client_type(selected)
 
 
 @pytest.mark.parametrize("mode", ["", "websocket", "unknown"])
@@ -58,6 +77,15 @@ def test_registry_rejects_second_registration_without_overwriting(first, second)
     registry.register_agent_server_client(original)
     with pytest.raises(AgentClientModeError, match="already registered"):
         registry.register_agent_server_client(SimpleNamespace(metadata=SimpleNamespace(id=second)))
+    assert registry.get_agent_server_client_extension() is original
+
+
+def test_registry_accepts_same_instance_registration_twice():
+    """同一实例重复注册保持幂等（多扩展根/复用 registry 的进程）。"""
+    registry = ExtensionRegistry(callback_framework=Mock(), config={}, logger=Mock())
+    original = SimpleNamespace(metadata=SimpleNamespace(id="runtime"))
+    registry.register_agent_server_client(original)
+    registry.register_agent_server_client(original)
     assert registry.get_agent_server_client_extension() is original
 
 

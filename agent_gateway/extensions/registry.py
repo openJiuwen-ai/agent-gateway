@@ -139,6 +139,9 @@ class ExtensionRegistry:
         base_crypto.set_crypto_provider(None)
 
     def register_agent_server_client(self, extension: AgentServerClientExtension) -> None:
+        if self._agent_server_client is extension:
+            # 同一实例重复注册是幂等的；不同客户端扩展才是冲突。
+            return
         if self._agent_server_client is not None:
             def label(item: Any) -> str:
                 metadata = getattr(item, "metadata", None)

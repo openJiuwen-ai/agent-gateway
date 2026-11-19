@@ -455,7 +455,16 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                         # JSON-RPC IDs are only unique within their session.
                         # An ambiguous reply must not select an arbitrary tenant
                         # or discard another session's pending response.
-                        raise RuntimeError("Reverse RPC origin Pod is ambiguous")
+                        logger.error(
+                            "[RuntimeRouted] reverse RPC origin ambiguous: "
+                            "jsonrpc_id=%s candidates=%s",
+                            jsonrpc_id,
+                            sorted(self._rpc_origins[k] for k in matches),
+                        )
+                        raise RuntimeError(
+                            "Reverse RPC origin Pod is ambiguous: "
+                            f"jsonrpc_id={jsonrpc_id} candidates={len(matches)}"
+                        )
             if base_url is None:
                 raise RuntimeError("Reverse RPC origin Pod is unavailable")
             return await self._http.send_request(

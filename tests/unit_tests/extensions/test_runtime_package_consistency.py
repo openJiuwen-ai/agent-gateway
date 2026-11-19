@@ -60,6 +60,18 @@ async def test_http_missing_trusted_bot_does_not_use_params(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_http_missing_trusted_bot_is_logged_not_silent(monkeypatch, caplog):
+    """空 bot 出站仍受下游空名单约束，但必须留下可定位的告警。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(bound_packages, "packages_for_bot", AsyncMock(return_value=[]))
+    envelope = _envelope()
+    envelope.channel_context["routing"].pop("bot_id")
+    with caplog.at_level("WARNING"):
+        await _assemble_with_allowlist(envelope, "http://agent/api/v1")
+    assert "no trusted bot_id" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_personal_http_skips_enterprise_package_lookup(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     lookup = AsyncMock(side_effect=AssertionError("personal request read enterprise packages"))
