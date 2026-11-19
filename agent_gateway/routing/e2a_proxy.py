@@ -172,6 +172,7 @@ async def proxy_unary_request(
     on_done: Callable[[bool, dict[str, Any]], Awaitable[None] | None] | None = None,
     preserve_error_payload: bool = False,
     default_error_code: str = "BAD_REQUEST",
+    metadata: dict[str, Any] | None = None,
 ) -> bool:
     """向目标 AgentServer 发起一次 unary E2A 请求并按原外部协议返回。
 
@@ -192,6 +193,7 @@ async def proxy_unary_request(
             Git、多模态配置等已定义结构化错误明细的外部协议。
         default_error_code: AgentServer 失败响应未携带 code 时回写的默认错误码
             （保持各入口迁移前的外部协议 code 不变）。
+        metadata: Gateway 提供的请求上下文，路由身份仍以入口解析结果为准。
 
     Returns:
         True 表示已向通道回写响应（调用方无需再 send_response）。
@@ -226,6 +228,8 @@ async def proxy_unary_request(
         # same way as cron creation and execution (app_web_handlers), so the
         # restore request matches the session's actual execution identity.
         ws_app_id = getattr(ws, "_jiuwen_app_id", None)
+        if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None:
+            metadata = {**(metadata or {}), "app_id": str(ws_app_id) or "default"}
         env = e2a_from_agent_fields(
             request_id=req_id,
             channel_id=channel.channel_id,
@@ -236,8 +240,7 @@ async def proxy_unary_request(
             timestamp=time.time(),
             user_id=user_id or None,
             metadata=apply_routing_metadata(
-                {"app_id": str(ws_app_id) or "default"}
-                if req_method == ReqMethod.SESSION_GET_METADATA and ws_app_id is not None else None,
+                metadata,
                 getattr(ws, "_web_routing", None),
             ),
         )

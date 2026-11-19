@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Exercise A4P through the raw WS entry point, including route registration."""
+"""Exercise A4P Web ingress and authorization route registration."""
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -28,6 +28,99 @@ class Socket:
 def route(mode, user="alice"):
     return RoutingKey(user_id=user, channel_id="web", app_id="default",
                       session_id="s", agent_ref=AgentRef(mode=mode, id="coder"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_session", [None, "new", "archived-session"])
+@pytest.mark.parametrize("operation,config", [("get", {}), ("update", {"enabled": True})])
+async def test_a4p_config_websocket_without_chat_route(operation, config, legacy_session):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"enabled": True})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    channel.routing_keys_for_ws = AsyncMock()
+    callback = AsyncMock()
+    channel.on_message(callback)
+    ws = Socket()
+    ws._jiuwen_app_id = "settings-app"
+    params = {**config, "user_id": "untrusted", "bot_id": "untrusted"}
+    if legacy_session:
+        params["session_id"] = legacy_session
+    method = f"a4p.config.{operation}"
+
+    await channel._handle_raw_message(ws, json.dumps({
+        "type": "req", "id": "rpc", "method": method, "params": params,
+    }), {})
+
+    callback.assert_not_called()
+    channel.routing_keys_for_ws.assert_not_called()
+    assert not channel._ws_sessions.get(id(ws))
+    client.send_request.assert_awaited_once()
+    envelope = client.send_request.call_args.args[0]
+    assert envelope.method == method
+    assert envelope.session_id is None
+    assert envelope.user_id == "alice"
+    assert envelope.channel_context["app_id"] == "settings-app"
+    assert envelope.agent_ref is None
+    assert envelope.params == config
+    assert channel.send_response.call_args.kwargs["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_session", [False, True])
+async def test_a4p_config_http_without_chat_route(monkeypatch, legacy_session):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from agent_gateway.channel_manager.web.web_http_routes import register_web_http_api_routes
+    from agent_gateway.extensions.runtime_management_extension.pod_rest_map import assemble_rest_request
+
+    monkeypatch.setenv("GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS", "1")
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"enabled": True})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.routing_keys_for_ws = AsyncMock()
+    app = FastAPI()
+    register_web_http_api_routes(app, channel, enterprise=True)
+    headers = {
+        "X-User-Id": "alice", "X-App-Id": "settings-app",
+        "X-Group-Id": "group-1", "X-Bot-Id": "bot-1",
+    }
+    path = "/api/v1/a4p/config"
+    body = {"enabled": True, "user_id": "untrusted", "bot_id": "untrusted"}
+    if legacy_session:
+        body["session_id"] = "new"
+        headers["X-Session-Id"] = "new"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as http:
+        read = await http.get(path + ("?session_id=new" if legacy_session else ""), headers=headers)
+        write = await http.put(path, headers=headers, json=body)
+        rejected = await http.put(path, headers=headers, json={
+            "enabled": False, "app_id": "untrusted",
+        })
+
+    assert read.json()["data"] == write.json()["data"] == {"enabled": True}
+    assert rejected.status_code == 400
+    channel.routing_keys_for_ws.assert_not_called()
+    assert client.send_request.await_count == 2
+    for call, suffix, config in zip(
+        client.send_request.await_args_list, ("get", "update"), ({}, {"enabled": True}),
+    ):
+        envelope = call.args[0]
+        assert envelope.method == f"a4p.config.{suffix}"
+        assert envelope.session_id is None
+        assert envelope.user_id == "alice"
+        assert envelope.channel_context["app_id"] == "settings-app"
+        assert envelope.channel_context["routing"] == {"group_id": "group-1", "bot_id": "bot-1"}
+        assert envelope.params == config
+        rest = assemble_rest_request(envelope, base_url="http://agent")
+        assert "X-Session-Id" not in rest.headers
+        assert rest.headers["X-User-Id"] == "alice"
+        assert rest.headers["X-Bot-Id"] == "bot-1"
+        assert rest.query is None
+        assert rest.json_body == (config or None)
 
 
 @pytest.mark.asyncio
@@ -349,9 +442,8 @@ def test_terminal_event_cleans_only_its_request_scope():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
 @pytest.mark.parametrize("existing_routes", [[], ["agent", "agent.code.normal"]])
-async def test_session_queries_restore_host_identity_without_request_hint(monkeypatch, method, existing_routes):
+async def test_pending_restores_host_identity_without_request_hint(monkeypatch, existing_routes):
     from agent_gateway.routing import e2a_proxy
 
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -380,7 +472,7 @@ async def test_session_queries_restore_host_identity_without_request_hint(monkey
         }), {})
         subscriptions = set(await channel.routing_keys_for_ws(ws))
         await channel._handle_raw_message(ws, json.dumps({
-            "type": "req", "id": "rpc", "method": method,
+            "type": "req", "id": "rpc", "method": "a4p.authorization.pending",
             "params": {"session_id": "s"},
         }), {})
         envelope = client.send_request.call_args.args[0]
@@ -417,14 +509,13 @@ async def test_reading_code_session_keeps_legacy_registration(method):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["pending", "config.get", "config.update"])
 @pytest.mark.parametrize("ids,host_id,expected", [
     ([], None, "default"), (["coder-a"], None, "coder-a"),
     (["coder-a", "coder-b"], None, None),
     (["coder-a", "coder-b"], "host-coder", "host-coder"),
 ])
 @pytest.mark.parametrize("http", [False, True])
-async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, method, ids, host_id, expected, http):
+async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, ids, host_id, expected, http):
     from dataclasses import replace
     from agent_gateway.routing import e2a_proxy
 
@@ -446,8 +537,7 @@ async def test_missing_agent_id_defaults_only_without_candidates(monkeypatch, me
         meta["agent_id"] = host_id
     monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", AsyncMock(return_value=(True, meta)))
     monkeypatch.setattr(e2a_proxy, "is_legacy_shared_directory_client", lambda ac: True)
-    name = "a4p.authorization.pending" if method == "pending" else f"a4p.{method}"
-    await channel._method_handlers[name](ws, "rpc", {}, "s", user_id="alice")
+    await channel._method_handlers["a4p.authorization.pending"](ws, "rpc", {}, "s", user_id="alice")
     if expected is None:
         client.send_request.assert_not_called()
         assert channel.send_response.call_args.kwargs["code"] == "A4P_WEB_ROUTE_AMBIGUOUS"

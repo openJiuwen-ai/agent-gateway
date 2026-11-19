@@ -367,7 +367,7 @@ class FakeReloadAgentClient:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", [
-    "a4p.config.get", "a4p.config.update", "a4p.authorization.reprepare",
+    "a4p.authorization.reprepare",
     "a4p.authorization.complete", "a4p.authorization.reject", "a4p.authorization.pending",
 ])
 @pytest.mark.parametrize("user_id", ["authenticated-user", None])
@@ -426,10 +426,9 @@ async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
+async def test_a4p_pending_rejects_websocket_without_session_route() -> None:
     channel = _bind(agent_client=SimpleNamespace(server_ready=True))
-    await channel.methods[method](
+    await channel.methods["a4p.authorization.pending"](
         SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", {}, "session-1"
     )
     assert channel.responses[-1]["ok"] is False
@@ -437,8 +436,7 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_http_outbound_allows_empty_agent_ref_without_route(method) -> None:
+async def test_a4p_pending_http_outbound_allows_empty_agent_ref_without_route() -> None:
     """HTTP Outbound 无 WS 路由时仍可转发，metadata 留空 app/agent 交给 AS 跳过匹配。"""
 
     class _AgentClient:
@@ -456,7 +454,7 @@ async def test_a4p_rpc_http_outbound_allows_empty_agent_ref_without_route(method
     _bind(channel, agent_client=agent_client)
     ws = SimpleNamespace(_jiuwen_ws_id="http-out-1", is_http_outbound=True)
 
-    await channel.methods[method](ws, "rpc-1", {}, "session-1")
+    await channel.methods["a4p.authorization.pending"](ws, "rpc-1", {}, "session-1")
 
     assert channel.responses[-1]["ok"] is True
     assert agent_client.envelope.channel_context == {

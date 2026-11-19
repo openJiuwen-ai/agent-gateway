@@ -231,13 +231,11 @@ _A4P_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "GET", "/a4p/config", "a4p.config.get",
         "a4p", "读取 A4P 配置",
         query_keys=("session_id",),
-        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "PUT", "/a4p/config", "a4p.config.update",
         "a4p", "更新 A4P 配置",
         accept_body=True,
-        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "GET", "/a4p/authorization/pending", "a4p.authorization.pending",
