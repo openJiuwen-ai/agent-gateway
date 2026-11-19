@@ -488,6 +488,25 @@ class ChannelManager(ABC):
             if not str(getattr(getattr(channel, "config", None), "agent_id", "") or "").strip()
         ]
 
+    def _resolve_dispatch_app_id(self, msg: "Message") -> str:
+        """解析出站 app_id；缺失时从消息 metadata 的路由身份兜底。
+
+        ``resolve_app_id`` 只读 ``msg.app_id``/``msg.bot_id``。AgentServer 主动
+        推送（心跳、工具输出）可能只在 ``metadata`` 里带 app_id/bot_id；不补这
+        一步，精确 ``ChannelKey`` 查不到，多实例场景会退化到第一个注册的实例。
+        """
+        app_id = self._message_handler.resolve_app_id(msg)
+        if app_id != "default":
+            return app_id
+        meta = getattr(msg, "metadata", None)
+        if not isinstance(meta, dict):
+            return app_id
+        return (
+            str(meta.get("app_id") or "").strip()
+            or str(meta.get("bot_id") or "").strip()
+            or app_id
+        )
+
     def mark_channel_restart_pending(self, channel_id: str) -> None:
         """请求在下次 set_conf / set_config 触发配置应用时，无论配置快照是否变化都重启该 channel。"""
         if channel_id:
@@ -955,7 +974,7 @@ class ChannelManager(ABC):
                 # ── 兜底：旧单 channel 投递（非 team 模式）──
                 # V2: 优先按 ChannelKey 精确路由（多应用场景下同一 channel_id 对应多个 app）
                 channel = None
-                app_id = self._message_handler.resolve_app_id(msg)
+                app_id = self._resolve_dispatch_app_id(msg)
                 if app_id:
                     channel = self.get_by_key(ChannelKey(msg.channel_id, app_id))
                     if channel is not None:
