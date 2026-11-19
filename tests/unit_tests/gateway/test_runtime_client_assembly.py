@@ -10,7 +10,6 @@ import pytest
 from agent_gateway.agent_client_mode import (
     ROUTER_CLIENT_TYPES,
     AgentClientModeError,
-    is_router_client_type,
     is_runtime_agent_client,
     resolve_agent_server_client,
     validate_agent_client_configuration,
@@ -27,21 +26,18 @@ def test_runtime_conflicting_configuration_fails(selected):
         )
 
 
-@pytest.mark.parametrize("configured", ["agentos_router", "adx_router"])
-def test_conflict_check_and_channel_admission_share_router_types(configured):
-    """冲突校验与渠道准入共用 ROUTER_CLIENT_TYPES，避免两处口径漂移。"""
-    assert configured in ROUTER_CLIENT_TYPES
-    assert is_router_client_type(configured)
-    assert is_router_client_type(f" {configured.upper()} ")
+@pytest.mark.parametrize("selected", ["agentos_router", "adx_router"])
+def test_router_client_types_cover_both_router_extensions(selected):
+    """冲突校验与 SSH 渠道准入共用 ROUTER_CLIENT_TYPES，避免两处口径漂移。"""
+    assert selected in ROUTER_CLIENT_TYPES
+
+
+@pytest.mark.parametrize("configured", ["AGENTOS_ROUTER", " adx_router "])
+def test_runtime_conflict_check_normalizes_configured_type(configured):
     with pytest.raises(AgentClientModeError):
         validate_agent_client_configuration(
             {"gateway": {"agent_client": {"type": configured}}}, mode="runtime",
         )
-
-
-@pytest.mark.parametrize("selected", ["", "websocket", "runtime", None])
-def test_non_router_types_are_not_treated_as_router_clients(selected):
-    assert not is_router_client_type(selected)
 
 
 @pytest.mark.parametrize("mode", ["", "websocket", "unknown"])

@@ -2418,7 +2418,7 @@ async def _run(
         logger=logger,
     )
     from agent_gateway.agent_client_mode import (
-        is_router_client_type,
+        ROUTER_CLIENT_TYPES,
         read_agent_client_mode,
         resolve_agent_server_client,
         validate_agent_client_configuration,
@@ -3866,7 +3866,7 @@ async def _run(
                 )
                 if not enabled:
                     logger.info("[App] channels.ssh.%s, SshChannel disabled", reason)
-                elif not is_router_client_type(client_type):
+                elif client_type not in ROUTER_CLIENT_TYPES:
                     logger.warning(
                         "[App] channels.ssh.enabled=true but gateway.agent_client.type=%s "
                         "(require agentos_router or adx_router); SshChannel will not start",

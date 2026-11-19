@@ -15,12 +15,8 @@ class AgentClientModeError(RuntimeError):
 
 # ``gateway.agent_client.type`` 中走 router 扩展（非 WebSocket）的类型。
 # 新增 router 扩展时只改这里：Runtime 冲突校验与 SSH 渠道准入共用同一口径。
+# 调用方需先自行取 ``.strip().lower()`` 归一化。
 ROUTER_CLIENT_TYPES: frozenset[str] = frozenset({"agentos_router", "adx_router"})
-
-
-def is_router_client_type(selected: str) -> bool:
-    """判断配置选中的南向类型是否属于 router 扩展。"""
-    return str(selected or "").strip().lower() in ROUTER_CLIENT_TYPES
 
 
 def read_agent_client_mode(env: dict[str, str] | None = None) -> str:
@@ -38,7 +34,7 @@ def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) ->
     """在扩展加载前拒绝 Runtime 与配置选择的其他路由器冲突。"""
     gateway = config.get("gateway") or {}
     selected = str((gateway.get("agent_client") or {}).get("type") or "").strip().lower()
-    if mode == "runtime" and is_router_client_type(selected):
+    if mode == "runtime" and selected in ROUTER_CLIENT_TYPES:
         raise AgentClientModeError(
             f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
         )
