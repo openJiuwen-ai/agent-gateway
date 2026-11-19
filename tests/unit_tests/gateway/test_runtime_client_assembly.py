@@ -148,5 +148,5 @@ async def test_app_runtime_load_failure_never_constructs_websocket(monkeypatch):
         agent_client, "WebSocketAgentServerClient",
         lambda **kwargs: pytest.fail("explicit runtime must not construct WebSocket"),
     )
-    with pytest.raises(AgentClientModeError, match="runtime 扩展包"):
+    with pytest.raises(AgentClientModeError, match="未加载"):
         await app_gateway._run("ws://unused", "127.0.0.1", 0, "/ws", asyncio.Event())

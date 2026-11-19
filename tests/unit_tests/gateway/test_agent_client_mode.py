@@ -76,7 +76,7 @@ def test_runtime_requires_the_runtime_client(client_type) -> None:
 
 
 def test_runtime_without_the_extension_fails() -> None:
-    with pytest.raises(AgentClientModeError, match="runtime 扩展包"):
+    with pytest.raises(AgentClientModeError, match="未加载.*扩展搜索目录"):
         resolve_agent_server_client(
             None,
             mode="runtime",
@@ -84,13 +84,26 @@ def test_runtime_without_the_extension_fails() -> None:
         )
 
 
+def test_runtime_extension_without_client_fails() -> None:
+    with pytest.raises(AgentClientModeError, match="没有返回客户端"):
+        resolve_agent_server_client(
+            _Extension(None),
+            mode="runtime",
+            websocket_factory=lambda: pytest.fail("缺客户端时不应退回 WebSocket"),
+        )
+
+
 def test_runtime_rejects_a_different_extension_client() -> None:
-    with pytest.raises(AgentClientModeError, match="runtime 扩展包"):
+    """扩展能加载但客户端未声明能力标记时，报错必须指向能力标记/版本，而非搜索目录。"""
+    with pytest.raises(AgentClientModeError, match='agent_client_mode="runtime"') as exc:
         resolve_agent_server_client(
             _Extension(_OtherClient()),
             mode="runtime",
             websocket_factory=lambda: "unused",
         )
+    message = str(exc.value)
+    assert "扩展搜索目录" not in message
+    assert "版本不匹配" in message
 
 
 def test_http_mode_fails() -> None:

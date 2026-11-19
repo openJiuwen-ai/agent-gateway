@@ -49,7 +49,8 @@ def resolve_agent_server_client(
     """按环境变量选出往 Agent 发消息的客户端。
 
     没写、websocket，以及其他不是 http / runtime 的值：有扩展就用扩展，否则用 WebSocket。
-    runtime：注册表里的客户端必须显式声明 agent_client_mode="runtime"，否则启动失败。
+    runtime：注册表里的客户端必须显式声明 agent_client_mode="runtime"，否则启动失败；
+    扩展未加载、get_client() 返回空、客户端缺能力标记三种情况分别给出可定位的报错。
     http：没有单独的 HTTP 客户端，启动失败。
     """
     if mode == "http":
@@ -58,11 +59,25 @@ def resolve_agent_server_client(
             "发给 Pod 的网页请求由 runtime 客户端在内部完成，请改成 runtime 或 websocket。"
         )
     if mode == "runtime":
-        client = extension.get_client() if extension is not None else None
+        if extension is None:
+            raise AgentClientModeError(
+                "GATEWAY_AGENT_CLIENT_MODE=runtime，但 runtime 扩展包未加载，启动失败。"
+                "请确认 runtime_management_extension 已放在扩展搜索目录里。"
+            )
+        client = extension.get_client()
+        if client is None:
+            metadata = getattr(extension, "metadata", None)
+            label = str(getattr(metadata, "id", None) or type(extension).__name__)
+            raise AgentClientModeError(
+                "GATEWAY_AGENT_CLIENT_MODE=runtime，runtime 扩展包已加载但没有返回客户端，启动失败。"
+                f"扩展：{label}；请检查该扩展的 get_client() 实现。"
+            )
         if not is_runtime_agent_client(client):
             raise AgentClientModeError(
-                "GATEWAY_AGENT_CLIENT_MODE=runtime，但没有加载 runtime 扩展包，启动失败。"
-                "请确认 runtime_management_extension 已放在扩展搜索目录里。"
+                "GATEWAY_AGENT_CLIENT_MODE=runtime，但已加载的客户端没有声明 "
+                f'agent_client_mode="runtime"，启动失败。客户端：{type(client).__name__}'
+                f"（{type(client).__module__}）。这通常说明 gateway 与扩展版本不匹配："
+                "请升级 runtime_management_extension，或确认该扩展就是 runtime 客户端。"
             )
         return client
     if extension is not None:
