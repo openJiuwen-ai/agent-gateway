@@ -3256,6 +3256,12 @@ class AgentOSRouterClient(AgentServerClient):
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
+            if isinstance(exc, YuanrongAgentApiError) and getattr(exc, "status_code", None) == 429:
+                # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
+                # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
+                raise AgentRebuildPending(
+                    "AGENT_REBUILD_PENDING: replacement creation was rate limited"
+                ) from exc
             # Retire this name so the next request starts a new generation instead of replaying a refused create.
             lifecycle.retired_instance = attempt.deterministic_id
             lifecycle.attempt = None
@@ -3279,6 +3285,17 @@ class AgentOSRouterClient(AgentServerClient):
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
             except asyncio.CancelledError:
                 lifecycle.attempt = attempt
+                raise
+            except YuanrongAgentApiError as exc:
+                # 429 is an explicit rejection: no sandbox was created by this
+                # attempt. Treat it as a retryable pre-create failure instead of
+                # caching a permanent FAILED runtime. Other 4xx may be
+                # deterministic (bad runtime_spec etc.) and keep the old path.
+                if getattr(exc, "status_code", None) == 429:
+                    raise AgentPreCreateError(
+                        "AGENT_PRE_CREATE_RETRYABLE: sandbox create was rate "
+                        f"limited: {exc}"
+                    ) from exc
                 raise
 
         deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
@@ -3411,7 +3428,16 @@ class AgentOSRouterClient(AgentServerClient):
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:
-            image_info = await self._registry.get_image_info(agent_info.agent_type)
+            try:
+                image_info = await self._registry.get_image_info(agent_info.agent_type)
+            except RegistryError as exc:
+                # Image lookup happens before any create request. It has no
+                # side effects, so a transient registry failure must not be
+                # cached as a permanent FAILED runtime.
+                raise AgentPreCreateError(
+                    "AGENT_PRE_CREATE_RETRYABLE: image lookup failed for "
+                    f"agent_type={agent_info.agent_type}: {exc}"
+                ) from exc
             runtime_spec = _with_web_access_cmds(
                 _with_default_third_agent_probes(
                     build_inline_runtime_spec(image_info),

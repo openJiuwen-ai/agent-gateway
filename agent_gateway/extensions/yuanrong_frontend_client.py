@@ -377,6 +377,13 @@ class SandboxInfo:
 class YuanrongAgentApiError(RuntimeError):
     """Raised when YuanRong /api/agent returns a non-success response."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        # Preserve the HTTP status so callers can distinguish e.g. a 429
+        # (definitely rejected, safe to retry before any sandbox exists)
+        # from an uncertain create result.
+        self.status_code = status_code
+
 
 class YuanrongAgentRequestNotSentError(YuanrongAgentApiError):
     """The request could not be dispatched because connection setup failed."""
@@ -1545,17 +1552,20 @@ class YuanrongFrontendAgentClient:
             parsed = json.loads(body) if body else {}
         except Exception as exc:
             raise YuanrongAgentApiError(
-                f"invalid agent API response: status={status}, body={body!r}"
+                f"invalid agent API response: status={status}, body={body!r}",
+                status_code=status,
             ) from exc
         if not isinstance(parsed, dict):
             raise YuanrongAgentApiError(
-                f"invalid agent API response shape: status={status}, body={body!r}"
+                f"invalid agent API response shape: status={status}, body={body!r}",
+                status_code=status,
             )
         code = parsed.get("code")
         if not (200 <= status < 300) or code not in (200, "200"):
             message = parsed.get("message") or parsed.get("status") or body
             raise YuanrongAgentApiError(
-                f"agent API failed: http_status={status}, code={code}, message={message!r}"
+                f"agent API failed: http_status={status}, code={code}, message={message!r}",
+                status_code=status,
             )
         return parsed
 

@@ -919,6 +919,84 @@ async def test_missing_workspace_precreate_failure_is_retryable(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_third_party_image_lookup_failure_is_precreate_retryable(
+    agentos_workspace_root: str,
+) -> None:
+    """A transient registry failure happens before create_sandbox and must not
+    be cached as a permanent FAILED runtime."""
+
+    class FlakyRegistry(FakeRegistryClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failures = 1
+
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            if self.failures:
+                self.failures -= 1
+                raise RegistryConnectionError("registry temporarily unavailable")
+            return await super().get_image_info(image_name)
+
+    yuanrong = FakeYuanRongClient()
+    registry = FlakyRegistry()
+    manager = AgentManager()
+    client = _router_client(yuanrong, registry, manager)
+
+    with pytest.raises(AgentPreCreateError, match="image lookup failed"):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=client._create_agent,
+        )
+
+    assert await manager.list_user_agents("u1") == []
+    assert yuanrong.create_calls == 0
+
+    created = await manager.get_or_create_agent(
+        "u1", "opencode", creator=client._create_agent,
+    )
+    assert created.info.status is AgentStatus.READY
+    assert yuanrong.create_calls == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_third_party_create_429_is_precreate_retryable(
+    agentos_workspace_root: str,
+) -> None:
+    """A first-attempt 429 explicitly rejected the create, so no sandbox exists."""
+
+    class RateLimitedOnceYuanRong(FakeYuanRongClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rate_limited = True
+
+        async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+            if self.rate_limited:
+                self.rate_limited = False
+                raise YuanrongAgentApiError(
+                    "create rate limited", status_code=429,
+                )
+            return await super().create_sandbox(**kwargs)
+
+    yuanrong = RateLimitedOnceYuanRong()
+    manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), manager)
+
+    with pytest.raises(AgentPreCreateError, match="rate limited"):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=client._create_agent,
+        )
+
+    assert await manager.list_user_agents("u1") == []
+    assert yuanrong.create_calls == 0
+
+    created = await manager.get_or_create_agent(
+        "u1", "opencode", creator=client._create_agent,
+    )
+    assert created.info.status is AgentStatus.READY
+    assert yuanrong.create_calls == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str) -> None:
     class RegistryWithEnvVars(FakeRegistryClient):
         async def get_image_info(self, image_name: str) -> ImageInfo:
@@ -4728,6 +4806,41 @@ async def test_rejected_replay_retires_the_name_and_starts_a_new_generation(reco
         runtime = await _create_recovery_runtime(router)
         assert posts[2]["name"] != posts[0]["name"]
         assert runtime.info.sandbox_id == deterministic_agent_instance_id("default", posts[2]["name"])
+    finally:
+        await router.shutdown()
+
+
+async def test_rate_limited_replay_keeps_the_original_attempt(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("response lost")
+        if len(posts) == 2:
+            raise YuanrongAgentApiError(
+                "agent API failed: http_status=429",
+                status_code=429,
+            )
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    frontend.create_sandbox.side_effect = create
+    try:
+        with pytest.raises(AgentRebuildPending, match="unknown"):
+            await _create_recovery_runtime(router)
+        with pytest.raises(AgentRebuildPending, match="rate limited"):
+            await _create_recovery_runtime(router)
+        lifecycle = router._sandbox_lifecycles["user+jiuwenswarm"]
+        assert lifecycle.attempt is not None
+        assert frontend.delete_sandbox.await_count == 0
+        assert posts[1] == posts[0]
+
+        runtime = await _create_recovery_runtime(router)
+        assert posts[2] == posts[0]
+        assert runtime.info.sandbox_id == deterministic_agent_instance_id("default", posts[0]["name"])
+        assert frontend.delete_sandbox.await_count == 0
+        assert lifecycle.attempt is None
     finally:
         await router.shutdown()
 
