@@ -700,7 +700,9 @@ async def test_three_provider_wire_acceptance_and_request_isolation(collector, m
             assert one[1] == two[1] == format(browser_context.trace_id, '032x')
             assert one[2] != two[2]
             assert independent[1] != one[1]
-            assert one[3] == two[3] == ('01' if mode == 'sampled' else '00')
+            # otel >= 1.45 adds the W3C random-trace-id flag (0x02) for locally
+            # generated trace ids; the browser root carries it through the parent.
+            assert one[3] == two[3] == ('03' if mode == 'sampled' else '02')
             roots = [span for name, span in found if name == 'jiuwenswarm-gateway' and span.name == 'gw.session.message']
             if mode == 'unsampled':
                 assert not roots
