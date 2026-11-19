@@ -2117,7 +2117,7 @@ class WebChannel(BaseWsChannel):
 
         # ── V2: 从 query 提取身份字段，构造默认 RoutingKey ──
         # session_id 和 agent_id 可能在首条消息中更新
-        _app_id = _flat_query.get("app_id", "default")
+        _app_id = _flat_query.get("app_id") or "default"
         setattr(ws, "_jiuwen_app_id", _app_id)
         _mode = _flat_query.get("mode", "agent")
         _agent_id = _flat_query.get("agent_id", "default")
@@ -2315,7 +2315,7 @@ class WebChannel(BaseWsChannel):
         connection_user_id, _user_id = self._resolve_ws_identity(
             ws, flat_query, remote,
         )
-        _app_id = flat_query.get("app_id", "default")
+        _app_id = flat_query.get("app_id") or "default"
         _rk = RoutingKey(
             user_id=_user_id,
             channel_id=self.channel_id,
@@ -2576,7 +2576,7 @@ class WebChannel(BaseWsChannel):
         _flat_query = {k: (v[0] if v else "") for k, v in query.items()}
         _mode = params.get("mode", "agent")
         _agent_id = params.get("agent_id", "default")
-        _app_id = _flat_query.get("app_id", "default")
+        _app_id = _flat_query.get("app_id") or "default"
         req_user_id = self._connection_user_id(ws)
         if has_explicit_session and not method.startswith("a4p."):
             _rk = RoutingKey(

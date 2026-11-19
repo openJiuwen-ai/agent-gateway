@@ -348,6 +348,7 @@ def _normalize_gateway_message(msg):
         stream_seq=msg.stream_seq,
         stream_id=msg.stream_id,
         metadata=msg.metadata,
+        app_id=getattr(msg, "app_id", None),
         user_id=getattr(msg, "user_id", None),
     )
     attach_message_trace(normalized, get_message_trace(msg))

@@ -199,6 +199,32 @@ async def test_git_websocket_query_rejects_oversized_session_id_before_registrat
 
 
 @pytest.mark.asyncio
+async def test_git_websocket_empty_app_id_normalizes_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/ws/git must resolve an empty app_id to the default scope like /ws does."""
+    from types import SimpleNamespace
+
+    channel = _make_channel()
+    channel.git_watcher_registry = SimpleNamespace(cleanup_ws=lambda _ws: None)
+    routing_keys: list[Any] = []
+
+    async def _capture_register(ws: Any, routing_key: Any, **_kwargs: Any) -> None:
+        routing_keys.append(routing_key)
+
+    monkeypatch.setattr(channel, "register_ws", _capture_register)
+    ws = _QueueWebSocket("/ws/git", [])
+
+    await channel._handle_git_ws_connection(
+        ws,
+        {"user_id": "alice", "app_id": "", "session_id": "sess-1"},
+        ws.remote_address,
+    )
+
+    assert [rk.app_id for rk in routing_keys] == ["default"]
+
+
+@pytest.mark.asyncio
 async def test_websocket_query_rejects_oversized_session_id_before_registration() -> None:
     channel = _make_channel()
     oversized = "s" * 10_240
