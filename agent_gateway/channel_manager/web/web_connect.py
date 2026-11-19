@@ -283,6 +283,10 @@ class WebChannel(BaseWsChannel):
         self._listener_available = asyncio.Event()
         self._listener_start_error: Exception | None = None
         self._starting = False
+        # Extension runtime starts on first use: its cold Core import can take seconds
+        # and must never delay listener readiness or shutdown.
+        self._extensions_active = False
+        self._extensions_lock = asyncio.Lock()
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
         self._local_only_methods: set[str] = set(_LOCAL_ONLY_METHODS)
@@ -927,9 +931,6 @@ class WebChannel(BaseWsChannel):
         self._listener_start_error = None
         self._listener_available.clear()
         try:
-            from agent_gateway.extensions_v2 import init_gateway_extensions
-
-            await init_gateway_extensions(self)
             await self._start_uvicorn_server()
         except asyncio.CancelledError:
             self._listener_start_error = RuntimeError("WebChannel stopped before becoming ready")
@@ -940,9 +941,7 @@ class WebChannel(BaseWsChannel):
             self._listener_available.set()
             raise
         finally:
-            from agent_gateway.extensions_v2 import shutdown_gateway_extensions
-
-            await shutdown_gateway_extensions()
+            await self._shutdown_extensions()
             self._starting = False
             self._running = False
             self._stop_trajectory_hints()
@@ -955,6 +954,40 @@ class WebChannel(BaseWsChannel):
         if self._listener is None:
             raise RuntimeError("WebChannel stopped before becoming ready")
         await self._listener.wait_ready()
+
+    async def ensure_extensions(self, ws: Any = None) -> None:
+        """Start the extension runtime on first use and announce ``ws`` to it.
+
+        The runtime imports Core and every installed package synchronously, so it
+        starts on the first extension-bearing frame instead of during ``start()``.
+        """
+
+        if self._extensions_active:
+            return
+        async with self._extensions_lock:
+            if self._extensions_active:
+                return
+            from agent_gateway.extensions_v2 import init_gateway_extensions, notify_gateway_connect
+
+            runtime = await init_gateway_extensions(self)
+            self._extensions_active = True
+            if runtime is not None and ws is not None:
+                # The connection that triggered the lazy start missed the channel's
+                # on_connect hook; announce it now so it still receives declarations.
+                await notify_gateway_connect(ws)
+
+    async def _shutdown_extensions(self) -> None:
+        """Stop the extension runtime if this channel ever started it."""
+
+        if not self._extensions_active:
+            return
+        async with self._extensions_lock:
+            if not self._extensions_active:
+                return
+            from agent_gateway.extensions_v2 import shutdown_gateway_extensions
+
+            self._extensions_active = False
+            await shutdown_gateway_extensions()
 
     async def _start_uvicorn_server(self) -> None:
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
@@ -1022,9 +1055,7 @@ class WebChannel(BaseWsChannel):
         """停止 WebSocket 服务并清理连接."""
         self._running = False
         self._stop_trajectory_hints()
-        from agent_gateway.extensions_v2 import shutdown_gateway_extensions
-
-        await shutdown_gateway_extensions()
+        await self._shutdown_extensions()
 
         all_clients = list(self.clients)
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in all_clients]
@@ -2456,6 +2487,7 @@ class WebChannel(BaseWsChannel):
         if request_context is not None and not isinstance(request_context, dict):
             await self.send_response(ws, req_id, ok=False, error="invalid request context", code="BAD_REQUEST")
             return
+        await self.ensure_extensions(ws)
         _visited, params = await intercept_gateway_frame(
             ws, req_id, method, params, request_context=request_context
         )

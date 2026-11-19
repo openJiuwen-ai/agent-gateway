@@ -2,7 +2,7 @@
 
 """Gateway-side extension runtime entry points.
 
-``WebChannel`` calls :func:`init_gateway_extensions` on start,
+``WebChannel`` calls :func:`init_gateway_extensions` on the first gateway frame,
 :func:`intercept_gateway_frame` for every inbound frame and
 :func:`notify_gateway_disconnect` when a socket closes. The singleton itself
 lives in :mod:`agent_gateway.extensions_v2.assembly`; this module keeps
@@ -63,6 +63,28 @@ async def intercept_gateway_frame(
     except Exception as exc:  # noqa: BLE001 - fail open to the native path
         logger.warning("[GatewayExtensions] frame interception failed, forwarding: %s", exc)
         return False, dict(params)
+
+
+async def notify_gateway_connect(ws: Any) -> None:
+    """Announce a connection so it receives declarations; no-op while unavailable.
+
+    Every connection receives declarations, including the empty ``packages`` of a
+    runtime without client-capability packages. A browser that reconnects after a
+    restart with every plugin disabled otherwise waits for a snapshot that never
+    arrives and rejects each business request as CLIENT_DECLARATIONS_REQUIRED (S_06).
+    """
+
+    from agent_gateway.extensions_v2.assembly import get_gateway_runtime
+
+    runtime = get_gateway_runtime()
+    if runtime is None:
+        return
+    try:
+        connection_id = await runtime.connection_id(ws)
+        if connection_id:
+            await runtime.browser.connect(ws, connection_id)
+    except Exception as exc:  # noqa: BLE001 - announcement must not break the connection
+        logger.warning("[GatewayExtensions] connect notification failed: %s", exc)
 
 
 async def notify_gateway_disconnect(ws: Any, session_ids: Any = None) -> None:

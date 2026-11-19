@@ -105,7 +105,7 @@ flowchart TB
 
 ### 3.1 装配链路
 
-`WebChannel` 启动 uvicorn 前调用 `init_gateway_extensions(channel)`：
+`WebChannel` 在首个业务帧到达时调用 `init_gateway_extensions(channel)`（不在监听启动路径上，避免 Core 冷启动导入拖慢就绪）：
 
 1. `assembly.install_gateway_extensions` 读取 `extensions.gateway` 配置；`enabled=false` 时返回 `None`，能力整体不可用。
 2. 创建 `GatewayRuntime`（总线 + 存储 + 路由 + 传输 + 渲染登记）。

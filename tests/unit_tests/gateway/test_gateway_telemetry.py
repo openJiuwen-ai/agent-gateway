@@ -88,7 +88,9 @@ def test_unsampled_context_still_propagates():
     with telemetry.bind_request_trace(operation):
         envelope = SimpleNamespace(request_id="r", channel_context={})
         telemetry.inject_request_trace(envelope)
-    assert envelope.traceparent.endswith("-00")
+    # opentelemetry-sdk>=1.45 会同时置位 W3C 的 random-trace-id 标志（0x02），
+    # 未采样只看 sampled 位（0x01）是否清零。
+    assert not int(envelope.traceparent.rsplit("-", 1)[1], 16) & 0x01
     assert envelope.channel_context == {}
     provider.shutdown()
 

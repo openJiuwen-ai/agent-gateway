@@ -108,8 +108,9 @@ manifest 的 `package.domain` 字段决定归属：只有 `gateway` 由 Gateway 
 
 | 位置 | 改动 |
 | --- | --- |
-| `web_connect._start_uvicorn_server` | 启动 uvicorn 前后调用 `init_gateway_extensions(self)` / `shutdown_gateway_extensions()` |
-| `web_connect.shutdown` | 停机时调用 `shutdown_gateway_extensions()` |
+| `web_connect.start` | 不再同步装配：扩展运行时的冷启动导入（Core + 已安装包）可能耗时数秒，会拖慢监听就绪与停机 |
+| `web_connect.ensure_extensions` | 首帧到达时按需装配；装配成功后对该连接补发浏览器声明，避免漏掉 `on_connect` 钩子 |
+| `web_connect.stop` / `start` 的 `finally` | 仅在本次确实装配过时调用 `shutdown_gateway_extensions()` |
 | `web_connect` 帧处理 | 原生分发前调用 `intercept_gateway_frame(ws, req_id, method, params)`，返回 `visited=True` 时不再分发 |
 | `web_connect.ws_by_id` | 按连接标识取回 socket，供下行帧发送 |
 | `base_ws_channel.ensure_ws_id` | 为连接分配稳定 id，维护 id 与 socket 双向映射及发送队列 |

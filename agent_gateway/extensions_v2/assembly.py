@@ -119,22 +119,10 @@ def _hook_disconnect(channel: Any) -> None:
     register = getattr(channel, "on_disconnect", None)
     if not callable(register):
         return
-    from agent_gateway.extensions_v2 import notify_gateway_disconnect
+    from agent_gateway.extensions_v2 import notify_gateway_connect, notify_gateway_disconnect
 
     register(notify_gateway_disconnect)
     connect = getattr(channel, "on_connect", None)
     if callable(connect):
-        async def browser_connected(ws):
-            runtime = get_gateway_runtime()
-            if runtime is None:
-                return
-            # Every connection receives declarations, including the empty ``packages`` of a
-            # runtime without client-capability packages. A browser that reconnects after a
-            # restart with every plugin disabled otherwise waits for a snapshot that never
-            # arrives and rejects each business request as CLIENT_DECLARATIONS_REQUIRED (S_06).
-            connection_id = await runtime.connection_id(ws)
-            if not connection_id:
-                return
-            await runtime.browser.connect(ws, connection_id)
-        connect(browser_connected)
+        connect(notify_gateway_connect)
     setattr(channel, "_gateway_extensions_hooked", True)

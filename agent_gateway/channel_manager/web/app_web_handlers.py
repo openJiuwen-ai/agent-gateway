@@ -483,7 +483,6 @@ _FORWARD_REQ_METHODS = frozenset({
 
     "initialize",
     "session.switch",
-    "session.detach",
     "session.fork",
     "acp.tool_response",
     # Client attachments (e.g. the Office Add-in): attaching a client, renewing it, and its read models.
@@ -737,7 +736,6 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 
     "initialize",
     "session.switch",
-    "session.detach",
     "session.fork",
     "acp.tool_response",
     "client.attach",
@@ -2288,11 +2286,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "protocol_version": "1.0",
             },
         )
-        mh = _resolve(message_handler)
-        if mh:
-            await mh.publish_robot_messages(ack_msg)
-        else:
-            await channel.send(ack_msg)
+        # connection.ack 必须是握手首帧（前端与 ST 契约）。不能经
+        # robot_messages 队列异步派发：扩展在连接钩子里直接向 ws 写
+        # client.declarations，队列中的 ack 会晚于声明到达。channel.send
+        # 直接入本连接的发送队列，保证 ack 先于后续连接钩子产生的帧。
+        await channel.send(ack_msg)
 
     channel.on_connect(_on_connect)
 
