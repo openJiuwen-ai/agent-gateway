@@ -132,6 +132,7 @@ async def run_single(
         startup_import_phases: list[tuple[str, float]],
         preprocessor: MessagePreprocessor,
         connect_with_retry: Callable[..., Awaitable[None]],
+        required_client_type: str | None = None,
 ) -> None:
     from agent_gateway.common.config import get_config
 
@@ -159,6 +160,7 @@ async def run_single(
     services = await assemble_services(
         agent_server_url, log_stage=log_startup_stage, startup_t0=startup_t0,
         connect_with_retry=connect_with_retry,
+        required_client_type=required_client_type,
     )
     client = services.client
     third_agent = services.third_agent

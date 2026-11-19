@@ -55,6 +55,25 @@ def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) ->
             )
 
 
+def _validate_agent_client_registration(
+    config: dict[str, Any] | None,
+    extension: Any,
+    *,
+    required_type: str | None = None,
+) -> None:
+    gateway = (config or {}).get("gateway") or {}
+    selected = str((gateway.get("agent_client") or {}).get("type") or "websocket").strip().lower()
+    expected = required_type or selected
+    if expected == "websocket":
+        return
+    registered = extension.metadata.id if extension is not None else "none"
+    if selected != expected or registered != expected or extension.get_client() is None:
+        raise RuntimeError(
+            f"Configured AgentServerClient {expected!r} is not registered (selected: {selected}, "
+            f"registered: {registered}). Check gateway.agent_client.type and extension loading logs."
+        )
+
+
 def resolve_agent_server_client(
     extension: Any,
     *,
