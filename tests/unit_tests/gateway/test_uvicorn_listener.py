@@ -129,6 +129,41 @@ async def test_stop_before_start_wakes_ready_waiter() -> None:
         await listener.start()
 
 
+async def test_stop_consumes_cancelled_task_and_wakes_ready_waiter() -> None:
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    listener = UvicornListener(FastAPI(), host="127.0.0.1", port=0, ws_per_message_deflate=False)
+    task = asyncio.create_task(asyncio.sleep(60))
+    task.cancel()
+    await asyncio.sleep(0)
+    listener._task = task
+    waiter = asyncio.create_task(listener.wait_ready())
+
+    await asyncio.wait_for(listener.stop(), 5)
+
+    assert listener._ready.is_set()
+    with pytest.raises(RuntimeError, match="stopped before becoming ready"):
+        await asyncio.wait_for(waiter, 5)
+
+
+async def test_stop_still_propagates_caller_cancellation() -> None:
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    listener = UvicornListener(FastAPI(), host="127.0.0.1", port=0, ws_per_message_deflate=False)
+    task = asyncio.create_task(asyncio.sleep(60))
+    listener._task = task
+    stopper = asyncio.create_task(listener.stop())
+    try:
+        await asyncio.sleep(0)
+        stopper.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await stopper
+        assert listener._ready.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_cancelled_ready_and_closed_waiters_do_not_stop_listener() -> None:
     from agent_gateway.transport.uvicorn_listener import UvicornListener
 

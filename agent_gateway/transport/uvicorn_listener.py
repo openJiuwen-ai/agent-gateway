@@ -94,9 +94,18 @@ class UvicornListener:
         self._stop_requested = True
         if self._server is not None:
             self._server.should_exit = True
-        if self._task is not None:
-            await asyncio.shield(self._task)
-        self._ready.set()
+        task = self._task
+        try:
+            if task is not None:
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if not task.cancelled():
+                        raise
+                except BaseException:
+                    pass
+        finally:
+            self._ready.set()
 
     async def _serve(self) -> None:
         try:
