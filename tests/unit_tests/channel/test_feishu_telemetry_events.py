@@ -5,7 +5,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.channel_manager.base import (
     WEB_ONLY_TELEMETRY_EVENTS,

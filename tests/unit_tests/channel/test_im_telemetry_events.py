@@ -5,7 +5,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-from openjiuwen_protocol.message import EventType, Message
+from e2a.message import EventType, Message
 
 from agent_gateway.channel_manager.base import (
     WEB_ONLY_TELEMETRY_EVENTS,
@@ -50,7 +50,7 @@ from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
 def _message(
     event_name: str,
     *,
-    msg_type: str = "res",
+    msg_type: str = "event",
     event_type: EventType | str | None = None,
     metadata: dict | None = None,
     content: str = "duplicate answer",
@@ -215,3 +215,21 @@ def test_dingtalk_still_delivers_chat_final() -> None:
 
     assert len(delivered) == 1
     assert "the answer" in delivered[0]
+
+
+def test_whatsapp_delivers_chat_final_event() -> None:
+    """chat.final 以 event 帧投递，确认过滤没有误伤正常正文。"""
+    channel = _whatsapp()
+    channel._extract_outgoing_text = lambda _msg: "the answer"  # type: ignore[method-assign]
+    frames: list[dict] = []
+
+    async def _capture(frame) -> None:
+        frames.append(frame)
+
+    channel._send_frame = _capture  # type: ignore[method-assign]
+    metadata = {"whatsapp_jid": "8613800000000@s.whatsapp.net"}
+
+    asyncio.run(channel.send(_message("chat.final", metadata=metadata)))
+
+    assert len(frames) == 1
+    assert frames[0]["text"] == "the answer"

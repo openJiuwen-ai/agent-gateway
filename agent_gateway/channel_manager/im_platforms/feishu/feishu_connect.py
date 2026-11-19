@@ -2379,6 +2379,7 @@ class FeishuChannel(BaseChannel):
 
             # 跳过只给 Web/TUI 的运行时遥测，避免重复渲染正文。
             if is_web_only_telemetry_event(msg):
+                logger.debug("[Feishu] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
                 return
 
             # 处理文件消息
