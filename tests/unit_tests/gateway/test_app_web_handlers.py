@@ -310,7 +310,7 @@ class FakeReloadAgentClient:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", [
-    "a4p.config.get", "a4p.config.update", "a4p.authorization.reprepare",
+    "a4p.authorization.reprepare",
     "a4p.authorization.complete", "a4p.authorization.reject", "a4p.authorization.pending",
 ])
 @pytest.mark.parametrize("user_id", ["authenticated-user", None])
@@ -369,10 +369,9 @@ async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
+async def test_a4p_pending_rejects_websocket_without_session_route() -> None:
     channel = _bind(agent_client=SimpleNamespace(server_ready=True))
-    await channel.methods[method](
+    await channel.methods["a4p.authorization.pending"](
         SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", {}, "session-1"
     )
     assert channel.responses[-1]["ok"] is False

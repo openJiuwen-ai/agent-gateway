@@ -223,6 +223,22 @@ _IM_HOSTING_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
 )
 
+# ---------------------------------------------------------------------------
+# settings — a4p.config.*
+# ---------------------------------------------------------------------------
+_A4P_CONFIG_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "GET", "/a4p/config", "a4p.config.get",
+        "a4p", "读取 A4P 配置",
+        query_keys=("session_id",),
+    ),
+    WebHttpMappedRoute(
+        "PUT", "/a4p/config", "a4p.config.update",
+        "a4p", "更新 A4P 配置",
+        accept_body=True,
+    ),
+)
+
 SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_CONFIG_ROUTES,
     *_A2A_INGRESS_ROUTES,
@@ -230,6 +246,7 @@ SETTINGS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_LOCALE_ROUTES,
     *_CRON_ROUTES,
     *_IM_HOSTING_ROUTES,
+    *_A4P_CONFIG_ROUTES,
 )
 
 # ---------------------------------------------------------------------------
