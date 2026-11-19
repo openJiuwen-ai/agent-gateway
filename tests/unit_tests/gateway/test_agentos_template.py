@@ -133,3 +133,39 @@ def test_gateway_templates_drop_as_only_modes() -> None:
         assert set(template["modes"]) == {"team"}
         assert "agent" not in template["modes"]
         assert "code" not in template["modes"]
+
+
+def test_gateway_templates_drop_as_only_modes_runtime_keys() -> None:
+    as_only = {
+        "swarmflow_progressive_tool",
+        "reliability",
+        "swarmflow_concurrency",
+        "worktree",
+        "workspace",
+        "transport",
+        "storage",
+        "memory",
+        "team_name",
+        "lifecycle",
+        "teammate_mode",
+        "spawn_mode",
+        "dispatch_mode",
+        "enable_task_verification",
+        "enable_member_messaging",
+        "max_subtask_depth",
+        "leader",
+        "agents",
+    }
+    for template in (BASE, AGENTOS):
+        team = template["modes"]["team"]["jiuwen_team"]
+        assert as_only.isdisjoint(team)
+
+
+def test_gateway_modes_keep_only_gateway_owned_keys() -> None:
+    for template in (BASE, AGENTOS):
+        team = template["modes"]["team"]["jiuwen_team"]
+        assert set(team) == {
+            "enable_swarmflow",
+            "external_cli_agents",
+            "external_transport",
+        }
