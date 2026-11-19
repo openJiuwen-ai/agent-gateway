@@ -15,6 +15,7 @@ from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
     RobotMessageRouter,
+    is_web_only_telemetry_event,
 )
 from agent_gateway.routing.keys import SlackDeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -128,6 +129,10 @@ class SlackChannel(BaseChannel):
         self, msg: Message, *, routing_target: RoutingTarget | None = None
     ) -> None:
         if self._client is None:
+            return
+        # 跳过只给 Web/TUI 的运行时遥测，避免通用内容提取把其渲染成重复正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[Slack] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
             return
         if msg.event_type == EventType.CHAT_DELTA:
             return

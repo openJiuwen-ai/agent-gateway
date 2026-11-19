@@ -22,6 +22,49 @@ if TYPE_CHECKING:
 ConnectHook = Callable[..., Any]
 _UNAUTHORIZED_BODY = b"Unauthorized\n"
 
+# 仅 Web/TUI 消费的运行时遥测事件。IM 渠道没有这些事件的呈现语义，而各渠道的
+# 通用内容提取会把任何带文本的 payload 当作正文发送，导致 chat.llm_call_end 在
+# chat.delta/chat.final 已展示答案之后再发一条重复消息（心跳与工具轮次都会触发）。
+# 所有 IM 渠道在 send() 入口统一丢弃，不要依赖上游是否过滤。
+WEB_ONLY_TELEMETRY_EVENTS: frozenset[str] = frozenset(
+    {
+        "chat.llm_call_start",
+        "chat.llm_call_end",
+        "chat.output_phase",
+        "chat.usage_metadata",
+        "chat.usage_summary",
+        "context.usage",
+    }
+)
+
+
+def _event_name_text(value: Any) -> str:
+    """把事件名归一化为字符串：兼容枚举成员、str 混入枚举与裸字符串。
+
+    ``EventType`` 是普通 ``Enum``（非 ``str`` 子类），直接 ``isinstance(..., str)``
+    会得到 False；``str`` 混入枚举则依赖 hash/eq 的实现细节。统一先取 ``value``
+    归一化，两条路径行为一致。
+    """
+    name = getattr(value, "value", None)
+    if isinstance(name, str) and name:
+        return name
+    return value if isinstance(value, str) else ""
+
+
+def resolve_event_name(msg: Message) -> str:
+    """取消息事件名：兼容 EventType 枚举、裸字符串与 payload.event_type。"""
+    event_name = _event_name_text(getattr(msg, "event_type", None))
+    if not event_name:
+        payload = getattr(msg, "payload", None)
+        if isinstance(payload, dict):
+            event_name = _event_name_text(payload.get("event_type"))
+    return event_name
+
+
+def is_web_only_telemetry_event(msg: Message) -> bool:
+    """判断消息是否为只给 Web/TUI 的运行时遥测；IM 渠道 send() 入口应直接丢弃。"""
+    return resolve_event_name(msg) in WEB_ONLY_TELEMETRY_EVENTS
+
 
 class ChannelType(str, Enum):
     """Channel 类型枚举."""

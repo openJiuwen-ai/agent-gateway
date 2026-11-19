@@ -23,6 +23,7 @@ from agent_gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,
     RobotMessageRouter,
+    is_web_only_telemetry_event,
 )
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
@@ -1150,6 +1151,11 @@ class WecomChannel(BaseChannel):
         """
         if not self._ws_client or not getattr(self._ws_client, "is_connected", False):
             logger.warning("WecomChannel 未连接，跳过发送")
+            return
+
+        # 跳过只给 Web/TUI 的运行时遥测，避免污染流式累积或重复渲染正文。
+        if is_web_only_telemetry_event(msg):
+            logger.debug("[WecomChannel] 跳过 Web/TUI 遥测事件: id=%s", msg.id)
             return
 
         # 不向企业微信发送 chat.processing_status（思考状态事件），避免展示思考过程
