@@ -1,5 +1,6 @@
 """Environment-scoped file contracts through the ADX adapter."""
 import asyncio
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,7 +9,7 @@ import pytest
 
 from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
 from agent_gateway.extensions.adx.router_client import AdxRouterClient, AdxRoutingError
-from agent_gateway.routing.container_files import AgentOSFileTransferError
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSFileTransferError
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from tests.unit_tests.extensions.test_adx_router import _config, FakeClient, _request, _router
 
@@ -16,12 +17,46 @@ from tests.unit_tests.extensions.test_adx_router import _config, FakeClient, _re
 def _files(monkeypatch, *, auth_client=None):
     router, _clients = _router(_config(monkeypatch), auth_client=auth_client)
     router._control.invoke = AsyncMock()
+    api = router.test_api
+    original = api.handle
+    api.transfers = []
+    api.file_data = b'abcdef'
+    async def handle(request):
+        if request.url.path.endswith('/upload'):
+            assert request.headers['authorization'] == 'Bearer platform-secret'
+            content = await request.aread()
+            api.transfers.append((request, content))
+            return httpx.Response(200, json={'size': len(content)})
+        if request.url.path.endswith('/download'):
+            assert request.headers['authorization'] == 'Bearer platform-secret'
+            api.transfers.append((request, None))
+            content = api.file_data
+            if 'range' in request.headers:
+                start, end = map(int, request.headers['range'][6:].split('-'))
+                if start >= len(content):
+                    return httpx.Response(416, content=b'unsatisfiable', headers={
+                        'Content-Range': f'bytes */{len(content)}',
+                    })
+                return httpx.Response(206, content=content[start:end + 1], headers={
+                    'Content-Range': f'bytes {start}-{end}/{len(content)}',
+                })
+            response = httpx.Response(200, content=content)
+            if content_type := getattr(api, 'file_content_type', None):
+                response.headers['Content-Type'] = content_type
+            if getattr(api, 'omit_download_length', False):
+                del response.headers['Content-Length']
+            return response
+        return original(request)
+    router._control.http._transport = httpx.MockTransport(handle)
     return router, router._control
 
 
-def _created_instance(router, index=0):
-    body = router.test_api.creates[index]
-    return f"{body['namespace']}-{body['name']}"
+def _alice_instance(router):
+    creates = [body for body in router.test_api.creates
+               if body['mounts'][0]['host_path'].endswith('/alice')]
+    assert len(creates) == 1
+    body = creates[0]
+    return body['namespace'] + '-' + body['name']
 
 
 def _file_channel(router):
@@ -46,6 +81,7 @@ def _business_authenticator():
 
 
 @pytest.mark.parametrize('connected', [True, False])
+@pytest.mark.asyncio
 async def test_gateway_health_check_is_mocked_without_activation(monkeypatch, connected):
     from agent_gateway.health_check import (
         HEALTH_CHECK_OK,
@@ -78,34 +114,38 @@ async def test_gateway_health_check_is_mocked_without_activation(monkeypatch, co
         await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_file_upload_is_atomic_and_scoped_to_activated_user(monkeypatch):
     router, control = _files(monkeypatch)
     await router.connect('')
     payload = b'hello' * 17000
     actions = []
     def invoke(env, action, args):
-        assert env == _created_instance(router)
+        assert env == _alice_instance(router)
         actions.append((action, args))
-        return {'bytes_written': len(bytes.fromhex(args['data']))} if action == 'file.write_chunk' else {}
+        return {'bytes_written': len(bytes.fromhex(args['data']))} if action == 'file.write_chunk' else {'exit_code': 0}
     control.invoke.side_effect = invoke
     result = await router.upload_container_file(user_id='alice', path='probe.txt', content=payload)
-    writes = [a for k, a in actions if k == 'file.write_chunk']
-    assert b''.join(bytes.fromhex(a['data']) for a in writes) == payload
-    assert [a['offset'] for a in writes] == [0, 65536]
+    assert len(router.test_api.transfers) == 1
+    request, uploaded = router.test_api.transfers[0]
+    assert uploaded == payload
+    assert request.url.path.endswith('/upload')
+    assert not any(action == 'file.write_chunk' for action, _ in actions)
     assert actions[-2][0] == 'file.rename' and actions[-2][1]['new_path'] == '/home/agentos/probe.txt'
     assert result['size'] == len(payload)
     with pytest.raises(AgentOSFileTransferError):
-        await router.download_container_file(user_id='bob', path='/home/agentos/probe.txt', instance_id=_created_instance(router))
+        await router.download_container_file(user_id='bob', path='/home/agentos/probe.txt', instance_id=_alice_instance(router))
     await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_http_download_keeps_environment_and_releases_activity(monkeypatch):
     from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')
     def invoke(env, action, args):
-        assert env == _created_instance(router)
+        assert env == _alice_instance(router)
         if action == 'file.stat':
             return {'type': 'file', 'size': 6}
         return {'data': (b'abc' if args['offset'] == 0 else b'def').hex(), 'bytes_read': 3}
@@ -123,6 +163,7 @@ async def test_http_download_keeps_environment_and_releases_activity(monkeypatch
         await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_http_file_routes_require_business_auth_and_reject_other_users(monkeypatch):
     from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
     auth_client = _business_authenticator()
@@ -134,6 +175,7 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
         {'type': 'file', 'size': 3} if action == 'file.stat' else
         {'data': b'abc'.hex(), 'bytes_read': 3, 'eof': True})
     channel = _file_channel(router)
+    router.test_api.file_data = b'abc'
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_web_channel_app(channel)), base_url='http://gateway', headers={'Authorization': 'Bearer business-test-token'}) as client:
         response = await client.get('/file-api/list-files', params={'dir': '/home/agentos', 'user_id': 'alice'})
         assert response.status_code == 200 and 'a.txt' in response.text
@@ -149,8 +191,8 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
         assert response.status_code == 401
         response = await client.get('/file-api/list-files', params={'dir': '/home/agentos'})
         assert response.status_code == 200
-    instance = _created_instance(router)
-    assert [call.args[0] for call in control.invoke.await_args_list] == [instance] * 4
+    assert all(call.args[0] == _alice_instance(router) for call in control.invoke.await_args_list)
+    assert len(router.test_api.transfers) == 1
     assert auth_client.authenticate.await_count == 6
     await router.shutdown()
 
@@ -163,6 +205,7 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
     ('agent_type', 404, 'instance_not_found'),
     ('environment', 502, 'SERVICE_UNAVAILABLE'),
 ])
+@pytest.mark.asyncio
 async def test_http_file_routes_map_adx_failures(monkeypatch, route, params, failure, status, code):
     from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
@@ -185,15 +228,17 @@ async def test_http_file_routes_map_adx_failures(monkeypatch, route, params, fai
         await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_missing_runtime_file_preserves_existing_not_found_contract(monkeypatch):
     control = AdxControlClient(_config(monkeypatch), transport=httpx.MockTransport(
         lambda request: httpx.Response(400, json={'error': 'path not found: /home/agentos/probe.txt'})))
     with pytest.raises(AdxControlError) as caught:
         await control.invoke('test-alice+jiuwenswarm', 'file.stat', {'path': '/home/agentos/probe.txt'})
-    assert caught.value.code == 'NOT_FOUND'
+    assert caught.value.code == 'file_not_found'
     await control.close()
 
 
+@pytest.mark.asyncio
 async def test_recursive_listing_preserves_unlimited_depth_contract(monkeypatch):
     router, control = _files(monkeypatch)
     await router.connect('')
@@ -210,6 +255,7 @@ async def test_recursive_listing_preserves_unlimited_depth_contract(monkeypatch)
     await router.shutdown()
 
 
+@pytest.mark.asyncio
 async def test_file_routes_follow_original_auth_disabled_behavior(monkeypatch):
     from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
@@ -226,19 +272,325 @@ async def test_file_routes_follow_original_auth_disabled_behavior(monkeypatch):
     await router.shutdown()
 
 
-@pytest.mark.parametrize('recursive', [False, True])
-async def test_mkdir_uses_native_adx_action_and_default_mode(monkeypatch, recursive):
+@pytest.mark.asyncio
+async def test_recursive_mkdir_uses_native_adx_action_and_default_mode(monkeypatch):
     router, control = _files(monkeypatch)
     await router.connect('')
-    control.invoke.return_value = {'created': True, 'error': None}
+    control.invoke.side_effect = lambda env, action, args: (
+        {'created': True, 'error': None} if action == 'file.mkdir' else {'exit_code': 0}
+    )
     assert await router.mkdir_container_dir(
-        user_id='alice', path='/home/agentos/nested/dir', recursive=recursive,
+        user_id='alice', path='/home/agentos/nested/dir', recursive=True,
     ) == {'success': True, 'path': '/home/agentos/nested/dir', 'created': True}
-    instance = _created_instance(router)
-    control.invoke.assert_awaited_once_with(instance, 'file.mkdir', {'path': '/home/agentos/nested/dir'})
+    control.invoke.assert_awaited_once_with(_alice_instance(router), 'file.mkdir', {'path': '/home/agentos/nested/dir'})
     assert await router.mkdir_container_dir(
-        user_id='alice', path='/home/agentos/other', mode='700', recursive=recursive,
+        user_id='alice', path='/home/agentos/other', mode='700', recursive=True,
     ) == {'success': True, 'path': '/home/agentos/other', 'created': True}
-    control.invoke.assert_awaited_with(instance, 'file.mkdir', {'path': '/home/agentos/other'})
-    assert control.invoke.await_count == 2
+    assert control.invoke.await_args_list[-2].args[1:] == ('file.mkdir', {'path': '/home/agentos/other'})
+    assert control.invoke.await_args_list[-1].args[1] == 'cmd.run'
+    assert 'chmod -- 700 /home/agentos/other' in control.invoke.await_args_list[-1].args[2]['cmd']
+    assert control.invoke.await_count == 3
     await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_uploaded_file_and_new_parents_inherit_workspace_owner(monkeypatch):
+    import shlex
+
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    actions = []
+    def invoke(env, action, args):
+        actions.append((action, args))
+        if action == 'file.exists':
+            return {'exists': args['path'] == '/home/agentos/existing'}
+        if action == 'file.write_chunk':
+            return {'bytes_written': len(bytes.fromhex(args['data']))}
+        return {'exit_code': 0}
+    control.invoke.side_effect = invoke
+    try:
+        await router.upload_container_file(
+            user_id='alice', path="existing/new dir/it's a file.txt", content=b'owned')
+        commands = [args['cmd'] for action, args in actions if action == 'cmd.run']
+        assert len(commands) == 1
+        words = shlex.split(commands[0])
+        assert words[:4] == ['chown', '-h', '--reference=/home/agentos', '--']
+        assert '/home/agentos/existing/new dir' in words[4:]
+        assert '/home/agentos/existing' not in words[4:]
+        assert actions[-3][0] == 'cmd.run' and actions[-2][0] == 'file.rename'
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_upload_does_not_publish_when_owner_cannot_be_applied(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    def invoke(env, action, args):
+        if action == 'file.exists':
+            return {'exists': True}
+        if action == 'file.write_chunk':
+            return {'bytes_written': len(bytes.fromhex(args['data']))}
+        if action == 'cmd.run':
+            return {'exit_code': 1, 'stderr': 'Operation not permitted'}
+        return {}
+    control.invoke.side_effect = invoke
+    try:
+        with pytest.raises(AgentOSFileTransferError):
+            await router.upload_container_file(user_id='alice', path='probe.txt', content=b'owned')
+        assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_native_download_holds_runtime_until_stream_closed(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'type': 'file', 'size': 6}
+    async with router.open_container_file(user_id='alice', path='/home/agentos/a') as response:
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        assert runtime.task_count == 1
+        assert await response.aread() == b'abcdef'
+    runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+    assert runtime.task_count == 0
+    control.invoke.assert_awaited_once_with(_alice_instance(router), 'file.stat', {'path': '/home/agentos/a'})
+    await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_native_range_download_preserves_chunk_contract(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'type': 'file', 'size': 6}
+    result = await router.download_container_file(user_id='alice', path='/home/agentos/a', offset=2, limit=3)
+    assert result.data == b'cde' and result.offset == 2 and result.size == 6 and not result.eof
+    assert router.test_api.transfers[0][0].headers['range'] == 'bytes=2-4'
+    result = await router.download_container_file(user_id='alice', path='/home/agentos/a', offset=6)
+    assert result.eof and result.data == b'' and len(router.test_api.transfers) == 1
+    await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_upload_never_publishes_target_and_releases_runtime(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'exists': True, 'exit_code': 0}
+    async def chunks():
+        yield b'partial'
+        raise RuntimeError('client disconnected')
+    with pytest.raises(RuntimeError, match='client disconnected'):
+        await router.upload_container_file_stream(user_id='alice', path='a', chunks=chunks())
+    assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
+    assert control.invoke.await_args_list[-1].args[1] == 'file.remove'
+    runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+    assert runtime.task_count == 0
+    await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_native_upload_rejects_traversal_before_creating_environment(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    with pytest.raises(AgentOSFileTransferError):
+        await router.upload_container_file(user_id='alice', path='../escape', content=b'bad')
+    assert not router.test_api.creates and not router.test_api.transfers
+    await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_upload_limit_counts_stream_and_never_publishes_oversize(monkeypatch):
+    from agent_gateway.extensions.adx import file_client
+    monkeypatch.setattr(file_client, '_MAX_UPLOAD_SIZE', 5)
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'exit_code': 0}
+    try:
+        assert (await router.upload_container_file(user_id='alice', path='ok', content=b'12345'))['size'] == 5
+        control.invoke.reset_mock()
+        with pytest.raises(AgentOSFileTransferError) as caught:
+            await router.upload_container_file(user_id='alice', path='too-large', content=b'123456')
+        assert caught.value.code == 'file_too_large'
+        assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
+        assert any(call.args[1] == 'file.remove' for call in control.invoke.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_native_upload_retains_stream_limit_for_unknown_size(monkeypatch):
+    from agent_gateway.extensions.adx import file_client
+    monkeypatch.setattr(file_client, '_MAX_UPLOAD_SIZE', 5)
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'exit_code': 0}
+    transmitted = b''
+    async def chunks():
+        for chunk in (b'12', b'345', b'6'):
+            yield chunk
+    @asynccontextmanager
+    async def transfer(*args, content):
+        nonlocal transmitted
+        async for chunk in content:
+            transmitted += chunk
+        yield SimpleNamespace(aread=AsyncMock(return_value=b''), json=lambda: {'size': len(transmitted)})
+    monkeypatch.setattr(file_client, 'file_request', transfer)
+    try:
+        with pytest.raises(AgentOSFileTransferError) as caught:
+            await router.upload_container_file_stream(user_id='alice', path='large', chunks=chunks())
+        assert caught.value.code == 'file_too_large' and transmitted == b'12345'
+        assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
+        assert any(call.args[1] == 'file.remove' for call in control.invoke.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_upload_mode_is_validated_and_applied_before_publish(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    control.invoke.return_value = {'exit_code': 0}
+    try:
+        with pytest.raises(AgentOSFileTransferError) as caught:
+            await router.upload_container_file(user_id='alice', path='x', content=b'x', mode='999')
+        assert caught.value.code == 'BAD_REQUEST'
+        assert router.test_api.creates == []
+        await router.upload_container_file(user_id='alice', path='x', content=b'x', mode='0600')
+        calls = control.invoke.await_args_list
+        chmod = next(i for i, call in enumerate(calls) if call.args[1] == 'cmd.run' and 'chmod' in call.args[2]['cmd'])
+        rename = next(i for i, call in enumerate(calls) if call.args[1] == 'file.rename')
+        assert chmod < rename
+        assert 'chmod -- 0600 ' in calls[chmod].args[2]['cmd']
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_directory_mode_is_rejected_before_activation(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    try:
+        with pytest.raises(AgentOSFileTransferError) as caught:
+            await router.mkdir_container_dir(user_id='alice', path='/home/agentos/a', mode='999')
+        assert caught.value.code == 'BAD_REQUEST'
+        assert router.test_api.creates == []
+        control.invoke.assert_not_awaited()
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize('status, payload, expected', [
+    (400, {'error': 'path not found: /home/agentos/a'}, 'file_not_found'),
+    (404, {'error': {'code': 'NOT_FOUND', 'message': 'instance not found'}}, 'instance_not_found'),
+    (404, {'error': 'not found'}, 'INTERNAL_ERROR'),
+    (404, {'error': 'missing', 'error_code': 'FILE_NOT_FOUND'}, 'file_not_found'),
+])
+@pytest.mark.asyncio
+async def test_invoke_distinguishes_structured_instance_and_file_errors(monkeypatch, status, payload, expected):
+    control = AdxControlClient(_config(monkeypatch), transport=httpx.MockTransport(
+        lambda request: httpx.Response(status, json=payload)))
+    try:
+        with pytest.raises(AdxControlError) as caught:
+            await control.invoke('test-alice', 'file.stat', {'path': '/home/agentos/a'})
+        assert caught.value.code == expected
+    finally:
+        await control.close()
+
+
+
+
+@pytest.mark.asyncio
+async def test_upload_does_not_publish_when_mode_cannot_be_applied(monkeypatch):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    def invoke(env, action, args):
+        if action == 'cmd.run' and 'chmod' in args['cmd']:
+            return {'exit_code': 1}
+        return {'exit_code': 0}
+    control.invoke.side_effect = invoke
+    try:
+        with pytest.raises(AgentOSFileTransferError):
+            await router.upload_container_file(user_id='alice', path='a', content=b'a', mode='600')
+        assert not any(call.args[1] == 'file.rename' for call in control.invoke.await_args_list)
+        assert any(call.args[1] == 'file.remove' for call in control.invoke.await_args_list)
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('recursive', [False, True])
+@pytest.mark.parametrize('path', ['relative', '/outside/root', '/home/agentos/../escape', '/home/agentos/bad\x00name'])
+async def test_mkdir_invalid_path_is_rejected_before_environment_use(monkeypatch, recursive, path):
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    try:
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=path, recursive=recursive)
+        assert error.value.code == 'BAD_REQUEST'
+        control.invoke.assert_not_awaited()
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_nonrecursive_mkdir_preserves_filesystem_contract(monkeypatch, tmp_path):
+    import subprocess
+    from agent_gateway.routing import container_files
+
+    monkeypatch.setattr(container_files, '_AGENT_FILE_PATH_ROOT', str(tmp_path))
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    async def invoke(environment, action, args):
+        assert action == 'cmd.run'
+        value = await asyncio.to_thread(subprocess.run, args['cmd'], shell=True,
+                                       capture_output=True, text=True)
+        return {'exit_code': value.returncode, 'stdout': value.stdout, 'stderr': value.stderr}
+    control.invoke.side_effect = invoke
+    try:
+        missing = tmp_path / 'missing/deep'
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=str(missing))
+        assert error.value.code == 'BAD_REQUEST'
+        assert not missing.parent.exists()
+
+        target = tmp_path / "quoted '; echo unsafe #"
+        result = await router.mkdir_container_dir(user_id='alice', path=str(target))
+        assert result == {'success': True, 'path': str(target), 'created': True}
+        assert target.is_dir()
+        result = await router.mkdir_container_dir(user_id='alice', path=str(target))
+        assert result['created'] is False
+
+        regular = tmp_path / 'regular'
+        regular.write_text('retained')
+        with pytest.raises(AgentOSFileTransferError) as error:
+            await router.mkdir_container_dir(user_id='alice', path=str(regular))
+        assert error.value.code == 'BAD_REQUEST'
+        assert regular.read_text() == 'retained'
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mkdir_http_rejects_nul(monkeypatch):
+    from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
+
+    router, control = _files(monkeypatch)
+    await router.connect('')
+    channel = _file_channel(router)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=build_web_channel_app(channel)),
+                                     base_url='http://gateway') as client:
+            response = await client.post('/file-api/mkdir', params={
+                'user_id': 'alice', 'path': '/home/agentos/bad\x00name', 'recursive': 'false',
+            })
+            assert response.status_code == 400
+            assert response.json()['code'] == 'BAD_REQUEST'
+        control.invoke.assert_not_awaited()
+    finally:
+        await router.shutdown()

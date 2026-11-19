@@ -5,22 +5,40 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 import mimetypes
+import re
+import anyio
+import httpx
+
+from agent_gateway.extensions.adx.file_transport import file_request
+import shlex
 from pathlib import PurePosixPath
 import uuid
 
-from agent_gateway.extensions.adx.control_client import AdxControlError
+from agent_gateway.extensions.adx.control_client import AdxControlError, AdxEnvironmentNotFoundError
 from agent_gateway.routing.container_files import (
     AgentFileDownloadChunk,
     AgentOSFileTransferError,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
+    parse_single_byte_range,
 )
 
 _FILE_TRANSFERS: ContextVar[dict | None] = ContextVar("adx_file_transfers", default=None)
 _CHUNK = 64 * 1024
+_MAX_UPLOAD_SIZE = 512 * 1024 * 1024
+
+
+def _validate_mode(mode: str | None) -> str | None:
+    if mode is None or mode == "":
+        return None
+    if not isinstance(mode, str) or not re.fullmatch(r"[0-7]{3,4}", mode):
+        raise AgentOSFileTransferError("invalid mode: expected 3-4 octal digits", code="BAD_REQUEST")
+    return mode
 
 
 class AdxFileMixin:
+    native_file_streaming = True
+
     @staticmethod
     def _begin_file_transfer() -> None:
         # Called once at the existing file-route entry hook. Streaming tasks
@@ -30,9 +48,9 @@ class AdxFileMixin:
     @asynccontextmanager
     async def _file_environment(self, user: str, agent_type: str | None, instance_id: str | None,
                                 session_id: str = ""):
-        held_runtime = None
+        runtime = None
         try:
-            environment, held_runtime = await self._resolve_file_runtime(
+            environment, runtime = await self._resolve_file_runtime(
                 user_id=user, agent_type=agent_type, session_id=session_id, acquire=True,
             )
             if instance_id and instance_id != environment:
@@ -45,12 +63,12 @@ class AdxFileMixin:
                 raise AgentOSFileTransferError("Environment changed during transfer", code="SERVICE_UNAVAILABLE")
             yield environment
         except AdxControlError as exc:
-            raise AgentOSFileTransferError(str(exc), code=exc.code) from exc
+            code = "instance_not_found" if isinstance(exc, AdxEnvironmentNotFoundError) else exc.code
+            raise AgentOSFileTransferError(str(exc), code=code) from exc
         finally:
-            if held_runtime is not None:
-                await self._agent_manager.release(
-                    held_runtime.key, expected_agent_id=held_runtime.info.agent_id,
-                )
+            if runtime is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
 
     async def _file_invoke(self, environment: str, action: str, args: dict) -> dict:
         try:
@@ -61,29 +79,107 @@ class AdxFileMixin:
     async def upload_container_file(
         self, *, user_id: str, path: str, content: bytes, dir_prefix: str = "",
         agent_type: str | None = None, session_id: str = "", instance_id: str | None = None,
-        auth_headers=None,
+        auth_headers=None, mode: str | None = None,
     ) -> dict:
-        del auth_headers
+        async def chunks():
+            for offset in range(0, len(content), _CHUNK):
+                yield content[offset:offset + _CHUNK]
+        return await self.upload_container_file_stream(
+            user_id=user_id, path=path, chunks=chunks(), dir_prefix=dir_prefix,
+            agent_type=agent_type, session_id=session_id, instance_id=instance_id, mode=mode,
+        )
+
+    async def upload_container_file_stream(
+        self, *, user_id: str, path: str, chunks, dir_prefix: str = "",
+        agent_type: str | None = None, session_id: str = "", instance_id: str | None = None,
+        mode: str | None = None,
+    ) -> dict:
+        mode = _validate_mode(mode)
         path = normalize_agent_file_upload_path(path, dir_prefix=dir_prefix, user_id=user_id)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
-            temporary = str(PurePosixPath(path).parent / (".upload-" + uuid.uuid4().hex))
-            try:
-                for offset in range(0, max(1, len(content)), _CHUNK):
-                    chunk = content[offset:offset + _CHUNK]
-                    result = await self._file_invoke(environment, "file.write_chunk", {
-                        "path": temporary, "offset": offset, "data": chunk.hex(),
-                    })
-                    if result.get("bytes_written") != len(chunk):
-                        raise AgentOSFileTransferError("Short ADX upload", code="INTERNAL_ERROR")
-                await self._file_invoke(environment, "file.rename", {"old_path": temporary, "new_path": path})
-            finally:
-                # Unknown transport outcomes must not trigger another business write.
-                # Removing the unique temporary path is safe even after atomic rename.
+            return await self._upload_file_stream(environment, path, chunks, mode=mode)
+
+    async def _upload_file_stream(self, environment: str, path: str, chunks, *, mode: str | None = None) -> dict:
+        parent = PurePosixPath(path).parent
+        new_directories = []
+        while parent != PurePosixPath('/home/agentos'):
+            info = await self._file_invoke(environment, "file.exists", {"path": str(parent)})
+            if info.get("exists") is True:
+                break
+            new_directories.append(str(parent))
+            parent = parent.parent
+        temporary = str(PurePosixPath(path).parent / (".upload-" + uuid.uuid4().hex))
+        size = 0
+        async def counted_chunks():
+            nonlocal size
+            async for chunk in chunks:
+                size += len(chunk)
+                if size > _MAX_UPLOAD_SIZE:
+                    raise AgentOSFileTransferError("upload exceeds 512 MiB", code="file_too_large")
+                yield chunk
+        try:
+            async with file_request(self._control, environment, 'POST', temporary,
+                                    content=counted_chunks()) as response:
+                await response.aread()
+                try:
+                    result = response.json()
+                except ValueError as error:
+                    raise AgentOSFileTransferError("Invalid ADX upload response", code="INTERNAL_ERROR") from error
+                if not isinstance(result, dict):
+                    raise AgentOSFileTransferError("Invalid ADX upload response", code="INTERNAL_ERROR")
+                if result.get('error') or result.get('size') != size:
+                    raise AgentOSFileTransferError("Short ADX upload", code="INTERNAL_ERROR")
+            # Keep workspace ownership and publish only after a complete upload.
+            ownership = await self._file_invoke(environment, "cmd.run", {
+                "cmd": shlex.join(['chown', '-h', '--reference=/home/agentos', '--',
+                                   temporary, *new_directories]), "timeout": 30,
+            })
+            if ownership.get("exit_code") != 0:
+                raise AgentOSFileTransferError("Cannot apply workspace ownership", code="INTERNAL_ERROR")
+            if mode is not None:
+                changed = await self._file_invoke(environment, "cmd.run", {
+                    "cmd": shlex.join(['chmod', '--', mode, temporary]), "timeout": 30,
+                })
+                if changed.get("exit_code") != 0:
+                    raise AgentOSFileTransferError("Cannot apply file mode", code="INTERNAL_ERROR")
+            await self._file_invoke(environment, "file.rename", {"old_path": temporary, "new_path": path})
+        finally:
+            with anyio.CancelScope(shield=True):
                 try:
                     await self._file_invoke(environment, "file.remove", {"path": temporary})
                 except AgentOSFileTransferError:
                     pass
-            return {"success": True, "path": path, "size": len(content)}
+        return {"success": True, "path": path, "size": size}
+
+    @asynccontextmanager
+    async def open_container_file(
+        self, *, user_id: str, path: str, agent_type: str | None = None,
+        session_id: str = "", instance_id: str | None = None, byte_range: str | None = None,
+    ):
+        path = normalize_agent_file_download_path(path)
+        async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
+            info = await self._file_invoke(environment, "file.stat", {"path": path})
+            if info.get("type") != "file":
+                raise AgentOSFileTransferError("path must identify a regular file", code="BAD_REQUEST")
+            size = int(info['size'])
+            if byte_range:
+                bounds = parse_single_byte_range(byte_range.strip(), size)
+                if bounds is None:
+                    yield httpx.Response(416, headers={
+                        'Content-Range': f'bytes */{size}', 'Accept-Ranges': 'bytes',
+                    })
+                    return
+                start, end = bounds
+                # Execd accepts an explicit start and end, including for suffix reads.
+                byte_range = f'bytes={start}-{end}'
+            async with file_request(self._control, environment, 'GET', path,
+                                    byte_range=byte_range, pass_range_error=True) as response:
+                if byte_range and response.status_code == 200:
+                    raise AgentOSFileTransferError("ADX did not honor the requested range", code="SERVICE_UNAVAILABLE")
+                # ADX ingress can stream without Content-Length. Preserve stat
+                # metadata for HEAD, without imposing a stale length on GET.
+                response.extensions['adx_file_size'] = size
+                yield response
 
     async def download_container_file(
         self, *, user_id: str, path: str, offset: int = 0, limit: int = _CHUNK,
@@ -92,23 +188,24 @@ class AdxFileMixin:
     ) -> AgentFileDownloadChunk:
         del auth_headers
         path = normalize_agent_file_download_path(path)
+        offset, limit = max(0, int(offset)), min(max(1, int(limit)), _CHUNK)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
-            offset, limit = max(0, int(offset)), min(max(1, int(limit)), _CHUNK)
             info = await self._file_invoke(environment, "file.stat", {"path": path})
             if info.get("type") != "file":
                 raise AgentOSFileTransferError("path must identify a regular file", code="BAD_REQUEST")
-            result = await self._file_invoke(
-                environment, "file.read_chunk", {"path": path, "offset": offset, "limit": limit},
-            )
-            try:
-                data = bytes.fromhex(result["data"])
-                size = int(info["size"])
-            except (ValueError, TypeError, KeyError) as exc:
-                raise AgentOSFileTransferError("Invalid ADX file response") from exc
-            if result.get("bytes_read") != len(data) or len(data) > limit:
-                raise AgentOSFileTransferError("Invalid ADX file chunk")
-            if not data and offset < size:
-                raise AgentOSFileTransferError("Invalid ADX file chunk")
+            size = int(info['size'])
+            data = b''
+            if offset < size:
+                async with file_request(self._control, environment, 'GET', path,
+                                        byte_range=f'bytes={offset}-{min(size, offset + limit) - 1}') as response:
+                    if response.status_code != 206:
+                        raise AgentOSFileTransferError("ADX did not honor the requested range")
+                    async for chunk in response.aiter_bytes(chunk_size=_CHUNK):
+                        data += chunk
+                        if len(data) > limit:
+                            raise AgentOSFileTransferError("Invalid ADX file chunk")
+                if not data:
+                    raise AgentOSFileTransferError("Invalid ADX file chunk")
             return AgentFileDownloadChunk(data, path, offset, len(data), size,
                 mimetypes.guess_type(path)[0] or "application/octet-stream", offset + len(data) >= size)
 
@@ -151,10 +248,39 @@ class AdxFileMixin:
         agent_type: str | None = None, session_id: str = "", instance_id: str | None = None,
         auth_headers=None,
     ) -> dict:
-        del auth_headers, recursive, mode
+        del auth_headers
         path = normalize_agent_file_download_path(path)
+        if "\x00" in path:
+            raise AgentOSFileTransferError("path must not contain NUL", code="BAD_REQUEST")
+        mode = _validate_mode(mode)
         async with self._file_environment(user_id, agent_type, instance_id, session_id) as environment:
-            result = await self._file_invoke(environment, "file.mkdir", {"path": path})
+            if recursive:
+                result = await self._file_invoke(environment, "file.mkdir", {"path": path})
+            else:
+                # Native file.mkdir always creates parents. Plain mkdir preserves
+                # the Gateway's non-recursive contract, including concurrent creates.
+                target = shlex.quote(path)
+                parent = shlex.quote(str(PurePosixPath(path).parent))
+                command = (
+                    f"if mkdir -- {target}; then printf created; "
+                    f"elif [ -d {target} ]; then printf exists; "
+                    f"elif [ -e {target} ] || [ -L {target} ] || [ ! -d {parent} ]; then exit 2; "
+                    "else exit 1; fi"
+                )
+                response = await self._file_invoke(environment, "cmd.run", {"cmd": command, "timeout": 30})
+                if response.get("exit_code") != 0:
+                    code = "BAD_REQUEST" if response.get("exit_code") == 2 else "INTERNAL_ERROR"
+                    raise AgentOSFileTransferError("Cannot create directory", code=code)
+                outcome = response.get("stdout", "").strip()
+                if outcome not in ("created", "exists"):
+                    raise AgentOSFileTransferError("Invalid ADX mkdir response")
+                result = {"created": outcome == "created"}
             if not isinstance(result.get("created"), bool):
                 raise AgentOSFileTransferError("Invalid ADX mkdir response")
+            if mode is not None:
+                changed = await self._file_invoke(environment, "cmd.run", {
+                    "cmd": shlex.join(['chmod', '--', mode, path]), "timeout": 30,
+                })
+                if changed.get("exit_code") != 0:
+                    raise AgentOSFileTransferError("Cannot apply directory mode", code="INTERNAL_ERROR")
             return {"success": True, "path": path, "created": result["created"]}

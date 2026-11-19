@@ -8,14 +8,18 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Mapping
 from urllib.parse import quote
 
+import anyio
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
+
+from agent_gateway.routing.container_files import AgentOSFileTransferError, parse_single_byte_range
 
 if TYPE_CHECKING:
     from agent_gateway.channel_manager.web.web_connect import WebChannel
@@ -24,10 +28,72 @@ logger = logging.getLogger(__name__)
 
 FILE_API_PREFIX = "/file-api"
 MAX_UPLOAD_COUNT = 20
+MAX_UPLOAD_FILE_SIZE = 512 * 1024 * 1024
 _STREAM_CHUNK = 65536
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
 # Keep the verified-download wire chunk bound aligned with AgentServer.
 _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
+
+
+async def _close_file_transfer(transfer):
+    with anyio.CancelScope(shield=True):
+        await transfer.__aexit__(None, None, None)
+
+
+class _FileStreamingResponse(StreamingResponse):
+    """Close the upstream and release runtime activity even on client abort."""
+    def __init__(self, content, *, transfer, status_code=200, media_type=None, headers=None):
+        super().__init__(content, status_code=status_code, media_type=media_type, headers=headers)
+        self._transfer = transfer
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            await _close_file_transfer(self._transfer)
+
+
+async def _native_file_response(client, *, request, user_id, path, session_id, agent_type=None,
+                                attachment=False):
+    transfer = client.open_container_file(
+        user_id=user_id, path=path, session_id=session_id, agent_type=agent_type,
+        byte_range=request.headers.get('Range'),
+    )
+    upstream = await transfer.__aenter__()
+    streaming = False
+    try:
+        headers = {'Cache-Control': 'no-store'}
+        for name in ('Content-Range', 'Accept-Ranges'):
+            if name in upstream.headers:
+                headers[name] = upstream.headers[name]
+        if upstream.status_code == 416:
+            return Response(status_code=416, headers=headers)
+        if 'Content-Length' in upstream.headers:
+            headers['Content-Length'] = upstream.headers['Content-Length']
+        if attachment:
+            filename = path.rsplit('/', 1)[-1] or 'download'
+            headers['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+        media_type = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+        upstream_type = upstream.headers.get('Content-Type', '')
+        if upstream_type and upstream_type.split(';', 1)[0].strip().lower() != 'application/octet-stream':
+            headers['Content-Type'] = upstream_type
+        if request.method == 'HEAD':
+            if 'Content-Length' not in headers:
+                if upstream.status_code == 206:
+                    content_range = re.fullmatch(r'bytes (\d+)-(\d+)/(?:\d+|\*)', headers.get('Content-Range', ''))
+                    if content_range is None or int(content_range[2]) < int(content_range[1]):
+                        raise AgentOSFileTransferError('Invalid ADX Content-Range', code='SERVICE_UNAVAILABLE')
+                    headers['Content-Length'] = str(int(content_range[2]) - int(content_range[1]) + 1)
+                elif 'adx_file_size' in upstream.extensions:
+                    headers['Content-Length'] = str(upstream.extensions['adx_file_size'])
+            return Response(status_code=upstream.status_code, media_type=media_type, headers=headers)
+        response = _FileStreamingResponse(upstream.aiter_bytes(chunk_size=_STREAM_CHUNK), transfer=transfer,
+                                          status_code=upstream.status_code, media_type=media_type, headers=headers)
+        streaming = True
+        return response
+    finally:
+        if not streaming:
+            await _close_file_transfer(transfer)
 
 
 class RawFileQuery(BaseModel):
@@ -79,6 +145,7 @@ class UploadForm(BaseModel):
     session_id: str = ""
     user_id: str | None = None
     agent_type: str | None = None
+    mode: str | None = None
 
 
 class MkdirQuery(BaseModel):
@@ -318,7 +385,7 @@ def _truthy_bool(value: Any) -> bool:
 
 
 def map_container_list_entry(item: Mapping[str, Any]) -> dict[str, Any]:
-    """Map a YuanRong list entry to Gateway ``list-files`` shape."""
+    """Map a remote file entry to Gateway ``list-files`` shape."""
     name = str(item.get("name") or "")
     path = str(item.get("path") or "")
     is_directory = _truthy_bool(item.get("is_directory", item.get("isDirectory")))
@@ -425,30 +492,6 @@ def _decode_download_token_location(token: str) -> tuple[str, str] | None:
     return path.strip(), session_id.strip()
 
 
-def _parse_single_byte_range(
-    range_header: str,
-    file_size: int,
-) -> tuple[int, int] | None:
-    """Parse one HTTP byte range without accepting multipart ranges."""
-    if file_size <= 0 or not range_header.startswith("bytes=") or "," in range_header:
-        return None
-    value = range_header[6:]
-    if "-" not in value:
-        return None
-    start_text, end_text = value.split("-", 1)
-    if not start_text:
-        if not end_text.isdecimal() or int(end_text) <= 0:
-            return None
-        return max(0, file_size - int(end_text)), file_size - 1
-    if not start_text.isdecimal() or (end_text and not end_text.isdecimal()):
-        return None
-    start = int(start_text)
-    if start >= file_size:
-        return None
-    end = min(int(end_text), file_size - 1) if end_text else file_size - 1
-    return (start, end) if end >= start else None
-
-
 def _decode_verified_chunk(
     payload: Mapping[str, Any],
     *,
@@ -546,7 +589,7 @@ async def serve_file_chunks(
     _, total_size, file_name, mime_type, _ = first_result
     range_header = str(request.headers.get("Range") or "").strip()
     byte_range = (
-        _parse_single_byte_range(range_header, total_size)
+        parse_single_byte_range(range_header, total_size)
         if range_header
         else None
     )
@@ -619,10 +662,7 @@ async def serve_file_chunks(
 
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
-    from agent_gateway.extensions.agentos.agentos_router.router_client import (
-        AgentOSFileTransferError,
-        AgentOSRouterClient,
-    )
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
     from agent_gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
@@ -751,7 +791,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     ) -> JSONResponse:
         return await _list_container_dir(request, params, markdown_only=True)
 
-    @app.get(f"{prefix}/raw-file")
+    @app.api_route(f"{prefix}/raw-file", methods=["GET", "HEAD"])
     async def raw_file_get(
         request: Request,
         params: Annotated[RawFileQuery, Query()],
@@ -799,6 +839,11 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     content=chunk.data,
                     media_type=chunk.content_type or "application/octet-stream",
                     headers={"Cache-Control": "no-store"},
+                )
+
+            if getattr(client, 'native_file_streaming', False) is True:
+                return await _native_file_response(
+                    client, request=request, user_id=uid, path=path, session_id=sid, agent_type=agent_type,
                 )
 
             # Peek first chunk for Content-Type, then stream remaining chunks.
@@ -855,6 +900,10 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
 
         file_path, session_id = location
         try:
+            if getattr(client, 'native_file_streaming', False) is True:
+                return await _native_file_response(
+                    client, request=request, user_id=uid, path=file_path, session_id=session_id, attachment=True,
+                )
             first = await client.download_container_file(
                 user_id=uid,
                 path=file_path,
@@ -952,6 +1001,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         form = UploadForm.model_validate(
             {
                 "dir": str(form_data.get("dir") or ""),
+                "mode": form_data.get("mode"),
                 "session_id": str(form_data.get("session_id") or ""),
                 "user_id": (
                     str(form_data.get("user_id")).strip()
@@ -991,16 +1041,33 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
 
         for item in uploads:
             filename = str(item.filename or "upload.bin")
+            # Multipart parsing records the actual file size; reject before
+            # activating an AgentServer or forwarding bytes to its backend.
+            if item.size is not None and item.size > MAX_UPLOAD_FILE_SIZE:
+                errors.append({"filename": filename, "error": "upload exceeds 512 MiB"})
+                await item.close()
+                continue
             try:
-                content = await item.read()
-                result = await client.upload_container_file(
-                    user_id=uid,
-                    path=filename,
-                    dir_prefix=upload_dir,
-                    content=content,
-                    agent_type=form.agent_type if isinstance(form.agent_type, str) else None,
-                    session_id=sid,
-                )
+                if getattr(client, 'native_file_streaming', False) is True:
+                    async def chunks():
+                        while True:
+                            chunk = await item.read(_STREAM_CHUNK)
+                            if not chunk:
+                                return
+                            yield chunk
+                    result = await client.upload_container_file_stream(
+                        user_id=uid, path=filename, dir_prefix=upload_dir, chunks=chunks(),
+                        agent_type=form.agent_type if isinstance(form.agent_type, str) else None, session_id=sid,
+                        mode=form.mode,
+                    )
+                    size = int(result['size'])
+                else:
+                    content = await item.read()
+                    result = await client.upload_container_file(
+                        user_id=uid, path=filename, dir_prefix=upload_dir, content=content,
+                        agent_type=form.agent_type if isinstance(form.agent_type, str) else None, session_id=sid,
+                    )
+                    size = int(result.get('size') or len(content))
                 out_path = str(result.get("path") or "")
                 mime, _ = mimetypes.guess_type(filename)
                 ok_files.append(
@@ -1008,7 +1075,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                         "filename": filename,
                         "path": out_path,
                         "mime_type": mime or "application/octet-stream",
-                        "size_bytes": int(result.get("size") or len(content)),
+                        "size_bytes": size,
                     }
                 )
             except AgentOSFileTransferError as exc:

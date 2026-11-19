@@ -117,3 +117,27 @@ def normalize_agent_file_download_path(path: str) -> str:
     return text
 
 
+
+
+def parse_single_byte_range(
+    range_header: str,
+    file_size: int,
+) -> tuple[int, int] | None:
+    """Parse one HTTP byte range without accepting multipart ranges."""
+    if file_size <= 0 or not range_header.startswith("bytes=") or "," in range_header:
+        return None
+    value = range_header[6:]
+    if "-" not in value:
+        return None
+    start_text, end_text = value.split("-", 1)
+    if not start_text:
+        if not end_text.isdecimal() or int(end_text) <= 0:
+            return None
+        return max(0, file_size - int(end_text)), file_size - 1
+    if not start_text.isdecimal() or (end_text and not end_text.isdecimal()):
+        return None
+    start = int(start_text)
+    if start >= file_size:
+        return None
+    end = min(int(end_text), file_size - 1) if end_text else file_size - 1
+    return (start, end) if end >= start else None
