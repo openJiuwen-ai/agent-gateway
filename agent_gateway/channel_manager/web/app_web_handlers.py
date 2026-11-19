@@ -6609,10 +6609,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             resolver = getattr(channel, "a4p_request_route", None)
             if resolver is not None and isinstance(request_id, str):
                 route = resolver(routes, request_id, ws=ws, session_id=session_id)
-            session_query = not request_id and req_method in {
-                ReqMethod.A4P_AUTHORIZATION_PENDING,
-                ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE,
-            }
+            session_query = not request_id and req_method == ReqMethod.A4P_AUTHORIZATION_PENDING
             cached_routes = set()
             if route is None and req_method == ReqMethod.A4P_AUTHORIZATION_PENDING:
                 cached_routes = channel.a4p_pending_routes(routes, ws=ws, session_id=session_id)
@@ -6736,6 +6733,42 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     from e2a.message import ReqMethod as _A4PReq
 
+    def _register_a4p_config(req_method: _A4PReq) -> None:
+        async def _handler(ws, req_id, params, session_id, user_id=None):
+            from agent_gateway.common.request_identity import WEB_IDENTITY_FIELDS
+            from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
+            # Legacy clients can send a session ID. HTTP also merges tenant
+            # headers into params, while the normalized identity travels separately.
+            forwarded = {
+                key: value for key, value in params.items()
+                if key not in ("session_id", *WEB_IDENTITY_FIELDS)
+            }
+            is_update = req_method == _A4PReq.A4P_CONFIG_UPDATE
+            if forwarded.keys() - ({"enabled"} if is_update else set()):
+                await channel.send_response(
+                    ws, req_id, ok=False, code="BAD_REQUEST",
+                    error="Provide enabled only" if is_update else "a4p.config.get accepts no config fields",
+                )
+                return
+            await proxy_unary_request(
+                channel=channel,
+                agent_client=_resolve(agent_client),
+                ws=ws,
+                req_id=req_id,
+                params=forwarded,
+                session_id=None,
+                user_id=user_id,
+                req_method=req_method,
+                label="config",
+                metadata={"app_id": getattr(ws, "_jiuwen_app_id", None) or "default"},
+            )
+
+        channel.register_method(req_method.value, _handler, local_only=True)
+
+    _register_a4p_config(_A4PReq.A4P_CONFIG_GET)
+    _register_a4p_config(_A4PReq.A4P_CONFIG_UPDATE)
+
     def _register_a4p(method_name: str, req_method: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
             await _forward_a4p_to_agent(
@@ -6744,8 +6777,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
-    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
-    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
     _register_a4p("a4p.authorization.reprepare", _A4PReq.A4P_AUTHORIZATION_REPREPARE)
     _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
     _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
