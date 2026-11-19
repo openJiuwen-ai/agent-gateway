@@ -38,16 +38,26 @@ WEB_ONLY_TELEMETRY_EVENTS: frozenset[str] = frozenset(
 )
 
 
+def _event_name_text(value: Any) -> str:
+    """把事件名归一化为字符串：兼容枚举成员、str 混入枚举与裸字符串。
+
+    ``EventType`` 是普通 ``Enum``（非 ``str`` 子类），直接 ``isinstance(..., str)``
+    会得到 False；``str`` 混入枚举则依赖 hash/eq 的实现细节。统一先取 ``value``
+    归一化，两条路径行为一致。
+    """
+    name = getattr(value, "value", None)
+    if isinstance(name, str) and name:
+        return name
+    return value if isinstance(value, str) else ""
+
+
 def resolve_event_name(msg: Message) -> str:
     """取消息事件名：兼容 EventType 枚举、裸字符串与 payload.event_type。"""
-    event_type = getattr(msg, "event_type", None)
-    event_name = getattr(event_type, "value", None)
-    if not isinstance(event_name, str) or not event_name:
-        event_name = event_type if isinstance(event_type, str) else ""
-    payload = getattr(msg, "payload", None)
-    if not event_name and isinstance(payload, dict):
-        candidate = payload.get("event_type")
-        event_name = candidate if isinstance(candidate, str) else ""
+    event_name = _event_name_text(getattr(msg, "event_type", None))
+    if not event_name:
+        payload = getattr(msg, "payload", None)
+        if isinstance(payload, dict):
+            event_name = _event_name_text(payload.get("event_type"))
     return event_name
 
 
