@@ -128,7 +128,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     builtin_launch = settings.get('builtin_launch')
     if builtin_launch is not None:
         if not isinstance(builtin_launch, dict) or set(builtin_launch) - {
-                'process', 'rootfs', 'mounts', 'env', 'image_env', 'workspace_mount_options'}:
+                'process', 'rootfs', 'mounts', 'env', 'image_env', 'workspace_mount_options', 'network'}:
             raise ValueError('gateway.adx.builtin_launch contains invalid settings')
         if not isinstance(builtin_launch.get('process'), dict) or not builtin_launch['process'].get('commands'):
             raise ValueError('gateway.adx.builtin_launch requires process.commands')
@@ -138,6 +138,12 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         if not isinstance(image_env, dict) or any(
                 not isinstance(k, str) or not isinstance(v, str) for k, v in image_env.items()):
             raise ValueError('gateway.adx.builtin_launch.image_env requires literal string values')
+        if 'network' in builtin_launch:
+            from agent_gateway.extensions.adx.network import validate_network_settings
+            network = builtin_launch['network']
+            if not isinstance(network, dict):
+                raise ValueError('gateway.adx.builtin_launch.network must be a mapping')
+            validate_network_settings(network)
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
