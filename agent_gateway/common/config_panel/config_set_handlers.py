@@ -464,11 +464,22 @@ def run_external_cli_version_command(cli_agent: str, resolved_path: str) -> tupl
 def detect_external_cli_agent(
     cli_agent: str, cli_path: str = "", use_builtin: bool = False
 ) -> dict[str, Any]:
+    from agent_gateway.common.custom_agent_runtime import custom_agent_names
+
     normalized_agent = cli_agent.strip().lower()
+    if normalized_agent in custom_agent_names():
+        # 自定义 agent 无内置（托管）CLI，builtin_path 恒为空串。
+        builtin_path = ""
+    else:
+        # 每次探测都携带内置（托管安装）CLI 路径：配置本地可执行文件后探测结果与
+        # PATH 扫描都不再指向内置路径，前端路径下拉框需要它作为常驻选项，
+        # 否则内置路径会从下拉框消失且会被历史清理剪掉（#6647）。与主仓
+        # jiuwenswarm/common/config_panel/config_set_handlers.py 的修复保持一致。
+        builtin_path = external_cli_managed_cli_path(normalized_agent)
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
-        return _detect_custom_agent_cli(normalized_agent, cli_path)
-    if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
-        return {
+        result = _detect_custom_agent_cli(normalized_agent, cli_path)
+    elif normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
+        result = {
             "cli_agent": normalized_agent,
             "status": "unavailable",
             "path": "",
@@ -476,8 +487,10 @@ def detect_external_cli_agent(
             "reference_version": "",
             "message": f"unsupported cli_agent: {cli_agent}",
         }
-
-    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    else:
+        result = _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    result["builtin_path"] = builtin_path
+    return result
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
