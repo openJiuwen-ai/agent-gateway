@@ -130,19 +130,6 @@ models:
   group_stream_idle_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}
   groups: []
 
-agents:
-  agent_leader:
-    workspace:
-      stable_base: true
-    # Leader 不受 max_iterations 限制，配置了也会被忽略，保证长程任务持续执行
-    completion_timeout: 6000.0
-
-  agent_teammate:
-    workspace:
-      stable_base: true
-    max_iterations: 200
-    completion_timeout: 6000.0
-
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
   exporter: otlp                    # otlp / console / none

@@ -3737,16 +3737,22 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         doc="查询指定轮次 Diff 详情。",
     )
 
+    def _config_use_local_handler(resolved_client: Any) -> bool:
+        """Whether a config/models request must stay in the Gateway process."""
+        from agent_gateway.enterprise import is_enterprise
+        from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
+
+        return is_enterprise() and (
+            resolved_client is None
+            or is_runtime_agent_client(resolved_client)
+            or is_legacy_shared_directory_client(resolved_client)
+        )
+
     async def _path_get(ws, req_id, params, session_id, user_id=None):
         """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
-        from agent_gateway.enterprise import is_enterprise
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
         # A4g 对齐：个人版 browser/jev 配置读写统一经目标 AgentServer——
@@ -3754,11 +3760,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # 启动环境会把已保存的 key 显示成"未配置"。企业版保留本地执行，
         # 判据与 _register_config_proxy 一致（RuntimeRouted / 无 client /
         # legacy 共享目录）。
-        use_local_path = is_enterprise() and (
-            resolved_client is None
-            or is_runtime_agent_client(resolved_client)
-            or is_legacy_shared_directory_client(resolved_client)
-        )
+        use_local_path = _config_use_local_handler(resolved_client)
         if not use_local_path:
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
@@ -3826,20 +3828,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         from agent_gateway.routing.e2a_proxy import (
             fetch_agent_unary,
-            is_legacy_shared_directory_client,
             proxy_unary_request,
         )
-
-        from agent_gateway.enterprise import is_enterprise
 
         resolved_client = _resolve(agent_client)
         # A4g 对齐，同 _path_get：个人版统一经目标 AgentServer 写入；企业版
         # （RuntimeRouted / 无 client / legacy 共享目录）保留本地写回语义。
-        use_local_path = is_enterprise() and (
-            resolved_client is None
-            or is_runtime_agent_client(resolved_client)
-            or is_legacy_shared_directory_client(resolved_client)
-        )
+        use_local_path = _config_use_local_handler(resolved_client)
         if not use_local_path:
             # Fetch current browser config so the restart callback can match the
             # old runtime identity (custom binary / headed mode).
@@ -5675,6 +5670,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.install", _external_cli_install)
     channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
+    def _config_forward_params(ws, params: Any) -> Any:
+        """Drop client-supplied auth session and inject the connection's session."""
+        if not isinstance(params, dict):
+            return params
+        from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+        forwarded = dict(params)
+        forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
+        auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+        if auth_session:
+            forwarded[E2A_AUTH_SESSION_PARAM_KEY] = auth_session
+        return forwarded
+
     async def _proxy_config_request(
         ws, req_id, params, session_id, user_id=None, *, req_method,
         preserve_error_payload=False,
@@ -5769,31 +5777,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # legacy 共享目录的外部 CLI 依赖安装门控仍保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
-            from agent_gateway.enterprise import is_enterprise
             from agent_gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)
             # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
-            use_local_handler = (
-                resolved_client is None
-                or is_runtime_agent_client(resolved_client)
-                or is_legacy_shared_directory_client(resolved_client)
-            )
-            if local_handler is not None and is_enterprise() and use_local_handler:
+            use_local_handler = _config_use_local_handler(resolved_client)
+            if local_handler is not None and use_local_handler:
                 await local_handler(ws, req_id, params, session_id)
                 return
             # 登录会话 id 随请求转发（硬规则：客户端传来的键先删，只信连接属性）：
             # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
             # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
-            if isinstance(params, dict):
-                from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
-
-                forwarded = dict(params)
-                forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
-                auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
-                if auth_session:
-                    forwarded[E2A_AUTH_SESSION_PARAM_KEY] = auth_session
-                params = forwarded
+            params = _config_forward_params(ws, params)
             if req_method in (
                 _ConfigReq.CONFIG_SET,
                 _ConfigReq.CONFIG_SAVE_ALL,
@@ -5810,6 +5805,64 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.register_method(method_name, _handler)
 
     from e2a.message import ReqMethod as _ConfigReq
+
+    async def _models_delete_with_references(
+        ws, req_id, params, session_id, user_id=None,
+    ):
+        """Delete a model only after the AS-side reference check succeeds."""
+        from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+        resolved_client = _resolve(agent_client)
+        use_local = _config_use_local_handler(resolved_client)
+        if use_local:
+            await _model_resource_rpc(ws, req_id, params, session_id, "models.delete")
+            return
+
+        params = _config_forward_params(ws, params)
+        model_id = str((params or {}).get("model_id") or "").strip()
+        if not model_id:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="model_id is required", code="BAD_REQUEST",
+            )
+            return
+
+        ok, refs_payload = await fetch_agent_unary(
+            agent_client=resolved_client,
+            req_method=_ConfigReq.MODELS_REFERENCES,
+            params=_config_forward_params(
+                ws, {"type": "model", "id": model_id}
+            ),
+            session_id=session_id,
+            user_id=user_id,
+            channel_id=channel.channel_id,
+            label="models.references",
+        )
+        if not isinstance(refs_payload, dict):
+            refs_payload = {}
+            ok = False
+        if not ok:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=str(refs_payload.get("error") or "models.references failed"),
+                code=str(refs_payload.get("code") or "SERVICE_UNAVAILABLE"),
+            )
+            return
+
+        references = refs_payload.get("references") or []
+        if references:
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="resource is still referenced",
+                code="MODEL_SELECTION_REFERENCED",
+                payload={"references": references},
+            )
+            return
+
+        await _proxy_config_request(
+            ws, req_id, params, session_id, user_id,
+            req_method=_ConfigReq.MODELS_DELETE,
+        )
 
     multimodal_methods = (
         _ConfigReq.MULTIMODAL_MODELS_LIST, _ConfigReq.MULTIMODAL_MODELS_GET,
@@ -5843,8 +5896,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
     _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,
                            lambda *a: _model_resource_rpc(*a, "models.upsert"))
-    _register_config_proxy("models.delete", _ConfigReq.MODELS_DELETE,
-                           lambda *a: _model_resource_rpc(*a, "models.delete"))
+    channel.register_method("models.delete", _models_delete_with_references)
     _register_config_proxy("models.references", _ConfigReq.MODELS_REFERENCES,
                            lambda *a: _model_resource_rpc(*a, "models.references"))
     _register_config_proxy("model_groups.list", _ConfigReq.MODEL_GROUPS_LIST,

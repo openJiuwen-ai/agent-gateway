@@ -77,6 +77,11 @@ def test_gateway_templates_drop_memory_section() -> None:
     assert "memory" not in AGENTOS
 
 
+def test_gateway_templates_drop_agents_section() -> None:
+    assert "agents" not in BASE
+    assert "agents" not in AGENTOS
+
+
 def test_gateway_template_drops_as_only_react_keys() -> None:
     assert BASE["react"] == {"model_name": "${MODEL_NAME}"}
     assert "react" not in AGENTOS

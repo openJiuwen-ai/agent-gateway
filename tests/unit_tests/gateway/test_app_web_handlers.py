@@ -1707,6 +1707,145 @@ async def test_memory_forbidden_set_without_agent_server_is_unavailable(monkeypa
     assert resp["error"] == "AgentServer is unavailable"
 
 
+@pytest.mark.asyncio
+async def test_models_delete_checks_agent_server_references_first(monkeypatch) -> None:
+    from agent_gateway.routing import e2a_proxy
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    references = [{"scope": "agent", "scope_id": "agent_leader"}]
+    fetch = AsyncMock(return_value=(True, {"references": references}))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    channel = _bind(agent_client=client)
+
+    await channel.methods["models.delete"](
+        object(), "delete-model", {"model_id": "mdl_test"}, "session-1", "user-1",
+    )
+
+    fetch.assert_awaited_once()
+    request = fetch.call_args.kwargs
+    assert request["req_method"] is ReqMethod.MODELS_REFERENCES
+    assert request["params"] == {"type": "model", "id": "mdl_test"}
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "MODEL_SELECTION_REFERENCED"
+    assert channel.responses[-1]["payload"] == {"references": references}
+
+
+@pytest.mark.asyncio
+async def test_models_delete_forwards_after_references_empty(monkeypatch) -> None:
+    from agent_gateway.routing import e2a_proxy
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    fetch = AsyncMock(return_value=(True, {"references": []}))
+    proxy = AsyncMock()
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(e2a_proxy, "proxy_unary_request", proxy)
+    channel = _bind(agent_client=client)
+
+    await channel.methods["models.delete"](
+        object(), "delete-model-ok", {"model_id": "mdl_test"}, "session-1", "user-1",
+    )
+
+    request = proxy.call_args.kwargs
+    assert request["req_method"] is ReqMethod.MODELS_DELETE
+    assert request["params"] == {"model_id": "mdl_test"}
+
+
+@pytest.mark.asyncio
+async def test_hooks_list_degrades_when_agent_is_unavailable(monkeypatch) -> None:
+    from agent_gateway.routing import e2a_proxy
+
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    fetch = AsyncMock(return_value=(False, {"error": "down"}))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    channel = _bind(agent_client=client)
+
+    await channel.methods["hooks.list"](
+        object(), "hooks-degraded", {}, "session-1", "user-1",
+    )
+
+    payload = channel.responses[-1]["payload"]
+    assert payload["degraded"] is True
+    assert payload["source"] == "gateway"
+    assert payload["events"]
+
+
+@pytest.mark.asyncio
+async def test_hooks_list_degrades_on_non_dict_agent_payload(monkeypatch) -> None:
+    from agent_gateway.routing import e2a_proxy
+
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    fetch = AsyncMock(return_value=(True, "not-a-dict"))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    channel = _bind(agent_client=client)
+
+    await channel.methods["hooks.list"](
+        object(), "hooks-bad-payload", {}, "session-1", "user-1",
+    )
+
+    payload = channel.responses[-1]["payload"]
+    assert payload["degraded"] is True
+    assert payload["source"] == "gateway"
+    assert payload["events"]
+
+
+@pytest.mark.asyncio
+async def test_models_delete_rejects_non_dict_references_payload(monkeypatch) -> None:
+    from agent_gateway.routing import e2a_proxy
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    fetch = AsyncMock(return_value=(True, "not-a-dict"))
+    proxy = AsyncMock()
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    monkeypatch.setattr(e2a_proxy, "proxy_unary_request", proxy)
+    channel = _bind(agent_client=client)
+
+    await channel.methods["models.delete"](
+        object(), "delete-model-bad-payload", {"model_id": "mdl_test"}, "session-1", "user-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == "SERVICE_UNAVAILABLE"
+    proxy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_models_delete_uses_connection_auth_session(monkeypatch) -> None:
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+    from agent_gateway.routing import e2a_proxy
+
+    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    fetch = AsyncMock(return_value=(True, {"references": [{"scope": "agent"}]}))
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", fetch)
+    channel = _bind(agent_client=client)
+    ws = SimpleNamespace(_jiuwen_auth_session="trusted-session")
+
+    await channel.methods["models.delete"](
+        ws,
+        "delete-model-auth",
+        {"model_id": "mdl_test", E2A_AUTH_SESSION_PARAM_KEY: "client-session"},
+        "session-1",
+        "user-1",
+    )
+
+    request = fetch.call_args.kwargs
+    assert request["params"] == {
+        "type": "model",
+        "id": "mdl_test",
+        E2A_AUTH_SESSION_PARAM_KEY: "trusted-session",
+    }
+
+
 class FakeUpdaterService:
     def get_runtime_config(self):
         return {"release_api_type": "gitcode", "release_api_url": ""}
