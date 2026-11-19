@@ -41,6 +41,42 @@ SKILL_UPLOAD_STAGE = "skills.upload.stage"
 SKILL_UPLOAD_FINALIZE = "skills.upload.finalize"
 
 
+# 企业版团队控制面：协议包尚未发布这 7 个方法，先在此登记（与 Agent 侧
+# ``jiuwenswarm/common/schema/message.py`` 的 ``ensure_team_control_req_methods``
+# 同名同值对齐）。缺失时 ``parse_request_method`` 返回 None，转发门禁直接短路，
+# 请求会退化成 METHOD_NOT_FOUND 而不是发往 Agent。
+_TEAM_CONTROL_REQ_METHODS: tuple[tuple[str, str], ...] = (
+    ("TEAM_CREATE", "team.create"),
+    ("TEAM_GET", "team.get"),
+    ("TEAM_STOP", "team.stop"),
+    ("TEAM_MEMBER_JOIN", "team.member.join"),
+    ("TEAM_MEMBER_LEAVE", "team.member.leave"),
+    ("TEAM_MEMBERS_LIST", "team.members.list"),
+    ("TEAM_QUOTA_GET", "team.quota.get"),
+)
+
+
+TEAM_CONTROL_METHODS = frozenset(value for _, value in _TEAM_CONTROL_REQ_METHODS)
+
+
+def ensure_team_control_req_methods() -> None:
+    """登记企业团队控制面方法；个人版不调用（避免暴露不可达的方法名）。"""
+    for name, value in _TEAM_CONTROL_REQ_METHODS:
+        _ensure_req_method(name, value)
+
+
+def register_edition_req_methods() -> None:
+    """按当前 edition 补齐协议包缺失的方法成员。
+
+    必须在 dotenv 已加载之后调用（``JIUWENSWARM_EDITION`` 决定企业版语义），
+    因此由启动流程（``apply_group_environment`` 之后）显式触发，不在 import 期执行。
+    """
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        ensure_team_control_req_methods()
+
+
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
 _ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
 _ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")

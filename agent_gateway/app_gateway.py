@@ -48,7 +48,7 @@ from e2a.message import (
     Message,
     Mode,
 )
-from agent_gateway.common.protocol_methods import ReqMethod
+from agent_gateway.common.protocol_methods import ReqMethod, register_edition_req_methods
 from agent_gateway.common.request_method import parse_request_method
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
@@ -149,6 +149,8 @@ _mark_startup_import_phase("gateway_core_imports_loaded")
 _mark_startup_import_phase("logging_configured")
 
 apply_group_environment(_mark_startup_import_phase)
+
+register_edition_req_methods()
 
 logger = logging.getLogger("gateway")
 

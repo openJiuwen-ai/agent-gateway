@@ -12,6 +12,9 @@ from urllib.parse import quote, urljoin
 
 from e2a.models import E2AEnvelope
 
+from agent_gateway.common.protocol_methods import TEAM_CONTROL_METHODS
+from agent_gateway.enterprise.edition import is_enterprise
+
 API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
 
@@ -127,6 +130,15 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
     ("team.delete", "DELETE", "/teams/{team_name}"),
+    # 企业团队控制面。路径照抄 e2a 协议表（RUNTIME_HTTP_ROUTES），**不要**用北向
+    # 的 /teams/lookup、/teams/memberships——那是 Gateway 北向接口，打南向会 404。
+    ("team.create", "POST", "/teams"),
+    ("team.get", "GET", "/teams/current"),
+    ("team.stop", "POST", "/teams/actions/stop"),
+    ("team.member.join", "POST", "/teams/members/join"),
+    ("team.member.leave", "POST", "/teams/members/leave"),
+    ("team.members.list", "GET", "/teams/members"),
+    ("team.quota.get", "GET", "/teams/quota"),
     ("skills.list", "GET", "/skills"),
     ("skills.installed", "GET", "/skills/installed"),
     ("skills.marketplace.list", "GET", "/skills/marketplace"),
@@ -448,6 +460,8 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
         return "POST", path
     if method == "history.get" and is_stream:
         return "GET", "/sessions/{session_id}/history/stream"
+    if method in TEAM_CONTROL_METHODS and not is_enterprise():
+        raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
     found = REST_ROUTES.get(method)
     if found is not None:
         return found[0], found[1]
