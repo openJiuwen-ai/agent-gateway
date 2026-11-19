@@ -47,6 +47,17 @@ Business requests already sent are never replayed automatically, avoiding side
 effects such as duplicate session creation. This is Gateway transport behavior;
 it changes neither the E2A wire protocol nor Agent Runtime readiness semantics.
 
+Beyond on-demand reconnect, the built-in WS client with `auto_reconnect` enabled
+(wired by default for the personal edition) restores the connection itself in a
+background task with exponential backoff: while the link is down, server-push
+frames (cron results, interaction requests, and similar) depend on the
+connection coming back quickly rather than waiting for the next business
+request. Background and on-demand reconnects share the same reconnect lock;
+once either side restores the connection the other exits. No business request
+already sent is replayed before recovery, and an explicit `disconnect()` stops
+the background loop. Extension clients (agentos_router and others) are
+unaffected: their disconnect handling stays with the outer cleanup logic.
+
 ---
 
 ## 1.1 TUI session interface contract

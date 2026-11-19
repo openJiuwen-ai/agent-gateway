@@ -714,3 +714,227 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         target_logger.removeHandler(caplog.handler)
         receiver.cancel()
         await receiver
+
+
+class AutoReconnectHarness(AgentClientHarness):
+    """auto_reconnect 开启、connect 行为可控的测试客户端.
+
+    模拟真实 connect() 的状态覆写顺序（先关 ``_reconnect_enabled``、再改写
+    ``_extra_headers``），使"失败后现场恢复"的断言有意义。
+    """
+
+    def __init__(self, *, auto_reconnect: bool = True) -> None:
+        super().__init__(auto_reconnect=auto_reconnect)
+        self.connect_calls: list[tuple[str, dict]] = []
+        self.fail_first_n = 0
+
+    def prime_connected_state_for_test(self, uri: str = "ws://agent-server") -> None:
+        """模拟"曾经成功连接过"的现场（fatal 后自动重连的前提）。"""
+        self._uri = uri
+        self._extra_headers = {"Authorization": "Bearer t"}
+        self._reconnect_enabled = True
+
+    async def connect(self, uri: str, extra_headers=None) -> None:
+        headers = dict(extra_headers or {})
+        self.connect_calls.append((uri, headers))
+        # 模拟真实 connect 的状态覆写顺序：先关重连标记，再改写 extra_headers
+        self._reconnect_enabled = False
+        self._extra_headers = {"clobbered": True}
+        if len(self.connect_calls) <= self.fail_first_n:
+            raise ConnectionRefusedError("agent server down")
+        self._uri = uri
+        self._ws = FakeWebSocket()
+        self._running = True  # 真实 connect 成功时接收循环就绪
+        self._server_ready = True
+        self._reconnect_enabled = True
+
+
+async def _wait_for_condition(predicate, timeout: float = 5.0, interval: float = 0.01) -> None:
+    for _ in range(int(timeout / interval)):
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError("等待条件超时")
+
+
+@pytest.mark.asyncio
+async def test_fatal_error_auto_reconnects_until_success():
+    """fatal 断连后后台循环退避重试，失败间保留 uri/headers 现场，最终恢复。"""
+    client = AutoReconnectHarness()
+    client.prime_connected_state_for_test()
+    client.fail_first_n = 2
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+
+    # 退避节奏 0.2s + 0.4s，第三次尝试成功
+    await _wait_for_condition(lambda: client.get_ws_for_test() is not None)
+    assert len(client.connect_calls) == 3
+    # 每次尝试都拿到保存的现场（真实 connect 失败会覆写 extra_headers，
+    # 循环必须复位——否则第二次尝试就丢失鉴权头）
+    assert [(uri, headers) for uri, headers in client.connect_calls] == [
+        ("ws://agent-server", {"Authorization": "Bearer t"}),
+    ] * 3
+    assert client.get_server_ready_for_test() is True
+    # 成功后循环任务退出
+    task = client._auto_reconnect_task
+    if task is not None:
+        await asyncio.wait_for(task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_fatal_error_without_auto_reconnect_starts_no_loop():
+    """默认（未开启 auto_reconnect）不启动后台重连：扩展复用方语义不受影响。"""
+    client = AutoReconnectHarness(auto_reconnect=False)
+    client.prime_connected_state_for_test()
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+    await asyncio.sleep(0.05)
+
+    assert client._auto_reconnect_task is None
+    assert client.connect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_auto_reconnect_loop():
+    """显式 disconnect 停止后台重连，不再发起后续连接尝试。"""
+    client = AutoReconnectHarness()
+    client.prime_connected_state_for_test()
+    client.fail_first_n = 10**9  # 一直失败，循环只能靠 disconnect 停
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+    await _wait_for_condition(lambda: bool(client.connect_calls))
+    assert len(client.connect_calls) == 1  # 首次尝试失败，进入退避睡眠
+
+    await client.disconnect()
+    attempts_after_disconnect = len(client.connect_calls)
+    await asyncio.sleep(0.5)  # 覆盖一个退避周期
+    assert len(client.connect_calls) == attempts_after_disconnect
+    assert client._auto_reconnect_task is None
+
+
+@pytest.mark.asyncio
+async def test_auto_reconnect_loop_defers_to_external_recovery():
+    """循环退避期间外部先行恢复连接：循环下一轮检查即退出，不重复连接。"""
+    client = AutoReconnectHarness()
+    client.prime_connected_state_for_test()
+    client.fail_first_n = 10**9
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+    await _wait_for_condition(lambda: bool(client.connect_calls))
+
+    # 模拟懒重连路径先行恢复（业务请求触发的 _ensure_connected_for_request）
+    external_ws = FakeWebSocket()
+    client._ws = external_ws
+    await asyncio.sleep(0.5)  # 覆盖退避周期，循环应已在下一轮检查时退出
+
+    assert len(client.connect_calls) == 1
+    assert client.get_ws_for_test() is external_ws
+
+
+@pytest.mark.asyncio
+async def test_auto_reconnect_survives_concurrent_fatal_during_connect():
+    """connect 成功返回瞬间并发 fatal 清掉现场：循环不得在成功分支退出。
+
+    回归防护：_maybe_start_auto_reconnect 见本任务未结束会跳过重调度；若
+    成功分支不校验现场，后台重连会就此丢失（连接死着直到下一个请求）。
+    """
+    client = AutoReconnectHarness()
+    client.prime_connected_state_for_test()
+    base_connect = client.connect
+    fatal_injected = False
+
+    async def connect_with_midflight_fatal(uri: str, extra_headers=None) -> None:
+        nonlocal fatal_injected
+        await base_connect(uri, extra_headers)
+        if not fatal_injected:
+            fatal_injected = True
+            # 模拟并发请求发送失败触发的 fatal：清掉刚建立的现场
+            await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+
+    client.connect = connect_with_midflight_fatal
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+
+    # 第 1 次尝试"成功"但被并发 fatal 清场 → 成功分支检测后接续第 2 次
+    await _wait_for_condition(lambda: len(client.connect_calls) >= 2 and client.get_ws_for_test() is not None)
+    assert fatal_injected is True
+    assert len(client.connect_calls) == 2
+    assert client.get_ws_for_test() is not None
+    task = client._auto_reconnect_task
+    if task is not None:
+        await asyncio.wait_for(task, timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_fails_pending_waiters_immediately():
+    """disconnect 通知所有等待队列：等待者立即失败而非悬挂到自身超时（600s）。"""
+    client = AgentClientHarness()
+    client.set_ws_for_test(FakeWebSocket())
+    queue = asyncio.Queue()
+    client.set_message_queue_for_test("rid-pending-disconnect", queue)
+
+    async def waiter():
+        data = await queue.get()
+        return data
+
+    task = asyncio.create_task(waiter())
+    await client.disconnect()
+
+    failure = await asyncio.wait_for(task, timeout=0.5)
+    assert isinstance(failure, agent_client._ReceiverFailure)
+    assert isinstance(failure.exc, RuntimeError)
+    assert client.has_message_queue_for_test("rid-pending-disconnect") is False
+
+
+@pytest.mark.asyncio
+async def test_send_request_skips_full_payload_debug_serialization_by_default(monkeypatch, caplog):
+    """debug 关闭时全载荷序列化日志不发生（每请求省两次全量 dumps+redact）。
+
+    logging 参数是先求值的：``_to_json(envelope.to_dict())`` 若不加守卫，
+    debug 级别关闭也会为每个请求多付两次全载荷序列化。同时验证线格式不因
+    序列化移出发送锁而改变。
+    """
+    calls: list[object] = []
+
+    def spy_to_json(data):
+        calls.append(data)
+        return "{}"
+
+    monkeypatch.setattr(agent_client, "_to_json", spy_to_json)
+
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+
+    env = e2a_from_agent_fields(
+        request_id="rid-lazy-debug",
+        channel_id="acp",
+        session_id="sess-lazy-debug",
+        params={"message": "hello"},
+        is_stream=False,
+    )
+    try:
+        task = asyncio.create_task(client.send_request(env, timeout=2.0))
+        await _wait_for_send(ws, 1)
+        assert calls == []  # debug 关闭：全载荷序列化未发生
+
+        ws.respond_unary("rid-lazy-debug", {"echo": "ok"})
+        response = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert response.ok is True
+        # 线格式仍是合法 E2A JSON（发送的是已序列化文本）
+        assert ws.sent_payloads[0]["request_id"] == "rid-lazy-debug"
+        assert ws.sent_payloads[0]["params"] == {"message": "hello"}
+
+        # debug 开启时守卫放行，日志功能不缺失
+        with caplog.at_level(logging.DEBUG, logger="agent_gateway.routing.agent_client"):
+            task = asyncio.create_task(client.send_request(env, timeout=2.0))
+            await _wait_for_send(ws, 2)
+            ws.respond_unary("rid-lazy-debug", {"echo": "ok-2"})
+            response = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+            assert response.ok is True
+        assert len(calls) > 0
+    finally:
+        receiver.cancel()
+        await receiver
