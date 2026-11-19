@@ -39,6 +39,9 @@ logger = logging.getLogger(__name__)
 
 _ROUTE_ATTEMPTS = 3
 _TOUCH_INTERVAL_SECONDS = 20.0
+# Leave room for the Runtime Manager's default 30s allocation queue.
+_ROUTE_BUDGET_SECONDS = 60.0
+_MAX_RETRY_DELAY_SECONDS = 5.0
 _INTERRUPT_METHODS = frozenset(
     {
         "chat.interrupt",
@@ -223,6 +226,10 @@ def _is_http_retryable(exc: BaseException) -> bool:
         exc,
         (httpx.RequestError, httpx.HTTPStatusError, OSError, TimeoutError, asyncio.TimeoutError),
     )
+
+
+# Only retry an ambiguous business operation if the transport never sent it.
+_UNSENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
 class RuntimeRoutedAgentClient(AgentServerClient):
@@ -521,6 +528,18 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             )
         except Exception as exc:
             if not _is_http_retryable(exc):
+                raise
+            if not isinstance(exc, _UNSENT_ERRORS):
+                # 请求可能已被 Pod 执行，只是响应丢了（ReadError/ReadTimeout/5xx）。
+                # 对 session.create、session.rename、command.* 这类方法重发会造成
+                # 重复创建/重复执行，宁可把错误交给调用方重试（由人决定）。
+                logger.warning(
+                    "[RuntimeRouted] unary http failed but NOT resent "
+                    "(may have executed): method=%s session=%s err=%s",
+                    envelope.method,
+                    session_id,
+                    exc,
+                )
                 raise
             logger.warning(
                 "[RuntimeRouted] unary http failed, re-route: session=%s err=%s",
@@ -931,35 +950,46 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         bot_id: str,
         request_id: str,
         user_id: str | None,
+        budget_seconds: float = _ROUTE_BUDGET_SECONDS,
     ) -> tuple[str, str]:
-        last_error: RetryableRouteError | None = None
-        route_id = request_id
-        for attempt in range(1, self._route_attempts + 1):
-            try:
-                result = await self._route.route(
-                    session_id=session_id,
-                    group_id=group_id,
-                    bot_id=bot_id,
-                    request_id=route_id,
-                    user_id=user_id,
-                )
-                return http_base_from_pod_sse_url(result.pod_sse_url), result.request_id
-            except RetryableRouteError as exc:
-                last_error = exc
-                delay = float(exc.retry_after) if exc.retry_after is not None else 1.0
-                logger.warning(
-                    "[RuntimeRouted] route retryable: code=%s attempt=%s/%s sleep=%.1fs",
-                    exc.code,
-                    attempt,
-                    self._route_attempts,
-                    delay,
-                )
-                if attempt >= self._route_attempts:
-                    break
-                await asyncio.sleep(delay)
-        if last_error is None:
-            raise RetryableRouteError("route failed", code="TRANSPORT")
-        raise last_error
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget_seconds
+        budget = asyncio.timeout_at(deadline)
+        try:
+            async with budget:
+                for attempt in range(1, self._route_attempts + 1):
+                    try:
+                        result = await self._route.route(
+                            session_id=session_id,
+                            group_id=group_id,
+                            bot_id=bot_id,
+                            request_id=request_id,
+                            user_id=user_id,
+                        )
+                    except RetryableRouteError as exc:
+                        delay = exc.retry_after
+                        if delay is None or delay <= 0:
+                            delay = 1.0
+                        # Do not retry earlier than the server requested. Return the
+                        # original retryable error when we cannot afford the wait.
+                        if (
+                            attempt >= self._route_attempts
+                            or delay > _MAX_RETRY_DELAY_SECONDS
+                            or delay >= deadline - loop.time()
+                        ):
+                            raise
+                        logger.warning(
+                            "[RuntimeRouted] route retry: code=%s attempt=%s/%s sleep=%.1fs",
+                            exc.code, attempt, self._route_attempts, delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        return http_base_from_pod_sse_url(result.pod_sse_url), result.request_id
+        except TimeoutError as exc:
+            if not budget.expired():
+                raise
+            raise RetryableRouteError("route deadline exceeded", code="TRANSPORT") from exc
+        raise RetryableRouteError("route failed", code="TRANSPORT")
 
     async def _touch_quiet(self, session_id: str, request_id: str) -> bool | None:
         try:
