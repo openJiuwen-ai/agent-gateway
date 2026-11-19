@@ -13,10 +13,10 @@ from e2a.models import E2AEnvelope
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentCreateFailed, AgentManager, AgentRuntime, BUILTIN_AGENT_TYPE
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
@@ -26,6 +26,7 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     is_ws_connect_retryable,
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
+    resolve_agent_workspace,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
@@ -64,6 +65,24 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         )
         self._closed = True
         self.set_or_update_server_config(config={})
+
+    async def _resolve_agent(
+        self, envelope: E2AEnvelope, *, acquire: bool = False, ws_ready: bool = False,
+    ) -> AgentRuntime:
+        try:
+            runtime = await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready)
+            try:
+                launch = self._config.builtin_launch or {}
+                if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
+                    workspace = resolve_agent_workspace(runtime.info.user_id, workspace_root=self._workspace_root)
+                    await self._control.ensure_builtin_network(runtime.info.sandbox_id, workspace)
+            except BaseException:
+                if acquire:
+                    await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+                raise
+            return runtime
+        except AdxControlError as exc:
+            raise AgentCreateFailed(f"AGENT_CREATE_FAILED: {exc}") from exc
 
     async def shutdown(self) -> None:
         await super().shutdown()
