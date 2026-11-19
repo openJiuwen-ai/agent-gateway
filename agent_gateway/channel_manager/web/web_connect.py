@@ -2333,7 +2333,9 @@ class WebChannel(BaseWsChannel):
         # 等 ws 层 keepalive / 拉取请求）→ 这类请求与 session 无关，
         # 仅合成一个临时 id 供后续 Message 构造使用，但【不】参与 register_ws，
         # 保留 ws 上一次的真实 RoutingKey，避免把 ws 从其所属 team session 摘除。
-        _explicit_session_id = params.get("session_id")
+        _explicit_session_id = (
+            None if method in {"a4p.config.get", "a4p.config.update"} else params.get("session_id")
+        )
         has_explicit_session = _explicit_session_id is not None and _explicit_session_id != ""
         try:
             if method in {"chat.send", "chat.resume"} and "group_id" in params:
