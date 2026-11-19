@@ -56,7 +56,7 @@ dependencies = [
     { name = "croniter" },
     { name = "dingtalk-stream" },
     { name = "discord-py" },
-    { name = "e2a" },
+    { name = "openjiuwen-e2a" },
     { name = "fastapi" },
     { name = "filelock" },
     { name = "httpx", extra = ["http2", "socks"] },
@@ -123,7 +123,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=3.0.0,<7" },
     { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
     { name = "discord-py", specifier = ">=2.4.0,<3" },
-    { name = "e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=defa6d8d8904eb3272a58fa0ad13f94f7adb4a51" },
+    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
     { name = "fastapi", specifier = ">=0.115,<1.0" },
     { name = "filelock", specifier = ">=3.25.0,<4" },
     { name = "httpx", extras = ["http2", "socks"], specifier = ">=0.27,<1.0" },
@@ -1395,11 +1395,6 @@ sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/ea/07/448
 wheels = [
     { url = "https://repo.huaweicloud.com/repository/pypi/packages/d6/51/756e71bec48ece0ecc2a10e921ef2756e197dcb7e478f2b43673b6683902/docx2txt-0.9-py3-none-any.whl", hash = "sha256:e3718c0653fd6f2fcf4b51b02a61452ad1c38a4c163bcf0a6fd9486cd38f529a" },
 ]
-
-[[package]]
-name = "e2a"
-version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=e2a&rev=defa6d8d8904eb3272a58fa0ad13f94f7adb4a51#defa6d8d8904eb3272a58fa0ad13f94f7adb4a51" }
 
 [[package]]
 name = "email-validator"
@@ -3262,6 +3257,11 @@ sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/4d/9d/f4b
 wheels = [
     { url = "https://repo.huaweicloud.com/repository/pypi/packages/4c/40/cce048afcd61bd7b00c3e7e3d1ebefb22e64b635cbfed8f0dfd39df5993c/openjiuwen-0.1.20.post3-py3-none-any.whl", hash = "sha256:bda4b1b785c3fb871eaf89e82c12209eb17806f618b710ce5a090fa7632b3627" },
 ]
+
+[[package]]
+name = "openjiuwen-e2a"
+version = "0.3.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" }
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
