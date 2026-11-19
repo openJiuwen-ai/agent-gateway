@@ -15,6 +15,9 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
 )
 
 
+DEFAULT_RESTART_POLICY = {'maxAttempts': 3, 'initialBackoffSeconds': 1, 'maxBackoffSeconds': 30}
+
+
 @dataclass(frozen=True)
 class AdxRouterConfig:
     ingress_url: str
@@ -26,7 +29,7 @@ class AdxRouterConfig:
     workspace_target: str = '/home/agentos'
     ssh_user: str = 'agentos'
     ssh_known_hosts: str = ''
-    restart_policy: dict[str, int] | None = None
+    restart_policy: dict[str, int] | None = field(default_factory=lambda: dict(DEFAULT_RESTART_POLICY))
     connect_timeout_seconds: float = 60.0
     builtin_process_from_image: bool = False
 
@@ -105,7 +108,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     ssh_known_hosts = settings.get('ssh_known_hosts', '')
     if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
         raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
-    restart_policy = _restart_policy(settings.get('restart_policy'))
+    restart_policy = _restart_policy(settings.get('restart_policy', DEFAULT_RESTART_POLICY))
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, require_frontend_endpoint=False),

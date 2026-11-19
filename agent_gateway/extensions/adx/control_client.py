@@ -140,6 +140,9 @@ class AdxControlClient:
                     value = await self.get_agent_info(instance_id)
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
                         return value
+                    if value.get('status') == 'failed' and value.get('restart_pending'):
+                        await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
+                        continue
                     if value.get('status') in ('failed', 'deleted', 'deleting'):
                         raise AdxControlError('ADX Environment is not available')
                     await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
