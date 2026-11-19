@@ -87,11 +87,9 @@ def test_gateway_template_drops_as_only_react_keys() -> None:
     assert "react" not in AGENTOS
 
 
-def test_gateway_templates_drop_as_only_models() -> None:
-    for template in (BASE, AGENTOS):
-        assert {
-            "video", "audio", "vision", "image_gen", "embed",
-        }.isdisjoint(template["models"])
+def test_gateway_templates_drop_models_section() -> None:
+    assert "models" not in BASE
+    assert "models" not in AGENTOS
 
 
 def test_gateway_templates_drop_preferred_language() -> None:

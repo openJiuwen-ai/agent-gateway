@@ -163,6 +163,47 @@ class CronController:
 
         return await fetch_zen_free_model_rows(client)
 
+    async def _remote_model_rows(
+        self,
+        auth_session: str | None = None,
+        *,
+        user_id: str | None = None,
+        group_id: str = "",
+        bot_id: str = "",
+    ) -> list[dict[str, Any]] | None:
+        client = self._agent_client
+        if client is None:
+            return None
+        from agent_gateway.common.model_errors import (
+            MODEL_RUNTIME_UNAVAILABLE,
+            ModelSelectionError,
+        )
+        from agent_gateway.common.remote_model_catalog import fetch_agent_model_rows
+        from agent_gateway.common.request_identity import (
+            apply_routing_metadata,
+            normalize_routing_identity,
+        )
+
+        identity = normalize_routing_identity(
+            {
+                "user_id": user_id or "",
+                "group_id": group_id,
+                "bot_id": bot_id,
+            }
+        )
+        rows = await fetch_agent_model_rows(
+            agent_client=client,
+            auth_session=auth_session,
+            user_id=user_id,
+            metadata=apply_routing_metadata(None, identity),
+        )
+        if rows is None:
+            raise ModelSelectionError(
+                MODEL_RUNTIME_UNAVAILABLE,
+                "Cannot validate the model because AgentServer models.list is unavailable",
+            )
+        return rows
+
     @classmethod
     def get_instance(
         cls,
@@ -610,9 +651,29 @@ class CronController:
             group_id = normalize_tenant_id(params.get("group_id"))
             bot_id = normalize_tenant_id(params.get("bot_id"))
             user_id = normalize_tenant_id(params.get("user_id"))
-            model_name, model_source = _resolve_cron_model(
-                params.get("model_name"), await self._zen_entries()
-            )
+            remote_model_rows = None
+            if (
+                params.get("model_name") is not None
+                or params.get("model_selection") is not None
+            ):
+                remote_model_rows = await self._remote_model_rows(
+                    auth_session,
+                    user_id=user_id,
+                    group_id=group_id,
+                    bot_id=bot_id,
+                )
+            if remote_model_rows is not None:
+                from agent_gateway.common.remote_model_catalog import (
+                    resolve_remote_cron_model,
+                )
+
+                model_name, model_source = resolve_remote_cron_model(
+                    params.get("model_name"), remote_model_rows
+                )
+            else:
+                model_name, model_source = _resolve_cron_model(
+                    params.get("model_name"), await self._zen_entries()
+                )
             model_selection = params.get("model_selection")
             if model_selection is not None:
                 from agent_gateway.common.model_selection import ModelSelection
@@ -620,7 +681,15 @@ class CronController:
                 selection = ModelSelection.model_validate(model_selection)
                 if selection.type != "model":
                     raise ValueError("Scheduled tasks only support a single model")
-                ModelSelectionResolver().resolve(selection)
+                if remote_model_rows is not None:
+                    from agent_gateway.common.remote_model_catalog import (
+                        RemoteModelCatalog,
+                    )
+
+                    catalog = RemoteModelCatalog(remote_model_rows)
+                else:
+                    catalog = None
+                ModelSelectionResolver(catalog=catalog).resolve(selection)
                 model_selection = selection.model_dump()
             # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
             # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
@@ -748,6 +817,11 @@ class CronController:
         patch = strip_sticky_identity_fields(patch)
         patch.pop("service_id", None)
         patch.pop("agent_id", None)
+        patch = {
+            key: value
+            for key, value in patch.items()
+            if not str(key).startswith("_")
+        }
         existing = await self._store.get_job(job_id)
         if existing is None or not self._owns_job(
             existing, user_id=user_id, group_id=group_id, bot_id=bot_id
@@ -765,6 +839,14 @@ class CronController:
                 "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
             )
         enterprise = is_enterprise()
+        remote_model_rows = None
+        if not enterprise and ("model_name" in patch or "model_selection" in patch):
+            remote_model_rows = await self._remote_model_rows(
+                auth_session,
+                user_id=user_id,
+                group_id=group_id,
+                bot_id=bot_id,
+            )
         if "mode" in patch:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
             # 同 create_job：内部模式只随 proactive_cron_sync 注册，不允许把
@@ -789,9 +871,18 @@ class CronController:
                     user_id=str(user_id or existing.user_id or ""),
                 )
         elif "model_name" in patch:
-            canonical, model_source = _resolve_cron_model(
-                patch.get("model_name"), await self._zen_entries()
-            )
+            if remote_model_rows is not None:
+                from agent_gateway.common.remote_model_catalog import (
+                    resolve_remote_cron_model,
+                )
+
+                canonical, model_source = resolve_remote_cron_model(
+                    patch.get("model_name"), remote_model_rows
+                )
+            else:
+                canonical, model_source = _resolve_cron_model(
+                    patch.get("model_name"), await self._zen_entries()
+                )
             patch["model_name"] = canonical
             # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
             # 账号；换回自配模型/清除模型 → 解绑，否则执行侧仍会注入登录凭据，
@@ -802,6 +893,24 @@ class CronController:
                 )
             else:
                 patch["credential_ref"] = ""
+        if not enterprise and "model_selection" in patch and remote_model_rows is not None:
+            raw_selection = patch.get("model_selection")
+            if raw_selection is not None:
+                from agent_gateway.common.model_routing_registry import (
+                    ModelSelectionResolver,
+                )
+                from agent_gateway.common.model_selection import ModelSelection
+                from agent_gateway.common.remote_model_catalog import (
+                    RemoteModelCatalog,
+                )
+
+                selection = ModelSelection.model_validate(raw_selection)
+                if selection.type != "model":
+                    raise ValueError("Scheduled tasks only support a single model")
+                ModelSelectionResolver(
+                    catalog=RemoteModelCatalog(remote_model_rows)
+                ).resolve(selection)
+                patch["_model_selection_remote_validated"] = True
         if not enterprise and "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))

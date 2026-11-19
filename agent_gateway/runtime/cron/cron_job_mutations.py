@@ -251,6 +251,9 @@ def ensure_proactive_deletable(existing: CronJob | None, *, force: bool) -> None
 
 
 def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
+    remote_model_selection_validated = bool(
+        patch.pop("_model_selection_remote_validated", False)
+    )
     if "_expected_legacy_model_name" in patch:
         if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
             return existing
@@ -354,8 +357,9 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
             selection = ModelSelection.model_validate(raw_selection)
             if selection.type != "model":
                 raise ValueError("Scheduled tasks only support a single model")
-            from agent_gateway.common.model_routing_registry import ModelSelectionResolver
-            ModelSelectionResolver().resolve(selection)
+            if not remote_model_selection_validated:
+                from agent_gateway.common.model_routing_registry import ModelSelectionResolver
+                ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())
     if "credential_ref" in patch:
         # 模型来源切换时由 controller 重算：登录模型 → 绑定创建会话的华为账号
