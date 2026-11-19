@@ -37,11 +37,13 @@ RUN sed -i -E '/^[[:space:]]*"openjiuwen([>=<!~=]| @ |")/d' pyproject.toml \
          exit 1; \
        fi
 
+# .[a2a]：装入 optional extra a2a-sdk，否则企业 manager_config 因缺 a2a
+# 跳过挂载，管理面探活 /api/health 会 404。
 RUN uv pip install --system \
     "openjiuwen @ git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT}" \
     "e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=e2a" \
     "openjiuwen-runtime-foundation @ git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation" \
-    -e . \
+    -e ".[a2a]" \
     ${PIP_EXTRA_ARGS}
 
 # tiktoken BPE 预热（openjiuwen 传递依赖，缺失则跳过）
