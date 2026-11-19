@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -100,3 +102,46 @@ async def test_run_failure_restores_handlers_and_awaits_cleanup(
 
     assert installed == old
     cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_web_runtime_cleanup_preserves_primary_error() -> None:
+    from agent_gateway import app_gateway
+
+    channel = SimpleNamespace(stop=AsyncMock())
+
+    async def failed_start() -> None:
+        raise RuntimeError("listener stopped before ready")
+
+    web_task = asyncio.create_task(failed_start())
+    await asyncio.sleep(0)
+
+    with pytest.raises(TimeoutError, match="ready timeout"):
+        try:
+            raise TimeoutError("ready timeout")
+        finally:
+            await app_gateway._stop_web_runtime(channel, web_task)
+
+    channel.stop.assert_awaited_once()
+    assert web_task.done()
+
+
+@pytest.mark.asyncio
+async def test_web_runtime_cleanup_cancels_running_start() -> None:
+    from agent_gateway import app_gateway
+
+    channel = SimpleNamespace(stop=AsyncMock())
+    started = asyncio.Event()
+    keep_running = asyncio.Event()
+
+    async def running_start() -> None:
+        started.set()
+        await keep_running.wait()
+
+    web_task = asyncio.create_task(running_start())
+    await started.wait()
+
+    await app_gateway._stop_web_runtime(channel, web_task)
+
+    channel.stop.assert_awaited_once()
+    assert web_task.cancelled()

@@ -578,6 +578,27 @@ async def _wait_for_web_channel_listening(
         await asyncio.gather(ready, return_exceptions=True)
 
 
+async def _stop_web_runtime(
+    web_channel: Any,
+    web_task: asyncio.Task[None] | None,
+) -> None:
+    """Stop the Web channel before its long-running start task exits.
+
+    Stopping the channel can make a still-starting task fail with its own
+    ``RuntimeError``. That error must not replace a primary startup failure such
+    as a readiness timeout originating in the caller, so only cancel a task that
+    is still running and consume the result without re-raising it.
+    """
+    try:
+        if web_channel is not None:
+            await web_channel.stop()
+    finally:
+        if web_task is not None:
+            if not web_task.done():
+                web_task.cancel()
+            await asyncio.gather(web_task, return_exceptions=True)
+
+
 def _running_under_supervisor() -> bool:
     """Whether our jiuwenswarm.app supervisor is alive right now and really is our parent.
 
@@ -4210,14 +4231,7 @@ async def _run(
         await acp_inbound_server.stop()
         if tui_channel is not None:
             await tui_channel.stop()
-        if web_channel is not None:
-            await web_channel.stop()
-        if web_task is not None:
-            web_task.cancel()
-            try:
-                await web_task
-            except asyncio.CancelledError:
-                pass
+        await _stop_web_runtime(web_channel, web_task)
 
         if feishu_channel is not None and feishu_task is not None:
             feishu_task.cancel()
