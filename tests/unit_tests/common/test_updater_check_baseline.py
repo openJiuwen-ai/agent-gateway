@@ -2,10 +2,13 @@
 
 Daily wheels bump the installed distribution metadata (for example
 ``workswarm 0.2.9``) without regenerating the checked-in
-``_build_config.VERSION`` constant (still ``0.2.8``), so the check must
-compare against ``get_runtime_version()``. The PyPI simple index lists every
-historical wheel, so the resolved asset must match the release version rather
-than the first entry in the list.
+``_build_config.VERSION`` constant (still ``0.2.8``), so pip checks must
+compare against ``get_runtime_version()``. Desktop checks keep the
+``_build_config`` version instead: the dist-info bundled into the frozen app
+holds the PEP 440 normalized spelling (``0.2.9b5``), which never matches the
+``v0.2.9.beta5`` release tag the timestamp lookup needs. The PyPI simple index
+lists every historical wheel, so the resolved asset must match the release
+version rather than the first entry in the list.
 """
 
 import sys
@@ -76,6 +79,48 @@ def test_check_uses_installed_version_as_baseline(monkeypatch):
     assert status["has_update"] is False
     assert status["state"] == "up_to_date"
     assert status["current_version"] == "0.2.9"
+
+
+def test_desktop_check_keeps_build_config_baseline(monkeypatch):
+    # The dist-info bundled into the frozen desktop app reads 0.2.9b5 (PEP 440
+    # normalized) while the release tag is v0.2.9.beta5; the desktop check
+    # must be driven by the _build_config version, otherwise the current
+    # release lookup misses and every desktop check fails with "Current
+    # desktop release timestamp is missing".
+    monkeypatch.setenv(updater.DESKTOP_ENV_FLAG, "1")
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    seen: dict[str, str] = {}
+
+    class FakeSource:
+        def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
+            seen["current_version"] = current_version
+            release = _release(
+                "0.2.9.beta5", "WorkSwarm-0.2.9.beta5-windows.exe"
+            )
+            if current_version == "0.2.9.beta5":
+                # The tag lookup only succeeds for the raw dotted spelling.
+                release.current_release_published_at = release.published_at
+            return release
+
+    monkeypatch.setattr(updater, "__version__", "0.2.9.beta5")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.9b5")
+    monkeypatch.setattr(
+        updater,
+        "get_config_raw",
+        lambda: {"updater": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        updater.UpdaterService,
+        "_create_version_source",
+        staticmethod(lambda config: FakeSource()),
+    )
+
+    status = updater.UpdaterService().check()
+
+    assert seen["current_version"] == "0.2.9.beta5"
+    assert status["has_update"] is False
+    assert status["state"] == "up_to_date"
 
 
 def test_check_picks_wheel_matching_release_version(monkeypatch):

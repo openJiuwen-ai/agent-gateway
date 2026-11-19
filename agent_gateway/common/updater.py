@@ -327,10 +327,18 @@ class UpdaterService:
 
     def _check(self, config: dict[str, Any]) -> None:
         source = self._create_version_source(config)
+        install_mode = _detect_install_mode()
         # Daily wheels bump the distribution metadata without regenerating the
-        # checked-in _build_config constant, so every update decision must use
+        # checked-in _build_config constant, so pip update decisions must use
         # the installed runtime version instead of the static __version__.
-        current_version = get_runtime_version()
+        # Desktop bundles keep the real release version in _build_config,
+        # while the dist-info bundled into the frozen app carries the PEP 440
+        # normalized spelling (0.2.9b5 vs the v0.2.9.beta5 release tag) that
+        # never matches the tag the timestamp lookup needs, so desktop keeps
+        # the __version__ baseline.
+        current_version = (
+            __version__ if install_mode == "desktop" else get_runtime_version()
+        )
         try:
             release = source.fetch_latest(current_version)
         except Exception as exc:
@@ -342,7 +350,6 @@ class UpdaterService:
         if not latest_version:
             raise RuntimeError("Latest release version is missing.")
 
-        install_mode = _detect_install_mode()
         timestamp_desktop = install_mode == "desktop" and sys.platform in {
             "darwin",
             "win32",
