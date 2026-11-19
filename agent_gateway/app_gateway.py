@@ -342,6 +342,7 @@ def _normalize_gateway_message(msg):
         stream_seq=msg.stream_seq,
         stream_id=msg.stream_id,
         metadata=msg.metadata,
+        app_id=getattr(msg, "app_id", None),
         user_id=getattr(msg, "user_id", None),
     )
     from agent_gateway.telemetry import attach_message_trace, get_message_trace
