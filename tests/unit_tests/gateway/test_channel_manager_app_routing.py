@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from openjiuwen_protocol.message import Message
+from e2a.message import Message
 
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 

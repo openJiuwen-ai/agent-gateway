@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from agent_gateway.common.event_names import event_name_text
+
 ALLOWED_LEVELS = frozenset({"user"})
 
 
@@ -52,9 +54,12 @@ class GatewayRegistrar:
             raise ValueError("handler must be callable")
         pattern = _match_pattern(match_pattern)
         local_id = f"local-{len(self.declarations) + 1}"
+        # Registration accepts any object; the str() fallback keeps that contract
+        # while enums are normalised to their wire name.
+        event_name = event_name_text(event_type) or str(event_type)
         self.declarations.append(
             HandlerDeclaration(
-                event_type=_event_name(event_type),
+                event_type=event_name,
                 handler=handler,
                 match_pattern=pattern,
                 local_id=local_id,
@@ -78,10 +83,3 @@ def _level_name(value: object) -> str:
     if isinstance(inner, str):
         return inner.strip().lower()
     return str(value).strip().lower()
-
-
-def _event_name(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    inner = getattr(value, "value", None)
-    return inner if isinstance(inner, str) else str(value)
