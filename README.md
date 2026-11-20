@@ -24,7 +24,7 @@
 
 **Agent Gateway** is the gateway process of the split deployment (Gateway + AgentServer). It sits between user-facing channels and the AgentServer: it accepts connections from the Web UI, TUI, ACP clients and IM platforms, routes requests to the AgentServer over a single WebSocket (E2A protocol), and owns the cross-session services — scheduled tasks, heartbeat, health checks and multi-instance isolation.
 
-The gateway builds and runs as its own Python package `agent-gateway` with two entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP bridge).
+The gateway builds and runs as its own Python package `openjiuwen-agent-gateway` with two entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP bridge).
 
 ## Core Features
 
@@ -92,7 +92,7 @@ uv sync
 
 ```bash
 bash scripts/build.sh --wheel
-pip install dist/agent_gateway-*.whl
+pip install dist/openjiuwen_agent_gateway-*.whl
 ```
 
 ## Quick Start
@@ -208,8 +208,8 @@ bash scripts/build.sh --no-clean   # keep build/ artifacts
 
 Artifacts are written to `dist/`:
 
-- `dist/agent_gateway-<version>-py3-none-any.whl`
-- `dist/agent_gateway-<version>.tar.gz`
+- `dist/openjiuwen_agent_gateway-<version>-py3-none-any.whl`
+- `dist/openjiuwen_agent_gateway-<version>.tar.gz`
 
 ## Test
 
