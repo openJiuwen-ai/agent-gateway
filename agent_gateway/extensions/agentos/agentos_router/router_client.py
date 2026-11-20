@@ -770,6 +770,18 @@ class AgentOSRouterClient(AgentServerClient):
     def auth_enabled(self) -> bool:
         return self._auth_client is not None
 
+    async def refresh_access_token(self, refresh_token: str) -> str | None:
+        """向 IAM 刷新 access token；供 web proxy 在 token 过期时调用。"""
+        auth_client = self._auth_client
+        refresh = (
+            getattr(auth_client, "refresh_access_token", None)
+            if auth_client is not None
+            else None
+        )
+        if not callable(refresh):
+            return None
+        return await refresh(refresh_token)
+
     @staticmethod
     def _header_user_id(headers: Mapping[str, str]) -> str:
         lowered = {str(k).lower(): str(v or "") for k, v in headers.items()}

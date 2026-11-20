@@ -25,8 +25,12 @@ from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     _TEST_NET_1,
     WEB_PROXY_COOKIE_NAME,
     WEB_PROXY_USER_COOKIE,
+    WebProxyAuthError,
     WebProxyChannelConfig,
+    _WEB_PROXY_REFRESH_CACHE,
+    _WEB_PROXY_REFRESH_FAILURES,
     _append_tail,
+    _authenticate_web_proxy,
     _ensure_http_proxy_session,
     _ensure_proxy_session,
     _filter_response_headers,
@@ -272,12 +276,34 @@ class _FakeIamClient:
         token: str = "good",
         auth_enabled: bool = True,
         username: str = "",
+        refresh_token: str = "refresh-good",
+        refreshed_token: str = "",
+        refresh_error: bool = False,
+        refresh_started: asyncio.Event | None = None,
+        refresh_gate: asyncio.Event | None = None,
     ) -> None:
         self.auth_enabled = auth_enabled
         self.user_id = user_id
         self.token = token
         self.username = username
+        self.refresh_token = refresh_token
+        self.refreshed_token = refreshed_token or token
+        self.refresh_error = refresh_error
+        self.refresh_started = refresh_started
+        self.refresh_gate = refresh_gate
         self.calls: list[dict[str, Any]] = []
+        self.refresh_calls: list[str] = []
+
+    async def refresh_access_token(self, refresh_token: str) -> str | None:
+        self.refresh_calls.append(refresh_token)
+        if self.refresh_started is not None:
+            self.refresh_started.set()
+        if self.refresh_gate is not None:
+            await self.refresh_gate.wait()
+        if self.refresh_error or refresh_token != self.refresh_token:
+            return None
+        self.token = self.refreshed_token
+        return self.refreshed_token
 
     async def authenticate_http(
         self,
@@ -307,7 +333,7 @@ class _FakeIamClient:
             return AuthResult(
                 success=False,
                 error="invalid token",
-                extensions={"error_code": "UNAUTHORIZED"},
+                extensions={"error_code": "INVALID_TOKEN"},
             )
         extensions: dict[str, Any] = {}
         if self.username:
@@ -355,6 +381,169 @@ async def _close_proxy_session(channel: WebChannel) -> None:
         if session is not None and not getattr(session, "closed", True):
             await session.close()
             setattr(channel, attr, None)
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_refreshes_missing_token_with_refresh_cookie() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    iam = _FakeIamClient(user_id="u1", token="fresh-token")
+    channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=iam)
+    try:
+        user_id, token = await _authenticate_web_proxy(
+            channel,
+            path="/?user_id=u1",
+            headers={"Cookie": "refresh_token=refresh-good"},
+            remote="",
+            query_user_id="u1",
+            referer="",
+        )
+    finally:
+        _WEB_PROXY_REFRESH_CACHE.clear()
+        _WEB_PROXY_REFRESH_FAILURES.clear()
+    assert (user_id, token) == ("u1", "fresh-token")
+    assert iam.refresh_calls == ["refresh-good"]
+    assert len(iam.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_retries_invalid_token_without_old_query_token() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    iam = _FakeIamClient(user_id="u1", token="fresh-token")
+    channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=iam)
+    try:
+        user_id, token = await _authenticate_web_proxy(
+            channel,
+            path="/?access_token=expired&user_id=u1",
+            headers={"Cookie": "access_token=expired; refresh_token=refresh-good"},
+            remote="",
+            query_user_id="u1",
+            referer="",
+        )
+    finally:
+        _WEB_PROXY_REFRESH_CACHE.clear()
+        _WEB_PROXY_REFRESH_FAILURES.clear()
+    assert (user_id, token) == ("u1", "fresh-token")
+    assert iam.refresh_calls == ["refresh-good"]
+    assert iam.calls[-1]["path"] == "/?user_id=u1"
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_refresh_result_is_cached_briefly() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    iam = _FakeIamClient(user_id="u1", token="fresh-token")
+    channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=iam)
+    try:
+        for _ in range(2):
+            await _authenticate_web_proxy(
+                channel,
+                path="/?user_id=u1",
+                headers={"Cookie": "refresh_token=refresh-good"},
+                remote="",
+                query_user_id="u1",
+                referer="",
+            )
+    finally:
+        _WEB_PROXY_REFRESH_CACHE.clear()
+        _WEB_PROXY_REFRESH_FAILURES.clear()
+    assert iam.refresh_calls == ["refresh-good"]
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_refresh_locks_are_per_refresh_token() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    started = asyncio.Event()
+    gate = asyncio.Event()
+    slow_iam = _FakeIamClient(
+        user_id="slow",
+        token="fresh-slow",
+        refresh_token="slow-refresh",
+        refresh_started=started,
+        refresh_gate=gate,
+    )
+    fast_iam = _FakeIamClient(
+        user_id="fast",
+        token="fresh-fast",
+        refresh_token="fast-refresh",
+    )
+    slow_channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=slow_iam)
+    fast_channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=fast_iam)
+    slow_task = asyncio.create_task(
+        _authenticate_web_proxy(
+            slow_channel,
+            path="/?user_id=slow",
+            headers={"Cookie": "refresh_token=slow-refresh"},
+            remote="",
+            query_user_id="slow",
+            referer="",
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        fast_result = await asyncio.wait_for(
+            _authenticate_web_proxy(
+                fast_channel,
+                path="/?user_id=fast",
+                headers={"Cookie": "refresh_token=fast-refresh"},
+                remote="",
+                query_user_id="fast",
+                referer="",
+            ),
+            timeout=1,
+        )
+        assert fast_result == ("fast", "fresh-fast")
+        gate.set()
+        slow_result = await asyncio.wait_for(slow_task, timeout=1)
+        assert slow_result == ("slow", "fresh-slow")
+    finally:
+        gate.set()
+        await slow_task
+        _WEB_PROXY_REFRESH_CACHE.clear()
+        _WEB_PROXY_REFRESH_FAILURES.clear()
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_without_refresh_token_keeps_original_401() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    iam = _FakeIamClient(user_id="u1")
+    channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=iam)
+    with pytest.raises(WebProxyAuthError) as exc:
+        await _authenticate_web_proxy(
+            channel,
+            path="/?user_id=u1",
+            headers={},
+            remote="",
+            query_user_id="u1",
+            referer="",
+        )
+    assert exc.value.code == "MISSING_TOKEN"
+    assert iam.refresh_calls == []
+
+
+@pytest.mark.asyncio
+async def test_web_proxy_refresh_failure_keeps_original_401() -> None:
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
+    iam = _FakeIamClient(user_id="u1", refresh_error=True)
+    channel = _proxy_channel(resolver=lambda *_a, **_k: None, iam=iam)
+    for _ in range(2):
+        with pytest.raises(WebProxyAuthError) as exc:
+            await _authenticate_web_proxy(
+                channel,
+                path="/?user_id=u1",
+                headers={"Cookie": "refresh_token=refresh-good"},
+                remote="",
+                query_user_id="u1",
+                referer="",
+            )
+        assert exc.value.code == "MISSING_TOKEN"
+    assert iam.refresh_calls == ["refresh-good"]
+    _WEB_PROXY_REFRESH_CACHE.clear()
+    _WEB_PROXY_REFRESH_FAILURES.clear()
 
 
 async def _listen(channel: WebChannel, desired: dict[str, int]) -> WebPortManager:

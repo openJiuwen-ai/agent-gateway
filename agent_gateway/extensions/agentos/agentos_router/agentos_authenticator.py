@@ -108,6 +108,53 @@ class AgentOSAuthenticator(CredentialAuthenticator):
             extensions={"error_code": "INVALID_TOKEN"},
         )
 
+    async def refresh_access_token(self, refresh_token: str) -> str | None:
+        """使用 Manager refresh token 换取新的 access token。"""
+        refresh_token = (refresh_token or "").strip()
+        if not refresh_token:
+            return None
+        try:
+            resp = await self._auth_client.post(
+                f"{self._auth_service_url}/api/v1/auth/refresh",
+                json={"refresh_token": refresh_token},
+                headers={"Content-Type": "application/json"},
+                timeout=self._timeout,
+            )
+        except httpx.RequestError as e:
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "auth.refresh_error",
+                error=type(e).__name__,
+            )
+            return None
+
+        try:
+            body = resp.json()
+        except ValueError:
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "auth.refresh_error",
+                error="INVALID_RESPONSE",
+                status=getattr(resp, "status_code", ""),
+            )
+            return None
+
+        data = body.get("data", {}) if isinstance(body, dict) else {}
+        token = str(data.get("access_token") or "").strip() if isinstance(data, dict) else ""
+        if resp.status_code != 200 or not token:
+            log_agentos(
+                logger,
+                logging.WARNING,
+                "auth.refresh_error",
+                status=getattr(resp, "status_code", ""),
+            )
+            return None
+
+        log_agentos(logger, logging.INFO, "auth.refresh")
+        return token
+
     async def authenticate(self, context: AuthContext) -> AuthResult:
         """支持Token、API-KEY、SSH证书等多种认证方式"""
         credentials = context.credentials or {}

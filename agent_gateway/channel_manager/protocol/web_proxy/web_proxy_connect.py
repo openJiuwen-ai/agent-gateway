@@ -16,9 +16,12 @@ sandbox hold. The listen port does not hold a sandbox.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import ipaddress
 import logging
 import os
+import time
 import urllib.parse
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -92,6 +95,14 @@ _BLOCKED_FORWARD_QUERY_KEYS = _TOKEN_QUERY_KEYS | frozenset(
 # via ``ipaddress`` so the source carries no hardcoded IP literal.
 _TEST_NET_1 = str(ipaddress.ip_address(0xC0000201))
 
+_REFRESH_TOKEN_COOKIE_NAME = "refresh_token"
+_WEB_PROXY_REFRESH_TTL_SECONDS = 30.0
+_WEB_PROXY_REFRESH_FAILURE_TTL_SECONDS = 5.0
+_WEB_PROXY_REFRESH_CACHE: dict[str, tuple[str, float]] = {}
+_WEB_PROXY_REFRESH_FAILURES: dict[str, float] = {}
+_WEB_PROXY_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
+_WEB_PROXY_REFRESH_LOCKS_GUARD = asyncio.Lock()
+
 
 def _append_tail(upstream_url: str, tail: str) -> str:
     """Join *tail* onto the upstream path; keep existing query as-is.
@@ -153,6 +164,10 @@ def _cookie_named(headers: Mapping[str, str], name: str) -> str:
 
 def _cookie_token(headers: Mapping[str, str]) -> str:
     return _cookie_named(headers, WEB_PROXY_COOKIE_NAME)
+
+
+def _cookie_refresh_token(headers: Mapping[str, str]) -> str:
+    return _cookie_named(headers, _REFRESH_TOKEN_COOKIE_NAME)
 
 
 def _query_access_token(query: str) -> str:
@@ -311,6 +326,107 @@ def _location_without_token(request: Request, user_id: str) -> str:
     return f"{path}?{query}" if query else path
 
 
+def _without_token_query(path: str) -> str:
+    """Remove query token keys while keeping the remaining request target."""
+    parsed = urllib.parse.urlsplit(path or "")
+    pairs = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(
+            parsed.query, keep_blank_values=True
+        )
+        if key.lower() not in _TOKEN_QUERY_KEYS
+    ]
+    query = urllib.parse.urlencode(pairs)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment)
+    )
+
+
+def _refresh_cache_key(refresh_token: str) -> str:
+    return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+
+
+async def _refresh_lock_for(key: str) -> asyncio.Lock:
+    """Get the per-refresh-token single-flight lock.
+
+    The guard only protects dictionary access and is never held during the
+    network call, so one slow refresh cannot block other users or agent ports.
+    """
+    async with _WEB_PROXY_REFRESH_LOCKS_GUARD:
+        lock = _WEB_PROXY_REFRESH_LOCKS.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            _WEB_PROXY_REFRESH_LOCKS[key] = lock
+        return lock
+
+
+async def _refresh_web_proxy_token(
+    channel: Any,
+    headers: Mapping[str, str],
+) -> str | None:
+    """Refresh an expired IAM access token using the browser refresh cookie."""
+    refresh_token = _cookie_refresh_token(headers)
+    if not refresh_token:
+        return None
+    client = _auth_client_from_channel(channel)
+    refresh = getattr(client, "refresh_access_token", None) if client else None
+    if not callable(refresh):
+        logger.warning("[WebProxy] IAM client has no refresh_access_token seam")
+        return None
+
+    key = _refresh_cache_key(refresh_token)
+    now = time.monotonic()
+    cached = _WEB_PROXY_REFRESH_CACHE.get(key)
+    if cached is not None and cached[1] > now:
+        return cached[0]
+    failure_until = _WEB_PROXY_REFRESH_FAILURES.get(key)
+    if failure_until is not None and failure_until > now:
+        return None
+
+    lock = await _refresh_lock_for(key)
+    async with lock:
+        now = time.monotonic()
+        cached = _WEB_PROXY_REFRESH_CACHE.get(key)
+        if cached is not None and cached[1] > now:
+            return cached[0]
+        failure_until = _WEB_PROXY_REFRESH_FAILURES.get(key)
+        if failure_until is not None and failure_until > now:
+            return None
+        try:
+            token = await refresh(refresh_token)
+        except Exception as exc:
+            _WEB_PROXY_REFRESH_FAILURES[key] = (
+                time.monotonic() + _WEB_PROXY_REFRESH_FAILURE_TTL_SECONDS
+            )
+            logger.warning(
+                "[WebProxy] IAM access token refresh failed: %s",
+                type(exc).__name__,
+            )
+            return None
+        token = str(token or "").strip()
+        if not token:
+            _WEB_PROXY_REFRESH_FAILURES[key] = (
+                time.monotonic() + _WEB_PROXY_REFRESH_FAILURE_TTL_SECONDS
+            )
+            return None
+        now = time.monotonic()
+        _WEB_PROXY_REFRESH_CACHE[key] = (
+            token,
+            now + _WEB_PROXY_REFRESH_TTL_SECONDS,
+        )
+        _WEB_PROXY_REFRESH_FAILURES.pop(key, None)
+        for stale_key in [
+            cached_key
+            for cached_key, (_, expires_at) in _WEB_PROXY_REFRESH_CACHE.items()
+            if expires_at <= now
+        ]:
+            _WEB_PROXY_REFRESH_CACHE.pop(stale_key, None)
+        for stale_key, expires_at in list(_WEB_PROXY_REFRESH_FAILURES.items()):
+            if expires_at <= now:
+                _WEB_PROXY_REFRESH_FAILURES.pop(stale_key, None)
+        return token
+
+
 async def _authenticate_web_proxy(
     channel: Any,
     *,
@@ -342,6 +458,30 @@ async def _authenticate_web_proxy(
         error_code = ""
         if isinstance(result.extensions, dict):
             error_code = str(result.extensions.get("error_code") or "")
+        if error_code in {"MISSING_TOKEN", "INVALID_TOKEN"}:
+            refreshed = await _refresh_web_proxy_token(channel, headers)
+            if refreshed:
+                token = refreshed
+                retry_path = _without_token_query(path)
+                retry_headers = {
+                    key: value
+                    for key, value in headers_to_dict(headers).items()
+                    if key.lower() not in {"authorization", "x-token"}
+                }
+                retry_headers["Authorization"] = f"Bearer {refreshed}"
+                result = await client.authenticate_http(
+                    path=retry_path,
+                    headers=retry_headers,
+                    remote=remote,
+                    channel="web-proxy",
+                )
+                if not result.success:
+                    error_code = ""
+                    if isinstance(result.extensions, dict):
+                        error_code = str(
+                            result.extensions.get("error_code") or ""
+                        )
+    if not result.success:
         raise WebProxyAuthError(
             401,
             result.error or "unauthorized",
