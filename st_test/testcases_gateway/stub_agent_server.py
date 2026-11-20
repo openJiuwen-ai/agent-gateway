@@ -38,6 +38,8 @@ _UNARY_PAYLOADS: dict[str, dict[str, Any]] = {
     "connection.status": {"server_ready": True, "agent_ready": True},
     "config.get": {"config": {}},
     "cron.job.list": {"jobs": [], "total": 0},
+    "locale.get_conf": {"preferred_language": "en"},
+    "locale.set_conf": {"preferred_language": "en"},
 }
 
 

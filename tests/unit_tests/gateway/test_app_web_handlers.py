@@ -198,13 +198,37 @@ async def test_enterprise_locale_unavailable_does_not_use_local_config(monkeypat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("legacy", [False, True], ids=["missing", "legacy"])
-async def test_personal_locale_preserves_local_fallback(monkeypatch, method, legacy):
+async def test_personal_locale_with_client_routes_to_agent_server(monkeypatch, method):
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+
+    def fail_local(*args, **kwargs):
+        pytest.fail("Personal locale with a client must not use Gateway config")
+
+    monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
+    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    send = AsyncMock(return_value=SimpleNamespace(ok=True, payload={"preferred_language": "en"}))
+    monkeypatch.setattr(client, "send_request", send, raising=False)
+    channel = _bind(agent_client=client)
+    await channel.methods[method](object(), "req", {"preferred_language": " EN "}, "sess", "user")
+    envelope = send.await_args.args[0]
+    assert envelope.method == method
+    assert envelope.params == ({"preferred_language": "en"} if method.endswith("set_conf") else {})
+    assert envelope.user_id == "user"
+    assert envelope.session_id == "sess"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"preferred_language": "en"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
+async def test_personal_locale_without_client_uses_local_fallback(monkeypatch, method):
     monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"preferred_language": "en"})
     saved = []
     monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", saved.append)
-    channel = _bind(agent_client=WebSocketAgentServerClient() if legacy else None)
+    channel = _bind(agent_client=None)
     await channel.methods[method](object(), "req", {"preferred_language": " EN "}, "sess", "user")
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"] == {"preferred_language": "en"}

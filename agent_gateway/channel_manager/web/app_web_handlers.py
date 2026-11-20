@@ -4295,15 +4295,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Return the selected AgentServer user's preferred language."""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and (
-            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
-        ):
+        if not _is_enterprise_edition() and resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4327,10 +4322,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """Update preferred language in the selected AgentServer directory."""
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
@@ -4352,9 +4344,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and (
-            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
-        ):
+        if not _is_enterprise_edition() and resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
