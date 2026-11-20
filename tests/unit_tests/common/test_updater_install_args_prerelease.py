@@ -1,9 +1,13 @@
-"""Regression tests for pre-release aware install arguments.
+"""Regression tests for target-pinned install arguments.
 
-The update check resolves pre-release targets (beta channel), but pip and uv
-skip pre-releases by default, so an upgrade offered for ``0.2.9b3`` used to
-finish with "Requirement already satisfied" and no change. The installer must
-opt in only when the offered release is itself a pre-release.
+The update check resolves a target release (beta channel included), but pip
+and uv resolve the index themselves when handed an unpinned package, so an
+upgrade offered for ``0.2.9b3`` used to install some other version than the
+one shown — a newer release published in the meantime, or no-op entirely
+because pre-releases are skipped by default ("Requirement already
+satisfied"). The installer now pins the requirement to the checked version;
+an explicit ``package==target`` also makes both tools accept pre-release
+targets without ``--pre`` / ``--prerelease allow``.
 """
 
 from agent_gateway.common.upgrade_executor import PipExecutor
@@ -21,38 +25,43 @@ def _build(monkeypatch, latest_version: str, uv_cmd: str | None):
         {"pypi_mirror": "", "latest_version": latest_version},
         _noop_callback,
     )
-    return executor._build_install_args("workswarm", 20)
+    return executor._build_install_args("workswarm", 20, latest_version)
 
 
-def test_pip_allows_prerelease_for_beta_target(monkeypatch):
+def test_pip_pins_prerelease_target(monkeypatch):
     args = _build(monkeypatch, "0.2.9b3", uv_cmd=None)
 
-    assert "--pre" in args
-    assert "workswarm" in args
-
-
-def test_pip_keeps_stable_targets_unchanged(monkeypatch):
-    args = _build(monkeypatch, "0.2.9", uv_cmd=None)
-
+    assert "workswarm==0.2.9b3" in args
     assert "--pre" not in args
 
 
-def test_uv_allows_prerelease_for_beta_target(monkeypatch):
+def test_pip_pins_stable_target(monkeypatch):
+    args = _build(monkeypatch, "0.2.9", uv_cmd=None)
+
+    assert "workswarm==0.2.9" in args
+    assert "--pre" not in args
+
+
+def test_uv_pins_prerelease_target(monkeypatch):
     args = _build(monkeypatch, "0.2.9b3", uv_cmd="/usr/bin/uv")
 
-    index = args.index("--prerelease")
-    assert args[index + 1] == "allow"
-
-
-def test_uv_keeps_stable_targets_unchanged(monkeypatch):
-    args = _build(monkeypatch, "0.2.8", uv_cmd="/usr/bin/uv")
-
+    assert "workswarm==0.2.9b3" in args
     assert "--prerelease" not in args
 
 
-def test_empty_latest_version_keeps_defaults(monkeypatch):
+def test_uv_pins_stable_target(monkeypatch):
+    args = _build(monkeypatch, "0.2.8", uv_cmd="/usr/bin/uv")
+
+    assert "workswarm==0.2.8" in args
+    assert "--prerelease" not in args
+
+
+def test_empty_latest_version_keeps_unpinned_fallback(monkeypatch):
     pip_args = _build(monkeypatch, "", uv_cmd=None)
     uv_args = _build(monkeypatch, "", uv_cmd="/usr/bin/uv")
 
+    assert "workswarm" in pip_args
+    assert "workswarm" in uv_args
+    assert all(not arg.startswith("workswarm==") for arg in pip_args + uv_args)
     assert "--pre" not in pip_args
     assert "--prerelease" not in uv_args

@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from agent_gateway.common import updater
-from agent_gateway.common.version_source import ReleaseAsset, ReleaseInfo
+from agent_gateway.common.version_source import ReleaseAsset, ReleaseInfo, release_sort_key
 
 
 @pytest.fixture(autouse=True)
@@ -153,6 +153,24 @@ def test_resolve_pip_asset_falls_back_to_first_wheel(monkeypatch):
     assert status["download_url"].endswith("/nightly-build.whl")
 
 
+def test_resolve_pip_asset_matches_hyphenated_distribution_names(monkeypatch):
+    # Distribution names may contain hyphens, so the wheel version cannot be
+    # taken as the second "-"-separated segment; taking the first wheel again
+    # would restore the historical-wheel mispick this PR fixes.
+    release = _release(
+        "0.2.9b3",
+        "my-workswarm-0.2.5-py3-none-any.whl",
+        "my-workswarm-0.2.9b3-py3-none-any.whl",
+    )
+    service = updater.UpdaterService()
+
+    service._resolve_pip_asset({}, release)  # pylint: disable=protected-access
+
+    status = service.get_status()
+    assert status["asset_name"] == "my-workswarm-0.2.9b3-py3-none-any.whl"
+    assert status["download_url"].endswith("/my-workswarm-0.2.9b3-py3-none-any.whl")
+
+
 def test_wheel_version_key_normalizes_prerelease_spellings():
     assert updater._wheel_version_key(  # pylint: disable=protected-access
         "workswarm-0.2.3b1-py3-none-any.whl"
@@ -160,3 +178,20 @@ def test_wheel_version_key_normalizes_prerelease_spellings():
         "workswarm-0.2.3.beta1-py3-none-any.whl"
     )
     assert updater._wheel_version_key("not-a-wheel") is None  # pylint: disable=protected-access
+
+
+def test_wheel_version_key_locates_version_from_the_right():
+    # The version segment is anchored on the python/abi/platform tag triplet,
+    # not on the distribution name, so hyphenated distributions and build
+    # tags keep resolving to the version.
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "zope-interface-5.10-py3-none-any.whl"
+    ) == release_sort_key("5.10")
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.9b3-1-py3-none-any.whl"
+    ) == release_sort_key("0.2.9b3")
+    # A digit-only segment is only a build tag when a version still sits to
+    # its left; single-digit versions without a build tag stay put.
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "sample-3-py3-none-any.whl"
+    ) == release_sort_key("3")

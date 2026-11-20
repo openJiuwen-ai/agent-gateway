@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import sys
 import threading
@@ -28,6 +29,7 @@ from agent_gateway.common.version_source import (
     ReleaseInfo,
     normalize_pypi_index_url,
     pypi_project_url,
+    release_sort_key,
     release_timestamp_key,
 )
 
@@ -69,7 +71,6 @@ def _is_newer_version(candidate: str, current: str) -> bool:
     - Within the same type, a larger pre-release number is newer
       (``0.2.3.beta2`` > ``0.2.3.beta1``).
     """
-    from agent_gateway.common.version_source import release_sort_key
     return release_sort_key(candidate) > release_sort_key(current)
 
 
@@ -77,15 +78,25 @@ def _wheel_version_key(filename: str) -> tuple[tuple[int, ...], int, tuple[int, 
     """Return the comparable version key of a wheel filename, or None.
 
     Wheel names follow ``{distribution}-{version}(-{build})?-{python}-{abi}-
-    {platform}.whl`` (PEP 427), so the version is always the second segment.
-    The key is compared against :func:`release_sort_key`, which keeps
-    ``0.2.3.beta1`` and ``0.2.3b1`` equivalent across sources.
+    {platform}.whl`` (PEP 427), but the distribution part may itself contain
+    hyphens (non-normalized names), so the version is located from the right:
+    the last three segments are always the python/abi/platform tags, and the
+    version sits immediately before them, or one segment further left when a
+    (digit-only) build tag is present. The key is compared against
+    :func:`release_sort_key`, which keeps ``0.2.3.beta1`` and ``0.2.3b1``
+    equivalent across sources. Unparsable names return None so the caller
+    falls back to the first wheel.
     """
-    parts = filename.split("-")
+    name = filename.removesuffix(".whl")
+    parts = name.split("-")
     if len(parts) < 5:
         return None
-    from agent_gateway.common.version_source import release_sort_key
-    return release_sort_key(parts[1])
+    candidate = parts[-4]
+    if len(parts) >= 6 and re.fullmatch(r"\d+", candidate):
+        # A digit-only segment in front of the tag triplet is a PEP 427
+        # build tag, not the version.
+        candidate = parts[-5]
+    return release_sort_key(candidate)
 
 
 def _is_newer_release(candidate_published_at: str, current_published_at: str) -> bool:
@@ -526,7 +537,6 @@ class UpdaterService:
         # trusting list order (the update page used to show workswarm-0.2.5 for
         # a 0.2.9b3 release). Fall back to the first wheel for sources whose
         # asset names are arbitrary.
-        from agent_gateway.common.version_source import release_sort_key
         target_key = release_sort_key(release.version)
         whl = next(
             (asset for asset in whls if _wheel_version_key(asset.name) == target_key),
