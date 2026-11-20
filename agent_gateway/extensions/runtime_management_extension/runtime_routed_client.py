@@ -9,9 +9,12 @@ import logging
 import os
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
+from weakref import WeakValueDictionary
 
 import httpx
 
@@ -39,6 +42,9 @@ logger = logging.getLogger(__name__)
 
 _ROUTE_ATTEMPTS = 3
 _TOUCH_INTERVAL_SECONDS = 20.0
+_KEEPALIVE_MAX_BACKOFF_SHIFT = 3
+_RPC_ORIGIN_TTL_SECONDS = 30 * 60
+_MAX_RPC_ORIGINS = 8192
 # Leave room for the Runtime Manager's default 30s allocation queue.
 _ROUTE_BUDGET_SECONDS = 60.0
 _MAX_RETRY_DELAY_SECONDS = 5.0
@@ -232,6 +238,18 @@ def _is_http_retryable(exc: BaseException) -> bool:
 _UNSENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 
 
+@dataclass(frozen=True)
+class _RpcOrigin:
+    base_url: str
+    expires_at: float
+
+
+@dataclass
+class _StreamKeepalive:
+    task: asyncio.Task[None]
+    users: int = 1
+
+
 class RuntimeRoutedAgentClient(AgentServerClient):
     """查 Runtime Manager 路由，再用 HTTP 客户端把信封发到对应 Pod。"""
 
@@ -255,19 +273,38 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
         # [PERF] 全局连接锁改 per-pod:10 个冷 Pod 首波建连由串行 ~0.3s×N 变并行 ~0.3s
-        self._pod_connect_locks: dict[str, asyncio.Lock] = {}
+        self._pod_connect_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._pod_locks_guard = asyncio.Lock()
-        self._rpc_origins: dict[tuple[str, str], str] = {}
+        self._rpc_origins: OrderedDict[tuple[str, str], _RpcOrigin] = OrderedDict()
         self._drop_tasks: set[asyncio.Task[None]] = set()
         self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
-        # session_id → 当前仍在推流的 AgentServer base_url。长工具无 chunk 时
+        # session_id → active stream tokens and their AgentServer URLs.
+        # 长工具无 chunk 时
         # Runtime 亲和可能过期；interrupt 多播时带上这里，避免杀错 Pod。
-        self._session_stream_bases: dict[str, str] = {}
+        self._session_stream_bases: dict[str, dict[object, str]] = {}
+        self._stream_keepalives: dict[tuple[str, str, str, str | None], _StreamKeepalive] = {}
 
     def set_server_push_handler(
         self, handler: Callable[[dict[str, Any]], Awaitable[None]] | None
     ) -> None:
         self._on_server_push = handler
+
+    def _prune_rpc_origins(self, now: float) -> None:
+        while self._rpc_origins:
+            oldest = next(iter(self._rpc_origins.values()))
+            if oldest.expires_at > now:
+                break
+            self._rpc_origins.popitem(last=False)
+
+    def _remember_rpc_origin(self, key: tuple[str, str], base_url: str) -> _RpcOrigin:
+        now = time.monotonic()
+        self._prune_rpc_origins(now)
+        origin = _RpcOrigin(base_url, now + _RPC_ORIGIN_TTL_SECONDS)
+        self._rpc_origins[key] = origin
+        self._rpc_origins.move_to_end(key)
+        if len(self._rpc_origins) > _MAX_RPC_ORIGINS:
+            self._rpc_origins.popitem(last=False)
+        return origin
 
     async def _handle_pod_push(self, base_url: str, wire: dict[str, Any]) -> None:
         from e2a.wire_codec import parse_agent_server_wire_chunk
@@ -279,6 +316,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         payload = chunk.payload if isinstance(chunk.payload, dict) else {}
         rpc = payload.get("jsonrpc", payload)
         key = None
+        origin = None
         if isinstance(rpc, dict) and rpc.get("id") is not None and rpc.get("method"):
             # session_id 与读取侧（acp.tool_response 分支）同口径：先取推送
             # wire 顶层，缺失时回退 payload（部分 Pod 推送帧不带顶层键）。
@@ -286,11 +324,11 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 str(wire.get("session_id") or payload.get("session_id") or ""),
                 str(rpc["id"]),
             )
-            self._rpc_origins[key] = base_url
+            origin = self._remember_rpc_origin(key, base_url)
         try:
             await handler(wire)
         except BaseException:
-            if key is not None:
+            if key is not None and self._rpc_origins.get(key) is origin:
                 self._rpc_origins.pop(key, None)
             raise
 
@@ -401,6 +439,12 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             clients = list(self._pod_clients.values())
             self._pod_clients.clear()
             self._pod_connect_locks.clear()
+        keepalives = [state.task for state in self._stream_keepalives.values()]
+        self._stream_keepalives.clear()
+        for task in keepalives:
+            task.cancel()
+        if keepalives:
+            await asyncio.gather(*keepalives, return_exceptions=True)
         drop_tasks = list(self._drop_tasks)
         self._drop_tasks.clear()
         if drop_tasks:
@@ -447,35 +491,33 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 str(envelope.session_id or params.get("session_id") or ""),
                 str(params.get("jsonrpc_id") or ""),
             )
-            base_url = self._rpc_origins.pop(key, None)
-            if base_url is None:
-                # 推送 wire 与响应信封的 session_id 口径可能漂移（推送帧无
-                # 顶层 session_id 或用合成 key）：退化为仅按 jsonrpc_id 命中。
-                jsonrpc_id = str(params.get("jsonrpc_id") or "")
-                if jsonrpc_id:
-                    matches = [
-                        k for k in self._rpc_origins if k[1] == jsonrpc_id
-                    ]
-                    if len(matches) == 1:
-                        base_url = self._rpc_origins.pop(matches[0])
-                    elif matches:
-                        # JSON-RPC IDs are only unique within their session.
-                        # An ambiguous reply must not select an arbitrary tenant
-                        # or discard another session's pending response.
-                        logger.error(
-                            "[RuntimeRouted] reverse RPC origin ambiguous: "
-                            "jsonrpc_id=%s candidates=%s",
-                            jsonrpc_id,
-                            sorted(self._rpc_origins[k] for k in matches),
-                        )
-                        raise RuntimeError(
-                            "Reverse RPC origin Pod is ambiguous: "
-                            f"jsonrpc_id={jsonrpc_id} candidates={len(matches)}"
-                        )
-            if base_url is None:
+            now = time.monotonic()
+            origin = self._rpc_origins.pop(key, None)
+            self._prune_rpc_origins(now)
+            if origin is None and key[1]:
+                # Only use the legacy fallback when one side lacks a session ID.
+                # A stale/evicted reply with an explicit session must not consume
+                # an unrelated session's remaining origin with the same RPC ID.
+                matches = [candidate for candidate in self._rpc_origins if candidate[1] == key[1]]
+                if len(matches) > 1:
+                    # JSON-RPC IDs are only unique within their session. An ambiguous
+                    # reply must not pick an arbitrary tenant or drop another session.
+                    logger.error(
+                        "[RuntimeRouted] reverse RPC origin ambiguous: "
+                        "jsonrpc_id=%s candidates=%s",
+                        key[1],
+                        sorted(self._rpc_origins[c].base_url for c in matches),
+                    )
+                    raise RuntimeError(
+                        "Reverse RPC origin Pod is ambiguous: "
+                        f"jsonrpc_id={key[1]} candidates={len(matches)}"
+                    )
+                if matches and not (key[0] and matches[0][0]):
+                    origin = self._rpc_origins.pop(matches[0])
+            if origin is None or origin.expires_at <= now:
                 raise RuntimeError("Reverse RPC origin Pod is unavailable")
             return await self._http.send_request(
-                envelope, base_url=base_url, timeout=timeout,
+                envelope, base_url=origin.base_url, timeout=timeout,
             )
         if _is_heartbeat_envelope(envelope):
             return self._heartbeat_response(envelope)
@@ -721,88 +763,59 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         touch，亲和会静默过期，随后 ``chat.interrupt`` 会 route 到别的 Pod，
         杀不到真正在跑的 bash。后台任务按 ``_touch_interval_seconds`` 周期 touch。
         """
-        self._session_stream_bases[session_id] = base_url
-        # 可变槽：保活任务在亲和恢复后更新 route_id
-        touch_state: dict[str, str] = {"route_id": route_id}
-        keepalive_task: asyncio.Task[None] | None = None
-
-        async def _keepalive_loop() -> None:
-            interval = self._touch_interval_seconds
-            if interval <= 0:
-                return
-            consecutive_fail = 0
-            while True:
-                await asyncio.sleep(interval)
-                touched = await self._touch_quiet(session_id, touch_state["route_id"])
-                if touched is True:
-                    consecutive_fail = 0
-                    continue
-                consecutive_fail += 1
-                logger.warning(
-                    "[RuntimeRouted] stream keepalive touch miss: session=%s "
-                    "base=%s touched=%s fails=%s",
-                    session_id,
-                    base_url,
-                    touched,
-                    consecutive_fail,
-                )
-                new_route_id = await self._restore_stream_affinity(
-                    session_id=session_id,
-                    group_id=group_id,
-                    bot_id=bot_id,
-                    user_id=user_id,
-                    stream_base_url=base_url,
-                )
-                if new_route_id:
-                    touch_state["route_id"] = new_route_id
-                    consecutive_fail = 0
-
         await self._ensure_pod_push(base_url)
+        stream_token = object()
+        streams = self._session_stream_bases.setdefault(session_id, {})
+        streams[stream_token] = base_url
+        key = (session_id, group_id, bot_id, user_id)
+        keepalive = None
         if self._touch_interval_seconds > 0:
-            keepalive_task = asyncio.create_task(
-                _keepalive_loop(),
-                name=f"runtime-touch:{session_id[:24]}",
-            )
-        last_touch = time.monotonic()
+            keepalive = self._stream_keepalives.get(key)
+            if keepalive is None:
+                task = asyncio.create_task(
+                    self._keep_stream_affinity(key, route_id, base_url),
+                    name="runtime-stream-keepalive",
+                )
+                keepalive = self._stream_keepalives[key] = _StreamKeepalive(task)
+            else:
+                keepalive.users += 1
         try:
-            async for chunk in self._http.send_request_stream(
-                envelope, base_url=base_url
-            ):
-                # 保留 chunk 顺带 touch：有输出时也能刷新，且覆盖 interval=0 关闭后台的情况
-                now = time.monotonic()
-                if (
-                    self._touch_interval_seconds > 0
-                    and now - last_touch >= self._touch_interval_seconds
-                ):
-                    touched = await self._touch_quiet(
-                        session_id, touch_state["route_id"]
-                    )
-                    last_touch = now
-                    if touched is False:
-                        new_route_id = await self._restore_stream_affinity(
-                            session_id=session_id,
-                            group_id=group_id,
-                            bot_id=bot_id,
-                            user_id=user_id,
-                            stream_base_url=base_url,
-                        )
-                        if new_route_id:
-                            touch_state["route_id"] = new_route_id
+            async for chunk in self._http.send_request_stream(envelope, base_url=base_url):
                 yield chunk
         finally:
-            if keepalive_task is not None:
-                keepalive_task.cancel()
-                try:
-                    await keepalive_task
-                except asyncio.CancelledError:
-                    pass
-                except Exception:  # noqa: BLE001 - 保活收尾不阻断推流清理
-                    logger.debug(
-                        "[RuntimeRouted] keepalive task cleanup error",
-                        exc_info=True,
-                    )
-            if self._session_stream_bases.get(session_id) == base_url:
+            streams.pop(stream_token, None)
+            if not streams:
                 self._session_stream_bases.pop(session_id, None)
+            if keepalive is not None:
+                keepalive.users -= 1
+                if keepalive.users == 0 and self._stream_keepalives.get(key) is keepalive:
+                    self._stream_keepalives.pop(key)
+                    keepalive.task.cancel()
+                    await asyncio.gather(keepalive.task, return_exceptions=True)
+
+    async def _keep_stream_affinity(
+        self, key: tuple[str, str, str, str | None], route_id: str, base_url: str,
+    ) -> None:
+        session_id, group_id, bot_id, user_id = key
+        failures = 0
+        while True:
+            shift = min(failures, _KEEPALIVE_MAX_BACKOFF_SHIFT)
+            await asyncio.sleep(self._touch_interval_seconds * 2**shift)
+            if await self._touch_quiet(session_id, route_id) is True:
+                failures = 0
+                continue
+            failures += 1
+            # A route result alone does not prove touch recovered. Keep backing off
+            # until a touch succeeds; never stop probing a long-running stream.
+            new_route_id = await self._restore_stream_affinity(
+                session_id=session_id,
+                group_id=group_id,
+                bot_id=bot_id,
+                user_id=user_id,
+                stream_base_url=base_url,
+            )
+            if new_route_id:
+                route_id = new_route_id
 
     async def _restore_stream_affinity(
         self,
@@ -849,15 +862,13 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 session_id,
                 stream_base_url,
             )
-        # 推流仍钉在原 Pod；表项供 interrupt 优先打到真正执行方
-        self._session_stream_bases[session_id] = stream_base_url
         return new_route_id
 
     async def _interrupt_target_bases(self, session_id: str, routed_base: str) -> list[str]:
         """interrupt 目标顺序：推流中的 Pod → route 结果 → 本 GW 已连接的其它 Pod。"""
         ordered: list[str] = []
-        stream_base = self._session_stream_bases.get(session_id, "")
-        for candidate in (stream_base, routed_base):
+        streams = self._session_stream_bases.get(session_id, {})
+        for candidate in (*reversed(streams.values()), routed_base):
             text = (candidate or "").strip()
             if text and text not in ordered:
                 ordered.append(text)
@@ -889,10 +900,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         )
         targets = await self._interrupt_target_bases(session_id, base_url)
         logger.info(
-            "[RuntimeRouted] interrupt fanout: session=%s targets=%s stream_base=%s",
+            "[RuntimeRouted] interrupt fanout: session=%s targets=%s",
             session_id,
             targets,
-            self._session_stream_bases.get(session_id),
         )
         primary: AgentResponse | None = None
         last_error: Exception | None = None

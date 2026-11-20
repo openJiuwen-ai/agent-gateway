@@ -81,27 +81,29 @@ def _client(monkeypatch):
 async def test_reverse_rpc_ambiguous_fallback_preserves_other_sessions(monkeypatch):
     client, http = _client(monkeypatch)
     origins = {("s1", "1"): "http://pod1", ("s2", "1"): "http://pod2"}
-    client._rpc_origins.update(origins)
+    for key, base in origins.items():
+        client._remember_rpc_origin(key, base)
     with pytest.raises(RuntimeError, match="ambiguous"):
         await client.send_request(_reply("missing"))
     http.send_request.assert_not_awaited()
-    assert client._rpc_origins == origins
+    assert {key: origin.base_url for key, origin in client._rpc_origins.items()} == origins
 
 
 @pytest.mark.asyncio
 async def test_reverse_rpc_exact_match_keeps_same_id_in_other_session(monkeypatch):
     client, http = _client(monkeypatch)
-    client._rpc_origins.update({("s1", "1"): "http://pod1", ("s2", "1"): "http://pod2"})
+    client._remember_rpc_origin(("s1", "1"), "http://pod1")
+    client._remember_rpc_origin(("s2", "1"), "http://pod2")
     envelope = _reply("s2")
     await client.send_request(envelope)
     http.send_request.assert_awaited_once_with(envelope, base_url="http://pod2", timeout=None)
-    assert client._rpc_origins == {("s1", "1"): "http://pod1"}
+    assert list(client._rpc_origins) == [("s1", "1")]
 
 
 @pytest.mark.asyncio
 async def test_reverse_rpc_unique_fallback_remains_compatible(monkeypatch):
     client, http = _client(monkeypatch)
-    client._rpc_origins[("synthetic-session", "1")] = "http://pod1"
+    client._remember_rpc_origin(("synthetic-session", "1"), "http://pod1")
     envelope = _reply(None)
     await client.send_request(envelope)
     http.send_request.assert_awaited_once_with(envelope, base_url="http://pod1", timeout=None)
