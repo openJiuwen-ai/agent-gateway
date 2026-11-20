@@ -24,7 +24,7 @@
 
 **Agent Gateway** 是（Gateway + AgentServer）分离部署中的网关进程。它位于用户侧频道与 AgentServer 之间：接收来自 Web UI、TUI、ACP 客户端与 IM 平台的连接，把请求经单条 WebSocket（E2A 协议）路由给 AgentServer，并承载跨会话的公共服务——定时任务、心跳、健康检查与多实例隔离。
 
-Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入口：`agent-gateway`（Gateway + 频道）与 `agent-gateway-acp`（ACP 桥接）。
+Gateway 以独立 Python 包 `openjiuwen-agent-gateway` 构建和运行，提供两个入口：`agent-gateway`（Gateway + 频道）与 `agent-gateway-acp`（ACP 桥接）。
 
 ## 核心特性
 
@@ -92,7 +92,7 @@ uv sync
 
 ```bash
 bash scripts/build.sh --wheel
-pip install dist/agent_gateway-*.whl
+pip install dist/openjiuwen_agent_gateway-*.whl
 ```
 
 ## 快速上手
@@ -208,8 +208,8 @@ bash scripts/build.sh --no-clean   # 保留 build/ 历史产物
 
 产物位于 `dist/`：
 
-- `dist/agent_gateway-<version>-py3-none-any.whl`
-- `dist/agent_gateway-<version>.tar.gz`
+- `dist/openjiuwen_agent_gateway-<version>-py3-none-any.whl`
+- `dist/openjiuwen_agent_gateway-<version>.tar.gz`
 
 ## 测试
 
