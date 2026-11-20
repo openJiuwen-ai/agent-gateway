@@ -31,7 +31,12 @@ from openjiuwen.core.extension.schema.records import ActivePackageRecord
 from openjiuwen.core.extension.selection import evaluate_reload, resolve_install_set
 
 from agent_gateway.common.system_plugin_recovery import SystemPluginRecovery
-from agent_gateway.extensions_v2.loader import load_gateway_package
+from agent_gateway.extensions_v2.host_compat import numeric_host_version
+from agent_gateway.extensions_v2.loader import (
+    ensure_package_supports_host,
+    load_gateway_package,
+    package_supports_host,
+)
 from agent_gateway.extensions_v2.manifest import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
@@ -316,12 +321,21 @@ class GatewayPackageManager:
         active = self._runtime.active_record(package_id)
         if active is not None and active.version == version and source is None:
             return _success(package_id, "enable", active=active)
+        root = self._find_root(package_id, version)
+        if source is None and root is not None:
+            # Refuse an incompatible stored copy before the running version is disabled.
+            try:
+                ensure_package_supports_host(root)
+            except ExtensionFailure as exc:
+                return _failure(package_id, "enable", exc.as_error())
+            except Exception:
+                # A malformed manifest is reported by the normal load below.
+                pass
         previous = active.version if active is not None else ""
         if previous:
             report = await self._disable_version(package_id, previous)
             if report.status != "SUCCESS":
                 return report
-        root = self._find_root(package_id, version)
         if source is not None:
             if self._report is None:
                 report = await self._legacy_install_path(Path(source), allow_existing=True)
@@ -404,8 +418,19 @@ class GatewayPackageManager:
         """Keep an installed Gateway package while changing its loading state."""
 
         async with self._lock:
-            root = self._highest(package_id)
+            root = self._highest(package_id, compatible_only=enabled)
             if root is None:
+                if enabled:
+                    installed = self.gateway_installed(package_id)
+                    if installed:
+                        # Installed but excluded by this host: report why instead of "not installed".
+                        newest = max(installed, key=lambda package: _version_key(package.version)).root
+                        try:
+                            ensure_package_supports_host(newest)
+                        except ExtensionFailure as exc:
+                            return _failure(package_id, "enable", exc.as_error())
+                        except Exception:  # noqa: BLE001 - a malformed manifest is reported by the load below
+                            pass
                 return _failure(
                     package_id,
                     "enable" if enabled else "disable",
@@ -1054,6 +1079,8 @@ class GatewayPackageManager:
         previous = self._runtime.active_record(manifest.package_id)
         try:
             await self._switch(load_gateway_package(root))
+        except ExtensionFailure as exc:
+            return _failure(manifest.package_id, operation, exc.as_error())
         except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
             logger.exception(
                 "[GatewayExtensions] cannot %s %s", operation, manifest.package_id
@@ -1244,8 +1271,11 @@ class GatewayPackageManager:
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _highest(self, package_id: str) -> Path | None:
-        versions = self.gateway_installed(package_id)
+    def _highest(self, package_id: str, *, compatible_only: bool = True) -> Path | None:
+        versions = [
+            package for package in self.gateway_installed(package_id)
+            if not compatible_only or package_supports_host(package.root)
+        ]
         if not versions:
             return None
         return max(versions, key=lambda package: _version_key(package.version)).root
@@ -1459,9 +1489,6 @@ def _record_recovery_change(
 
 
 def _host_version() -> str | None:
-    try:
-        from importlib.metadata import version
+    """``MAJOR.MINOR.PATCH`` of the running JiuwenSwarm host, for Core's requires.host checks."""
 
-        return version("agent-gateway")
-    except Exception:  # noqa: BLE001 - a source checkout may not be installed
-        return None
+    return numeric_host_version()

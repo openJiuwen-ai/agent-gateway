@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import sys
 import types
@@ -107,6 +108,7 @@ def _package_zip(
     entry: str = ENTRY,
     enable: bool | None = None,
     requires: dict | None = None,
+    compatibility: dict | None = None,
 ) -> Path:
     source = tmp_path / "src" / package_id / version
     source.mkdir(parents=True)
@@ -120,6 +122,8 @@ def _package_zip(
         manifest_document["enable"] = enable
     if requires is not None:
         manifest_document["requires"] = requires
+    if compatibility is not None:
+        manifest_document["compatibility"] = compatibility
     manifest = json.dumps(manifest_document)
     (source / "manifest.json").write_text(manifest, encoding="utf-8")
     (source / "extension.py").write_text(entry, encoding="utf-8")
@@ -1460,3 +1464,355 @@ async def test_gateway_assembly_survives_an_invalid_configuration(tmp_path, monk
 
     monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.load_gateway_config", broken_config)
     assert installed_splash_providers() == []
+
+
+HUB_ASSET_ID = "8c64541f99f540949a70d9d69ec08c92"
+
+
+def _hub_package(
+    version: str = "1.0.0",
+    package_id: str = "demo.gateway",
+    *,
+    asset_id: str = HUB_ASSET_ID,
+    checksum_sha256: str = "0" * 64,
+):
+    from agent_gateway.extensions_v2.management.hub import HubPackage
+
+    return HubPackage(
+        asset_id=asset_id,
+        package_id=package_id,
+        version=version,
+        download_url=f"https://openjiuwen-market.obs.cn-north-4.myhuaweicloud.com/{asset_id}.zip",
+        checksum_sha256=checksum_sha256,
+    )
+
+
+async def test_install_by_hub_asset_downloads_and_activates_a_gateway_package(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    archive = _package_zip(tmp_path, version="1.0.0")
+    downloads: list[str] = []
+
+    async def fake_query(asset_id, version):
+        assert asset_id == HUB_ASSET_ID
+        return _hub_package("1.0.0")
+
+    async def fake_download(package, destination):
+        downloads.append(package.version)
+        destination.write_bytes(archive.read_bytes())
+        return destination
+
+    monkeypatch.setattr(extension_package_handlers, "query_gateway_package", fake_query)
+    monkeypatch.setattr(extension_package_handlers, "download_package", fake_download)
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
+        {"package_ids": [HUB_ASSET_ID], "version": "1.0.0"},
+    )
+
+    assert handled is True
+    assert downloads == ["1.0.0"]
+    payload = runtime.channel.responses[0]["payload"]
+    assert [report["status"] for report in payload["reports"]] == ["SUCCESS"]
+    assert (tmp_path / "extension_pkgs" / "demo.gateway" / "1.0.0" / "manifest.json").is_file()
+    record = ExtensionInstallState.for_install_dir(tmp_path / "extension_pkgs").get("demo.gateway")
+    assert record is not None and record.origin == "hub"
+    assert record.asset_id == HUB_ASSET_ID
+
+
+async def test_install_by_hub_asset_is_forwarded_for_an_agent_package(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+
+    async def fake_query(asset_id, version):
+        return None
+
+    monkeypatch.setattr(extension_package_handlers, "query_gateway_package", fake_query)
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
+        {"package_ids": [HUB_ASSET_ID]},
+    )
+
+    assert handled is False
+    assert runtime.channel.responses == []
+
+
+async def test_hub_asset_that_is_already_stored_skips_the_download(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    await runtime.packages.install([_package_zip(tmp_path, version="1.0.0")])
+
+    async def fake_query(asset_id, version):
+        return _hub_package("1.0.0")
+
+    async def forbidden_download(package, destination):
+        raise AssertionError("stored Hub versions must not be downloaded again")
+
+    monkeypatch.setattr(extension_package_handlers, "query_gateway_package", fake_query)
+    monkeypatch.setattr(extension_package_handlers, "download_package", forbidden_download)
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
+        {"package_ids": [HUB_ASSET_ID], "version": "1.0.0"},
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["payload"]["reports"][0]["status"] == "SUCCESS"
+    record = ExtensionInstallState.for_install_dir(tmp_path / "extension_pkgs").get("demo.gateway")
+    assert record is not None and record.origin == "hub"
+    assert record.asset_id == HUB_ASSET_ID
+
+
+async def test_hub_download_rejects_a_host_outside_the_allowlist(tmp_path, monkeypatch):
+    from agent_gateway.extensions_v2.management.hub import HubDownloadError, HubPackage, download_package
+
+    package = HubPackage(
+        asset_id=HUB_ASSET_ID,
+        package_id="demo.gateway",
+        version="1.0.0",
+        download_url="https://evil.example.org/a.zip",
+        checksum_sha256="0" * 64,
+    )
+
+    with pytest.raises(HubDownloadError):
+        await download_package(package, tmp_path / "a.zip")
+
+
+async def test_package_requiring_a_newer_swarm_host_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "0.2.9.beta5")
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    archive = _package_zip(tmp_path, compatibility={"swarm": ">=0.2.10"})
+
+    reports = await manager.install([archive])
+
+    assert reports[0].status == "FAILED"
+    assert reports[0].error.code == "EXTENSION_HOST_VERSION_TOO_LOW"
+    assert not runtime.active_packages()
+    assert not (tmp_path / "extension_pkgs" / "demo.gateway").exists()
+
+
+async def test_package_declaring_the_next_swarm_release_installs_on_that_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "0.2.10")
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    archive = _package_zip(tmp_path, compatibility={"swarm": ">=0.2.10"})
+
+    reports = await manager.install([archive])
+
+    assert [report.status for report in reports] == ["SUCCESS"]
+    assert runtime.active_packages()[0].package_id == "demo.gateway"
+
+
+def test_swarm_specifier_matches_an_exact_beta_and_a_numeric_range():
+    from agent_gateway.extensions_v2.host_compat import swarm_spec_matches
+
+    assert swarm_spec_matches("0.2.9.beta3", "0.2.9.beta3")
+    assert swarm_spec_matches("0.2.9b3", "0.2.9.beta3")
+    assert not swarm_spec_matches("0.2.9.beta5", "0.2.9.beta3")
+    assert not swarm_spec_matches("0.2.9b5", ">=0.2.10")
+    assert not swarm_spec_matches("0.2.9.beta5", ">=0.2.10")
+    assert swarm_spec_matches("0.2.10", ">=0.2.10")
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("0.2.9.dev3+g1a2b3c", "0.2.9"), ("0.2.9.post1", "0.2.9"), ("1.0.0+abc", "1.0.0")],
+)
+def test_numeric_host_version_accepts_pep440_suffixes(monkeypatch, raw, expected):
+    from agent_gateway.extensions_v2.host_compat import numeric_host_version
+
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", raw)
+
+    assert numeric_host_version() == expected
+
+
+def test_unparsable_host_version_is_reported_as_a_host_error(monkeypatch):
+    from agent_gateway.extensions_v2.host_compat import ensure_swarm_compatible
+
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "not-a-version")
+
+    with pytest.raises(ExtensionFailure) as failure:
+        ensure_swarm_compatible(">=0.2.9")
+
+    assert failure.value.status is StatusCode.EXTENSION_HOST_VERSION_MISSING
+
+
+async def test_discover_keeps_a_package_when_the_host_version_is_unknown(tmp_path, monkeypatch):
+    from agent_gateway.extensions_v2 import host_compat
+    from agent_gateway.extensions_v2.loader import discover_package_roots
+
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "0.2.10")
+    runtime = await _runtime(tmp_path)
+    await runtime.packages.install([_package_zip(tmp_path, compatibility={"swarm": ">=0.2.9"})])
+    install_dir = tmp_path / "extension_pkgs"
+    assert [root.name for root in discover_package_roots(install_dir)] == ["0.1.0"]
+
+    monkeypatch.setattr(host_compat, "host_version", lambda: None)
+
+    assert [root.name for root in discover_package_roots(install_dir)] == ["0.1.0"]
+
+
+async def test_set_enabled_reports_a_host_version_error_instead_of_not_installed(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "0.2.10")
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        reports = await manager.install([_package_zip(tmp_path, compatibility={"swarm": ">=0.2.9"})])
+        assert [report.status for report in reports] == ["SUCCESS"]
+        assert (await manager.set_enabled("demo.gateway", False)).status == "SUCCESS"
+
+        monkeypatch.setenv("JIUWENSWARM_HOST_VERSION", "0.2.8")
+        report = await manager.set_enabled("demo.gateway", True)
+
+        assert report.status == "FAILED"
+        assert report.error.code == "EXTENSION_HOST_VERSION_TOO_LOW"
+    finally:
+        await manager.close()
+
+
+class _FakeDownloadResponse:
+    """The subset of ``httpx.Response`` used by ``download_package``."""
+
+    def __init__(self, body: bytes) -> None:
+        self.headers = {"content-length": str(len(body))}
+        self._body = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def aiter_bytes(self):
+        yield self._body
+
+
+class _FakeDownloadClient:
+    """``httpx.AsyncClient`` stand-in that streams ``body`` for any URL."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def stream(self, method: str, url: str):
+        body = self._body
+
+        class _Stream:
+            async def __aenter__(self):
+                return _FakeDownloadResponse(body)
+
+            async def __aexit__(self, *exc_info):
+                return False
+
+        return _Stream()
+
+
+@pytest.mark.parametrize("matching", [False, True])
+async def test_download_package_verifies_the_sha256_before_writing(tmp_path, monkeypatch, matching):
+    from agent_gateway.extensions_v2.management import hub
+
+    body = _package_zip(tmp_path, version="1.0.0").read_bytes()
+    checksum = hashlib.sha256(body).hexdigest() if matching else "0" * 64
+    monkeypatch.setattr(hub.httpx, "AsyncClient", lambda **kwargs: _FakeDownloadClient(body))
+    destination = tmp_path / "downloads" / "demo.gateway-1.0.0.zip"
+
+    if not matching:
+        with pytest.raises(hub.HubDownloadError):
+            await hub.download_package(_hub_package(checksum_sha256=checksum), destination)
+        assert not destination.exists()
+        return
+
+    assert await hub.download_package(_hub_package(checksum_sha256=checksum), destination) == destination
+    assert destination.read_bytes() == body
+
+
+async def test_download_package_rejects_a_non_zip_artifact_with_a_matching_checksum(tmp_path, monkeypatch):
+    from agent_gateway.extensions_v2.management import hub
+
+    body = b"<html>not a package</html>"
+    checksum = hashlib.sha256(body).hexdigest()
+    monkeypatch.setattr(hub.httpx, "AsyncClient", lambda **kwargs: _FakeDownloadClient(body))
+    destination = tmp_path / "downloads" / "demo.gateway-1.0.0.zip"
+
+    with pytest.raises(hub.HubDownloadError):
+        await hub.download_package(_hub_package(checksum_sha256=checksum), destination)
+    assert not destination.exists()
+
+
+async def test_hub_download_failure_reports_failed_and_records_the_activated_package(tmp_path, monkeypatch):
+    from agent_gateway.extensions_v2.management.hub import HubDownloadError
+
+    runtime = await _runtime(tmp_path)
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+    _local_gateway(tmp_path, monkeypatch)
+    await runtime.packages.install([_package_zip(tmp_path, version="1.0.0")])
+    broken_asset = "f" * 32
+
+    async def fake_query(asset_id, version):
+        if asset_id == HUB_ASSET_ID:
+            return _hub_package("1.0.0")
+        return _hub_package("2.0.0", "demo.broken", asset_id=broken_asset)
+
+    async def failing_download(package, destination):
+        raise HubDownloadError("Hub download checksum mismatch")
+
+    monkeypatch.setattr(extension_package_handlers, "query_gateway_package", fake_query)
+    monkeypatch.setattr(extension_package_handlers, "download_package", failing_download)
+
+    handled = await _handle(
+        runtime,
+        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
+        {"package_ids": [HUB_ASSET_ID, broken_asset]},
+    )
+
+    assert handled is True
+    assert len(runtime.channel.responses) == 1
+    payload = runtime.channel.responses[0]["payload"]
+    assert [(report["package_id"], report["status"]) for report in payload["reports"]] == [
+        ("demo.gateway", "SUCCESS"),
+        ("demo.broken", "FAILED"),
+    ]
+    store = ExtensionInstallState.for_install_dir(tmp_path / "extension_pkgs")
+    record = store.get("demo.gateway")
+    assert record is not None and record.origin == "hub" and record.asset_id == HUB_ASSET_ID
+    assert store.get("demo.broken") is None
+
+
+async def test_query_gateway_package_rejects_an_unsafe_hub_identifier(monkeypatch):
+    from agent_gateway.extensions_v2.management import hub
+
+    async def fake_get_data(path, params=None):
+        if path == "/api/v1/plugins":
+            return {"items": [{"asset_id": HUB_ASSET_ID, "name": "demo.gateway", "public_latest_version": "1.0.0"}]}
+        if path.startswith("/api/v1/plugins/"):
+            return {"package_profile": {"domain": "gateway"}}
+        return {
+            "name": "../../escape",
+            "version": "../../escape",
+            "download_url": "https://openjiuwen-market.obs.cn-north-4.myhuaweicloud.com/a.zip",
+            "checksum_sha256": "a" * 64,
+        }
+
+    monkeypatch.setattr(hub, "_get_data", fake_get_data)
+
+    with pytest.raises(hub.HubUnavailable):
+        await hub.query_gateway_package(HUB_ASSET_ID)
+
+
+def test_hub_base_url_rejects_plain_http_outside_loopback(monkeypatch):
+    from agent_gateway.extensions_v2.management.hub import HubUnavailable, hub_base_url
+
+    monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "http://hub.example.com")
+
+    with pytest.raises(HubUnavailable):
+        hub_base_url()
