@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 
@@ -35,42 +34,6 @@ class RuntimeManagementExtension(AgentServerClientExtension):
             await self._client.disconnect()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[RuntimeManagement] shutdown error: %s", exc)
-
-    def setup_gateway_shutdown_signals(self, shutdown_requested: asyncio.Event) -> None:
-        """预留接口（仓库内暂无调用点，网关停机信号由 app_gateway 自行处理）。
-
-        供企业打包管线/宿主进程按需调用：注册 SIGINT/SIGTERM/SIGBREAK，
-        收到信号置位 ``shutdown_requested``；退出路径由调用方在 ``finally``
-        里 ``await client.disconnect()``。
-        """
-        import signal
-        import sys
-
-        logger.info(
-            "[RuntimeManagement] 注册停机信号处理器（K8s 删 Pod/SIGINT）；"
-            "退出时将执行 AgentServerClient.disconnect()。"
-        )
-
-        def _on_signal() -> None:
-            logger.info("[RuntimeManagement] 收到停机信号，准备退出…")
-            shutdown_requested.set()
-
-        if sys.platform == "win32":
-            signal.signal(signal.SIGINT, lambda signum, frame: _on_signal())
-            logger.info("[RuntimeManagement] 已注册 SIGINT (Windows)")
-            signal.signal(signal.SIGTERM, lambda signum, frame: _on_signal())
-            logger.info("[RuntimeManagement] 已注册 SIGTERM (Windows)")
-            if hasattr(signal, "SIGBREAK"):
-                signal.signal(signal.SIGBREAK, lambda signum, frame: _on_signal())
-                logger.info("[RuntimeManagement] 已注册 SIGBREAK (Windows)")
-        else:
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                try:
-                    loop.add_signal_handler(sig, _on_signal)
-                    logger.info("[RuntimeManagement] 已注册 %s", sig)
-                except (NotImplementedError, OSError) as exc:
-                    logger.info("[RuntimeManagement] 无法注册 %s: %s", sig, exc)
 
 
 def runtime_client_requested(env: dict[str, str] | None = None) -> bool:

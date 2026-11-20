@@ -313,7 +313,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("project.remove", "DELETE", "/projects/{project_id}"),
     # 定时任务创建前问「这个项目现在能不能跑」。长连接里已有同名处理，这里补 HTTP。
     # events/inventory 全目录变体不带 project_id，走 scope-wide /lifecycle
-    # （见 assemble_rest_request 的变体选择与 declared_http_routes 的注册）。
+    # （见 assemble_rest_request 的变体选择，以及 declared_http_routes 的声明）。
     ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle"),
     # Gateway 把 cron 工具结果 / 立即执行 run_id / 任务快照回传 Agent（runtime HTTP）。
     ("cron.command.ack", "POST", "/cron/command-ack"),
@@ -436,12 +436,13 @@ def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
 
 
 def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
-    """返回要注册的 ``(方法名, 动词, 路径)``：REST_ROUTES 即南向 REST 能力声明。
+    """本仓声明的南向网址清单：``(方法名, 动词, 路径)``。
 
-    解耦部署后 Gateway 不 import AgentServer 代码，也不读它的处理函数
-    注册表——远端有没有专用网址以本表声明为准（表对照
-    ``docs/zh/Gateway-AgentServer-HTTP-REST组装.md`` 与 AgentServer HTTP
-    路由保持同步）。同一条网址的别名方法取先声明的规范名（键序即优先级）。
+    **本仓只声明、不注册**——这里是跨仓契约，真正注册 FastAPI 网址的是
+    Agent 侧（``jiuwenswarm/server/agent_http_routes.py`` 读取同名函数）。
+    Gateway 不 import AgentServer 代码，远端有没有专用网址以本表为准
+    （表对照 ``docs/zh/Gateway-AgentServer-HTTP-REST组装.md`` 保持同步）。
+    同一条网址的别名方法取先声明的规范名（键序即优先级）。
     """
     chosen: dict[tuple[str, str], str] = {}
     for method, (verb, path) in REST_ROUTES.items():

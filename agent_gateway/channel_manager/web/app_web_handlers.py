@@ -5865,7 +5865,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             req_id,
             ok=True,
             payload={
-                "agent_ready": ac is not None and bool(getattr(ac, "server_ready", False)),
+                # 优先读 agent_ready（Runtime 能否执行）；老客户端没这个属性时
+                # 退回 server_ready，避免把"传输连通"当成"可执行"。
+                "agent_ready": ac is not None
+                and bool(
+                    getattr(ac, "agent_ready", getattr(ac, "server_ready", False))
+                ),
                 "protocol_version": "1.0",
             },
         )

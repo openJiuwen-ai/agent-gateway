@@ -48,12 +48,10 @@ _MAX_RPC_ORIGINS = 8192
 # Leave room for the Runtime Manager's default 30s allocation queue.
 _ROUTE_BUDGET_SECONDS = 60.0
 _MAX_RETRY_DELAY_SECONDS = 5.0
-_INTERRUPT_METHODS = frozenset(
-    {
-        "chat.interrupt",
-        "chat.cancel",
-    }
-)
+# 只有 chat.interrupt：协议枚举 ReqMethod.CHAT_CANCEL 的值本身就是
+# "chat.interrupt"，全仓没有真实发送 "chat.cancel" 字面量的调用方，
+# 留着会让人误以为存在第二条取消路径。
+_INTERRUPT_METHODS = frozenset({"chat.interrupt"})
 _ROUTELESS_METHODS = frozenset(
     {
         "hub.expert_packages.catalog",
@@ -430,8 +428,24 @@ class RuntimeRoutedAgentClient(AgentServerClient):
 
     @property
     def server_ready(self) -> bool:
-        """WebChannel on_connect 依赖此标志发送 connection.ack。"""
+        """传输可用：Gateway 能往 Runtime 发请求。
+
+        对动态路由器来说，"连接上了"不等于"已连到某个 Pod"，所以这里只表示
+        客户端已就绪可以发起 route，具体 Pod 建连按需进行。
+        """
         return self._connected
+
+    @property
+    def agent_ready(self) -> bool:
+        """Agent 可执行：至少有一个 Pod 的推流通道已连上。
+
+        与 ``WebSocketAgentServerClient.agent_ready`` 语义对齐。动态路由器没有
+        唯一目标 Pod，因此这里表示"本网关至少握有一个可执行 Pod"，不代表
+        **当前会话**已经落在可执行 Pod 上——会话级就绪要靠 route 结果。
+        """
+        if not self._connected:
+            return False
+        return bool(self._pod_clients)
 
     async def disconnect(self) -> None:
         self._connected = False
