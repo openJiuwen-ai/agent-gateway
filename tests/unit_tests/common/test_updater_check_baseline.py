@@ -81,7 +81,7 @@ def test_check_uses_installed_version_as_baseline(monkeypatch):
     assert status["current_version"] == "0.2.9"
 
 
-def test_desktop_check_keeps_build_config_baseline(monkeypatch):
+def test_desktop_check_keeps_build_config_baseline(monkeypatch, tmp_path):
     # The dist-info bundled into the frozen desktop app reads 0.2.9b5 (PEP 440
     # normalized) while the release tag is v0.2.9.beta5; the desktop check
     # must be driven by the _build_config version, otherwise the current
@@ -89,6 +89,10 @@ def test_desktop_check_keeps_build_config_baseline(monkeypatch):
     # desktop release timestamp is missing".
     monkeypatch.setenv(updater.DESKTOP_ENV_FLAG, "1")
     monkeypatch.setattr(sys, "platform", "win32")
+    # The up-to-date path runs _cleanup_obsolete_desktop_installers against
+    # the user workspace .updates directory; isolate it so the test can never
+    # delete real downloaded installers from the developer's machine.
+    monkeypatch.setattr(updater, "get_user_workspace_dir", lambda: tmp_path)
 
     seen: dict[str, str] = {}
 
