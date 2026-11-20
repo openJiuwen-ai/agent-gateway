@@ -3187,7 +3187,9 @@ class MessageHandler(ABC):
             await web_channel.broadcast_event("models.updated", {})
             logger.info("[MessageHandler] broadcasted models.updated")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+            # 与 _broadcast_push_terminated 一致：models.updated 是前端刷新可用
+            # 模型列表的唯一通道，失败须在生产 INFO 级日志可查。
+            logger.warning("[MessageHandler] broadcast models.updated failed: %s", exc)
 
     async def _broadcast_push_terminated(self, payload: dict[str, Any]) -> None:
         """把 ``gateway.push_terminated`` 推送给所有 Web 连接。
@@ -3208,7 +3210,13 @@ class MessageHandler(ABC):
                 payload.get("api_root"),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[MessageHandler] broadcast gateway.push_terminated failed: %s", exc)
+            # gateway.push_terminated 是通知前端「推送已永久终止」的唯一通道；
+            # 失败时若只 DEBUG 级记录，生产 INFO 日志下无任何痕迹，前端会
+            # 静默挂等在已断开的 SSE 上（issue #115 现象 1 原样重现）。故提
+            # 升到 WARNING 并带异常信息，便于排查。
+            logger.warning(
+                "[MessageHandler] broadcast gateway.push_terminated failed: %s", exc
+            )
 
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
