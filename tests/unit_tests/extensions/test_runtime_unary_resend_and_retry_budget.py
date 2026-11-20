@@ -175,3 +175,93 @@ def test_route_budget_bounds_an_in_flight_request(monkeypatch):
             user_id="u", budget_seconds=0.01,
         ))
     assert cancelled
+
+
+# --------------------------------------------------------------------------- #
+# PR258 review：重发策略分档、发送前失败、预算错误透传
+# --------------------------------------------------------------------------- #
+
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "http://pod1/api/v1/chat/completions")
+    response = httpx.Response(status, request=request)
+    return httpx.HTTPStatusError("status", request=request, response=response)
+
+
+@pytest.mark.parametrize("status", [429, 503, 504])
+def test_server_side_rejection_is_resendable_for_any_method(status):
+    """服务端明确没执行（限流/网关层不可用）时，非幂等方法也可重发。"""
+    assert runtime_client_module._may_resend(_status_error(status), "session.create") is True
+
+
+@pytest.mark.parametrize("status", [500, 502])
+def test_ambiguous_server_error_is_not_resendable_for_create(status):
+    """5xx 不一定没执行，非幂等方法不重发。"""
+    assert runtime_client_module._may_resend(_status_error(status), "session.create") is False
+
+
+def test_read_method_is_resendable_on_read_error():
+    assert runtime_client_module._may_resend(
+        httpx.ReadError("lost"), "history.get"
+    ) is True
+
+
+def test_non_idempotent_method_is_not_resendable_on_read_error():
+    assert runtime_client_module._may_resend(
+        httpx.ReadError("lost"), "session.create"
+    ) is False
+
+
+def test_push_setup_failure_is_not_treated_as_maybe_executed(patched_identity):
+    """建推送通道失败时业务请求还没发出，应走重试而不是被「可能已执行」拦下。"""
+    route = _FakeRoute()
+    http = _FakeHTTP(None)
+    client = _make_client(route, http)
+
+    async def fail_push(_base_url):
+        raise httpx.ConnectError("push channel down")
+
+    client._ensure_pod_push = fail_push
+
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(client.send_request(_Envelope("session.create")))
+    # 没有业务请求被发出，也没有被误判成「已执行」的日志路径
+    assert http.sent == []
+
+
+def test_budget_exhaustion_re_raises_last_retryable_error(monkeypatch):
+    """预算到点时应保留服务端给的 retry_after，而不是换成通用错误。"""
+
+    async def _no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(runtime_client_module.asyncio, "sleep", _no_sleep)
+    route = _FakeRoute(retry_after=1.0, always_fail=True)
+    client = _make_client(route, _FakeHTTP(None))
+
+    # 单次 route 调用挂住超过预算，让 timeout_at 先于重试逻辑触发
+    inner = runtime_client_module.RetryableRouteError(
+        "overloaded", code="TRANSPORT", retry_after=1.0
+    )
+
+    # 先让 route 抛一次可重试错误（记录 last_error），再让下一次挂住
+    calls = {"n": 0}
+
+    async def fail_then_stall(**_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise inner
+        await asyncio.sleep(10)
+
+    route.route = fail_then_stall
+
+    with pytest.raises(RetryableRouteError) as caught:
+        asyncio.run(
+            client._route_with_retry(
+                session_id="S1", group_id="g", bot_id="b", request_id="RID",
+                user_id="u", budget_seconds=0.05,
+            )
+        )
+    # 抛出的是服务端原始错误（带 retry_after），而不是通用的 deadline 错误
+    assert caught.value is inner
+    assert caught.value.retry_after == 1.0
+    assert "deadline" not in str(caught.value)

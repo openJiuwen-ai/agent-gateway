@@ -15,6 +15,11 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
+
+# 子进程要导入完整 app_gateway 应用栈（web 通道 + 企业平面），冷启动或高负载
+# CI 上可能接近一分钟。放宽到 180s，避免与代码质量无关的不稳定失败。
+_SUBPROCESS_TIMEOUT_SECONDS = 180.0
 
 # 协议包尚未发布、gateway 侧也没有补齐的方法。键是方法名，值是「为何还在名单里」。
 _KNOWN_UNREACHABLE: dict[str, str] = {
@@ -33,6 +38,24 @@ _KNOWN_UNREACHABLE: dict[str, str] = {
     "skills.update": "技能更新方法待协议包发布",
     "skills.updates.check": "技能更新方法待协议包发布",
 }
+
+
+def _run_in_subprocess(code: str, tmp_path, *, edition: str):
+    """在独立解释器里跑断言，返回 (CompletedProcess, 实际耗时秒数)。"""
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
+        env=dict(
+            os.environ,
+            JIUWENSWARM_HOME=str(tmp_path),
+            JIUWENSWARM_DATA_DIR=str(tmp_path / "data"),
+            JIUWENSWARM_EDITION=edition,
+        ),
+    )
+    return result, time.monotonic() - started
 
 
 def test_enterprise_team_forwarding_contract(tmp_path):
@@ -57,12 +80,11 @@ unreachable = {m for m in _FORWARD_REQ_METHODS if parse_request_method(m) is Non
 expected = set(%r)
 assert unreachable == expected, unreachable ^ expected
 """ % sorted(_KNOWN_UNREACHABLE)
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
-        env=dict(os.environ, JIUWENSWARM_HOME=str(tmp_path),
-                 JIUWENSWARM_DATA_DIR=str(tmp_path / "data"), JIUWENSWARM_EDITION="enterprise"),
+    result, elapsed = _run_in_subprocess(code, tmp_path, edition="enterprise")
+    assert result.returncode == 0, (
+        f"子进程失败（耗时 {elapsed:.1f}s / 上限 {_SUBPROCESS_TIMEOUT_SECONDS}s）:\n"
+        f"{result.stdout}{result.stderr}"
     )
-    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_personal_team_control_is_not_enabled(tmp_path):
@@ -84,9 +106,8 @@ for method in _ENTERPRISE_TEAM_CONTROL_METHODS:
         continue
     raise AssertionError(method)
 """
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, timeout=60,
-        env=dict(os.environ, JIUWENSWARM_HOME=str(tmp_path),
-                 JIUWENSWARM_DATA_DIR=str(tmp_path / "data"), JIUWENSWARM_EDITION="personal"),
+    result, elapsed = _run_in_subprocess(code, tmp_path, edition="personal")
+    assert result.returncode == 0, (
+        f"子进程失败（耗时 {elapsed:.1f}s / 上限 {_SUBPROCESS_TIMEOUT_SECONDS}s）:\n"
+        f"{result.stdout}{result.stderr}"
     )
-    assert result.returncode == 0, result.stdout + result.stderr

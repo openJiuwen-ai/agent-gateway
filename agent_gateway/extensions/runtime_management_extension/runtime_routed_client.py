@@ -45,8 +45,11 @@ _TOUCH_INTERVAL_SECONDS = 20.0
 _KEEPALIVE_MAX_BACKOFF_SHIFT = 3
 _RPC_ORIGIN_TTL_SECONDS = 30 * 60
 _MAX_RPC_ORIGINS = 8192
-# Leave room for the Runtime Manager's default 30s allocation queue.
+# 路由阶段总预算（含每次 route 请求本身的耗时）：覆盖 Runtime Manager 默认
+# 30s 分配队列后仍有重试余量。
 _ROUTE_BUDGET_SECONDS = 60.0
+# 单次重试前允许的最长等待。超过这个值的 Retry-After 不做等待，直接放弃重试并
+# 把原始可重试错误抛回 —— 提前重试会加重上游拥塞，照睡会挂住用户请求。
 _MAX_RETRY_DELAY_SECONDS = 5.0
 # 只有 chat.interrupt：协议枚举 ReqMethod.CHAT_CANCEL 的值本身就是
 # "chat.interrupt"，全仓没有真实发送 "chat.cancel" 字面量的调用方，
@@ -234,6 +237,59 @@ def _is_http_retryable(exc: BaseException) -> bool:
 
 # Only retry an ambiguous business operation if the transport never sent it.
 _UNSENT_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
+
+# 服务端明确表示「本轮未处理」的状态码：限流与网关层不可用，请求本身没有执行。
+# 这类响应重发是安全的，不能和 ReadError（可能已执行）混为一谈。
+_SERVER_DID_NOT_RUN_STATUS = frozenset({429, 503, 504})
+
+# 读类方法没有副作用，响应丢失后重发是可接受的。
+_IDEMPOTENT_RESEND_METHODS = frozenset(
+    {
+        "session.list",
+        "session.get_metadata",
+        "session.archived.list",
+        "history.get",
+        "history.list_turns",
+        "chat.resume",
+        "skills.list",
+        "skills.installed",
+        "agents.list",
+        "agents.get",
+        "mcp.list",
+        "mcp.server.list",
+        "project.list",
+        "project.info",
+        "team.list",
+        "team.get",
+        "team.members.list",
+        "team.quota.get",
+    }
+)
+
+
+def _server_skipped_this_request(exc: BaseException) -> bool:
+    """服务端明确未执行这条请求（限流 / 网关层不可用）。"""
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and exc.response is not None
+        and exc.response.status_code in _SERVER_DID_NOT_RUN_STATUS
+    )
+
+
+def _may_resend(exc: BaseException, method: str) -> bool:
+    """能否把同一个业务信封重发到另一个 Pod。
+
+    分三档：
+    1. 确认未送达（建连失败）—— 任何方法都可重发；
+    2. 服务端明确未执行（429/503/504）—— 任何方法都可重发；
+    3. 读类方法 —— 无副作用，可重发。
+    其余（尤其是 ReadError/ReadTimeout 对应的非幂等方法）一律不重发。
+    """
+    if isinstance(exc, _UNSENT_ERRORS):
+        return True
+    if _server_skipped_this_request(exc):
+        return True
+    return str(method or "") in _IDEMPOTENT_RESEND_METHODS
 
 
 @dataclass(frozen=True)
@@ -577,15 +633,17 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             request_id=request_id,
             user_id=user_id,
         )
+        # 建推送通道是「发送前」动作：它失败时业务请求还没发出，可以安全重试，
+        # 因此放在同一个 except 之外，避免被下面的「可能已执行」门禁误拦。
+        await self._ensure_pod_push(base_url)
         try:
-            await self._ensure_pod_push(base_url)
             result = await self._http.send_request(
                 envelope, base_url=base_url, timeout=timeout,
             )
         except Exception as exc:
             if not _is_http_retryable(exc):
                 raise
-            if not isinstance(exc, _UNSENT_ERRORS):
+            if not _may_resend(exc, str(envelope.method or "")):
                 # 请求可能已被 Pod 执行，只是响应丢了（ReadError/ReadTimeout/5xx）。
                 # 对 session.create、session.rename、command.* 这类方法重发会造成
                 # 重复创建/重复执行，宁可把错误交给调用方重试（由人决定）。
@@ -730,6 +788,18 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 yield chunk
         except Exception as exc:
             if yielded or not _is_http_retryable(exc):
+                raise
+            if not _may_resend(exc, str(envelope.method or "")):
+                # 与 unary 同口径：首帧前失败也不证明业务没执行。ReadError/
+                # ReadTimeout 可能意味着 Pod 已在跑 chat.send，重发会让同一会话
+                # 执行两次（模型调用成本翻倍、产生重复副作用）。
+                logger.warning(
+                    "[RuntimeRouted] stream http failed but NOT resent "
+                    "(may have executed): method=%s session=%s err=%s",
+                    envelope.method,
+                    session_id,
+                    exc,
+                )
                 raise
             logger.warning(
                 "[RuntimeRouted] stream http failed before first chunk, re-route: session=%s err=%s",
@@ -979,6 +1049,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         loop = asyncio.get_running_loop()
         deadline = loop.time() + budget_seconds
         budget = asyncio.timeout_at(deadline)
+        last_error: RetryableRouteError | None = None
         try:
             async with budget:
                 for attempt in range(1, self._route_attempts + 1):
@@ -991,6 +1062,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                             user_id=user_id,
                         )
                     except RetryableRouteError as exc:
+                        last_error = exc
                         delay = exc.retry_after
                         if delay is None or delay <= 0:
                             delay = 1.0
@@ -1012,6 +1084,17 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         except TimeoutError as exc:
             if not budget.expired():
                 raise
+            if last_error is not None:
+                # 预算到点前服务端已经给过退避提示（retry_after），直接重抛原错误，
+                # 让调用方能按服务端建议的时长退避；换成通用错误会丢掉这个信息。
+                logger.warning(
+                    "[RuntimeRouted] route budget exhausted (%.1fs), "
+                    "re-raising last retryable error: code=%s retry_after=%s",
+                    budget_seconds,
+                    last_error.code,
+                    last_error.retry_after,
+                )
+                raise last_error from exc
             raise RetryableRouteError("route deadline exceeded", code="TRANSPORT") from exc
         raise RetryableRouteError("route failed", code="TRANSPORT")
 
