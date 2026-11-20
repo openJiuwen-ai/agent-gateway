@@ -8,11 +8,12 @@ version = "0.1.0"
 description = "Pip dependencies for jiuwenclaw_ee extensions.runtime_management_extension"
 requires-python = ">=3.11.4,<3.14"
 license = { text = "Apache-2.0" }
-# 与 extension.yaml 一致。
-dependencies = [
-    "openjiuwen_runtime_management @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=management",
-]
+# 本扩展的南向实现只依赖 httpx 与协议包（见仓根 pyproject），不 import
+# agent-runtime 的管理 SDK，因此这里不声明额外依赖。
+dependencies = []
 
 [tool.setuptools]
+# 纯元数据包：不含任何模块，只把扩展的依赖声明带给 pip。
+# （原先的 py-modules 指向一个本仓不存在的占位文件，构建时会产生警告。）
 packages = []
-py-modules = ["_ee_deps_runtime_management"]
+py-modules = []
