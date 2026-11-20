@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig, HttpPolicy
 from agent_gateway.extensions_v2.loader import LoadedPackage
@@ -248,6 +249,34 @@ async def test_redirects_are_not_followed_by_default(tmp_path, monkeypatch):
     assert record["output"].code is None
     assert record["output"].status == 302
     assert len(FakeClient.requests) == 1
+
+
+@pytest.mark.parametrize("status", [307, 308])
+async def test_redirect_preserves_method_and_body(tmp_path, monkeypatch, status):
+    _install_fakes(
+        monkeypatch,
+        FakeResponse(status=status, content=b"", headers={"location": "/next"}),
+        FakeResponse(content=b'{"ok": true}'),
+    )
+    runtime = await _runtime(tmp_path, HttpPolicy(allowed_hosts=("auth.example.com",)))
+    record: dict = {
+        "request": HttpFetchInput(
+            "https://auth.example.com/login",
+            method="POST",
+            headers={"content-type": "application/json"},
+            body={"password": "p1"},
+            follow_redirects=True,
+        )
+    }
+    runtime.publish(_package(_fetch_handler(record)))
+
+    await runtime.intercept(SimpleNamespace(closed=False), "r1", "chat.send", {})
+
+    assert record["output"].code is None
+    second = FakeClient.requests[1]
+    assert second["url"] == "https://auth.example.com/next"
+    assert second["method"] == "POST"
+    assert second["content"] == b'{"password": "p1"}'
 
 
 async def test_request_failure_is_reported_as_a_code(tmp_path, monkeypatch):
