@@ -423,13 +423,16 @@ async def dispatch_to_session(
     fan_out: list,           # list[LogicalTarget]
     channel_manager,         # ChannelManager
     registry: SessionSharingRegistry,
-) -> None:
+) -> int:
     """响应分发入口 —— 由 _dispatch_robot_messages() 调用。
 
     薄封装，转调 SessionDispatcher.dispatch，保留模块级函数签名以兼容现有调用方。
     逻辑见 SessionDispatcher。
+
+    Returns:
+        实际投递的物理容器数。0 表示 fan_out 中没有任何目标找到订阅者。
     """
-    await SessionDispatcher.dispatch(msg, session_id, fan_out, channel_manager, registry)
+    return await SessionDispatcher.dispatch(msg, session_id, fan_out, channel_manager, registry)
 
 
 class SessionDispatcher:
@@ -456,12 +459,16 @@ class SessionDispatcher:
         fan_out: list,           # list[LogicalTarget]
         channel_manager,
         registry: SessionSharingRegistry,
-    ) -> None:
+    ) -> int:
         """对每个 LogicalTarget 查 Registry → 按物理容器去重 → 组装 RoutingTarget →
         调 channel.send(msg, routing_target=RoutingTarget)。
+
+        Returns:
+            实际投递的物理容器数。0 表示 fan_out 中没有任何目标找到订阅者，
+            调用方可据此回退到发起连接，而不是把广播帧静默丢弃。
         """
         if not fan_out:
-            return
+            return 0
 
         # 企业版团队直播按 session_id 交给浏览器订阅，不按每次 chat.send 的 ws_id
         # 各写一遍。Web 先投一次，后面的 fan-out 不再进入 web 容器。
@@ -488,6 +495,8 @@ class SessionDispatcher:
                 await SessionDispatcher._send_to_container(
                     msg, target, group_subs, container_key, channel_manager,
                 )
+
+        return len(sent_containers)
 
     @staticmethod
     def _is_session_live(msg) -> bool:
