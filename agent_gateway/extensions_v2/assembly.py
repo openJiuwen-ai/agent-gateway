@@ -81,10 +81,12 @@ async def shutdown_gateway_extensions() -> None:
     global _ASSEMBLY, _LOCAL_CLI
     async with _LOCK:
         assembly, _ASSEMBLY = _ASSEMBLY, None
+        # Take the CLI reference in the same critical section: a concurrent install
+        # may publish a new one while the old runtime is still closing.
+        local_cli, _LOCAL_CLI = _LOCAL_CLI, None
+        if local_cli is not None:
+            await local_cli.close()
     if assembly is not None:
-        if _LOCAL_CLI is not None:
-            await _LOCAL_CLI.close()
-            _LOCAL_CLI = None
         await assembly.runtime.shutdown()
 
 

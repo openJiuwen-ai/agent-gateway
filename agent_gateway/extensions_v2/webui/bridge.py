@@ -29,7 +29,7 @@ from agent_gateway.extensions_v2.webui.models import (
     UiDownloadInput, UiSplashPreviewInput, valid_instance_key,
 )
 from agent_gateway.extensions_v2.webui.call_context import Caller
-from agent_gateway.extensions_v2.webui.constants import UPSTREAM_EVENTS, WebUIEvent
+from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX, UPSTREAM_EVENTS, WebUIEvent
 from agent_gateway.extensions_v2.webui.component_rules import validate_event_data
 from agent_gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
 from agent_gateway.extensions_v2.webui.host_settings import SplashPreferences
@@ -50,7 +50,6 @@ MIN_SPLASH_MS = 1_000
 MAX_SPLASH_MS = 60_000
 #: Package handlers answering a platform frame get the same budget as gateway.request.
 PLATFORM_TIMEOUT_S = 5.0
-ASSET_PREFIX = "/extension-assets/"
 #: Marks a generation segment that addresses the package data ``public/`` directory.
 DATA_GENERATION_SUFFIX = ".data"
 ASSET_SOURCES = frozenset({"package", "data"})
@@ -359,7 +358,8 @@ class BrowserBridge:
             return UiActionOutput(accepted=True, status="playing" if record and record.root is not None else "skipped")
         reason = payload.get("reason") if isinstance(payload, Mapping) else None
         revision = payload.get("revision") if isinstance(payload, Mapping) else None
-        if set(payload) != {"reason", "revision"} or reason not in CLOSE_REASONS or type(revision) is not int:
+        if (not isinstance(payload, Mapping) or set(payload) != {"reason", "revision"}
+                or reason not in CLOSE_REASONS or type(revision) is not int):
             return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
         record = self.runtime.registry.get(scoped)
         if (self.active_application_package(package_id) is None or record is None or record.root is None
@@ -477,8 +477,26 @@ class BrowserBridge:
             return None
         task = loop.create_task(coroutine)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+
+        def _finished(finished: asyncio.Task) -> None:
+            self._tasks.discard(finished)
+            if finished.cancelled():
+                return
+            error = finished.exception()
+            if error is not None:
+                logger.warning("[GatewayWebUI] background browser task failed: %r", error)
+
+        task.add_done_callback(_finished)
         return task
+
+    async def close(self) -> None:
+        """Cancel background notifications that outlived the runtime (S_01 shutdown)."""
+        pending = list(self._tasks)
+        self._tasks.clear()
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def settle(self) -> None:
         """Wait until release notifications have been sent."""
@@ -763,13 +781,17 @@ class BrowserBridge:
         raw_payload = params.get("payload", {})
         if not isinstance(raw_payload, Mapping):
             return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
-        payload = json_copy(dict(raw_payload), maximum=64 * 1024)
+        try:
+            payload = json_copy(dict(raw_payload), maximum=64 * 1024)
+        except ValueError:
+            return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
         if event_name == "ui.ready":
             accepted = False
             for package in own:
                 if package_id and package_id != package.package_id:
                     continue
-                if not any(item.get("slot") == slot_id for item in package.ui["items"]):
+                items = package.ui.get("items", ()) if isinstance(package.ui, Mapping) else ()
+                if not any(isinstance(item, Mapping) and item.get("slot") == slot_id for item in items):
                     continue
                 scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package.package_id,
                                       instance_key=instance_key, scope="application", connection_id=request.connection_id)

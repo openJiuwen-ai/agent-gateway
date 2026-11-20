@@ -16,6 +16,7 @@ from agent_gateway.extensions_v2.webui.constants import (
     FRAME_APPEARANCE,
     FRAME_CLEAR,
     FRAME_DOWNLOAD,
+    FRAME_PRESENTATION_START,
     FRAME_RENDER,
     FRAME_RENDER_ERROR,
     FRAME_SPLASH_PLAY,
@@ -71,7 +72,7 @@ class GatewayTransport:
 
     async def send_presentation_start(self, connection_id: str, payload: Mapping[str, Any]) -> bool:
         """Request one explicit presentation start; the caller separately awaits its receipt."""
-        return await self._send(connection_id, "webui.presentation.start", payload)
+        return await self._send(connection_id, FRAME_PRESENTATION_START, payload)
 
     async def send_error(
         self,

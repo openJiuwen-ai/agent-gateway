@@ -14,7 +14,7 @@ from openjiuwen.core.events import Event, SessionContext
 
 from agent_gateway.extensions_v2.assembly import get_gateway_runtime
 from agent_gateway.extensions_v2.models import EVENT_GATEWAY_REQUEST, GatewayRequestInput, GatewayRequestOutput
-from agent_gateway.extensions_v2.webui.bridge import ASSET_PREFIX
+from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX
 from agent_gateway.extensions_v2.webui.transfers import DOWNLOAD_PREFIX, UPLOAD_PREFIX
 
 # Assets are documents of an opaque origin even when opened directly, so they
@@ -39,8 +39,21 @@ DOWNLOAD_HEADERS = MappingProxyType({
 TICKET_PREFIXES = (UPLOAD_PREFIX, DOWNLOAD_PREFIX)
 
 
+def _cross_site(request: Request) -> bool:
+    """Reject cross-site fetches of one-time tickets; absence keeps non-browser clients working."""
+
+    return request.headers.get("sec-fetch-site", "").strip().lower() == "cross-site"
+
+
 def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) -> None:
-    """Attach generic request interception without encoding a login policy."""
+    """Attach generic request interception without encoding a login policy.
+
+    HTTP is intentionally fail-closed: when the extension chain raises, times out
+    (5 s) or returns an unusable result, the request is rejected with 503 instead
+    of continuing. WebSocket frames keep their fail-open contract because the
+    native dispatch can still serve them; an HTTP endpoint cannot know whether a
+    plugin policy meant to protect it, so continuing would bypass that policy.
+    """
 
     @app.middleware("http")
     async def extension_http(request: Request, call_next):
@@ -94,11 +107,15 @@ def attach_browser_routes(app: FastAPI, runtime_provider=get_gateway_runtime) ->
         runtime = runtime_provider()
         if runtime is None:
             return JSONResponse({"code": "NOT_FOUND"}, status_code=404)
+        if _cross_site(request):
+            return JSONResponse({"code": "FORBIDDEN"}, status_code=403)
         status = await runtime.browser.transfers.receive(upload_id, path, request.stream())
         return Response(status_code=status, headers={"Cache-Control": "no-store"})
 
     async def download_file(token: str, request: Request):
         runtime = runtime_provider()
+        if _cross_site(request):
+            return JSONResponse({"code": "FORBIDDEN"}, status_code=403)
         offer = None if runtime is None else runtime.browser.transfers.download(token, consume=request.method == "GET")
         if offer is None:
             return JSONResponse({"code": "NOT_FOUND"}, status_code=404)

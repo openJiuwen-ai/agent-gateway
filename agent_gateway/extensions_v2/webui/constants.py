@@ -36,6 +36,10 @@ FRAME_RENDER_ERROR: Final[str] = "webui.render.error"
 FRAME_APPEARANCE: Final[str] = "webui.appearance"
 FRAME_DOWNLOAD: Final[str] = "webui.download"
 FRAME_SPLASH_PLAY: Final[str] = "webui.splash.play"
+FRAME_PRESENTATION_START: Final[str] = "webui.presentation.start"
+
+# Versioned asset URL prefix shared by URL generation, validation and HTTP routing.
+ASSET_PREFIX: Final[str] = "/extension-assets/"
 
 # Upstream events: all enter the event chain through the single method webui.dispatch.
 UPSTREAM_EVENTS: Final[frozenset[str]] = frozenset(

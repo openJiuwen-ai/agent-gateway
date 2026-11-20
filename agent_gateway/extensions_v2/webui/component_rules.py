@@ -17,7 +17,14 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import unquote, urljoin, urlsplit
 
-from agent_gateway.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
+from agent_gateway.extensions_v2.webui.constants import (
+    ASSET_PREFIX,
+    MAX_DEPTH,
+    MAX_LIST_ITEMS,
+    MAX_NODES,
+    MAX_PROP_DEPTH,
+    MAX_TEXT_BYTES,
+)
 from agent_gateway.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
 
 
@@ -338,13 +345,16 @@ def _form_rules_ok(rules: Any) -> bool:
 
 
 def _tree_options(items: list[Any] | tuple[Any, ...], *, depth: int = 1) -> list[Mapping[str, Any]]:
-    if depth > 8 and items:
-        raise ValueError("tree option depth exceeds 8")
+    if depth > MAX_DEPTH and items:
+        raise ValueError(f"tree option depth exceeds {MAX_DEPTH}")
     result = []
     for item in items:
         result.append(item)
+        # Check before descending so a wide or deep subtree cannot be walked past the budget.
+        if len(result) > MAX_NODES:
+            raise ValueError("too many tree options")
         result.extend(_tree_options(item.get("children", ()), depth=depth + 1))
-        if len(result) > 512:
+        if len(result) > MAX_NODES:
             raise ValueError("too many tree options")
     return result
 
@@ -418,7 +428,7 @@ def valid_url(value: str, *, iframe: bool = False) -> bool:
         return False
 
 
-MEDIA_URL_PREFIX = "/extension-assets/"
+MEDIA_URL_PREFIX = ASSET_PREFIX
 _MEDIA_PATH_CHARS = re.compile(r"[A-Za-z0-9\-._~!$&'()*+,;=:@%/]*")
 # Printable ASCII without the space and the backslash.
 _MEDIA_FORBIDDEN = re.compile(r"[^\x21-\x5b\x5d-\x7e]")
@@ -426,16 +436,14 @@ _MEDIA_BAD_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _MEDIA_BAD_SEGMENT = re.compile(r"[/\\\x00-\x1f\x7f]")
 
 
-def valid_media_url(value: str) -> bool:
-    """Accept only site-relative package or data asset paths for MediaSurface.
+def valid_asset_url(value: str) -> bool:
+    """Accept a site-relative package asset path, including raw non-ASCII names.
 
-    The browser copy in ``catalog/components/mediaSurface.ts`` applies the same
-    steps so both sides reach the same verdict.
+    ``.``/``..`` segments and encoded separators are rejected after decoding so
+    a localized file name cannot climb out of the package generation directory.
     """
-    if _MEDIA_FORBIDDEN.search(value):
-        return False
     path = re.split(r"[?#]", value, maxsplit=1)[0]
-    if not path.startswith(MEDIA_URL_PREFIX) or not _MEDIA_PATH_CHARS.fullmatch(path) or _MEDIA_BAD_ESCAPE.search(path):
+    if not path.startswith(MEDIA_URL_PREFIX) or _MEDIA_BAD_ESCAPE.search(path):
         return False
     segments = path[len(MEDIA_URL_PREFIX):].split("/")
     if len(segments) < 3:
@@ -448,6 +456,20 @@ def valid_media_url(value: str) -> bool:
         if not segment or decoded in (".", "..") or _MEDIA_BAD_SEGMENT.search(decoded):
             return False
     return True
+
+
+def valid_media_url(value: str) -> bool:
+    """Accept only site-relative package or data asset paths for MediaSurface.
+
+    The browser copy in ``catalog/components/mediaSurface.ts`` applies the same
+    steps so both sides reach the same verdict.
+    """
+    if _MEDIA_FORBIDDEN.search(value):
+        return False
+    path = re.split(r"[?#]", value, maxsplit=1)[0]
+    if not _MEDIA_PATH_CHARS.fullmatch(path):
+        return False
+    return valid_asset_url(value)
 
 
 def _dimension_allowed(value: Any, *, allow_auto: bool) -> bool:
@@ -596,7 +618,7 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         titles = [props["title"]] if isinstance(props["title"], str) else props["title"].values()
         if any(not title.strip() or len(title.encode("utf-8")) > 200 for title in titles):
             return "invalid ApplicationSurface title"
-        if not valid_media_url(props["src"]):
+        if not valid_asset_url(props["src"]):
             return "invalid ApplicationSurface URL"
         if len(json.dumps(props.get("config", {}), ensure_ascii=False, allow_nan=False).encode("utf-8")) > 16 * 1024:
             return "ApplicationSurface config exceeds 16 KiB"

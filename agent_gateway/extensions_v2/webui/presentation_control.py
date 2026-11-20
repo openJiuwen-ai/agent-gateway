@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from agent_gateway.extensions_v2.webui.constants import FRAME_PRESENTATION_START
 from agent_gateway.extensions_v2.webui.models import RenderTarget, valid_instance_key
 
-START_EVENT = "webui.presentation.start"
+START_EVENT = FRAME_PRESENTATION_START
 RESULT_METHOD = "webui.presentation.result"
 RESULT_CODES = frozenset({"STARTED", "DESKTOP_REQUIRED", "TARGET_INACTIVE", "BUSY", "OPEN_FAILED"})
 

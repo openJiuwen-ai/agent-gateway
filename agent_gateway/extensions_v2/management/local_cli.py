@@ -61,7 +61,12 @@ async def start_local_cli(runtime: Any) -> LocalControl:
             else:
                 if not manager.owns(package_id):
                     return _error("PACKAGE_NOT_FOUND", "Gateway 没有该包的安装副本。")
-                operation = manager.reload if action == "reload" else manager.uninstall
+                # Map every known action explicitly: a new method added to METHODS must
+                # never fall through to an uninstall by accident.
+                operations = {"reload": manager.reload, "uninstall": manager.uninstall}
+                operation = operations.get(action)
+                if operation is None:
+                    return _error("INVALID_PARAMS", f"未知的包管理动作：{action}")
                 reports = [await operation(package_id)]
             payload = {"reports": [_encode(report) for report in reports]}
             succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]

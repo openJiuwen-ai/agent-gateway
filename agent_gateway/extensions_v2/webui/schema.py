@@ -23,10 +23,16 @@ from agent_gateway.extensions_v2.webui.constants import (
     MAX_NODES,
     MAX_PROP_DEPTH,
     MAX_TEXT_BYTES,
+    ASSET_PREFIX,
     SlotScope,
     slot_spec,
 )
-from agent_gateway.extensions_v2.webui.component_rules import COMPONENT_RULES, finite_number, validate_props
+from agent_gateway.extensions_v2.webui.component_rules import (
+    COMPONENT_RULES,
+    finite_number,
+    valid_asset_url,
+    validate_props,
+)
 from agent_gateway.extensions_v2.webui.models import (
     MAX_TARGET_BYTES,
     RenderFrame,
@@ -174,8 +180,11 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
         return report
     slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
     if request.root.component == "ApplicationSurface":
-        prefix = f"/extension-assets/{request.target.package_id}/"
-        if not request.target.package_id or not request.root.props["src"].startswith(prefix):
+        prefix = f"{ASSET_PREFIX}{request.target.package_id}/"
+        src = request.root.props["src"]
+        # Only traversal and escape rules apply here: raw localized file names
+        # stay valid, while ``..`` segments and encoded separators are rejected.
+        if not request.target.package_id or not src.startswith(prefix) or not valid_asset_url(src):
             return _fail("ApplicationSurface must use its own package assets")
     if request.target.slot_id in _STRICT_ROOT_SLOTS:
         if request.root.component not in slot_roots:

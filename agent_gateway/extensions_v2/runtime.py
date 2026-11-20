@@ -122,7 +122,7 @@ class GatewayRuntime:
     async def start(self) -> None:
         """Register events, run ``ops.build`` once and publish packages."""
 
-        if self._started or not self.config.enabled:
+        if self._started or self._closed or not self.config.enabled:
             return
         try:
             begin_system_plugin_recovery_session(
@@ -193,6 +193,7 @@ class GatewayRuntime:
         self._activations.clear()
         self.browser.presentations.invalidate()
         await self.browser.settle()
+        await self.browser.close()
         await self.webui.shutdown()
         self.store.clear()
         if self._data_store_bound:

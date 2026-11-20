@@ -10,6 +10,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+#: Records are small; a larger file means corruption rather than legitimate state.
+MAX_STATE_BYTES = 64 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class ExtensionInstallRecord:
@@ -64,6 +67,8 @@ class ExtensionInstallState:
         if not self.path.is_file():
             return {}
         try:
+            if self.path.stat().st_size > MAX_STATE_BYTES:
+                return {}
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}

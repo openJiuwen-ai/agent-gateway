@@ -212,6 +212,10 @@ class TransferManager:
             self.uploads.pop(item.upload_id, None)
         upload_id = uuid4().hex
         data_dir = self.runtime.package_data_dir(target.package_id)
+        upload_root = data_dir / UPLOAD_DIR
+        # Check the leaf before creating anything, so a pre-existing symlink is never followed.
+        if upload_root.is_symlink():
+            raise HostRequestError(CODE_BAD_REQUEST, "package data directory is not usable")
         directory = data_dir / UPLOAD_DIR / upload_id
         upload = Upload(
             upload_id=upload_id, connection_id=target.connection_id, package_id=target.package_id,
@@ -227,7 +231,7 @@ class TransferManager:
             self._forget(upload)
             await self._discard(upload)
             raise
-        unusable = (data_dir / UPLOAD_DIR).is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve())
+        unusable = upload_root.is_symlink() or not directory.resolve().is_relative_to(data_dir.resolve())
         if unusable or self.uploads.get(upload_id) is not upload or not target_is_current():
             # The original target may change while directories are prepared; never adopt its replacement.
             self._forget(upload)
@@ -258,7 +262,9 @@ class TransferManager:
         """Own the handle before opening it, and retain ownership until close and cleanup finish."""
         upload.receiving.add(relative)
         destination = upload.directory.joinpath(*PurePosixPath(relative).parts)
-        partial_path = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
+        # A short random name keeps the partial file inside the 255-byte segment limit
+        # even when the declared name already uses it.
+        partial_path = destination.with_name(f".upload-{uuid4().hex}.part")
         expected = upload.files[relative]
         status = 204
         resources = ExitStack()
