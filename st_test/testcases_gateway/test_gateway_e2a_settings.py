@@ -1,8 +1,27 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""个人版语言配置 E2A 黑盒契约。"""
+"""个人版语言配置与启动模型目录的 E2A 黑盒契约。"""
 
 from __future__ import annotations
+
+import time
+
+
+def _wait_for_method(stub_agent_server, method: str, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for envelope in stub_agent_server.requests:
+            if envelope.get("method") == method:
+                return envelope
+        time.sleep(0.05)
+    raise AssertionError(f"AgentServer 未收到 {method} 请求")
+
+
+def test_gateway_startup_queries_remote_models(gateway, stub_agent_server) -> None:
+    """file cron store 启动迁移应通过 models.list 获取远端模型目录。"""
+    assert gateway.proc.poll() is None
+    envelope = _wait_for_method(stub_agent_server, "models.list")
+    assert envelope["channel"] == "gateway-cron-migration"
 
 
 def test_locale_get_conf_is_proxied_to_agent_server(gateway_ws, stub_agent_server) -> None:

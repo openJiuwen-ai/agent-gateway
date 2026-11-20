@@ -2523,7 +2523,28 @@ async def _run(
     # the per-user resource/reference boundary, never using Gateway's catalog.
     if load_cron_store_settings(get_config()).backend == "file":
         try:
-            await migrate_legacy_cron_selections(cron_store, user_id=None)
+            from agent_gateway.common.remote_model_catalog import (
+                RemoteModelCatalog,
+                fetch_agent_model_rows,
+            )
+
+            rows = await fetch_agent_model_rows(
+                agent_client=client,
+                channel_id="gateway-cron-migration",
+            )
+            if rows is None:
+                logger.warning(
+                    "Cron model-selection migration skipped: "
+                    "AgentServer models.list is unavailable; "
+                    "will retry on the next Gateway startup"
+                )
+            else:
+                await migrate_legacy_cron_selections(
+                    cron_store,
+                    catalog=RemoteModelCatalog(rows),
+                    user_id=None,
+                    remote_validated=True,
+                )
         except Exception:  # noqa: BLE001
             logger.warning("Cron model-selection migration deferred", exc_info=True)
     cron_scheduler = CronSchedulerService(

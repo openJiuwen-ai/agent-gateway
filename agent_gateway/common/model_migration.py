@@ -18,8 +18,18 @@ def _name_map(catalog: ModelCatalog | None = None) -> dict[str, str]:
     return {name: ids[0] for name, ids in candidates.items() if len(ids) == 1}
 
 
-async def migrate_legacy_cron_selections(store, *, catalog=None, user_id="") -> int:
-    """Migrate only this user's jobs through the configured store's atomic patch."""
+async def migrate_legacy_cron_selections(
+    store,
+    *,
+    catalog=None,
+    user_id="",
+    remote_validated: bool = False,
+) -> int:
+    """Migrate only this user's jobs through the configured store's atomic patch.
+
+    ``remote_validated`` is true only when ``catalog`` came from AgentServer;
+    a local catalog must still be validated by the store's local resolver.
+    """
     mapping = _name_map(catalog)
     changed = 0
     for job in await store.list_jobs(strict=True):
@@ -32,6 +42,7 @@ async def migrate_legacy_cron_selections(store, *, catalog=None, user_id="") -> 
             await store.update_job(job.id, {
                 "model_selection": {"type": "model", "id": model_id},
                 "_expected_legacy_model_name": job.model_name,
+                "_model_selection_remote_validated": remote_validated,
             })
             changed += 1
     return changed

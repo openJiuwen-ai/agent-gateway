@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from agent_gateway.common.model_migration import migrate_legacy_cron_selections
 from agent_gateway.common.remote_model_catalog import (
     RemoteModelCatalog,
     fetch_agent_model_rows,
@@ -95,6 +96,71 @@ def test_remote_model_catalog_supports_stable_model_ids() -> None:
 
     assert catalog.has_selection(selection)
     assert catalog.get_model("mdl_1")["entry"]["model_client_config"]["model_name"] == "my-model"
+
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_cron_selections_uses_remote_catalog() -> None:
+    updates: list[tuple[str, dict]] = []
+    job = SimpleNamespace(
+        id="job-1",
+        user_id="",
+        model_name="my-model",
+        model_selection=None,
+    )
+
+    class _Store:
+        async def list_jobs(self, *, strict: bool = False):
+            assert strict is True
+            return [job]
+
+        async def update_job(self, job_id: str, patch: dict) -> None:
+            updates.append((job_id, patch))
+
+    catalog = RemoteModelCatalog([_row("mdl_1", "my-model")])
+    changed = await migrate_legacy_cron_selections(
+        _Store(), catalog=catalog, remote_validated=True
+    )
+
+    assert changed == 1
+    assert updates == [(
+        "job-1",
+        {
+            "model_selection": {"type": "model", "id": "mdl_1"},
+            "_expected_legacy_model_name": "my-model",
+            "_model_selection_remote_validated": True,
+        },
+    )]
+
+
+@pytest.mark.asyncio
+async def test_migrate_legacy_cron_selections_marks_local_catalog_as_unvalidated() -> None:
+    updates: list[dict] = []
+    job = SimpleNamespace(
+        id="job-local",
+        user_id="",
+        model_name="local-model",
+        model_selection=None,
+    )
+
+    class _Store:
+        async def list_jobs(self, *, strict: bool = False):
+            assert strict is True
+            return [job]
+
+        async def update_job(self, job_id: str, patch: dict) -> None:
+            updates.append(patch)
+
+    class _LocalCatalog:
+        def list_public_models(self):
+            return [{"model_id": "mdl_local", "model_name": "local-model", "alias": ""}]
+
+    changed = await migrate_legacy_cron_selections(
+        _Store(), catalog=_LocalCatalog()
+    )
+
+    assert changed == 1
+    assert updates[0]["model_selection"] == {"type": "model", "id": "mdl_local"}
+    assert updates[0]["_model_selection_remote_validated"] is False
 
 
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:
