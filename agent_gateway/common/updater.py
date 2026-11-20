@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import sys
 import threading
@@ -28,6 +29,7 @@ from agent_gateway.common.version_source import (
     ReleaseInfo,
     normalize_pypi_index_url,
     pypi_project_url,
+    release_sort_key,
     release_timestamp_key,
 )
 
@@ -69,8 +71,32 @@ def _is_newer_version(candidate: str, current: str) -> bool:
     - Within the same type, a larger pre-release number is newer
       (``0.2.3.beta2`` > ``0.2.3.beta1``).
     """
-    from agent_gateway.common.version_source import release_sort_key
     return release_sort_key(candidate) > release_sort_key(current)
+
+
+def _wheel_version_key(filename: str) -> tuple[tuple[int, ...], int, tuple[int, ...]] | None:
+    """Return the comparable version key of a wheel filename, or None.
+
+    Wheel names follow ``{distribution}-{version}(-{build})?-{python}-{abi}-
+    {platform}.whl`` (PEP 427), but the distribution part may itself contain
+    hyphens (non-normalized names), so the version is located from the right:
+    the last three segments are always the python/abi/platform tags, and the
+    version sits immediately before them, or one segment further left when a
+    (digit-only) build tag is present. The key is compared against
+    :func:`release_sort_key`, which keeps ``0.2.3.beta1`` and ``0.2.3b1``
+    equivalent across sources. Unparsable names return None so the caller
+    falls back to the first wheel.
+    """
+    name = filename.removesuffix(".whl")
+    parts = name.split("-")
+    if len(parts) < 5:
+        return None
+    candidate = parts[-4]
+    if len(parts) >= 6 and re.fullmatch(r"\d+", candidate):
+        # A digit-only segment in front of the tag triplet is a PEP 427
+        # build tag, not the version.
+        candidate = parts[-5]
+    return release_sort_key(candidate)
 
 
 def _is_newer_release(candidate_published_at: str, current_published_at: str) -> bool:
@@ -312,8 +338,20 @@ class UpdaterService:
 
     def _check(self, config: dict[str, Any]) -> None:
         source = self._create_version_source(config)
+        install_mode = _detect_install_mode()
+        # Daily wheels bump the distribution metadata without regenerating the
+        # checked-in _build_config constant, so pip update decisions must use
+        # the installed runtime version instead of the static __version__.
+        # Desktop bundles keep the real release version in _build_config,
+        # while the dist-info bundled into the frozen app carries the PEP 440
+        # normalized spelling (0.2.9b5 vs the v0.2.9.beta5 release tag) that
+        # never matches the tag the timestamp lookup needs, so desktop keeps
+        # the __version__ baseline.
+        current_version = (
+            __version__ if install_mode == "desktop" else get_runtime_version()
+        )
         try:
-            release = source.fetch_latest(__version__)
+            release = source.fetch_latest(current_version)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to fetch latest release from {config['release_api_type']}: {exc}"
@@ -323,7 +361,6 @@ class UpdaterService:
         if not latest_version:
             raise RuntimeError("Latest release version is missing.")
 
-        install_mode = _detect_install_mode()
         timestamp_desktop = install_mode == "desktop" and sys.platform in {
             "darwin",
             "win32",
@@ -332,14 +369,14 @@ class UpdaterService:
             if not release.current_release_published_at:
                 raise RuntimeError(
                     "Current desktop release timestamp is missing for version "
-                    f"{__version__}."
+                    f"{current_version}."
                 )
             has_update = _is_newer_release(
                 release.published_at,
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, __version__)
+            has_update = _is_newer_version(latest_version, current_version)
 
         if not has_update:
             if install_mode == "desktop":
@@ -489,12 +526,22 @@ class UpdaterService:
                 continue
 
     def _resolve_pip_asset(self, config: dict[str, Any], release: ReleaseInfo) -> None:
-        whl = next((a for a in release.assets if a.name.endswith(".whl")), None)
-        if not whl:
+        whls = [asset for asset in release.assets if asset.name.endswith(".whl")]
+        if not whls:
             raise RuntimeError(
                 "No .whl package found in the release assets. "
                 "For pip installations the release must include a .whl file."
             )
+        # The PyPI simple index lists every historical wheel, in index order, so
+        # pick the one whose version matches the resolved release instead of
+        # trusting list order (the update page used to show workswarm-0.2.5 for
+        # a 0.2.9b3 release). Fall back to the first wheel for sources whose
+        # asset names are arbitrary.
+        target_key = release_sort_key(release.version)
+        whl = next(
+            (asset for asset in whls if _wheel_version_key(asset.name) == target_key),
+            whls[0],
+        )
 
         self._update_status(
             latest_version=release.version,
