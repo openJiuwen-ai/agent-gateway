@@ -153,6 +153,16 @@ _APPROVAL_PLAN_EXTRA_KEYS = ("plan_approval_kind", "plan_content", "plan_languag
 # 飞书交互卡片没有输入框，"Other" 只是自由输入的占位项：点它只会产出一个被
 # 服务端归一为空的答案（`interface.py` 把裸 "Other" 置空），中断恢复必然失败。
 _OTHER_OPTION_TEXT = "other"
+# 评审意见 #201832613：占位按钮回传专用 token。同题若并存 value 恰为
+# other（大小写不敏感）的真实选项，两按钮回传相同 "other" 时解析先命中
+# 真实选项，Other 点击被静默写成真实答案、文本作答通路丢失。本 PR 未发布
+# 无在途旧卡，占位直接换用不冲突 token；点击侧保留裸 other 兜底兼容过渡。
+_OTHER_PLACEHOLDER_TOKEN = "__other__"
+_OTHER_BUTTON_LABEL = "其他（自定义答案）"
+_OTHER_HINT_SINGLE = ("💡 点击「其他（自定义答案）」后，直接回复本条消息的文本即可作为"
+                      "自定义答案（若文本通路不可用，请在网页端或终端完成）。")
+# 评审意见 #201589594：文本作答契约仅对 ask_user 来源单题提问生效，其余来源统一引导网页端/终端。
+_OTHER_HINT_WEB = "💡 自定义答案请在网页端或终端填写。"
 
 
 def _is_other_placeholder(option: dict[str, Any]) -> bool:
@@ -191,28 +201,48 @@ class _ApprovalCardContext:
     def options_of(self, index: int) -> list[dict[str, Any]]:
         """返回指定题目可按钮作答的选项。
 
-        丢弃非 dict 项，以及 "Other" 自由输入占位——卡片不提供输入框，渲染成
-        按钮后点出来的答案会被服务端判为空，进而让整轮中断恢复失败。
+        丢弃非 dict 项；"Other" 自由输入占位保留为「其他（自定义答案）」按钮
+        （#140）：卡片没有输入框，点击该按钮不产答案、只给出文本作答引导——
+        用户直接回复本条消息文本即为自定义答案（服务端对含 Other 选项的单题
+        提问将纯文本按自定义答案投递）。
         """
         if not 0 <= index < len(self.questions):
             return []
         options = self.questions[index].get("options")
         if not isinstance(options, list):
             return []
-        return [
-            option
-            for option in options
-            if isinstance(option, dict) and not _is_other_placeholder(option)
-        ]
+        return [option for option in options if isinstance(option, dict)]
 
     def answerable_indexes(self) -> list[int]:
-        """存在按钮选项、可在飞书卡片内完成的题号。"""
-        return [index for index in range(len(self.questions)) if self.options_of(index)]
+        """存在非占位按钮选项、可在飞书卡片内完成的题号。
+
+        评审意见 #201553270：仅含 Other 占位的题目不可在卡片内完成——占位
+        按钮只触发文本作答引导、不写入 answers（#140），若计入可答题，
+        is_answered 对该题恒 False，最后一道真按钮题答完卡片仍不投递、
+        「已选择，请继续回答剩余问题」提示永不清零。此类题目的答案走
+        文本回复路径（服务端 _free_text_as_custom_answer 消费）。
+        """
+        return [
+            index
+            for index in range(len(self.questions))
+            if any(not _is_other_placeholder(option) for option in self.options_of(index))
+        ]
 
     def is_answered(self) -> bool:
         """所有可按钮作答的题目都已选择。"""
         indexes = self.answerable_indexes()
         return bool(indexes) and all(index in self.answers for index in indexes)
+
+
+def _is_text_reply_custom_answer_available(ctx: "_ApprovalCardContext") -> bool:
+    """「直接回复本条消息文本即自定义答案」是否成立。
+
+    评审意见 #201604545：服务端 `_free_text_as_custom_answer` 契约仅对
+    ask_user 来源的单题提问成立；渲染侧引导与点击侧 toast 共用本谓词，
+    契约演进（扩展多题/其他来源）时两处同源变更，不再各改各的。
+    """
+    return (str(ctx.source or "").strip() == _APPROVAL_SOURCE_ASK_USER
+            and len(ctx.questions) == 1)
 
 
 def _extract_feishu_post_text(content: str) -> str:
@@ -3347,6 +3377,14 @@ class FeishuChannel(BaseChannel):
         """按钮回传稳定取值（option.value），缺失时回退展示文案。"""
         label = str(option.get("label") or option.get("value") or "").strip()
         value = str(option.get("value") or label).strip()
+        if _is_other_placeholder(option):
+            # #140: Other 占位显式标记；点击不写入答案，只触发文本作答引导。
+            label = _OTHER_BUTTON_LABEL
+            # 评审意见 #201589591：占位判定（label 优先）与点击侧 value 比较
+            # 必须同源——label="Other" 而 value 为其他取值时，回传原 value 会
+            # 被当真实答案静默提交。回传统一规范化为专用占位 token
+            # （评审意见 #201832613：与真实选项 value=other 不冲突）。
+            value = _OTHER_PLACEHOLDER_TOKEN
         return {
             "tag": "button",
             "text": {"tag": "plain_text", "content": label or value},
@@ -3356,8 +3394,12 @@ class FeishuChannel(BaseChannel):
 
     @staticmethod
     def _option_label(ctx: _ApprovalCardContext, index: int, value: str) -> str:
-        """按取值反查选项文案，用于卡片回显。"""
+        """按取值反查选项文案，用于卡片回显。跳过 Other 占位项：占位点击始终提前
+        返回文本作答引导、不会走到回显路径；若参与反查，同值占位在前时首个命中会
+        落在占位选项上，回显错成「Other」且 answer_labels 随之记错。"""
         for option in ctx.options_of(index):
+            if _is_other_placeholder(option):
+                continue
             option_value = str(option.get("value") or "").strip()
             option_label = str(option.get("label") or "").strip()
             if value and value in (option_value, option_label):
@@ -3397,6 +3439,15 @@ class FeishuChannel(BaseChannel):
                         "tag": "action",
                         "actions": [self._approval_button(ctx, index, option) for option in options],
                     })
+                    if any(_is_other_placeholder(option) for option in options):
+                        # 评审意见 #201589594：「直接回复本条消息的文本」指引仅对
+                        # ask_user 来源的单题提问成立（服务端
+                        # _free_text_as_custom_answer 契约）；权限/计划审批等
+                        # 其他来源统一引导网页端/终端填写。
+                        if _is_text_reply_custom_answer_available(ctx):
+                            elements.append(self._create_div_element(_OTHER_HINT_SINGLE))
+                        else:
+                            elements.append(self._create_div_element(_OTHER_HINT_WEB))
                 else:
                     elements.append(self._create_div_element("该问题需要文字作答，请在网页端或终端完成。"))
             if index < total - 1:
@@ -3845,20 +3896,44 @@ class FeishuChannel(BaseChannel):
                 return self._card_action_response(None, "error", "审批已过期或已处理")
 
             value = str(action_value.get("value") or "").strip()
-            if value.lower() == _OTHER_OPTION_TEXT:
-                # 渲染时已丢弃 "Other" 占位项，这里只做兜底：万一回调仍带回该值，
-                # 也不能当答案提交——卡片没有输入框，点它只会产出被服务端归一为
-                # 空的答案，白跑一轮中断恢复。
+            # P2（atomgit 2026-11-18）：占位判定单源——渲染侧以
+            # `_is_other_placeholder`（label 优先）决定占位与文本作答引导，
+            # 点击侧若按裸 value 匹配即两侧分叉：{"label":"其他","value":"other"}
+            # 渲染为可点真选项（可作答、无引导），点击却落占位分支弹 toast、
+            # 答案永不入卡＝死卡。此处解析被点 option 走同一谓词；无 option
+            # 可解析（规范化占位按钮 value 不在 options 内）回退原 value 判定。
+            _opts_hit = [opt for opt in ctx.options_of(index)
+                         if str(opt.get("value") or "").strip() == value]
+            # 评审意见 #201912955/#202437587：同题两选项 value 相同且占位在前时，
+            # 取首个命中会把真实选项的点击吞进占位分支（答案永不入卡、卡片挂起）。
+            # 多命中优先取非占位项；全部命中皆为占位才回落首个命中。
+            _clicked_opt = next(
+                (opt for opt in _opts_hit if not _is_other_placeholder(opt)),
+                _opts_hit[0] if _opts_hit else None,
+            )
+            if (_is_other_placeholder(_clicked_opt) if _clicked_opt is not None
+                    else value.lower() in (_OTHER_OPTION_TEXT, _OTHER_PLACEHOLDER_TOKEN)):
+                # #140: Other 占位不再被丢弃、也不再被拒绝——点击给出文本作答
+                # 引导；占位值不写入答案（服务端把含 Other 选项的单题提问的
+                # 纯文本按自定义答案投递）。多题提问引导到网页端/终端。
                 logger.info(
-                    "[FeishuChannel] 拒绝 Other 占位选项: token=%s, request_id=%s, index=%s",
+                    "[FeishuChannel] 收到 Other 占位选项（自定义答案引导）: token=%s, request_id=%s, index=%s",
                     token,
                     request_id,
                     index,
                 )
+                # 评审意见 #201589594：toast 同源校验——非 ask_user 来源不承诺
+                # 「回复文本即自定义答案」。
+                if _is_text_reply_custom_answer_available(ctx):
+                    return self._card_action_response(
+                        None,
+                        "info",
+                        "已选择「其他（自定义答案）」：请直接回复本条消息的文本",
+                    )
                 return self._card_action_response(
                     None,
-                    "error",
-                    "该题需要在网页端或终端填写答案",
+                    "info",
+                    "该提问的自定义答案请在网页端或终端填写",
                 )
             label = self._option_label(ctx, index, value)
             remaining = [
