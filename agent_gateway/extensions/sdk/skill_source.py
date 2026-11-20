@@ -2,8 +2,9 @@
 
 """Public Skill Source SPI used by extensions.
 
-源路径：``jiuwenswarm/extensions/sdk/skill_source.py``（本副本为真源，母仓改为转发别名）。
-裁剪说明：仅把 ``BaseExtension`` 与制品校验改为 gateway 内部实现，其余保持一致。
+真源在本模块；``jiuwenswarm/extensions/sdk/skill_source.py`` 为转发别名。
+Providers translate a remote catalogue protocol into the common models below.
+They deliberately do not install, update, or remove workspace files.
 """
 
 from __future__ import annotations
@@ -13,13 +14,17 @@ import io
 import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 import httpx
 
 from agent_gateway.extensions.sdk.base import BaseExtension
+
+
+SKILL_CAPABILITIES = frozenset(
+    {"search", "get_artifact", "check_updates", "get_detail"}
+)
 
 
 @dataclass(frozen=True)
@@ -29,31 +34,21 @@ class SkillRef:
 
 
 @dataclass(frozen=True)
-class ArtifactRef:
-    skill_ref: SkillRef
-    version_id: str
-
-
-@dataclass(frozen=True)
-class TrustPolicy:
-    verification: str = "if-present"
-    allowed_algorithms: frozenset[str] = frozenset({"HmacSHA256"})
-    hmac_key_refs: Mapping[str, str] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
 class DownloadPolicy:
+    """Platform download limits plus optional source-private knobs.
+
+    Host allow-listing (``allowed_hosts``) is enforced by the **platform
+    install path** (fail-closed when empty after merging Provider defaults).
+    The SPI default ``download_artifact`` does not re-check hosts: it pulls the
+    already-approved ``download_url`` under ``max_bytes`` / ``timeout_seconds``.
+    ``metadata`` is ignored by the default implementation; Providers that
+    override download may read source-private keys from it.
+    """
+
     allowed_hosts: tuple[str, ...] = ()
     max_bytes: int = 64 * 1024 * 1024
     timeout_seconds: float = 60.0
-
-
-class SecretResolver(ABC):
-    """Resolve an approved secret reference without exposing it to Providers."""
-
-    @abstractmethod
-    def resolve(self, reference: str) -> str | None:
-        raise NotImplementedError
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -66,7 +61,6 @@ class SourceConfig:
     auth_ref: str | None = None
     capabilities: frozenset[str] = frozenset()
     download_policy: DownloadPolicy | None = None
-    trust_policy: TrustPolicy | None = None
     options: Mapping[str, Any] = field(default_factory=dict)
     verify_ssl: bool = True
 
@@ -102,57 +96,40 @@ class SkillSearchRequest:
 
 @dataclass(frozen=True)
 class SkillCandidate:
+    """Catalogue card for search results.
+
+    Shared display fields with Connector Candidate / Detail: ``display_name``,
+    ``short_description``, ``icon_uri``, ``tags``, ``category_name``. Market
+    extras such as ``owner_display_name`` / ``download_count`` / ``asset_type``
+    / ``updated_at`` belong in ``metadata``, not as first-class fields.
+    """
+
     source_id: str
     skill_id: str
     version_id: str
     name: str
-    display_name: str | None = None
-    summary: str | None = None
+    display_name: str = ""
+    short_description: str | None = None
     version: str | None = None
-    fingerprint: str | None = None
-    namespace: str | None = None
-    slug: str | None = None
-    canonical_slug: str | None = None
-    owner_display_name: str | None = None
-    labels: tuple[Mapping[str, Any], ...] = ()
-    homepage: str | None = None
-    rating_avg: float | None = None
-    rating_count: int | None = None
-    download_count: int | None = None
-    updated_at: datetime | str | int | None = None
-    versions: tuple[Mapping[str, Any], ...] = ()
-    previous_version: str | None = None
-    accessible: bool | None = None
-    downloadable: bool | None = None
+    icon_uri: str = ""
+    tags: tuple[str, ...] = ()
+    category_name: str = ""
+    all_versions: tuple[str, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        updated_at: str | int | None = self.updated_at
-        if isinstance(updated_at, datetime):
-            updated_at = updated_at.isoformat()
         raw: dict[str, Any] = {
             "source_id": self.source_id,
             "skill_id": self.skill_id,
             "version_id": self.version_id,
             "name": self.name,
             "display_name": self.display_name,
-            "summary": self.summary,
+            "short_description": self.short_description,
             "version": self.version,
-            "fingerprint": self.fingerprint,
-            "namespace": self.namespace,
-            "slug": self.slug,
-            "canonical_slug": self.canonical_slug,
-            "owner_display_name": self.owner_display_name,
-            "labels": list(self.labels),
-            "homepage": self.homepage,
-            "rating_avg": self.rating_avg,
-            "rating_count": self.rating_count,
-            "download_count": self.download_count,
-            "updated_at": updated_at,
-            "versions": list(self.versions),
-            "previous_version": self.previous_version,
-            "accessible": self.accessible,
-            "downloadable": self.downloadable,
+            "icon_uri": self.icon_uri,
+            "tags": list(self.tags),
+            "category_name": self.category_name,
+            "all_versions": list(self.all_versions),
             "metadata": dict(self.metadata),
         }
         result: dict[str, Any] = {}
@@ -165,9 +142,59 @@ class SkillCandidate:
 
 @dataclass(frozen=True)
 class SkillSearchResult:
+    """One search page. Aligned with ``ConnectorSearchResult``.
+
+    ``page`` / ``page_size`` stay on the request (and host RPC echo).
+    """
+
     items: tuple[SkillCandidate, ...]
     total: int | None = None
     next_page: int | None = None
+
+
+@dataclass(frozen=True)
+class SkillDetail:
+    """Catalogue detail for one skill (optional ``get_detail`` capability).
+
+    Display fields align with ``SkillCandidate`` / Connector Detail:
+    ``display_name``, ``short_description``, ``icon_uri``, ``tags``,
+    ``category_name``, plus detail-only ``detail_description`` / ``changelog``.
+    """
+
+    source_id: str
+    skill_id: str
+    name: str
+    display_name: str
+    version_id: str = ""
+    short_description: str | None = None
+    detail_description: str = ""
+    changelog: str = ""
+    icon_uri: str = ""
+    tags: tuple[str, ...] = ()
+    category_name: str = ""
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        raw: dict[str, Any] = {
+            "source_id": self.source_id,
+            "skill_id": self.skill_id,
+            "name": self.name,
+            "display_name": self.display_name,
+            "version_id": self.version_id,
+            "short_description": self.short_description,
+            "detail_description": self.detail_description,
+            "changelog": self.changelog,
+            "icon_uri": self.icon_uri,
+            "tags": list(self.tags),
+            "category_name": self.category_name,
+            "metadata": dict(self.metadata),
+        }
+        result: dict[str, Any] = {}
+        for key, value in raw.items():
+            if value is None or value in ((), [], {}):
+                continue
+            result[key] = value
+        return result
 
 
 @dataclass(frozen=True)
@@ -181,6 +208,11 @@ class InstalledArtifact:
 
 @dataclass(frozen=True)
 class SkillUpdateStatus:
+    """Update check outcome for one installed skill.
+
+    Field shape aligns with ``ConnectorUpdateStatus``.
+    """
+
     skill_ref: SkillRef
     current_version_id: str
     latest_version_id: str | None
@@ -188,18 +220,26 @@ class SkillUpdateStatus:
     latest_version: str | None = None
     fingerprint_matched: bool | None = None
     accessible: bool | None = None
-    downloadable: bool | None = None
     remote_status: str = "unknown"
     error_code: str | None = None
 
 
 @dataclass(frozen=True)
 class ArtifactDescriptor:
-    artifact_ref: ArtifactRef
+    """Remote artifact metadata used by download and verify.
+
+    Identity is flat (``source_id`` / ``skill_id`` / ``version_id``), matching
+    ``SkillCandidate`` / ``InstalledArtifact``. Content integrity uses
+    ``content_sha256`` only (aligned with Connector SPI). Providers that still
+    see Hub ``checksum_sha256`` / ``artifact_sha256`` should map them into
+    ``content_sha256`` at the boundary.
+    """
+
+    source_id: str
+    skill_id: str
+    version_id: str
     download_url: str
-    expires_at: datetime | None = None
-    checksum_sha256: str | None = None
-    artifact_sha256: str | None = None
+    content_sha256: str | None = None
     signature: str | None = None
     signature_algorithm: str | None = None
     signature_encoding: str | None = None
@@ -210,12 +250,110 @@ class ArtifactDescriptor:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+class SkillCapabilityError(RuntimeError):
+    """Raised when a Provider does not support the requested capability."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SkillArtifactVerificationError(RuntimeError):
+    """Raised when default or provider verification rejects an artifact."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+class SkillDownloadError(RuntimeError):
+    """Raised when default or provider download rejects an artifact URL/body."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+async def _read_response_body_capped(resp: httpx.Response, max_bytes: int) -> bytes:
+    """Stream ``resp`` into memory while enforcing ``max_bytes`` as a peak cap.
+
+    Uses ``Content-Length`` for an early reject when present and parseable; always
+    accumulates via ``aiter_bytes`` so a missing or forged header cannot bypass
+    the limit. Raises ``SkillDownloadError(content_too_large)`` as soon as
+    the cap would be exceeded.
+    """
+    content_length = resp.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = -1
+        if declared > max_bytes:
+            raise SkillDownloadError(
+                "content_too_large",
+                "下载内容超过来源允许的最大大小",
+            )
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in resp.aiter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > max_bytes:
+            raise SkillDownloadError(
+                "content_too_large",
+                "下载内容超过来源允许的最大大小",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@dataclass(frozen=True)
+class SkillVerificationResult:
+    """Outcome of a successful skill artifact verification.
+
+    Aligned with ``ConnectorVerificationResult``: ``verified=True`` means a
+    signature was checked and accepted. Optional algorithm/scope/key_id record
+    what the artifact declared and the verifier accepted (not the platform
+    policy itself). Source-private audit knobs belong in ``metadata``.
+    """
+
+    verified: bool
+    content_sha256: str
+    algorithm: str | None = None
+    scope: str | None = None
+    key_id: str | None = None
+    verified_at: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        raw: dict[str, Any] = {
+            "verified": self.verified,
+            "content_sha256": self.content_sha256,
+            "algorithm": self.algorithm,
+            "scope": self.scope,
+            "key_id": self.key_id,
+            "verified_at": self.verified_at,
+            "metadata": dict(self.metadata),
+        }
+        result: dict[str, Any] = {}
+        for key, value in raw.items():
+            if value is None or value == {}:
+                continue
+            result[key] = value
+        return result
+
+
 @dataclass(frozen=True)
 class ProviderInvocationContext:
     request_id: str
     trace_id: str | None = None
     authorization_scope: str | None = None
     credential_ref: str | None = None
+    user_id: str | None = None
+    group_id: str | None = None
+    bot_id: str | None = None
 
 
 class SkillSourceProvider(ABC):
@@ -226,36 +364,21 @@ class SkillSourceProvider(ABC):
     display_name: str
     capabilities: frozenset[str]
 
-    # 信任策略内聚在 Provider：由扩展工厂/宿主在构造后经 set_trust_policy()
-    # 注入，验签默认实现据此执行；类级默认值保证未调用 super().__init__()
-    # 的子类也可安全读取。
-    _trust_policy: TrustPolicy | None = None
-    _secret_resolver: SecretResolver | None = None
-    # Provider 显式声明的默认下载主机白名单：注册来源时并入
-    # SourceConfig.download_policy（管理面显式配置的 allowed_hosts 优先）；
-    # 两者皆空时安装链路 fail-closed 拒绝下载。
+    # Provider-declared default download host allow-list: merged into
+    # SourceConfig.download_policy at bind time (management allowed_hosts win);
+    # when both are empty the host install path fail-closes.
     download_allowed_hosts: tuple[str, ...] = ()
     verify_ssl: bool = True
+    # Opt-in plaintext HTTP for default download_artifact. Cleartext downloads
+    # are MITM-replaceable; catalogue checksums from the same channel do not
+    # restore integrity. Keep False unless the source truly cannot serve HTTPS.
+    allow_insecure_http: bool = False
 
     async def start(self) -> None:
         return None
 
     async def close(self) -> None:
         return None
-
-    def set_trust_policy(
-        self,
-        trust_policy: TrustPolicy | None,
-        secret_resolver: SecretResolver | None = None,
-    ) -> None:
-        """Inject the source trust policy after construction.
-
-        Called by the extension factory or the host runtime; the default
-        ``verify_artifact`` implementation verifies against it.
-        """
-        self._trust_policy = trust_policy
-        if secret_resolver is not None:
-            self._secret_resolver = secret_resolver
 
     @abstractmethod
     async def search(
@@ -265,12 +388,36 @@ class SkillSourceProvider(ABC):
     ) -> SkillSearchResult:
         raise NotImplementedError
 
+    async def get_detail(
+        self,
+        skill_ref: SkillRef,
+        version_id: str,
+        context: ProviderInvocationContext,
+    ) -> SkillDetail:
+        """Return skill detail for one version when the source supports ``get_detail``.
+
+        Same identity shape as ``get_artifact``: caller supplies ``version_id``.
+        """
+        raise SkillCapabilityError(
+            "capability_unsupported",
+            f"skill source {self.source_id} does not support get_detail",
+        )
+
     async def check_updates(
         self,
         installed: Sequence[InstalledArtifact],
         context: ProviderInvocationContext,
     ) -> Sequence[SkillUpdateStatus]:
-        raise NotImplementedError
+        """Return update status for the full same-source ``installed`` batch.
+
+        Implementations that advertise ``check_updates`` must process the list
+        as a batch: prefer one bulk/list remote call, or bounded-concurrency
+        per-id lookups when the market only exposes single-id APIs. Do not
+        document or ship a serial for-each-search as the normative pattern.
+        The generic default returns an empty sequence (aligned with Connector).
+        """
+        del installed, context
+        return ()
 
     @abstractmethod
     async def get_artifact(
@@ -286,82 +433,113 @@ class SkillSourceProvider(ABC):
         descriptor: ArtifactDescriptor,
         download_policy: DownloadPolicy | None = None,
     ) -> bytes:
-        """Download artifact bytes under the platform's secure download policy.
+        """Download artifact bytes for an already platform-approved URL.
 
-        The default accepts HTTP(S) URLs, forbids redirects, applies the
-        DownloadPolicy ``max_bytes``/``timeout_seconds`` limits (timeout is
-        clamped to at least 30s, matching the platform's historical behavior),
-        requires a ZIP payload (PK magic, intact archive) and checks the
-        descriptor's ``checksum_sha256`` when present. Providers may override
-        to customize the download.
+        Host allow-listing is the platform install path's job. Default accepts
+        HTTPS only; plaintext ``http://`` is rejected unless this Provider sets
+        ``allow_insecure_http=True``. Also forbids redirects and URL userinfo,
+        enforces size/timeout via streaming read (peak memory capped by
+        ``max_bytes``), requires a ZIP payload, and checks ``content_sha256``
+        when present. Response ``Content-Length`` may fail fast when larger
+        than ``max_bytes``. Transport and HTTP status failures raise
+        ``SkillDownloadError(network_error)`` instead of raw ``httpx``
+        exceptions.
         """
         download_url = str(descriptor.download_url or "").strip()
         parsed = urlparse(download_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-            raise RuntimeError("skill 下载 URL 必须是 HTTP 或 HTTPS 地址")
+        allowed_schemes = {"https", "http"} if self.allow_insecure_http else {"https"}
+        if parsed.scheme not in allowed_schemes or not parsed.hostname:
+            raise SkillDownloadError(
+                "invalid_download_url",
+                (
+                    "skill 下载 URL 必须是 HTTPS 地址"
+                    if not self.allow_insecure_http
+                    else "skill 下载 URL 必须是 HTTP 或 HTTPS 地址"
+                ),
+            )
+        if parsed.username or parsed.password:
+            raise SkillDownloadError(
+                "invalid_download_url",
+                "skill 下载 URL 不能包含用户信息",
+            )
         policy = download_policy or DownloadPolicy()
         timeout = max(30.0, policy.timeout_seconds or DownloadPolicy.timeout_seconds)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, verify=self.verify_ssl) as client:
-            resp = await client.get(download_url)
-            if resp.is_redirect:
-                raise RuntimeError("skill 下载不支持自动跳转，请提供最终制品地址")
-            resp.raise_for_status()
-            body = resp.content or b""
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout, follow_redirects=False, verify=self.verify_ssl
+            ) as client:
+                async with client.stream("GET", download_url) as resp:
+                    if resp.is_redirect:
+                        raise SkillDownloadError(
+                            "redirect_forbidden",
+                            "skill 下载不支持自动跳转，请提供最终制品地址",
+                        )
+                    resp.raise_for_status()
+                    body = await _read_response_body_capped(resp, policy.max_bytes)
+        except httpx.HTTPError as exc:
+            raise SkillDownloadError(
+                "network_error",
+                f"skill 下载网络失败: {exc}",
+            ) from exc
 
         if not body:
-            raise RuntimeError("下载内容为空")
-        if len(body) > policy.max_bytes:
-            raise RuntimeError("下载内容超过来源允许的最大大小")
+            raise SkillDownloadError("empty_content", "下载内容为空")
         if len(body) < 4 or not body.startswith(b"PK"):
-            raise RuntimeError("下载内容不是 ZIP 文件")
+            raise SkillDownloadError("not_zip", "下载内容不是 ZIP 文件")
 
-        expected_sha256 = str(descriptor.checksum_sha256 or "").strip().lower()
+        expected_sha256 = str(descriptor.content_sha256 or "").strip().lower()
         if expected_sha256 and hashlib.sha256(body).hexdigest().lower() != expected_sha256:
-            raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
+            raise SkillDownloadError(
+                "checksum_mismatch",
+                "下载文件校验失败（SHA256 不匹配）",
+            )
 
         try:
             with zipfile.ZipFile(io.BytesIO(body), "r") as zf:
                 if zf.testzip() is not None:
-                    raise RuntimeError("下载 ZIP 文件已损坏")
+                    raise SkillDownloadError("zip_corrupt", "下载 ZIP 文件已损坏")
         except zipfile.BadZipFile as exc:
-            raise RuntimeError("下载内容不是有效 ZIP 文件") from exc
+            raise SkillDownloadError(
+                "invalid_zip",
+                "下载内容不是有效 ZIP 文件",
+            ) from exc
         return body
 
     async def verify_artifact(
         self,
         descriptor: ArtifactDescriptor,
         content: bytes,
-    ) -> Mapping[str, Any] | None:
+    ) -> SkillVerificationResult | None:
         """Verify downloaded artifact bytes before installation.
 
-        Returns the verification audit mapping recorded on the installation,
-        or None when the artifact carries no signature and the trust policy
-        is ``if-present``; raises ArtifactVerificationError on verification
-        failure. The default delegates to the platform's common SkillHub
-        verification with the trust policy injected via ``set_trust_policy()``;
-        Providers may override to enforce a custom verification contract.
-        """
-        from agent_gateway.extensions.sdk.artifact_security import (
-            EnvironmentSecretResolver,
-            verify_skillhub_artifact,
-        )
+        Generic SPI default (no source-specific signing contract):
+        - Does not re-check content SHA (that belongs to download).
+        - When no ``signature`` is present, return ``None`` (skip).
+        - When a ``signature`` is present, raise and require the Provider to
+          override (e.g. SwarmSkillHub HMAC).
 
-        trust_policy = self._trust_policy or TrustPolicy(verification="if-present")
-        resolver = self._secret_resolver or EnvironmentSecretResolver()
-        result = verify_skillhub_artifact(
-            descriptor,
-            content,
-            trust_policy=trust_policy,
-            secret_resolver=resolver,
+        Returns ``None`` when verification is skipped (unsigned).
+        Raises ``SkillArtifactVerificationError`` on failure.
+        """
+        _ = content
+        signature = str(descriptor.signature or "").strip()
+        if not signature:
+            return None
+
+        raise SkillArtifactVerificationError(
+            "artifact_signature_unsupported",
+            (
+                f"skill source {self.source_id} received a signed artifact but "
+                "the generic verify_artifact default has no signing contract; "
+                "override verify_artifact on the Provider"
+            ),
         )
-        return result.to_audit_dict() if result.verified else None
 
 
 class SkillSourceExtension(BaseExtension, ABC):
     """Factory registered by a trusted extension package."""
 
     provider_type: str
-    api_version: str = "2"
 
     @abstractmethod
     def create_provider(self, config: SourceConfig) -> SkillSourceProvider:
