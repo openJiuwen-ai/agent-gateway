@@ -27,6 +27,11 @@ from typing import Any
 
 from openjiuwen.core.extension.schema.manifest import PackageDependency
 
+from agent_gateway.extensions_v2.host_compat import (
+    ensure_swarm_compatible,
+    is_swarm_compatible,
+    swarm_spec,
+)
 from agent_gateway.extensions_v2.registry import GatewayRegistrar, HandlerDeclaration
 from agent_gateway.extensions_v2.manifest import (
     DOMAIN_AGENT_SERVER,
@@ -70,6 +75,7 @@ def load_gateway_packages(install_dir: Path) -> list[LoadedPackage]:
                 continue
             if not manifest["enable"]:
                 continue
+            ensure_swarm_compatible(manifest["compatibility"])
             handlers, module_names = _load_handlers(root, manifest["modules"])
         except Exception as exc:  # noqa: BLE001 - one bad package must not block startup
             logger.warning("[GatewayExtensions] skipping package %s: %s", root, exc)
@@ -86,6 +92,7 @@ def load_gateway_package(root: Path) -> LoadedPackage:
         raise ValueError(f"{root} is not a gateway package")
     if not manifest["enable"]:
         raise ValueError(f"{root} is disabled")
+    ensure_swarm_compatible(manifest["compatibility"])
     handlers, module_names = _load_handlers(Path(root), manifest["modules"])
     return _package_from(Path(root), manifest, handlers, module_names)
 
@@ -132,11 +139,31 @@ def discover_package_roots(install_dir: Path) -> list[Path]:
             if child.is_dir() and has_manifest(child)
         ]
         for root in candidates:
+            if not package_supports_host(root):
+                continue
             key = _version_key(root.name)
             current = highest.get(package_dir.name)
             if current is None or key > current[0]:
                 highest[package_dir.name] = (key, root)
     return [root for _, root in highest.values()]
+
+
+def package_supports_host(root: Path) -> bool:
+    """Return whether a stored version declares support for the running host.
+
+    A manifest that cannot be read is left to the loader, which warns with context.
+    """
+
+    try:
+        return is_swarm_compatible(swarm_spec(read_manifest_document(Path(root))))
+    except Exception:  # noqa: BLE001 - malformed manifests are reported when loading
+        return True
+
+
+def ensure_package_supports_host(root: Path) -> None:
+    """Raise ``EXTENSION_HOST_VERSION_*`` when a stored version excludes this host."""
+
+    ensure_swarm_compatible(swarm_spec(read_manifest_document(Path(root))))
 
 
 def read_package_manifest(root: Path) -> dict[str, Any]:
@@ -158,6 +185,7 @@ def _read_manifest(root: Path) -> dict[str, Any]:
         "client": _optional_mapping(raw.get("client"), "client"),
         "display_name": _display_name(raw.get("display")),
         "requires": _requires(raw.get("requires")),
+        "compatibility": swarm_spec(raw),
     }
 
 
