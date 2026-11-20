@@ -20,6 +20,7 @@ from ..core.template.extension_config_template import ExtensionConfigTemplateSer
 from ..core.template.mcp_template import McpTemplateService
 from ..core.template.model_template import ModelTemplateService
 from ..core.template.permissions_template import PermissionsTemplateService
+from ..core.template.react_template import ReactTemplateService
 from ..core.template.skill_prebuilt_template import SkillPrebuiltTemplateService
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import SyncEnvelopeOnlyBody, make_sync_body
@@ -42,6 +43,8 @@ from ..schemas.template_schemas import (
     ModelTemplateUpdateRequest,
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
+    ReactTemplateCreateRequest,
+    ReactTemplateUpdateRequest,
     SkillPrebuiltTemplateCreateRequest,
     SkillPrebuiltTemplateUpdateRequest,
 )
@@ -227,6 +230,13 @@ _add_template_crud(
     "permissions",
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/react-templates",
+    ReactTemplateService,
+    "react",
+    ReactTemplateCreateRequest,
+    ReactTemplateUpdateRequest,
 )
 _add_template_crud(
     "/mcp-templates",
