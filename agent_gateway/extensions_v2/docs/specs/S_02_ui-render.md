@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | `S_02 / ui-render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
-| 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
+| 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer F_06（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/features/F_06_render-service.md`） |
 | 最近一次修订日期 | 2026-11-10 |
 | 契约状态 | 已实现；本文是 Gateway 侧 `ui.render` 与 Ops 契约的唯一维护位置 |
 
@@ -25,7 +25,7 @@
 
 `status` 取 `delivered`、`rejected`、`delivery_failed`。`revision` 是本次提交后的实例版本；被拒绝时为 0 或上次版本。
 
-可选实例显示条件 visible_when 的形态、快照和替换语义统一遵循 [S_17 §2.4](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md#24-渲染实例的显示条件)，由客户端槽位宿主管理外层容器，不属于组件 props。
+可选实例显示条件 visible_when 的形态、快照和替换语义统一遵循 S_17 §2.4（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md#24-渲染实例的显示条件`），由客户端槽位宿主管理外层容器，不属于组件 props。
 
 ## 2. Ops 契约
 
@@ -86,6 +86,9 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | 活跃实例 | 每个连接最多 32 个 |
 | 事件声明 `args` | 8 KiB |
 
+`Input.maxLength` 按 UTF-16 码元计数（与浏览器 `maxLength` 一致），因此一个补充平面字符占 2；
+夹具中 `😀` 在 `maxLength=2` 时允许、`😀a` 被拒绝。
+
 下行事件由 `GatewayTransport` 经 `WebChannel.send_event` 直接发到目标 socket：
 
 | 事件 | 载荷 |
@@ -103,7 +106,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 ## 6. 与 AgentServer 的必要差异
 
 组件属性、嵌套字段、children 和事件数据统一遵循
-[S_17 WebUI 组件 Props 权威规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)。
+S_17 WebUI 组件 Props 权威规约（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`）。
 本节只说明宿主范围，不独立定义另一套 props。
 
 | 差异 | 原因 |
@@ -155,6 +158,6 @@ Text.value、Button.value 和 Switch.ariaLabel 的多语言文本值与前端组
 
 ## 内联文档与面板打开
 
-Iframe 必须且只能提供 src 或 srcDoc；srcDoc 和 title 支持完整 zh/en 文本值，每个标题仍限 200 UTF-8 字节、每种语言的文档限 16 KiB。固定沙箱不变。Button.openPanel 只表达同包同会话右侧目标，ui.click 明确成功后由当前客户端导航，普通数据帧不抢焦点、不重开已关闭页签。属性主责见 AgentServer 文档目录的 S_17_webui-component-props。
+Iframe 必须且只能提供 src 或 srcDoc；srcDoc 和 title 支持完整 zh/en 文本值，每个标题仍限 200 UTF-8 字节、每种语言的文档限 16 KiB。固定沙箱不变。Button.openPanel 只表达同包同会话右侧目标，ui.click 明确成功后由当前客户端导航，普通数据帧不抢焦点、不重开已关闭页签。属性主责见 jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`。
 
 Iframe accepts exactly one of src or srcDoc. Localized documents and titles retain the shared text limits and fixed sandbox. The plugin declares minWidth in pixels (default 0); the host supplies horizontal scrolling for narrower containers, with the same rule for URL and inline documents and no width mode selector. Button.openPanel opens a rendered same-package, same-session panel only after an accepted explicit click. Render updates do not navigate or affect other clients.

@@ -7,7 +7,7 @@
 | 类型 | 设计基线 |
 | 最近一次修订日期 | 2026-11-04 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
-| 上游依据 | agent-core `openjiuwen.core.events`；AgentServer [详细架构](../../../../extensions_v2/docs/designs/extensions-v2-architecture.md) |
+| 上游依据 | agent-core `openjiuwen.core.events`；AgentServer 详细架构（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/designs/extensions-v2-architecture.md`） |
 | 关联文档 | [设计概览](extensions-v2-overview.md)、[开发模板](builtin-event-development-guide.md)、[运行时规约](../specs/S_01_gateway-extension-runtime.md) |
 
 本文说明 Gateway 扩展运行时的分层、模块职责、装配与生命周期、事件与 Ops 的接入方式、WebUI 链路、状态归属、故障处理和约束。与 AgentServer 一致的部分直接沿用其契约；仅在 Gateway 语境下成立的差异单独标注。
@@ -247,7 +247,9 @@ USER handler 在允许请求后调用 `next_handler`，独立浏览器分派器�
 | `RenderFrame` | 一次渲染：target + node + revision |
 | `ClearFrame` | 清除指定 target 的实例 |
 
-槽位白名单当前只含 `application.gate`：登录界面挂载在应用入口的整屏遮罩位。其余槽位在 Gateway 侧不开放，避免与 AgentServer 的槽位目录冲突。
+槽位白名单与渲染规约 [S_02 第 3 节（槽位契约）](../specs/S_02_ui-render.md) 一致，当前为 `application.entry`、
+`application.sidebar.footer`、`application.background`、`application.splash`、`application.settings`
+与 `application.presentation`；会话级槽位仍由 AgentServer 拥有，Gateway 不开放。
 
 ### 7.2 校验与登记
 

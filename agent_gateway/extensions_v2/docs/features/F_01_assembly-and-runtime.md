@@ -8,7 +8,7 @@
 | 编号 / slug | `F_01 / assembly-and-runtime` |
 | 关联计划 | EXTV2-GW-01 装配与运行时骨架 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/{assembly,bootstrap,runtime,config,loader,registry}.py`、`channel_manager/web/web_connect.py`、`routing/base_ws_channel.py` |
-| 设计依据 | [详细架构](../designs/extensions-v2-architecture.md)、[运行时规约](../specs/S_01_gateway-extension-runtime.md)、AgentServer [F_01](../../../../extensions_v2/docs/features/F_01_assembly-and-source.md) |
+| 设计依据 | [详细架构](../designs/extensions-v2-architecture.md)、[运行时规约](../specs/S_01_gateway-extension-runtime.md)、AgentServer F_01（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/features/F_01_assembly-and-source.md`） |
 | 最近一次修订日期 | 2026-11-04 |
 | 方案状态 | 已实现，单元验证通过 |
 

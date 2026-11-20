@@ -176,12 +176,12 @@ Gateway 的浏览器桥接把“应用级界面”与“浏览器请求绑定”
 
 ### 8.2 实际执行与证据
 
-环境：macOS（arm64），Python 3.11.17，独立虚拟环境；仓库基线 `f38242f`；agent-core `31fee3a`
-（锁定版本 `86990bd` 缺少当前导入的模块，见计划第 6 节）。命令在仓库根目录执行，未生成覆盖率报告：
+环境：macOS（arm64），Python 3.11.17，独立虚拟环境；仓库基线 `f38242f`；agent-core `f5ecfd7`
+（当前 `pyproject.toml` 锁定 rev；本特性开发时的旧锁定 `86990bd` 缺少当前导入的模块，见计划第 6 节）。命令在仓库根目录执行，未生成覆盖率报告：
 
-> **可复现性**：本节的验证结论只在 agent-core `31fee3a` 及以上成立。开发分支已把依赖提升为 PyPI
-> `openjiuwen>=0.1.20.post3`（对应 tag `v0.1.20.post3`），在该版本下可复现；若仍使用旧锁定 rev，
-> 扩展运行时的导入会失败，并按降级约定表现为“扩展整体不可用”，而非本节的通过结果。
+> **可复现性**：本节的验证结论在 agent-core `31fee3a` 及以上成立。当前 `pyproject.toml` 锁定
+> `f5ecfd7`，已包含所需模块；若回退到旧锁定 rev，扩展运行时的导入会失败，并按降级约定表现为
+> “扩展整体不可用”，而非本节的通过结果。
 
 ```text
 python -m pytest -q -o addopts= --asyncio-mode=auto --strict-markers tests/unit_tests/gateway/extensions_v2

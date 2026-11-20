@@ -89,7 +89,7 @@
 
 ## 6. 与登录示例的关系
 
-[auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 使用包内 SQLite Mock，
+auth_login_demo 示例包使用包内 SQLite Mock，
 不调用 ops.http.fetch，不依赖远程 mock_auth_service.py、application.gate 或 auth.session。
 早期远程登录服务草案不属于当前有效接口。当前示例契约与验证见 [F_07](../features/F_07_local-login-integration.md)。
 

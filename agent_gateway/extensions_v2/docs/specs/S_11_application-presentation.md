@@ -6,7 +6,7 @@
 ## 槽位与身份
 
 AP-01：`application.presentation` 是 Gateway 所有、按可信 Web 连接隔离的应用级列表槽位。
-只接受 [S_17](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) 定义的 `ApplicationSurface` 根。
+只接受 S_17（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） 定义的 `ApplicationSurface` 根。
 插件须声明 `package.domain: gateway` 及该槽位。Server 不接受该槽位。
 插件的静态页面必须使用同包、当前激活代次的 `/extension-assets/` URL。
 

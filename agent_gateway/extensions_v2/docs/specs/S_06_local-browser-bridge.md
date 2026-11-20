@@ -8,7 +8,8 @@
 Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分开判定：
 
 - **应用级 UI 包**：至少一项 `web.slot.contribution` 指向 Gateway 应用级槽位（`application.entry`、
-  `application.sidebar.footer`、`application.background`、`application.splash`、`application.settings`）的活动包。`application.settings` 与 AgentServer 共用，Gateway 只认领其包声明的配置项实例（S_10 第 2 节）。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
+  `application.sidebar.footer`、`application.background`、`application.splash`、`application.settings`、
+  `application.presentation`）的活动包。`application.settings` 与 AgentServer 共用，Gateway 只认领其包声明的配置项实例（S_10 第 2 节）。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
   及本包素材，并按激活代次拦截迟到调用。不需要声明 `client`。
 - **客户端能力包**：声明 `client` 的应用级 UI 包。安装并激活后在上述能力之外直接具备请求绑定、
   `client.declarations` 与 `ops.client.*`（浏览器存储写删与页面刷新）；无需额外权限声明、Gateway 授权配置或确认，
@@ -35,6 +36,10 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 `handled=false, route=forward`；插件无须接管每条请求。显式 `deny` 和 `consume` 保留插件决定。
 素材路径 `/extension-assets/` 同样先经 `gateway.request`；策略继续后由激活代次与路径校验决定能否读取。
 
+HTTP 消费路径是 **fail-closed**：扩展链抛错、超时（5 秒）或返回不可用结果时直接以 503 拒绝原请求，
+不继续原接口；WebSocket 帧保持 fail-open，异常时交回原生分派。两者取舍不同——HTTP 端点无法判断
+自己是否受插件策略保护，继续执行会绕过策略；WS 原生分派本身仍会执行既有鉴权与路由。
+
 ## 协议
 
 - 连接建立、首次请求及包激活信息变化（安装、启用、重载、禁用、卸载）时下发 `client.declarations`。字段复用前端 ClientDeclarationSnapshot。
@@ -47,7 +52,7 @@ HTTP 请求同样进入 `gateway.request`。合法的 `forward` 结果继续原�
 - ready 按声明贡献分派；交互事件必须匹配当前连接、包、槽位、实例、revision、node_key、action_id 和 args。
   `target.instance_key` 按 [S_02 第 4 节](S_02_ui-render.md)的实例键规则校验（与声明、渲染、文件导入同一规则），不符合时返回
   `invalid_target` / `SCHEMA_ERROR`。
-- 本地 UI 子集为 Box、Text、Button、Input、Form、Form.Item、Dropdown、Avatar、Card、Image，以及只用于 `application.background` 的 MediaSurface（[S_07](S_07_media-surface.md)）与经宿主导入文件的 FileImport（[S_10](S_10_application-settings.md)）。
+- 本地 UI 子集为 Box、Text、Button、Input、Form、Form.Item、Dropdown、Avatar、Card、Image，以及用于 `application.background` 与 `application.splash` 的 MediaSurface（[S_07](S_07_media-surface.md)）与经宿主导入文件的 FileImport（[S_10](S_10_application-settings.md)）。
   Gateway Dropdown 仅支持一个展示子节点作为触发器，不开放 icon 属性；登录示例使用 Avatar。
   渲染复用正式 GatewayWebUIRuntime 的组件规则和预算，交互从同一 ActiveRenderRegistry 读取树并校验。
 - localStorage 命令与前端 ClientOperation 一致，归属取当前 Ops 的包和连接，不接受调用者指定其他浏览器。

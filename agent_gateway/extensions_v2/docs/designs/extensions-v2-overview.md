@@ -4,12 +4,12 @@
 
 | 项 | 说明 |
 | --- | --- |
-| 类型 | 设计基线；Gateway 装配、`gateway.request`、扩展鉴权接入、本地路由、`ops.http.fetch` 已实现；`ui.render`、entry/footer 浏览器交互与 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 已实现；`ui.store` 尚未接入浏览器 |
+| 类型 | 设计基线；Gateway 装配、`gateway.request`、扩展鉴权接入、本地路由、`ops.http.fetch` 已实现；`ui.render`、entry/footer 浏览器交互与 auth_login_demo 示例包已实现；`ui.store` 尚未接入浏览器 |
 | 最近一次修订日期 | 2026-11-04 |
 | 维护责任 | Gateway Extensions V2 模块维护者；与 AgentServer `extensions_v2` 的契约差异由两侧维护者共同确认 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 详细设计 | [详细架构](extensions-v2-architecture.md)、[特性开发计划](extensions-v2-development-plan.md) |
-| 公共机制依据 | agent-core [Events 架构](../../../../../agent-core/openjiuwen/core/events/docs/designs/events-architecture.md)、AgentServer [设计概览](../../../../extensions_v2/docs/designs/extensions-v2-overview.md) |
+| 公共机制依据 | agent-core Events 架构（agent-core 仓 `openjiuwen/core/events/docs/designs/events-architecture.md`）、AgentServer 设计概览（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/designs/extensions-v2-overview.md`） |
 | 模块维护规范 | [模块规范](../AGENTS.md) |
 | 关键前提 | agent-core Events 已提供 EventBus、Builder、Ops 与执行链；AgentServer 的 `extensions_v2` 已提供可镜像的装配、WebUI 与文档结构；Gateway 侧自建一套独立运行时，不复用 AgentServer 进程内实例 |
 
@@ -46,7 +46,7 @@ Gateway Extensions V2 因此在 Gateway 进程内建立**一套独立的扩展�
 - `ui.render` / `ui.store` / `ui.click` 三个 WebUI 事件与对应 `ops`。
 - `ops.http.fetch`：受白名单约束的出站 HTTP。
 - 共享 `extension_pkgs` 下的包管理：`package.domain: gateway` 包本地安装/卸载/热重载，`/extension` 指令按归属分流。
-- [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 示例包。
+- auth_login_demo 示例包。
 
 ### 1.4 非目标
 

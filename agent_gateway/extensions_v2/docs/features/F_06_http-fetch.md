@@ -18,7 +18,7 @@
 
 一句话概括：**包通过 `ops.http.fetch` 发一次受白名单约束的请求；平台把网络失败翻译成错误码，把成功翻译成状态码 + 解析后的响应体。**
 
-早期设计将登录示例作为外部 HTTP 使用场景。当前 [auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 使用包内 SQLite Mock，不调用 `ops.http.fetch`；其行为与验证由 [F_07](F_07_local-login-integration.md) 维护。
+早期设计将登录示例作为外部 HTTP 使用场景。当前 auth_login_demo 示例包使用包内 SQLite Mock，不调用 `ops.http.fetch`；其行为与验证由 [F_07](F_07_local-login-integration.md) 维护。
 
 ## 2. 范围
 

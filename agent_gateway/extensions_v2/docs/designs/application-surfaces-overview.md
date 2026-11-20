@@ -10,7 +10,7 @@
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
 | 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md)、[F_14 开场预览](../features/F_14_splash-preview.md)、[F_15 应用形态](../features/F_15_application-presentation.md) |
 | 开发安排 | [Gateway 特性开发计划](extensions-v2-development-plan.md) 中的 `EXTV2-GW-07`～`EXTV2-GW-15` |
-| 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、[S_17 组件 Props 规约](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
+| 关联文档 | [运行时规约](../specs/S_01_gateway-extension-runtime.md)、[渲染规约](../specs/S_02_ui-render.md)、[浏览器桥接规约](../specs/S_06_local-browser-bridge.md)、S_17 组件 Props 规约（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） |
 | 关键假设与待确认项 | 见第 1.3 节及各 feature；agent-core 锁定版本与当前导入不一致的问题记录在开发计划第 6 节 |
 
 | 阅读目的 | 阅读位置 |

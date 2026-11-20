@@ -11,7 +11,7 @@
 | 计划条目 | [EXTV2-GW-12](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 1.1、3.3 节 |
 | 方案成熟度 | 已确认，已实现 |
-| 关联规约 | [S_10 应用级设置页与文件交接](../specs/S_10_application-settings.md)、[S_09 启动门控与开场](../specs/S_09_startup-splash.md)、[S_17 组件属性](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) §4.25 |
+| 关联规约 | [S_10 应用级设置页与文件交接](../specs/S_10_application-settings.md)、[S_09 启动门控与开场](../specs/S_09_startup-splash.md)、S_17 组件属性（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） §4.25 |
 | 验证摘要 | 单元验证与 Chromium 157 无头模式验证通过（2026-11-05）；桌面打包版与真实 WebChannel 联调随壁纸插件进行 |
 
 ## 2. 背景、目标与范围
@@ -127,7 +127,7 @@ Gateway 仍把已有开场偏好保存在 `<data_dir>/host/splash.json`，`webui
 #### D-09 与 AgentServer 插件设置并存（2026-11-06；已被 D-11 替代）
 
 `releases/0.2.9.beta3` 引入了 AgentServer 插件设置：`webui.settings.catalog` 返回 `kind: menu|section|item` 贡献，
-按 location 规则合成进已有设置模块（[S_18](../../../../extensions_v2/docs/specs/S_18_settings-location.md)）；
+按 location 规则合成进已有设置模块（S_18（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_18_settings-location.md`））；
 S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并存、不合并：
 
 | 机制 | 数据来源 | 呈现 |
@@ -142,7 +142,7 @@ S_18 说明 Gateway 域插件目录未接入该接口。合入时两套机制并
 #### D-10 标题取 manifest.json 的 `display.name`（2026-11-07；设置菜单标题改由 D-11 的声明提供，本条只用于启动开场列表）
 
 `releases/0.2.9.beta3` 把系统插件包统一为 `manifest.json`：包归属写在 `package.domain`，展示信息写在 `display`，
-所有文案为 `{zh, en}`（[系统插件包指南](../../../../extensions_v2/docs/designs/system-plugin-package-guide.md)）。
+所有文案为 `{zh, en}`（系统插件包指南（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/designs/system-plugin-package-guide.md`））。
 原方案读取的 `package.displayName` 不再存在，插件项会退回包标识。现在 Gateway 加载时按包目录的同一规则读取
 `display.name`：单个字符串按双语同值，缺一种语言时取另一种，为空或超过 200 字节时忽略；`webui.settings.pages`
 与 `webui.splash.settings` 的 `title` 改为 `{zh, en}`，前端设置导航、页头与启动开场列表按界面语言显示，切换语言即时生效。

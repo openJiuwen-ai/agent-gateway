@@ -8,8 +8,8 @@
 | 编号 / slug | `S_07 / media-surface` |
 | 所属模块 | Gateway `webui/`（校验）；Web 前端 `features/webui/`（宿主与渲染） |
 | 最近一次修订日期 | 2026-11-07 |
-| 契约状态 | 已实现（背景槽位）；开场槽位的策略在 EXTV2-GW-11 补充 |
-| 关联文档 | [F_10](../features/F_10_media-surface-and-background.md)、[S_17 组件 Props](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)（`MediaSurface` 字段的唯一维护位置）、[S_02 渲染](S_02_ui-render.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md) |
+| 契约状态 | 已实现（背景与开场槽位） |
+| 关联文档 | [F_10](../features/F_10_media-surface-and-background.md)、jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`（`MediaSurface` 字段的唯一维护位置，跨仓引用）、[S_02 渲染](S_02_ui-render.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md) |
 
 本文维护媒体容器在宿主中的行为：可用槽位、宿主策略、与沙箱内容的消息协议及不变量。组件字段见 S_17。
 

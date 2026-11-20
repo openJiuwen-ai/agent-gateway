@@ -7,7 +7,7 @@
 | 类型 | 开发模板 |
 | 适用对象 | 在 Gateway 侧新增事件类型、CORE Handler、BUILTIN Handler 或 Ops 能力的开发者 |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
-| 关联文档 | [详细架构](extensions-v2-architecture.md)、AgentServer [内置事件开发模板](../../../../extensions_v2/docs/designs/builtin-event-development-guide.md) |
+| 关联文档 | [详细架构](extensions-v2-architecture.md)、AgentServer 内置事件开发模板（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/designs/builtin-event-development-guide.md`） |
 | 最近一次修订日期 | 2026-11-04 |
 
 本文按顺序说明一次完整的接入：定义输入输出 → 写 CORE Handler → 注册事件类型 → 按需加 BUILTIN → 开放 Ops → 接触发点 → 补测试与文档。示例中的代码是示意，落地时以实际实现为准。

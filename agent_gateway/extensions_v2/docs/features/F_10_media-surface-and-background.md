@@ -10,7 +10,7 @@
 | 计划条目 | [EXTV2-GW-09](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) |
 | 方案成熟度 | 已确认，已实现 |
-| 关联规约 | [S_07 媒体容器](../specs/S_07_media-surface.md)、[S_17 组件 Props](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md)、[S_02 渲染](../specs/S_02_ui-render.md) |
+| 关联规约 | [S_07 媒体容器](../specs/S_07_media-surface.md)、S_17 组件 Props（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`）、[S_02 渲染](../specs/S_02_ui-render.md) |
 | 验证摘要 | 单元验证通过；内置浏览器与 Chromium 157 无头模式验证通过（2026-11-05）；桌面打包版联调随 GW-11 |
 
 ## 2. 背景、目标与范围

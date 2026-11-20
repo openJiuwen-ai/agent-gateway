@@ -9,7 +9,7 @@
 | 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（插件设置贡献）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
 | 最近一次修订日期 | 2026-11-09 |
 | 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示；插件设置改用 S_18 共享目录，移除 `application.settings.page` 与 `webui.settings.pages`） |
-| 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、[S_17 组件属性](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) §4.25 |
+| 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、S_17 组件属性（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） §4.25 |
 
 ## 1. 范围与术语
 
@@ -26,7 +26,7 @@
 
 ## 2. 设置贡献
 
-Gateway 包与 AgentServer 包使用同一套设置声明（[AgentServer S_18](../../../../extensions_v2/docs/specs/S_18_settings-location.md)）：
+Gateway 包与 AgentServer 包使用同一套设置声明（AgentServer S_18（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_18_settings-location.md`））：
 manifest `ui.items` 中 `slot=application.settings`，`kind` 为 menu / section / item，带 `location`、`title {zh, en}`，
 菜单使用白名单图标，配置项使用 `renderer={kind: webui-tree}`。没有另一个 Gateway 专用的设置槽位。
 

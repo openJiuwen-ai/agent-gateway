@@ -8,7 +8,7 @@
 | 编号 / slug | `F_03 / render-service` |
 | 关联计划 | EXTV2-GW-03 `ui.render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
-| 设计依据 | [详细架构第 7 节](../designs/extensions-v2-architecture.md)、[渲染规约](../specs/S_02_ui-render.md)、AgentServer [F_06](../../../../extensions_v2/docs/features/F_06_render-service.md) |
+| 设计依据 | [详细架构第 7 节](../designs/extensions-v2-architecture.md)、[渲染规约](../specs/S_02_ui-render.md)、AgentServer F_06（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/features/F_06_render-service.md`） |
 | 最近一次修订日期 | 2026-11-07 |
 | 方案状态 | 已实现，单元验证通过 |
 

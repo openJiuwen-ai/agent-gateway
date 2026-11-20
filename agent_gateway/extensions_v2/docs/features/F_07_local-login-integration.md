@@ -4,7 +4,7 @@
 
 ## 范围与职责
 
-[auth_login_demo](../../../../extensions_v2/examples/auth_login_demo/) 是可通过 GatewayPackageManager 安装的示例包。
+auth_login_demo 是可通过 GatewayPackageManager 安装的示例包。
 示例与其他 V2 插件统一归档在 `jiuwenswarm/extensions_v2/examples/`，由 manifest 的 `package.domain: gateway` 选择 Gateway 宿主。
 多账号注册、Mock token 签发与校验、退出登录、双语渲染树、页面布局和素材由插件提供。
 Gateway 提供通用的声明下发、客户端操作、资源服务与应用级交互接入，不解释登录字段。
@@ -28,7 +28,7 @@ clear 移除活动树，但保留目标的渲染版本；连接或会话结束�
 标题、背景、透明宣传图、头像、宽度、留白和菜单位置均由插件声明。
 用户名行组合 Box、Avatar、Text，并声明 disabled=true；分隔线使用原生 type=divider。
 2026-11-04：示例在插件中计算首字素与稳定配色，通过 Avatar.props.children 和原生 style 下发；宿主只做通用 AntD 渲染。
-属性白名单见[通用组件契约](../../../../channels/web/frontend/src/features/webui/docs/specs/S_01_components.md)，自定义图片仍由插件显式声明 url。
+属性白名单见通用组件契约（jiuwenswarm 仓 `jiuwenswarm/channels/web/frontend/src/features/webui/docs/specs/S_01_components.md`），自定义图片仍由插件显式声明 url。
 菜单宽度、placement、align、autoFocus 和 destroyOnHidden 直接映射 AntD 属性。
 Form.requiredMark=false 隐藏必填星号而保留校验；Input.autoComplete=off 是浏览器偏好提示，
 不保证禁止浏览器保存密码或显示已保存账号。
@@ -113,8 +113,7 @@ production WebChannel/AgentServer behavior, model inference, real identity-servi
 页面初始化保留工作台提前展示的行为，不新增等待配置完成的登录专用加载屏。
 修改插件 Python 模块后需重启测试 Gateway；settings.json 可通过 reload 生效。
 
-运行、打包和安装授权方式见示例的 [中文说明](../../../../extensions_v2/examples/auth_login_demo/README.md) 与
-[English README](../../../../extensions_v2/examples/auth_login_demo/README_EN.md)。本文件维护该本地接入的验证状态。
+运行、打包和安装授权方式见示例包内的中文说明与 English README。本文件维护该本地接入的验证状态。
 
 ## 安装后直接使用浏览器能力（2026-11-04）
 
@@ -186,8 +185,8 @@ Gateway 只为参与客户端能力的包生成激活标记。渲染始终使用
 AgentServer 等普通插件的帧继续走既有 WebUI 协议，无需为展示 UI 声明浏览器存储能力。
 登录和退出时的存储变化会使依赖凭据的资源上下文更新，前端在该类资源未就绪期间不挂载图片。
 插件静态素材按 Gateway、包 ID 和激活代次管理，不随凭据变化失效；具体契约及本轮宿主验证见
-[前端资源作用域](../../../../channels/web/frontend/src/features/webui/docs/specs/S_02_client-capabilities.md#资源作用域)和
-[实现记录](../../../../channels/web/frontend/src/features/webui/docs/features/F_02_client-capabilities.md#插件静态素材的生命周期)。
+前端资源作用域（jiuwenswarm 仓 `jiuwenswarm/channels/web/frontend/src/features/webui/docs/specs/S_02_client-capabilities.md#资源作用域`）和
+实现记录（jiuwenswarm 仓 `jiuwenswarm/channels/web/frontend/src/features/webui/docs/features/F_02_client-capabilities.md#插件静态素材的生命周期`）。
 
 Plugin static assets follow Gateway and package activation lifetimes rather than credentials. Credential-protected
 resources retain request-context invalidation; the frontend contract and implementation record above own this behavior.

@@ -4,7 +4,7 @@
 | --- | --- |
 | 建档日期 | 2026-11-09 |
 | 状态 | 见[开发计划 GW-15](../designs/extensions-v2-development-plan.md)；尚未通过 DMG 原生交互和录屏验收 |
-| 契约 | [应用形态](../specs/S_11_application-presentation.md)、[组件 Props](../../../../extensions_v2/docs/specs/S_17_webui-component-props.md) |
+| 契约 | [应用形态](../specs/S_11_application-presentation.md)、组件 Props（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） |
 | 验收证据 | 本文集中维护本特性的详细验证记录；开发计划维护进度 |
 
 ## 背景、目标与范围

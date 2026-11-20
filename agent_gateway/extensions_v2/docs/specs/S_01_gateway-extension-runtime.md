@@ -242,5 +242,5 @@ Gateway 装配完成后创建本机管理入口，关闭运行时时撤销入口
 - **界面通知：** install 与 reload 成功后广播 `extensions.v2.installed`（见第 3.2 节）。
 - **访问权限：** 访问密钥与实例标识由宿主生成，只供当前操作系统账号使用。Web 登录和认证继续使用原有规则。
 
-公共命令和退出码见[本机 CLI 契约](../../../../extensions_v2/docs/specs/S_02_backend-package-management.md#5-本机-cli)，
-实施与验证见 [F_31](../../../../extensions_v2/docs/features/F_31_extension-cli.md)。
+公共命令和退出码见本机 CLI 契约（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_02_backend-package-management.md#5-本机-cli`），
+实施与验证见 F_31（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/features/F_31_extension-cli.md`）。
