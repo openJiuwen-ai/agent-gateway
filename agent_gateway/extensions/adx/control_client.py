@@ -42,7 +42,6 @@ class AdxControlClient:
     def __init__(self, config: AdxRouterConfig, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
         self.agent_namespace = config.router.agent_namespace
-        self.frontend_endpoint = config.ingress_url
         self.server_ready = False
         self.http = httpx.AsyncClient(
             timeout=config.connect_timeout_seconds, follow_redirects=False, transport=transport,
