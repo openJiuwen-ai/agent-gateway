@@ -17,18 +17,10 @@ from ...infrastructure.utils import (
     utc_now,
 )
 from ...schemas.template_schemas import AgentTemplateUpdateRequest
+from .template_id import normalize_template_id as _normalize_template_id
 
 _TABLE = AGENT_TEMPLATE_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 async def _get_row_for_instance(

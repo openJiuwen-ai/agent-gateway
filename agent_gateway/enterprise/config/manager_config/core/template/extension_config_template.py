@@ -17,20 +17,12 @@ from ...schemas.template_schemas import (
     HookConfig,
     normalize_hook_schedule,
 )
+from .template_id import normalize_template_id as _normalize_template_id
 
 _TABLE = EXTENSION_CONFIG_TEMPLATE_TABLE_DEF.table_name
 _ALLOWED_COMPONENTS = frozenset({"gateway", "agent_server"})
 _ALLOWED_HOOK_TYPES = frozenset({"pre_request", "post_request", "error", "schedule"})
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 def _validate_component(value: str) -> str:

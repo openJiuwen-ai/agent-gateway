@@ -15,18 +15,10 @@ from agent_gateway.config.enterprise.tables.template_models import (
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import PermissionsTemplateUpdateRequest
+from .template_id import normalize_template_id as _normalize_template_id
 
 _TABLE = PERMISSIONS_TEMPLATE_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 def _normalize_body(value: Any) -> dict[str, Any]:
