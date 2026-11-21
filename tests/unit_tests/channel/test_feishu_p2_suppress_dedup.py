@@ -1435,14 +1435,19 @@ def test_frame_delivery_budget_env_validation(monkeypatch):
     assert delivery_dedup.FRAME_DELIVERY_BUDGET_SECONDS == 10.0
 
 
-def test_tiny_frame_budget_settle_wait_is_rejected():
-    """评审意见 #202580557（边界钉死）：极小正预算使 settle_wait 舍入为 0——
-    初始化断言 settle_wait>0 必须拒绝该形态，正常预算不受影响。"""
-    rounds = _make_channel()._dedup_settle_max_rounds
+def test_tiny_frame_budget_settle_wait_is_rejected(monkeypatch):
+    """评审意见 #202580557（边界钉死）＋#202649864：极小正预算使 settle_wait 舍入
+    为 0 必须被拒绝——逐档预算实际调用生产初始化校验（settle_wait 推导与拒绝
+    形态均由生产代码裁决，用例不再重算公式）。"""
+    from agent_gateway.channel_manager.im_platforms.feishu import feishu_connect as fc
     for budget, expect_ok in [(10.0, True), (0.8, True), (0.01, False)]:
-        wait = round(budget / (rounds + 1), 2)
-        ok = wait > 0 and rounds * wait < budget
-        assert ok is expect_ok, f"budget={budget} wait={wait}"
+        monkeypatch.setattr(fc, "FRAME_DELIVERY_BUDGET_SECONDS", budget)
+        if expect_ok:
+            ch = _make_channel()
+            assert ch._dedup_settle_wait > 0, f"budget={budget}"
+        else:
+            with pytest.raises(ValueError):
+                _make_channel()
 
 
 def test_init_budget_validation_is_valueerror_not_assert(monkeypatch):

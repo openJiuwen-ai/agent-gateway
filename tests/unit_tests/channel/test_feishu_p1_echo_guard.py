@@ -782,6 +782,28 @@ async def test_final_fingerprint_suffix_allows_short_reply():
 
 
 @pytest.mark.asyncio
+async def test_final_fingerprint_suffix_ignores_empty_frame():
+    """评审意见 #202649864：指纹尾缀兜底的「非空」守卫补用例锁定（#201614725 同题）——
+    空正文终帧在 endswith("") 恒真下不得命中指纹面；长度门落地（≥_ECHO_MIN_CHARS）
+    后空正文同样被门槛排除。钉住「指纹面不吃空帧」不变量。"""
+    ch = _make_channel()
+    ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
+    ch._send_feishu_message = AsyncMock()
+    text = "回声受抑入指纹后空正文终帧不得被尾缀兜底命中的长正文"
+    _record_input(ch, "oc_x", text)
+    m = _msg(event_name="chat.final", content=text, metadata={"feishu_chat_id": "oc_x"})
+    m.payload["is_complete"] = True
+    await ch.send(m)
+    ch._send_feishu_message.assert_not_awaited()   # 首帧：回声守卫拦截
+    assert ch._p2_final_fingerprints.get("req_t1")
+    empty = _msg(event_name="chat.final", content="", metadata={"feishu_chat_id": "oc_x"})
+    empty.payload["is_complete"] = True
+    await ch.send(empty)
+    assert ch._fingerprint_suppressed_total == 0   # 空正文不得触发尾缀兜底
+    assert ch._echo_blocked_total == 1
+
+
+@pytest.mark.asyncio
 async def test_echo_suppressed_flush_fingerprint_blocks_replay():
     """评审意见 #201604038 冲刷面镜像：回声受抑的冲刷正文入指纹，同文冲刷重投帧被
     尾缀兜底抑制。修复前：回声记录已消费、指纹无条目→重投冲刷照投用户=红。"""
