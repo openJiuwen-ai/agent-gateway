@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common.match_expr import coerce_match_expr
 from agent_gateway.common.paths import get_infra_data_dir
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
 
@@ -115,19 +116,6 @@ def leader_spawn_names(leader_member_name: str = "") -> tuple[str, ...]:
     names = {_clean(leader_member_name), DEFAULT_LEADER_MEMBER_NAME}
     return tuple(n for n in names if n)
 
-def _parse_match_expr(raw: Any) -> Any:
-    if raw is None or raw == "":
-        return []
-    if isinstance(raw, (list, dict)):
-        return raw
-    text = str(raw).strip()
-    if not text:
-        return []
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
-
 def _updated_at_rank(raw: Any) -> str:
     """Normalize ``updated_at`` so a later save sorts after an earlier one."""
     if raw is None or raw == "":
@@ -141,7 +129,7 @@ def _policy_rank(row: dict[str, Any]) -> tuple[int, str]:
     return (int(row.get("priority") or 0), _updated_at_rank(row.get("updated_at")))
 
 def _is_unconditional(expr: Any) -> bool:
-    canon = _parse_match_expr(expr)
+    canon = coerce_match_expr(expr)
     if canon in (None, [], ""):
         return True
     if isinstance(canon, str):
@@ -158,7 +146,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
     for row in policies:
         if not bool(row.get("enabled", True)):
             continue
-        expr = _parse_match_expr(row.get("match_expr"))
+        expr = coerce_match_expr(row.get("match_expr"))
         try:
             if matches(expr, ident):
                 hits.append(row)
@@ -189,7 +177,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
     )
 
 def _expr_blob(expr: Any) -> str:
-    canon = _parse_match_expr(expr)
+    canon = coerce_match_expr(expr)
     if canon in (None, [], ""):
         return ""
     if isinstance(canon, list):
@@ -235,7 +223,7 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
     for row in policies:
         if not bool(row.get("enabled", True)) or not _is_org_policy(row.get("match_expr")):
             continue
-        expr = _parse_match_expr(row.get("match_expr"))
+        expr = coerce_match_expr(row.get("match_expr"))
         try:
             if matches(expr, ident):
                 hits.append(row)
