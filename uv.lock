@@ -117,8 +117,8 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "aiohttp", specifier = ">=3.9,<4" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
-    { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
-    { name = "asyncssh", marker = "extra == 'test'", specifier = ">=2.14.0,<2.24" },
+    { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.24.0,<2.25" },
+    { name = "asyncssh", marker = "extra == 'test'", specifier = ">=2.24.0,<2.25" },
     { name = "charset-normalizer", specifier = ">=3.3,<4" },
     { name = "croniter", specifier = ">=3.0.0,<7" },
     { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
@@ -330,9 +330,9 @@ name = "aiologic"
 version = "0.17.1"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
-    { name = "sniffio" },
-    { name = "typing-extensions" },
-    { name = "wrapt" },
+    { name = "sniffio", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "wrapt", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/f1/7a/d51f2fde1e8ae8a83431f8e97b7a71e9358cdb1d4d2ce6be387fa44d68de/aiologic-0.17.1.tar.gz", hash = "sha256:2e1b93b9e88ced318c2a63ad7b382688f40cbfe40e3d42258d49dc9c5aea179d" }
 wheels = [
@@ -506,15 +506,15 @@ wheels = [
 
 [[package]]
 name = "asyncssh"
-version = "2.23.1"
+version = "2.24.1"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
     { name = "cryptography" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/a4/95/212d3d394f2a6ccb3f95056d3b9a7ce13c2f58503cbd6a38d037ef48cb13/asyncssh-2.23.1.tar.gz", hash = "sha256:d9dc3bc0206f3e4b5d80d1c0e6a24af2b4ad4beb556884c41fb2ad1c7ca3f44f" }
+sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/0f/c5/41a0d5477865c48cee65050586092dc3ba3fc1c52e29b47fba08d3a44581/asyncssh-2.24.1.tar.gz", hash = "sha256:efcd36e9b35f79873535b06444a7c9b0a3c61d97081b208c7fdd3fd8a40f1eca" }
 wheels = [
-    { url = "https://repo.huaweicloud.com/repository/pypi/packages/ef/94/9aa81bde40627af70388d634152e7c53e7533788e662b8093047501a1473/asyncssh-2.23.1-py3-none-any.whl", hash = "sha256:f68e55476d41253d785bcac9a90834ae5fdea0f417bd6d7182608bda248de88e" },
+    { url = "https://repo.huaweicloud.com/repository/pypi/packages/07/e5/8bc721f04ff545c5a84c9c23fbf788fbb56960bb57a86c6366bc35be0f66/asyncssh-2.24.1-py3-none-any.whl", hash = "sha256:fc560b4f43be0f0c602d184783e5e3876f5d24d933a25359d86e5a50a5f46fe5" },
 ]
 
 [[package]]
@@ -932,7 +932,7 @@ resolution-markers = [
     "python_full_version < '3.11.5' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" } },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }, marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880" }
 wheels = [
@@ -1025,7 +1025,7 @@ resolution-markers = [
     "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.4", source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" } },
+    { name = "numpy", version = "2.5.4", source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }, marker = "python_full_version >= '3.12'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/83/5a/a55177dd22553a277388e8a1b3220e92de91bacb28356cdc73caa240121d/contourpy-1.4.0.tar.gz", hash = "sha256:20156f5a1ac4f8ce02656e39a61e82164a3d359796dc8026f75b062783d500e1" }
 wheels = [
@@ -1266,8 +1266,8 @@ name = "culsans"
 version = "0.11.0"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
-    { name = "aiologic" },
-    { name = "typing-extensions" },
+    { name = "aiologic", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/d9/e3/49afa1bc180e0d28008ec6bcdf82a4072d1c7a41032b5b759b60814ca4b0/culsans-0.11.0.tar.gz", hash = "sha256:0b43d0d05dce6106293d114c86e3fb4bfc63088cfe8ff08ed3fe36891447fe33" }
 wheels = [
@@ -1938,8 +1938,8 @@ name = "httpcore2"
 version = "2.14.0"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "sys_platform != 'emscripten'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/30/ff/b53af1b49bb2cb5fa97c92215614b173ca5c1a99ded80e2d52f15a94fa6d/httpcore2-2.14.0.tar.gz", hash = "sha256:4f57a1a8249fe6af589d935cfd456f1d13bbdcb0f0fc72af9142368fc94811d7" }
 wheels = [
@@ -4798,8 +4798,8 @@ name = "secretstorage"
 version = "3.5.0"
 source = { registry = "https://repo.huaweicloud.com/repository/pypi/simple" }
 dependencies = [
-    { name = "cryptography" },
-    { name = "jeepney" },
+    { name = "cryptography", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "jeepney", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://repo.huaweicloud.com/repository/pypi/packages/1c/03/e834bcd866f2f8a49a85eaff47340affa3bfa391ee9912a952a1faa68c7b/secretstorage-3.5.0.tar.gz", hash = "sha256:f04b8e4689cbce351744d5537bf6b1329c6fc68f91fa666f60a380edddcd11be" }
 wheels = [
