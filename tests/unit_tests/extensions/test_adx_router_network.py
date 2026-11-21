@@ -107,12 +107,12 @@ async def _network(tmp_path, monkeypatch, *, restart_policy='default'):
 
         async def auth(path, headers):
             handshakes.append((path, dict(headers)))
-            if urlsplit(path).path != "/agent/ws" or headers.get("Authorization") != f"Bearer {expected_key}":
+            if not urlsplit(path).path.endswith("/18092") or headers.get("Authorization") != f"Bearer {expected_key}":
                 return 401, [], b"unauthorized"
             return None
 
         async def ingress(downstream, path):
-            target = parse_qs(urlsplit(path).query)["target"][0]
+            target = urlsplit(path).path.split("/")[1]
             async with connect(f"ws://127.0.0.1:{agent_port}/?target={target}") as upstream:
                 async def copy(source, destination):
                     try:

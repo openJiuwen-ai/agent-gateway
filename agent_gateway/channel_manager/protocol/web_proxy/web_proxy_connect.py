@@ -57,6 +57,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
         # IAM credentials must not leak into the agent container.
         "authorization",
+        "x-auth",
         "cookie",
         "x-token",
         "x-user-id",
@@ -104,16 +105,15 @@ _WEB_PROXY_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
 _WEB_PROXY_REFRESH_LOCKS_GUARD = asyncio.Lock()
 
 
-def _append_tail(upstream_url: str, tail: str) -> str:
-    """Join *tail* onto the upstream path; keep existing query as-is.
-
-    YuanRong frontend: ``/serverless/v1/http?instance=&port=&tenant_id=`` plus
-    ``api/foo`` becomes ``/serverless/v1/http/api/foo?instance=&port=&tenant_id=``.
-    """
+def _append_tail(upstream_url: str, tail: str) -> str | None:
+    """Join a decoded browser path while keeping the upstream service prefix."""
     if not tail:
         return upstream_url
     parsed = urllib.parse.urlsplit(upstream_url)
-    path = parsed.path.rstrip("/") + "/" + str(tail).lstrip("/")
+    parts = str(tail).lstrip("/").split("/")
+    if any(part in {".", ".."} for part in parts):
+        return None
+    path = parsed.path.rstrip("/") + "/" + urllib.parse.quote("/".join(parts), safe="/:@!$&'()*+,;=")
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
     )

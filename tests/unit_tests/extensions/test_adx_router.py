@@ -42,7 +42,10 @@ def _config(monkeypatch, *, sandbox=None, **overrides):
 def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
     config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
     router = AdxRouterClient(config)
-    assert urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'ws'
+    local_url = urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092))
+    assert local_url.scheme == 'ws'
+    assert local_url.path == '/test-alice%2Bjiuwenswarm/18092'
+    assert urlsplit(router._agent_http_url('test-third', 8080)).path == '/test-third/8080'
     assert urlsplit(router._agent_http_url('test-alice+jiuwenswarm', 18092)).scheme == 'http'
     secure = AdxRouterClient(_config(monkeypatch))
     assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
@@ -431,7 +434,7 @@ def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('default_runtime,declared_runtime,local_template', [
+@pytest.mark.parametrize('default_runtime,declared_runtime,local_source', [
     ('supervisor', None, None),
     ('supervisor', 'runsc', None),
     ('supervisor', 'runsc', 'local-third'),
@@ -439,14 +442,13 @@ def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
     ('runsc', 'conch', 'local-third'),
 ])
 async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
-    monkeypatch, default_runtime, declared_runtime, local_template,
+    monkeypatch, default_runtime, declared_runtime, local_source,
 ):
     from agent_gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
     image = 'registry.example/third:2'
     router, _clients = _router(_config(monkeypatch, runtime_class=default_runtime,
         builtin_image='registry.example/builtin:1',
-        local_images={image: local_template} if local_template else None,
         builtin_launch={'process': {'commands': [['/opt/python/bin/python', '-m', 'agentserver']]},
                         'mounts': [{'type': 'bind', 'host_path': '/opt/python',
                                     'target': '/opt/python', 'options': ['ro']}]},
@@ -456,6 +458,9 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
             'probes': {'startup': {'tcpSocket': {'port': 8080}, 'failureThreshold': 3}}}
     if declared_runtime:
         spec['sandbox_type'] = declared_runtime
+    if local_source and declared_runtime == 'runsc':
+        del spec['rootfs']['imageurl']
+        spec['rootfs'].update(type='local', path=f'/objects/{local_source}/rootfs')
     router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
         image_name='third', image_uri='registry.example/third:2',
         metadata={'runtime_spec': spec, 'env_vars': {'MODEL_ENDPOINT': 'http://model/v1'}}))
@@ -466,8 +471,9 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
         assert runtime.info.sandbox_id == 'test-' + body['name']
         assert body['name'] == 'alice+third-' + runtime.info.agent_id[:12]
         selected_runtime = declared_runtime or default_runtime
-        if local_template and selected_runtime == 'runsc':
-            assert body['rootfs'] == {'type': 'template', 'name': local_template, 'runtime': selected_runtime}
+        if local_source and selected_runtime == 'runsc':
+            assert body['rootfs'] == {'type': 'local', 'path': f'/objects/{local_source}/rootfs',
+                                      'runtime': selected_runtime}
         else:
             assert body['rootfs'] == {'type': 'image', 'imageurl': image, 'runtime': selected_runtime}
         assert ('idleTimeoutSeconds' in body) == (selected_runtime == 'runsc')
@@ -597,8 +603,7 @@ async def test_config_request_retains_adx_warmup_failure(monkeypatch):
 async def test_gateway_workspace_image_is_not_a_new_user_default(monkeypatch, default_image):
     router, _ = _router(_config(monkeypatch))
     sandbox = {"type": "adx-environment", "runtime": "runsc", "image": "workspace:v1",
-        "rootfs_template": "local-workspace", "local_images": {
-            "workspace:v1": "local-workspace", "tools:v1": "local-default"}}
+        "rootfs": {"type": "local", "path": "/objects/workspace/rootfs"}}
     if default_image:
         sandbox["deployment_image"] = default_image
     router.set_or_update_server_config(config={"sandbox": sandbox})
