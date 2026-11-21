@@ -5,5 +5,9 @@ description: OpenJiuwen Runtime
 author: openjiuwen
 min_jiuwenswarm_version: "0.1.0"
 dependencies: {}
+# 与 agentos_router / adx_router 同类：这是南向客户端扩展，运行期由 Gateway
+# 注册 agent_server_client。ExtensionManager.load_all_extensions 在
+# include_transport_extensions=false（Agent worker 进程）时按本标记跳过它。
+requires_transport: true
 config_schema:
   type: object
