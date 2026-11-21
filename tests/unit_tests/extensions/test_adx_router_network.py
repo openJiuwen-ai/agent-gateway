@@ -54,7 +54,7 @@ def _certificate(tmp_path):
 
 
 @asynccontextmanager
-async def _network(tmp_path, monkeypatch):
+async def _network(tmp_path, monkeypatch, *, restart_policy='default'):
     monkeypatch.setattr(
         'agent_gateway.extensions.agentos.agentos_router.router_client._WS_CONNECT_READY_TIMEOUT_SECONDS', 5,
     )
@@ -135,6 +135,8 @@ async def _network(tmp_path, monkeypatch):
             port = proxy.sockets[0].getsockname()[1]
             monkeypatch.setenv("ADX_TEST_PLATFORM", expected_key)
             config = _config(monkeypatch, ingress_url=f"https://localhost:{port}")
+            if restart_policy != 'default':
+                config = replace(config, restart_policy=restart_policy)
             api = EnvironmentAPI(config.tenant)
             control = AdxControlClient(config, transport=httpx.MockTransport(api.handle))
             router = AdxRouterClient(config, control_client=control)

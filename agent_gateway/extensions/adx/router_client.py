@@ -26,7 +26,7 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     is_ws_connect_retryable,
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
-    _sandbox_name,
+    sandbox_name,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
@@ -79,7 +79,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             # authority. Also discover pre-generation IDs during an upgrade.
             records = await self._registry.list_instances(
                 user=agent_info.user_id, framework=agent_info.agent_type, include_unhealthy=True)
-            candidates = {namespace + _sandbox_name(agent_info.user_id, agent_info.agent_type)}
+            candidates = {namespace + sandbox_name(agent_info.user_id, agent_info.agent_type)}
             candidates.update(record.instance_id for record in records
                 if record.user == agent_info.user_id and record.framework == agent_info.agent_type
                 and record.instance_id.startswith(namespace))

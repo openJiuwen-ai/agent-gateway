@@ -21,7 +21,8 @@ async def test_agentserver_restart_defaults_and_overrides_reach_create(monkeypat
         'agentos': {'workspace_root': str(tmp_path)}}})
     client = AdxControlClient(config)
     try:
-        body = client._creation_body('native', 'alice+jiuwenswarm', '/workspace', {}, None, None)
+        runtime_spec = {'rootfs': {'imageurl': 'agentos-supervisor:v1'}}
+        body = client._creation_body('native', 'alice+jiuwenswarm', '/workspace', runtime_spec, None, None)
         if policy is None:
             assert 'restartPolicy' not in body
         else:
