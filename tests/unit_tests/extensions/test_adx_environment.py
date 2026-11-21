@@ -1,4 +1,5 @@
 """Environment-backed routing retains Gateway-owned launch specifications."""
+import asyncio
 import base64
 import json
 
@@ -7,6 +8,7 @@ import pytest
 
 from agent_gateway.extensions.adx.config import load_router_config
 from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError, AdxCreateTimeout
+from agent_gateway.extensions.agentos.agentos_router.backend import AGENT_GENERATION_ENV
 
 
 def config(monkeypatch, tmp_path):
@@ -24,6 +26,53 @@ def envelope(data):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('stored_generation', 'probed_generation', 'accepted'), [
+    (None, None, False),
+    (None, '0123456789ab' + '0' * 20, False),
+    (None, '0123456789ab' + '1' * 20, True),
+    ('0123456789ab' + '0' * 20, None, False),
+    ('0123456789ab' + '1' * 20, None, True),
+])
+async def test_short_name_reuse_requires_the_full_generation(
+    monkeypatch, tmp_path, stored_generation, probed_generation, accepted,
+):
+    generation = '0123456789ab' + '1' * 20
+    name = 'alice+jiuwenswarm-' + generation[:12]
+    identifier = 'test-' + name
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.method == 'POST':
+            assert request.url.path == f'/direct/{identifier}/invoke'
+            body = json.loads(request.content)
+            assert body['action'] == 'cmd.run'
+            assert body['args'] == {'cmd': f'printf %s "${AGENT_GENERATION_ENV}"', 'timeout': 5}
+            return httpx.Response(200, json={'exit_code': 0, 'stdout': probed_generation or ''})
+        assert request.method == 'GET' and request.url.path == '/api/instances'
+        return httpx.Response(200, json=[{
+            'id': identifier, 'tenant_id': 'tenant', 'status': 'running',
+            'env_vars': {} if stored_generation is None else {AGENT_GENERATION_ENV: stored_generation},
+        }])
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    try:
+        args = dict(namespace='test', name=name, workspace='/mnt/users/alice', runtime_spec={},
+                    env_vars={AGENT_GENERATION_ENV: generation})
+        if accepted:
+            assert (await client.create_sandbox(**args)).sandbox_id == identifier
+        else:
+            with pytest.raises(AdxControlError, match='another Agent generation') as error:
+                await client.create_sandbox(**args)
+            assert error.value.code == 'CONFLICT'
+        # Missing metadata permits only the exact read-only marker probe, never
+        # an Environment creation/deletion or arbitrary command on a collision.
+        assert sum(request.method == 'POST' for request in requests) == int(stored_generation is None)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('name', 'image', 'from_image'), [
     ('alice+jiuwenswarm', 'jiuwenswarm-agent-runtime:latest', True),
     ('alice+custom', 'jiuwenswarm-agent-runtime:latest', False),
@@ -33,7 +82,8 @@ async def test_builtin_can_use_deployed_image_process(monkeypatch, name, image, 
     monkeypatch.setenv('TEST_ADX_KEY', 'platform-secret')
     cfg = load_router_config({'gateway': {
         'adx': {'ingress_url': 'https://adx.example', 'tenant': 'tenant',
-                'token_env': 'TEST_ADX_KEY', 'builtin_process_from_image': True},
+                'token_env': 'TEST_ADX_KEY', 'builtin_process_from_image': True,
+                'builtin_image': 'jiuwenswarm-agent-runtime:latest'},
     }})
     exists = False
 
@@ -59,6 +109,7 @@ async def test_builtin_can_use_deployed_image_process(monkeypatch, name, image, 
         await client.close()
 
 
+@pytest.mark.asyncio
 async def test_environment_create_query_delete_uses_original_spec(monkeypatch, tmp_path):
     cfg = config(monkeypatch, tmp_path)
     calls = []
@@ -90,7 +141,7 @@ async def test_environment_create_query_delete_uses_original_spec(monkeypatch, t
     body = json.loads(creates[0].content)
     assert body['namespace'] == cfg.router.agent_namespace != cfg.tenant
     assert second.metadata['tenant_id'] == cfg.tenant
-    assert body['rootfs'] == {'type': 'image', 'imageurl': 'agent-runtime:1', 'runtime': 'runc'}
+    assert body['rootfs'] == {'type': 'image', 'imageurl': 'agent-runtime:1', 'runtime': 'supervisor'}
     assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001'}
     assert body['cpu'] == 2000 and body['memory'] == 4096
     assert body['env']['MODEL_API_BASE'] == 'http://model/v1'
@@ -103,6 +154,91 @@ async def test_environment_create_query_delete_uses_original_spec(monkeypatch, t
     await client.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('lost_first_reply', [False, True])
+async def test_recreate_after_confirmed_removal_uses_a_new_operation(monkeypatch, tmp_path, lost_first_reply):
+    exists = False
+    operations = []
+    identifier = 'test-alice+jiuwenswarm'
+
+    def handle(request):
+        nonlocal exists
+        if request.method == 'GET':
+            return httpx.Response(200, json=[{
+                'id': identifier, 'tenant_id': 'tenant', 'status': 'running',
+            }]) if exists else httpx.Response(404)
+        operation = request.headers['x-request-id']
+        if operation not in operations:
+            operations.append(operation)
+            exists = True
+            if lost_first_reply and len(operations) == 1:
+                raise httpx.ReadTimeout('reply lost', request=request)
+        # Replaying a completed create does not recreate a removed resource.
+        return httpx.Response(200, json=envelope({'environmentId': identifier, 'status': 'running'}))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    args = dict(namespace='test', name='alice+jiuwenswarm', workspace='/mnt/users/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}, 'cpu': 1000, 'memory': 512})
+    try:
+        if lost_first_reply:
+            with pytest.raises(AdxControlError):
+                await client.create_sandbox(**args)
+        first = await client.create_sandbox(**args)
+        assert first.sandbox_id == identifier
+        assert identifier not in client._creates
+        exists = False
+
+        second = await client.create_sandbox(**args)
+
+        assert second.sandbox_id == identifier
+        assert len(operations) == 2 and operations[0] != operations[1]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('outcome', ['terminal', 'unknown', None])
+async def test_terminal_create_can_restart_only_after_confirmed_absence(monkeypatch, tmp_path, outcome):
+    operations = []
+    exists = False
+    identifier = 'test-alice+jiuwenswarm'
+
+    def handle(request):
+        nonlocal exists
+        if request.method == 'GET':
+            return httpx.Response(200, json=[{
+                'id': identifier, 'tenant_id': 'tenant', 'status': 'running',
+            }]) if exists else httpx.Response(404)
+        operation = request.headers['x-request-id']
+        operations.append(operation)
+        if operation == operations[0]:
+            error = {'code': 'UNAVAILABLE', 'retry': 'never'}
+            if outcome is not None:
+                error['outcome'] = outcome
+            return httpx.Response(409, json={'error': error})
+        exists = True
+        return httpx.Response(200, json=envelope({'environmentId': identifier, 'status': 'running'}))
+
+    client = AdxControlClient(config(monkeypatch, tmp_path), transport=httpx.MockTransport(handle))
+    args = dict(namespace='test', name='alice+jiuwenswarm', workspace='/mnt/users/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}})
+    try:
+        with pytest.raises(AdxControlError):
+            await client.create_sandbox(**args)
+        if outcome == 'terminal':
+            assert identifier not in client._creates
+            assert (await client.create_sandbox(**args)).sandbox_id == identifier
+            assert operations[0] != operations[1]
+        else:
+            assert client._creates[identifier][0] == operations[0]
+            with pytest.raises(AdxControlError):
+                await client.create_sandbox(**args)
+            assert operations[0] == operations[1]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_create_timeout_retries_same_operation_and_never_changes_instance(monkeypatch, tmp_path):
     ids = []
     def handle(request):
@@ -120,6 +256,7 @@ async def test_create_timeout_retries_same_operation_and_never_changes_instance(
     await client.close()
 
 
+@pytest.mark.asyncio
 async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypatch, tmp_path):
     cfg = config(monkeypatch, tmp_path)
     for view in [
@@ -133,9 +270,10 @@ async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypa
         await client.close()
 
 
+@pytest.mark.asyncio
 async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatch, tmp_path):
     from dataclasses import replace
-    from agent_gateway.extensions.yuanrong_frontend_client import YuanrongAgentTimeoutError
+    from agent_gateway.extensions.agentos.agentos_router.backend import AgentTimeoutError
 
     cfg = replace(config(monkeypatch, tmp_path), connect_timeout_seconds=0.01)
     calls = []
@@ -150,9 +288,61 @@ async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatc
     try:
         with pytest.raises(AdxCreateTimeout) as error:
             await client.wait_until_running('test-alice')
-        assert isinstance(error.value, YuanrongAgentTimeoutError)
+        assert isinstance(error.value, AgentTimeoutError)
         assert error.value.code == 'SERVICE_UNAVAILABLE'
         assert isinstance(error.value.__cause__, TimeoutError)
         assert calls and all(request.method == 'GET' for request in calls)
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_running_honors_probe_deadline_beyond_connect_timeout(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    cfg = replace(config(monkeypatch, tmp_path), connect_timeout_seconds=0.01)
+
+    async def handle(_request):
+        await asyncio.sleep(0.03)
+        return httpx.Response(200, json=[{'id': 'test-alice', 'tenant_id': cfg.tenant, 'status': 'running'}])
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    try:
+        deadline = asyncio.get_running_loop().time() + 1
+        assert (await client.wait_until_running('test-alice', deadline=deadline))['status'] == 'running'
+        assert (await client._ready_sandbox_info('test-alice')).sandbox_id == 'test-alice'
+    finally:
+        await client.close()
+
+
+def test_built_in_prepared_local_rootfs_and_image_environment(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    from agent_gateway.common.config import resolve_env_vars
+
+    monkeypatch.setenv("USER_VALUE", "host-value")
+    launch = {
+        "rootfs": {"type": "local", "path": "/prepared/rootfs"},
+        "process": {"commands": [["/app/server"]]},
+        "image_env": {"VALUE": "${USER_VALUE}", "PROFILE": "image"},
+        "env": {"PROFILE": "${USER_VALUE}"},
+    }
+    resolved = resolve_env_vars({"gateway": {"adx": {"builtin_launch": launch}}})
+    client = AdxControlClient(replace(config(monkeypatch, tmp_path), runtime_class="runsc",
+                                      builtin_launch=resolved["gateway"]["adx"]["builtin_launch"]))
+    body = client._creation_body("test", "alice", str(tmp_path), {}, {}, [], builtin=True)
+    assert body["rootfs"] == {"type": "local", "path": "/prepared/rootfs", "runtime": "runsc"}
+    assert body["process"] == launch["process"]
+    assert body["env"]["VALUE"] == "${USER_VALUE}"
+    assert body["env"]["PROFILE"] == "host-value"
+    assert "inheritEntrypoint" not in body
+
+
+def test_third_party_web_port_is_published_only_when_requested(monkeypatch, tmp_path):
+    client = AdxControlClient(config(monkeypatch, tmp_path))
+    spec = {"sandbox_type": "runsc", "rootfs": {"type": "local", "path": "/node/rootfs"},
+            "cmds": [["/app/agent"]]}
+    body = client._creation_body("test", "alice", str(tmp_path), spec, {}, [], builtin=False, web_port=8080)
+    assert body["ports"] == ["8080"]
+    assert body["dataPlane"] == {"portForwardSecurityMode": "tls"}
+    assert body["rootfs"] == {"type": "local", "path": "/node/rootfs", "runtime": "runsc"}

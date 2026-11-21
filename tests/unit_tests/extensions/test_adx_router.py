@@ -52,7 +52,8 @@ class EnvironmentAPI:
             body = json.loads(request.content)
             self.creates.append(body)
             instance = body['namespace'] + '-' + body['name']
-            self.environments[instance] = {'id': instance, 'tenant_id': self.tenant, 'status': 'running'}
+            self.environments[instance] = {'id': instance, 'tenant_id': self.tenant, 'status': 'running',
+                                           'env_vars': dict(body.get('env') or {})}
             result = {'code': 200, 'data': base64.b64encode(json.dumps({'environmentId': instance}).encode()).decode()}
             return httpx.Response(200, json=result)
         if request.method == 'DELETE':
