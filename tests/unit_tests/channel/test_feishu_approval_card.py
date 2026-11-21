@@ -536,7 +536,9 @@ def test_click_other_without_text_channel_toasts_web_hint(channel):
     )
     channel._save_card_context(ctx)
     response = channel._on_card_action_trigger_sync(_card_action(
-        {"ref": {"request_id": "call_1", "index": 0}, "value": _OTHER_OPTION_TEXT},
+        # 评审意见 #202654738：占位按钮实际回传值是专用 token，非 "other" 字面——
+        # 用 _OTHER_OPTION_TEXT 模拟的是卡片不会回传的取值。
+        {"ref": {"request_id": "call_1", "index": 0}, "value": _OTHER_PLACEHOLDER_TOKEN},
     ))
     assert "网页端或终端填写" in _toast_content(response)
     assert channel._card_contexts["call_1"].answers == {}

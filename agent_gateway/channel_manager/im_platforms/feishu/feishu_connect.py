@@ -164,7 +164,11 @@ _OTHER_BUTTON_LABEL = "其他（自定义答案）"
 _OTHER_HINT_SINGLE = ("💡 点击「其他（自定义答案）」后，直接回复本条消息的文本即可作为"
                       "自定义答案（若文本通路不可用，请在网页端或终端完成）。")
 # 评审意见 #201589594：文本作答契约仅对 ask_user 来源单题提问生效，其余来源统一引导网页端/终端。
-_OTHER_HINT_WEB = "💡 自定义答案请在网页端或终端填写。"
+# 评审意见 #202654738（P2）：多题卡 Other-only 题被排除出 answerable_indexes 后，
+# 其余真实题答完即投递并删除上下文、中断关闭——网页端补答须在卡片提交前完成，
+# 提示语必须诚实反映该生命周期，否则逃生通道自相矛盾。
+_OTHER_HINT_WEB = ("💡 自定义答案请在网页端或终端填写。"
+                   "须在本题卡片作答完成前提交；卡片提交后中断即关闭，无法补答。")
 
 
 def _is_other_placeholder(option: dict[str, Any]) -> bool:
@@ -3909,7 +3913,10 @@ class FeishuChannel(BaseChannel):
             # 评审意见 #201912955/#202437587：同题两选项 value 相同且占位在前时，
             # 取首个命中会把真实选项的点击吞进占位分支（答案永不入卡、卡片挂起）。
             # 多命中优先取非占位项；全部命中皆为占位才回落首个命中。
-            _clicked_opt = next(
+            # 评审意见 #202654738（P3）：保留 token 点击侧优先判定——真实选项 value
+            # 恰为 __other__ 时，占位按钮点击不得被静默解析成该真实选项提交答案
+            # （与 !201832613 修掉的 "other" 冲突同源）。token 点击强制走占位分支。
+            _clicked_opt = None if value == _OTHER_PLACEHOLDER_TOKEN else next(
                 (opt for opt in _opts_hit if not _is_other_placeholder(opt)),
                 _opts_hit[0] if _opts_hit else None,
             )
