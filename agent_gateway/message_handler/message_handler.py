@@ -3187,7 +3187,36 @@ class MessageHandler(ABC):
             await web_channel.broadcast_event("models.updated", {})
             logger.info("[MessageHandler] broadcasted models.updated")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+            # 与 _broadcast_push_terminated 一致：models.updated 是前端刷新可用
+            # 模型列表的唯一通道，失败须在生产 INFO 级日志可查。
+            logger.warning("[MessageHandler] broadcast models.updated failed: %s", exc)
+
+    async def _broadcast_push_terminated(self, payload: dict[str, Any]) -> None:
+        """把 ``gateway.push_terminated`` 推送给所有 Web 连接。
+
+        来源：``HttpSseAgentServerClient._push_loop`` 在 events/stream 连续失败
+        达到 ``_PUSH_MAX_CONNECT_FAILURES`` 次后，停止推送循环前合成的 frame
+        （issue #115 现象 1）。前端收到此事件后可弹提示并重建 SSE，而不是
+        无限挂等已断开的连接。
+        """
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("gateway.push_terminated", payload)
+            logger.info(
+                "[MessageHandler] broadcasted gateway.push_terminated: reason=%s api_root=%s",
+                payload.get("reason"),
+                payload.get("api_root"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # gateway.push_terminated 是通知前端「推送已永久终止」的唯一通道；
+            # 失败时若只 DEBUG 级记录，生产 INFO 日志下无任何痕迹，前端会
+            # 静默挂等在已断开的 SSE 上（issue #115 现象 1 原样重现）。故提
+            # 升到 WARNING 并带异常信息，便于排查。
+            logger.warning(
+                "[MessageHandler] broadcast gateway.push_terminated failed: %s", exc
+            )
 
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
@@ -3848,6 +3877,15 @@ class MessageHandler(ABC):
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "gateway.push_terminated":
+            # ``HttpSseAgentServerClient._push_loop`` synthesises this frame
+            # right before it gives up on an agentserver pod (issue #115
+            # 现象 1): without it, the frontend SSE stays attached to a
+            # gateway that has no source to push, so the user must refresh
+            # manually. Broadcast it so the web client can show a reconnect
+            # prompt / rebuild the SSE.
+            await self._broadcast_push_terminated(chunk.payload)
             return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
