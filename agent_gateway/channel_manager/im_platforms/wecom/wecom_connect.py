@@ -28,6 +28,11 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.group_ack import (
+    DEFAULT_GROUP_ACK,
+    generate_group_ack_text,
+    normalize_group_ack_text,
+)
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
@@ -294,86 +299,21 @@ class WecomChannel(BaseChannel):
     @staticmethod
     def _fallback_group_ack() -> str:
         """群内短回复兜底文案。"""
-        return "好的，我知道了，会跟进处理。"
+        return DEFAULT_GROUP_ACK
 
     @classmethod
     def _normalize_group_ack_text(cls, target_name: str, text: str) -> str:
         """过滤掉机器人旁白式短回复。"""
-        normalized = re.split(r"[\r\n]+", (text or "").strip(), maxsplit=1)[0]
-        normalized = re.sub(r"\s+", " ", normalized).strip(' "\'""''「」')
-        if not normalized:
-            return ""
-
-        forbidden_phrases = (
-            "已提醒",
-            "已通知",
-            "私下通知",
-            "私聊",
-            "转告",
-            "提醒了",
-            "通知了",
-            "告诉了",
-            "帮你",
-            "帮您",
-            "代为",
-        )
-        if target_name and target_name in normalized:
-            return ""
-        if any(phrase in normalized for phrase in forbidden_phrases):
-            return ""
-        return normalized
+        return normalize_group_ack_text(target_name, text)
 
     def _generate_group_ack_sync(self, target_name: str, content: str) -> str:
         """调用轻量 LLM 生成群内简短确认文案。"""
-        api_key = os.getenv("API_KEY", "").strip()
-        api_base = os.getenv("API_BASE", "").strip()
-        model_name = os.getenv("MODEL_NAME", "").strip() or "GLM-4.7"
-        if not api_key or not api_base:
-            return self._fallback_group_ack()
-
-        prompt = (
-            "你是一个企业微信群聊机器人。群里有一条需要{name}关注的消息,"
-            "你已经把详细回复私发给了{name}。"
-            "现在群里需要补一句很短的话，但这句话必须像{name}本人在群里的直接回复,"
-            "而不是机器人旁白或转述。\n\n"
-            "要求：\n"
-            "- 一句话，不超过30个字\n"
-            "- 用第一人称口吻，像当事人本人在说话\n"
-            "- 不要提到{name}的名字\n"
-            "- 不要写成'我已经提醒了{name}''已通知{name}''我帮{name}处理了'这类机器人/第三人称表达\n"
-            "- 更像'好的，我知道了，会准时参加会议''收到，我会跟进这件事'\n"
-            "- 不要照搬原文，保留核心动作即可\n\n"
-            "你私发给{name}的内容是：\n{content}"
-        ).format(   
-            name=target_name,
-            content=content[:500],
+        return generate_group_ack_text(
+            target_name,
+            content,
+            platform_name="企业微信",
+            fallback=self._fallback_group_ack(),
         )
-        try:
-            resp = requests.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 80,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            choices = resp.json().get("choices") or []
-            if choices:
-                text = (choices[0].get("message") or {}).get("content", "").strip()
-                text = self._normalize_group_ack_text(target_name, text)
-                if text:
-                    return text
-        except Exception as e:
-            logger.warning("[WecomChannel] 生成群确认文案失败，使用回退: %s", e)
-
-        return self._fallback_group_ack()
 
     async def _send_group_ack(self, metadata: dict[str, Any], content: str) -> None:
         """后台生成并发送群内简短确认，不阻塞主回复。"""
