@@ -283,3 +283,25 @@ A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
     indexes=[IndexDefinition(["policy_id"], unique=True)],
 )
+
+# React 运行策略模板：react 配置整段存 data JSON（不再拆列）。
+REACT_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="react_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["template_id"], unique=True)],
+)
