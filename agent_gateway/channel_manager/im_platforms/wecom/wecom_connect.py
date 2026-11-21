@@ -28,6 +28,9 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.message_content import (
+    strip_think_tags,
+)
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
@@ -1075,13 +1078,7 @@ class WecomChannel(BaseChannel):
     @staticmethod
     def _strip_think_tags(text: str) -> str:
         """移除 <think>...</think> 块及未闭合的 <think>...，避免将 Agent 的思考过程展示给用户。"""
-        if not text or not isinstance(text, str):
-            return text or ""
-        # 1. 移除完整的 <think>...</think> 块
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        # 2. 移除未闭合的 <think>...（流式场景下可能先收到 <think> 后收到 </think>）
-        text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE | re.DOTALL)
-        return text
+        return strip_think_tags(text)
 
     @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
