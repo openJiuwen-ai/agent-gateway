@@ -16,6 +16,9 @@ from agent_gateway.extensions.agentos.agentos_router.ssh_relay import (
 )
 
 
+_CONNECT_TRACE_HEADERS = {'traceparent', 'tracestate', 'x-trace-id'}
+
+
 class _ConnectedSsh:
     """Own the SSH connection and its two bounded CONNECT pumps together."""
 
@@ -77,17 +80,27 @@ class AdxSshRelay(YuanrongSshRelay):
         asyncssh = _import_asyncssh()
         keys = self._resolve_client_keys(user_id)
         origin = urlsplit(self._adx.ingress_url)
-        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or 443,
-            ssl=ssl.create_default_context(), server_hostname=origin.hostname)
+        tls = origin.scheme == 'https'
+        reader, writer = await asyncio.open_connection(origin.hostname, origin.port or (443 if tls else 80),
+            ssl=ssl.create_default_context() if tls else None,
+            server_hostname=origin.hostname if tls else None)
         peer_writer = None
         client_socket = None
         bridge_socket = None
         pumps = []
         try:
             authority = f'{instance_id}:{self._settings.port}'
+            from agent_gateway.extensions.adx.control_client import trace_headers
+            # Optional telemetry must be safe to write as a single raw HTTP header.
+            context_headers = ''.join(
+                f'{name}: {value}\r\n'
+                for name, value in trace_headers({}).items()
+                if name.lower() in _CONNECT_TRACE_HEADERS
+                and all(' ' <= char <= '~' for char in value)
+            )
             request = (f'CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n'
                        f'Authorization: Bearer {self._adx.token}\r\n'
-                       'X-Adx-Access-Kind: ssh\r\n\r\n')
+                       f'X-Adx-Access-Kind: ssh\r\n{context_headers}\r\n')
             writer.write(request.encode('ascii'))
             await writer.drain()
             headers = await reader.readuntil(b'\r\n\r\n')
