@@ -105,6 +105,8 @@ class _TestMessageHandler(MessageHandler):
         ("team.normal", "team.work.normal"),
         ("agent.work", "agent.work.normal"),
         ("agent.code", "agent.code.normal"),
+        # MACRO Auto routing: /mode auto is a first-class mode, not a legacy alias.
+        ("auto", "auto"),
     ],
 )
 def test_mode_switch_uses_deprecation_map(input_mode: str, expected_state: str) -> None:
@@ -135,15 +137,17 @@ def test_mode_switch_unknown_input_does_not_touch_state() -> None:
 
 
 def test_valid_mode_inputs_covers_new_and_legacy() -> None:
-    """_VALID_MODE_INPUTS 必须是新 canonical、旧 canonical、正式别名的并集。"""
+    """_VALID_MODE_INPUTS 必须是新 canonical、旧 canonical、正式别名，以及 auto 的并集。"""
     assert NEW_CANONICAL_MODES <= _VALID_MODE_INPUTS
     assert set(DEPRECATION_MAP.keys()) <= _VALID_MODE_INPUTS
     assert set(MODE_ALIASES.keys()) <= _VALID_MODE_INPUTS
-    # 额外 sanity：8 + 10 + 6 = 24（DEPRECATION_MAP 含裸 code），三集合互不相交
+    assert "auto" in _VALID_MODE_INPUTS
+    # 三集合互不相交；auto 不属于其中任何一个，单独计入。
     assert len(_VALID_MODE_INPUTS) == (
         len(NEW_CANONICAL_MODES)
         + len(DEPRECATION_MAP.keys())
         + len(MODE_ALIASES.keys())
+        + 1
     )
 
 
