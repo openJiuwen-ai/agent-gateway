@@ -6,8 +6,9 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
@@ -36,6 +37,20 @@ logger = logging.getLogger(__name__)
 _TOKEN_RETRY_SECONDS = 30.0
 # Swarm membership checks can run three CLI calls, each with a 30-second limit.
 _LIFECYCLE_ACK_TIMEOUT_SECONDS = 120.0
+_WORKSPACE_FILENAME_PATTERN = re.compile(
+    r"[\"'「「【《]([^\"'」」】》]+\.\w{1,10})[\"'」」】》]"
+)
+
+
+@lru_cache(maxsize=64)
+def _workspace_path_pattern(workspace_dir: str) -> re.Pattern[str]:
+    """Compile the absolute workspace-path matcher once per workspace."""
+    return re.compile(
+        r"(?:^|[\"'「「【《\s])("
+        + re.escape(workspace_dir)
+        + r"[^\s\"'」」】》]+\.\w{1,10})(?:$|[\"'」」】》\s])",
+        re.MULTILINE,
+    )
 
 
 class DingTalkConfig(BaseModel):
@@ -1461,10 +1476,7 @@ class DingTalkChannel(BaseChannel):
 
         # 模式1：完整绝对路径匹配
         # 匹配类似 /home/xxx/.jiuwenswarm/agent/workspace/xxx.ext 的路径
-        path_pattern = re.compile(
-            r'(?:^|["\'「「【《\s])(' + re.escape(workspace_dir) + r'[^\s"\'」」】》]+\.\w{1,10})(?:$|["\'」」】》\s])',
-            re.MULTILINE
-        )
+        path_pattern = _workspace_path_pattern(workspace_dir)
         for match in path_pattern.finditer(text):
             path = match.group(1).strip()
             if os.path.isfile(path):
@@ -1472,10 +1484,7 @@ class DingTalkChannel(BaseChannel):
 
         # 模式2：从引号/书名号中提取文件名
         # 匹配 "filename.ext"、'filename.ext'、「filename.ext」、《filename.ext》
-        filename_pattern = re.compile(
-            r'["\'「「【《]([^"\'」」】》]+\.\w{1,10})["\'」」】》]'
-        )
-        for match in filename_pattern.finditer(text):
+        for match in _WORKSPACE_FILENAME_PATTERN.finditer(text):
             filename = match.group(1).strip()
             # 在 workspace 下查找同名文件
             potential_path = os.path.join(workspace_dir, filename)
