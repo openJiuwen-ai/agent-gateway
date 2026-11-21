@@ -29,6 +29,7 @@ class AdxRouterConfig:
     restart_policy: dict[str, int] | None = None
     connect_timeout_seconds: float = 60.0
     builtin_process_from_image: bool = False
+    builtin_launch: dict | None = field(default=None, repr=False)
 
 
 def adx_router_selected(config: dict) -> bool:
@@ -68,7 +69,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not isinstance(settings, dict) or settings.keys() - {
         'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
-        'builtin_process_from_image',
+        'builtin_process_from_image', 'builtin_launch',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
@@ -95,6 +96,22 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     builtin_process_from_image = settings.get('builtin_process_from_image', False)
     if not isinstance(builtin_process_from_image, bool):
         raise ValueError('gateway.adx.builtin_process_from_image must be a boolean')
+    builtin_launch = settings.get('builtin_launch')
+    if isinstance(builtin_launch, dict):
+        if 'network' in builtin_launch:
+            from agent_gateway.extensions.adx.network import _origin, network_profile
+            network = builtin_launch['network']
+            if not isinstance(network, dict):
+                raise ValueError('gateway.adx.builtin_launch.network must be a mapping')
+            key = 'gateway.adx.builtin_launch.network.ingress_url'
+            ingress_url = network.get('ingress_url')
+            if not isinstance(ingress_url, str) or not ingress_url.strip():
+                raise ValueError(f'{key} must be an HTTP(S) origin')
+            try:
+                _origin(ingress_url)
+            except ValueError as error:
+                raise ValueError(f'{key} must be an HTTP(S) origin') from error
+            network_profile(network.get('profile', 'N2'))
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
@@ -110,7 +127,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, require_frontend_endpoint=False),
         builtin_image=builtin_image, runtime_class=runtime_class,
-        builtin_process_from_image=builtin_process_from_image,
+        builtin_process_from_image=builtin_process_from_image, builtin_launch=builtin_launch,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )

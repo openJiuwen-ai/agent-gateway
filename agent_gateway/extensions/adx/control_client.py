@@ -9,8 +9,11 @@ import hashlib
 import json
 import logging
 import uuid
+from collections import OrderedDict
+from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, urljoin
+from weakref import WeakValueDictionary
 
 import httpx
 
@@ -21,6 +24,8 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
 
 
 logger = logging.getLogger(__name__)
+# Eviction only causes a later policy refresh. Uncertain operations keep their IDs.
+_MAX_APPLIED_NETWORK_POLICIES = 1024
 
 
 class AdxControlError(YuanrongAgentApiError):
@@ -49,6 +54,10 @@ class AdxControlClient:
         )
         self._creates: dict[str, tuple[str, str]] = {}
         self._deletes: dict[str, str] = {}
+        self._environment_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self._network_applied: OrderedDict[str, str] = OrderedDict()
+        self._network_pending: dict[str, tuple[str, str, dict]] = {}
+        self._compile_network_policy = lru_cache(maxsize=128)(self._compile_network_policy)
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -102,6 +111,7 @@ class AdxControlClient:
     async def _lookup(self, instance: str) -> dict | None:
         value = await self._request('GET', '/api/instances', params={'instance_id': instance}, missing_ok=True)
         if value is None or value == []:
+            self._network_applied.pop(instance, None)
             return None
         if not isinstance(value, list) or len(value) != 1:
             raise AdxControlError('ADX Environment identity or tenant mismatch', code='CONFLICT')
@@ -206,7 +216,57 @@ class AdxControlClient:
                 if action and 'port' in action:
                     ports.append(str(action['port']))
         body['ports'] = sorted(set(ports))
+        if builtin and 'network' in (self.config.builtin_launch or {}):
+            _, policy = self._builtin_network_policy(workspace)
+            body['network'] = copy.deepcopy(policy)
         return body
+
+    def _compile_network_policy(self, model_origins: tuple[str, ...]) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import agent_policy, http_policy
+
+        network = self.config.builtin_launch['network']
+        policy = http_policy(agent_policy(
+            {'ingress_url': network['ingress_url'], 'ingress_policy_peer': network.get('ingress_policy_peer')},
+            model_origins, network.get('allowed_internal_origins', []),
+            profile=network.get('profile', 'N2'), blocked_cidrs=network.get('blocked_cidrs', []),
+        ))
+        return hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest(), policy
+
+    def _builtin_network_policy(self, workspace: str) -> tuple[str, dict]:
+        from agent_gateway.extensions.adx.network import workspace_model_origins
+
+        return self._compile_network_policy(tuple(workspace_model_origins(workspace)))
+
+    async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
+        launch = self.config.builtin_launch or {}
+        if 'network' not in launch:
+            return
+        async with self._environment_locks.setdefault(instance, asyncio.Lock()):
+            digest, desired = self._builtin_network_policy(workspace)
+            # Reconcile an ambiguous previous replacement before submitting a
+            # different policy. A model switch must not reorder old mutations.
+            if instance in self._network_pending:
+                await self._apply_pending_network(instance)
+            if self._network_applied.get(instance) == digest:
+                self._network_applied.move_to_end(instance)
+                return
+            self._network_pending[instance] = (digest, 'network-' + uuid.uuid4().hex, desired)
+            await self._apply_pending_network(instance)
+
+    async def _apply_pending_network(self, instance: str) -> None:
+        digest, operation, policy = self._network_pending[instance]
+        try:
+            await self._request('PUT', f'/api/environment/v1/environments/{quote(instance, safe="")}/network',
+                                body=policy, request_id=operation, operation_id=operation)
+        except AdxControlError as error:
+            if error.outcome in ('terminal', 'not_started') or error.code in ('INVALID_ARGUMENT', 'PERMISSION_DENIED', 'NOT_FOUND'):
+                self._network_pending.pop(instance, None)
+            raise
+        self._network_applied[instance] = digest
+        self._network_applied.move_to_end(instance)
+        if len(self._network_applied) > _MAX_APPLIED_NETWORK_POLICIES:
+            self._network_applied.popitem(last=False)
+        self._network_pending.pop(instance, None)
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
@@ -241,14 +301,17 @@ class AdxControlClient:
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         del trace_id
-        operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
-        await self._request(
-            'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
-            request_id=operation, missing_ok=True,
-        )
-        logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
-        self._deletes.pop(sandbox_id, None)
-        self._creates.pop(sandbox_id, None)
+        async with self._environment_locks.setdefault(sandbox_id, asyncio.Lock()):
+            operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
+            await self._request(
+                'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
+                request_id=operation, missing_ok=True,
+            )
+            logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
+            self._deletes.pop(sandbox_id, None)
+            self._creates.pop(sandbox_id, None)
+            self._network_applied.pop(sandbox_id, None)
+            self._network_pending.pop(sandbox_id, None)
 
     async def invoke(self, environment: str, action: str, args: dict) -> dict:
         rid = 'invoke-' + uuid.uuid4().hex
