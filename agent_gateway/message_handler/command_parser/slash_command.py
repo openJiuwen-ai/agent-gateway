@@ -568,6 +568,23 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
         "requires_session": False,
         "available_modes": None,
     },
+    {
+        # 客户端本地执行，extensions.v2.* 请求再经 Gateway 转发给扩展管理层。
+        # 未在这里声明会被快捷面板过滤，Web 端就无法通过 / 唤起该命令。
+        "name": "extension",
+        "description_i18n": {
+            "zh": "管理扩展包：查询、安装、卸载或重载",
+            "en": "Manage extension packages: query, install, uninstall, or reload",
+        },
+        "usage": "/extension [query|install|uninstall|reload] [参数]",
+        "example": "/extension query webui.login-demo",
+        "kind": "built-in",
+        "takesArgs": True,
+        "scope": "client",
+        "execution": "client",
+        "requires_session": False,
+        "available_modes": None,
+    },
 )
 
 
