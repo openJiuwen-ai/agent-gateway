@@ -38,6 +38,19 @@ class AdvancedConfigUpsertRequest(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class A2UIConfigUpsertRequest(BaseModel):
+    """对齐 a2ui_config：按 agent_template_id 绑定的 A2UI 开关。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    agent_template_id: str = Field(..., min_length=1, max_length=100)
+    enabled: bool = False
+    protocol_version: str = Field(default="0.8", min_length=1, max_length=16)
+    stream_validation_enabled: bool = True
+    dev_smoke_tools_enabled: bool = False
+    data: dict[str, Any] | None = None
+
+
 class TaskMemoryUpsertRequest(BaseModel):
     """对齐 task_memory_config：仅 ``enabled`` NOT NULL；模型/密钥等列可空。"""
 
