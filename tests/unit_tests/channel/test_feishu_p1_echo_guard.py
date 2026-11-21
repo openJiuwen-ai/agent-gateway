@@ -8,21 +8,9 @@ from collections import deque
 from unittest.mock import MagicMock, AsyncMock
 import pytest
 
-# atomgit 2026-11-18：importorskip 静默跳改响亮跳——e2a 缺席（fleet CI worker
-# 装配竞态）时整文件曾静默全跳、门禁读数为绿实则零用例。改为携处置指引的
-# warning＋显名 skip，读数面上可见 SKIP 与成因。
-import warnings as _warnings
-try:
-    import e2a  # noqa: F401
-except Exception as _e2a_exc:  # noqa: BLE001
-    _warnings.warn(
-        "e2a 协议包缺失（develop 37eae76 起协议包更名为 e2a，openjiuwen_protocol "
-        "已不在依赖面）。fleet CI worker 装配竞态请修复环境或安装钉定依赖后复跑；"
-        "原始异常 %r" % (_e2a_exc,),
-        RuntimeWarning, stacklevel=2,
-    )
-    pytest.skip("e2a missing (assembly race) - loud skip, see warning",
-                allow_module_level=True)
+# 评审意见 #202644735：模块级 skip（含响亮跳）本质未变——e2a 缺席时整文件依旧
+# 零用例且退出码 0。改与同目录约定一致的硬导入，依赖缺失成为可见红灯失败；
+# 装配竞态按评审建议在 CI/依赖安装层处理，本文件不做容错。
 from e2a.message import Message
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
@@ -769,6 +757,28 @@ async def test_echo_suppressed_final_fingerprint_blocks_same_rid_replay():
     await ch.send(replay)
     ch._send_feishu_message.assert_not_awaited()   # 重投：指纹尾缀兜底
     assert ch._echo_blocked_total == 1             # 重投拦在指纹面，不占回声计数
+
+
+@pytest.mark.asyncio
+async def test_final_fingerprint_suffix_allows_short_reply():
+    """评审意见 #202644735：指纹尾缀兜底受最小长度门约束（与 #202640934 同修形制）——
+    回声受抑正文入指纹后，同会话到短合法回复（「好的」）恰为指纹尾缀时，
+    endswith 不得将其误判为重投吞掉；仅达阈正文才受尾缀兜底。"""
+    ch = _make_channel()
+    ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
+    ch._send_feishu_message = AsyncMock()
+    text = "回声受抑入指纹后短尾缀合法回复必须照常投递不被误吞的长正文好的"
+    _record_input(ch, "oc_x", text)
+    m = _msg(event_name="chat.final", content=text, metadata={"feishu_chat_id": "oc_x"})
+    m.payload["is_complete"] = True
+    await ch.send(m)
+    ch._send_feishu_message.assert_not_awaited()   # 首帧：回声守卫拦截
+    assert ch._p2_final_fingerprints.get("req_t1")  # 受抑正文已入指纹账
+    short = _msg(event_name="chat.final", content="好的", metadata={"feishu_chat_id": "oc_x"})
+    short.payload["is_complete"] = True
+    await ch.send(short)
+    ch._send_feishu_message.assert_awaited()       # 短回复过长度门，照常投递
+    assert ch._echo_blocked_total == 1
 
 
 @pytest.mark.asyncio

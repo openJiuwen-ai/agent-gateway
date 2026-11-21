@@ -2830,7 +2830,11 @@ class FeishuChannel(BaseChannel):
                         # 评审意见 #201580054：与 chat.final 面同修——去掉
                         # _fp != content_str，正文与指纹完全相等的冲刷重投同样抑制。
                         _fp = self._p2_fingerprint_for_target(stream_key, _dd_sess)
-                        if _fp and content_str and _fp.endswith(content_str):
+                        # 评审意见 #202644735：冲刷面尾缀兜底补最小长度门——与终帧面
+                        # （#202640934 同修）对称，「好的」「收到」等短合法回复恰为指纹
+                        # 尾缀时不再被 endswith 误判为重投吞掉。
+                        if (_fp and len(content_str) >= _ECHO_MIN_CHARS
+                                and content_str and _fp.endswith(content_str)):
                             self._delivery_dedup.abort(dedup_token)  # token=None 时幂等空转
                             self._fingerprint_suppressed_total += 1
                             logger.warning(
@@ -3262,7 +3266,11 @@ class FeishuChannel(BaseChannel):
                 target_type.rsplit("\0", 1)[-1],
                 exc_info=True,
             )
-            return False
+            # 评审意见 #202644735：卡片已流出增量时，finalize 异常按「内容已投递」
+            # 处理（返回 True）——返回 False 会让调用方回退再投全文，与卡内已实时
+            # 展示内容构成二次投递；流式增量用户已见，仅缺收尾快照。未流出任何
+            # 增量时仍返回 False，由调用方回退投递全文（恰好一次，无重复）。
+            return bool(self._cardkit_buffers.get(key, "").strip())
         finally:
             self._cardkit_sessions.pop(key, None)
             self._cardkit_buffers.pop(key, None)

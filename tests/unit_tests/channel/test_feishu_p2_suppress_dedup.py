@@ -9,20 +9,9 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
-# 评审意见 #202640934：模块级 importorskip 会让整份用例在 e2a 缺席时静默全跳、
-# 门禁读绿实则零用例。改携处置指引的 warning＋显名 skip（p1_echo_guard 同款）。
-import warnings as _warnings
-try:
-    import e2a  # noqa: F401
-except Exception as _e2a_exc:  # noqa: BLE001
-    _warnings.warn(
-        "e2a 协议包缺失（develop 37eae76 起协议包更名为 e2a，openjiuwen_protocol "
-        "已不在依赖面）。fleet CI worker 装配竞态请修复环境或安装钉定依赖后复跑；"
-        "原始异常 %r" % (_e2a_exc,),
-        RuntimeWarning, stacklevel=2,
-    )
-    pytest.skip("e2a missing (assembly race) - loud skip, see warning",
-                allow_module_level=True)
+# 评审意见 #202645537：模块级 skip（含响亮跳）本质未变——e2a 缺席时整文件依旧
+# 零用例且退出码 0，宽 except 还会把真实导入破损吞成 SKIP。改与同目录约定一致
+# 的硬导入，依赖缺失成为可见红灯失败；装配竞态在 CI/依赖安装层处理。
 from e2a.message import Message
 from agent_gateway.common.delivery_dedup import DeliveryDedup, request_seen_before
 from tests.unit_tests.channel.test_feishu_p1_echo_guard import _make_channel, _msg
@@ -1466,8 +1455,10 @@ def test_init_budget_validation_is_valueerror_not_assert(monkeypatch):
 
 
 def test_finalize_cardkit_swallows_unexpected_errors():
-    """评审意见 #202615220：finalize 抛非 CardKitError 异常同样必须兜住并以 False
-    返回，由调用方 abort 回收预留，不得击穿调用方造成预留泄漏至 TTL。"""
+    """评审意见 #202615220＋#202644735：finalize 抛非 CardKitError 异常同样必须兜住、
+    不得击穿调用方造成预留泄漏至 TTL。返回值精化：卡片已流出增量时按「内容已投递」
+    返回 True——返回 False 会触发调用方回退再投全文，与卡内已实时展示内容二次投递；
+    未流出任何增量时返回 False，由调用方回投递全文（恰好一次）。两分支均须弹清会话/缓冲。"""
     ch = _make_channel()
 
     class _Boom:
@@ -1478,7 +1469,12 @@ def test_finalize_cardkit_swallows_unexpected_errors():
     boom = _Boom()
     ch._cardkit_sessions[key] = boom
     ch._cardkit_buffers[key] = "增量缓冲"
-    assert asyncio.run(ch._finalize_cardkit_session(key, boom, "")) is False
+    assert asyncio.run(ch._finalize_cardkit_session(key, boom, "")) is True
+    assert key not in ch._cardkit_sessions and key not in ch._cardkit_buffers
+
+    boom2 = _Boom()
+    ch._cardkit_sessions[key] = boom2
+    assert asyncio.run(ch._finalize_cardkit_session(key, boom2, "")) is False
     assert key not in ch._cardkit_sessions and key not in ch._cardkit_buffers
 
 
