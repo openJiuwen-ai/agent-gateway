@@ -14,8 +14,9 @@
      ``Message.user_id`` / ``E2AEnvelope.user_id``
    - ``metadata["routing"] = {group_id, bot_id, gateway_id}``—— 路由维
      （E2A 上对应 ``channel_context.routing``）
-   - ``metadata["agent_identity"] = {agent_template_id}``—— 本次上传门禁使用的
-     Agent 配置模板 id（客户端声明，由上传门禁回查 Manager 校验）
+   - ``metadata["agent_identity"] = {agent_name, agent_id, runtime_template_id,
+     agent_template_id}``—— 平台展示身份（无业务路由含义，仅用于工作区落盘）；
+     其中 ``agent_template_id`` 同时由技能上传门禁回查 Manager 校验
 
    Gateway 入口用 :func:`normalize_routing_identity` + :func:`apply_routing_metadata`
    写一次；下游用 :func:`web_routing_identity` 一次读全（含顶层 ``user_id``）。
@@ -50,8 +51,14 @@ from e2a.identity import (
 )
 
 AGENT_IDENTITY_METADATA_KEY = "agent_identity"
-# 本次上传门禁只需要 Agent 配置模板 id；保留分组结构便于后续扩展。
-AGENT_IDENTITY_FIELDS = ("agent_template_id",)
+# 平台展示身份（由 Manager 计算），只在 metadata.agent_identity 内成组出现。
+# 其中 agent_template_id 亦供技能上传门禁使用。
+AGENT_IDENTITY_FIELDS = (
+    "agent_name",
+    "agent_id",
+    "runtime_template_id",
+    "agent_template_id",
+)
 
 
 def _identity_value(value: Any) -> str | None:
@@ -70,10 +77,11 @@ def _pick_field(mapping: Mapping[str, Any], field: str) -> str | None:
 def normalize_agent_identity(
     *sources: Mapping[str, Any] | None,
 ) -> dict[str, str]:
-    """从若干 mapping 归一化 Agent 模板 id（先出现的非空值为准）。
+    """从若干 mapping 归一化平台展示身份（先出现的非空值为准）。
 
-    与路由身份不同，这里没有必填项；缺失时返回空 dict，由上传门禁按
-    “无法确认”处理。
+    与路由身份不同，这里没有必填项：旧 Manager 可能只返回 ``agent_name``。
+    是否足以落盘由调用方按 ``agent_name`` + ``agent_id`` 判断；整体缺失时
+    返回空 dict，由上传门禁按“无法确认”处理。
     """
     identity: dict[str, str] = {}
     for source in sources:
@@ -91,11 +99,18 @@ def normalize_agent_identity(
 def normalize_agent_identity_query(
     query: Mapping[str, Any] | None,
 ) -> dict[str, str]:
-    """归一化 WS 握手 query 中的 Agent 模板 id。"""
+    """归一化 WS 握手 query 中的展示身份。
+
+    Query 的展示 id 键是 ``agent_identity_id``，避免与路由层的 ``agent_id``
+    （模式内 Agent id）冲突；这里映射回统一的 ``agent_id`` 字段。
+    """
     if not isinstance(query, Mapping):
         return {}
     return normalize_agent_identity(
         {
+            "agent_name": query.get("agent_name"),
+            "agent_id": query.get("agent_identity_id"),
+            "runtime_template_id": query.get("runtime_template_id"),
             "agent_template_id": query.get("agent_template_id"),
         }
     )
@@ -105,7 +120,7 @@ def apply_agent_identity_metadata(
     metadata: Mapping[str, Any] | None,
     identity: Mapping[str, str] | None,
 ) -> dict[str, Any]:
-    """把 Agent 模板 id 写入 ``metadata.agent_identity``（空身份则移除）。"""
+    """把平台展示身份写入 ``metadata.agent_identity``（空身份则移除）。"""
     meta = dict(metadata or {})
     cleaned = normalize_agent_identity(identity)
     if cleaned:

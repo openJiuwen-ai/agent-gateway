@@ -185,6 +185,9 @@ async def dispatch_http_request(
     _agent_identity = (
         normalize_agent_identity(
             {
+                "agent_name": _get_header(hdrs, "X-Agent-Name"),
+                "agent_id": _get_header(hdrs, "X-Agent-Id"),
+                "runtime_template_id": _get_header(hdrs, "X-Runtime-Template-Id"),
                 "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
             }
         )

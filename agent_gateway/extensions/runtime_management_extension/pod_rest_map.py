@@ -378,13 +378,20 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     不采用 ``channel_context`` 里客户端自带的名单。
 
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
+
+    平台展示身份 ``channel_context.agent_identity`` 经 ``X-Agent-Name`` /
+    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` / ``X-Agent-Template-Id``
+    透传，供 AgentServer 重建 ``metadata.agent_identity`` 并写入工作区留痕。
     """
     from agent_gateway.common.request_ext import (
         INTERNAL_HEADER_NAME,
         METADATA_KEY,
         encode_internal_header,
     )
-    from agent_gateway.common.request_identity import web_routing_identity
+    from agent_gateway.common.request_identity import (
+        read_agent_identity,
+        web_routing_identity,
+    )
 
     headers = {
         "X-Request-Id": str(envelope.request_id or ""),
@@ -428,6 +435,19 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
         headers["X-Cron-Meta"] = json.dumps(
             cron_meta, ensure_ascii=True, separators=(",", ":"),
         )
+    # 平台展示身份（Manager 计算的 agent_name / agent_id / 模板 id）同样只在
+    # channel_context 里，需经头透传；``X-Agent-Id`` 已被路由层 Agent id 占用，
+    # 展示 id 改用 ``X-Agent-Identity-Id``。
+    display_identity = read_agent_identity(channel_context)
+    for field, header_name in (
+        ("agent_name", "X-Agent-Name"),
+        ("agent_id", "X-Agent-Identity-Id"),
+        ("runtime_template_id", "X-Runtime-Template-Id"),
+        ("agent_template_id", "X-Agent-Template-Id"),
+    ):
+        value = display_identity.get(field)
+        if value:
+            headers[header_name] = value
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
