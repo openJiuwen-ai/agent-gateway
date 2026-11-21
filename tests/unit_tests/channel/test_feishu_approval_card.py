@@ -17,6 +17,8 @@ from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
     FeishuChannel,
     FeishuConfig,
     _ApprovalCardContext,
+    _OTHER_OPTION_TEXT,
+    _OTHER_PLACEHOLDER_TOKEN,
 )
 
 ALLOW_ONCE = {"label": "本次允许", "value": "allow_once"}
@@ -250,6 +252,7 @@ async def test_send_card_renders_every_question_and_saves_context(channel):
     assert ctx.chat_id == "oc_chat"
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_send_card_saves_interrupt_id_for_echo(channel):
     channel._create_and_send_message = AsyncMock()
@@ -278,7 +281,8 @@ def test_resume_params_omit_missing_interrupt_id(channel):
 
 
 @pytest.mark.asyncio
-async def test_other_option_is_not_rendered_as_button(channel):
+async def test_other_option_renders_as_custom_answer_button(channel):
+    """#140: Other 不再被丢弃，渲染为「其他（自定义答案）」并带文本作答引导。"""
     channel._create_and_send_message = AsyncMock()
     questions = [
         _question("第一题", [{"label": "红", "value": "red"}, {"label": "Other", "description": "Custom input"}]),
@@ -291,24 +295,40 @@ async def test_other_option_is_not_rendered_as_button(channel):
 
     card = json.loads(channel._create_and_send_message.await_args.args[0].content)
     action_blocks = [element for element in card["elements"] if element.get("tag") == "action"]
-    assert len(action_blocks) == 1
-    assert [button["value"]["value"] for button in action_blocks[0]["actions"]] == ["red"]
+    assert len(action_blocks) == 2
+    # 评审意见 #201604544→#201832613：占位按钮回传规范化为专用占位 token
+    # （与真实选项 value=other 不冲突），断言与过滤统一取常量，避免硬编码脱节。
+    assert [button["value"]["value"] for button in action_blocks[0]["actions"]] == ["red", _OTHER_PLACEHOLDER_TOKEN]
+    other_buttons = [
+        button for block in action_blocks for button in block["actions"]
+        if button["value"]["value"] == _OTHER_PLACEHOLDER_TOKEN
+    ]
+    assert other_buttons and all(
+        button["text"]["content"] == "其他（自定义答案）" for button in other_buttons
+    )
     rendered = json.dumps(card, ensure_ascii=False)
-    assert "该问题需要文字作答，请在网页端或终端完成。" in rendered
+    assert "该问题需要文字作答，请在网页端或终端完成。" not in rendered
+    assert "请在网页端或终端填写" in rendered  # 多题卡片：自定义答案引导到网页端/终端
+    # 评审意见 #202659447：多题逃生提示必须携生命周期前提（卡片提交前完成），
+    # 锁死 #202654738 修正后的文案语义，防止退回无时序限定的矛盾指引。
+    assert "须在本题卡片作答完成前提交" in rendered
 
 
-def test_other_only_question_is_not_answerable(channel):
+def test_other_only_question_answerable_via_text_not_button(channel):
+    """#140: Other-only 题目不计入可答题——不阻塞卡片完成，答案走文本回复路径（评审意见 #201604539）。"""
     ctx = _ctx(
         source="ask_user_interrupt",
         questions=[_question("自由题", [{"label": "Other", "description": "Custom input"}])],
     )
 
-    assert ctx.options_of(0) == []
-    assert ctx.answerable_indexes() == []
+    assert len(ctx.options_of(0)) == 1
+    assert ctx.options_of(0)[0].get("label") == "Other"
+    assert ctx.answerable_indexes() == []  # Other-only 不计入可答题（评审意见 #201604539）
     assert ctx.is_answered() is False
 
 
-def test_other_placeholder_click_is_rejected(channel):
+def test_other_placeholder_click_guides_text_reply(channel):
+    """#140: 点击 Other 返回文本作答引导（info），不写入答案。"""
     ctx = _ctx(
         source="ask_user_interrupt",
         questions=[_question("Q1", [{"label": "A1", "value": "a1"}, {"label": "Other", "description": "Custom input"}])],
@@ -319,7 +339,7 @@ def test_other_placeholder_click_is_rejected(channel):
         {"ref": {"request_id": "call_1", "index": 0}, "value": "Other"},
     ))
 
-    assert _toast_content(response) == "该题需要在网页端或终端填写答案"
+    assert "自定义答案" in _toast_content(response)
     assert channel._card_contexts["call_1"].answers == {}
 
 
@@ -345,6 +365,7 @@ async def test_permission_card_shows_tool_preview(channel):
     assert "rm -rf /tmp/x" in rendered
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_send_failure_drops_context(channel):
     channel._create_and_send_message = AsyncMock(side_effect=RuntimeError("boom"))
@@ -356,6 +377,7 @@ async def test_send_failure_drops_context(channel):
     assert "call_4" not in channel._card_contexts
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_multi_question_partial_answer_does_not_submit(channel):
     ctx = _ctx(
@@ -386,6 +408,7 @@ async def test_multi_question_partial_answer_does_not_submit(channel):
     assert "call_1" not in channel._card_contexts
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_permission_answer_submits_chat_send_with_card_id(channel):
     channel._save_card_context(_ctx())
@@ -432,6 +455,7 @@ async def test_expired_context_is_rejected_and_removed(channel):
     assert "call_1" not in channel._card_contexts
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_duplicate_click_after_submit_is_rejected(channel):
     channel._save_card_context(_ctx())
@@ -446,6 +470,7 @@ async def test_duplicate_click_after_submit_is_rejected(channel):
     notify.assert_awaited_once()
 
 
+# 评审意见 #202641835：恢复被本 diff 误删的 asyncio 标记，防 strict 模式静默跳过
 @pytest.mark.asyncio
 async def test_delivery_failure_reports_invalid_card_without_retry_hint(channel):
     channel._save_card_context(_ctx())
@@ -481,3 +506,142 @@ def test_unknown_request_id_reports_expired(channel):
     ))
 
     assert _toast_content(response) == "审批已过期或已处理"
+
+
+def test_click_side_other_placeholder_predicate_same_source(channel):
+    """P2 回归（atomgit 2026-11-18）：点击侧与渲染侧占位判定单源同判据。
+
+    {"label":"其他","value":"other"} 渲染为可点真选项（label 非 Other 占位），
+    点击侧此前按 value 字面 "other" 误判占位、弹文本引导且答案永不入卡＝死卡。
+    修复前：点击命中占位 toast＝红。"""
+    ctx = _ctx(
+        source="ask_user_interrupt",
+        questions=[_question("自定义", [{"label": "其他", "value": "other"}])],
+    )
+    channel._save_card_context(ctx)
+    response = channel._on_card_action_trigger_sync(_card_action(
+        {"ref": {"request_id": "call_1", "index": 0}, "value": "other"},
+    ))
+    # 评审意见 #202649866：裸「不含某串」断言恒真（修复前 toast 同样不含该串），
+    # 对「死卡」回归零免疫。改正向反证：修复后此点击走正常选项作答路径
+    # （单题应答完成＝「已提交，等待处理」），而非占位文本引导分支。
+    toast = _toast_content(response)
+    assert "已提交，等待处理" in toast
+    assert "请直接回复本条消息的文本" not in toast
+
+
+def test_click_other_without_text_channel_toasts_web_hint(channel):
+    """P3 覆盖补齐（atomgit 2026-11-18）：非 ask_user 来源的 Other 占位点击
+    不承诺文本作答，须引导网页端/终端——else-toast 此前无用例。"""
+    ctx = _ctx(
+        source="permission_interrupt",
+        questions=[_question("Q1", [ALLOW_ONCE, {"label": "Other", "description": "Custom input"}])],
+    )
+    channel._save_card_context(ctx)
+    response = channel._on_card_action_trigger_sync(_card_action(
+        # 评审意见 #202654738：占位按钮实际回传值是专用 token，非 "other" 字面——
+        # 用 _OTHER_OPTION_TEXT 模拟的是卡片不会回传的取值。
+        {"ref": {"request_id": "call_1", "index": 0}, "value": _OTHER_PLACEHOLDER_TOKEN},
+    ))
+    assert "网页端或终端填写" in _toast_content(response)
+    assert channel._card_contexts["call_1"].answers == {}
+
+
+@pytest.mark.asyncio
+async def test_single_question_other_hint_names_text_fallback(channel):
+    """P2 回归（atomgit 2026-11-18）：单题 Other 引导文案须带文本通路兜底
+    指引——文本回复通道不可用时用户知道去网页端/终端。修复前：无该句＝红。"""
+    channel._create_and_send_message = AsyncMock()
+    await channel._send_ask_user_question_card(_event_message(
+        "call_7", "ask_user_interrupt",
+        [_question("Q", [{"label": "A", "value": "a"},
+                         {"label": "Other", "description": "Custom input"}])],
+    ))
+    card = json.loads(channel._create_and_send_message.await_args.args[0].content)
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "若文本通路不可用，请在网页端或终端完成" in rendered
+
+
+def test_resume_params_omit_unanswered_other_only_question(channel):
+    """inline #201711463：Other-only 未答题不进 resume answers——无空
+    selected_options 项，与服务端 #6792「Other 自定义答案走文本通路、
+    卡片 resume 仅携真实作答」语义对齐的断言固化。"""
+    ctx = _ctx(
+        source="ask_user_interrupt",
+        questions=[
+            _question("真实题", [{"label": "A1", "value": "a1"}]),
+            _question("Other题", [{"label": "Other", "description": "Custom input"}]),
+        ],
+    )
+    ctx.answers[0] = "a1"
+    params = channel._build_resume_params(ctx)
+    assert params["answers"] == [{"question": "真实题", "selected_options": ["a1"]}]
+    assert all(a["selected_options"] for a in params["answers"])
+
+
+def test_real_other_option_and_placeholder_coexist_no_value_collision(channel):
+    """评审意见 #201832613 回归：真实选项 value=other 与 Other 占位同题共存——
+    渲染侧两按钮回传值必须不同（占位＝专用 token），点击侧占位 token 走文本
+    作答引导且答案不写入，裸 other 仍按真实选项处理不被占位吞掉。"""
+    opts = [{"label": "Other 选项", "value": "other"},
+            {"label": "Other", "description": "Custom input"}]
+    ctx = _ctx(source="ask_user_interrupt", questions=[_question("共存", opts)])
+    b_real = channel._approval_button(ctx, 0, opts[0])
+    b_ph = channel._approval_button(ctx, 0, opts[1])
+    # 评审意见 #202659447：真实选项按钮取值就是其字面 value "other"，与占位
+    # 专用常量无涉——用 _OTHER_OPTION_TEXT 断言是语义耦合，改字面值。
+    assert b_real["value"]["value"] == "other"
+    assert b_ph["value"]["value"] == _OTHER_PLACEHOLDER_TOKEN
+    assert b_ph["value"]["value"] != b_real["value"]["value"]
+    channel._save_card_context(ctx)
+    resp = channel._on_card_action_trigger_sync(_card_action(
+        {"ref": {"request_id": "call_1", "index": 0}, "value": _OTHER_PLACEHOLDER_TOKEN},
+    ))
+    assert "请直接回复本条消息的文本" in _toast_content(resp)
+    assert channel._card_contexts["call_1"].answers == {}
+    resp2 = channel._on_card_action_trigger_sync(_card_action(
+        {"ref": {"request_id": "call_1", "index": 0}, "value": "other"},
+    ))
+    # 评审意见 #202649866：同型恒真断言修正——裸 other 真实选项点击必须按正常
+    # 应答路径回「已提交，等待处理」，不得静默/不得落占位引导。
+    assert "已提交，等待处理" in _toast_content(resp2)
+
+
+def test_duplicate_value_with_leading_placeholder_click_hits_real_option(channel):
+    """评审意见 #201912955/#202437587：同题两选项 value 相同且占位在前——点击真实
+    选项的按钮不得被占位分支吞掉（不落文本作答引导），按正常选项路径应答。"""
+    ctx = _ctx(
+        source="ask_user_interrupt",
+        questions=[_question("Q1", [
+            {"label": "Other", "description": "Custom input", "value": "x"},
+            {"label": "A1", "value": "x"},
+        ])],
+    )
+    channel._save_card_context(ctx)
+
+    response = channel._on_card_action_trigger_sync(_card_action(
+        {"ref": {"request_id": "call_1", "index": 0}, "value": "x"},
+    ))
+
+    toast = _toast_content(response)
+    assert "自定义答案" not in toast, "真实选项点击被占位分支吞掉"
+    assert "已提交" in toast or "已选择" in toast
+    # 回显文案反查不得落在占位选项上：同值占位在前时反查结果必须是真实选项 A1。
+    assert channel._option_label(ctx, 0, "x") == "A1", "回显反查错成占位选项"
+
+
+def test_all_placeholder_duplicate_value_still_guides_text_reply(channel):
+    """全部命中皆为占位时维持占位语义（回落首个命中→文本作答引导）。"""
+    channel._save_card_context(_ctx(
+        source="ask_user_interrupt",
+        questions=[_question("Q1", [
+            {"label": "Other", "value": "x"},
+            {"label": "Other", "description": "alt", "value": "x"},
+        ])],
+    ))
+
+    response = channel._on_card_action_trigger_sync(_card_action(
+        {"ref": {"request_id": "call_1", "index": 0}, "value": "x"},
+    ))
+
+    assert "自定义答案" in _toast_content(response)
