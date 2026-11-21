@@ -29,7 +29,7 @@ from agent_gateway.extensions_v2.webui.models import (
     UiDownloadInput, UiSplashPreviewInput, valid_instance_key,
 )
 from agent_gateway.extensions_v2.webui.call_context import Caller
-from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX, UPSTREAM_EVENTS, WebUIEvent
+from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX, CODE_NO_CONTRIBUTION, UPSTREAM_EVENTS, WebUIEvent
 from agent_gateway.extensions_v2.webui.component_rules import validate_event_data
 from agent_gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
 from agent_gateway.extensions_v2.webui.host_settings import SplashPreferences
@@ -141,6 +141,8 @@ class BrowserBridge:
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
+        #: Gateway-domain package ids known to ``runtime.packages``; only positives are cached.
+        self._gateway_packages: set[str] = set()
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
 
     @property
@@ -156,6 +158,40 @@ class BrowserBridge:
     def application_enabled(self) -> bool:
         """Whether any active package contributes to a Gateway application slot."""
         return any(activation.application for activation in self.runtime.current_activations())
+
+    def _is_gateway_package(self, package_id: str) -> bool:
+        """Whether ``package_id`` belongs to the Gateway domain, active or not.
+
+        A Gateway package disabled by a snapshot restore keeps its files in the shared
+        store. Recognizing it lets a stale ``ui.*`` frame be answered locally instead of
+        being forwarded to AgentServer, which has no contribution for it and only lets
+        the request run into its unary timeout.
+        """
+        if package_id in self._gateway_packages:
+            return True
+        if not self.runtime.packages.owns(package_id):
+            return False
+        # Only positives are cached: an installed package must never stay hidden behind a
+        # stale negative, while a removal keeps the answer correct (no AgentServer
+        # contribution exists for a Gateway id either).
+        self._gateway_packages.add(package_id)
+        return True
+
+    def _inactive_gateway_target(self, params: Any) -> dict[str, Any] | None:
+        """Local receipt for a stale ``ui.*`` frame aimed at an inactive Gateway package.
+
+        Returns ``None`` for every other target so AgentServer packages keep being
+        forwarded exactly as before.
+        """
+        target = params.get("target") if isinstance(params, Mapping) else None
+        package_id = target.get("package_id", "") if isinstance(target, Mapping) else ""
+        if not isinstance(package_id, str) or not package_id:
+            return None
+        if any(package.package_id == package_id for package in self.application_packages()):
+            return None
+        if not self._is_gateway_package(package_id):
+            return None
+        return {"accepted": False, "status": "unhandled", "code": CODE_NO_CONTRIBUTION}
 
     @property
     def generations(self) -> Mapping[str, str]:
@@ -569,6 +605,7 @@ class BrowserBridge:
         Activation changes triggered by management frames are not followed by a business
         frame, so the next request may not connect and refresh them in time.
         """
+        self._gateway_packages.clear()
         for connection in list(self.connections.values()):
             async with connection.lock:
                 try:
@@ -601,8 +638,13 @@ class BrowserBridge:
                     and request.method == RESULT_METHOD):
                 response = self.presentations.complete(request.connection_id, dict(request.params))
                 return GatewayRequestOutput(handled=True, route="consume", response=response)
-            if (not self.application_enabled or not isinstance(request, GatewayRequestInput)
+            if (not isinstance(request, GatewayRequestInput)
                     or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
+                return await next_handler(event)
+            if not self.application_enabled:
+                stale = self._inactive_gateway_target(request.params)
+                if stale is not None:
+                    return GatewayRequestOutput(handled=True, route="consume", response=stale)
                 return await next_handler(event)
             receipt = await self.dispatch(request, ops.session_context)
             if receipt is None or _forwards_shared_agentserver_ready(request):
@@ -762,6 +804,10 @@ class BrowserBridge:
         package_id = target.get("package_id", "")
         own = self.application_packages()
         if package_id and not any(package.package_id == package_id for package in own):
+            # Installed but inactive Gateway package: AgentServer has no contribution, so
+            # forwarding would only wait for its unary timeout.
+            if isinstance(package_id, str) and self._is_gateway_package(package_id):
+                return UiActionOutput(accepted=False, status="unhandled", code=CODE_NO_CONTRIBUTION)
             return None
         slot_id = target.get("slot_id")
         if slot_id not in SLOTS:
