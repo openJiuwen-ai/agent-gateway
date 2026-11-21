@@ -50,6 +50,7 @@ async def test_input_received_not_delivered(caplog):
     ch._api_client.im.v1.message.create.assert_not_called()
     assert "[P1-guard]" in caplog.text
 
+@pytest.mark.asyncio
 async def test_unknown_event_not_delivered(caplog):
     ch = _make_channel()
     ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
@@ -61,6 +62,7 @@ async def test_unknown_event_not_delivered(caplog):
     ch._api_client.im.v1.message.create.assert_not_called()
     assert "[P1-guard]" in caplog.text
 
+@pytest.mark.asyncio
 async def test_final_delivered_normally():
     ch = _make_channel()
     ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
@@ -68,6 +70,7 @@ async def test_final_delivered_normally():
     await ch.send(_msg(event_name="chat.final", content="写入成功，文件在 SMB"))
     ch._send_feishu_message.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_echo_suppressed():
     ch = _make_channel()
     ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
@@ -76,6 +79,7 @@ async def test_echo_suppressed():
     await ch.send(_msg(event_name="chat.final", content="这么简单的事情，搞不定"))
     ch._send_feishu_message.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_similar_but_different_not_killed():
     ch = _make_channel()
     ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
@@ -84,6 +88,7 @@ async def test_similar_but_different_not_killed():
     await ch.send(_msg(event_name="chat.final", content="搞不定的问题已经解决"))
     ch._send_feishu_message.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_output_phase_not_delivered(caplog):
     ch = _make_channel()
     ch._extract_receive_info = MagicMock(return_value=("oc_x", "chat_id"))
@@ -97,6 +102,7 @@ async def test_output_phase_not_delivered(caplog):
 
 # ── 误杀降级策略：最小长度 / 时间窗 / 命中消费（atomgit gw49-2）──
 
+@pytest.mark.asyncio
 async def test_short_reply_not_killed():
     """短句回复（< _ECHO_MIN_CHARS）超紧窗后与入站全同照常放行，不误杀。
 
@@ -110,6 +116,7 @@ async def test_short_reply_not_killed():
     await ch.send(_msg(event_name="chat.final", content="好的"))
     ch._send_feishu_message.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_stale_input_beyond_window_not_matched():
     """入站记录超过时间窗（_ECHO_WINDOW_SECONDS）后不参与比对，误杀窗口有界。"""
     ch = _make_channel()
@@ -119,6 +126,7 @@ async def test_stale_input_beyond_window_not_matched():
     await ch.send(_msg(event_name="chat.final", content="这么简单的事情，搞不定"))
     ch._send_feishu_message.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_echo_hit_consumes_record():
     """命中即消费：第一次同文回复被拦，之后合法同文回复放行。"""
     ch = _make_channel()
@@ -134,6 +142,7 @@ async def test_echo_hit_consumes_record():
 
 # ── 守卫二前移：cardkit 流式早退之前必须先过回声守卫 ──
 
+@pytest.mark.asyncio
 async def test_echo_hit_cleanup_finalizes_cardkit_session():
     """守卫二命中收尾锁定（gw49 force-scan P3-4）：cardkit 会话以已流出缓冲
     finalize 回收、增量缓冲弹出、卡片不卡「生成中」。"""
@@ -154,6 +163,7 @@ async def test_echo_hit_cleanup_finalizes_cardkit_session():
     assert key not in ch._cardkit_sessions
     assert "req_t1" not in ch._stream_text_buffers
 
+@pytest.mark.asyncio
 async def test_cardkit_echo_guard_runs_before_cardkit():
     """echo 场景：守卫二在 cardkit 流式早退之前拦截（cardkit 处理器未被 await）。"""
     ch = _make_channel()
@@ -163,6 +173,7 @@ async def test_cardkit_echo_guard_runs_before_cardkit():
     await ch.send(_msg(event_name="chat.final", content="这么简单的事情，搞不定"))
     ch._handle_cardkit_streaming_event.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_cardkit_normal_final_reaches_cardkit():
     """正常 chat.final：守卫放行，cardkit 流式路径照常接管。"""
     ch = _make_channel()
@@ -171,6 +182,7 @@ async def test_cardkit_normal_final_reaches_cardkit():
     await ch.send(_msg(event_name="chat.final", content="正常回复正文，不构成入站回声"))
     ch._handle_cardkit_streaming_event.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_echo_key_uses_feishu_chat_id_fallback():
     """会话键统一：入站按 chat_id（oc_x）录制；出站 session_id 被 /new_session
     改写为其他值后，守卫仍按 meta.feishu_chat_id 命中拦截。"""
@@ -235,6 +247,7 @@ async def test_on_message_inbound_key_aligns_with_outbound_guard():
     await ch.send(m)
     ch._send_feishu_message.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_on_message_records_raw_text_variant_for_mention_mismatch():
     """双源录制锁定（atomgit gw49-4）：解析态经 mention 名字替换后与出站原文
     不同源时，原始 text 字段变体仍能命中守卫。"""
@@ -253,6 +266,7 @@ async def test_on_message_records_raw_text_variant_for_mention_mismatch():
     await ch.send(m)
     ch._send_feishu_message.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_on_message_bot_messages_not_recorded():
     """机器人自身消息不录制：sender_type=bot 的入站不进回声比对账本。"""
     ch = _make_channel()
@@ -265,6 +279,7 @@ async def test_on_message_bot_messages_not_recorded():
 
 # ── W2 名字形变体（B1 RED，plan §1.3 W2）──
 
+@pytest.mark.asyncio
 async def test_on_message_records_name_form_variant_for_mention_echo():
     """名字形回声命中（RED→GREEN）：入站 mention 占位符形经本地零 HTTP 归一化
     增补名字形解析态变体后，出站名字形回声被守卫拦截。"""
@@ -292,6 +307,7 @@ async def test_on_message_records_name_form_variant_for_mention_echo():
 
 # ── W3 合并流式+final 比对（B1 RED，plan §1.3 W3）──
 
+@pytest.mark.asyncio
 async def test_echo_guard_uses_merged_stream_and_final_text():
     """守卫比 candidate=merge(peek 缓冲, final)：三形态收尾仅一次 pop、终态缓冲空。"""
     echo = "这么简单的事情，搞不定真得好好反思一下"
@@ -327,6 +343,7 @@ async def test_echo_guard_uses_merged_stream_and_final_text():
     assert "req_t1" not in ch3._stream_text_buffers
 
 
+@pytest.mark.asyncio
 async def test_cleanup_nonterminal_frame_keeps_buffer():
     """P2①（p2 镜像）：非终态事件收尾不得弹出增量缓冲——缓冲弹出唯一在终态集合内。"""
     ch = _make_channel()
@@ -336,6 +353,7 @@ async def test_cleanup_nonterminal_frame_keeps_buffer():
     await ch._cleanup_suppressed_frame(m, "chat.delta", key, None)
     assert ch._stream_text_buffers.get(key) == "已流出的增量文本内容"
 
+@pytest.mark.asyncio
 async def test_cleanup_terminal_frame_still_pops_buffer():
     """P2① 反向锁：终态 chat.final 收尾照常弹出缓冲（勿把修复写成不弹）。"""
     ch = _make_channel()
@@ -347,6 +365,7 @@ async def test_cleanup_terminal_frame_still_pops_buffer():
     assert key not in ch._stream_text_buffers
 
 
+@pytest.mark.asyncio
 async def test_echo_guard_reads_cardkit_stream_buffer():
     """round-e P2#1：cardkit 流式模式 delta 只写 _cardkit_buffers，比对面必含该缓存。"""
     echo = "这么简单的事情，搞不定真得好好反思一下"
@@ -360,6 +379,7 @@ async def test_echo_guard_reads_cardkit_stream_buffer():
     await ch.send(m)
     ch._send_feishu_message.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_cleanup_partial_final_frame_not_terminal():
     """round-e P2#2：is_complete=False 的 chat.final 部分帧非终态——不弹缓冲不提前 finalize。"""
     echo = "这么简单的事情，搞不定真得好好反思一下"
@@ -401,6 +421,7 @@ async def test_cleanup_suppressed_chat_error_registers_errored_key():
     assert "req_t1" in ch._errored_stream_keys
     assert "req_t1" not in ch._stream_text_buffers
 
+@pytest.mark.asyncio
 async def test_cleanup_processing_status_terminal_not_marked_errored():
     """反向锁：终态 processing_status 抑制收尾不登记 errored（只有 chat.error 登记）。"""
     ch = _make_channel()
@@ -411,6 +432,7 @@ async def test_cleanup_processing_status_terminal_not_marked_errored():
     assert "req_t1" not in ch._errored_stream_keys
 
 
+@pytest.mark.asyncio
 async def test_guard1_blocks_blacklisted_event_even_with_parsed_enum():
     """round-g P2：ensure_gateway_event_types() 动态补枚举后，黑名单事件名解析成
     EventType（msg.event_type 非 None）守卫一仍须拦截——旧写法整体挂在
@@ -444,6 +466,7 @@ async def test_output_suppressed_chat_error_registers_errored():
     ch._send_feishu_message.assert_not_awaited()
     assert "req_t1" in ch._errored_stream_keys
 
+@pytest.mark.asyncio
 async def test_output_suppressed_processing_status_deferred_no_errored():
     """反向锁（D1 契约）：output_suppressed 的 processing_status 延后收尾，
     不弹缓冲不登记 errored——收尾交给后续终态抑制帧。"""
@@ -463,6 +486,7 @@ async def test_output_suppressed_processing_status_deferred_no_errored():
     assert "req_t1" not in ch._errored_stream_keys
 
 
+@pytest.mark.asyncio
 async def test_output_suppressed_processing_status_terminal_settles_buffer():
     """配对锁（atomgit gw49 id=200074234）：is_processing=False 的终态抑制帧
     当场收尾——缓冲弹出、不登记 errored（抑制帧不投递，收尾非失败），
@@ -479,6 +503,7 @@ async def test_output_suppressed_processing_status_terminal_settles_buffer():
     assert ch._stream_text_buffers.get("req_t1") is None
     assert "req_t1" not in ch._errored_stream_keys
 
+@pytest.mark.asyncio
 async def test_whitelist_arm_passes_known_enum_event_in_payload_form():
     """round-k P2：白名单臂只拦「未识别」事件名——payload 形态的已知枚举事件
     （cron 侧 event_type=None＋payload.event_type=chat.file 等）不得静默丢弃，
@@ -492,6 +517,7 @@ async def test_whitelist_arm_passes_known_enum_event_in_payload_form():
     assert ch._guard_blocked_total == 0
     ch._send_feishu_message.assert_awaited_once()
 
+@pytest.mark.asyncio
 async def test_whitelist_arm_still_drops_truly_unknown_payload_event():
     """反向锁：payload 形态的真·未知名事件仍被守卫一拦截（计数＋不投递）。"""
     ch = _make_channel()
@@ -503,6 +529,7 @@ async def test_whitelist_arm_still_drops_truly_unknown_payload_event():
     assert ch._guard_blocked_total == 1
     ch._send_feishu_message.assert_not_awaited()
 
+@pytest.mark.asyncio
 async def test_whitelist_arm_passes_dynamically_registered_event_value():
     """round-l P2：已知事件值判定必须**动态**求值——ensure_protocol_member 运行期
     向 EventType 注入的成员（ensure_gateway_event_types 机制）不得被导入期快照
@@ -540,6 +567,7 @@ async def test_whitelist_arm_passes_dynamically_registered_event_value():
             assert value not in EventType._value2member_map_
             assert name not in getattr(EventType, "_member_names_", ())
 
+@pytest.mark.asyncio
 async def test_echo_guard_covers_processing_status_flush():
     """round-m P2：chat.processing_status 终态冲刷缓冲的投递面与守卫二同源比对——
     缓冲回声文本命中入站记录必须抑制（旧路径完全绕过比对）。"""
@@ -556,6 +584,7 @@ async def test_echo_guard_covers_processing_status_flush():
     ch._send_feishu_message.assert_not_awaited()
     assert ch._echo_blocked_total == 1
 
+@pytest.mark.asyncio
 async def test_processing_status_flush_delivers_non_echo_text():
     """反向锁：冲刷文本非回声时照常投递。"""
     ch = _make_channel()
@@ -570,6 +599,7 @@ async def test_processing_status_flush_delivers_non_echo_text():
     ch._send_feishu_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_flush_echo_suppression_routes_cleanup():
     """round-n P3：冲刷回声抑制不得绕过收尾清理——群进度清理须执行
     （与守卫二命中/去重命中同收尾契约；裸 return＝verdict 200075834）。"""
@@ -589,6 +619,7 @@ async def test_flush_echo_suppression_routes_cleanup():
     ch._clear_group_progress_state.assert_called_once_with("req_t1")
 
 
+@pytest.mark.asyncio
 async def test_record_inbound_atbot_keyless_parsed_variant():
     """round-q P2（verdict 200095280）：@机器人解析态录制——模型回声用户文本会连头部
     @bot 一并剥除，原始态/名字形双源均失配；剔除全部 mention key 并去首尾空的
@@ -604,6 +635,7 @@ async def test_record_inbound_atbot_keyless_parsed_variant():
     assert "帮我查一下今天天气并给出建议" in texts
 
 
+@pytest.mark.asyncio
 async def test_status_flush_nonterminal_echo_hit_keeps_record():
     """round-q P3（verdict 200095280）：中间 processing_status 帧回声命中只拦不消费记录——
     同文终态帧抵达仍须命中拦截（镜像守卫二仅终帧消费契约）。"""
@@ -632,6 +664,7 @@ async def test_status_flush_nonterminal_echo_hit_keeps_record():
     assert not any(t == text for t, _ in ch._recent_user_inputs.get("sess_x", ()))
 
 
+@pytest.mark.asyncio
 async def test_record_inbound_atbot_mixed_mentions_parsed_state():
     """round-r P2（verdict 200136390）：混合 @（机器人＋同事）——运行时
     `_replace_mentions_with_names` 解析态＝剥 @机器人 占位＋@其他→@名字；
@@ -648,6 +681,7 @@ async def test_record_inbound_atbot_mixed_mentions_parsed_state():
     assert "帮我问下 @李四 下午评审时间" in texts
 
 
+@pytest.mark.asyncio
 async def test_record_inbound_bot_mention_not_first():
     """round-s（verdict 200147104 测试缺口）：@机器人 不在首位——解析态＝原位摘除
     占位符其余保留，录制面须锁定该形态命中。"""
@@ -662,6 +696,7 @@ async def test_record_inbound_bot_mention_not_first():
     assert "先夸一句 然后帮我订会议室" in texts
 
 
+@pytest.mark.asyncio
 async def test_record_inbound_many_mentions_original_survives():
     """round-s P2（verdict 200147104）：多 mention（≥3）变体生成数超环形缓存旧容量
     8，原始态最先入列反被挤出、守卫静默失效——容量须容得下一消息全变体族。"""
@@ -679,6 +714,7 @@ async def test_record_inbound_many_mentions_original_survives():
     assert len(texts) >= 9
 
 
+@pytest.mark.asyncio
 async def test_on_message_records_mention_position_variants():
     """位置变体（atomgit gw49 id=200150749）：同事 @ 在首位、机器人 @ 不在首位，
     录制集合仍含名字形解析态变体并命中回声守卫；期望值由 mention 元数据
@@ -712,6 +748,7 @@ async def test_on_message_records_mention_position_variants():
     ch._send_feishu_message.assert_not_awaited()
     ch._fetch_bot_open_id.assert_not_called()
 
+@pytest.mark.asyncio
 async def test_cleanup_salvages_cardkit_when_receive_info_raises():
     """评审意见 #200679559：收件地址解析抛异常——cardkit 会话按请求前缀兜底
     finalize、缓冲回收，卡片不得永久停在「生成中」（终态收尾契约闭环）。"""
@@ -732,6 +769,7 @@ async def test_cleanup_salvages_cardkit_when_receive_info_raises():
     assert not ch._cardkit_buffers
 
 
+@pytest.mark.asyncio
 async def test_cleanup_error_salvage_still_registers_errored():
     """重排反向锁：解析异常路径 chat.error 的 errored 登记照旧（round-g P2 语义不丢）。"""
     ch = _make_channel()
@@ -743,6 +781,7 @@ async def test_cleanup_error_salvage_still_registers_errored():
     assert "req_t1" not in ch._stream_text_buffers
 
 
+@pytest.mark.asyncio
 async def test_mention_prefix_keys_do_not_pollute_variants():
     """评审意见 #200715966：同消息内较短 mention key 是较长 key 的前缀
     （@_user_1 / @_user_12），str.replace 连带改写长 key 产生被污染变体。
@@ -775,6 +814,7 @@ async def test_mention_prefix_keys_do_not_pollute_variants():
     ch._send_feishu_message.assert_not_awaited()
 
 
+@pytest.mark.asyncio
 async def test_empty_chat_id_recording_skipped_with_debug_log(caplog):
     """评审意见 #200899315：chat_id 缺失的入站消息不得落空串键——空键与
     出站守卫键（feishu_chat_id/session_id，真实投递帧恒非空）永不匹配，录制
@@ -794,6 +834,7 @@ async def test_empty_chat_id_recording_skipped_with_debug_log(caplog):
     assert any("empty chat_id" in r.message for r in caplog.records), "debug 留痕缺位"
 
 
+@pytest.mark.asyncio
 async def test_errored_stream_nonstream_status_no_completed():
     """建议1 回归（atomgit 2026-11-18）：已出错流的非流式冲刷面不得补发
     「[状态] 已完成」——chat.error 正常投递后，空正文终态 status 帧在
@@ -812,6 +853,7 @@ async def test_errored_stream_nonstream_status_no_completed():
     assert "req_t1" not in ch._errored_stream_keys  # 标记被消费，无泄漏
 
 
+@pytest.mark.asyncio
 async def test_guard2_short_nudge_echo_suppressed_in_tight_window():
     """建议2 回归（atomgit 2026-11-18）：短催办（「继续」）不再被长度阈值
     整类排除比对面——紧窗（30s）内精确重复按回声拦截。修复前：短文被
@@ -826,6 +868,7 @@ async def test_guard2_short_nudge_echo_suppressed_in_tight_window():
     ch._send_feishu_message.assert_not_awaited()
 
 
+@pytest.mark.asyncio
 async def test_guard2_short_text_beyond_tight_window_delivered():
     """紧窗镜像：短文本记录超 30s 窗视为用户新意图，投递放行（防误杀）。"""
     ch = _make_channel()
@@ -838,6 +881,7 @@ async def test_guard2_short_text_beyond_tight_window_delivered():
     ch._send_feishu_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_record_inbound_six_mentions_full_name_form_recorded():
     """评审意见 #201653214：mention n≥6——旧 ≤5 整块上限下全量替名/@_all 形
     均不生成，「全部 mention 解析为名字」回声形态零录制、守卫二静默漏拦。
@@ -893,6 +937,7 @@ async def test_salvage_finalize_carries_errored_interruption_note():
     assert "[状态] 任务因错误中断，未正常完成" in session.finalize.await_args.args[0]
 
 
+@pytest.mark.asyncio
 async def test_guard2_empty_session_key_leaves_trace_and_counts(caplog):
     """评审意见 #201821028：出站空键留痕——feishu_chat_id 与 session_id 双缺时
     守卫二必不命中，须打 debug 留痕（携 req）并 lifetime 计数 +1（stop() 汇总），
@@ -910,6 +955,7 @@ async def test_guard2_empty_session_key_leaves_trace_and_counts(caplog):
                for r in caplog.records)
 
 
+@pytest.mark.asyncio
 async def test_echo_guard_flush_over_4000_truncation_aligned():
     """评审意见 #201844323：>4000 字符流式回声——入站录制形态为截断形（4000+...），
     冲刷面候选比对前套用同一截断，守卫二必须命中抑制（修前冲刷候选为全文，
@@ -929,6 +975,7 @@ async def test_echo_guard_flush_over_4000_truncation_aligned():
     assert ch._echo_blocked_total == 1
 
 
+@pytest.mark.asyncio
 async def test_echo_guard_final_over_4000_truncation_aligned():
     """评审意见 #201844323 同族（终帧面 buffered_peek 候选）：>4000 流缓冲文本
     与截断录制值对齐后命中守卫二，修前 cand_set 全文形不等＝漏拦。"""
@@ -972,6 +1019,7 @@ async def test_guard2_cardkit_peek_targets_exact_delivery():
     assert ch._cardkit_buffers["req_t1\0oc_a\0chat_id"] == "目标A卡片文本"
 
 
+@pytest.mark.asyncio
 async def test_guard2_cardkit_peek_wrong_target_not_echo_killed():
     """投递目标 A 时只取 A 的缓冲：A 缓冲与入站不同文则终稿放行，不得被
     B 目标缓冲（与入站全同）顶替造成误拦。"""
@@ -987,6 +1035,7 @@ async def test_guard2_cardkit_peek_wrong_target_not_echo_killed():
     ch._send_feishu_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_guard2_cardkit_peek_receive_parse_precise_key():
     """无 routing_target 时走收件解析重建精确键：解析出的目标缓冲参与比对，
     行为与 delivery 路径一致。"""
@@ -1002,6 +1051,7 @@ async def test_guard2_cardkit_peek_receive_parse_precise_key():
     ch._send_feishu_message.assert_not_awaited()
 
 
+@pytest.mark.asyncio
 async def test_guard2_cardkit_peek_parse_failure_falls_back_to_prefix():
     """收件解析异常时退回请求前缀扫描兜底（与收尾侧主/兜底路径同构），
     前缀下首个非空缓冲仍参与比对，守卫不因解析失败而失效。"""
@@ -1018,6 +1068,7 @@ async def test_guard2_cardkit_peek_parse_failure_falls_back_to_prefix():
 
 # ── 误报面锁定＋抑制日志可观测性＋回退键留痕 ──
 
+@pytest.mark.asyncio
 async def test_echo_guard_group_member_unrelated_false_positive_face():
     """已知误报面锁定：录制范围覆盖群内全部非 bot 用户消息（含未 @ 机器人
     者），群成员无关消息与机器人合法回复全文相等时，当轮被守卫二误判回声
@@ -1035,6 +1086,7 @@ async def test_echo_guard_group_member_unrelated_false_positive_face():
     ch._send_feishu_message.assert_awaited_once()
 
 
+@pytest.mark.asyncio
 async def test_echo_guard_suppression_log_carries_matched_snippet_and_age(caplog):
     """抑制命中 warning 日志携命中记录截断片段（前 32 字符）与 age（秒）——
     「机器人没回」排查可直接定位触发的入站消息，免人工时间线对齐。"""
@@ -1051,6 +1103,7 @@ async def test_echo_guard_suppression_log_carries_matched_snippet_and_age(caplog
     assert "age=" in recs[0].getMessage()
 
 
+@pytest.mark.asyncio
 async def test_echo_guard_session_key_fallback_logged(caplog):
     """feishu_chat_id 缺失但 session_id 非空时，回退键形态打 debug 留痕＋
     lifetime 计数——排查可区分「台账无记录」与「键错位」两类漏拦。"""
@@ -1065,6 +1118,7 @@ async def test_echo_guard_session_key_fallback_logged(caplog):
     assert ch._echo_key_fallback_total == 1
 
 
+@pytest.mark.asyncio
 async def test_suppressed_terminal_frame_preserves_errored_marker():
     """错误序列：受回声抑制的终帧（非 chat.error）不得撤销 errored 标记——唯一消费
     点交回终态冲刷帧，避免其后 processing_status 补发「[状态] 已完成」。"""
@@ -1076,6 +1130,7 @@ async def test_suppressed_terminal_frame_preserves_errored_marker():
     assert "req_t1" in ch._errored_stream_keys
 
 
+@pytest.mark.asyncio
 async def test_suppressed_clean_terminal_frame_clears_errored_marker():
     """正常终帧（无错误标记）收尾不留 errored——防泄漏清理契约不变。"""
     ch = _make_channel()
@@ -1085,6 +1140,7 @@ async def test_suppressed_clean_terminal_frame_clears_errored_marker():
     assert "req_t1" not in ch._errored_stream_keys
 
 
+@pytest.mark.asyncio
 async def test_suppressed_error_frame_reinstates_errored_marker():
     """chat.error 受抑帧就地重登记（round-g 不变）：收尾后 errored 在席。"""
     ch = _make_channel()
