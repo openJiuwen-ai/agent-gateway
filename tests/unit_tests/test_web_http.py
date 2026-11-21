@@ -371,6 +371,7 @@ def test_http_dispatch_session_create_emits_resolve_identity(
     from agent_gateway.channel_manager.base import RobotMessageRouter
     from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
     from agent_gateway.channel_manager.web import web_http_dispatch as disp
+    from agent_gateway.channel_manager.web import client_trust
 
     channel = WebChannel(WebChannelConfig(host="127.0.0.1", port=0), RobotMessageRouter())
     audit_calls: list[dict[str, Any]] = []
@@ -383,6 +384,7 @@ def test_http_dispatch_session_create_emits_resolve_identity(
         _capture_ua,
     )
     monkeypatch.setattr(disp, "is_enterprise", lambda: True)
+    monkeypatch.setattr(client_trust, "is_enterprise", lambda: True)
 
     async def _handler(ws, req_id, params, session_id, **kwargs):
         await channel.send_response(ws, req_id, ok=True, payload={"id": "s1"})

@@ -119,11 +119,7 @@ def apply_agent_identity_metadata(
 ) -> dict[str, Any]:
     """把平台展示身份写入 ``metadata.agent_identity``（空身份则移除）。"""
     meta = dict(metadata or {})
-    cleaned = {
-        field: value
-        for field, value in normalize_agent_identity(identity).items()
-        if field in AGENT_IDENTITY_FIELDS
-    }
+    cleaned = normalize_agent_identity(identity)
     if cleaned:
         meta[AGENT_IDENTITY_METADATA_KEY] = cleaned
     else:
