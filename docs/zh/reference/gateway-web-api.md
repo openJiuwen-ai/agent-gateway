@@ -1797,6 +1797,8 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.1 配置与模型
 
+个人版不支持 `GATEWAY_AGENT_CLIENT_MODE=runtime`；请不设置该变量，使用默认的 WebSocket 客户端。显式选择 runtime 会在扩展加载前报错，不会回落到 WebSocket。
+
 **分发契约（A4g/A5）**：`config.get/set/save_all/validate_model`、`models.*`、`model_groups.*`、`multimodal.*`（6 个，§10.1）、`session.selection.set` 经 `_register_config_proxy` 注册——**个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地**；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler（`app_web_handlers.py:5714-5759`）。`config.moa_status` 与 `models.refresh_status` **恒 E2A**（无本地 handler）。`vendors.*`、`openai_account.*`、`connection.status`、`locale.*` 为网关本地 handler。转发前删客户端传入的 `_auth_session` 键、改注入连接登录会话（`:5735-5746`）。企业版写保护（WS 与 HTTP 双入口共用 `invoke.is_enterprise_write_forbidden` 统一 guard，`invoke.py:79`）：`config.set/save_all`、`models.replace_all/save/remove/set_active`、`multimodal.models.upsert/delete`、`multimodal.tools.update`、`multimodal.config.apply` → `FORBIDDEN "企业版配置由管理面统一下发"`（multimodal 读接口 list/get 放行）。
 
 #### config.get

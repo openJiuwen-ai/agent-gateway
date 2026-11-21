@@ -19,7 +19,9 @@ from agent_gateway.extensions.registry import ExtensionRegistry
 
 
 @pytest.mark.parametrize("selected", ["agentos_router", "adx_router"])
-def test_runtime_conflicting_configuration_fails(selected):
+def test_runtime_conflicting_configuration_fails(selected, monkeypatch):
+    # runtime 只允许企业版，先满足该前提，再验证 router 类型冲突。
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     with pytest.raises(AgentClientModeError, match=f"type={selected}"):
         validate_agent_client_configuration(
             {"gateway": {"agent_client": {"type": selected}}}, mode="runtime",
@@ -33,7 +35,8 @@ def test_router_client_types_cover_both_router_extensions(selected):
 
 
 @pytest.mark.parametrize("configured", ["AGENTOS_ROUTER", " adx_router "])
-def test_runtime_conflict_check_normalizes_configured_type(configured):
+def test_runtime_conflict_check_normalizes_configured_type(configured, monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     with pytest.raises(AgentClientModeError):
         validate_agent_client_configuration(
             {"gateway": {"agent_client": {"type": configured}}}, mode="runtime",
@@ -136,7 +139,9 @@ async def test_app_runtime_load_failure_never_constructs_websocket(monkeypatch):
     from agent_gateway.routing import agent_client
 
     monkeypatch.setenv("GATEWAY_AGENT_CLIENT_MODE", "runtime")
-    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: False)
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr("agent_gateway.extensions.redis.init_gateway_redis_from_config", AsyncMock())
+    monkeypatch.setattr("agent_gateway.storage_assembly.setup.start_gateway_storage", AsyncMock())
     monkeypatch.setattr("agent_gateway.common.config.get_config", lambda: {})
     registry = SimpleNamespace(get_agent_server_client_extension=lambda: None)
     monkeypatch.setattr(ExtensionRegistry, "create_instance", lambda **kwargs: registry)
