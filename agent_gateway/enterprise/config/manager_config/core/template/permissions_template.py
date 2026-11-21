@@ -15,18 +15,10 @@ from agent_gateway.config.enterprise.tables.template_models import (
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import PermissionsTemplateUpdateRequest
+from .template_id import normalize_template_id
 
 _TABLE = PERMISSIONS_TEMPLATE_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 def _normalize_body(value: Any) -> dict[str, Any]:
@@ -41,7 +33,7 @@ async def _get_row_for_instance(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 async def update_permissions_template(
@@ -51,7 +43,7 @@ async def update_permissions_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
         return None
@@ -76,7 +68,7 @@ async def delete_permissions_template(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row_for_instance(repo, tid)
     if existing is None:
         return False
@@ -88,7 +80,7 @@ def _build_row_from_template(
     *,
     now: Any,
 ) -> dict[str, Any]:
-    template_uuid = _normalize_template_id(template.get("template_id"))
+    template_uuid = normalize_template_id(template.get("template_id"))
     return {
         "template_id": template_uuid,
         "template_name": str(template["template_name"]).strip(),
@@ -106,7 +98,7 @@ async def _upsert_permissions_template_from_sync(
     template: dict[str, Any],
 ) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(template, now=now)
     if existing is None:
@@ -132,7 +124,7 @@ async def _sync_permissions_templates_records(
     for item in templates:
         if not isinstance(item, dict):
             raise ValueError("permissions_templates.sync templates must be objects")
-        tid = _normalize_template_id(item.get("template_id"))
+        tid = normalize_template_id(item.get("template_id"))
         incoming_ids.add(tid)
         await _upsert_permissions_template_from_sync(repo, item)
         synced += 1
@@ -158,7 +150,7 @@ class PermissionsTemplateService:
         repo = require_enterprise_repository(_TABLE)
         await _upsert_permissions_template_from_sync(repo, template)
         result = {
-            "template_id": _normalize_template_id(template.get("template_id")),
+            "template_id": normalize_template_id(template.get("template_id")),
         }
         logger.info(
             "[ManagerConfigReceiver] permissions_templates create template_id=%s",
@@ -176,7 +168,7 @@ class PermissionsTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("permissions_templates.update requires non-empty updates")
         req = PermissionsTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         existing = await _get_row_for_instance(repo, tid)
         row = await update_permissions_template(
@@ -192,7 +184,7 @@ class PermissionsTemplateService:
     async def delete(self, template_id: str) -> None:
         if template_id is None:
             raise ValueError("permissions_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_permissions_template(repo, tid)
         logger.info(
