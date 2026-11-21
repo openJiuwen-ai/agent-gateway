@@ -29,6 +29,7 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.message_dedup import MessageDeduplicator
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
     FeishuFileService,
     is_audio_file,
@@ -427,7 +428,7 @@ class FeishuChannel(BaseChannel):
         self._websocket_client: Any = None  # WebSocket客户端（用于接收消息）
         self._websocket_connected = threading.Event()
         self._websocket_thread: threading.Thread | None = None  # WebSocket运行线程
-        self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()  # 消息去重缓存
+        self._message_deduplicator = MessageDeduplicator()
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
@@ -4139,16 +4140,7 @@ class FeishuChannel(BaseChannel):
         Returns:
             bool: True表示消息重复，False表示新消息
         """
-        if message_id in self._message_dedup_cache:
-            return True
-
-        self._message_dedup_cache[message_id] = None
-
-        # 修剪缓存：当超过1000时保留最近的500条
-        while len(self._message_dedup_cache) > 1000:
-            self._message_dedup_cache.popitem(last=False)
-
-        return False
+        return self._message_deduplicator.is_duplicate(message_id)
 
     def _parse_message_content(self, message: Any) -> str:
         """
