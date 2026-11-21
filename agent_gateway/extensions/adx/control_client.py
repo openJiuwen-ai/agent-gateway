@@ -267,9 +267,20 @@ class AdxControlClient:
         if not isinstance(result, dict):
             raise AdxControlError('Invalid ADX operation response')
         if result.get('error') and response.status_code in (200, 400, 404):
-            message = str(result['error'])
-            missing = 'not found' in message.lower() or 'no such file' in message.lower()
-            raise AdxControlError(message, code='NOT_FOUND' if missing else 'INTERNAL_ERROR')
+            error = result['error']
+            message = str(error.get('message') or result.get('message') or error) if isinstance(error, dict) else str(error)
+            error_code = str(error.get('code') or '') if isinstance(error, dict) else str(result.get('error_code') or '')
+            if error_code.upper() == 'FILE_NOT_FOUND':
+                code = 'file_not_found'
+            elif isinstance(error, dict) and error_code.upper() in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
+                code = 'instance_not_found'
+            elif (action.startswith('file.') and response.status_code in (200, 400)
+                  and ('not found' in message.lower() or 'no such file' in message.lower())):
+                # Older Execd file actions report path errors without a structured code.
+                code = 'file_not_found'
+            else:
+                code = error_code or 'INTERNAL_ERROR'
+            raise AdxControlError(message, code=code)
         if response.status_code >= 300:
             raise AdxControlError(f'ADX operation returned HTTP {response.status_code}')
         return result

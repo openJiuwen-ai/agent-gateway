@@ -9,7 +9,8 @@ from pathlib import PurePosixPath
 
 from agent_gateway.common.attachment_safety import is_forbidden_document, safe_upload_filename
 
-_AGENT_FILE_PATH_ROOT = "/home/agentos"
+AGENT_FILE_PATH_ROOT = "/home/agentos"
+MAX_UPLOAD_FILE_SIZE = 512 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ def normalize_agent_file_upload_path(
     if path_parent and path_parent != ".":
         parts.append(path_parent)
     parts.append(safe_name)
-    return f"{_AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
+    return f"{AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
 
 
 def normalize_agent_file_download_path(path: str) -> str:
@@ -108,7 +109,7 @@ def normalize_agent_file_download_path(path: str) -> str:
     posix = PurePosixPath(text)
     if ".." in posix.parts:
         raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    root = _AGENT_FILE_PATH_ROOT
+    root = AGENT_FILE_PATH_ROOT
     if text != root and not text.startswith(f"{root}/"):
         raise AgentOSFileTransferError(
             f"path must be under {root}",
@@ -117,3 +118,27 @@ def normalize_agent_file_download_path(path: str) -> str:
     return text
 
 
+
+
+def parse_single_byte_range(
+    range_header: str,
+    file_size: int,
+) -> tuple[int, int] | None:
+    """Parse one HTTP byte range without accepting multipart ranges."""
+    if file_size <= 0 or not range_header.startswith("bytes=") or "," in range_header:
+        return None
+    value = range_header[6:]
+    if "-" not in value:
+        return None
+    start_text, end_text = value.split("-", 1)
+    if not start_text:
+        if not end_text.isdecimal() or int(end_text) <= 0:
+            return None
+        return max(0, file_size - int(end_text)), file_size - 1
+    if not start_text.isdecimal() or (end_text and not end_text.isdecimal()):
+        return None
+    start = int(start_text)
+    if start >= file_size:
+        return None
+    end = min(int(end_text), file_size - 1) if end_text else file_size - 1
+    return (start, end) if end >= start else None
