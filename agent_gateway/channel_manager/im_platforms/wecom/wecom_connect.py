@@ -28,7 +28,8 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from agent_gateway.channel_manager.im_platforms.message_content import (
+from agent_gateway.channel_manager.im_platforms.thinking_content import (
+    is_thinking_only_content,
     strip_think_tags,
 )
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
@@ -1083,15 +1084,7 @@ class WecomChannel(BaseChannel):
     @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
         """判断内容是否为空或仅为占位符。"""
-        if not text or not isinstance(text, str):
-            return True
-        t = text.strip()
-        if not t:
-            return True
-        # 纯省略号、纯点
-        if re.match(r"^[.．。…\s]+$", t):
-            return True
-        return False
+        return is_thinking_only_content(text)
 
     def _extract_content_from_payload(self, msg: Message) -> str | None:
         """从 chat.delta / chat.final 的 payload 提取 content，无则返回 None。"""
