@@ -4,7 +4,11 @@ from collections import OrderedDict
 
 
 class MessageDeduplicator:
-    """Track recently seen message IDs while keeping memory bounded."""
+    """Track recently seen message IDs while keeping memory bounded.
+
+    Instances are not thread-safe. Use each instance within one thread's event
+    loop, or synchronize calls externally when sharing it across threads.
+    """
 
     def __init__(self, capacity: int = 1000) -> None:
         if capacity < 1:
