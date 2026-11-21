@@ -1233,6 +1233,10 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* frames carry target/root/revision/theme; the reduction to
+            # {session_id, content} drops them, so extension UI (for example the
+            # AgentServer token/weather widgets) never renders.
+            or event_name.startswith("webui.")
             or event_name == "cron.run.updated"
         )
 
