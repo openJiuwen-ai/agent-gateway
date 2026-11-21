@@ -374,9 +374,10 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
 
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
 
-    平台展示身份 ``channel_context.agent_identity`` 经 ``X-Agent-Name`` /
-    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` / ``X-Agent-Template-Id``
-    透传，供 AgentServer 重建 ``metadata.agent_identity`` 并写入工作区留痕。
+    平台展示身份 ``channel_context.agent_identity`` 中只透传 ``agent_id`` /
+    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` / ``X-Agent-Template-Id``；
+    ``agent_name`` 仅保留在 metadata，供 Gateway 本地展示/技能上传判定使用，不进入
+    AgentServer 的 HTTP 头（避免非 ASCII/控制字符导致请求失败）。
     """
     from agent_gateway.common.request_ext import (
         INTERNAL_HEADER_NAME,
@@ -422,12 +423,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
-    # 平台展示身份（Manager 计算的 agent_name / agent_id / 模板 id）同样只在
-    # channel_context 里，需经头透传；``X-Agent-Id`` 已被路由层 Agent id 占用，
-    # 展示 id 改用 ``X-Agent-Identity-Id``。
+    # 展示身份只透传可用于跨进程的 id / 模板 id；``X-Agent-Id`` 已被路由层
+    # Agent id 占用，展示 id 改用 ``X-Agent-Identity-Id``。``agent_name`` 是
+    # 人类可读展示名，可能含非 ASCII/控制字符，只保留在 metadata，不进入 HTTP 头。
     display_identity = read_agent_identity(channel_context)
     for field, header_name in (
-        ("agent_name", "X-Agent-Name"),
         ("agent_id", "X-Agent-Identity-Id"),
         ("runtime_template_id", "X-Runtime-Template-Id"),
         ("agent_template_id", "X-Agent-Template-Id"),

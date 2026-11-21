@@ -2113,7 +2113,9 @@ class WebChannel(BaseWsChannel):
         setattr(ws, "_web_routing", _routing)
         # 展示身份（Manager 计算的 agent_name/agent_id/模板 id）随连接保存，
         # 每条消息再写入 metadata.agent_identity 供 AgentServer 落盘。
-        setattr(ws, "_web_agent_identity", normalize_agent_identity_query(_flat_query))
+        # 仅企业版使用；个人版没有展示身份，也不接受客户端自带值。
+        if is_enterprise():
+            setattr(ws, "_web_agent_identity", normalize_agent_identity_query(_flat_query))
         if is_enterprise() and not _routing.get("bot_id"):
             logger.warning(
                 "WebChannel 新连接缺少 bot_id: remote=%s routing=%s",

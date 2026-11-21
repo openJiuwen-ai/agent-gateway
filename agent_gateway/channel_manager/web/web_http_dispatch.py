@@ -202,7 +202,7 @@ async def dispatch_http_request(
         normalize_agent_identity(
             {
                 "agent_name": _get_header(hdrs, "X-Agent-Name"),
-                "agent_id": _get_header(hdrs, "X-Agent-Id"),
+                "agent_id": _get_header(hdrs, "X-Agent-Identity-Id"),
                 "runtime_template_id": _get_header(hdrs, "X-Runtime-Template-Id"),
                 "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
             }
@@ -210,7 +210,6 @@ async def dispatch_http_request(
         if trust_tenant_headers
         else {}
     )
-    setattr(outbound, "_web_agent_identity", _agent_identity)
     _meta = apply_agent_identity_metadata(
         apply_routing_metadata(
             {
