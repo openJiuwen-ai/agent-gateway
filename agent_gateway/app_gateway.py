@@ -2342,6 +2342,115 @@ def _validate_agent_client_registration(config, extension, *, required_type=None
         )
 
 
+def _is_channel_enabled(conf: dict | None, required_fields: list[str]) -> tuple[bool, str]:
+    if conf is None:
+        return False, "missing or invalid config"
+    enabled_raw = conf.get("enabled", None)
+    if enabled_raw is None:
+        all_fields_present = all(conf.get(f) for f in required_fields)
+        return all_fields_present, f"missing {','.join(required_fields)}" if not all_fields_present else ""
+    return bool(enabled_raw), "enabled = false" if not enabled_raw else ""
+
+async def _apply_web_proxy_config(web_channel, agent_server_ext, web_proxy_conf):
+    """Apply the registered AgentServer endpoint to the optional Web proxy."""
+    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import WebProxyChannelConfig
+    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import WebPortManager
+    from agent_gateway.common.config import get_config
+
+    web_channel.web_proxy_enabled = False
+    web_channel.web_proxy_auth_enabled = True
+    web_channel.web_resolver = None
+    web_channel.web_runtime_release = None
+    previous_watcher = getattr(web_channel, "web_registry_watcher", None)
+    if previous_watcher is not None:
+        await previous_watcher.stop()
+        web_channel.web_registry_watcher = None
+    previous_manager = getattr(web_channel, "web_port_manager", None)
+    if previous_manager is not None:
+        await previous_manager.close_all()
+    if isinstance(web_proxy_conf, dict):
+        enabled, reason = _is_channel_enabled(web_proxy_conf, [])
+        full_cfg = get_config()
+        gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
+        agent_client_cfg = (
+            gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
+        )
+        client_type = (
+            str(agent_client_cfg.get("type") or "websocket").strip().lower()
+            if isinstance(agent_client_cfg, dict)
+            else "websocket"
+        )
+        wp_config = WebProxyChannelConfig.from_dict(web_proxy_conf)
+        if not enabled:
+            logger.info("[App] channels.web_proxy.%s, web proxy disabled", reason or "enabled=false")
+        elif client_type != "agentos_router":
+            logger.warning(
+                "[App] channels.web_proxy.enabled=true but gateway.agent_client.type=%s "
+                "(require agentos_router); web proxy will not start",
+                client_type,
+            )
+        else:
+            web_resolver = getattr(agent_server_ext, "resolve_web_endpoint", None)
+            if not callable(web_resolver):
+                logger.warning(
+                    "[App] channels.web_proxy.enabled=true but agent_server_ext has no "
+                    "resolve_web_endpoint; web proxy will not start"
+                )
+            else:
+                web_release = getattr(
+                    agent_server_ext, "release_web_endpoint", None
+                )
+
+                async def _held_web_resolver(
+                    user_id: str,
+                    agent_type: str,
+                    protocol: str,
+                    _resolve=web_resolver,
+                ) -> str | None:
+                    return await _resolve(
+                        user_id, agent_type, protocol, acquire=True
+                    )
+
+                token_resolver = getattr(agent_server_ext, "acquire_web_endpoint", None)
+
+                web_channel.web_proxy_enabled = wp_config.enabled
+                web_channel.web_proxy_auth_enabled = wp_config.auth_enabled
+                web_channel.web_proxy_config = wp_config
+                web_channel.web_resolver = (
+                    token_resolver if callable(token_resolver)
+                    else _held_web_resolver
+                )
+                web_channel.web_runtime_release = (
+                    web_release if callable(web_release) else None
+                )
+                manager = WebPortManager(web_channel, wp_config)
+                web_channel.web_port_manager = manager
+                manager.start()
+                from agent_gateway.runtime.cron.factory import (
+                    load_cron_store_settings,
+                )
+                from agent_gateway.extensions.agentos.registry_watcher.service import (
+                    RegistryWatcherService,
+                )
+
+                endpoints = list(load_cron_store_settings(full_cfg).endpoints)
+                watcher = RegistryWatcherService(
+                    etcd_endpoints=endpoints,
+                    on_desired=manager.reconcile,
+                )
+                web_channel.web_registry_watcher = watcher
+                await watcher.start()
+                logger.info(
+                    "[App] 3rd-agent web proxy: listeners driven by registry_watcher "
+                    "(listen %s, auth=%s, etcd=%s)",
+                    wp_config.listen_host,
+                    "on" if wp_config.auth_enabled else "off",
+                    "on" if watcher.enabled else "off",
+                )
+    else:
+        logger.info("[App] channels.web_proxy missing or invalid, web proxy disabled")
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
@@ -2357,13 +2466,7 @@ async def _run(
     from openjiuwen.core.runner import Runner
 
     from agent_gateway.channel_manager.channel_manager import ChannelManager
-    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
-        WebProxyChannelConfig,
-    )
-    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
-        WebPortManager,
-        register_3rdagent_web_method,
-    )
+    from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import register_3rdagent_web_method
     from agent_gateway.channel_manager.web.app_web_handlers import (
         _FORWARD_NO_LOCAL_HANDLER_METHODS,
         _FORWARD_REQ_METHODS,
@@ -3283,15 +3386,6 @@ async def _run(
             if unregister:
                 channel_manager.unregister_channel(channel.channel_id)
 
-    def _is_channel_enabled(conf: dict | None, required_fields: list[str]) -> tuple[bool, str]:
-        if conf is None:
-            return False, "missing or invalid config"
-        enabled_raw = conf.get("enabled", None)
-        if enabled_raw is None:
-            all_fields_present = all(conf.get(f) for f in required_fields)
-            return all_fields_present, f"missing {','.join(required_fields)}" if not all_fields_present else ""
-        return bool(enabled_raw), "enabled = false" if not enabled_raw else ""
-
     def _create_dingtalk_channel(settings: dict):
         from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
             DingTalkChannel,
@@ -3917,99 +4011,9 @@ async def _run(
                 logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
 
         if "web_proxy" in changed_channels:
-            web_proxy_conf = conf.get("web_proxy") if isinstance(conf, dict) else None
-            web_channel.web_proxy_enabled = False
-            web_channel.web_proxy_auth_enabled = True
-            web_channel.web_resolver = None
-            web_channel.web_runtime_release = None
-            previous_watcher = getattr(web_channel, "web_registry_watcher", None)
-            if previous_watcher is not None:
-                await previous_watcher.stop()
-                web_channel.web_registry_watcher = None
-            previous_manager = getattr(web_channel, "web_port_manager", None)
-            if previous_manager is not None:
-                await previous_manager.close_all()
-            if isinstance(web_proxy_conf, dict):
-                enabled, reason = _is_channel_enabled(web_proxy_conf, [])
-                full_cfg = get_config()
-                gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
-                agent_client_cfg = (
-                    gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
-                )
-                client_type = (
-                    str(agent_client_cfg.get("type") or "websocket").strip().lower()
-                    if isinstance(agent_client_cfg, dict)
-                    else "websocket"
-                )
-                wp_config = WebProxyChannelConfig.from_dict(web_proxy_conf)
-                if not enabled:
-                    logger.info("[App] channels.web_proxy.%s, web proxy disabled", reason or "enabled=false")
-                elif client_type != "agentos_router":
-                    logger.warning(
-                        "[App] channels.web_proxy.enabled=true but gateway.agent_client.type=%s "
-                        "(require agentos_router); web proxy will not start",
-                        client_type,
-                    )
-                else:
-                    web_resolver = getattr(agent_server_ext, "resolve_web_endpoint", None)
-                    if not callable(web_resolver):
-                        logger.warning(
-                            "[App] channels.web_proxy.enabled=true but agent_server_ext has no "
-                            "resolve_web_endpoint; web proxy will not start"
-                        )
-                    else:
-                        web_release = getattr(
-                            agent_server_ext, "release_web_endpoint", None
-                        )
-
-                        async def _held_web_resolver(
-                            user_id: str,
-                            agent_type: str,
-                            protocol: str,
-                            _resolve=web_resolver,
-                        ) -> str | None:
-                            return await _resolve(
-                                user_id, agent_type, protocol, acquire=True
-                            )
-
-                        token_resolver = getattr(agent_server_ext, "acquire_web_endpoint", None)
-
-                        web_channel.web_proxy_enabled = wp_config.enabled
-                        web_channel.web_proxy_auth_enabled = wp_config.auth_enabled
-                        web_channel.web_proxy_config = wp_config
-                        web_channel.web_resolver = (
-                            token_resolver if callable(token_resolver)
-                            else _held_web_resolver
-                        )
-                        web_channel.web_runtime_release = (
-                            web_release if callable(web_release) else None
-                        )
-                        manager = WebPortManager(web_channel, wp_config)
-                        web_channel.web_port_manager = manager
-                        manager.start()
-                        from agent_gateway.runtime.cron.factory import (
-                            load_cron_store_settings,
-                        )
-                        from agent_gateway.extensions.agentos.registry_watcher.service import (
-                            RegistryWatcherService,
-                        )
-
-                        endpoints = list(load_cron_store_settings(full_cfg).endpoints)
-                        watcher = RegistryWatcherService(
-                            etcd_endpoints=endpoints,
-                            on_desired=manager.reconcile,
-                        )
-                        web_channel.web_registry_watcher = watcher
-                        await watcher.start()
-                        logger.info(
-                            "[App] 3rd-agent web proxy: listeners driven by registry_watcher "
-                            "(listen %s, auth=%s, etcd=%s)",
-                            wp_config.listen_host,
-                            "on" if wp_config.auth_enabled else "off",
-                            "on" if watcher.enabled else "off",
-                        )
-            else:
-                logger.info("[App] channels.web_proxy missing or invalid, web proxy disabled")
+            await _apply_web_proxy_config(
+                web_channel, agent_server_ext, conf.get("web_proxy") if isinstance(conf, dict) else None,
+            )
 
         _schedule_agent_prewarm_sync(
             "agent-prewarm-sync-after-channel-change",

@@ -1,33 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Exercise the Gateway's nested web-proxy startup callback in isolation."""
-import ast
-import logging
-from pathlib import Path
+"""Exercise Gateway Web proxy startup and listener reconciliation."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent_gateway.app_gateway import _apply_web_proxy_config
+from agent_gateway.channel_manager.protocol.web_proxy import web_proxy_listen
+from agent_gateway.common import config
 from agent_gateway.extensions.agentos.registry_watcher import service
-from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import WebProxyChannelConfig
 from agent_gateway.runtime.cron import factory
-
-
-def _startup_callback(namespace):
-    source = Path(__file__).resolve().parents[3] / 'agent_gateway/app_gateway.py'
-    tree = ast.parse(source.read_text())
-    # The production callback is a closure in _run. Execute its whole web-proxy
-    # branch, including router selection and registry wiring, without booting IMs.
-    branch = next(node for node in ast.walk(tree) if isinstance(node, ast.If)
-                  and isinstance(node.test, ast.Compare)
-                  and isinstance(node.test.left, ast.Constant) and node.test.left.value == 'web_proxy'
-                  and isinstance(node.test.comparators[0], ast.Name)
-                  and node.test.comparators[0].id == 'changed_channels')
-    function = ast.AsyncFunctionDef(name='apply', args=ast.arguments(posonlyargs=[], args=[],
-        kwonlyargs=[], kw_defaults=[], defaults=[]), body=[branch], decorator_list=[])
-    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
-    exec(compile(module, str(source), 'exec'), namespace)
-    return namespace['apply']
 
 
 @pytest.mark.asyncio
@@ -75,15 +57,9 @@ async def test_web_proxy_starts_registry_driven_listeners(monkeypatch, router, e
     monkeypatch.setattr(service, 'RegistryWatcherService', Watcher)
     monkeypatch.setattr(factory, 'load_cron_store_settings',
                         lambda config: SimpleNamespace(endpoints=['http://etcd.test:2379']))
-    callback = _startup_callback({
-        'changed_channels': ['web_proxy'], 'conf': {'web_proxy': {'enabled': enabled}},
-        'web_channel': channel, 'agent_server_ext': extension,
-        '_is_channel_enabled': lambda config, fields: (config['enabled'], 'enabled=false'),
-        'get_config': lambda: {'gateway': {'agent_client': {'type': router}}},
-        'WebProxyChannelConfig': WebProxyChannelConfig, 'WebPortManager': Manager,
-        'logger': logging.getLogger(__name__),
-    })
-    await callback()
+    monkeypatch.setattr(web_proxy_listen, 'WebPortManager', Manager)
+    monkeypatch.setattr(config, 'get_config', lambda: {'gateway': {'agent_client': {'type': router}}})
+    await _apply_web_proxy_config(channel, extension, {'enabled': enabled})
     previous_watcher.stop.assert_awaited_once()
     previous_manager.close_all.assert_awaited_once()
     assert channel.web_proxy_enabled is starts
