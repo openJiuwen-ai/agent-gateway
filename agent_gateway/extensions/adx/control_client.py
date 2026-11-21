@@ -56,6 +56,10 @@ class AdxCreateUncertain(AdxControlError, AgentCreateUncertainError):
     """Preserve the attempted generation when ADX cannot confirm creation."""
 
 
+class AdxGenerationMismatch(AdxControlError, AgentGenerationMismatchError):
+    """The existing Environment is confirmed to belong to another generation."""
+
+
 class AdxEnvironmentNotFoundError(AdxControlError, AgentNotFoundError):
     """Confirmed native absence satisfies the Gateway retirement fence."""
 
@@ -342,10 +346,13 @@ class AdxControlClient:
         existing = await self._lookup(instance, trace_id=trace_id)
         if existing is not None:
             expected_generation = (env_vars or {}).get(AGENT_GENERATION_ENV)
-            if (expected_generation is not None
-                    and await self._instance_generation(instance, existing, trace_id=trace_id) != expected_generation):
-                raise AdxControlError('ADX Environment name belongs to another Agent generation',
-                                      code='CONFLICT', outcome='not_started')
+            if expected_generation is not None:
+                actual = await self._instance_generation(instance, existing, trace_id=trace_id)
+                if actual is None:
+                    raise AdxCreateUncertain('ADX Environment generation is not visible yet', outcome='unknown')
+                if actual != expected_generation:
+                    raise AdxGenerationMismatch('ADX Environment name belongs to another Agent generation',
+                                                code='CONFLICT', outcome='not_started')
             return await self._ready_sandbox_info(instance, trace_id=trace_id)
         body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts,
                                    builtin=builtin, web_port=web_port)

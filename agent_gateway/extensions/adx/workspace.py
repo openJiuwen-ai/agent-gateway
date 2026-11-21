@@ -15,7 +15,7 @@ def check_workspace_config(config_path: str | Path, *, require_prepared: bool = 
     marker = path.with_name(MIGRATION_ERROR_FILE)
     try:
         if marker.is_file():
-            record = json.loads(marker.read_text())
+            record = json.loads(marker.read_text(encoding="utf-8"))
             reason = record.get('reason') if isinstance(record, dict) else None
             if not isinstance(reason, str) or not reason:
                 reason = 'invalid deployment migration status'
@@ -26,11 +26,11 @@ def check_workspace_config(config_path: str | Path, *, require_prepared: bool = 
                 raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: application workspace initialization required')
             import yaml
             try:
-                document = yaml.safe_load(path.read_text())
+                document = yaml.safe_load(path.read_text(encoding="utf-8"))
             except yaml.YAMLError:
                 raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: invalid YAML') from None
             sandbox = document.get('sandbox') if isinstance(document, dict) else None
             if not isinstance(sandbox, dict) or sandbox.get('type') != 'adx-environment':
                 raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: deployment migration required')
-    except (OSError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         raise ValueError(f'WORKSPACE_CONFIG_INVALID: {path}: cannot read workspace deployment status') from None
