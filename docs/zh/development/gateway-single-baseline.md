@@ -38,6 +38,19 @@ WebSocket 监听任务被取消时先关闭已绑定资源，原任务仍保持�
 测试包括 `test_uvicorn_listener.py`、`test_websocket_listener.py`、
 `test_gateway_listener_lifecycle.py` 及对应进程 ST，覆盖归档、活连接、取消、绑定失败和端口复用。
 
+## P2-B：协议运行时
+
+`routing/protocol_runtime.py` 拥有 ProtocolRuntime、ProtocolRuntimeConfig、RouteConfig、
+ACP bridge 及请求、会话和连接索引。`app_gateway` 与 `routing.gateway_server` 的
+GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名。
+
+保留最新 develop 的 TUI 请求关联、会话切换、断线宽限、重连与路由隔离。客户端请求 ID 映射为
+唯一内部上游 ID，响应时恢复；旧连接的迟到结果不能投递到替代窗口。新模块和测试使用当前
+`e2a` 包，不使用旧 `openjiuwen_protocol` 路径。冷导入不初始化旧入口或提前加载 ACP。
+
+测试包括 `test_protocol_runtime_import_contract.py`、`test_tui_request_correlation.py`、
+`test_tui_lifecycle_routing.py` 与原 `test_app_gateway_acp.py` 兼容测试。
+
 ## 验证与回退
 
 使用每个 worktree 独立的新 `.venv` 和 develop 未修改的锁文件。先记录基线，再验证每个

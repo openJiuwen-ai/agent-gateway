@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from agent_gateway import app_gateway
+from agent_gateway.routing import protocol_runtime as app_gateway
 from agent_gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
 from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
 from agent_gateway.channel_manager.tui.tui_connect import CliRouteBindParams, build_cli_route_binding
@@ -168,6 +168,31 @@ async def test_identical_switch_ids_complete_only_the_originating_connection(pai
     assert (pair.sockets[0].frames[1]["id"], pair.sockets[0].frames[1]["ok"]) == ("switch-2", True)
     assert pair.server.is_session_bound_to_client("tui", "new-0", pair.sockets[0])
     assert pair.server._pending_tui_switches == {}
+
+
+@pytest.mark.asyncio
+async def test_switch_registration_failure_replies_to_the_waiting_window(pair, monkeypatch, caplog):
+    channel = pair.route.ws_channel
+    if channel is None:
+        pytest.skip("registration commit is delegated to TuiChannel")
+
+    async def fail_register(*args, **kwargs):
+        raise RuntimeError("registration commit failed")
+
+    monkeypatch.setattr(channel, "register_ws", fail_register)
+    switch = await pair.send(0, "switch-1", "session.switch", "new-0")
+    await pair.respond(switch)
+    await pair.wait_frames(0, 1)
+    rejected = pair.sockets[0].frames[0]
+    assert (rejected["id"], rejected["ok"], rejected["code"]) == ("switch-1", False, "INTERNAL_ERROR")
+    assert rejected["error"] == "session switch registration failed"
+    assert not pair.server.is_session_bound_to_client("tui", "new-0", pair.sockets[0])
+    assert pair.server._pending_tui_switches == {}
+    warnings = [
+        record for record in caplog.records
+        if record.getMessage() == "GatewayServer TUI session.switch registration failed: channel_id=tui session_id=new-0"
+    ]
+    assert warnings
 
 
 @pytest.mark.asyncio
