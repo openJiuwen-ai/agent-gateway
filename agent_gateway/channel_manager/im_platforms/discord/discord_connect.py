@@ -1,6 +1,5 @@
 """Discord channel implementation based on discord.py."""
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -220,12 +219,7 @@ class DiscordChannel(BaseChannel):
             },
         )
 
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(req)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(req)
+        await self._dispatch_inbound_message(req, self._on_message_cb)
 
     def _extract_target_channel_id(self, msg: Message) -> int | None:
         meta = msg.metadata or {}

@@ -236,6 +236,23 @@ class BaseChannel(ABC):
 
         await self.bus.route_user_message(msg)
 
+    async def _dispatch_inbound_message(
+        self,
+        msg: Message,
+        callback: Callable[[Message], Any] | None,
+        *,
+        fallback_on_unhandled: bool = False,
+    ) -> None:
+        """Send inbound messages to an optional callback or the shared router."""
+        if callback is not None:
+            result = callback(msg)
+            if inspect.isawaitable(result):
+                result = await result
+            if not fallback_on_unhandled or bool(result):
+                return
+
+        await self.bus.route_user_message(msg)
+
     @property
     def is_running(self) -> bool:
         """Check if the channel_id is running."""

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
@@ -248,12 +247,7 @@ class SlackChannel(BaseChannel):
             },
         )
 
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(req)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(req)
+        await self._dispatch_inbound_message(req, self._on_message_cb)
 
     def _remember_event(self, event_id: str) -> bool:
         if event_id in self._seen_event_ids:

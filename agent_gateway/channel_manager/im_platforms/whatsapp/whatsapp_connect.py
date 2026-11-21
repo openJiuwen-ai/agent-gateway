@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -327,15 +326,9 @@ class WhatsAppChannel(BaseChannel):
         except Exception:
             pass
 
-        handled = False
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(msg)
-            if inspect.isawaitable(result):
-                result = await result
-            handled = bool(result)
-
-        if not handled:
-            await self.bus.route_user_message(msg)
+        await self._dispatch_inbound_message(
+            msg, self._on_message_cb, fallback_on_unhandled=True
+        )
 
     def _handle_status_message(self, data: dict[str, Any]) -> None:
         state = str(data.get("state") or data.get("status") or "").strip().lower()

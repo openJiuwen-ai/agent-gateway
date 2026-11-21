@@ -8,7 +8,6 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import inspect
 import ipaddress
 import json
 import logging
@@ -1677,15 +1676,9 @@ class XiaoyiChannel(BaseChannel):
         self._session_timeout_tasks[session_id] = asyncio.create_task(periodic_timeout_handler())
         # =================================================================
 
-        handled = False
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(user_message)
-            if inspect.isawaitable(result):
-                result = await result
-            handled = bool(result)
-
-        if not handled:
-            await self.bus.route_user_message(user_message)
+        await self._dispatch_inbound_message(
+            user_message, self._on_message_cb, fallback_on_unhandled=True
+        )
 
         # Start session heartbeat to prevent xiaoyi client timeout
         if not self.config.enable_streaming and session_id:

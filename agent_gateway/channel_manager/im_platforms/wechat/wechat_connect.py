@@ -1294,12 +1294,7 @@ class WechatChannel(BaseChannel):
             },
         )
 
-        if self._message_callback:
-            result = self._message_callback(msg)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(msg)
+        await self._dispatch_inbound_message(msg, self._message_callback)
 
     def _headers(self) -> dict[str, str]:
         if not self.config.bot_token:
