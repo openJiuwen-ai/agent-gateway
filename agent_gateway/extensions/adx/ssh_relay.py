@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.extensions.agentos.agentos_router.ssh_relay import (
-    YuanrongSshRelay,
+    SshRelay,
     _import_asyncssh,
     _is_ssh_connect_retryable,
 )
@@ -46,9 +46,9 @@ class _ConnectedSsh:
                                  return_exceptions=True)
 
 
-class AdxSshRelay(YuanrongSshRelay):
+class AdxSshRelay(SshRelay):
     def __init__(self, config: AdxRouterConfig) -> None:
-        super().__init__(config.router.ssh, frontend_endpoint=config.ingress_url)
+        super().__init__(config.router.ssh, endpoint=config.ingress_url)
         self._adx = config
 
     async def _connect_until_ready(self, instance_id: str, *, user_id: str = '',

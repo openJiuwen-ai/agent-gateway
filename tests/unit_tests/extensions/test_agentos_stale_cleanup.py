@@ -18,7 +18,7 @@ from agent_gateway.extensions.agentos.agentos_router.stale_cleanup import (
 )
 from tests.unit_tests.extensions.test_agentos_router import (
     FakeRegistryClient,
-    FakeYuanRongClient,
+    FakeControlClient,
     _router_client,
 )
 
@@ -79,14 +79,14 @@ def _record(*, user: str, framework: str, instance_id: str) -> InstanceRecord:
 
 @pytest.mark.asyncio
 async def test_cleanup_deletes_all_listed_sandboxes_and_unregisters() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     records = [
         _record(user="u1", framework="jiuwenswarm", instance_id="sbx-old-1"),
         _record(user="u2", framework="opencode", instance_id="sbx-old-2"),
     ]
     registry = _CleanupRegistry(records)
     processed = await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=AgentManager(),
     )
@@ -97,7 +97,7 @@ async def test_cleanup_deletes_all_listed_sandboxes_and_unregisters() -> None:
 
 @pytest.mark.asyncio
 async def test_cleanup_continues_after_one_record_fails() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     records = [
         _record(user="u1", framework="jiuwenswarm", instance_id="sbx-boom"),
         _record(user="u2", framework="opencode", instance_id="sbx-ok"),
@@ -116,7 +116,7 @@ async def test_cleanup_continues_after_one_record_fails() -> None:
             return await super().list_all_agents()
 
     processed = await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=_FlakyManager(),
     )
@@ -137,7 +137,7 @@ async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> N
     stale = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-old")
     other = _record(user="u2", framework="opencode", instance_id="sbx-stale")
 
-    class _YuanRongCreatesLiveOnDelete(FakeYuanRongClient):
+    class _EnvironmentCreatesLiveOnDelete(FakeControlClient):
         async def delete_sandbox(self, sandbox_id: str) -> None:
             await super().delete_sandbox(sandbox_id)
             if sandbox_id != stale.instance_id:
@@ -155,10 +155,10 @@ async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> N
                 metadata={},
             )
 
-    yuanrong = _YuanRongCreatesLiveOnDelete()
+    yuanrong = _EnvironmentCreatesLiveOnDelete()
     registry = _CleanupRegistry([stale, other])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -175,7 +175,7 @@ async def test_cleanup_cas_skips_unregister_when_row_retargeted() -> None:
     other = _record(user="u2", framework="opencode", instance_id="sbx-stale")
     registry = _CleanupRegistry([stale, other])
 
-    class _YuanRongUpsertsRowOnDelete(FakeYuanRongClient):
+    class _EnvironmentUpsertsRowOnDelete(FakeControlClient):
         async def delete_sandbox(self, sandbox_id: str) -> None:
             await super().delete_sandbox(sandbox_id)
             if sandbox_id != stale.instance_id:
@@ -185,9 +185,9 @@ async def test_cleanup_cas_skips_unregister_when_row_retargeted() -> None:
                 other,
             ]
 
-    yuanrong = _YuanRongUpsertsRowOnDelete()
+    yuanrong = _EnvironmentUpsertsRowOnDelete()
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -223,9 +223,9 @@ async def test_cleanup_cas_skips_sibling_upsert_during_unregister() -> None:
             )
 
     registry = _RegistrySiblingUpsert([stale, other])
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=AgentManager(),
     )
@@ -252,11 +252,11 @@ class _FailAfterFirstSnapshot(AgentManager):
 
 @pytest.mark.asyncio
 async def test_cleanup_unregisters_when_live_service_refresh_fails_after_delete() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     stale = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-stale")
     registry = _CleanupRegistry([stale])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=_FailAfterFirstSnapshot(),
     )
@@ -266,7 +266,7 @@ async def test_cleanup_unregisters_when_live_service_refresh_fails_after_delete(
 
 @pytest.mark.asyncio
 async def test_cleanup_keeps_registry_row_when_live_sandbox_refresh_fails() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = _FailAfterFirstSnapshot()
 
     async def creator(info: AgentInfo) -> AgentInfo:
@@ -283,7 +283,7 @@ async def test_cleanup_keeps_registry_row_when_live_sandbox_refresh_fails() -> N
     live = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-live")
     registry = _CleanupRegistry([live])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -293,7 +293,7 @@ async def test_cleanup_keeps_registry_row_when_live_sandbox_refresh_fails() -> N
 
 @pytest.mark.asyncio
 async def test_cleanup_skips_live_sandbox_and_service() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     manager = AgentManager()
     live = AgentInfo(
         user_id="u1",
@@ -320,7 +320,7 @@ async def test_cleanup_skips_live_sandbox_and_service() -> None:
     ]
     registry = _CleanupRegistry(records)
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        backend=yuanrong,
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -330,7 +330,7 @@ async def test_cleanup_skips_live_sandbox_and_service() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_lists_and_clears_sandboxes_in_background() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     records = [_record(user="u1", framework="opencode", instance_id="sbx-left")]
     registry = _CleanupRegistry(records)
     client = _router_client(yuanrong, registry, AgentManager())  # type: ignore[arg-type]
@@ -346,7 +346,7 @@ async def test_connect_lists_and_clears_sandboxes_in_background() -> None:
 
 @pytest.mark.asyncio
 async def test_connect_skips_cleanup_when_registry_disabled() -> None:
-    yuanrong = FakeYuanRongClient()
+    yuanrong = FakeControlClient()
     client = _router_client(yuanrong, FakeRegistryClient(), AgentManager())
     await client.connect("http://yuanrong.test")
     assert client._stale_cleanup_task is None

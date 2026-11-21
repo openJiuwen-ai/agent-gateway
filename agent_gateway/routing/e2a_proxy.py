@@ -91,14 +91,10 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
     on that extension.  The concrete client is deliberately identified by its
     stable module/class name instead.
     """
-    client_type = type(agent_client)
-    module = client_type.__module__
-    return (
+    return any(
         client_type.__name__ == "AgentOSRouterClient"
-        and module.startswith("agent_gateway.extensions.agentos.")
-    ) or (
-        client_type.__name__ == "AdxRouterClient"
-        and module == "agent_gateway.extensions.adx.router_client"
+        and client_type.__module__.startswith("agent_gateway.extensions.agentos.")
+        for client_type in type(agent_client).__mro__
     )
 
 

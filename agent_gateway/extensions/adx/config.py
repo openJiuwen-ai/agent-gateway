@@ -31,12 +31,6 @@ class AdxRouterConfig:
     builtin_process_from_image: bool = False
 
 
-def adx_router_selected(config: dict) -> bool:
-    gateway = config.get('gateway') or {}
-    client = gateway.get('agent_client') or {}
-    return str(client.get('type') or '').strip().lower() == 'adx_router'
-
-
 def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
     value = settings.get(key, default)
     if not isinstance(value, str) or not value.strip():
@@ -72,11 +66,11 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
-    origin_error = 'gateway.adx.ingress_url must be an HTTPS origin'
+    origin_error = 'gateway.adx.ingress_url must be an HTTP(S) origin'
     if not isinstance(url, str) or any(ord(char) < 33 for char in url):
         raise ValueError(origin_error)
     parsed = urlsplit(url)
-    if parsed.scheme != 'https' or not parsed.hostname:
+    if parsed.scheme not in ('http', 'https') or not parsed.hostname:
         raise ValueError(origin_error)
     if parsed.username is not None or parsed.password is not None:
         raise ValueError(origin_error)
@@ -108,7 +102,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     restart_policy = _restart_policy(settings.get('restart_policy'))
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
-        router=load_agentos_config(config, require_frontend_endpoint=False),
+        router=load_agentos_config(config),
         builtin_image=builtin_image, runtime_class=runtime_class,
         builtin_process_from_image=builtin_process_from_image,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
