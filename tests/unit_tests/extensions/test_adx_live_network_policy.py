@@ -107,7 +107,8 @@ async def test_unknown_policy_replacement_is_reconciled_before_a_different_model
         await client.close()
 
 @pytest.mark.asyncio
-async def test_policy_refresh_failure_releases_the_business_activity_hold(monkeypatch):
+@pytest.mark.parametrize('release_fails', [False, True])
+async def test_policy_refresh_failure_releases_the_business_activity_hold(monkeypatch, release_fails):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from tests.unit_tests.extensions.test_adx_router import _config, _router
@@ -119,11 +120,57 @@ async def test_policy_refresh_failure_releases_the_business_activity_hold(monkey
     launch = {'process': {'commands': [['true']]}, 'network': {'ingress_url': 'http://10.88.4.1:8080'}}
     router, _ = _router(_config(monkeypatch, builtin_launch=launch))
     monkeypatch.setattr(router._control, 'ensure_builtin_network', AsyncMock(side_effect=AdxControlError('policy rejected')))
-    release = AsyncMock()
+    release = AsyncMock(side_effect=RuntimeError('release failed') if release_fails else None)
     monkeypatch.setattr(router._agent_manager, 'release', release)
-    with pytest.raises(AgentCreateFailed, match='policy rejected'):
+    with pytest.raises(AgentCreateFailed, match='AGENT_NETWORK_UPDATE_FAILED: policy rejected'):
         await router._resolve_agent(None, acquire=True)
     release.assert_awaited_once_with(runtime.key, expected_agent_id=runtime.info.agent_id)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_policy_refresh_finishes_activity_release(monkeypatch):
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+    from tests.unit_tests.extensions.test_adx_router import _router
+
+    runtime = SimpleNamespace(
+        info=SimpleNamespace(agent_type='jiuwenswarm', user_id='alice',
+                             sandbox_id='adx-alice', agent_id='generation-1'),
+        key=('alice', 'jiuwenswarm'),
+    )
+    monkeypatch.setattr(AgentOSRouterClient, '_resolve_agent', AsyncMock(return_value=runtime))
+    launch = {'process': {'commands': [['true']]}, 'network': {'ingress_url': 'http://10.88.4.1:8080'}}
+    router, _ = _router(_config(monkeypatch, builtin_launch=launch))
+    updating = asyncio.Event()
+    releasing = asyncio.Event()
+    finish_release = asyncio.Event()
+    released = asyncio.Event()
+
+    async def update(*_args):
+        updating.set()
+        await asyncio.Future()
+
+    async def release(key, *, expected_agent_id=None):
+        assert key == runtime.key and expected_agent_id == runtime.info.agent_id
+        releasing.set()
+        await finish_release.wait()
+        released.set()
+
+    monkeypatch.setattr(router._control, 'ensure_builtin_network', update)
+    monkeypatch.setattr(router._agent_manager, 'release', release)
+    task = asyncio.create_task(router._resolve_agent(None, acquire=True))
+    try:
+        await asyncio.wait_for(updating.wait(), 1)
+        task.cancel()
+        await asyncio.wait_for(releasing.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        finish_release.set()
+        await asyncio.wait_for(released.wait(), 1)
+    finally:
+        finish_release.set()
+        await router.shutdown()
+
 
 @pytest.mark.asyncio
 async def test_delete_waits_for_policy_update_and_clears_generation_cache(monkeypatch):

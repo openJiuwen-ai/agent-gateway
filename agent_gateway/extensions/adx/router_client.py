@@ -71,18 +71,26 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
     ) -> AgentRuntime:
         try:
             runtime = await super()._resolve_agent(envelope, acquire=acquire, ws_ready=ws_ready)
-            try:
-                launch = self._config.builtin_launch or {}
-                if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
-                    workspace = resolve_agent_workspace(runtime.info.user_id, workspace_root=self._workspace_root)
-                    await self._control.ensure_builtin_network(runtime.info.sandbox_id, workspace)
-            except BaseException:
-                if acquire:
-                    await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
-                raise
-            return runtime
         except AdxControlError as exc:
             raise AgentCreateFailed(f"AGENT_CREATE_FAILED: {exc}") from exc
+        try:
+            launch = self._config.builtin_launch or {}
+            if 'network' in launch and runtime.info.agent_type == BUILTIN_AGENT_TYPE:
+                workspace = resolve_agent_workspace(runtime.info.user_id, workspace_root=self._workspace_root)
+                await self._control.ensure_builtin_network(runtime.info.sandbox_id, workspace)
+        except (Exception, asyncio.CancelledError) as exc:
+            if acquire:
+                await asyncio.shield(self._release_after_network_failure(runtime))
+            if isinstance(exc, AdxControlError):
+                raise AgentCreateFailed(f"AGENT_NETWORK_UPDATE_FAILED: {exc}") from exc
+            raise
+        return runtime
+
+    async def _release_after_network_failure(self, runtime: AgentRuntime) -> None:
+        try:
+            await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+        except Exception:
+            logger.exception("Failed to release AgentServer activity after network update failure")
 
     async def shutdown(self) -> None:
         await super().shutdown()

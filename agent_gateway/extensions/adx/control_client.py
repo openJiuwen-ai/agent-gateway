@@ -301,16 +301,17 @@ class AdxControlClient:
 
     async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
         del trace_id
-        operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
-        await self._request(
-            'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
-            request_id=operation, missing_ok=True,
-        )
-        logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
-        self._deletes.pop(sandbox_id, None)
-        self._creates.pop(sandbox_id, None)
-        self._network_applied.pop(sandbox_id, None)
-        self._network_pending.pop(sandbox_id, None)
+        async with self._environment_locks.setdefault(sandbox_id, asyncio.Lock()):
+            operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
+            await self._request(
+                'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
+                request_id=operation, missing_ok=True,
+            )
+            logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
+            self._deletes.pop(sandbox_id, None)
+            self._creates.pop(sandbox_id, None)
+            self._network_applied.pop(sandbox_id, None)
+            self._network_pending.pop(sandbox_id, None)
 
     async def invoke(self, environment: str, action: str, args: dict) -> dict:
         rid = 'invoke-' + uuid.uuid4().hex
