@@ -7,7 +7,11 @@ from typing import Any
 
 from sqlalchemy import Boolean
 
-_PG_DIALECTS = frozenset({"postgresql", "postgres", "pg", "gaussdb", "opengauss"})
+from agent_gateway.storage.backends.db.column_metadata import (
+    column_names,
+    dialect_name,
+    is_postgres_dialect,
+)
 
 
 def _as_bool(value: Any) -> bool | None:
@@ -28,24 +32,8 @@ def _as_bool(value: Any) -> bool | None:
     return bool(value)
 
 
-def _dialect_name(handler: Any) -> str:
-    engine = handler.get_engine()
-    return engine.dialect.name
-
-
 def _boolean_column_names(handler: Any, table_name: str) -> set[str]:
-    get_table = getattr(handler, "get_table", None)
-    if not callable(get_table):
-        return set()
-    try:
-        table = get_table(table_name)
-    except (ValueError, AttributeError):
-        return set()
-    return {
-        column.name
-        for column in table.columns
-        if isinstance(column.type, Boolean)
-    }
+    return column_names(handler, table_name, Boolean)
 
 
 def normalize_boolean_columns_for_write(
@@ -54,10 +42,10 @@ def normalize_boolean_columns_for_write(
     if not data:
         return {} if data is None else data
     names = _boolean_column_names(handler, table_name)
-    dialect = _dialect_name(handler)
+    dialect = dialect_name(handler)
     convert = (
         pg_boolean_for_write
-        if dialect in _PG_DIALECTS
+        if is_postgres_dialect(dialect)
         else mysql_boolean_for_write
     )
     out = dict(data)
@@ -90,10 +78,10 @@ def normalize_boolean_columns_for_read(
     names = _boolean_column_names(handler, table_name)
     if not names:
         return record
-    dialect = _dialect_name(handler)
+    dialect = dialect_name(handler)
     convert = (
         pg_boolean_for_read
-        if dialect in _PG_DIALECTS
+        if is_postgres_dialect(dialect)
         else mysql_boolean_for_read
     )
     if isinstance(record, dict):
