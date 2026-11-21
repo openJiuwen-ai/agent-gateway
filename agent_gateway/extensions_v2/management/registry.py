@@ -96,6 +96,8 @@ class GatewayPackageManager:
         self._recovery_data_dir = recovery_data_dir
         self._inited = False
         self._stopping = False
+        self._startup_loaded = False
+        self._accepted_roots: set[Path] = set()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -113,8 +115,14 @@ class GatewayPackageManager:
     async def load_installed(self) -> list[ActivationReport]:
         """Start the Gateway packages selected by the shared startup plan."""
 
-        if self._report is None:
+        if self._report is None or self._startup_loaded:
             return []
+        # Snapshot the roots present when the host starts: a directory left
+        # behind by an interrupted copy/unpack must not be reported as an
+        # accepted package before its install operation succeeds.
+        roots = tuple(root.resolve() for root in self._store.list_installed())
+        self._startup_loaded = True
+        self._accepted_roots.update(roots)
         plan = await self._report.prepare_startup(self._store)
         reports: list[ActivationReport] = []
         for manifest in plan.ordered:
@@ -123,6 +131,13 @@ class GatewayPackageManager:
             root = self._store.version_dir(manifest.package_id, manifest.version)
             if not has_manifest(root):
                 root = self._find_root(manifest.package_id, manifest.version) or root
+            if root.resolve() not in self._accepted_roots:
+                logger.warning(
+                    "[GatewayExtensions] skip %s %s: root outside the startup snapshot",
+                    manifest.package_id,
+                    manifest.version,
+                )
+                continue
             reports.append(await self._install_manifest(manifest, root, startup=True))
         await self._report.mark_started()
         return reports
@@ -149,7 +164,13 @@ class GatewayPackageManager:
         """Every installed package in the shared store, both domains."""
 
         found: list[InstalledPackage] = []
-        for root in self._store.list_installed():
+        # Before the startup plan has been read (for example a manager created
+        # outside the runtime) the store is the only source of truth; after it
+        # the snapshot filters directories that never completed an install.
+        roots = sorted(self._accepted_roots) if self._startup_loaded else self._store.list_installed()
+        for root in roots:
+            if not root.is_dir() or not has_manifest(root):
+                continue
             try:
                 manifest = load_manifest(root, require_domain=False)
             except ExtensionFailure:
@@ -717,6 +738,8 @@ class GatewayPackageManager:
                 )
             created = root != Path(source_root).resolve()
             report = await self._publish_manifest(manifest, root, "install")
+            if report.status == "SUCCESS":
+                self._accepted_roots.add(root.resolve())
             if report.status != "SUCCESS" and created and self._runtime.active_record(
                 manifest.package_id
             ) is None:
@@ -1127,6 +1150,7 @@ class GatewayPackageManager:
             # A disabled copy is kept but never published.
             if self._runtime.is_active_package(package_id):
                 await self._disable(root, manifest)
+            self._accepted_roots.add(root.resolve())
             return _success(package_id, "install", active=None)
         package = None
         try:
@@ -1149,6 +1173,7 @@ class GatewayPackageManager:
                 "install",
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
+        self._accepted_roots.add(root.resolve())
         return _success(
             package_id,
             "install",
