@@ -34,7 +34,7 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
     resolve_agent_workspace,
-    _sandbox_name,
+    sandbox_name,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.extensions.agentos.agentos_router.backend import apply_trace_header
@@ -91,7 +91,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return f'{namespace}-{name}'
 
     def _sandbox_physical_name(self, agent_info: AgentInfo) -> str:
-        return f'{_sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
+        return f'{sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
 
     async def _create_agent_impl(self, agent_info, operation):
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
@@ -134,6 +134,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)
+        # ADX decodes the query value and the instance segment of its target URN separately.
         target = 'urn:adx:instance:' + quote(instance, safe='')
         scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
         return urlunsplit((scheme, origin.netloc,

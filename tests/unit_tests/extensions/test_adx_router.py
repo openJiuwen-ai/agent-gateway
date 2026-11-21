@@ -49,6 +49,15 @@ def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monke
     assert urlsplit(router._agent_http_url('test-alice+jiuwenswarm', 18092)).scheme == 'http'
     secure = AdxRouterClient(_config(monkeypatch))
     assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
+    for protocol, url in [
+        ('ws', secure._agent_ws_url('test-alice+jiuwenswarm', 18092)),
+        ('http', secure._agent_http_url('test-alice+jiuwenswarm', 18092)),
+    ]:
+        parsed = urlsplit(url)
+        target = parse_qs(parsed.query)['target'][0]
+        assert parsed.path == f'/agent/{protocol}'
+        assert target == 'urn:adx:instance:test-alice%2Bjiuwenswarm'
+        assert unquote(target.removeprefix('urn:adx:instance:')) == 'test-alice+jiuwenswarm'
 
 
 class EnvironmentAPI:
@@ -668,7 +677,8 @@ def test_builtin_home_matches_workspace_mount_for_each_runtime(monkeypatch, runt
     assert builtin['env']['HOME'] == builtin['env']['JIUWENSWARM_HOME'] == home
     assert builtin['mounts'][0]['host_path'] == '/users/alice'
     assert builtin['mounts'][0]['target'] == home
-    custom = control._creation_body('adx', 'custom', '/users/alice', {}, {'HOME': '/image/home'}, [], builtin=False)
+    spec = {'rootfs': {'imageurl': 'custom:1'}}
+    custom = control._creation_body('adx', 'custom', '/users/alice', spec, {'HOME': '/image/home'}, [], builtin=False)
     assert custom['env'] == {'HOME': '/image/home'}
     assert launch['env'] == {'HOME': '/old/home', 'JIUWENSWARM_HOME': '/old/home'}
 
