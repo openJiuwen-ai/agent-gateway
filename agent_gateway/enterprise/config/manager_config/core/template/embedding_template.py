@@ -13,7 +13,7 @@ from agent_gateway.config.enterprise.tables.template_models import EMBEDDING_TEM
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import EmbeddingTemplateUpdateRequest
-from .template_id import normalize_template_id as _normalize_template_id
+from .template_id import normalize_template_id
 
 _TABLE = EMBEDDING_TEMPLATE_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ async def _get_row_for_instance(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 async def update_embedding_template(
@@ -33,7 +33,7 @@ async def update_embedding_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
         return None
@@ -56,7 +56,7 @@ async def delete_embedding_template(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row_for_instance(repo, tid)
     if existing is None:
         return False
@@ -68,7 +68,7 @@ def _build_row_from_template(
     *,
     now: Any,
 ) -> dict[str, Any]:
-    template_uuid = _normalize_template_id(template.get("template_id"))
+    template_uuid = normalize_template_id(template.get("template_id"))
     template_name = (
         template["template_name"] if "template_name" in template else template["name"]
     )
@@ -95,7 +95,7 @@ async def _upsert_embedding_template_from_sync(
     template: dict[str, Any]
 ) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(
         template, now=now
@@ -125,7 +125,7 @@ async def _sync_embedding_templates_records(
     for item in templates:
         if not isinstance(item, dict):
             raise ValueError("embedding_templates.sync templates must be objects")
-        tid = _normalize_template_id(item.get("template_id"))
+        tid = normalize_template_id(item.get("template_id"))
         incoming_ids.add(tid)
         await _upsert_embedding_template_from_sync(
             repo, item
@@ -154,7 +154,7 @@ class EmbeddingTemplateService:
             repo, template
         )
         result = {
-            "template_id": _normalize_template_id(template.get("template_id")),
+            "template_id": normalize_template_id(template.get("template_id")),
         }
         logger.info(
             "[ManagerConfigReceiver] embedding_templates create template_id=%s",
@@ -172,7 +172,7 @@ class EmbeddingTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("embedding_templates.update requires non-empty updates")
         request = EmbeddingTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         row = await update_embedding_template(repo, tid, request)
         if row is None:
@@ -185,7 +185,7 @@ class EmbeddingTemplateService:
     async def delete(self, template_id: str) -> None:
         if template_id is None:
             raise ValueError("embedding_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_embedding_template(repo, tid)
         logger.info(

@@ -17,7 +17,7 @@ from ...schemas.template_schemas import (
     HookConfig,
     normalize_hook_schedule,
 )
-from .template_id import normalize_template_id as _normalize_template_id
+from .template_id import normalize_template_id
 
 _TABLE = EXTENSION_CONFIG_TEMPLATE_TABLE_DEF.table_name
 _ALLOWED_COMPONENTS = frozenset({"gateway", "agent_server"})
@@ -66,7 +66,7 @@ async def _get_row_for_instance(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 async def update_extension_config_template(
@@ -76,7 +76,7 @@ async def update_extension_config_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
         return None
@@ -110,7 +110,7 @@ async def delete_extension_config_template(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row_for_instance(repo, tid)
     if existing is None:
         return False
@@ -122,7 +122,7 @@ def _build_row_from_template(
     *,
     now: Any,
 ) -> dict[str, Any]:
-    template_uuid = _normalize_template_id(template.get("template_id"))
+    template_uuid = normalize_template_id(template.get("template_id"))
     component = _validate_component(str(template["component"]))
     hook_type = _validate_hook_type(str(template["hook_type"]))
     hook_config = _validate_hook_config(template["hook_config"], hook_type=hook_type)
@@ -149,7 +149,7 @@ async def _upsert_extension_config_template_from_sync(
     template: dict[str, Any]
 ) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(
         template, now=now
@@ -177,7 +177,7 @@ async def _sync_extension_config_templates_records(
     for item in templates:
         if not isinstance(item, dict):
             raise ValueError("extension_config_templates.sync templates must be objects")
-        tid = _normalize_template_id(item.get("template_id"))
+        tid = normalize_template_id(item.get("template_id"))
         incoming_ids.add(tid)
         await _upsert_extension_config_template_from_sync(
             repo, item
@@ -205,7 +205,7 @@ class ExtensionConfigTemplateService:
             repo, template
         )
         result = {
-            "template_id": _normalize_template_id(template.get("template_id")),
+            "template_id": normalize_template_id(template.get("template_id")),
         }
         logger.info(
             "[ManagerConfigReceiver] extension_config_templates create template_id=%s",
@@ -223,7 +223,7 @@ class ExtensionConfigTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("extension_config_templates.update requires non-empty updates")
         req = ExtensionConfigTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         existing = await _get_row_for_instance(repo, tid)
         row = await update_extension_config_template(
@@ -239,7 +239,7 @@ class ExtensionConfigTemplateService:
     async def delete(self, template_id: str) -> None:
         if template_id is None:
             raise ValueError("extension_config_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_extension_config_template(repo, tid)
         logger.info(

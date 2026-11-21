@@ -13,7 +13,7 @@ from agent_gateway.config.enterprise.tables.template_models import MODEL_TEMPLAT
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import ModelTemplateUpdateRequest
-from .template_id import normalize_template_id as _normalize_template_id
+from .template_id import normalize_template_id
 
 _TABLE = MODEL_TEMPLATE_TABLE_DEF.table_name
 _ALLOWED_MODEL_TYPES = frozenset({"default", "video", "audio", "vision", "image_gen"})
@@ -48,7 +48,7 @@ async def _get_row_for_instance(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 async def update_model_template(
@@ -58,7 +58,7 @@ async def update_model_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
         return None
@@ -89,7 +89,7 @@ async def delete_model_template(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row_for_instance(repo, tid)
     if existing is None:
         return False
@@ -101,7 +101,7 @@ def _build_row_from_template(
     *,
     now: Any,
 ) -> dict[str, Any]:
-    template_uuid = _normalize_template_id(template.get("template_id"))
+    template_uuid = normalize_template_id(template.get("template_id"))
     model_type = _normalize_model_types(template.get("model_type"))
     return {
         "template_id": template_uuid,
@@ -131,7 +131,7 @@ async def _upsert_model_template_from_sync(
     template: dict[str, Any]
 ) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(
         template, now=now
@@ -159,7 +159,7 @@ async def _sync_model_templates_records(
     for item in templates:
         if not isinstance(item, dict):
             raise ValueError("model_templates.sync templates must be objects")
-        tid = _normalize_template_id(item.get("template_id"))
+        tid = normalize_template_id(item.get("template_id"))
         incoming_ids.add(tid)
         await _upsert_model_template_from_sync(repo, item)
         synced += 1
@@ -185,7 +185,7 @@ class ModelTemplateService:
             repo, template
         )
         result = {
-            "template_id": _normalize_template_id(template.get("template_id")),
+            "template_id": normalize_template_id(template.get("template_id")),
         }
         logger.info(
             "[ManagerConfigReceiver] model_templates create template_id=%s",
@@ -203,7 +203,7 @@ class ModelTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("model_templates.update requires non-empty updates")
         req = ModelTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         row = await update_model_template(repo, tid, req)
         if row is None:
@@ -216,7 +216,7 @@ class ModelTemplateService:
     async def delete(self, template_id: str) -> None:
         if template_id is None:
             raise ValueError("model_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_model_template(repo, tid)
         logger.info(
