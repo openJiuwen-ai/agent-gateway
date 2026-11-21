@@ -826,6 +826,8 @@ async def test_echo_suppressed_flush_fingerprint_blocks_replay():
     replay.payload["is_processing"] = False
     await ch.send(replay)
     ch._send_feishu_message.assert_not_awaited()
+    # 评审意见 #202663340：补观测计数器断言，证明冲刷重投确由指纹面拦下。
+    assert ch._fingerprint_suppressed_total == 1
 
 
 @pytest.mark.asyncio
