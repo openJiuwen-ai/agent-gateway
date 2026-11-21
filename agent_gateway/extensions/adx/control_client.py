@@ -195,6 +195,7 @@ class AdxControlClient:
         loop = asyncio.get_running_loop()
         expires = deadline if deadline is not None else loop.time() + self.config.connect_timeout_seconds
         observed = False
+        generation_pending = False
         try:
             async with asyncio.timeout_at(expires):
                 while True:
@@ -207,7 +208,9 @@ class AdxControlClient:
                         continue
                     observed = True
                     if expected_generation is not None:
+                        generation_pending = True
                         actual = await self._instance_generation(instance_id, value, trace_id=trace_id)
+                        generation_pending = actual is None
                         if actual is not None and actual != expected_generation:
                             raise AgentGenerationMismatchError('ADX Environment generation mismatch')
                         if actual is None:
@@ -223,6 +226,8 @@ class AdxControlClient:
         except TimeoutError as exc:
             if expected_generation is not None and not observed:
                 raise AgentNotVisibleError('ADX replacement Environment is not visible yet') from exc
+            if generation_pending:
+                raise AdxCreateTimeout('Timed out confirming the ADX Environment generation') from exc
             raise AdxCreateTimeout('Timed out waiting for the ADX Environment to become available') from exc
 
     def resolve_runtime_class(self, runtime_spec: dict, *, builtin: bool) -> str:
@@ -260,6 +265,8 @@ class AdxControlClient:
         elif image:
             body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
             body['inheritEntrypoint'] = True
+        elif not builtin:
+            raise ValueError('Custom Agent launch specification requires an image or Local rootfs')
         if runtime_class == 'runsc':
             timeout = self.agent_idle_timeout_seconds
             if not math.isfinite(timeout):

@@ -366,7 +366,8 @@ async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatch, tmp_path):
+@pytest.mark.parametrize('confirm_generation', [False, True])
+async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatch, tmp_path, confirm_generation):
     from dataclasses import replace
     from agent_gateway.extensions.agentos.agentos_router.backend import AgentTimeoutError
 
@@ -375,18 +376,26 @@ async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatc
 
     def handle(request):
         calls.append(request)
+        if request.method == 'POST':
+            return httpx.Response(200, json={'exit_code': 0, 'stdout': ''})
         return httpx.Response(200, json=[{
-            'id': 'test-alice', 'tenant_id': cfg.tenant, 'status': 'creating',
+            'id': 'test-alice', 'tenant_id': cfg.tenant,
+            'status': 'running' if confirm_generation else 'creating',
         }])
 
     client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
     try:
         with pytest.raises(AdxCreateTimeout) as error:
-            await client.wait_until_running('test-alice')
+            await client.wait_until_running('test-alice', expected_generation='pending' if confirm_generation else None)
         assert isinstance(error.value, AgentTimeoutError)
         assert error.value.code == 'SERVICE_UNAVAILABLE'
         assert isinstance(error.value.__cause__, TimeoutError)
-        assert calls and all(request.method == 'GET' for request in calls)
+        if confirm_generation:
+            assert 'confirming the ADX Environment generation' in str(error.value)
+            assert calls[1].url.path == '/direct/test-alice/invoke'
+        else:
+            assert 'become available' in str(error.value)
+            assert calls and all(request.method == 'GET' for request in calls)
     finally:
         await client.close()
 
@@ -441,3 +450,18 @@ def test_third_party_web_port_is_published_only_when_requested(monkeypatch, tmp_
     assert body["ports"] == ["8080"]
     assert body["dataPlane"] == {"portForwardSecurityMode": "tls"}
     assert body["rootfs"] == {"type": "local", "path": "/node/rootfs", "runtime": "runsc"}
+
+
+@pytest.mark.asyncio
+async def test_deployment_default_rootfs_is_reserved_for_builtin_agents(monkeypatch, tmp_path):
+    from dataclasses import replace
+
+    cfg = replace(config(monkeypatch, tmp_path), builtin_image=None)
+    client = AdxControlClient(cfg)
+    try:
+        args = ('test', 'alice', str(tmp_path), {}, {}, [])
+        assert 'rootfs' not in client._creation_body(*args, builtin=True)
+        with pytest.raises(ValueError, match='requires an image or Local rootfs'):
+            client._creation_body(*args, builtin=False)
+    finally:
+        await client.close()
