@@ -231,6 +231,28 @@ async def test_other_package_ui_keeps_the_existing_forward_path(tmp_path):
         await runtime.shutdown()
 
 
+def _retire(runtime, package_id):
+    """Make ``runtime.packages.owns`` report a Gateway-domain package (installed, inactive)."""
+    runtime.packages.owns = lambda candidate: candidate == package_id
+
+
+async def test_disabled_gateway_package_ui_is_answered_without_forwarding(tmp_path):
+    """还原关闭的 Gateway 包：本地回执无贡献，不再转发给 AgentServer 等满超时。"""
+    runtime = await _runtime(tmp_path)
+    try:
+        _retire(runtime, "retired.package")
+        params = {"event": "ui.ready", "target": {
+            "scope": "application", "slot_id": "application.sidebar.footer", "package_id": "retired.package",
+        }}
+        visited, _ = await runtime.intercept(SimpleNamespace(closed=False), "retired", "webui.dispatch", params)
+        assert visited is True
+        assert runtime.channel.responses[-1]["payload"] == {
+            "accepted": False, "status": "unhandled", "code": "NO_CONTRIBUTION",
+        }
+    finally:
+        await runtime.shutdown()
+
+
 @pytest.mark.parametrize("mode", ["no-policy", "continue", "forward"])
 async def test_http_default_forward_keeps_the_native_route(tmp_path, mode):
     async def policy(event, ops, next_handler):
