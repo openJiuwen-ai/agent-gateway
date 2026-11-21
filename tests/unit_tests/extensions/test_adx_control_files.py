@@ -238,6 +238,19 @@ async def test_missing_runtime_file_preserves_existing_not_found_contract(monkey
     await control.close()
 
 
+@pytest.mark.parametrize('payload', [
+    {'error': {'code': 'INSTANCE_NOT_FOUND'}},
+    {'error': 'instance missing', 'error_code': 'INSTANCE_NOT_FOUND'},
+])
+@pytest.mark.asyncio
+async def test_native_stream_maps_instance_not_found_for_both_response_shapes(payload):
+    from agent_gateway.extensions.adx.file_transport import _check_response
+
+    with pytest.raises(AdxControlError) as caught:
+        await _check_response(httpx.Response(404, json=payload))
+    assert caught.value.code == 'instance_not_found'
+
+
 @pytest.mark.asyncio
 async def test_recursive_listing_preserves_unlimited_depth_contract(monkeypatch):
     router, control = _files(monkeypatch)
@@ -294,16 +307,20 @@ async def test_recursive_mkdir_uses_native_adx_action_and_default_mode(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_uploaded_file_and_new_parents_inherit_workspace_owner(monkeypatch):
+@pytest.mark.parametrize('root', ['/home/agentos', '/custom/workspace'])
+async def test_uploaded_file_and_new_parents_inherit_workspace_owner(monkeypatch, root):
     import shlex
+    from agent_gateway.routing import container_files
 
+    monkeypatch.setattr(container_files, 'AGENT_FILE_PATH_ROOT', root)
     router, control = _files(monkeypatch)
     await router.connect('')
     actions = []
     def invoke(env, action, args):
         actions.append((action, args))
         if action == 'file.exists':
-            return {'exists': args['path'] == '/home/agentos/existing'}
+            assert args['path'].startswith(root + '/')
+            return {'exists': root == '/home/agentos' and args['path'] == f'{root}/existing'}
         if action == 'file.write_chunk':
             return {'bytes_written': len(bytes.fromhex(args['data']))}
         return {'exit_code': 0}
@@ -314,9 +331,9 @@ async def test_uploaded_file_and_new_parents_inherit_workspace_owner(monkeypatch
         commands = [args['cmd'] for action, args in actions if action == 'cmd.run']
         assert len(commands) == 1
         words = shlex.split(commands[0])
-        assert words[:4] == ['chown', '-h', '--reference=/home/agentos', '--']
-        assert '/home/agentos/existing/new dir' in words[4:]
-        assert '/home/agentos/existing' not in words[4:]
+        assert words[:4] == ['chown', '-h', f'--reference={root}', '--']
+        assert f'{root}/existing/new dir' in words[4:]
+        assert (f'{root}/existing' in words[4:]) == (root != '/home/agentos')
         assert actions[-3][0] == 'cmd.run' and actions[-2][0] == 'file.rename'
     finally:
         await router.shutdown()
@@ -401,7 +418,7 @@ async def test_native_upload_rejects_traversal_before_creating_environment(monke
 @pytest.mark.asyncio
 async def test_upload_limit_counts_stream_and_never_publishes_oversize(monkeypatch):
     from agent_gateway.extensions.adx import file_client
-    monkeypatch.setattr(file_client, '_MAX_UPLOAD_SIZE', 5)
+    monkeypatch.setattr(file_client, 'MAX_UPLOAD_FILE_SIZE', 5)
     router, control = _files(monkeypatch)
     await router.connect('')
     control.invoke.return_value = {'exit_code': 0}
@@ -420,7 +437,7 @@ async def test_upload_limit_counts_stream_and_never_publishes_oversize(monkeypat
 @pytest.mark.asyncio
 async def test_native_upload_retains_stream_limit_for_unknown_size(monkeypatch):
     from agent_gateway.extensions.adx import file_client
-    monkeypatch.setattr(file_client, '_MAX_UPLOAD_SIZE', 5)
+    monkeypatch.setattr(file_client, 'MAX_UPLOAD_FILE_SIZE', 5)
     router, control = _files(monkeypatch)
     await router.connect('')
     control.invoke.return_value = {'exit_code': 0}
@@ -543,7 +560,7 @@ async def test_nonrecursive_mkdir_preserves_filesystem_contract(monkeypatch, tmp
     import subprocess
     from agent_gateway.routing import container_files
 
-    monkeypatch.setattr(container_files, '_AGENT_FILE_PATH_ROOT', str(tmp_path))
+    monkeypatch.setattr(container_files, 'AGENT_FILE_PATH_ROOT', str(tmp_path))
     router, control = _files(monkeypatch)
     await router.connect('')
     async def invoke(environment, action, args):

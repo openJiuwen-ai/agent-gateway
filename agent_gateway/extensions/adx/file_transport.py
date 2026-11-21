@@ -32,11 +32,13 @@ async def _check_response(response: httpx.Response) -> None:
         value = json.loads(detail)
     except ValueError:
         value = None
-    error = value.get('error') if isinstance(value, dict) else None
-    structured = error.get('code') if isinstance(error, dict) else value.get('error_code') if isinstance(value, dict) else None
-    if str(structured or '').upper() == 'FILE_NOT_FOUND':
+    payload = value if isinstance(value, dict) else {}
+    error = payload.get('error')
+    error_code = error.get('code') if isinstance(error, dict) else None
+    structured = str(error_code or payload.get('error_code') or '').upper()
+    if structured == 'FILE_NOT_FOUND':
         code = 'file_not_found'
-    elif isinstance(error, dict) and str(structured or '').upper() in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
+    elif structured in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
         code = 'instance_not_found'
     elif response.status_code == 400 and ('not found' in detail.lower() or 'no such file' in detail.lower()):
         code = 'file_not_found'

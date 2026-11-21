@@ -120,6 +120,24 @@ async def test_native_head_and_error_close_upstream_when_cancelled(fail):
     assert closes == [True]
 
 
+@pytest.mark.asyncio
+async def test_native_head_preserves_response_when_upstream_close_fails():
+    from agent_gateway.channel_manager.web.container_file_http import _native_file_response
+
+    @asynccontextmanager
+    async def open_file(**_kwargs):
+        yield httpx.Response(416, headers={'Content-Range': 'bytes */6'})
+        raise RuntimeError('upstream close failed')
+
+    response = await _native_file_response(
+        SimpleNamespace(open_container_file=open_file),
+        request=SimpleNamespace(headers={}, method='HEAD'),
+        user_id='alice', path='/home/agentos/a', session_id='',
+    )
+    assert response.status_code == 416
+    assert response.headers['Content-Range'] == 'bytes */6'
+
+
 @pytest.mark.parametrize('size', [5, 6])
 @pytest.mark.parametrize('streaming', [True, False])
 @pytest.mark.asyncio

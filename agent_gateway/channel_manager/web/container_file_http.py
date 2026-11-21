@@ -19,7 +19,11 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agent_gateway.routing.container_files import AgentOSFileTransferError, parse_single_byte_range
+from agent_gateway.routing.container_files import (
+    MAX_UPLOAD_FILE_SIZE,
+    AgentOSFileTransferError,
+    parse_single_byte_range,
+)
 
 if TYPE_CHECKING:
     from agent_gateway.channel_manager.web.web_connect import WebChannel
@@ -28,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 FILE_API_PREFIX = "/file-api"
 MAX_UPLOAD_COUNT = 20
-MAX_UPLOAD_FILE_SIZE = 512 * 1024 * 1024
 _STREAM_CHUNK = 65536
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
 # Keep the verified-download wire chunk bound aligned with AgentServer.
@@ -36,8 +39,11 @@ _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
 
 
 async def _close_file_transfer(transfer):
-    with anyio.CancelScope(shield=True):
-        await transfer.__aexit__(None, None, None)
+    try:
+        with anyio.CancelScope(shield=True):
+            await transfer.__aexit__(None, None, None)
+    except Exception:
+        logger.warning("Failed to close native file transfer", exc_info=True)
 
 
 class _FileStreamingResponse(StreamingResponse):

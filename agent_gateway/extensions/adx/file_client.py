@@ -15,7 +15,9 @@ from pathlib import PurePosixPath
 import uuid
 
 from agent_gateway.extensions.adx.control_client import AdxControlError, AdxEnvironmentNotFoundError
+from agent_gateway.routing import container_files
 from agent_gateway.routing.container_files import (
+    MAX_UPLOAD_FILE_SIZE,
     AgentFileDownloadChunk,
     AgentOSFileTransferError,
     normalize_agent_file_download_path,
@@ -25,7 +27,6 @@ from agent_gateway.routing.container_files import (
 
 _FILE_TRANSFERS: ContextVar[dict | None] = ContextVar("adx_file_transfers", default=None)
 _CHUNK = 64 * 1024
-_MAX_UPLOAD_SIZE = 512 * 1024 * 1024
 
 
 def _validate_mode(mode: str | None) -> str | None:
@@ -101,8 +102,11 @@ class AdxFileMixin:
 
     async def _upload_file_stream(self, environment: str, path: str, chunks, *, mode: str | None = None) -> dict:
         parent = PurePosixPath(path).parent
+        root = PurePosixPath(container_files.AGENT_FILE_PATH_ROOT)
+        if not parent.is_relative_to(root):
+            raise AgentOSFileTransferError("upload path is outside the workspace", code="BAD_REQUEST")
         new_directories = []
-        while parent != PurePosixPath('/home/agentos'):
+        while parent != root:
             info = await self._file_invoke(environment, "file.exists", {"path": str(parent)})
             if info.get("exists") is True:
                 break
@@ -114,7 +118,7 @@ class AdxFileMixin:
             nonlocal size
             async for chunk in chunks:
                 size += len(chunk)
-                if size > _MAX_UPLOAD_SIZE:
+                if size > MAX_UPLOAD_FILE_SIZE:
                     raise AgentOSFileTransferError("upload exceeds 512 MiB", code="file_too_large")
                 yield chunk
         try:
@@ -131,7 +135,7 @@ class AdxFileMixin:
                     raise AgentOSFileTransferError("Short ADX upload", code="INTERNAL_ERROR")
             # Keep workspace ownership and publish only after a complete upload.
             ownership = await self._file_invoke(environment, "cmd.run", {
-                "cmd": shlex.join(['chown', '-h', '--reference=/home/agentos', '--',
+                "cmd": shlex.join(['chown', '-h', f'--reference={root}', '--',
                                    temporary, *new_directories]), "timeout": 30,
             })
             if ownership.get("exit_code") != 0:

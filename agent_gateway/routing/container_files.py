@@ -9,7 +9,8 @@ from pathlib import PurePosixPath
 
 from agent_gateway.common.attachment_safety import is_forbidden_document, safe_upload_filename
 
-_AGENT_FILE_PATH_ROOT = "/home/agentos"
+AGENT_FILE_PATH_ROOT = "/home/agentos"
+MAX_UPLOAD_FILE_SIZE = 512 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -95,7 +96,7 @@ def normalize_agent_file_upload_path(
     if path_parent and path_parent != ".":
         parts.append(path_parent)
     parts.append(safe_name)
-    return f"{_AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
+    return f"{AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
 
 
 def normalize_agent_file_download_path(path: str) -> str:
@@ -108,7 +109,7 @@ def normalize_agent_file_download_path(path: str) -> str:
     posix = PurePosixPath(text)
     if ".." in posix.parts:
         raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    root = _AGENT_FILE_PATH_ROOT
+    root = AGENT_FILE_PATH_ROOT
     if text != root and not text.startswith(f"{root}/"):
         raise AgentOSFileTransferError(
             f"path must be under {root}",
