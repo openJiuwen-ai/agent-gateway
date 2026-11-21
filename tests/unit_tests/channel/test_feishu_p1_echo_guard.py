@@ -756,6 +756,8 @@ async def test_echo_suppressed_final_fingerprint_blocks_same_rid_replay():
     replay.payload["is_complete"] = True
     await ch.send(replay)
     ch._send_feishu_message.assert_not_awaited()   # 重投：指纹尾缀兜底
+    # 评审意见 #202659440：补观测计数器断言，证明拦截确实来自指纹面而非更早分支。
+    assert ch._fingerprint_suppressed_total == 1
     assert ch._echo_blocked_total == 1             # 重投拦在指纹面，不占回声计数
 
 
