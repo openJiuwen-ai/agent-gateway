@@ -1053,9 +1053,14 @@ async def test_p2_flush_face_fingerprint_replay_suppressed():
     ch._start_cardkit_session = AsyncMock(return_value=False)
     merged = "首次入账的合并正文前段内容远超下限要求内容足够长尾部增量文本"
     ch._p2_final_fingerprints["req_t1"] = merged
+    # 评审意见 #202654733：冲刷面正文经流式缓冲 pop 入面（帧正文为空的真实重投形制）——
+    # 仅携帧正文时该帧在「内容为空跳过发送」处自然不投递，not-awaited 恒真、兜底未达。
+    ch._stream_text_buffers["req_t1"] = "尾部增量文本"
     m = _msg(event_name="chat.processing_status", content="尾部增量文本")
-    m.payload = {"is_processing": False}
+    m.payload["is_processing"] = False
     await ch.send(m)
+    # 补正向计数断言真正锁定「被指纹兜底抑制」这一行为本身。
+    assert ch._fingerprint_suppressed_total == 1
     ch._send_feishu_message.assert_not_awaited()
 
 
