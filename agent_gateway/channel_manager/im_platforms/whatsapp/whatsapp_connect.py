@@ -20,6 +20,9 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.platform_adapter.outgoing_text import (
+    extract_outgoing_text,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -479,22 +482,7 @@ class WhatsAppChannel(BaseChannel):
 
     @staticmethod
     def _extract_outgoing_text(msg: Message) -> str:
-        payload = getattr(msg, "payload", None) or {}
-        if msg.event_type == EventType.HEALTH_CHECK_RELAY and isinstance(payload, dict):
-            health_check = payload.get("health_check")
-            if health_check:
-                return str(health_check)
-
-        if isinstance(payload, dict) and "content" in payload:
-            content = payload.get("content")
-            if isinstance(content, dict):
-                return str(content.get("output", content))
-            return str(content or "")
-        if msg.params and "content" in msg.params:
-            return str(msg.params.get("content") or "")
-        if isinstance(msg.payload, str):
-            return msg.payload
-        return ""
+        return extract_outgoing_text(msg, strip=False)
 
     def _extract_target_jid(self, msg: Message) -> str:
         metadata = msg.metadata or {}
