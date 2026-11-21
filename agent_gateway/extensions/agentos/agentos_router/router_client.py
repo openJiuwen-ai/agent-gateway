@@ -3267,6 +3267,10 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt.sandbox = await attempt.create()
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
+        except YuanrongAgentGenerationMismatchError as exc:
+            # This name is owned by a different generation; leave it alone.
+            lifecycle.attempt = None
+            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
             # Retire this name so the next request starts a new generation instead of replaying a refused create.
             lifecycle.retired_instance = attempt.deterministic_id
