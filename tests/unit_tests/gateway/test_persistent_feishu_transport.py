@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime, timezone
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from e2a.message import EventType, Message
@@ -168,12 +169,13 @@ async def test_delivery_feishu_result_uses_chat_create_when_no_source_message():
 
 
 def _raw_feishu_event(
-    *, sender_type="user", message_type="text", content=None, message_id="om_001", mention_ids=("ou_dev",)
+    *, sender_type="user", message_type="text", content=None, message_id="om_001", mention_ids=("ou_dev",),
+    chat_type="group",
 ):
     message = SimpleNamespace(
         message_id=message_id,
         chat_id="oc_project",
-        chat_type="group",
+        chat_type=chat_type,
         create_time=str(int(NOW.timestamp() * 1000)),
         message_type=message_type,
         content=content if content is not None else json.dumps({"text": "请看一下"}),
@@ -839,6 +841,149 @@ async def test_gateway_feishu_file_reaches_real_sender(tmp_path, share_mode, upl
         channel._upload_file.assert_not_called()
     else:
         channel._upload_file.assert_called_once_with(str(source))
+
+
+# ---------------------------------------------------------------------------
+# gw-emojiack-125: group_digital_avatar 只抑制群聊 emoji ack，单聊 p2p 不受影响。
+# 判据＝调用事实（call_count/call_args），非 await_count——create_task 派生的
+# 副作用在断言点未获事件循环执行机会时 await_count 结构性为 0。
+# 隔离义务：mock 落盘面（add_message_to_memory）与 15s 合并窗（_enqueue_message_batch），
+# 避免向家目录写记忆文件、不留 pending 任务。
+# ---------------------------------------------------------------------------
+
+async def _run_emoji_ack_arm(chat_type: str, avatar_on: bool):
+    channel = _feishu_channel()
+    channel.config.group_digital_avatar = avatar_on
+    channel._enqueue_message_batch = AsyncMock()
+    channel._message_storage.add_message_to_memory = MagicMock()
+    await channel._on_message(_raw_feishu_event(chat_type=chat_type))
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_avatar_on_p2p_still_sends_emoji_ack():
+    """修复臂：分身开＋单聊 → ack 发出（修前 call_count==0 属 RED 判例）。"""
+    channel = await _run_emoji_ack_arm("p2p", avatar_on=True)
+    assert channel._add_reaction.call_count == 1
+    assert channel._add_reaction.call_args == call("om_001", "THUMBSUP")
+
+
+@pytest.mark.asyncio
+async def test_avatar_on_group_suppresses_emoji_ack():
+    """行为保持臂：分身开＋群聊 → ack 抑制。"""
+    channel = await _run_emoji_ack_arm("group", avatar_on=True)
+    assert channel._add_reaction.call_count == 0
+    assert channel._add_reaction.call_args is None
+
+
+@pytest.mark.asyncio
+async def test_avatar_off_p2p_sends_emoji_ack():
+    """行为保持臂：分身关＋单聊 → ack 发出。"""
+    channel = await _run_emoji_ack_arm("p2p", avatar_on=False)
+    assert channel._add_reaction.call_count == 1
+    assert channel._add_reaction.call_args == call("om_001", "THUMBSUP")
+
+
+@pytest.mark.asyncio
+async def test_avatar_off_group_sends_emoji_ack():
+    """行为保持臂：分身关＋群聊 → ack 发出。"""
+    channel = await _run_emoji_ack_arm("group", avatar_on=False)
+    assert channel._add_reaction.call_count == 1
+    assert channel._add_reaction.call_args == call("om_001", "THUMBSUP")
+
+
+# ---------------------------------------------------------------------------
+# gw-emojiack-125 观测三臂：emoji ack 四态可分辨（成功/失败/缺席/抑制）。
+# 前提：捕获依赖仓内 pytest.ini log_cli_level=INFO；本组显式 caplog.set_level 不依赖该配置。
+# ---------------------------------------------------------------------------
+
+def _reaction_channel() -> FeishuChannel:
+    """未 mock _add_reaction 的 channel（日志断言需走真实 reaction 链路）。"""
+    channel = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="app-dev", agent_id="", channel_id="test-feishu"),
+        MagicMock(),
+    )
+    return channel
+
+
+def _reaction_api(create_result) -> SimpleNamespace:
+    return SimpleNamespace(
+        im=SimpleNamespace(
+            v1=SimpleNamespace(message_reaction=SimpleNamespace(create=MagicMock(return_value=create_result)))
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_emoji_ack_success_logs_reaction_id(caplog):
+    """成功路径日志为 debug 级且含 message_id/emoji/reaction_id（data 可空
+    防御取值）——消息级高频路径不得占 INFO 面。"""
+    channel = _reaction_channel()
+    channel._api_client = _reaction_api(SimpleNamespace(
+        success=lambda: True, code=0, msg="success", data=SimpleNamespace(reaction_id="om_r1"),
+    ))
+    with caplog.at_level(logging.DEBUG, logger="agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"):
+        await channel._add_reaction("om_001", "THUMBSUP")
+    assert any(r.levelno == logging.DEBUG and "reaction_id=om_r1" in r.message
+               and "message_id=om_001" in r.message for r in caplog.records)
+    assert not any(r.levelno == logging.INFO and "emoji ack" in r.message
+                   for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_emoji_ack_failure_logs_message_and_code(caplog):
+    """失败路径以 warning 级记录 message_id 与飞书错误码。"""
+    channel = _reaction_channel()
+    channel._api_client = _reaction_api(SimpleNamespace(
+        success=lambda: False, code=230001, msg="bad", data=None,
+    ))
+    with caplog.at_level(logging.WARNING, logger="agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"):
+        await channel._add_reaction("om_002", "THUMBSUP")
+    assert any(r.levelno == logging.WARNING and "message_id=om_002" in r.message
+               and "code=230001" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_emoji_ack_missing_api_client_logs_reason(caplog):
+    """缺席路径（api_client_missing）以 debug 级分因记录，不再静默返回；
+    消息级高频重复不得占 INFO 面。"""
+    channel = _reaction_channel()
+    assert channel._api_client is None
+    with caplog.at_level(logging.DEBUG, logger="agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"):
+        await channel._add_reaction("om_003", "THUMBSUP")
+    assert any(r.levelno == logging.DEBUG and "reason=api_client_missing" in r.message
+               and "message_id=om_003" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_avatar_on_group_suppression_is_positively_logged(caplog):
+    """分身开＋群聊时抑制分支主动打 debug 级「抑制」日志（非靠日志缺席反推）；
+    消息级高频路径不占 INFO 面。"""
+    channel = _feishu_channel()
+    channel.config.group_digital_avatar = True
+    channel._enqueue_message_batch = AsyncMock()
+    channel._message_storage.add_message_to_memory = MagicMock()
+    with caplog.at_level(logging.DEBUG, logger="agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"):
+        await channel._on_message(_raw_feishu_event(chat_type="group"))
+    assert channel._add_reaction.call_count == 0
+    assert any(r.levelno == logging.DEBUG and "emoji ack 抑制" in r.message
+               and "message_id=om_001" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_emoji_ack_reaction_id_dict_shaped_data(caplog):
+    """response.data 为 dict 形态时 reaction_id 仍需取到——单形态属性取
+    恒 None 的死角补兼容断言。"""
+    channel = _reaction_channel()
+    channel._api_client = _reaction_api(SimpleNamespace(
+        success=lambda: True, code=0, msg="success", data={"reaction_id": "om_r2"},
+    ))
+    with caplog.at_level(logging.DEBUG, logger="agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"):
+        await channel._add_reaction("om_004", "THUMBSUP")
+    assert any(r.levelno == logging.DEBUG and "reaction_id=om_r2" in r.message
+               and "message_id=om_004" in r.message for r in caplog.records)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("event_id", ["cron-push-job", "ordinary-response"])
 async def test_personal_feishu_push_does_not_use_employee_bots(event_id):
@@ -869,3 +1014,35 @@ async def test_personal_feishu_push_does_not_use_employee_bots(event_id):
     employee, personal = manager.get_channels_by_id("feishu")
     employee.send.assert_not_awaited()
     personal.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reaction_ack_task_strong_ref_and_exception_visible(monkeypatch):
+    """emoji ack 任务须留强引用（pending 期间不被 GC），done 回调移除引用并把
+    任务内异常打日志（含 message_id 归属）——不再静默丢失。"""
+    from agent_gateway.channel_manager.im_platforms.feishu import feishu_connect as fc_mod
+    channel = FeishuChannel(
+        FeishuConfig(enabled=True, app_id="cli_ack", agent_id="mate_1"), MagicMock()
+    )
+    warned = []
+    monkeypatch.setattr(fc_mod.logger, "warning",
+                        lambda msg, *a, **k: warned.append(msg % a if a else msg))
+
+    started = asyncio.Event()
+
+    async def _boom(message_id, emoji_type="THUMBSUP"):
+        started.set()
+        raise RuntimeError("reaction api down")
+
+    channel._add_reaction = _boom
+    channel._spawn_reaction_ack("om_msg_1")
+    assert len(channel._reaction_ack_tasks) == 1, "pending 期间必须持有强引用"
+    await started.wait()
+    for _ in range(50):
+        await asyncio.sleep(0)
+        if not channel._reaction_ack_tasks:
+            break
+    assert not channel._reaction_ack_tasks, "done 回调必须释放强引用"
+    assert any("emoji ack" in w for w in warned), "任务异常必须可见（日志）"
+    assert any("message_id=om_msg_1" in w for w in warned), \
+        "失败日志必须携带 message_id 归属，多任务在途时可定位失败消息"

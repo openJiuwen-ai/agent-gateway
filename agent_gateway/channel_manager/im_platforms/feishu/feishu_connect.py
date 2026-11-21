@@ -439,6 +439,9 @@ class FeishuChannel(BaseChannel):
         self._pending_message_lock = asyncio.Lock()
         self._pending_group_progress_tasks: dict[str, asyncio.Task[None]] = {}
         self._sent_group_progress_requests: set[str] = set()
+        # 即时应答（emoji ack）后台任务的强引用集合——
+        # 事件循环对 task 只持弱引用，不留强引用可能中途中途被 GC 静默丢失。
+        self._reaction_ack_tasks: "set[asyncio.Task[None]]" = set()
         self._stopping = False
         # 按 request_id 聚合 chat.delta，避免同一任务被拆分成多条消息发送到飞书。
         self._stream_text_buffers: dict[str, str] = {}
@@ -967,12 +970,48 @@ class FeishuChannel(BaseChannel):
 
             if not response.success():
                 logger.warning(
-                    f"添加消息反应失败: 错误码={response.code}, 消息={response.msg}"
+                    "[FeishuChannel] emoji ack 失败: message_id=%s emoji=%s code=%s msg=%s",
+                    message_id, emoji_type, response.code, response.msg,
                 )
             else:
-                logger.debug("已为消息 %s 添加 %s 表情", message_id, emoji_type)
+                _rdata = getattr(response, "data", None)
+                # lark_oapi response.data 部分形态为 dict——单形态属性取恒
+                # None，反查句柄形同虚设；两种形态均需兼容。
+                if isinstance(_rdata, dict):
+                    reaction_id = _rdata.get("reaction_id")
+                else:
+                    reaction_id = getattr(_rdata, "reaction_id", None)
+                # emoji ack 每条入站消息必发，成功日志 INFO 级即消息级洪水，
+                # 降 DEBUG；reaction_id 保留在 DEBUG 行（反查飞书 reaction
+                # 的唯一句柄，需要时开级即得）。
+                logger.debug(
+                    "[FeishuChannel] emoji ack 成功: message_id=%s emoji=%s reaction_id=%s",
+                    message_id, emoji_type, reaction_id,
+                )
         except Exception as e:
-            logger.warning(f"添加消息反应时发生异常: {e}")
+            logger.warning(
+                "[FeishuChannel] emoji ack 异常: message_id=%s emoji=%s error_type=%s error=%s",
+                message_id, emoji_type, type(e).__name__, e,
+            )
+
+    def _spawn_reaction_ack(self, message_id: str) -> None:
+        """emoji ack 后台任务保留强引用并在 done 回调观测异常，避免事件循环
+        弱引用下任务被 GC 静默丢失、内部异常不可见。"""
+        task = asyncio.create_task(self._add_reaction(message_id, "THUMBSUP"))
+        self._reaction_ack_tasks.add(task)
+        # done 回调绑定 message_id 归属上下文：多个 ack 任务同时在途时，失败日志
+        # 可直接定位是哪条消息的 reaction 失败，无需靠时间线反推。
+        task.add_done_callback(lambda t, mid=message_id: self._reaction_ack_task_done(t, mid))
+
+    def _reaction_ack_task_done(self, task: "asyncio.Task[None]", message_id: str = "") -> None:
+        self._reaction_ack_tasks.discard(task)
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                logger.warning(
+                    "[FeishuChannel] emoji ack task failed: message_id=%s error=%s",
+                    message_id, exc,
+                )
 
     async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> None:
         """
@@ -991,6 +1030,12 @@ class FeishuChannel(BaseChannel):
             emoji_type: 表情类型
         """
         if not self._api_client or not Emoji:
+            reason = "api_client_missing" if not self._api_client else "sdk_missing"
+            # 跳过与成功同为消息级高频重复（配置缺失时每帧必打），INFO 降 DEBUG。
+            logger.debug(
+                "[FeishuChannel] emoji ack 跳过: message_id=%s emoji=%s reason=%s",
+                message_id, emoji_type, reason,
+            )
             return
 
         loop = asyncio.get_running_loop()
@@ -3652,9 +3697,17 @@ class FeishuChannel(BaseChannel):
             if sender.sender_type == "bot":
                 return
 
-            # 群聊数字分身模式下不自动点赞
-            if not self.config.group_digital_avatar:
-                asyncio.create_task(self._add_reaction(message.message_id, "THUMBSUP"))
+            # 群聊数字分身模式下不自动点赞（仅群聊抑制；单聊 p2p 即时 ack 不受该开关影响）
+            _is_group = str(getattr(message, "chat_type", "") or "").strip() == "group"
+            if (not self.config.group_digital_avatar) or (not _is_group):
+                self._spawn_reaction_ack(message.message_id)
+            else:
+                # 群聊分身开启后抑制分支每条群消息必发，INFO 即消息级洪水，
+                # 降 DEBUG。
+                logger.debug(
+                    "[FeishuChannel] emoji ack 抑制: message_id=%s (群聊数字分身模式)",
+                    message.message_id,
+                )
 
             # 解析消息内容（支持文件类型）
             try:
