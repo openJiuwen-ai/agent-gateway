@@ -12,7 +12,6 @@ import os
 import re
 import threading
 import time
-from collections import OrderedDict
 from typing import Any, Callable
 
 from e2a.message import EventType, Message, ReqMethod
@@ -32,6 +31,7 @@ from agent_gateway.channel_manager.im_platforms.group_ack import (
     generate_group_ack_text,
     normalize_group_ack_text,
 )
+from agent_gateway.channel_manager.im_platforms.message_dedup import MessageDeduplicator
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from agent_gateway.channel_manager.im_platforms.thinking_content import (
     is_thinking_only_content,
@@ -101,7 +101,7 @@ class WecomChannel(BaseChannel):
         self._message_callback: Callable[[Message], None] | None = None
         self._connect_task: asyncio.Task | None = None
         self._pending_streams: dict[str, dict[str, Any]] = {}
-        self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()
+        self._message_deduplicator = MessageDeduplicator()
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._pending_message_batches: dict[tuple[str, str], dict[str, Any]] = {}
         self._pending_message_lock = asyncio.Lock()
@@ -214,15 +214,7 @@ class WecomChannel(BaseChannel):
 
     def _is_duplicate_message(self, message_id: str) -> bool:
         """检查消息是否重复。"""
-        if message_id in self._message_dedup_cache:
-            return True
-
-        self._message_dedup_cache[message_id] = None
-
-        while len(self._message_dedup_cache) > 1000:
-            self._message_dedup_cache.popitem(last=False)
-
-        return False
+        return self._message_deduplicator.is_duplicate(message_id)
 
     _GROUP_PROGRESS_HINT_DELAY_SECONDS = 6.0
     _GROUP_PROGRESS_HINT_TEXTS: tuple[str, ...] = (
