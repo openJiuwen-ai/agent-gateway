@@ -23,6 +23,10 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.thinking_content import (
+    is_thinking_only_content,
+    strip_think_tags,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -811,24 +815,11 @@ class WechatChannel(BaseChannel):
 
     @staticmethod
     def _strip_think_tags(text: str) -> str:
-        if not text or not isinstance(text, str):
-            return text or ""
-        text = re.sub(
-            r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL
-        )
-        text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE | re.DOTALL)
-        return text
+        return strip_think_tags(text)
 
     @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
-        if not text or not isinstance(text, str):
-            return True
-        t = text.strip()
-        if not t:
-            return True
-        if re.match(r"^[.．。…\s]+$", t):
-            return True
-        return False
+        return is_thinking_only_content(text)
 
     @staticmethod
     def _is_reasoning_chunk(msg: Message) -> bool:
