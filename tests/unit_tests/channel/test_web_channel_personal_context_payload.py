@@ -61,3 +61,63 @@ def test_personal_context_structure_events_preserve_complete_payload(
         **payload,
         "session_id": "personal-context-session",
     }
+
+
+@pytest.mark.parametrize("event_name", [
+    "webui.render",
+    "webui.render.clear",
+    "webui.render.error",
+    "webui.appearance",
+    "webui.download",
+    "webui.splash.play",
+    "webui.presentation.start",
+])
+def test_webui_frames_preserve_complete_payload(event_name: str) -> None:
+    payload = {
+        "event_type": event_name,
+        "target": {
+            "scope": "application",
+            "slot_id": "application.sidebar.footer",
+            "package_id": "core.token-weather",
+        },
+        "root": {"component": "Text", "props": {"text": "1.2k"}},
+        "revision": 7,
+    }
+    message = Message(
+        id="webui-frame",
+        type="event",
+        channel_id="web",
+        session_id="webui-session",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload=payload,
+    )
+
+    assert WebChannel._build_event_payload(message, event_name) == {
+        **payload,
+        "session_id": "webui-session",
+    }
+
+
+def test_non_contract_webui_events_keep_only_the_display_payload() -> None:
+    message = Message(
+        id="webui-catalog",
+        type="event",
+        channel_id="web",
+        session_id="webui-session",
+        params={},
+        timestamp=0.0,
+        ok=True,
+        payload={
+            "event_type": "webui.settings.catalog",
+            "content": "settings ready",
+            "catalog": {"env": {"API_KEY": "secret"}},
+            "settings_path": "C:/Users/demo/.jiuwenswarm/config/config.yaml",
+        },
+    )
+
+    assert WebChannel._build_event_payload(message, "webui.settings.catalog") == {
+        "session_id": "webui-session",
+        "content": "settings ready",
+    }

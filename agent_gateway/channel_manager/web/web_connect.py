@@ -225,6 +225,23 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
     }
 )
 
+# Downstream extension frames whose payload schema is fixed by the extensions v2
+# webui contract (render/clear/error, appearance, download, splash, presentation).
+# Only these names are forwarded verbatim; other webui.* events keep the reduced
+# payload because they may carry internal management data that must not reach the
+# browser.
+_WEBUI_FULL_PAYLOAD_EVENTS = frozenset(
+    {
+        "webui.render",
+        "webui.render.clear",
+        "webui.render.error",
+        "webui.appearance",
+        "webui.download",
+        "webui.splash.play",
+        "webui.presentation.start",
+    }
+)
+
 _CONTEXT_USAGE_JSONL_FILENAME = "context_usage.jsonl"
 _CONTEXT_USAGE_MAX_BYTES = 10 * 1024 * 1024
 _CONTEXT_USAGE_BACKUP_COUNT = 3
@@ -1233,6 +1250,11 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* frames carry target/root/revision/theme; the reduction to
+            # {session_id, content} drops them, so extension UI (for example the
+            # AgentServer token/weather widgets) never renders. Only the four
+            # contract events are forwarded in full; other webui.* stay reduced.
+            or event_name in _WEBUI_FULL_PAYLOAD_EVENTS
             or event_name == "cron.run.updated"
         )
 
