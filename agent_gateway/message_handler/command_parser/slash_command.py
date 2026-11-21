@@ -573,11 +573,11 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
         # 未在这里声明会被快捷面板过滤，Web 端就无法通过 / 唤起该命令。
         "name": "extension",
         "description_i18n": {
-            "zh": "管理扩展包：查询、安装、卸载或重载",
-            "en": "Manage extension packages: query, install, uninstall, or reload",
+            "zh": "安装、查询、卸载或重载系统插件",
+            "en": "Install, query, uninstall, or reload system plugins",
         },
-        "usage": "/extension [query|install|uninstall|reload] [参数]",
-        "example": "/extension query webui.login-demo",
+        "usage": "/extension [install <ZIP 路径>|query [package_id]|uninstall <package_id>|reload <package_id>]",
+        "example": "/extension query",
         "kind": "built-in",
         "takesArgs": True,
         "scope": "client",

@@ -398,7 +398,10 @@ def test_web_slash_picker_command_contract() -> None:
     assert commands[4]["usage"] == "/persist <任务>"
     assert commands[4]["execution"] == "session.create"
     assert commands[4]["requires_session"] is False
-    assert commands[5]["usage"] == "/extension [query|install|uninstall|reload] [参数]"
+    assert (
+        commands[5]["usage"]
+        == "/extension [install <ZIP 路径>|query [package_id]|uninstall <package_id>|reload <package_id>]"
+    )
     assert commands[5]["execution"] == "client"
     assert commands[5]["takesArgs"] is True
     assert commands[5]["requires_session"] is False
@@ -412,7 +415,7 @@ def test_web_slash_picker_descriptions_are_bilingual_and_backward_compatible() -
         "切换计划模式（只读规划 → 审批 → 执行）",
         "设置、查看、暂停、恢复或清除持续目标",
         "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
-        "管理扩展包：查询、安装、卸载或重载",
+        "安装、查询、卸载或重载系统插件",
     ]
     assert [command["description"] for command in commands] == expected_legacy_descriptions
     for command in commands:
