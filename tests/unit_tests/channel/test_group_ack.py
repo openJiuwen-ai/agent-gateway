@@ -1,5 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import pytest
+
 from agent_gateway.channel_manager.im_platforms.group_ack import (
     DEFAULT_GROUP_ACK,
     build_group_ack_prompt,
@@ -8,6 +10,13 @@ from agent_gateway.channel_manager.im_platforms.group_ack import (
 )
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel
 from agent_gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel
+
+
+@pytest.mark.parametrize("text", ['"acknowledged"', "'acknowledged'", "\u201cacknowledged\u201d", "\u2018acknowledged\u2019"])
+def test_normalize_group_ack_removes_wrapping_quotes(text: str) -> None:
+    assert normalize_group_ack_text("target", text) == "acknowledged"
+    assert FeishuChannel._normalize_group_ack_text("target", text) == "acknowledged"
+    assert WecomChannel._normalize_group_ack_text("target", text) == "acknowledged"
 
 
 def test_normalize_group_ack_rejects_narration_and_target_name() -> None:

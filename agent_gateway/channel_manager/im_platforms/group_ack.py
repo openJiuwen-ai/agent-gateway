@@ -22,7 +22,7 @@ _FORBIDDEN_PHRASES = (
 def normalize_group_ack_text(target_name: str, text: str) -> str:
     """Keep a short first-person reply and reject bot-style narration."""
     normalized = re.split(r"[\r\n]+", (text or "").strip(), maxsplit=1)[0]
-    normalized = re.sub(r"\s+", " ", normalized).strip(' "\'「」')
+    normalized = re.sub(r"\s+", " ", normalized).strip(' "\'\u201c\u201d\u2018\u2019「」')
     if not normalized or (target_name and target_name in normalized):
         return ""
     if any(phrase in normalized for phrase in _FORBIDDEN_PHRASES):
