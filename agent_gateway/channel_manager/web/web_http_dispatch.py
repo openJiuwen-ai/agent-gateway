@@ -191,19 +191,37 @@ async def dispatch_http_request(
     agent_id = str(params.get("agent_id") or "default")
 
     from agent_gateway.common.request_identity import (
+        apply_agent_identity_metadata,
         apply_routing_metadata,
+        normalize_agent_identity,
     )
 
     _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
-    _meta = apply_routing_metadata(
-        {
-            "query": query,
-            "method": method,
-            "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
-            "transport": "web-http",
-        },
-        _routing,
+    _agent_identity = (
+        normalize_agent_identity(
+            {
+                "agent_name": _get_header(hdrs, "X-Agent-Name"),
+                "agent_id": _get_header(hdrs, "X-Agent-Id"),
+                "runtime_template_id": _get_header(hdrs, "X-Runtime-Template-Id"),
+                "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
+            }
+        )
+        if trust_tenant_headers
+        else {}
+    )
+    setattr(outbound, "_web_agent_identity", _agent_identity)
+    _meta = apply_agent_identity_metadata(
+        apply_routing_metadata(
+            {
+                "query": query,
+                "method": method,
+                "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
+                "transport": "web-http",
+            },
+            _routing,
+        ),
+        _agent_identity,
     )
 
     from agent_gateway.channel_manager.web.web_connect import WebChannel
