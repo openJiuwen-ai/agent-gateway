@@ -18,6 +18,9 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.message_content import (
+    select_message_content,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -237,15 +240,7 @@ class TelegramChannel(BaseChannel):
             if health_check:
                 return str(health_check).strip()
         # Gateway/Agent 响应在 payload.content
-        content = (
-                (msg.params or {}).get("content")
-                or payload.get("content")
-                or ""
-        )
-
-        # 处理字典格式
-        if isinstance(content, dict):
-            content = content.get("output", str(content))
+        content = select_message_content(getattr(msg, "params", None), payload)
 
         return str(content).strip()
 

@@ -28,6 +28,9 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.message_content import (
+    select_message_content,
+)
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
@@ -1061,15 +1064,9 @@ class WecomChannel(BaseChannel):
 
     def _extract_content(self, msg: Message) -> str:
         """从出站消息中提取文本内容。"""
-        payload = getattr(msg, "payload", None) or {}
-        params = getattr(msg, "params", None) or {}
-        content = (
-            params.get("content")
-            or payload.get("content")
-            or ""
+        content = select_message_content(
+            getattr(msg, "params", None), getattr(msg, "payload", None)
         )
-        if isinstance(content, dict):
-            content = content.get("output", str(content))
         return str(content or "").strip()
 
     @staticmethod
