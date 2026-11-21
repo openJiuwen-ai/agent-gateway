@@ -150,8 +150,10 @@ _APPROVAL_SOURCE_ASK_USER = "ask_user_interrupt"
 _APPROVAL_SOURCE_PERMISSION = "permission_interrupt"
 _APPROVAL_PLAN_EXTRA_KEYS = ("plan_approval_kind", "plan_content", "plan_language")
 
-# 飞书交互卡片没有输入框，"Other" 只是自由输入的占位项：点它只会产出一个被
-# 服务端归一为空的答案（`interface.py` 把裸 "Other" 置空），中断恢复必然失败。
+# 飞书交互卡片没有输入框，"Other" 只是自由输入的占位项：点击不提交答案、只给出
+# 文本作答引导（占位值绝不写入 answers——服务端 `interface.py` 会把裸 "Other"
+# 归一为空，写入即中断恢复失败）；该契约与本文件占位 token 规范化、点击侧
+# 非占位优先判定共同成立，删任一即两侧分叉。
 _OTHER_OPTION_TEXT = "other"
 # 评审意见 #201832613：占位按钮回传专用 token。同题若并存 value 恰为
 # other（大小写不敏感）的真实选项，两按钮回传相同 "other" 时解析先命中

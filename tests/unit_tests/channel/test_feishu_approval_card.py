@@ -519,7 +519,12 @@ def test_click_side_other_placeholder_predicate_same_source(channel):
     response = channel._on_card_action_trigger_sync(_card_action(
         {"ref": {"request_id": "call_1", "index": 0}, "value": "other"},
     ))
-    assert "请直接回复本条消息的文本" not in _toast_content(response)
+    # 评审意见 #202649866：裸「不含某串」断言恒真（修复前 toast 同样不含该串），
+    # 对「死卡」回归零免疫。改正向反证：修复后此点击走正常选项作答路径
+    # （单题应答完成＝「已提交，等待处理」），而非占位文本引导分支。
+    toast = _toast_content(response)
+    assert "已提交，等待处理" in toast
+    assert "请直接回复本条消息的文本" not in toast
 
 
 def test_click_other_without_text_channel_toasts_web_hint(channel):
@@ -590,7 +595,9 @@ def test_real_other_option_and_placeholder_coexist_no_value_collision(channel):
     resp2 = channel._on_card_action_trigger_sync(_card_action(
         {"ref": {"request_id": "call_1", "index": 0}, "value": "other"},
     ))
-    assert "请直接回复本条消息的文本" not in _toast_content(resp2)
+    # 评审意见 #202649866：同型恒真断言修正——裸 other 真实选项点击必须按正常
+    # 应答路径回「已提交，等待处理」，不得静默/不得落占位引导。
+    assert "已提交，等待处理" in _toast_content(resp2)
 
 
 def test_duplicate_value_with_leading_placeholder_click_hits_real_option(channel):
