@@ -309,6 +309,9 @@ async def test_other_option_renders_as_custom_answer_button(channel):
     rendered = json.dumps(card, ensure_ascii=False)
     assert "该问题需要文字作答，请在网页端或终端完成。" not in rendered
     assert "请在网页端或终端填写" in rendered  # 多题卡片：自定义答案引导到网页端/终端
+    # 评审意见 #202659447：多题逃生提示必须携生命周期前提（卡片提交前完成），
+    # 锁死 #202654738 修正后的文案语义，防止退回无时序限定的矛盾指引。
+    assert "须在本题卡片作答完成前提交" in rendered
 
 
 def test_other_only_question_answerable_via_text_not_button(channel):
@@ -585,7 +588,9 @@ def test_real_other_option_and_placeholder_coexist_no_value_collision(channel):
     ctx = _ctx(source="ask_user_interrupt", questions=[_question("共存", opts)])
     b_real = channel._approval_button(ctx, 0, opts[0])
     b_ph = channel._approval_button(ctx, 0, opts[1])
-    assert b_real["value"]["value"] == _OTHER_OPTION_TEXT
+    # 评审意见 #202659447：真实选项按钮取值就是其字面 value "other"，与占位
+    # 专用常量无涉——用 _OTHER_OPTION_TEXT 断言是语义耦合，改字面值。
+    assert b_real["value"]["value"] == "other"
     assert b_ph["value"]["value"] == _OTHER_PLACEHOLDER_TOKEN
     assert b_ph["value"]["value"] != b_real["value"]["value"]
     channel._save_card_context(ctx)
