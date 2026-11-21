@@ -38,11 +38,12 @@ def test_identity_headers_carry_agent_display_identity() -> None:
             },
         },
     )
-    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
-    assert headers["X-Agent-Name"] == "agent_" + _AGENT_ID
+    headers = assemble_rest_request(envelope, base_url="http://gateway.test:8766").headers
     assert headers["X-Agent-Identity-Id"] == _AGENT_ID
     assert headers["X-Runtime-Template-Id"] == "rt-1"
     assert headers["X-Agent-Template-Id"] == "tpl-1"
+    assert "X-Agent-Name" not in headers
+    assert headers.get("X-Agent-Id") != _AGENT_ID
 
 
 def test_identity_headers_absent_without_display_identity() -> None:
@@ -51,7 +52,7 @@ def test_identity_headers_absent_without_display_identity() -> None:
         user_id="u",
         channel_context={"routing": {"group_id": "g", "bot_id": "b"}},
     )
-    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    headers = assemble_rest_request(envelope, base_url="http://gateway.test:8766").headers
     for name in (
         "X-Agent-Name",
         "X-Agent-Identity-Id",
