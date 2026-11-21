@@ -1025,6 +1025,9 @@ async def test_guard2_cardkit_peek_wrong_target_not_echo_killed():
     B 目标缓冲（与入站全同）顶替造成误拦。"""
     ch = _make_channel()
     ch.config.enable_streaming = True
+    # 评审意见 #202654729：屏蔽真实 cardkit 流式路径——放行断言不得依赖真实
+    # 会话创建处理器的返回值，start 显式失败使投递确定性走非流式放行分支。
+    ch._start_cardkit_session = AsyncMock(return_value=False)
     ch._extract_receive_info = MagicMock(return_value=("oc_a", "chat_id"))
     ch._send_feishu_message = AsyncMock()
     ch._cardkit_buffers["req_t1\0oc_a\0chat_id"] = "目标A卡片文本"
