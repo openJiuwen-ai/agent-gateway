@@ -3568,6 +3568,10 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt.sandbox = await attempt.create()
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
+        except YuanrongAgentGenerationMismatchError as exc:
+            # This name is owned by a different generation; leave it alone.
+            lifecycle.attempt = None
+            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
             status = getattr(exc, "status_code", None)
             if isinstance(exc, YuanrongAgentApiError) and status == 429:

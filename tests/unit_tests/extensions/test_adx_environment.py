@@ -2,12 +2,16 @@
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
 from agent_gateway.extensions.adx.config import load_router_config
-from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError, AdxCreateTimeout
+from agent_gateway.extensions.adx.control_client import (
+    AdxControlClient, AdxControlError, AdxCreateTimeout, AdxCreateUncertain, AdxGenerationMismatch,
+)
 from agent_gateway.extensions.agentos.agentos_router.backend import AGENT_GENERATION_ENV
 
 
@@ -61,8 +65,12 @@ async def test_short_name_reuse_requires_the_full_generation(
                     env_vars={AGENT_GENERATION_ENV: generation})
         if accepted:
             assert (await client.create_sandbox(**args)).sandbox_id == identifier
+        elif stored_generation is None and probed_generation is None:
+            with pytest.raises(AdxCreateUncertain, match='generation is not visible') as error:
+                await client.create_sandbox(**args)
+            assert error.value.outcome == 'unknown'
         else:
-            with pytest.raises(AdxControlError, match='another Agent generation') as error:
+            with pytest.raises(AdxGenerationMismatch, match='another Agent generation') as error:
                 await client.create_sandbox(**args)
             assert error.value.code == 'CONFLICT'
         # Missing metadata permits only the exact read-only marker probe, never
@@ -70,6 +78,35 @@ async def test_short_name_reuse_requires_the_full_generation(
         assert sum(request.method == 'POST' for request in requests) == int(stored_generation is None)
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize('name', ['config.yaml', 'adx-migration-error.json'])
+def test_workspace_preflight_reports_invalid_utf8(tmp_path, name):
+    from agent_gateway.extensions.adx.workspace import check_workspace_config
+
+    (tmp_path / name).write_bytes(b'\xff')
+    with pytest.raises(ValueError, match='WORKSPACE_CONFIG_INVALID: .*cannot read workspace deployment status'):
+        check_workspace_config(tmp_path / 'config.yaml', require_prepared=True)
+
+
+@pytest.mark.asyncio
+async def test_replayed_create_never_deletes_a_different_generation():
+    from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentRebuildPending
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+
+    router = SimpleNamespace(_request_sandbox_delete=AsyncMock())
+    attempt = SimpleNamespace(
+        deterministic_id='test-alice',
+        create=AsyncMock(side_effect=AdxGenerationMismatch('another Agent generation')),
+    )
+    lifecycle = SimpleNamespace(attempt=attempt, retired_instance='previous-instance')
+    with pytest.raises(AgentRebuildPending, match='generation did not match'):
+        await AgentOSRouterClient._post_sandbox_attempt(
+            router, lifecycle, attempt, asyncio.get_running_loop().time() + 1,
+        )
+    assert lifecycle.attempt is None
+    assert lifecycle.retired_instance == 'previous-instance'
+    router._request_sandbox_delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
