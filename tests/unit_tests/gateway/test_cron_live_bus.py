@@ -29,6 +29,42 @@ def test_late_subscriber_replays_cron_final() -> None:
     asyncio.run(_run())
 
 
+def test_resubscribe_replays_terminal_frame_seen_by_previous_viewer() -> None:
+    """上个订阅者已收过终态帧，重订阅仍要拿到回放。
+
+    会话级去重只该挡住「同一批订阅者的重复投递」。若回放也被它挡住，
+    effect 重建 / 导航竞态下终态帧就会丢，前端「任务执行 Xs」再也停不下来。
+    """
+
+    async def _run() -> None:
+        bus = CronLiveBus()
+        sid = "__cron___1a1640a452f_resubscribe"
+        first = bus.subscribe(sid, replay=False)
+        try:
+            bus.publish(
+                sid,
+                {
+                    "event": "chat.processing_status",
+                    "payload": {"is_processing": False, "live_seq": 7, "session_id": sid},
+                },
+            )
+            delivered = await asyncio.wait_for(first.get(), timeout=1)
+            assert delivered["event"] == "chat.processing_status"
+        finally:
+            bus.unsubscribe(sid, first)
+
+        second = bus.subscribe(sid, replay=True)
+        try:
+            replayed = await asyncio.wait_for(second.get(), timeout=1)
+        finally:
+            bus.unsubscribe(sid, second)
+        assert replayed["event"] == "chat.processing_status"
+        assert replayed["payload"]["is_processing"] is False
+        assert replayed["replay"] is True
+
+    asyncio.run(_run())
+
+
 def test_http_stream_marks_replay_but_not_new_frames(monkeypatch) -> None:
     from agent_gateway.channel_manager.web.web_http_routes import register_web_http_api_routes
 
@@ -90,7 +126,89 @@ def test_redis_backlog_also_marks_replayed_frames(monkeypatch) -> None:
         monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
         bus = CronLiveBus()
         queue = asyncio.Queue()
-        await bus._redis_replay_into("cron_remote_replay", queue)
+        await bus._redis_replay_into("cron_remote_replay", queue, set())
         assert await queue.get() == {**frame, "replay": True}
+
+    asyncio.run(_run())
+
+
+def test_redis_fallback_does_not_requeue_live_frames(monkeypatch) -> None:
+    """Redis 回放失败时不能把订阅后已实时投递的帧再补一遍。"""
+
+    from agent_gateway.cron.live_bus import _frame_fingerprint
+
+    async def _run() -> None:
+        client = AsyncMock()
+        client.lrange.side_effect = RuntimeError("redis down")
+        monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
+        bus = CronLiveBus()
+        sid = "cron_redis_fallback"
+        replayed = {"event": "chat.final", "payload": {"content": "old", "live_seq": 1}}
+        live = {"event": "chat.delta", "payload": {"content": "new", "live_seq": 2}}
+        queue = asyncio.Queue()
+        # 订阅时同步回放与订阅后的实时投递已经入队。
+        await queue.put({**replayed, "replay": True})
+        await queue.put(live)
+
+        await bus._redis_replay_into(sid, queue, {_frame_fingerprint(replayed)})
+
+        assert queue.qsize() == 2
+        assert await queue.get() == {**replayed, "replay": True}
+        assert await queue.get() == live
+        assert queue.empty()
+
+    asyncio.run(_run())
+
+
+def test_redis_replay_skips_frames_already_live_delivered(monkeypatch) -> None:
+    """订阅建立后、Redis 列表读完前实时投递的帧不能再带 replay 标记补一遍。"""
+
+    from agent_gateway.cron.live_bus import _encode_wire
+
+    async def _run() -> None:
+        frame = {"event": "chat.delta", "payload": {"content": "live", "live_seq": 3}}
+        client = AsyncMock()
+        client.lrange.return_value = [_encode_wire(origin="other-pod", frame=frame)]
+        monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
+        bus = CronLiveBus()
+        sid = "cron_replay_double_delivery"
+        queue: asyncio.Queue = asyncio.Queue()
+        bus._subscribers[sid] = {queue}
+        bus.publish(sid, frame)
+        assert await asyncio.wait_for(queue.get(), timeout=1) == frame
+
+        await bus._redis_replay_into(sid, queue, set())
+
+        assert queue.empty()
+        bus.unsubscribe(sid, queue)
+        assert queue not in bus._queue_seen
+
+    asyncio.run(_run())
+
+
+def test_redis_replay_still_delivers_frames_seen_by_previous_queue(monkeypatch) -> None:
+    """上个订阅者已收过的帧仍要回放：per-queue 去重不能退化成会话级去重。"""
+
+    from agent_gateway.cron.live_bus import _encode_wire
+
+    async def _run() -> None:
+        frame = {"event": "chat.final", "payload": {"content": "done", "live_seq": 9}}
+        client = AsyncMock()
+        client.lrange.return_value = [_encode_wire(origin="other-pod", frame=frame)]
+        monkeypatch.setattr("agent_gateway.cron.live_bus._redis_client", lambda: client)
+        bus = CronLiveBus()
+        sid = "cron_replay_previous_queue"
+        first: asyncio.Queue = asyncio.Queue()
+        bus._subscribers[sid] = {first}
+        bus.publish(sid, frame)
+        assert await first.get() == frame
+        bus.unsubscribe(sid, first)
+
+        second: asyncio.Queue = asyncio.Queue()
+        bus._subscribers[sid] = {second}
+        await bus._redis_replay_into(sid, second, set())
+
+        assert await asyncio.wait_for(second.get(), timeout=1) == {**frame, "replay": True}
+        bus.unsubscribe(sid, second)
 
     asyncio.run(_run())
