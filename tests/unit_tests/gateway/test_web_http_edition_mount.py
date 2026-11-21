@@ -24,18 +24,19 @@ HTTP_PATH = ROOT / "channel_manager" / "web" / "web_http_routes.py"
 CHANNEL_APP_PATH = ROOT / "channel_manager" / "web" / "web_channel_app.py"
 
 
-def _load_module(mod_name: str, path: Path) -> ModuleType:
+def _load_module(mod_name: str, path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     spec = importlib.util.spec_from_file_location(mod_name, path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[mod_name] = mod
+    # Restore prior module identities after the test, including on failure.
+    monkeypatch.setitem(sys.modules, mod_name, mod)
     spec.loader.exec_module(mod)
     return mod
 
 
-@pytest.fixture(scope="module")
-def mapped_mod() -> ModuleType:
-    return _load_module("jw_mapped_edition_ut", MAPPED_PATH)
+@pytest.fixture
+def mapped_mod(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    return _load_module("jw_mapped_edition_ut", MAPPED_PATH, monkeypatch)
 
 
 def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) -> None:
@@ -116,7 +117,7 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setitem(sys.modules, "jiuwenswarm.extensions", ModuleType("jiuwenswarm.extensions"))
     monkeypatch.setitem(sys.modules, ext_host.__name__, ext_host)
 
-    channel_app = _load_module("jw_web_channel_app_edition_ut", CHANNEL_APP_PATH)
+    channel_app = _load_module("jw_web_channel_app_edition_ut", CHANNEL_APP_PATH, monkeypatch)
     app = FastAPI()
     channel_app.register_http_routes(app, MagicMock())
     paths = {getattr(r, "path", None) for r in app.routes}
@@ -230,19 +231,21 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     mapped = _load_module(
         "agent_gateway.channel_manager.web.http_routes.mapped",
         MAPPED_PATH,
+        monkeypatch,
     )
     routes_pkg.mapped_routes_for_edition = mapped.mapped_routes_for_edition  # type: ignore[attr-defined]
     routes_pkg.catalog_entries = mapped.catalog_entries  # type: ignore[attr-defined]
     routes_pkg.WebHttpMappedRoute = mapped.WebHttpMappedRoute  # type: ignore[attr-defined]
 
-    _load_module("agent_gateway.channel_manager.web.web_http_timeouts", TIMEOUTS_PATH)
-    _load_module("agent_gateway.channel_manager.web.outbound", OUTBOUND_PATH)
+    _load_module("agent_gateway.channel_manager.web.web_http_timeouts", TIMEOUTS_PATH, monkeypatch)
+    _load_module("agent_gateway.channel_manager.web.outbound", OUTBOUND_PATH, monkeypatch)
     web_http = _load_module(
         "agent_gateway.channel_manager.web.web_http_routes",
         HTTP_PATH,
+        monkeypatch,
     )
 
-    channel_app = _load_module("jw_web_channel_app_ent_ut", CHANNEL_APP_PATH)
+    channel_app = _load_module("jw_web_channel_app_ent_ut", CHANNEL_APP_PATH, monkeypatch)
     app = FastAPI()
     from types import SimpleNamespace
     channel_app.register_http_routes(app, SimpleNamespace(config=SimpleNamespace(path="/ws")))
