@@ -3925,10 +3925,14 @@ class FeishuChannel(BaseChannel):
                 # 评审意见 #201589594：toast 同源校验——非 ask_user 来源不承诺
                 # 「回复文本即自定义答案」。
                 if _is_text_reply_custom_answer_available(ctx):
+                    # 评审意见 #202644747：toast 与卡片提示行（_OTHER_HINT_SINGLE）兜底
+                    # 语义对齐——文本通路对服务端契约是单向依赖，落地次序不当时用户
+                    # 不能拿到无退路的指引，toast 同样携网页端/终端退路。
                     return self._card_action_response(
                         None,
                         "info",
-                        "已选择「其他（自定义答案）」：请直接回复本条消息的文本",
+                        "已选择「其他（自定义答案）」：请直接回复本条消息的文本"
+                        "（若文本通路不可用，请在网页端或终端完成）",
                     )
                 return self._card_action_response(
                     None,
