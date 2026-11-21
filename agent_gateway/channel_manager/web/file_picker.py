@@ -25,6 +25,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.channel_manager.web.dialog_capture import run_dialog_capture
+
 logger = logging.getLogger(__name__)
 
 _DIALOG_TITLE = "选择文件"
@@ -248,22 +250,6 @@ def _tk_filetypes() -> list[tuple[str, str]]:
     return [("Allowed files", patterns)]
 
 
-def _run_capture(command: list[str], *, timeout: float = 600.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        # The dialog helpers below (osascript, zenity, kdialog, yad) print the
-        # selected path; they emit UTF-8 regardless of the interpreter's text
-        # mode. Decode explicitly so a non-UTF-8 locale cannot raise inside the
-        # reader thread and silently turn a selection into an empty stdout.
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-
-
 def attachment_mime_type(filename: str) -> str:
     """先用 mimetypes.guess_type，没有有效结果时再用已知图片扩展名补齐。"""
     guessed = mimetypes.guess_type(filename)[0]
@@ -429,7 +415,7 @@ def _select_files_macos(*, initial_dir: str, allow_multiple: bool) -> list[str] 
 
     for script in (script_with_default, script_plain):
         try:
-            completed = _run_capture(["osascript", "-e", script])
+            completed = run_dialog_capture(["osascript", "-e", script])
         except FileNotFoundError as exc:
             raise RuntimeError("file picker unavailable: osascript not found") from exc
         except subprocess.TimeoutExpired as exc:
@@ -464,7 +450,7 @@ def _try_zenity_files(*, initial_dir: str, allow_multiple: bool) -> list[str] | 
     if allow_multiple:
         command.append("--multiple")
         command.append("--separator=\n")
-    completed = _run_capture(command)
+    completed = run_dialog_capture(command)
     if completed.returncode == 1:
         return None
     if completed.returncode != 0:
@@ -482,7 +468,7 @@ def _try_kdialog_files(*, initial_dir: str, allow_multiple: bool) -> list[str] |
     # Filter string: '*.txt *.md|Allowed files'
     patterns = " ".join(f"*{ext}" for ext in ATTACHMENT_DIALOG_EXTENSIONS)
     command.append(f"{patterns}|Allowed files")
-    completed = _run_capture(command)
+    completed = run_dialog_capture(command)
     if completed.returncode == 1:
         return None
     if completed.returncode != 0:
@@ -508,7 +494,7 @@ def _try_yad_files(*, initial_dir: str, allow_multiple: bool) -> list[str] | Non
     ]
     if allow_multiple:
         command.append("--multiple")
-    completed = _run_capture(command)
+    completed = run_dialog_capture(command)
     if completed.returncode == 1:
         return None
     if completed.returncode != 0:
@@ -589,14 +575,9 @@ else:
     sys.stdout.write("\n".join(selected))
 sys.exit(0)
 """
-    completed = subprocess.run(  # noqa: S603
+    completed = run_dialog_capture(
         [sys.executable, "-c", script],
-        check=False,
-        capture_output=True,
-        text=True,
         # PYTHONIOENCODING above makes the child encode its stdout as UTF-8.
-        encoding="utf-8",
-        errors="replace",
         timeout=600.0,
         env=env,
     )
