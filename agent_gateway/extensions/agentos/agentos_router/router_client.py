@@ -206,7 +206,7 @@ class _SandboxLifecycle:
     shared_sandbox_owner: str = ""
 
 
-def _sandbox_name(user_id: str, agent_type: str) -> str:
+def sandbox_name(user_id: str, agent_type: str) -> str:
     return f"{user_id.strip()}+{AgentRuntime.normalize_agent_type(agent_type)}"
 
 
@@ -3211,7 +3211,7 @@ class AgentOSRouterClient(AgentServerClient):
             yield None
             return
         instance_id = str(record.instance_id or "").strip()
-        async with self._sandbox_lifecycle(_sandbox_name(record.user, record.framework)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(record.user, record.framework)) as lifecycle:
             async def retire() -> bool:
                 if (
                     lifecycle.attempt is not None or lifecycle.retired_instance
@@ -3454,7 +3454,7 @@ class AgentOSRouterClient(AgentServerClient):
 
         started = time.monotonic()
 
-        logical_name = _sandbox_name(agent_info.user_id, agent_info.agent_type)
+        logical_name = sandbox_name(agent_info.user_id, agent_info.agent_type)
         # The frontend resolves DELETE by ID at execution time. A new
         # generation must never reuse the ID addressed by a previous DELETE.
         generation = agent_info.agent_id
@@ -3479,7 +3479,7 @@ class AgentOSRouterClient(AgentServerClient):
                         and not lifecycle.retired_instance and lifecycle.attempt is None):
                     runtimes = await self._agent_manager.list_user_agents(agent_info.user_id)
                     reusable = any(
-                        _sandbox_name(runtime.info.user_id, runtime.info.agent_type) == logical_name
+                        sandbox_name(runtime.info.user_id, runtime.info.agent_type) == logical_name
                         and (
                             (runtime.is_ready() and runtime.info.sandbox_id == candidate.sandbox_id)
                             or (runtime.is_creating()
@@ -3604,7 +3604,7 @@ class AgentOSRouterClient(AgentServerClient):
 
         target_agent_id = expected_agent_id
         while True:
-            async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+            async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)) as lifecycle:
                 current = await self._agent_manager.get_agent(
                     user_id, agent_type, key_values=resolved_key_values or None,
                 )
@@ -3650,7 +3650,7 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_type,
             key_values=key_values or None,
         )
-        async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)) as lifecycle:
             runtime = await self._agent_manager.pop_if_idle(
                 key, idle_timeout_seconds, include_shared_sandbox=True,
             )
@@ -3826,7 +3826,7 @@ class AgentOSRouterClient(AgentServerClient):
 
         # A delayed unregister uses the same service ID as the replacement.
         # Keep the check and unregister under the same lock as new registration.
-        async with self._sandbox_lifecycle(_sandbox_name(agent_info.user_id, agent_info.agent_type)) as lifecycle:
+        async with self._sandbox_lifecycle(sandbox_name(agent_info.user_id, agent_info.agent_type)) as lifecycle:
             if lifecycle.attempt is not None or await self._agent_manager.get_agent(
                 agent_info.user_id, agent_info.agent_type, key_values=key_values,
             ) is not None:
@@ -3986,7 +3986,7 @@ class AgentOSRouterClient(AgentServerClient):
         while True:
             attempt += 1
             try:
-                async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)):
+                async with self._sandbox_lifecycle(sandbox_name(user_id, agent_type)):
                     live = await self._agent_manager.get_agent(
                         user_id, agent_type, key_values=key_values,
                     )

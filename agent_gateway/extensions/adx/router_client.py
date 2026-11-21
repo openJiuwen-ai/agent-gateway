@@ -13,10 +13,10 @@ from e2a.models import E2AEnvelope
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_client import AdxControlClient, AdxControlError
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager, AgentRuntime, BUILTIN_AGENT_TYPE
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
@@ -26,6 +26,7 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import (
     is_ws_connect_retryable,
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
+    sandbox_name,
 )
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
@@ -69,6 +70,38 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         await super().shutdown()
         await self._control.close()
 
+    async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, **kwargs):
+        builtin = agent_info.agent_type == BUILTIN_AGENT_TYPE
+        runtime_class = self._control.resolve_runtime_class(kwargs.get('runtime_spec') or {}, builtin=builtin)
+        if reuse_existing and (runtime_class == 'runsc' or self._config.restart_policy is not None):
+            namespace = self._control.agent_namespace + '-'
+            # Registry rows survive Gateway restart; native state remains the
+            # authority. Also discover pre-generation IDs during an upgrade.
+            records = await self._registry.list_instances(
+                user=agent_info.user_id, framework=agent_info.agent_type, include_unhealthy=True)
+            candidates = {namespace + sandbox_name(agent_info.user_id, agent_info.agent_type)}
+            candidates.update(record.instance_id for record in records
+                if record.user == agent_info.user_id and record.framework == agent_info.agent_type
+                and record.instance_id.startswith(namespace))
+            available = []
+            for instance in sorted(candidates):
+                try:
+                    view = await self._control.get_agent_info(instance)
+                except AdxControlError as exc:
+                    if exc.code == 'NOT_FOUND':
+                        continue
+                    raise
+                if (view.get('status') in ('running', 'paused', 'pausing', 'resuming')
+                        or view.get('status') == 'failed' and view.get('restart_pending')):
+                    available.append(instance)
+                elif view.get('status') not in ('failed', 'deleted', 'stopped'):
+                    raise AdxControlError('Existing ADX Environment is still transitioning', code='CONFLICT')
+            if len(available) > 1:
+                raise AdxControlError('Multiple native Environments match the Agent identity', code='CONFLICT')
+            if available:
+                return await self._control._ready_sandbox_info(available[0])
+        return await self._control.create_sandbox(builtin=builtin, **kwargs)
+
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
         channel = channel_manager.get_channel(ChannelType.WEB)
@@ -89,6 +122,32 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
 
     def _tool_sandbox_env(self) -> dict[str, str]:
         return super()._tool_sandbox_env()
+
+    async def _run_network_failure_delete(self, runtime: AgentRuntime, *, reason: str = 'network_failure') -> None:
+        """Keep ADX-owned recovery state when a business transport disconnects."""
+        runtime_class = self._control.resolve_runtime_class(
+            runtime.info.metadata.get('runtime_spec') or {}, builtin=runtime.info.agent_type == BUILTIN_AGENT_TYPE)
+        if runtime_class != 'runsc' and self._config.restart_policy is None:
+            await super()._run_network_failure_delete(runtime, reason=reason)
+            return
+        if not await self._agent_manager.is_current(runtime):
+            return
+        instance = runtime.info.sandbox_id
+        try:
+            view = await self._control.get_agent_info(instance)
+        except AdxControlError as exc:
+            if exc.code == 'NOT_FOUND':
+                await super()._run_network_failure_delete(runtime, reason=reason)
+                return
+            logger.warning('[ADX] retaining Environment after uncertain lifecycle lookup instance_id=%s', instance)
+        else:
+            if view.get('status') in ('failed', 'deleted', 'deleting', 'stopped') and not view.get('restart_pending'):
+                await super()._run_network_failure_delete(runtime, reason=reason)
+                return
+            logger.info('[ADX] retaining Environment after transport failure instance_id=%s state=%s',
+                        instance, view.get('status'))
+        if await self._agent_manager.is_current(runtime):
+            await self._close_ws_client(instance)
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)
