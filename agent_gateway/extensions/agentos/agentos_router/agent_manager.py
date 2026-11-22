@@ -647,6 +647,44 @@ class AgentManager:
                 if runtime.info.user_id == normalized_user_id
             ]
 
+    async def list_failed_agents(
+        self, stale_after_seconds: float,
+    ) -> list[AgentRuntime]:
+        """Return FAILED runtimes that are unheld and older than the threshold."""
+        threshold = max(0.0, float(stale_after_seconds))
+        async with self._runtimes_lock:
+            now = time.time()
+            return [
+                runtime.snapshot()
+                for runtime in self._runtimes.values()
+                if runtime.is_failed()
+                and runtime.task_count == 0
+                and now - float(runtime.info.updated_at or 0.0) >= threshold
+            ]
+
+    async def pop_failed_if_expired(
+        self,
+        key: AgentKey,
+        stale_after_seconds: float,
+        *,
+        expected_agent_id: str | None = None,
+    ) -> AgentRuntime | None:
+        """Atomically remove a stale FAILED runtime and mark it DELETED."""
+        threshold = max(0.0, float(stale_after_seconds))
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if runtime is None or not runtime.is_failed():
+                return None
+            if expected_agent_id is not None and runtime.info.agent_id != expected_agent_id:
+                return None
+            if runtime.task_count > 0:
+                return None
+            if time.time() - float(runtime.info.updated_at or 0.0) < threshold:
+                return None
+            self._runtimes.pop(key)
+            runtime.mark_deleted()
+            return runtime.snapshot()
+
     async def _mark_creator_failed(
         self,
         key: AgentKey,

@@ -327,6 +327,9 @@ _DISCONNECT_CLEANUP_MAX_ATTEMPTS = 3
 # pop_if_idle 的固定 idle 宽限（秒）：真正的安全守卫是连接数==0 + task_count==0
 # + READY，宽限只需覆盖 release 的 touch 落地竞态，秒级即可。
 _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
+# FAILED runtime 的超龄回收阈值（秒）。过短会对“平台明确拒绝”反复重试；
+# 过长则用户等待成本过高。最坏情况下用户每 5 分钟可重试一次，而非重启进程。
+_FAILED_RUNTIME_RECLAIM_SECONDS = 300.0
 
 # 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
 # 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
@@ -2931,13 +2934,17 @@ class AgentOSRouterClient(AgentServerClient):
             current=new_timeout,
         )
 
-        if new_timeout <= 0:
-            self._cancel_idle_reaper()
-        elif previous <= 0:
-            # Was disabled, now enabled: start the reaper. When both are
-            # positive the running loop already reads the new value, and
-            # ``create_task`` would need a running event loop we may not have.
-            self._ensure_idle_reaper_task()
+        if new_timeout > 0 and previous <= 0:
+            # Transitioning from disabled to enabled: start the reaper. The
+            # loop also reclaims stale FAILED runtimes, so a non-positive
+            # timeout must not cancel it. A sync config context may have no
+            # running loop; connect() starts the task in that case.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                logger.debug("idle reaper start deferred: no running event loop")
+            else:
+                self._ensure_idle_reaper_task()
 
     def _apply_agent_sandbox_resources(
         self,
@@ -3023,21 +3030,13 @@ class AgentOSRouterClient(AgentServerClient):
             TOOL_SANDBOX_MEMORY_ENV: str(self._tool_sandbox_memory),
         }
 
-    def _cancel_idle_reaper(self) -> None:
-        """Cancel the reaper from a sync context (does not join the task).
-
-        Clears the handle first so a following enable can start a fresh task.
-        """
-        task = self._idle_reaper_task
-        self._idle_reaper_task = None
-        if task is not None and not task.done():
-            task.cancel()
-
     def _idle_reaper_enabled(self) -> bool:
         return self._sandbox_idle_timeout_seconds > 0
 
     def _ensure_idle_reaper_task(self) -> None:
-        if self._closed or not self._idle_reaper_enabled():
+        # The loop also reclaims stale FAILED runtimes, so it must keep running
+        # even when idle reclamation is disabled.
+        if self._closed:
             return
         if self._idle_reaper_task is not None and not self._idle_reaper_task.done():
             return
@@ -3102,16 +3101,18 @@ class AgentOSRouterClient(AgentServerClient):
                 logger.exception("[AgentOSRouter] idle sandbox reap pass failed")
 
     async def _reap_idle_once(self) -> int:
-        """Reclaim agents idle beyond the timeout; returns the reclaimed count.
+        """Reclaim stale FAILED runtimes, then idle READY agents.
 
-        Delegates to :meth:`delete_agent` with ``idle_timeout_seconds`` so the
-        same sandbox + registry cleanup path is used. ``pop_if_idle`` inside
-        ``delete_agent`` re-checks READY / ``task_count == 0`` / staleness under
-        the manager lock, so a concurrent acquire can never lose its sandbox.
+        FAILED reclaim is a recovery mechanism and runs even when idle
+        reclamation is disabled. The idle part delegates to
+        :meth:`delete_agent` with ``idle_timeout_seconds`` so the same sandbox
+        + registry cleanup path is used; ``pop_if_idle`` inside ``delete_agent``
+        re-checks READY / ``task_count == 0`` / staleness under the manager
+        lock, so a concurrent acquire can never lose its sandbox.
         """
+        reaped = await self._reap_stale_failed_once()
         if not self._idle_reaper_enabled():
-            return 0
-        reaped = 0
+            return reaped
         for key in await self._agent_manager.list_keys():
             values = dict(zip(self._agent_manager.key_fields, key, strict=False))
             user_id = str(values.pop("user_id", "") or "").strip()
@@ -3139,6 +3140,112 @@ class AgentOSRouterClient(AgentServerClient):
             if deleted:
                 reaped += 1
         return reaped
+
+    async def _reap_stale_failed_once(self) -> int:
+        """Remove FAILED runtimes older than the reclaim threshold.
+
+        A FAILED runtime may still own a provisioned sandbox (create succeeded
+        but publication failed). That sandbox is retired before the runtime is
+        removed. An unfinished create is left in place so the next request can
+        resume it. No automatic rebuild: the user's next request creates a
+        fresh runtime and sandbox.
+        """
+        if getattr(self, "_closed", False):
+            return 0
+        reclaimed = 0
+        stale = await self._agent_manager.list_failed_agents(
+            _FAILED_RUNTIME_RECLAIM_SECONDS,
+        )
+        for runtime in stale:
+            key = runtime.key
+            values = dict(zip(self._agent_manager.key_fields, key, strict=False))
+            user_id = str(values.pop("user_id", "") or "").strip()
+            agent_type = str(values.pop("agent_type", "") or "").strip()
+            if not user_id or not agent_type:
+                continue
+            try:
+                async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+                    current = await self._agent_manager.get_agent(
+                        user_id, agent_type, key_values=values or None,
+                    )
+                    if (
+                        current is None
+                        or not current.is_failed()
+                        or current.info.agent_id != runtime.info.agent_id
+                        or current.task_count > 0
+                    ):
+                        continue
+                    target_instance = lifecycle.provisioned_instance
+                    attempt_pending = lifecycle.attempt is not None
+                    deleted_sandbox = False
+                    if (
+                        target_instance
+                        and not attempt_pending
+                        and not lifecycle.retired_instance
+                        and not await self._provisioned_instance_in_use(lifecycle, current)
+                    ):
+                        retired = current.info.copy()
+                        retired.sandbox_id = target_instance
+                        retired.updated_at = time.time()
+                        await self._retire_sandbox(
+                            lifecycle, retired, best_effort_registry=True,
+                        )
+                        deleted_sandbox = True
+                    popped = await self._agent_manager.pop_failed_if_expired(
+                        key,
+                        _FAILED_RUNTIME_RECLAIM_SECONDS,
+                        expected_agent_id=current.info.agent_id,
+                    )
+                    if popped is None:
+                        continue
+                    reclaimed += 1
+                    failed_age = max(
+                        0.0, time.time() - float(runtime.info.updated_at or 0.0),
+                    )
+                    log_agentos(
+                        logger,
+                        logging.INFO,
+                        "sandbox.failed.reclaim",
+                        user_id=user_id,
+                        agent_type=agent_type,
+                        sandbox_id=str(runtime.info.sandbox_id or ""),
+                        instance=target_instance,
+                        failed_age_s=f"{failed_age:.0f}s",
+                        deleted_sandbox=deleted_sandbox,
+                        attempt_pending=attempt_pending,
+                    )
+            except Exception:  # noqa: BLE001 - keep reaping other runtimes
+                logger.exception(
+                    "[AgentOS] sandbox.failed.reclaim.fail user_id=%s agent_type=%s",
+                    user_id,
+                    agent_type,
+                )
+                continue
+        return reclaimed
+
+    async def _provisioned_instance_in_use(
+        self,
+        lifecycle: _SandboxLifecycle,
+        failed: AgentRuntime,
+    ) -> bool:
+        """Return whether a provisioned sandbox may still be used by another runtime."""
+        instance_id = lifecycle.provisioned_instance
+        if not instance_id:
+            return True
+        for runtime in await self._agent_manager.list_all_agents():
+            if runtime.info.agent_id == failed.info.agent_id:
+                continue
+            if (
+                runtime.info.user_id != failed.info.user_id
+                or runtime.info.agent_type != failed.info.agent_type
+            ):
+                continue
+            if runtime.is_creating():
+                # A creator may resume/reuse this lifecycle; be conservative.
+                return True
+            if runtime.is_ready() and runtime.info.sandbox_id == instance_id:
+                return True
+        return False
 
     @asynccontextmanager
     async def _sandbox_lifecycle(self, name: str) -> AsyncIterator[_SandboxLifecycle]:
