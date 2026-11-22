@@ -155,9 +155,9 @@ def _last_dir_state_path() -> Path:
     try:
         from agent_gateway.common.paths import get_user_workspace_dir
 
-        base = get_user_workspace_dir() / "infra"
+        base = get_user_workspace_dir()
     except Exception:  # noqa: BLE001
-        base = Path.home() / ".jiuwenswarm" / "infra"
+        base = Path.home() / ".jiuwenswarm"
     return base / _LAST_DIR_FILENAME
 
 

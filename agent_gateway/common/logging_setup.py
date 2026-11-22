@@ -2,7 +2,7 @@
 
 """Gateway 日志初始化（``gateway.common.paths.setup_logger`` 的 Gateway 版本）。
 
-输出目录与母仓一致：``~/.jiuwenswarm/infra/logs/agent/``；``gateway.log`` 可通过
+输出目录与旧版平铺目录兼容：``~/.jiuwenswarm/logs/agent/``；``gateway.log`` 可通过
 ``AGENTOS_GATEWAY_LOG_DIR`` 独立存放。级别取自共享 ``config.yaml`` 的
 ``logging`` 段。handler / 级别 / 过滤器的定义与母仓逐行一致，仅根 logger
 从 ``jiuwenswarm`` 换成 ``gateway``。已知偏差：根级别聚合把 ``console``
@@ -201,7 +201,7 @@ class _CompositeFilter(logging.Filter):
 
 
 def _load_logging_config_from_yaml() -> dict[str, Any]:
-    """读取 infra/config/config.yaml 中的 logging 段（无则空）。"""
+    """读取 config/config.yaml 中的 logging 段（无则空）。"""
     try:
         cf = get_config_file()
         if not cf.exists():

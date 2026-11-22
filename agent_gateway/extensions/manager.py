@@ -6,7 +6,7 @@ from typing import Any
 
 from agent_gateway.agent_client_mode import AgentClientModeError, read_agent_client_mode
 from agent_gateway.common.config import get_config
-from agent_gateway.common.paths import get_root_dir, logger
+from agent_gateway.common.paths import get_profile_data_dir, logger
 from agent_gateway.extensions.loader import ExtensionLoader
 from agent_gateway.extensions.registry import ExtensionRegistry
 
@@ -92,7 +92,7 @@ class ExtensionManager:
 
     def _setup_search_paths(self) -> None:
         seen: set[str] = set()
-        user_plugin_dir = get_root_dir() / "domain" / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir = get_profile_data_dir() / _USER_APPLICATION_PLUGIN_DIR
         user_plugin_dir.mkdir(parents=True, exist_ok=True)
         extension_dirs = _extension_dir_paths_from_config(get_config())
         for path in [str(user_plugin_dir), *extension_dirs]:

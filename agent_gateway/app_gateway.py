@@ -116,7 +116,7 @@ from agent_gateway.common.debug_dump import (
 from agent_gateway.common.paths import (
     apply_free_search_runtime_defaults,
     get_env_file,
-    get_infra_data_dir,
+    get_user_workspace_dir,
 )
 from agent_gateway.common.process_supervision import (
     GATEWAY_RESTART_EXIT_CODE,
@@ -2773,7 +2773,7 @@ async def _run(
             # 时 faas 拿不到 sessionCtxID，acquire lease 走 init 路径失败
             # （"connect runtime failed"），invocation 60s 超时，首登 config.set 后前端卡死+1001。
             # user_id 还必须是 faas 沙箱配置了可工作区的真实用户：faas 沙箱按 user_id
-            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（infra/root）建沙箱失败
+            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（root）建沙箱失败
             # （code 80004 "Failed to create sandbox"）。agentos_test 是 agentos 部署的默认
             # 用户（gateway-config.yaml ssh username），有完整工作区，复用其 warm instance。
             reload_env = e2a_from_agent_fields(
@@ -4541,7 +4541,7 @@ def main() -> None:
     # cron_jobs.json => duplicate cron executions).
     from agent_gateway.startup.lifecycle import gateway_workspace_lock
 
-    with gateway_workspace_lock(get_infra_data_dir()):
+    with gateway_workspace_lock(get_user_workspace_dir()):
         asyncio.run(
             _run_with_shutdown_signals(
                 agent_server_url=agent_server_url,
