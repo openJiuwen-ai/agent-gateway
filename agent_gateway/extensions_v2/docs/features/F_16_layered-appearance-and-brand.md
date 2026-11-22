@@ -8,16 +8,16 @@
 | 编号 / slug | `F_16 / layered-appearance-and-brand` |
 | 建档日期 | 2026-11-23 |
 | 范围 | agent-gateway `agent_gateway/extensions_v2/`（外观接口、层级与合成、声明槽位、候选提示）；jiuwenswarm `jiuwenswarm/channels/web/app_web.py` 与前端（门控、外观应用、主页四处显示） |
-| 方案成熟度 | 草稿：产品决策已确认（第 4.2 节），待模块维护者评审；未实现 |
+| 方案成熟度 | 产品决策已确认（第 4.2 节），待模块维护者评审；Gateway 侧已实现，jiuwenswarm 侧（`app_web` 与前端）未实现 |
 | 计划条目 | [EXTV2-GW-16](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 3.1、3.3 节 |
 | 设计依据 | [S_08 受控外观](../specs/S_08_appearance.md)、[S_09 启动门控](../specs/S_09_startup-splash.md)、[S_10 第 4 节](../specs/S_10_application-settings.md)、[S_02 槽位](../specs/S_02_ui-render.md)、[S_06 浏览器桥接](../specs/S_06_local-browser-bridge.md)、[S_07 媒体容器](../specs/S_07_media-surface.md) |
 | 关联 feature | 延续 [F_11 受控外观](F_11_controlled-appearance.md)（提供者规则由本方案替代）与 [F_12 启动门控](F_12_startup-gate-and-splash.md)（门控增加外观准备） |
-| 验证摘要 | 未执行；验证设计见第 8 节 |
+| 验证摘要 | 2026-11-23 Gateway 单元验证通过（第 8.2 节）；前端、`app_web` 与真实联调未执行 |
 | Refs | 未关联 issue；需求与决策来自 2026-11-17～2026-11-23 的产品讨论 |
 
-本文同时维护本次目标契约的草案（第 5.3 节）。实现时把契约迁入 S_08、S_09 等主责规约，本文只保留决策与验证；
-迁入前，规约中的现行条款仍描述已实现行为。
+契约已迁入主责规约：外观部件、层级与快照帧见 S_08，声明槽位、平台帧、提示与门控见 S_09（第 5.3 节列出对应位置）。
+本文维护决策、设计依据与验证记录；第 5.4～5.6 节保留合成算法与前端尚待实现部分的设计说明。
 
 ## 2. 背景、目标与范围
 
@@ -223,109 +223,20 @@ Gateway 保留每个包在每个部件上的最近一次值。上层包撤回某
 
 层级：在记录中的位置越靠后，层级越高；不在记录中的包排在全部已记录包之下，按发布顺序排列。
 
-### 5.3 接口定义与消息契约（目标草案）
+### 5.3 接口定义与消息契约
 
-#### 5.3.1 `ops.appearance.apply(appearance: Mapping | None) -> dict`
+契约在规约中维护，本文不重复定义：
 
-调用条件不变（S_08 第 1 节）：调用方须是活动的应用级 UI 包的当前激活，调用须发生在带浏览器连接的事件中，
-经 `ui.appearance` 事件链执行。
-
-| 输入 | 语义 |
-| --- | --- |
-| `{"colors": …, "identity": …, "welcome": …, "mascot": …}` | 部件写法：至少一个键；值为对象时设置本包的该部件，为 `null` 时撤回本包的该部件；未出现的部件保持本包原值 |
-| 只含 `accent`、`surface`、`surfaceOpacity`、`tokens` 的对象 | 旧写法：等同于 `{"colors": <该对象>}` |
-| `None` | 撤回本包的全部部件 |
-
-部件键与配色字段不能出现在同一对象中。对象不合法时抛出 `ValueError`，记录与快照都不变。
-
-返回 `{"status": <状态>, "revision": <int>, "shown": [<部件>…]}`，`shown` 为该包当前在此连接上生效的部件：
-
-| 状态 | 含义 |
-| --- | --- |
-| `applied` | 至少设置了一个部件；合成结果变化时已下发新快照，否则 `revision` 为当前值 |
-| `revoked` | 只撤回了本包原有的部件 |
-| `unchanged` | 调用没有改变任何记录（例如撤回本包没有提交过的部件） |
-| `delivery_failed` | 合成结果变化但连接已不可用；本包的记录保持调用前的状态 |
-
-#### 5.3.2 部件
-
-**配色 `colors`**：字段、约束与派生沿用 S_08 第 2、3 节。
-
-**标识 `identity`**：至少一个字段。
-
-| 字段 | 约束 | 用途 |
+| 契约 | 位置 | 实现状态 |
 | --- | --- | --- |
-| `name` | 文本，1～32 个字符 | 浏览器标签标题、欢迎语中高亮的品牌名、中性层名称 |
-| `logo` | 图片地址 | 侧栏 Logo、中性层 Logo |
-| `favicon` | 图片地址；省略时取 `logo` | 浏览器标签图标 |
-
-**欢迎语 `welcome`**：至少一个字段。
-
-| 字段 | 约束 |
-| --- | --- |
-| `default` | 多语言文本，1～64 个字符 |
-| `modes` | 对象，键取 `work`、`code`、`design`，值为多语言文本；至少一项 |
-
-后半句取值顺序：当前工作模式的 `modes` 项，然后是 `default`，最后是宿主对该模式的默认文字。
-
-**吉祥物 `mascot`**：
-
-| 字段 | 约束 |
-| --- | --- |
-| `src` | 必填，图片地址 |
-| `hoverSrc` | 可选，图片地址；悬停时显示 |
-| `hoverMs` | 与 `hoverSrc` 同时出现；500～10000 的整数，悬停动图的显示时长 |
-
-**公共规则**
-
-- 多语言文本：对象 `{"zh"?: string, "en"?: string}`，至少一项。界面语言以 `zh` 开头时取 `zh`，否则取 `en`，缺失时取另一项。
-- 文本：去掉首尾空白后非空，不含控制字符与换行，长度按字符计。
-- 图片地址：须通过 `valid_media_url`，且以 `/extension-assets/<调用包>/<当前代次>/` 或
-  `/extension-assets/<调用包>/<当前代次>.data/` 开头，即 `ops.ui.asset_url` 为调用包当前激活生成的地址；
-  扩展名限 `.png`、`.webp`、`.svg`、`.gif`；文件须存在，`logo`、`favicon` 不超过 1 MiB，`src`、`hoverSrc` 各不超过 4 MiB
-  （宿主自带的悬停动图约 1.8 MiB）。大小只在提交时检查。
-
-#### 5.3.3 下行帧 `webui.appearance`
-
-```json
-{
-  "revision": 7,
-  "parts": {
-    "colors":   { "package_id": "pkg.theme", "value": { "accent": "#b45309", "surface": "translucent" } },
-    "identity": { "package_id": "pkg.logo",  "value": { "name": "Acme", "logo": "/extension-assets/pkg.logo/<代次>/logo.svg" } },
-    "mascot":   { "package_id": "pkg.theme", "value": { "src": "/extension-assets/pkg.theme/<代次>/idle.png" } }
-  }
-}
-```
-
-每帧都是完整快照：未出现的部件用宿主默认，`parts` 为空对象表示全部为宿主默认（取代原来的 `appearance: null`）。
-`value` 为校验后的规范形式（旧写法已转为 `colors`，`favicon` 缺省时已补为 `logo`）。浏览器在同一连接内忽略
-`revision` 不大于已接受值的帧；载荷不合法时忽略该帧。
-
-#### 5.3.4 声明与平台帧
-
-manifest `ui.items` 中声明：
-
-```json
-{ "type": "web.slot.contribution", "id": "brand.appearance", "slot": "application.appearance" }
-```
-
-| 项 | 规则 |
-| --- | --- |
-| 槽位 | `application.appearance`：应用级、`list`，不接受渲染，向它渲染返回 `SCHEMA_ERROR` |
-| 声明 | 该项不接受 `web.slot.contribution` 通用字段以外的字段；不合法时包发布失败 |
-| `ui.ready` | 目标 `{"scope": "application", "slot_id": "application.appearance"}`，不指定 `package_id`、载荷为空对象；按平台帧处理（绕过请求策略，登录前可用） |
-| 分派 | 宿主并行触发每个声明包的 `ui.ready`，各包 Handler 时限 5 秒 |
-| 回执 | 至少一个包处理：`{"accepted": true, "status": "ready"}`；没有：`{"accepted": false, "status": "unhandled"}`；超时：`{"accepted": false, "status": "timeout"}` |
-
-包在该 `ui.ready` 的 Handler 中调用 `ops.appearance.apply`，提交在回执之前完成，外观帧因此先于回执到达浏览器。
-
-#### 5.3.5 候选提示
-
-`GET /extension-splash/hint` 返回 `{"candidates": <bool>, "appearance": <bool>}`。`appearance` 由 Gateway 的
-`splash_hint` 模块静态计算：与 `installed_splash_providers()` 相同的配置与 manifest 规则，存在已安装、`package.domain` 为 gateway、
-声明了合法的 `application.appearance` 项的包时为 true；扩展未启用或配置无效时为 false；不运行包代码。
-取不到或格式不符时按“未知”处理。
+| `ops.appearance.apply` 的部件写法、旧写法兼容与返回值（含 `shown`） | [S_08 第 1 节](../specs/S_08_appearance.md) | Gateway 已实现 |
+| 部件字段、文本与图片规则（含所有权与大小上限） | [S_08 第 2 节](../specs/S_08_appearance.md) | Gateway 已实现；前端校验待实现 |
+| 快照帧 `webui.appearance` | [S_08 第 4 节](../specs/S_08_appearance.md) | Gateway 已实现；前端待实现 |
+| 层级、叠加、释放与层级记录 | [S_08 第 5 节](../specs/S_08_appearance.md) | Gateway 已实现 |
+| 主页品牌显示 | [S_08 第 3.3 节](../specs/S_08_appearance.md) | 待实现 |
+| 声明槽位 `application.appearance` 与其 `ui.ready` | [S_09 第 2、3.4 节](../specs/S_09_startup-splash.md) | Gateway 已实现 |
+| 候选提示的 `appearance` 字段 | [S_09 第 4 节](../specs/S_09_startup-splash.md) | Gateway 判定函数已实现；`app_web` 待实现 |
+| 外观准备与首帧记录 | [S_09 第 5 节](../specs/S_09_startup-splash.md) | 待实现 |
 
 ### 5.4 层级与合成
 
@@ -338,38 +249,23 @@ compose(connection):
 ```
 
 - 每次 `apply` 改变记录后，在连接锁内重新合成；合成结果与上次下发的快照不同才下发新帧。
-- 包释放：删除该包在全部连接上的记录；对合成结果因此变化的连接，以及该包外观帧仍在发送的连接，预留新的 `revision`，
-  并在连接锁内下发重新合成的快照（排在在途帧之后）。
+- 包释放：删除该包在全部连接上的记录；对该包在其上有记录、或外观帧仍在发送的连接预留新的 `revision`，
+  并在连接锁内下发重新合成的快照（排在在途帧之后）。快照在发送时合成，因此包含释放后已完成的调用；
+  该包只在下层时，这一帧与浏览器已显示的内容相同（第 10 节）。
 - 层级记录变化（安装、卸载）只影响之后的合成；安装新包不会立即改变现有快照，直到新包提交。
 
 ### 5.5 门控中的外观准备
 
-在 S_09 第 5 节的门控中增加“外观准备”阶段，位于判定与开场队列之间：
+阶段、时限与首帧记录的契约见 [S_09 第 5 节](../specs/S_09_startup-splash.md)。前端实现时另需：
 
-| 阶段 | 行为 |
-| --- | --- |
-| 首帧 | 内联脚本：`workswarm.appearance.expected` 为 `1` 或开场预期有开场时保留中性层；存在 `workswarm.appearance.identity` 时，中性层、标签标题与图标使用记录中的标识；图片加载失败时显示宿主默认 Logo |
-| 判定 | 开场的判定规则不变。外观：提示为否时不准备；为是或未知时准备 |
-| 外观准备 | 连接建立后发送第 5.3.4 节的 `ui.ready` 并等待回执。只有外观需要等待时，总时限 3 秒，从门控开始计时（含等待连接）；同时有开场时，等待连接沿用开场规则，连接后等待回执至多 3 秒 |
-| 准备结束 | 回执到达或超时：更新首帧记录（有回执且 `accepted` 为 true 时 `expected` 为 `1`，否则为 `0`），进入开场队列 |
-| 开场顺序 | `customized` 为 false 时，本次快照中配色部件的提供者排在首位；准备超时、没有快照时使用 `workswarm.appearance.provider` |
-| 开放 | 不变。之后到达的快照照常应用 |
-
-- 同一启动内已完成开场时只跳过开场，外观准备照常执行。
-- 提示为否时，连接建立后前端仍按已挂载的应用级槽位发送一次该 `ui.ready`，回执被接受时把 `expected` 记为 `1`，供下次打开使用。
-- 重连与重载广播（`extensions.v2.installed`）后，前端重新发送该 `ui.ready`。等待回执期间（至多 3 秒）只暂存快照，
-  回执到达后应用最新一份，避免各包先后提交造成闪动；全部应用级 `ui.ready` 返回后仍未收到快照时恢复宿主默认（S_08 第 5 节原规则）。
+- 外观准备放在开场队列之前，开场播放时配色与品牌已经生效，开场排序也能取到本次的配色提供者。
+- 重连与重载广播（`extensions.v2.installed`）后，前端重新发送 `application.appearance` 的 `ui.ready`。等待回执期间
+  （至多 3 秒）只暂存收到的快照，回执到达后应用最新一份，避免各包先后提交造成闪动。
+- 首帧记录只保存标识（名称与两张图片的地址），不保存配色与吉祥物：门控层盖住了它们，开放前已由本次快照替换。
 
 ### 5.6 主页显示
 
-| 位置 | 数据 | 规则 |
-| --- | --- | --- |
-| 侧栏 Logo | `identity.logo` | 宿主固定尺寸，按比例完整显示；加载失败时显示宿主 Logo |
-| 浏览器标签 | `identity.name`、`identity.favicon` | `document.title` 为品牌名，缺省为 “WorkSwarm”；图标缺省为宿主图标 |
-| 欢迎语 | `identity.name`、`welcome` | 高亮词为品牌名，缺省为 “WorkSwarm”；后半句按第 5.3.2 节取值 |
-| 吉祥物 | `mascot` | 显示区域沿用宿主尺寸，按比例完整显示；悬停交互与宿主小蜜蜂一致：触发气泡，有 `hoverSrc` 时在 `hoverMs` 内显示悬停图；加载失败时显示宿主小蜜蜂 |
-
-群聊创建页的欢迎区不变。
+见 [S_08 第 3.3 节](../specs/S_08_appearance.md)。四处显示都读取同一份快照；群聊创建页的欢迎区不变。
 
 ### 5.7 异常与边界
 
@@ -458,11 +354,22 @@ compose(connection):
 
 | 执行日期 / 验证范围 | 实现版本与环境 | 命令 / 记录 | 实际结果 | 未覆盖项 |
 | --- | --- | --- | --- | --- |
-| — | — | — | 未执行 | 全部（尚未实现） |
+| 2026-11-23；V-01（Gateway 一侧）、V-02～V-06 | agent-gateway develop `6f36398` 加本特性的 Gateway 改动；Python 3.11.17，隔离环境 `.venv-bm-develop`，agent-core 为本地 `c48b5bb`（仓库锁定 `f5ecfd7`，本机未安装）；`JIUWENSWARM_DATA_DIR` 指向临时目录 | `python -m pytest tests/unit_tests/gateway/extensions_v2/test_gateway_appearance.py -o addopts="--strict-markers --tb=short --asyncio-mode=auto"` | 107 通过 | 无 |
+| 同上；新用例在改动前失败 | 同一提交未改动的临时工作树，只复制新的测试文件与共享用例（缺失的导入以空值代替） | 同上，只选新增与改写的用例 | 13 个行为用例全部失败；共享用例中合法用例因返回格式变化失败；非法用例在旧代码上同样被拒 | 无 |
+| 同上；V-12（Gateway 一侧） | 同上 | `python -m pytest tests/unit_tests/gateway/extensions_v2 -o addopts="--strict-markers --tb=line --asyncio-mode=auto"`，改动前后各一次 | 改动后 718 通过、43 失败；改动前 664 通过、43 失败，两次失败的用例集合完全相同 | 43 项失败来自本地 agent-core 缺少 `Manifest.enable`、`PackageManager.set_enabled` 等新接口，集中在包管理、应用设置与包数据用例，与本特性无关 |
+| 同上；全部单元用例 | 同上 | `python -m pytest tests/unit_tests --continue-on-collection-errors -o addopts="--strict-markers --tb=line --asyncio-mode=auto"`，改动前后各一次 | 改动后 4956 通过、56 失败、4 跳过、18 个收集错误；改动前 4902 通过，失败与收集错误的集合完全相同 | 18 个收集错误来自本机未安装的 `openjiuwen_runtime`、`minio` 等依赖；未在仓库锁定的依赖版本上运行 |
+| — | — | — | 未执行 | V-01（前端一侧）、V-07～V-11、V-12 的 Web 渠道与前端部分：`app_web` 与前端尚未实现 |
+
+测试的整理：5 个测试文件此前使用默认的相对数据目录（`extension/gateway`）。本特性在包首次发布时写入层级记录，
+这些用例因而会在仓库目录下生成 `extension/gateway/host/appearance.json`；已改为使用各自的临时数据目录。
+`test_gateway_host_actions.py` 中一处断言改读新的快照格式。
 
 ### 8.3 验证结论
 
-尚无实际验证证据。
+- 已证明范围：Gateway 侧的部件校验、`apply` 语义、按安装顺序叠加、释放与在途帧、品牌图片所有权与大小、声明槽位与
+  平台帧的并行分派、候选提示的静态判定，均在单元范围内成立；其余扩展用例没有新增失败。
+- 未覆盖：前端的快照处理、门控外观准备、首帧记录与主页显示；`app_web` 的提示字段；真实浏览器与桌面打包版联调。
+- 交付判断：Gateway 侧可以提交评审；新帧格式与现有前端不兼容，须与 jiuwenswarm 侧在同一次固定提交升级中交付（第 7 节）。
 
 ## 9. 风险与已知遗留
 
@@ -471,7 +378,8 @@ compose(connection):
 | 风险 / 触发条件 | 影响 | 应对 | 核实方式 |
 | --- | --- | --- | --- |
 | 每次打开都等待外观准备 | 装有外观插件时打开页面变慢，至多 3 秒 | 时限 3 秒；包 Handler 只读偏好 | V-11 中记录各阶段耗时 |
-| 包的版本化发布改变素材地址（agent-gateway 中进行中的包版本化工作） | 第 5.3.2 节的地址规则需随之调整 | 实现前核对目标分支的素材地址格式 | I-02 开工前检查 |
+| 包的版本化发布改变素材地址（agent-gateway 中进行中的包版本化工作） | S_08 第 2.7 节的地址规则需随之调整 | 2026-11-23 核对 !298（`3b39528a`）：只改包管理、Hub 与宿主兼容，不改素材地址 | 合入前再核对目标分支 |
+| 同期修改 `webui/bridge.py` 的 !301（`1467093c`，包状态） | 与本特性在导入行和 `BrowserBridge.__init__` 附近相邻，合并时有文本冲突 | 冲突只在相邻行，两边逻辑互不依赖 | 先合入者之后，另一方变基并重跑扩展用例 |
 | 未登录时素材被登录插件拒绝 | 中性层与侧栏显示宿主默认 Logo | 加载失败回退 | V-11 中覆盖登录插件场景 |
 
 ### 9.2 已知遗留
@@ -484,3 +392,17 @@ compose(connection):
 | 群聊创建页的横幅与品牌名 | 范围外 | 不变 | 另立条目 |
 | 暗色模式专用外观 | 沿用 F_11 遗留 | — | 概览第 1.3 节 |
 | 多语言只支持中文与英文 | 与宿主界面语言一致 | 宿主增加语言时扩充 | — |
+
+## 10. 设计演进与修订
+
+### 2026-11-23 Gateway 实现中的调整
+
+- 原结论与适用范围：第 5.4 节草案写的是只对“合成结果因此变化”的连接预留 `revision`；第 5.3.4 节草案写的是各包 Handler 时限 5 秒。
+- 新证据与原因：释放发生在同步路径中，此时合成要等连接锁内才可靠；先判断“是否变化”需要在锁外合成，可能与锁内的调用交错。
+  平台帧本来由宿主整体限时 5 秒。
+- 最终变化：对该包在其上有记录或有在途帧的连接都预留 `revision`，在连接锁内合成并下发，结果可能与已显示内容相同；
+  外观提供者的 `ui.ready` 由宿主并行触发、整体等待至多 5 秒（S_09 第 3.4 节）。另外，`HostActionOutput` 增加 `shown`，
+  把调用包生效的部件带回 Ops 的返回值。
+- 旧结论的效力：第 5.4 节已按新做法修改；契约以 S_08 第 5 节、S_09 第 3.4 节为准。
+- 影响与同步：S_08、S_09、S_01（释放语义）已同步；浏览器多收到一帧相同快照，按 `revision` 处理无副作用。
+- 验证：`test_releasing_the_upper_layer_shows_the_lower_one` 断言释放下层时的那一帧；第 8.2 节。

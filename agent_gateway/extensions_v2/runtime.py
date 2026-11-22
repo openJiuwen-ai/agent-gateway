@@ -138,6 +138,7 @@ class GatewayRuntime:
         self._builtin_ids.extend(bootstrap.register_handlers(self.bus, self))
         self._bind_package_data()
         self.browser.splash_preferences.load()
+        self.browser.appearance_order.load()
         await self.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
         if self.config.report_path is not None:
             await self.packages.init(host_version=_host_version())
@@ -526,6 +527,7 @@ class GatewayRuntime:
             await asyncio.to_thread(shutil.rmtree, directory)
         # Host settings about the package share its data lifecycle (S_10 section 4).
         self.browser.splash_preferences.forget(package_id)
+        self.browser.appearance_order.forget(package_id)
 
     def active_packages(self) -> tuple[LoadedPackage, ...]:
         """Return the packages currently published on this runtime."""

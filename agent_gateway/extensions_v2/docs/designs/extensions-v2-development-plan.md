@@ -35,7 +35,7 @@
 | EXTV2-GW-13 | 开场预览 | `ops.splash.preview()`、下行帧 `webui.splash.play`、开场 `ui.ready` 的 `preview` 字段、门控开放后的单次预览播放 | [F_14](../features/F_14_splash-preview.md) | [S_09](../specs/S_09_startup-splash.md) | `test_gateway_splash.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
 | EXTV2-GW-14 | 真实环境联调 | 在隔离实例中运行开发分支的 Gateway、AgentServer、`app_web` 与前端构建产物，安装主题背景插件与登录示例，用无头 Chromium 走完首次启动、设置、导入导出、登录前后与断线；联调中发现的缺陷就地修复 | [F_13](../features/F_13_application-settings-page.md)（D-08）、[F_12](../features/F_12_startup-gate-and-splash.md)（V-10） | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_10](../specs/S_10_application-settings.md) | `test_gateway_request.py`、`test_gateway_package_management.py`；前端 `test:webui-components`、`test:settings-panel` | Song Haoran | 已完成（A 档真实 Gateway 与 Web、B 档 Electron 开发模式通过；打包版与 Windows 由打包团队验证） |
 | EXTV2-GW-15 | 应用形态 | `application.presentation`、`ApplicationSurface`、受控会话桥接与透明窗口、蜜蜂 / 胶囊 / 会话终端示例 | [F_15](../features/F_15_application-presentation.md) | [S_11](../specs/S_11_application-presentation.md)、S_17（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） | `test_gateway_application_presentation.py`；前端 `test:application-presentation`；`tests/electron/application_presentation.test.cjs` | 未登记 | 进行中（DMG 原生交互及录屏待验收，证据见 F_15） |
-| EXTV2-GW-16 | 外观部件叠加与主页品牌 | 外观拆为配色、标识、欢迎语、吉祥物四个部件，按安装顺序分层叠加；完整快照下行帧；声明槽位 `application.appearance` 与平台帧；候选提示的外观字段；门控中的外观准备与首帧记录；主页侧栏 Logo、标签图标与标题、欢迎语、吉祥物 | [F_16](../features/F_16_layered-appearance-and-brand.md) | [S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md)（待修订，目标草案见 F_16 第 5.3 节） | `test_gateway_appearance.py`、`test_gateway_splash.py`；jiuwenswarm `test_app_web_splash_hint.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-contracts` | Song Haoran | 未开始（方案草稿待评审） |
+| EXTV2-GW-16 | 外观部件叠加与主页品牌 | 外观拆为配色、标识、欢迎语、吉祥物四个部件，按安装顺序分层叠加；完整快照下行帧；声明槽位 `application.appearance` 与平台帧；候选提示的外观字段；门控中的外观准备与首帧记录；主页侧栏 Logo、标签图标与标题、欢迎语、吉祥物 | [F_16](../features/F_16_layered-appearance-and-brand.md) | [S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md) | `test_gateway_appearance.py`、`test_gateway_splash.py`；jiuwenswarm `test_app_web_splash_hint.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-contracts` | Song Haoran | 进行中（Gateway 侧已实现，单测通过；jiuwenswarm 侧未开始） |
 
 ## 3. 依赖与开工条件
 
@@ -130,6 +130,7 @@ flowchart LR
 | 2026-11-07 | GW-08、GW-12 | 补充修复 PR #10763 的取消与跨代次边界：`ops.data.root()` 复用 Core 文件操作取消处理，后台线程结束后才释放调用计数；上传始终绑定最初的激活代次、实例与渲染版本，在清理过期凭据和目录创建之后分别核对。新增 7 项回归，修复前 5 失败、2 通过，修复后全部通过；包含新页面规则下重新上传成功的路径。复验（Python 3.11.17、agent-core `c48b5bb`）：Gateway 扩展与 Web 渠道 874 通过、1 跳过，AgentServer 共享设置契约 30 通过；前端源码本次未改，沿用 `0767763d5` 上相关 544 项通过记录。未重做浏览器、打包版或桌面冷启动 |
 | 2026-11-07 | GW-03、GW-12、GW-14 | PR #10763：渲染 Ops 与提交绑定原激活；所有应用级目标保留清除版本下限；容量淘汰预留清除版本；宿主导入持有文件资源直到取消清理结束。后端 913 通过、1 跳过，前端 605 项通过；详细范围及未执行项见下方回归记录 |
 | 2026-11-23 | GW-16 | 建立外观部件叠加与主页品牌条目，负责人 Song Haoran；方案草稿见 F_16，产品决策已确认，待模块维护者评审后开工 |
+| 2026-11-23 | GW-16 | Gateway 侧实现：外观部件与旧写法兼容、按安装顺序分层叠加与快照帧、层级记录、品牌图片所有权与大小、`application.appearance` 声明与并行的平台帧、外观提供者的静态判定；契约迁入 S_08、S_09，同步 S_01、S_02、S_06、S_10。`test_gateway_appearance.py` 107 项通过；扩展用例 718 通过、43 失败，失败与改动前相同（本地 agent-core `c48b5bb` 较旧）。`app_web`、前端与联调未开始，证据见 F_16 第 8.2 节 |
 
 ### 2026-11-07 渲染与上传生命周期回归记录
 
