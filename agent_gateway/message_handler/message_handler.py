@@ -340,10 +340,20 @@ if TYPE_CHECKING:
 
 
 def _queue_maxsize_from_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
     try:
-        return max(1, int(os.getenv(name, str(default))))
+        value = int(raw)
     except (TypeError, ValueError):
         return default
+    if value <= 0:
+        logger.warning(
+            "[MessageHandler] %s=%s is invalid; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
 
 
 # Bounded by default. A full user queue is surfaced as "busy" on the Web
@@ -3067,11 +3077,25 @@ class MessageHandler(ABC):
         await self.publish_user_messages(msg)
 
     def publish_user_messages_nowait(self, msg: "Message") -> None:
-        """将消息放入 user_messages 队列（同步）."""
+        """将消息放入 user_messages 队列（同步）.
+
+        队列有界后不能再假定 put_nowait 必然成功。满了就转入后台 put，
+        保留消息并形成背压，避免在同步调用点抛出 QueueFull。
+        """
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        try:
+            self._user_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] user queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            asyncio.create_task(
+                self._user_messages.put(msg),
+                name=f"agentos-inbound-deferred-{getattr(msg, 'id', '')}",
+            )
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
         """消费一条 user_messages；timeout 为 None 则阻塞，否则超时返回 None."""

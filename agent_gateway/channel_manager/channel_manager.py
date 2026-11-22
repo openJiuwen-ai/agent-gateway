@@ -537,15 +537,6 @@ class ChannelManager(ABC):
         if not self._get_channel_by_id(msg.channel_id):
             logger.info(f"[ChannelManager] Channel: {msg.channel_id} closed, cancel this user message.")
             return
-        queue_full = getattr(self._message_handler, "is_user_queue_full", None)
-        if callable(queue_full) and queue_full():
-            logger.warning(
-                "[ChannelManager] inbound queue full, reject with busy: id=%s channel_id=%s",
-                msg.id,
-                msg.channel_id,
-            )
-            asyncio.create_task(self._reject_inbound_busy(msg))
-            return
 
         asyncio.create_task(self._message_handler.handle_message(msg))
 
@@ -726,7 +717,24 @@ class ChannelManager(ABC):
         self._channels[key] = channel
 
     async def deliver_to_message_handler(self, msg: "Message") -> None:
-        """将消息交给 MessageHandler（供自定义入站路径使用）。"""
+        """将消息交给 MessageHandler（供自定义入站路径使用）。
+
+        Web/TUI 走这条路径而不是 ``_on_channel_message``。入站队列满时，
+        支持 ``reject_inbound`` 的通道（目前是 Web）直接回 ``SERVER_BUSY``；
+        其他通道继续走 ``handle_message``，在队列上形成背压而不丢消息。
+        """
+        queue_full = getattr(self._message_handler, "is_user_queue_full", None)
+        if callable(queue_full) and queue_full():
+            channel = self._get_channel_by_id(msg.channel_id)
+            reject = getattr(channel, "reject_inbound", None)
+            if callable(reject):
+                logger.warning(
+                    "[ChannelManager] inbound queue full, reject with busy: id=%s channel_id=%s",
+                    msg.id,
+                    msg.channel_id,
+                )
+                await self._reject_inbound_busy(msg)
+                return
         await self._message_handler.handle_message(msg)
 
     # ── Channel 连接事件 ──
