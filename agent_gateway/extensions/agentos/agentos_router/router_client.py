@@ -3759,6 +3759,7 @@ class AgentOSRouterClient(AgentServerClient):
                         user_id, agent_type, key_values=resolved_key_values or None,
                         expected_agent_id=target_agent_id,
                         include_shared_sandbox=True,
+                        reason="explicit_delete",
                     )
                     if runtime is None:
                         _cleanup_step("runtime", "skipped", "replaced")
@@ -3792,9 +3793,18 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_type,
             key_values=key_values or None,
         )
+        trigger, _ = _cleanup_trigger.get()
+        delete_reason = (
+            trigger
+            if trigger in {"idle_reaper", "disconnect_cleanup"}
+            else "idle_reclaim"
+        )
         async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
             runtime = await self._agent_manager.pop_if_idle(
-                key, idle_timeout_seconds, include_shared_sandbox=True,
+                key,
+                idle_timeout_seconds,
+                include_shared_sandbox=True,
+                reason=delete_reason,
             )
             if runtime is None:
                 if not trace_on_pop:

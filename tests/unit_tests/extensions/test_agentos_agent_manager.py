@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import pytest
@@ -147,6 +148,29 @@ async def test_failed_runtime_list_and_pop_respect_age_and_holds() -> None:
 
     await manager.release(held.key)
     assert await manager.pop_failed_if_expired(held.key, 300) is not None
+
+
+@pytest.mark.asyncio
+async def test_state_transition_events_and_invalid_transition_is_logged(caplog) -> None:
+    runtime = AgentRuntime.for_key(
+        ("u1", "jiuwenswarm"), user_id="u1", agent_type="jiuwenswarm",
+    )
+    ready = runtime.info.copy()
+
+    with caplog.at_level(logging.INFO):
+        runtime.mark_ready(ready, reason="create_ok")
+    assert "agent.state.changed" in caplog.text
+    assert "from_status=creating" in caplog.text
+    assert "to_status=ready" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        runtime.mark_failed(RuntimeError("boom"), reason="test_failure")
+    assert "agent.state.invalid_transition" in caplog.text
+    assert "from_status=ready" in caplog.text
+    assert "to_status=failed" in caplog.text
+    # Best-effort: the illegal transition is reported but still applied.
+    assert runtime.info.status is AgentStatus.FAILED
 
 
 @pytest.mark.asyncio
