@@ -41,6 +41,10 @@ def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) ->
     gateway = config.get("gateway") or {}
     selected = str((gateway.get("agent_client") or {}).get("type") or "").strip().lower()
     if mode == "runtime":
+        if selected in ROUTER_CLIENT_TYPES:
+            raise AgentClientModeError(
+                f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
+            )
         from agent_gateway.enterprise.edition import is_enterprise
 
         if not is_enterprise():
@@ -49,10 +53,6 @@ def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) ->
                 "个人版没有 config.*/models.* 的南向端点，配置面板会不可用；"
                 "请改用默认 websocket 模式（不设置该环境变量）。"
             )
-    if mode == "runtime" and selected in ROUTER_CLIENT_TYPES:
-        raise AgentClientModeError(
-            f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
-        )
 
 
 def resolve_agent_server_client(

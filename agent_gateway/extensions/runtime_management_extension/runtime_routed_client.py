@@ -155,7 +155,8 @@ class RoutelessTargetMissing(FatalRouteError):
         super().__init__(
             f"routeless method {method!r} has no target: set "
             "GATEWAY_RUNTIME_DEFAULT_HTTP_BASE (or AGENT_SERVER_HOST/AGENT_HTTP_PORT) "
-            "to the AgentServer HTTP endpoint",
+            "to the AgentServer HTTP endpoint; for a colocated AgentServer, "
+            "set GATEWAY_RUNTIME_COLOCATED_AGENT=1",
             code="SERVICE_UNAVAILABLE",
         )
 
@@ -631,8 +632,8 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
         apply_invoke_ids_to_envelope(envelope)
         if _is_routeless_envelope(envelope):
+            base_url = _routeless_base_or_raise(envelope.method)
             try:
-                base_url = _routeless_base_or_raise(str(envelope.method or ""))
                 return await self._http.send_request(
                     envelope, base_url=base_url, timeout=timeout,
                 )

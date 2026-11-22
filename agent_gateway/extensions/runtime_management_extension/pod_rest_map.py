@@ -461,15 +461,12 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
         return "POST", path
     if method == "history.get" and is_stream:
         return "GET", "/sessions/{session_id}/history/stream"
-    if method in TEAM_CONTROL_METHODS and not is_enterprise():
+    found = None
+    if method not in TEAM_CONTROL_METHODS or is_enterprise():
+        found = REST_ROUTES.get(method) or _enterprise_pod_route(method)
+    if found is None:
         raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
-    found = REST_ROUTES.get(method)
-    if found is not None:
-        return found[0], found[1]
-    extra = _enterprise_pod_route(method)
-    if extra is not None:
-        return extra
-    raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
+    return found
 
 
 def _enterprise_pod_route(method: str) -> tuple[str, str] | None:

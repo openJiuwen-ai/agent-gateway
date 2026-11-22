@@ -189,6 +189,47 @@ def test_unrelated_method_skips_admission(enterprise_env):
     ) is None
 
 
+@pytest.mark.parametrize("method", ["team.create", "team.snapshot", "team.history.get", "session.assets.rename", "history.get", "command.sandbox"])
+@pytest.mark.parametrize("missing", ["group_id", "bot_id", "user_id"])
+def test_non_chat_without_complete_bot_identity_skips_admission(enterprise_env, method, missing):
+    envelope = _envelope(method)
+    if missing == "user_id":
+        envelope.channel_context.pop("user_id")
+    else:
+        envelope.channel_context["routing"].pop(missing)
+    # 客户端业务参数不能补齐可信身份、触发错误的 bot 资源校验。
+    envelope.params = {"group_id": "forged", "bot_id": "forged", "user_id": "forged"}
+    enterprise_env.setattr(
+        agent_authorization, "_enterprise_checkers",
+        lambda: pytest.fail("no bot resource admission without complete identity"),
+    )
+    assert asyncio.run(agent_authorization.authorize_agent(envelope)) is None
+
+
+@pytest.mark.parametrize("method", sorted(agent_authorization.CHAT_METHODS))
+@pytest.mark.parametrize("missing", ["group_id", "bot_id", "user_id"])
+def test_chat_still_requires_complete_identity(enterprise_env, method, missing):
+    envelope = _envelope(method)
+    if missing == "user_id":
+        envelope.channel_context.pop("user_id")
+    else:
+        envelope.channel_context["routing"].pop(missing)
+    with pytest.raises(agent_authorization.FatalRouteError, match="routing identity") as caught:
+        asyncio.run(agent_authorization.authorize_agent(envelope))
+    assert caught.value.code == "FORBIDDEN"
+
+
+@pytest.mark.parametrize("method", [None, ""])
+def test_methodless_envelope_skips_resource_admission(enterprise_env, method):
+    assert asyncio.run(agent_authorization.authorize_agent(_envelope(method))) is None
+
+
+def test_new_resource_write_method_does_not_bypass_expiry(enterprise_env):
+    _set_row(expires_at=datetime.now(timezone.utc) - timedelta(days=1))
+    with pytest.raises(agent_authorization.FatalRouteError, match="denied"):
+        asyncio.run(agent_authorization.authorize_agent(_envelope("session.future_write")))
+
+
 # --------------------------------------------------------------------------- #
 # 10：个人版不支持 runtime
 # --------------------------------------------------------------------------- #

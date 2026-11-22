@@ -36,6 +36,8 @@ READ_ONLY_METHODS = frozenset({
 
 # 需要经过资源准入的方法全集。
 _ADMITTED_METHODS = CHAT_METHODS | READ_ONLY_METHODS
+# 同一业务族的新方法默认按写操作准入，避免新增写入口绕过过期检查。
+_RESOURCE_METHOD_PREFIXES = ("session.", "chat.", "history.", "command.", "team.")
 
 
 def _enterprise_checkers():
@@ -71,15 +73,22 @@ async def authorize_agent(envelope: E2AEnvelope) -> tuple[str, str, str] | None:
 
     if not is_enterprise():
         return None
-    method = str(envelope.method or "")
-    if method not in _ADMITTED_METHODS and not method.startswith(("session.", "chat.", "history.", "command.", "team.")):
+    method = envelope.method
+    # E2AEnvelope.method 的协议类型为 str | None；无方法的信封不做资源准入。
+    if method is None:
         return None
-    get_enterprise_record_repository, matches = _enterprise_checkers()
+    if method not in _ADMITTED_METHODS and not method.startswith(_RESOURCE_METHOD_PREFIXES):
+        return None
     group_id, bot_id, user_id = routing_triple_from_envelope(envelope)
     identity = {"group_id": group_id, "bot_id": bot_id, "user_id": user_id}
-    # 聊天准入必须三身份齐全；业务 params 不参与可信身份判定。
+    # 聊天入口必须三身份齐全；非聊天入口可能只有团队/用户上下文，
+    # 无完整 bot 路由时保持原行为，由 Agent 校验会话/团队访问权。
+    # 业务 params 不用于补齐可信身份，也不据其执行 bot 资源准入。
     if not all(identity.values()):
+        if method not in CHAT_METHODS:
+            return None
         raise FatalRouteError("Agent routing identity is required", code="FORBIDDEN")
+    get_enterprise_record_repository, matches = _enterprise_checkers()
     repo = get_enterprise_record_repository("instance_agent_resource")
     if repo is None:
         logger.error(
@@ -93,7 +102,7 @@ async def authorize_agent(envelope: E2AEnvelope) -> tuple[str, str, str] | None:
     row = await repo.get(resource_id=bot_id)
     # PostgreSQL 读回 bool，MySQL 布尔编解码器读回 1/0。
     enabled = row.get("enabled") if row is not None else None
-    if row is None or enabled not in (1, True, "1"):
+    if enabled not in (1, True, "1"):
         # 不存在或被主动禁用：只读也不放行。禁用是管理员的显式动作，
         # 与「授权到期」语义不同，不应继续暴露会话内容。
         raise FatalRouteError("Agent access denied", code="FORBIDDEN")

@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 
 import pytest
+from unittest.mock import AsyncMock
+from e2a.models import E2AEnvelope
 
 _EXT_DIR = (
     Path(__file__).resolve().parents[3]
@@ -81,6 +83,40 @@ def test_colocated_flag_allows_loopback(clean_env):
     clean_env.setenv("GATEWAY_RUNTIME_COLOCATED_AGENT", "1")
     module = _reload_routed()
     assert module._default_http_base() == "http://127.0.0.1:8766"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_missing_target_error_survives_request_dispatch(clean_env, stream):
+    module = _reload_routed()
+    clean_env.setenv("JIUWENSWARM_EDITION", "enterprise")
+    http = AsyncMock()
+    client = module.RuntimeRoutedAgentClient(route_client=AsyncMock(), http_client=http)
+    client._connected = True
+    envelope = E2AEnvelope(method="initialize", request_id="r", channel="web")
+    with pytest.raises(module.RoutelessTargetMissing) as caught:
+        if stream:
+            async for _ in client.send_request_stream(envelope):
+                pytest.fail("no stream events without a target")
+        else:
+            await client.send_request(envelope)
+    assert caught.value.code == "SERVICE_UNAVAILABLE"
+    http.send_request.assert_not_called()
+    http.send_request_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_configured_target_keeps_http_failure_response(clean_env):
+    module = _reload_routed()
+    clean_env.setenv("JIUWENSWARM_EDITION", "enterprise")
+    clean_env.setenv("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "http://agent:8766")
+    http = AsyncMock()
+    http.send_request.side_effect = RuntimeError("connection failed")
+    client = module.RuntimeRoutedAgentClient(route_client=AsyncMock(), http_client=http)
+    client._connected = True
+    response = await client.send_request(E2AEnvelope(method="initialize", request_id="r"))
+    assert response.ok is False
+    assert response.payload["code"] == "ROUTELESS_HTTP_ERROR"
 
 
 # --------------------------------------------------------------------------- #
