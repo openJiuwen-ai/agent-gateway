@@ -1,4 +1,6 @@
 """测试 agentos_authenticator.py"""
+import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -234,6 +236,31 @@ class TestAuthRetryBehavior:
         assert result.success is False
         assert result.extensions.get("error_code") == "IAM_UNAVAILABLE"
         assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_total_budget_is_a_hard_limit(self, monkeypatch):
+        auth = AgentOSAuthenticator(
+            auth_service_url="http://test-auth:8000", timeout=0.2,
+        )
+        calls = {"n": 0}
+
+        async def slow_post(*args, **kwargs):
+            calls["n"] += 1
+            await asyncio.sleep(1.0)
+            return _valid_response()
+
+        monkeypatch.setattr(auth._auth_client, "post", slow_post)
+        started = time.monotonic()
+        try:
+            result = await auth._authenticate_token("token")
+        finally:
+            await auth._auth_client.aclose()
+        elapsed = time.monotonic() - started
+
+        assert result.success is False
+        assert result.extensions.get("error_code") == "IAM_UNAVAILABLE"
+        assert calls["n"] == 1
+        assert elapsed < 0.9
 
     @pytest.mark.asyncio
     async def test_401_is_invalid_token_without_retry(self):

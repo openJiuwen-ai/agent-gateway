@@ -139,13 +139,17 @@ class AgentOSAuthenticator(CredentialAuthenticator):
                 return self._failure("登录服务响应超时", "IAM_UNAVAILABLE")
             attempt += 1
             try:
-                resp = await self._auth_client.post(
-                    f"{self._auth_service_url}/api/v1/auth/verify",
-                    json={"token": token, "resource_id": "apps", "action_id": "read"},
-                    headers=headers,
-                    timeout=max(0.001, remaining),
-                )
-            except httpx.TimeoutException as exc:
+                # httpx applies a float timeout to connect/read/write/pool
+                # separately, so it is not an end-to-end limit. Bound the whole
+                # attempt with the remaining auth budget instead.
+                async with asyncio.timeout(max(0.001, remaining)):
+                    resp = await self._auth_client.post(
+                        f"{self._auth_service_url}/api/v1/auth/verify",
+                        json={"token": token, "resource_id": "apps", "action_id": "read"},
+                        headers=headers,
+                        timeout=max(0.001, remaining),
+                    )
+            except (TimeoutError, httpx.TimeoutException) as exc:
                 # The per-request timeout consumes the remaining budget; a
                 # second request cannot finish within the handshake limit.
                 self._log_retry(
