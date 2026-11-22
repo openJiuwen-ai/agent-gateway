@@ -484,6 +484,27 @@ class WebChannel(BaseWsChannel):
 
         self._on_message_cb = wrapped
 
+    async def reject_inbound(
+        self,
+        msg: Message,
+        *,
+        error: str = "系统繁忙，请稍后重试",
+        code: str = "SERVER_BUSY",
+    ) -> None:
+        """Tell the originating WebSocket that its request was not queued."""
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        ws_id = str(metadata.get("ws_id") or "").strip()
+        ws = self._lookup_peer(ws_id) if ws_id else None
+        if ws is None:
+            return
+        await self.send_response(
+            ws,
+            str(msg.id or ""),
+            ok=False,
+            error=error,
+            code=code,
+        )
+
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         # All unary, streamed and pushed frames converge here, after internal
         # callbacks and busy-state tracking have consumed the canonical values.

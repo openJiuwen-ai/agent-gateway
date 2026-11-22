@@ -339,6 +339,23 @@ if TYPE_CHECKING:
     from agent_gateway.routing.agent_client import AgentServerClient
 
 
+def _queue_maxsize_from_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+# Bounded by default. A full user queue is surfaced as "busy" on the Web
+# channel; robot_messages applies backpressure to the dispatch loop.
+_USER_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_USER_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+_ROBOT_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_ROBOT_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+
+
 # ---------- 双队列实现：入队经 AgentServerClient 发往 AgentServer ----------
 class MessageHandler(ABC):
     """
@@ -375,8 +392,12 @@ class MessageHandler(ABC):
         self.on_recommendation_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         # Chat requests that ended here before AgentServer answered: request_id -> session_id.
         self._awaiting_host_completion: dict[str, str] = {}
-        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
-        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
+        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_USER_MESSAGE_QUEUE_MAXSIZE,
+        )
+        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_ROBOT_MESSAGE_QUEUE_MAXSIZE,
+        )
         self._running = False
         self._forward_task: asyncio.Task | None = None
         self._scheduler_stream_ids: set[str] = set()
@@ -881,7 +902,7 @@ class MessageHandler(ABC):
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        await self._user_messages.put(msg)
         logger.debug(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
@@ -3027,6 +3048,10 @@ class MessageHandler(ABC):
             msg.params.setdefault("mode", state.mode.value)
 
     # ---------- user_messages ----------
+
+    def is_user_queue_full(self) -> bool:
+        """Return whether the inbound message queue has reached its limit."""
+        return self._user_messages.full()
 
     async def publish_user_messages(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（异步）."""

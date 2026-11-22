@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import time
 from abc import ABC
@@ -536,8 +537,38 @@ class ChannelManager(ABC):
         if not self._get_channel_by_id(msg.channel_id):
             logger.info(f"[ChannelManager] Channel: {msg.channel_id} closed, cancel this user message.")
             return
+        queue_full = getattr(self._message_handler, "is_user_queue_full", None)
+        if callable(queue_full) and queue_full():
+            logger.warning(
+                "[ChannelManager] inbound queue full, reject with busy: id=%s channel_id=%s",
+                msg.id,
+                msg.channel_id,
+            )
+            asyncio.create_task(self._reject_inbound_busy(msg))
+            return
 
         asyncio.create_task(self._message_handler.handle_message(msg))
+
+    async def _reject_inbound_busy(self, msg: "Message") -> None:
+        """Let the channel tell the client that the inbound queue is full."""
+        channel = self._get_channel_by_id(msg.channel_id)
+        reject = getattr(channel, "reject_inbound", None)
+        if not callable(reject):
+            return
+        try:
+            result = reject(
+                msg,
+                error="系统繁忙，请稍后重试",
+                code="SERVER_BUSY",
+            )
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 - rejecting is best-effort
+            logger.exception(
+                "[ChannelManager] reject busy inbound failed: id=%s channel_id=%s",
+                msg.id,
+                msg.channel_id,
+            )
 
     def register_channel(self, channel: "BaseChannel") -> None:
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""
