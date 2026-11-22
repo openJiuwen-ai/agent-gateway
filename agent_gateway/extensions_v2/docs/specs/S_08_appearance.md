@@ -8,8 +8,8 @@
 | 编号 / slug | `S_08 / appearance` |
 | 所属模块 | Gateway `webui/`（接口、校验、提供者登记与投递）；Web 前端 `features/webui/`（派生与应用） |
 | 最近一次修订日期 | 2026-11-07 |
-| 契约状态 | 已实现 |
-| 关联文档 | [F_11](../features/F_11_controlled-appearance.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_07 媒体容器](S_07_media-surface.md) |
+| 契约状态 | 已实现。EXTV2-GW-16 将修订第 1、2、4～7 节（外观部件、按安装顺序叠加、完整快照帧），目标草案见 [F_16](../features/F_16_layered-appearance-and-brand.md) 第 5.3～5.8 节；实现前本文仍为现行契约 |
+| 关联文档 | [F_11](../features/F_11_controlled-appearance.md)、[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_07 媒体容器](S_07_media-surface.md) |
 
 本文维护 `ops.appearance.apply` 的接口、外观对象、宿主派生规则、下行帧、提供者生命周期与不变量。
 

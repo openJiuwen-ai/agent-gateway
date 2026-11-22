@@ -7,7 +7,7 @@
 | 类型 | 开发计划 |
 | 编号作用域 | `EXTV2-GW-NN` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-23 |
 | 维护责任 | Gateway Extensions V2 模块维护者 |
 
 ## 1. 计划说明
@@ -35,6 +35,7 @@
 | EXTV2-GW-13 | 开场预览 | `ops.splash.preview()`、下行帧 `webui.splash.play`、开场 `ui.ready` 的 `preview` 字段、门控开放后的单次预览播放 | [F_14](../features/F_14_splash-preview.md) | [S_09](../specs/S_09_startup-splash.md) | `test_gateway_splash.py`；前端 `test:webui-components` | Song Haoran | 已实现（单测与浏览器验证通过；桌面打包版联调待真实插件） |
 | EXTV2-GW-14 | 真实环境联调 | 在隔离实例中运行开发分支的 Gateway、AgentServer、`app_web` 与前端构建产物，安装主题背景插件与登录示例，用无头 Chromium 走完首次启动、设置、导入导出、登录前后与断线；联调中发现的缺陷就地修复 | [F_13](../features/F_13_application-settings-page.md)（D-08）、[F_12](../features/F_12_startup-gate-and-splash.md)（V-10） | [S_01](../specs/S_01_gateway-extension-runtime.md)、[S_10](../specs/S_10_application-settings.md) | `test_gateway_request.py`、`test_gateway_package_management.py`；前端 `test:webui-components`、`test:settings-panel` | Song Haoran | 已完成（A 档真实 Gateway 与 Web、B 档 Electron 开发模式通过；打包版与 Windows 由打包团队验证） |
 | EXTV2-GW-15 | 应用形态 | `application.presentation`、`ApplicationSurface`、受控会话桥接与透明窗口、蜜蜂 / 胶囊 / 会话终端示例 | [F_15](../features/F_15_application-presentation.md) | [S_11](../specs/S_11_application-presentation.md)、S_17（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） | `test_gateway_application_presentation.py`；前端 `test:application-presentation`；`tests/electron/application_presentation.test.cjs` | 未登记 | 进行中（DMG 原生交互及录屏待验收，证据见 F_15） |
+| EXTV2-GW-16 | 外观部件叠加与主页品牌 | 外观拆为配色、标识、欢迎语、吉祥物四个部件，按安装顺序分层叠加；完整快照下行帧；声明槽位 `application.appearance` 与平台帧；候选提示的外观字段；门控中的外观准备与首帧记录；主页侧栏 Logo、标签图标与标题、欢迎语、吉祥物 | [F_16](../features/F_16_layered-appearance-and-brand.md) | [S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md)（待修订，目标草案见 F_16 第 5.3 节） | `test_gateway_appearance.py`、`test_gateway_splash.py`；jiuwenswarm `test_app_web_splash_hint.py`；前端 `test:webui-runtime`、`test:webui-components`、`test:webui-contracts` | Song Haoran | 未开始（方案草稿待评审） |
 
 ## 3. 依赖与开工条件
 
@@ -54,6 +55,8 @@ flowchart LR
     G11 --> G13["GW-13 开场预览"]
     G12 --> G13
     G7 --> G15["GW-15 应用形态"]
+    G10 --> G16["GW-16 外观部件叠加与主页品牌"]
+    G11 --> G16
 ```
 
 - GW-01 是其余条目的前置：事件类型必须在装配阶段先注册。
@@ -63,6 +66,7 @@ flowchart LR
 - GW-13 复用 GW-11 的开场层与时限；预览入口在 GW-12 的插件设置页中。
 - GW-07～GW-13 的整体设计见[应用级界面能力设计概览](application-surfaces-overview.md)；GW-07 是其余条目的前置，使不带浏览器请求绑定的应用级 UI 包也能取得交互、素材与激活代次。
 - GW-15 复用 GW-07 的可信声明、素材和释放通知；会话动作仍由 Web Client 的原有入口执行，Electron 只拥有窗口。
+- GW-16 修改 GW-10 的提供者规则与 GW-11 的门控；Gateway 侧与 jiuwenswarm 前端的帧格式须在同一次 agent-gateway 固定提交升级中交付（F_16 第 7 节）。
 
 ## 4. 验证要求
 
@@ -83,6 +87,7 @@ flowchart LR
 | GW-13 | 预览帧只发往调用连接并带声明值；未声明开场、失效激活、无连接时拒绝；停用后仍可预览；`ui.ready` 的 `preview` 必填；前端只在门控开放且空闲时播放一次、不改写启动记录；Chromium 中从设置页点击到播放结束 |
 | GW-14 | 真实 WebChannel 往返（平台帧、外观、背景、开场、设置页、导入导出经 `app_web`）；登录插件存在时登录前后的完整流程；断线后连接状态被清理；同版本卸载重装后执行新代码；与正在使用的 WorkSwarm 隔离（数据、家目录、worker 套接字、端口） |
 | GW-15 | 同包沙箱、当前窗口代次、请求去重、明确的完整会话目标、草稿与发送回执、失效目标拒绝、并行工具状态、原生窗口恢复；真实 DMG 安装、三形态、模型与工具交互、卸载和视频 |
+| GW-16 | 部件校验两端一致（含旧写法）；两包不同部件同时生效、同部件按安装顺序叠加、上层撤回或释放后下层露出、结果与提交先后无关；释放时 `revision` 不复用；声明槽位平台帧在请求策略拒绝一切时仍到达各包；候选提示；门控外观准备的三条路径、每次打开均执行与 3 秒时限；首帧与标签记录；主页四处显示与加载失败回退；隔离实例中主题插件与 Logo 示例同时生效且打开、刷新不闪默认品牌（F_16 第 8 节） |
 
 单元测试统一位于 `tests/unit_tests/gateway/extensions_v2/`。
 
@@ -124,6 +129,7 @@ flowchart LR
 | 2026-11-07 | GW-07～GW-14 | PR #10763 第六轮收敛（独立提交）：小清理（海象运算符、开场排序规则前端共用一处、令牌按实例创建等）；宿主操作的调用方改由 `trigger_context` 传给 CORE，嵌套事件链与后台任务不再继承调用方，渲染 CORE 显式交给传输层调用方的代次（S_01 第 4 节、不变量 13，F_09）；激活状态收敛为激活记录一个来源，激活有效性统一为一个判断，凭据持有激活，宿主动作在链开始前核对调用方。修复本 PR 早先改动遗留的集成用例 `tests/integration/test_webui_resource_browser.py`（目标分支通过、本分支失败：桥接层新增读取 `config.data_dir`，代次视图改为只读派生），其假运行时改为激活记录，使用本机已有的 chrome-headless-shell 复验通过；门控在“有候选”提示后的判定期间显示中性层，不再先显示页面底色（S_09 第 5 节、F_12） |
 | 2026-11-07 | GW-08、GW-12 | 补充修复 PR #10763 的取消与跨代次边界：`ops.data.root()` 复用 Core 文件操作取消处理，后台线程结束后才释放调用计数；上传始终绑定最初的激活代次、实例与渲染版本，在清理过期凭据和目录创建之后分别核对。新增 7 项回归，修复前 5 失败、2 通过，修复后全部通过；包含新页面规则下重新上传成功的路径。复验（Python 3.11.17、agent-core `c48b5bb`）：Gateway 扩展与 Web 渠道 874 通过、1 跳过，AgentServer 共享设置契约 30 通过；前端源码本次未改，沿用 `0767763d5` 上相关 544 项通过记录。未重做浏览器、打包版或桌面冷启动 |
 | 2026-11-07 | GW-03、GW-12、GW-14 | PR #10763：渲染 Ops 与提交绑定原激活；所有应用级目标保留清除版本下限；容量淘汰预留清除版本；宿主导入持有文件资源直到取消清理结束。后端 913 通过、1 跳过，前端 605 项通过；详细范围及未执行项见下方回归记录 |
+| 2026-11-23 | GW-16 | 建立外观部件叠加与主页品牌条目，负责人 Song Haoran；方案草稿见 F_16，产品决策已确认，待模块维护者评审后开工 |
 
 ### 2026-11-07 渲染与上传生命周期回归记录
 

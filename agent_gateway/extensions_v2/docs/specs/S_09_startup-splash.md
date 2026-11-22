@@ -8,8 +8,8 @@
 | 编号 / slug | `S_09 / startup-splash` |
 | 所属模块 | Gateway `webui/`（声明、提供者、平台帧与 `ui.closed`）；`channels/web/app_web.py`（候选提示）；Electron 主进程与预加载（启动标识）；Web 前端 `features/webui/`（门控与开场队列） |
 | 最近一次修订日期 | 2026-11-07 |
-| 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12）；开场预览（第 3.3 节）已实现（EXTV2-GW-13，[F_14](../features/F_14_splash-preview.md)） |
-| 关联文档 | [F_12](../features/F_12_startup-gate-and-splash.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_08 受控外观](S_08_appearance.md) |
+| 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12）；开场预览（第 3.3 节）已实现（EXTV2-GW-13，[F_14](../features/F_14_splash-preview.md)）。EXTV2-GW-16 将修订第 2、3.2、4～7 节（声明槽位 `application.appearance`、候选提示的外观字段、门控中的外观准备与首帧记录），目标草案见 [F_16](../features/F_16_layered-appearance-and-brand.md) 第 5.3.4、5.3.5、5.5 节；实现前本文仍为现行契约 |
+| 关联文档 | [F_12](../features/F_12_startup-gate-and-splash.md)、[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_08 受控外观](S_08_appearance.md) |
 
 ## 1. 声明
 
