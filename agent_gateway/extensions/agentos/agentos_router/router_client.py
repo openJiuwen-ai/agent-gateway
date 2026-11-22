@@ -23,6 +23,7 @@ from e2a.message import ReqMethod
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.common.retry import jittered_sleep
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateInterrupted,
@@ -1826,7 +1827,7 @@ class AgentOSRouterClient(AgentServerClient):
                     error=type(exc).__name__,
                     sleep=f"{sleep_for:.1f}s",
                 )
-                await asyncio.sleep(sleep_for)
+                await jittered_sleep(sleep_for)
 
     async def _wait_yuanrong_running(
         self,

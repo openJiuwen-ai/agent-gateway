@@ -94,6 +94,7 @@ def apply_trace_header(
         if str(key).lower() != "x-trace-id"
     } | {TRACE_ID_HEADER: resolved}
 
+from agent_gateway.common.retry import jittered_sleep
 from agent_gateway.routing.container_files import AgentFileDownloadChunk
 from agent_gateway.telemetry import (
     current_request_trace,
@@ -895,7 +896,7 @@ class YuanrongFrontendAgentClient:
                     type(last_error).__name__ if last_error is not None else "-",
                     poll_trace_id,
                 )
-                await asyncio.sleep(sleep_for)
+                await jittered_sleep(sleep_for)
 
     async def upload_agent_file(
         self,
