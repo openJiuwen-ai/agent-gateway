@@ -38,8 +38,11 @@ from agent_gateway.extensions.runtime_management_extension.pod_http_client impor
     _PUSH_TERMINATED_EVENT_TYPE,
 )
 
+# Loopback 测试地址：合成帧只做契约断言，不发起真实连接，避免硬编码 Pod IP。
+_TEST_API_ROOT = "http://127.0.0.1:8766"
 
-def _make_client(*, api_root: str = "http://10.244.0.1:8766", failures: int = 3) -> HttpSseAgentServerClient:
+
+def _make_client(*, api_root: str = _TEST_API_ROOT, failures: int = 3) -> HttpSseAgentServerClient:
     """Construct a stub ``HttpSseAgentServerClient`` without running ``__init__``."""
     client = HttpSseAgentServerClient.__new__(HttpSseAgentServerClient)
     client._on_server_push = None  # set by each test
@@ -105,13 +108,13 @@ async def test_emit_push_terminated_payload_keeps_event_type_for_downstream_bran
     """
     wire = await _capture_synthesised_wire()
     chunk = parse_agent_server_wire_chunk(wire)
-    assert chunk.request_id == "push_terminated:http://10.244.0.1:8766"
+    assert chunk.request_id == f"push_terminated:{_TEST_API_ROOT}"
     assert chunk.channel_id == "web"
     assert chunk.is_complete is False
     assert isinstance(chunk.payload, dict)
     assert chunk.payload.get("event_type") == _PUSH_TERMINATED_EVENT_TYPE
     assert chunk.payload.get("reason") == "connect_failures_exceeded"
-    assert chunk.payload.get("api_root") == "http://10.244.0.1:8766"
+    assert chunk.payload.get("api_root") == _TEST_API_ROOT
     assert chunk.payload.get("failures") == 3
 
 
