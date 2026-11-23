@@ -32,6 +32,8 @@ LANGUAGES = frozenset({"zh", "en"})
 MAX_NAME_CHARS = 32
 MAX_WELCOME_CHARS = 64
 IMAGE_SUFFIXES = frozenset({".png", ".webp", ".svg", ".gif"})
+#: The brand name in the welcome line: one colour, or two for a left-to-right gradient.
+MAX_HIGHLIGHT_COLORS = 2
 MIN_HOVER_MS = 500
 MAX_HOVER_MS = 10_000
 #: Largest image file of each image field, checked when the part is submitted.
@@ -176,9 +178,9 @@ def validate_identity(value: Any) -> dict[str, Any]:
 
 
 def validate_welcome(value: Any) -> dict[str, Any]:
-    """The second half of the welcome line, per work mode and as a default."""
-    if not isinstance(value, Mapping) or not value or set(value) - {"default", "modes"}:
-        raise ValueError("welcome accepts default and modes")
+    """The second half of the welcome line, per work mode and as a default, and the brand name's colour."""
+    if not isinstance(value, Mapping) or not value or set(value) - {"default", "modes", "highlight"}:
+        raise ValueError("welcome accepts default, modes and highlight")
     result: dict[str, Any] = {}
     if "default" in value:
         result["default"] = _localized(value["default"], MAX_WELCOME_CHARS, "welcome.default")
@@ -188,6 +190,12 @@ def validate_welcome(value: Any) -> dict[str, Any]:
             raise ValueError("welcome.modes accepts work, code and design")
         result["modes"] = {mode: _localized(modes[mode], MAX_WELCOME_CHARS, f"welcome.modes.{mode}")
                            for mode in sorted(modes)}
+    if "highlight" in value:
+        colors = value["highlight"]
+        if (not isinstance(colors, list) or not 0 < len(colors) <= MAX_HIGHLIGHT_COLORS
+                or not all(isinstance(color, str) and _ACCENT.fullmatch(color) for color in colors)):
+            raise ValueError("welcome.highlight must be one or two #RRGGBB colours")
+        result["highlight"] = list(colors)
     return result
 
 

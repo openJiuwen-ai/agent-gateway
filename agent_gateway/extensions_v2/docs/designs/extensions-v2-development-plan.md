@@ -132,6 +132,7 @@ flowchart LR
 | 2026-11-23 | GW-16 | 建立外观部件叠加与主页品牌条目，负责人 Song Haoran；方案草稿见 F_16，产品决策已确认，待模块维护者评审后开工 |
 | 2026-11-23 | GW-16 | Gateway 侧实现：外观部件与旧写法兼容、按安装顺序分层叠加与快照帧、层级记录、品牌图片所有权与大小、`application.appearance` 声明与并行的平台帧、外观提供者的静态判定；契约迁入 S_08、S_09，同步 S_01、S_02、S_06、S_10。`test_gateway_appearance.py` 107 项通过；扩展用例 718 通过、43 失败，失败与改动前相同（本地 agent-core `c48b5bb` 较旧）。`app_web`、前端与联调未开始，证据见 F_16 第 8.2 节 |
 | 2026-11-23 | GW-16 | jiuwenswarm 侧实现（develop `b9da49f`，分支 `feat/home-page-brand`）：`app_web` 提示增加 `appearance`；前端快照校验与暂存、`application.appearance` 声明槽位、门控外观准备与首帧记录、侧栏 Logo、标签标题与图标、欢迎语、吉祥物。`test_app_web_splash_hint.py` 5 项通过；前端 runtime 26、components 427 项通过，全部 277 个前端测试脚本与 `tsc` 的结果除这两个套件外与改动前相同。隔离实例中的浏览器预览：两包叠加、安装与卸载即时生效、刷新首帧品牌符合设计。实现中的调整见 F_16 第 10 节；agent-gateway 固定提交升级待 Gateway 侧合入 |
+| 2026-11-23 | GW-16 | 欢迎语增加品牌名高亮色 `welcome.highlight`（产品确认，F_16 D-13）：两端校验与共享用例、前端按页面底色保证 3:1 对比度。Gateway 外观用例 114 项、前端 components 436 项通过 |
 
 ### 2026-11-07 渲染与上传生命周期回归记录
 
