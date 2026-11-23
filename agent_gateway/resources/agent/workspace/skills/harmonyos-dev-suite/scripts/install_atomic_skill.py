@@ -124,8 +124,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--source", help="Local harmonyos-agent-skills checkout")
     parser.add_argument(
         "--target",
-        default="~/.jiuwenswarm/profile/agent/workspace/skills",
-        help="JiuwenSwarm skills directory",
+        help="JiuwenSwarm skills directory (defaults to the configured Gateway skills directory)",
     )
     parser.add_argument("--skill", help="Atomic Skill name to install")
     parser.add_argument(
@@ -145,9 +144,19 @@ def main(argv: list[str]) -> int:
     if not args.source:
         parser.error("--source is required when installing a Skill")
 
+    if args.target:
+        target = Path(args.target).expanduser()
+    else:
+        try:
+            from agent_gateway.common.paths import get_agent_skills_dir
+        except ModuleNotFoundError:
+            parser.error("--target is required when agent-gateway is not installed")
+
+        target = get_agent_skills_dir()
+
     result = install_skill(
         Path(args.source).expanduser(),
-        Path(args.target).expanduser(),
+        target,
         args.skill,
         force=args.force,
     )
