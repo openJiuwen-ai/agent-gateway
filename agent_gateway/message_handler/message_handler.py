@@ -339,6 +339,33 @@ if TYPE_CHECKING:
     from agent_gateway.routing.agent_client import AgentServerClient
 
 
+def _queue_maxsize_from_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        logger.warning(
+            "[MessageHandler] %s=%s is invalid; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+# Bounded by default. A full user queue is surfaced as "busy" on the Web
+# channel; robot_messages applies backpressure to the dispatch loop.
+_USER_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_USER_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+_ROBOT_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_ROBOT_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+
+
 # ---------- 双队列实现：入队经 AgentServerClient 发往 AgentServer ----------
 class MessageHandler(ABC):
     """
@@ -375,10 +402,15 @@ class MessageHandler(ABC):
         self.on_recommendation_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         # Chat requests that ended here before AgentServer answered: request_id -> session_id.
         self._awaiting_host_completion: dict[str, str] = {}
-        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
-        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
+        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_USER_MESSAGE_QUEUE_MAXSIZE,
+        )
+        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_ROBOT_MESSAGE_QUEUE_MAXSIZE,
+        )
         self._running = False
         self._forward_task: asyncio.Task | None = None
+        self._deferred_put_tasks: set[asyncio.Task] = set()
         self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
@@ -881,7 +913,7 @@ class MessageHandler(ABC):
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        await self._user_messages.put(msg)
         logger.debug(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
@@ -3028,6 +3060,10 @@ class MessageHandler(ABC):
 
     # ---------- user_messages ----------
 
+    def is_user_queue_full(self) -> bool:
+        """Return whether the inbound message queue has reached its limit."""
+        return self._user_messages.full()
+
     async def publish_user_messages(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（异步）."""
         queue_request_trace(msg)
@@ -3041,12 +3077,62 @@ class MessageHandler(ABC):
             raise RuntimeError("runtime wake host is not forwarding")
         await self.publish_user_messages(msg)
 
+    def _defer_queue_put(
+        self,
+        queue: asyncio.Queue["Message"],
+        msg: "Message",
+        *,
+        kind: str,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        async def _put() -> None:
+            await queue.put(msg)
+
+        task = asyncio.create_task(
+            _put(),
+            name=f"agentos-{kind}-deferred-{getattr(msg, 'id', '')}",
+        )
+        tasks = getattr(self, "_deferred_put_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._deferred_put_tasks = tasks
+        tasks.add(task)
+
+        def _done(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if done.cancelled() and on_cancel is not None:
+                try:
+                    on_cancel()
+                except Exception:  # noqa: BLE001 - trace cleanup is best-effort
+                    logger.debug(
+                        "[MessageHandler] deferred put trace cleanup failed",
+                        exc_info=True,
+                    )
+
+        task.add_done_callback(_done)
+
     def publish_user_messages_nowait(self, msg: "Message") -> None:
-        """将消息放入 user_messages 队列（同步）."""
+        """将消息放入 user_messages 队列（同步）.
+
+        队列有界后不能再假定 put_nowait 必然成功。满了就转入后台 put，
+        保留消息并形成背压，避免在同步调用点抛出 QueueFull。
+        """
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        try:
+            self._user_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] user queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._user_messages,
+                msg,
+                kind="inbound",
+                on_cancel=lambda: release_message_trace(msg, requests=True),
+            )
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
         """消费一条 user_messages；timeout 为 None 则阻塞，否则超时返回 None."""
@@ -3253,6 +3339,17 @@ class MessageHandler(ABC):
             release_message_trace(msg)
         try:
             self._robot_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] robot queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._robot_messages,
+                msg,
+                kind="robot",
+                on_cancel=lambda: release_response_trace(msg, reason="queue_failed"),
+            )
         except BaseException:
             release_response_trace(msg, reason="queue_failed")
             raise
@@ -6985,6 +7082,13 @@ class MessageHandler(ABC):
             except asyncio.CancelledError:
                 pass
             self._forward_task = None
+
+        deferred = list(self._deferred_put_tasks)
+        for task in deferred:
+            task.cancel()
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
+        self._deferred_put_tasks.clear()
 
         release_queued_message_traces(self._user_messages, requests=True)
         manager = getattr(self, "_channel_manager", None)

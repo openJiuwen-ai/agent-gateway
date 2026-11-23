@@ -536,10 +536,10 @@ class BaseWsChannel(BaseWebChannel):
                     "[%s] writer flush timed out 5s, cancelling ws_id=%s", self.channel_id, ws_id,
                 )
                 writer.cancel()
-                try:
-                    await writer
-                except (asyncio.CancelledError, Exception):
-                    pass
+                # await 一个"已被取消"的 task 会向等待方抛 CancelledError。用 gather
+                # 收集子任务的取消结果，既能等它真正退出，又不会把子任务的取消误当成
+                # 本协程被取消而向上传播；本协程真被取消时 gather 仍会照常抛出。
+                await asyncio.gather(writer, return_exceptions=True)
             except Exception:
                 pass  # writer 内部异常已记录，此处吞掉避免影响断连流程
         if writer is not None and not writer.done():
@@ -566,10 +566,8 @@ class BaseWsChannel(BaseWebChannel):
         for ws_id in ws_ids:
             writer = self._writers.pop(ws_id, None)
             if writer is not None and not writer.done():
-                try:
-                    await writer
-                except (asyncio.CancelledError, Exception):
-                    pass
+                # 同 _drain_and_cleanup_writer：等子任务退出，但不吞本协程的取消。
+                await asyncio.gather(writer, return_exceptions=True)
             self._send_queues.pop(ws_id, None)
         for ws in list(self._trace_sockets.values()):
             self._finish_ws_traces(ws, "channel_stopped")

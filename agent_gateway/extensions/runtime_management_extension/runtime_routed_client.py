@@ -144,18 +144,56 @@ def _rebind_timeout() -> float:
     return value if value > 0 else 2.0
 
 
-def _default_http_base() -> str:
-    """管理类请求（reload_config 等）的默认 Agent HTTP Base。
+class RoutelessTargetMissing(FatalRouteError):
+    """routeless 管理请求没有可用的目标地址。
 
-    须指向 Agent ``http_server``（默认 ``AGENT_HTTP_PORT=8766``），
-    **不要**打 WS 口 ``AGENT_SERVER_PORT=18092``（对该口发 HTTP 会 426/400 且无 JSON）。
+    独立 Pod 部署下 Gateway 与 AgentServer 不在同一主机，回环地址必然连不上；
+    与其等到 HTTP 连接失败，不如在发请求前明确报错。
+    """
+
+    def __init__(self, method: str) -> None:
+        super().__init__(
+            f"routeless method {method!r} has no target: set "
+            "GATEWAY_RUNTIME_DEFAULT_HTTP_BASE (or AGENT_SERVER_HOST/AGENT_HTTP_PORT) "
+            "to the AgentServer HTTP endpoint; for a colocated AgentServer, "
+            "set GATEWAY_RUNTIME_COLOCATED_AGENT=1",
+            code="SERVICE_UNAVAILABLE",
+        )
+
+
+def _default_http_base() -> str | None:
+    """管理类请求（reload_config 等）的 Agent HTTP Base；无法确定时返回 ``None``。
+
+    解析顺序：
+    1. ``GATEWAY_RUNTIME_DEFAULT_HTTP_BASE`` —— 显式目标，最可靠；
+    2. ``AGENT_SERVER_HOST`` / ``AGENT_HTTP_PORT`` —— 显式主机端口；
+    3. 两者都没配时**不再默认回环地址**：只有 Gateway 与 AgentServer 同机
+       （``GATEWAY_RUNTIME_COLOCATED_AGENT=1``）才回落到 ``127.0.0.1:8766``。
+
+    须指向 Agent ``http_server``（默认 ``AGENT_HTTP_PORT=8766``），**不要**打 WS 口
+    ``AGENT_SERVER_PORT=18092``（对该口发 HTTP 会 426/400 且无 JSON）。
     """
     explicit = os.getenv("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "").strip()
     if explicit:
         return explicit.rstrip("/")
-    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    port = os.getenv("AGENT_HTTP_PORT", "8766").strip() or "8766"
-    return f"http://{host}:{port}"
+    host = os.getenv("AGENT_SERVER_HOST", "").strip()
+    port = os.getenv("AGENT_HTTP_PORT", "").strip()
+    if host or port:
+        return f"http://{host or '127.0.0.1'}:{port or '8766'}"
+    if os.getenv("GATEWAY_RUNTIME_COLOCATED_AGENT", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        # Gateway 与 AgentServer 同机的显式确认。
+        return "http://127.0.0.1:8766"
+    return None
+
+
+def _routeless_base_or_raise(method: str) -> str:
+    """解析 routeless 目标；缺失时抛 ``RoutelessTargetMissing``（fail-fast）。"""
+    base = _default_http_base()
+    if base is None:
+        raise RoutelessTargetMissing(method)
+    return base
 
 
 def identity_from_envelope(
@@ -594,9 +632,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
         apply_invoke_ids_to_envelope(envelope)
         if _is_routeless_envelope(envelope):
+            base_url = _routeless_base_or_raise(envelope.method)
             try:
                 return await self._http.send_request(
-                    envelope, base_url=_default_http_base(), timeout=timeout,
+                    envelope, base_url=base_url, timeout=timeout,
                 )
             except Exception as exc:  # noqa: BLE001
                 # routeless 管理请求没有重路由兜底：5xx/429 原始 httpx 异常
@@ -758,8 +797,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
         apply_invoke_ids_to_envelope(envelope)
         if _is_routeless_envelope(envelope):
+            base_url = _routeless_base_or_raise(str(envelope.method or ""))
             async for chunk in self._http.send_request_stream(
-                envelope, base_url=_default_http_base()
+                envelope, base_url=base_url
             ):
                 yield chunk
             return

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import time
 from abc import ABC
@@ -116,6 +117,7 @@ class ChannelManager(ABC):
         self._on_config_updated = on_config_updated
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
+        self._inbound_busy = False
         self._dispatch_diag_count: int = 0
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
@@ -539,6 +541,32 @@ class ChannelManager(ABC):
 
         asyncio.create_task(self._message_handler.handle_message(msg))
 
+    async def _reject_inbound_busy(
+        self, msg: "Message", reject: Callable[..., Any],
+    ) -> bool:
+        """Let the channel tell the client that the inbound queue is full.
+
+        Returns true only when the channel actually accepted the rejection.
+        A missing peer or a failed send returns false so the caller can fall
+        back to queue backpressure instead of dropping the message.
+        """
+        try:
+            result = reject(
+                msg,
+                error="系统繁忙，请稍后重试",
+                code="SERVER_BUSY",
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            return result is not False
+        except Exception:  # noqa: BLE001 - rejecting is best-effort
+            logger.exception(
+                "[ChannelManager] reject busy inbound failed: id=%s channel_id=%s",
+                msg.id,
+                msg.channel_id,
+            )
+            return False
+
     def register_channel(self, channel: "BaseChannel") -> None:
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""
         cid = channel.channel_id
@@ -695,7 +723,35 @@ class ChannelManager(ABC):
         self._channels[key] = channel
 
     async def deliver_to_message_handler(self, msg: "Message") -> None:
-        """将消息交给 MessageHandler（供自定义入站路径使用）。"""
+        """将消息交给 MessageHandler（供自定义入站路径使用）。
+
+        Web/TUI 走这条路径而不是 ``_on_channel_message``。入站队列满时，
+        支持 ``reject_inbound`` 的通道（目前是 Web）直接回 ``SERVER_BUSY``；
+        其他通道继续走 ``handle_message``，在队列上形成背压而不丢消息。
+        """
+        queue_full = getattr(self._message_handler, "is_user_queue_full", None)
+        if callable(queue_full) and queue_full():
+            if not self._inbound_busy:
+                logger.warning(
+                    "[ChannelManager] inbound queue full: channel_id=%s",
+                    msg.channel_id,
+                )
+                self._inbound_busy = True
+            else:
+                logger.debug(
+                    "[ChannelManager] inbound queue still full: id=%s channel_id=%s",
+                    msg.id,
+                    msg.channel_id,
+                )
+            channel = self._get_channel_by_id(msg.channel_id)
+            reject = getattr(channel, "reject_inbound", None)
+            if callable(reject) and await self._reject_inbound_busy(msg, reject):
+                return
+            # No channel-level busy response (IM, or Web peer already gone):
+            # keep the message and apply real backpressure in handle_message.
+        elif self._inbound_busy:
+            logger.info("[ChannelManager] inbound queue recovered")
+            self._inbound_busy = False
         await self._message_handler.handle_message(msg)
 
     # ── Channel 连接事件 ──

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import tarfile
+import tempfile
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -30,7 +31,9 @@ from tarfile import ReadError, TarError
 from typing import Any
 from zipfile import BadZipFile, ZipFile
 
-from openjiuwen.core.extension import ExtensionFailure
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.extension import ActivationReport, ExtensionFailure
+from openjiuwen.core.extension.errors import operation_error
 from openjiuwen.core.extension.package_manager import PackageManager
 from openjiuwen.core.extension.versions import parse_version
 
@@ -49,6 +52,12 @@ from agent_gateway.extensions_v2.management.catalog import (
     resolve_install_source,
 )
 from agent_gateway.extensions_v2.management.notifications import notify_disabled, notify_installed
+from agent_gateway.extensions_v2.management.hub import (
+    HubPackage,
+    HubUnavailable,
+    download_package,
+    query_gateway_package,
+)
 from agent_gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
 from agent_gateway.extensions_v2.management.install_state import (
     ExtensionInstallRecord,
@@ -169,8 +178,51 @@ async def _handle_locally(
 
     if method is ReqMethod.EXTENSIONS_V2_QUERY:
         package_id = params.get("package_id")
+        if package_id is None:
+            agent_client = resolve_client()
+            if agent_client is None:
+                return False
+            ok, payload = await fetch_agent_unary(
+                agent_client=agent_client,
+                req_method=method,
+                params=dict(params),
+                session_id=session_id,
+                user_id=user_id,
+                channel_id=channel.channel_id,
+                label=method.value,
+                timeout_seconds=_request_timeout(),
+            )
+            if not ok:
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    payload=payload,
+                    error=str(payload.get("error") or f"{method.value} failed"),
+                    code=str(payload.get("code") or OPERATION_FAILED_CODE),
+                )
+                return True
+            remote = payload.get("state")
+            if not isinstance(remote, Mapping):
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="AgentServer returned an invalid extension query state",
+                    code=OPERATION_FAILED_CODE,
+                )
+                return True
+            await _respond(
+                channel,
+                ws,
+                req_id,
+                ok=True,
+                payload={"state": _merge_query_states(manager.query(), remote)},
+            )
+            return True
         if not isinstance(package_id, str) or not package_id:
-            # The shared report is owned by AgentServer; it returns every domain id.
             return False
         if await manager.get_package_domain(package_id) != DOMAIN_GATEWAY:
             return False
@@ -241,6 +293,7 @@ async def _handle_locally(
         store = ExtensionInstallState.for_install_dir(manager.install_dir)
         version = params.get("version")
         version = version.strip() if isinstance(version, str) else ""
+        hub_packages: list[HubPackage] = []
         if "package_ids" in params:
             ids = params.get("package_ids")
             if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
@@ -253,32 +306,62 @@ async def _handle_locally(
                     code=INVALID_PARAMS_CODE,
                 )
                 return True
+            paths = []
+            hub_targets: list[str] = []
             for package_id in ids:
-                installed_record = store.get(package_id)
-                if (
-                    installed_record is not None
-                    and installed_record.origin == "hub"
-                    and installed_record.asset_id
-                ):
-                    # Hub 资产由 AgentServer 下载与升级，Gateway 只处理本地来源。
-                    return False
-            try:
-                paths = [
-                    resolve_install_source(
+                install_path: Path | None = None
+                try:
+                    install_path = resolve_install_source(
                         package_id,
                         examples_dir=examples_dir,
                         install_dir=manager.install_dir,
                     )
-                    for package_id in ids
-                ]
-            except PackageNotFound:
-                # 目录内没有本地副本时交给 AgentServer 判断归属。
-                return False
-            except ValueError:
-                await _respond(
-                    channel, ws, req_id, ok=False, error="package_ids contains an invalid id", code=INVALID_PARAMS_CODE
+                except PackageNotFound:
+                    pass
+                except ValueError:
+                    await _respond(
+                        channel, ws, req_id, ok=False, error="package_ids contains an invalid id", code=INVALID_PARAMS_CODE
+                    )
+                    return True
+                installed_record = store.get(package_id)
+                if install_path is not None:
+                    stored_root = manager.install_dir / package_id / version if version else None
+                    version_missing = (
+                        bool(version)
+                        and not (stored_root and stored_root.is_dir())
+                        and _manifest_version(install_path) != version
+                    )
+                    if not (
+                        version_missing
+                        and installed_record is not None
+                        and installed_record.origin == "hub"
+                        and installed_record.asset_id
+                    ):
+                        paths.append(install_path)
+                        continue
+                hub_targets.append(
+                    installed_record.asset_id
+                    if installed_record is not None and installed_record.origin == "hub" and installed_record.asset_id
+                    else package_id
                 )
-                return True
+            try:
+                hub_packages = [package for package in await _resolve_hub_packages(hub_targets, version) if package]
+            except HubUnavailable as exc:
+                logger.info("[GatewayExtensions] Hub lookup skipped: %s", exc)
+                hub_packages = []
+            if len(hub_packages) != len(hub_targets):
+                # Unknown or AgentServer-owned targets keep the previous forwarding behaviour.
+                if paths:
+                    await _respond(
+                        channel,
+                        ws,
+                        req_id,
+                        ok=False,
+                        error="gateway and agent packages cannot be installed in one request",
+                        code=INVALID_PARAMS_CODE,
+                    )
+                    return True
+                return False
         else:
             paths, error = _install_paths(params)
             if error is not None:
@@ -298,18 +381,19 @@ async def _handle_locally(
                     code=INVALID_PARAMS_CODE,
                 )
                 return True
-        if not any(owners):
-            return False
-        if not all(owners):
-            await _respond(
-                channel,
-                ws,
-                req_id,
-                ok=False,
-                error="gateway and agent packages cannot be installed in one request",
-                code=INVALID_PARAMS_CODE,
-            )
-            return True
+        if owners:
+            if not any(owners) and not hub_packages:
+                return False
+            if not all(owners):
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="gateway and agent packages cannot be installed in one request",
+                    code=INVALID_PARAMS_CODE,
+                )
+                return True
         if "package_ids" in params:
             reports = []
             for path in paths:
@@ -344,10 +428,23 @@ async def _handle_locally(
                         source=None if stored_root.is_dir() else path,
                     )
                 )
+            hub_assets: dict[str, str] = {}
+            for package in hub_packages:
+                try:
+                    report = await _activate_hub_package(manager, package)
+                except Exception as exc:  # noqa: BLE001 - answer the frame instead of dropping it
+                    logger.exception(
+                        "[GatewayExtensions] cannot activate Hub package %s", package.package_id
+                    )
+                    report = _hub_failure(package, exc)
+                if report.status == "SUCCESS":
+                    hub_assets[package.package_id] = package.asset_id
+                reports.append(report)
         else:
             reports = await manager.install(paths)
+            hub_assets = {}
         origin = _install_origin(paths, examples_dir, store) if "package_ids" in params else "user"
-        _record_installed(reports, manager, store, origin=origin)
+        _record_installed(reports, manager, store, origin=origin, hub_assets=hub_assets)
         ui_notified = await notify_installed(runtime, [report.package_id for report in reports if report.status == "SUCCESS"])
         await _respond(
             channel,
@@ -433,6 +530,52 @@ async def _handle_locally(
 def _active_version(manager: Any, package_id: str) -> str:
     active = manager.query(package_id).get("active") or []
     return str(active[0].get("version") or "") if active else ""
+
+
+async def _resolve_hub_packages(targets: list[str], version: str) -> list[HubPackage | None]:
+    """Resolve Hub install targets in request order.
+
+    Raises ``HubUnavailable`` for transport failures. ``None`` marks a target the
+    Hub does not own (unknown asset or an AgentServer package), which keeps the
+    frame on the previous forwarding path.
+    """
+
+    return [await query_gateway_package(target, version) for target in targets]
+
+
+async def _activate_hub_package(manager: Any, package: HubPackage) -> Any:
+    """Activate a downloaded Hub version, downloading it only when it is not stored yet."""
+
+    stored_root = manager.install_dir / package.package_id / package.version
+    if stored_root.is_dir():
+        return await manager.enable_version(package.package_id, package.version)
+    with tempfile.TemporaryDirectory(prefix="gateway-hub-") as folder:
+        archive = Path(folder) / f"{package.package_id}-{package.version}.zip"
+        await download_package(package, archive)
+        return await manager.enable_version(package.package_id, package.version, source=archive)
+
+
+def _hub_failure(package: HubPackage, exc: Exception) -> ActivationReport:
+    """Turn a Hub download or activation failure into the report the frame returns."""
+
+    error = (
+        exc.as_error()
+        if isinstance(exc, ExtensionFailure)
+        else operation_error(
+            StatusCode.EXTENSION_SOURCE_INVALID,
+            package_id=package.package_id,
+            reason=str(exc) or type(exc).__name__,
+        )
+    )
+    return ActivationReport(
+        plan_id="",
+        package_id=package.package_id,
+        operation="install",
+        status="FAILED",
+        previous_generation=None,
+        current_generation=None,
+        error=error,
+    )
 
 
 async def _import_local(
@@ -624,6 +767,7 @@ def _record_installed(
     *,
     origin: str,
     asset_id: str = "",
+    hub_assets: Mapping[str, str] | None = None,
 ) -> None:
     state = manager.query()
     active_versions = {
@@ -647,11 +791,16 @@ def _record_installed(
         )
         if not version:
             continue
+        record_origin = origin
+        record_asset_id = asset_id
+        if hub_assets and report.package_id in hub_assets:
+            record_origin = "hub"
+            record_asset_id = hub_assets[report.package_id]
         record = ExtensionInstallRecord(
             package_id=report.package_id,
             version=version,
-            origin=origin,
-            asset_id=asset_id,
+            origin=record_origin,
+            asset_id=record_asset_id,
             install_path=str(facts.get("install_path") or ""),
             active=active_versions.get(report.package_id) == version,
             enabled=active_versions.get(report.package_id) == version,
@@ -702,6 +851,156 @@ def _merge_packages(
         if status["installed"]:
             card.update(status)
         merged[str(card.get("id") or identity)] = card
+    return list(merged.values())
+
+
+def _merge_query_states(local: Mapping[str, Any], remote: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge each host's current facts; do not trust AgentServer's legacy cross-domain rows."""
+
+    remote = _agentserver_query_state(remote)
+    local_packages = _gateway_query_packages(local)
+    remote_packages = _mapping_rows(remote.get("packages"))
+    packages = _unique_rows(local_packages, remote_packages, key=lambda item: str(item.get("package_id") or ""))
+    active = _unique_rows(
+        _mapping_rows(local.get("active")),
+        _mapping_rows(remote.get("active")),
+        key=lambda item: str(item.get("package_id") or item.get("root") or ""),
+    )
+    installed_packages = _unique_rows(
+        _mapping_rows(local.get("installed_packages")),
+        _mapping_rows(remote.get("installed_packages")),
+        key=lambda item: "\0".join(
+            str(item.get(name) or "") for name in ("package_id", "version", "install_path")
+        ),
+    )
+    installed = list(dict.fromkeys([
+        *[str(item) for item in local.get("installed") or [] if isinstance(item, (str, Path))],
+        *[str(item) for item in remote.get("installed") or [] if isinstance(item, (str, Path))],
+    ]))
+    package_ids = list(dict.fromkeys([
+        *[str(item.get("package_id")) for item in packages if item.get("package_id")],
+        *[str(item) for item in local.get("package_ids") or [] if isinstance(item, str) and item],
+        *[str(item) for item in remote.get("package_ids") or [] if isinstance(item, str) and item],
+    ]))
+    return {
+        "active": active,
+        "installed": installed,
+        "installed_packages": installed_packages,
+        "inflight": {**_mapping_value(remote.get("inflight")), **_mapping_value(local.get("inflight"))},
+        "published": {**_mapping_value(remote.get("published")), **_mapping_value(local.get("published"))},
+        "packages": packages,
+        "package_ids": package_ids,
+    }
+
+
+def _agentserver_query_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove Gateway-owned facts from the legacy shared AgentServer report."""
+
+    gateway_ids: set[str] = set()
+    gateway_paths: set[str] = set()
+    for field in ("active", "installed_packages", "packages"):
+        for item in _mapping_rows(state.get(field)):
+            if str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY:
+                continue
+            package_id = str(item.get("package_id") or "")
+            if package_id:
+                gateway_ids.add(package_id)
+            path = str(item.get("install_path") or item.get("root") or "")
+            if path:
+                gateway_paths.add(path)
+
+    def agent_rows(field: str) -> list[dict[str, Any]]:
+        return [
+            item for item in _mapping_rows(state.get(field))
+            if str(item.get("package_id") or "") not in gateway_ids
+            and str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY
+        ]
+
+    return {
+        "active": agent_rows("active"),
+        "installed": [
+            str(item) for item in state.get("installed") or []
+            if isinstance(item, (str, Path)) and str(item) not in gateway_paths
+        ],
+        "installed_packages": agent_rows("installed_packages"),
+        "inflight": {
+            str(key): value for key, value in _mapping_value(state.get("inflight")).items()
+            if str(key) not in gateway_ids
+        },
+        "published": {
+            str(key): value for key, value in _mapping_value(state.get("published")).items()
+            if str(key) not in gateway_ids
+        },
+        "packages": agent_rows("packages"),
+        "package_ids": [
+            str(item) for item in state.get("package_ids") or []
+            if isinstance(item, str) and item and item not in gateway_ids
+        ],
+    }
+
+
+def _gateway_query_packages(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project Gateway runtime and installed rows into the shared query report shape."""
+
+    active = {
+        str(item.get("package_id")): item
+        for item in _mapping_rows(state.get("active"))
+        if item.get("package_id")
+    }
+    identities = dict.fromkeys([
+        *active,
+        *[
+            str(item.get("package_id"))
+            for item in _mapping_rows(state.get("installed_packages"))
+            if item.get("package_id")
+        ],
+    ])
+    rows: list[dict[str, Any]] = []
+    for package_id in identities:
+        record = active.get(package_id)
+        requires = {}
+        if record is not None:
+            requires = {
+                str(item.get("package_id")): str(item.get("version") or "")
+                for item in _mapping_rows(record.get("requires_packages"))
+                if item.get("package_id")
+            }
+        rows.append({
+            "package_id": package_id,
+            "domain": DOMAIN_GATEWAY,
+            "process_id": None,
+            "active_version": str(record.get("version")) if record is not None else None,
+            "requires": requires,
+            # An installed row that is not active in this process is not a failure:
+            # the shared report only pairs "failed" with a concrete reason, and the
+            # install itself succeeded. Activations excluded by the host filter or
+            # disabled by the manifest land here with active_version None.
+            "status": "success",
+            "reason": None,
+            "pending": None,
+        })
+    return rows
+
+
+def _mapping_rows(value: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in value or [] if isinstance(item, Mapping)]
+
+
+def _mapping_value(value: Any) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items()} if isinstance(value, Mapping) else {}
+
+
+def _unique_rows(
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+    *,
+    key: Callable[[Mapping[str, Any]], str],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in (*first, *second):
+        identity = key(item)
+        if identity:
+            merged.setdefault(identity, item)
     return list(merged.values())
 
 

@@ -136,14 +136,18 @@ async def test_response_queue_holds_operation_until_dispatch_drops_missing_chann
 
 
 @pytest.mark.asyncio
-async def test_rejected_response_queue_releases_reference(monkeypatch):
+async def test_full_response_queue_defers_and_cancel_releases_reference(monkeypatch):
     op = operation(monkeypatch)
     handler = object.__new__(MessageHandler)
     handler._robot_messages = asyncio.Queue(maxsize=1)
     handler._robot_messages.put_nowait(message("other"))
     with telemetry.bind_request_trace(op):
-        with pytest.raises(asyncio.QueueFull):
-            handler.publish_robot_messages_nowait(message())
+        handler.publish_robot_messages_nowait(message())
+        deferred = list(handler._deferred_put_tasks)
+        assert deferred
+        for task in deferred:
+            task.cancel()
+        await asyncio.gather(*deferred, return_exceptions=True)
     op.complete("success")
     assert op.finished
     assert op.outcome == "incomplete"

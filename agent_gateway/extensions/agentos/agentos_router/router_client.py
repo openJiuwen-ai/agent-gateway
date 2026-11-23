@@ -10,6 +10,7 @@ import re
 import shlex
 import stat
 import time
+import uuid
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
@@ -22,7 +23,12 @@ from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.web.channel_sync import (
+    merge_channel_snapshots,
+    select_channel_snapshot,
+)
 from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.common.retry import jittered_delay
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateInterrupted,
@@ -33,6 +39,13 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentPreCreateError,
     AgentRebuildPending,
     AgentRuntime,
+    DELETE_REASON_CREATE_NOT_RUNNING,
+    DELETE_REASON_DISCONNECT,
+    DELETE_REASON_EXPLICIT,
+    DELETE_REASON_IDLE,
+    DELETE_REASON_INSTANCE_UNAVAILABLE,
+    DELETE_REASON_NETWORK_FAILURE,
+    DELETE_REASON_WARMUP_FAILURE,
     is_third_party_agent_type,
 )
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
@@ -129,6 +142,7 @@ from agent_gateway.routing.container_files import (
 )
 
 logger = logging.getLogger(__name__)
+_CHANNEL_SYNC_FAILURE_LIMIT = 3
 
 _ws_readiness_required: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "agentos_ws_readiness_required", default=False,
@@ -327,6 +341,10 @@ _DISCONNECT_CLEANUP_MAX_ATTEMPTS = 3
 # pop_if_idle 的固定 idle 宽限（秒）：真正的安全守卫是连接数==0 + task_count==0
 # + READY，宽限只需覆盖 release 的 touch 落地竞态，秒级即可。
 _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
+# FAILED runtime 的超龄回收阈值（秒）。过短会对“平台明确拒绝”反复重试；
+# 过长则用户等待成本过高。实际回收发生在超过阈值后的下一个巡检周期
+# （_sandbox_idle_check_interval_seconds，默认 30 秒）。
+_FAILED_RUNTIME_RECLAIM_SECONDS = 300.0
 
 # 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
 # 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
@@ -711,6 +729,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_client_factory = ws_client_factory or WebSocketAgentServerClient
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._server_config: dict[str, Any] = {}
+        self._last_channel_snapshot: dict[str, Any] = {}
+        self._channel_synced_sandboxes: set[str] = set()
+        self._channel_sync_failures: dict[str, int] = {}
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -1063,6 +1084,7 @@ class AgentOSRouterClient(AgentServerClient):
                             runtime.info.agent_type,
                             key_values=key_values,
                             idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS,
+                            reason=DELETE_REASON_DISCONNECT,
                         )
                     finally:
                         _cleanup_trigger.reset(token)
@@ -1217,6 +1239,7 @@ class AgentOSRouterClient(AgentServerClient):
                 if existing is not None and existing.is_failed():
                     await self._agent_manager.pop_agent(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
+                        reason=DELETE_REASON_WARMUP_FAILURE,
                     )
             except Exception:
                 logger.debug(
@@ -1521,6 +1544,7 @@ class AgentOSRouterClient(AgentServerClient):
         if config:
             import copy
             self._server_config = copy.deepcopy(config)
+            self._last_channel_snapshot = {}
         self._yuanrong.set_or_update_server_config(config=config, env=env)
 
     def set_server_push_handler(
@@ -1822,6 +1846,7 @@ class AgentOSRouterClient(AgentServerClient):
                     raise
 
                 sleep_for = min(_WS_CONNECT_RETRY_INTERVAL_SECONDS, remaining)
+                delay = min(jittered_delay(sleep_for), max(0.0, remaining))
                 retry_level = (
                     logging.WARNING if _should_log_ws_retry(attempt) else logging.DEBUG
                 )
@@ -1836,9 +1861,9 @@ class AgentOSRouterClient(AgentServerClient):
                     instance=instance_id,
                     attempt=attempt,
                     error=type(exc).__name__,
-                    sleep=f"{sleep_for:.1f}s",
+                    sleep=f"{delay:.1f}s",
                 )
-                await asyncio.sleep(sleep_for)
+                await asyncio.sleep(delay)
 
     async def _wait_yuanrong_running(
         self,
@@ -2247,6 +2272,8 @@ class AgentOSRouterClient(AgentServerClient):
                     runtime, reason=type(exc).__name__
                 )
                 return self._routing_error_response(envelope, error)
+            if envelope.method != ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value:
+                await self._sync_channel_config_for_runtime(runtime, ws_client)
             self._log_route("route.unary", envelope, runtime)
             try:
                 return await ws_client.send_request(envelope, timeout=timeout)
@@ -2263,6 +2290,129 @@ class AgentOSRouterClient(AgentServerClient):
                 return self._routing_error_response(envelope, error)
         finally:
             await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+
+    async def _sync_channel_config_for_runtime(
+        self,
+        runtime: AgentRuntime,
+        ws_client: WebSocketAgentServerClient,
+    ) -> None:
+        """Send the current channel snapshot once to a newly used builtin AS."""
+        if runtime.info.agent_type != BUILTIN_AGENT_TYPE:
+            return
+        sandbox_id = str(runtime.info.sandbox_id or "").strip()
+        if not sandbox_id or sandbox_id in self._channel_synced_sandboxes:
+            return
+        if self._channel_sync_failures.get(sandbox_id, 0) >= _CHANNEL_SYNC_FAILURE_LIMIT:
+            return
+        channels = merge_channel_snapshots(
+            self._server_config.get("channels"),
+            self._last_channel_snapshot,
+        )
+        if not channels:
+            return
+
+        envelope = E2AEnvelope(
+            request_id=uuid.uuid4().hex,
+            channel="web",
+            user_id=runtime.info.user_id,
+            method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
+            params={"channels": channels},
+        )
+        runtime.attach_to_envelope(envelope)
+        try:
+            response = await ws_client.send_request(envelope, timeout=5.0)
+        except Exception as exc:  # noqa: BLE001 - retry on the next request
+            self._record_channel_sync_failure(sandbox_id)
+            logger.warning(
+                "[ChannelSync] initial sync failed user=%s: %s",
+                runtime.info.user_id,
+                type(exc).__name__,
+            )
+            return
+        if not getattr(response, "ok", False):
+            self._record_channel_sync_failure(sandbox_id)
+            logger.warning(
+                "[ChannelSync] initial sync rejected user=%s",
+                runtime.info.user_id,
+            )
+            return
+        self._channel_sync_failures.pop(sandbox_id, None)
+        self._channel_synced_sandboxes.add(sandbox_id)
+
+    def _record_channel_sync_failure(self, sandbox_id: str) -> None:
+        failures = self._channel_sync_failures.get(sandbox_id, 0) + 1
+        self._channel_sync_failures[sandbox_id] = failures
+        if failures == _CHANNEL_SYNC_FAILURE_LIMIT:
+            logger.warning(
+                "[ChannelSync] initial sync disabled after %d failures sandbox=%s",
+                failures,
+                sandbox_id,
+            )
+
+    async def sync_channel_config(self, channels: Mapping[str, Any]) -> bool:
+        """Push one global channel snapshot to every ready builtin AS."""
+        if not isinstance(channels, Mapping) or not channels:
+            return False
+        changes = select_channel_snapshot(channels)
+        if not changes:
+            return False
+        snapshot = merge_channel_snapshots(
+            self._server_config.get("channels"),
+            self._last_channel_snapshot,
+            changes,
+        )
+        if not snapshot:
+            return False
+        try:
+            runtimes = await self._agent_manager.list_all_agents()
+        except Exception:  # noqa: BLE001
+            logger.warning("[ChannelSync] cannot enumerate AgentOS runtimes", exc_info=True)
+            return False
+
+        targets = [
+            runtime for runtime in runtimes
+            if runtime.is_ready() and runtime.info.agent_type == BUILTIN_AGENT_TYPE
+        ]
+        if not targets:
+            self._last_channel_snapshot = snapshot
+            return True
+
+        async def send_one(runtime: AgentRuntime) -> bool:
+            envelope = E2AEnvelope(
+                request_id=uuid.uuid4().hex,
+                channel="web",
+                user_id=runtime.info.user_id,
+                method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
+                params={"channels": changes},
+            )
+            runtime.attach_to_envelope(envelope)
+            ws_client = await self._get_ws_client(runtime)
+            response = await ws_client.send_request(envelope, timeout=5.0)
+            if not getattr(response, "ok", False):
+                logger.warning(
+                    "[ChannelSync] AgentOS AS rejected channel snapshot user=%s",
+                    runtime.info.user_id,
+                )
+                return False
+            sandbox_id = str(runtime.info.sandbox_id or "").strip()
+            if sandbox_id:
+                self._channel_sync_failures.pop(sandbox_id, None)
+                self._channel_synced_sandboxes.add(sandbox_id)
+            return True
+
+        results = await asyncio.gather(
+            *(send_one(runtime) for runtime in targets),
+            return_exceptions=True,
+        )
+        failed = sum(result is not True for result in results)
+        if failed:
+            logger.warning(
+                "[ChannelSync] AgentOS fanout partial failure: %d/%d",
+                failed, len(targets),
+            )
+        else:
+            self._last_channel_snapshot = snapshot
+        return failed == 0
 
     async def send_request_stream(
         self, envelope: E2AEnvelope
@@ -2318,6 +2468,8 @@ class AgentOSRouterClient(AgentServerClient):
                 )
                 yield self._routing_error_chunk(envelope, error)
                 return
+            if envelope.method != ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value:
+                await self._sync_channel_config_for_runtime(runtime, ws_client)
             self._log_route("route.stream", envelope, runtime)
             try:
                 async for chunk in ws_client.send_request_stream(envelope):
@@ -2943,13 +3095,17 @@ class AgentOSRouterClient(AgentServerClient):
             current=new_timeout,
         )
 
-        if new_timeout <= 0:
-            self._cancel_idle_reaper()
-        elif previous <= 0:
-            # Was disabled, now enabled: start the reaper. When both are
-            # positive the running loop already reads the new value, and
-            # ``create_task`` would need a running event loop we may not have.
-            self._ensure_idle_reaper_task()
+        if new_timeout > 0 and previous <= 0:
+            # Transitioning from disabled to enabled: start the reaper. The
+            # loop also reclaims stale FAILED runtimes, so a non-positive
+            # timeout must not cancel it. A sync config context may have no
+            # running loop; connect() starts the task in that case.
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                logger.debug("idle reaper start deferred: no running event loop")
+            else:
+                self._ensure_idle_reaper_task()
 
     def _apply_agent_sandbox_resources(
         self,
@@ -3035,21 +3191,13 @@ class AgentOSRouterClient(AgentServerClient):
             TOOL_SANDBOX_MEMORY_ENV: str(self._tool_sandbox_memory),
         }
 
-    def _cancel_idle_reaper(self) -> None:
-        """Cancel the reaper from a sync context (does not join the task).
-
-        Clears the handle first so a following enable can start a fresh task.
-        """
-        task = self._idle_reaper_task
-        self._idle_reaper_task = None
-        if task is not None and not task.done():
-            task.cancel()
-
     def _idle_reaper_enabled(self) -> bool:
         return self._sandbox_idle_timeout_seconds > 0
 
     def _ensure_idle_reaper_task(self) -> None:
-        if self._closed or not self._idle_reaper_enabled():
+        # The loop also reclaims stale FAILED runtimes, so it must keep running
+        # even when idle reclamation is disabled.
+        if self._closed:
             return
         if self._idle_reaper_task is not None and not self._idle_reaper_task.done():
             return
@@ -3114,16 +3262,18 @@ class AgentOSRouterClient(AgentServerClient):
                 logger.exception("[AgentOSRouter] idle sandbox reap pass failed")
 
     async def _reap_idle_once(self) -> int:
-        """Reclaim agents idle beyond the timeout; returns the reclaimed count.
+        """Reclaim stale FAILED runtimes, then idle READY agents.
 
-        Delegates to :meth:`delete_agent` with ``idle_timeout_seconds`` so the
-        same sandbox + registry cleanup path is used. ``pop_if_idle`` inside
-        ``delete_agent`` re-checks READY / ``task_count == 0`` / staleness under
-        the manager lock, so a concurrent acquire can never lose its sandbox.
+        FAILED reclaim is a recovery mechanism and runs even when idle
+        reclamation is disabled. The idle part delegates to
+        :meth:`delete_agent` with ``idle_timeout_seconds`` so the same sandbox
+        + registry cleanup path is used; ``pop_if_idle`` inside ``delete_agent``
+        re-checks READY / ``task_count == 0`` / staleness under the manager
+        lock, so a concurrent acquire can never lose its sandbox.
         """
+        reaped = await self._reap_stale_failed_once()
         if not self._idle_reaper_enabled():
-            return 0
-        reaped = 0
+            return reaped
         for key in await self._agent_manager.list_keys():
             values = dict(zip(self._agent_manager.key_fields, key, strict=False))
             user_id = str(values.pop("user_id", "") or "").strip()
@@ -3138,6 +3288,7 @@ class AgentOSRouterClient(AgentServerClient):
                         agent_type,
                         key_values=values or None,
                         idle_timeout_seconds=self._sandbox_idle_timeout_seconds,
+                        reason=DELETE_REASON_IDLE,
                     )
                 finally:
                     _cleanup_trigger.reset(token)
@@ -3151,6 +3302,120 @@ class AgentOSRouterClient(AgentServerClient):
             if deleted:
                 reaped += 1
         return reaped
+
+    async def _reap_stale_failed_once(self) -> int:
+        """Remove FAILED runtimes older than the reclaim threshold.
+
+        A FAILED runtime may still own a provisioned sandbox (create succeeded
+        but publication failed). That sandbox is retired before the runtime is
+        removed. An unfinished create is left in place so the next request can
+        resume it. No automatic rebuild: the user's next request creates a
+        fresh runtime and sandbox.
+        """
+        if getattr(self, "_closed", False):
+            return 0
+        reclaimed = 0
+        stale = await self._agent_manager.list_failed_agents(
+            _FAILED_RUNTIME_RECLAIM_SECONDS,
+        )
+        for runtime in stale:
+            key = runtime.key
+            values = dict(zip(self._agent_manager.key_fields, key, strict=False))
+            user_id = str(values.pop("user_id", "") or "").strip()
+            agent_type = str(values.pop("agent_type", "") or "").strip()
+            if not user_id or not agent_type:
+                continue
+            try:
+                async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
+                    current = await self._agent_manager.get_agent(
+                        user_id, agent_type, key_values=values or None,
+                    )
+                    if (
+                        current is None
+                        or not current.is_failed()
+                        or current.info.agent_id != runtime.info.agent_id
+                        or current.task_count > 0
+                    ):
+                        continue
+                    target_instance = lifecycle.provisioned_instance
+                    attempt_pending = lifecycle.attempt is not None
+                    if (
+                        target_instance
+                        and not attempt_pending
+                        and lifecycle.retired_instance
+                    ):
+                        # Defer popping while the retirement loop still owns
+                        # retired_instance; otherwise provisioned_instance would
+                        # lose its only reaper. Retry after retirement clears.
+                        continue
+                    deleted_sandbox = False
+                    if (
+                        target_instance
+                        and not attempt_pending
+                        and not await self._provisioned_instance_in_use(lifecycle, current)
+                    ):
+                        retired = current.info.copy()
+                        retired.sandbox_id = target_instance
+                        retired.updated_at = time.time()
+                        await self._retire_sandbox(
+                            lifecycle, retired, best_effort_registry=True,
+                        )
+                        deleted_sandbox = True
+                    popped = await self._agent_manager.pop_failed_if_expired(
+                        key,
+                        _FAILED_RUNTIME_RECLAIM_SECONDS,
+                        expected_agent_id=current.info.agent_id,
+                    )
+                    if popped is None:
+                        continue
+                    reclaimed += 1
+                    failed_age = max(
+                        0.0, time.time() - float(runtime.info.updated_at or 0.0),
+                    )
+                    log_agentos(
+                        logger,
+                        logging.INFO,
+                        "sandbox.failed.reclaim",
+                        user_id=user_id,
+                        agent_type=agent_type,
+                        sandbox_id=str(runtime.info.sandbox_id or ""),
+                        instance=target_instance,
+                        failed_age_s=f"{failed_age:.0f}s",
+                        deleted_sandbox=deleted_sandbox,
+                        attempt_pending=attempt_pending,
+                    )
+            except Exception:  # noqa: BLE001 - keep reaping other runtimes
+                logger.exception(
+                    "[AgentOS] sandbox.failed.reclaim.fail user_id=%s agent_type=%s",
+                    user_id,
+                    agent_type,
+                )
+                continue
+        return reclaimed
+
+    async def _provisioned_instance_in_use(
+        self,
+        lifecycle: _SandboxLifecycle,
+        failed: AgentRuntime,
+    ) -> bool:
+        """Return whether a provisioned sandbox may still be used by another runtime."""
+        instance_id = lifecycle.provisioned_instance
+        if not instance_id:
+            return True
+        for runtime in await self._agent_manager.list_all_agents():
+            if runtime.info.agent_id == failed.info.agent_id:
+                continue
+            if (
+                runtime.info.user_id != failed.info.user_id
+                or runtime.info.agent_type != failed.info.agent_type
+            ):
+                continue
+            if runtime.is_creating():
+                # A creator may resume/reuse this lifecycle; be conservative.
+                return True
+            if runtime.is_ready() and runtime.info.sandbox_id == instance_id:
+                return True
+        return False
 
     @asynccontextmanager
     async def _sandbox_lifecycle(self, name: str) -> AsyncIterator[_SandboxLifecycle]:
@@ -3268,6 +3533,12 @@ class AgentOSRouterClient(AgentServerClient):
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
+            if isinstance(exc, YuanrongAgentApiError) and getattr(exc, "status_code", None) == 429:
+                # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
+                # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
+                raise AgentRebuildPending(
+                    "AGENT_REBUILD_PENDING: replacement creation was rate limited"
+                ) from exc
             # Retire this name so the next request starts a new generation instead of replaying a refused create.
             lifecycle.retired_instance = attempt.deterministic_id
             lifecycle.attempt = None
@@ -3291,6 +3562,17 @@ class AgentOSRouterClient(AgentServerClient):
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
             except asyncio.CancelledError:
                 lifecycle.attempt = attempt
+                raise
+            except YuanrongAgentApiError as exc:
+                # 429 is an explicit rejection: no sandbox was created by this
+                # attempt. Treat it as a retryable pre-create failure instead of
+                # caching a permanent FAILED runtime. Other 4xx may be
+                # deterministic (bad runtime_spec etc.) and keep the old path.
+                if getattr(exc, "status_code", None) == 429:
+                    raise AgentPreCreateError(
+                        "AGENT_PRE_CREATE_RETRYABLE: sandbox create was rate "
+                        f"limited: {exc}"
+                    ) from exc
                 raise
 
         deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
@@ -3423,7 +3705,16 @@ class AgentOSRouterClient(AgentServerClient):
             # create 后 Gateway 通过 frontend WS 代理直连该端口（不走 invoke）。
             extra_metadata: dict[str, Any] = {"agent_port": port}
         else:
-            image_info = await self._registry.get_image_info(agent_info.agent_type)
+            try:
+                image_info = await self._registry.get_image_info(agent_info.agent_type)
+            except RegistryError as exc:
+                # Image lookup happens before any create request. It has no
+                # side effects, so a transient registry failure must not be
+                # cached as a permanent FAILED runtime.
+                raise AgentPreCreateError(
+                    "AGENT_PRE_CREATE_RETRYABLE: image lookup failed for "
+                    f"agent_type={agent_info.agent_type}: {exc}"
+                ) from exc
             runtime_spec = _with_web_access_cmds(
                 _with_default_third_agent_probes(
                     build_inline_runtime_spec(image_info),
@@ -3555,27 +3846,29 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any] | None = None,
         idle_timeout_seconds: float | None = None,
         expected_agent_id: str | None = None,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> bool:
         if _cleanup_nested_delete.get() and current_cleanup_trace() is not None:
             return await self._delete_agent_impl(
                 user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
-                expected_agent_id=expected_agent_id,
+                expected_agent_id=expected_agent_id, reason=reason,
             )
-        trigger, root = _cleanup_trigger.get()
-        if trigger == "idle_reaper" and root and idle_timeout_seconds is not None:
+        _, root = _cleanup_trigger.get()
+        if reason == DELETE_REASON_IDLE and root and idle_timeout_seconds is not None:
             return await self._delete_idle_agent(
                 user_id, agent_type, key_values=dict(key_values or {}),
-                idle_timeout_seconds=float(idle_timeout_seconds), trace_on_pop=True,
+                idle_timeout_seconds=float(idle_timeout_seconds),
+                trace_on_pop=True, reason=reason,
             )
         with trace_operation(
             "gw.agent.delete",
-            attributes={"source": trigger, "trigger": trigger, "user_id": user_id, "agent_type": agent_type},
+            attributes={"source": reason, "trigger": reason, "user_id": user_id, "agent_type": agent_type},
             root=root,
         ) as operation:
             with bind_cleanup_trace(operation):
                 return await self._delete_agent_impl(
                     user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
-                    expected_agent_id=expected_agent_id,
+                    expected_agent_id=expected_agent_id, reason=reason,
                 )
 
     async def _delete_agent_impl(
@@ -3586,6 +3879,7 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any] | None = None,
         idle_timeout_seconds: float | None = None,
         expected_agent_id: str | None = None,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> bool:
         """Delete agent mapping, release its YuanRong sandbox, unregister registry.
 
@@ -3600,6 +3894,7 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type,
                 key_values=resolved_key_values,
                 idle_timeout_seconds=float(idle_timeout_seconds),
+                reason=reason,
             )
 
         target_agent_id = expected_agent_id
@@ -3617,6 +3912,7 @@ class AgentOSRouterClient(AgentServerClient):
                         user_id, agent_type, key_values=resolved_key_values or None,
                         expected_agent_id=target_agent_id,
                         include_shared_sandbox=True,
+                        reason=reason,
                     )
                     if runtime is None:
                         _cleanup_step("runtime", "skipped", "replaced")
@@ -3642,6 +3938,7 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any],
         idle_timeout_seconds: float,
         trace_on_pop: bool = False,
+        reason: str = DELETE_REASON_IDLE,
     ) -> bool:
         """Atomically pop an idle agent then run shared delete cleanup."""
         key = AgentRuntime.build_key(
@@ -3652,7 +3949,10 @@ class AgentOSRouterClient(AgentServerClient):
         )
         async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
             runtime = await self._agent_manager.pop_if_idle(
-                key, idle_timeout_seconds, include_shared_sandbox=True,
+                key,
+                idle_timeout_seconds,
+                include_shared_sandbox=True,
+                reason=reason,
             )
             if runtime is None:
                 if not trace_on_pop:
@@ -3660,7 +3960,7 @@ class AgentOSRouterClient(AgentServerClient):
                 return False
             agent_info = runtime.info
             scope = trace_operation("gw.agent.delete", root=True, attributes={
-                "source": "idle_reaper", "trigger": "idle_reaper",
+                "source": reason, "trigger": reason,
                 "user_id": agent_info.user_id, "agent_type": agent_info.agent_type,
             }) if trace_on_pop else nullcontext(current_cleanup_trace())
             with scope as operation, bind_cleanup_trace(operation):
@@ -3739,14 +4039,19 @@ class AgentOSRouterClient(AgentServerClient):
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
         try:
-            trigger = "instance_unavailable" if reason.startswith("instance_unavailable:") else "network_failure"
-            token = _cleanup_trigger.set((trigger, False))
+            delete_reason = (
+                DELETE_REASON_INSTANCE_UNAVAILABLE
+                if reason.startswith("instance_unavailable:")
+                else DELETE_REASON_NETWORK_FAILURE
+            )
+            token = _cleanup_trigger.set((delete_reason, False))
             try:
                 await self.delete_agent(
                     info.user_id,
                     info.agent_type,
                     key_values=key_values,
                     expected_agent_id=info.agent_id,
+                    reason=delete_reason,
                 )
             finally:
                 _cleanup_trigger.reset(token)
@@ -3812,6 +4117,7 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_info.agent_type,
                 key_values=key_values,
                 expected_agent_id=agent_info.agent_id,
+                reason=DELETE_REASON_CREATE_NOT_RUNNING,
             ):
                 return
         except Exception as cleanup_exc:  # noqa: BLE001 - background register must not raise
@@ -3922,6 +4228,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._web_ready_sandboxes = {
             key for key in self._web_ready_sandboxes if key[0] != instance_id
         }
+        if instance_id:
+            self._channel_synced_sandboxes.discard(instance_id)
+            self._channel_sync_failures.pop(instance_id, None)
         await self._close_ws_client(agent_info.sandbox_id)
         if instance_id:
             await self._request_sandbox_delete(lifecycle)

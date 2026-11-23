@@ -10,20 +10,6 @@ logging:
   agent_server: INFO
   full: INFO
 
-proactive_recommendation:
-  enabled: false                # 总开关
-  max_recommend_per_day: 10               # 每天最多推荐次数
-  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
-
-# 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
-# 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
-# enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
-# 识别方言时，在此按 host 声明；保存、校验、运行时各路径会自动补
-# endpoint_profile 透传给 core。示例：
-# endpoint_profile_overrides:
-#   "10.0.0.1": "vllm"
-# 留空表示不做任何推断；模型条目里显式配置的 endpoint_profile 始终优先。
-
 endpoint_profile_overrides:
 
 telemetry:
@@ -206,7 +192,7 @@ channels:
       # 飞书应用配置
         app_id:
         # 新版 JiuwenMate 可填 JM-02 同事 ID；留空时保持个人版消息路由
-        persistent_agent_id:
+        agent_id:
         app_secret:
         encrypt_key:
         verification_token:
@@ -224,7 +210,7 @@ channels:
     # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
     # bot_a:
     #   app_id:
-    #   persistent_agent_id:  # 可选：绑定到一个 JM-02 新版同事
+    #   agent_id:  # 可选：绑定到一个 JM-02 新版同事
     #   app_secret:
     #   encrypt_key:
     #   verification_token:
@@ -449,8 +435,17 @@ updater:
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
-  # EXTENSION_DIRS="E:/a;D:/b"
+  # EXTENSION_DIRS="/opt/jiuwenswarm/extensions;/opt/custom/extensions"
   extension_dirs: ${EXTENSION_DIRS:-agent_gateway/extensions}
+  # 与 AgentServer 共享的 V2 扩展包安装根；拆分部署时应使用同一绝对路径。
+  install_dir: ${EXTENSION_INSTALL_DIR:-extension_pkgs}
+  # 共享扩展数据根；安装报告和恢复数据由此派生。
+  data_dir: ${EXTENSION_DATA_DIR:-extension}
+  # 扩展安装报告与超时设置；Gateway 与 AgentServer 共用同一份报告。
+  install_report:
+    poll_interval_ms: 500
+    dependency_timeout_seconds: 300
+    lock_timeout_seconds: 5
 
 # ============================================================
 # Hooks 配置

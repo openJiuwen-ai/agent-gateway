@@ -42,6 +42,10 @@ def owner(tmp_path, monkeypatch):
         return SimpleNamespace(ok=True, payload=payload)
 
     service = SimpleNamespace(send_request=AsyncMock(side_effect=respond))
+    async def skip_channel_sync(*_args, **_kwargs):
+        return True
+    from agent_gateway.channel_manager.web import channel_sync
+    monkeypatch.setattr(channel_sync, "sync_channel_config", skip_channel_sync)
     settings = register_persistent_bindings(channel, lambda: cm, lambda: service, _normalize_feishu_conf, MagicMock())
 
     async def rpc(method, params):

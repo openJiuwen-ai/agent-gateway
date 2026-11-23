@@ -44,6 +44,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
 
 from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
+from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -484,6 +485,7 @@ _FORWARD_REQ_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -739,6 +741,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -4607,6 +4610,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.xiaoyi.set_conf] 写回 config.yaml apps 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "xiaoyi", cm.get_conf("xiaoyi"))
             await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.xiaoyi.set_conf] 异常, req_id=%s: %s", req_id, e)
@@ -4660,6 +4664,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.telegram.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "telegram", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.telegram.set_conf] %s", e)
@@ -4763,6 +4768,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.whatsapp.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "whatsapp", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.whatsapp.set_conf] %s", e)
@@ -4814,6 +4820,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.discord.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "discord", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.discord.set_conf] %s", e)
@@ -4865,6 +4872,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.slack.set_conf] failed to persist config.yaml: %s", e)
+            schedule_channel_config(_resolve(agent_client), "slack", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.slack.set_conf] %s", e)
@@ -4916,6 +4924,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wecom.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wecom", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wecom.set_conf] %s", e)
@@ -4978,6 +4987,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wechat.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wechat", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wechat.set_conf] %s", e)

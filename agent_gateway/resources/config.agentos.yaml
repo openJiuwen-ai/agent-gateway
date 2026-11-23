@@ -6,13 +6,6 @@
 #
 # 应用版本与打包日期：例如 "0.2.8 · 2026-10-26"，日期按 UTC+08:00 记录。
 # 启动时自动同步；保留 WHL 完整版本后缀，旧包或源码无日期时仅写版本号。
-config_version: ""
-
-
-# 日志目录：~/.jiuwenswarm/logs/agent/
-# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。
-# level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
-# 环境变量 LOG_LEVEL 仅覆盖控制台级别（不覆盖各日志文件）。
 logging:
   level: INFO
   console_level: INFO
@@ -21,29 +14,13 @@ logging:
   agent_server: INFO
   full: INFO
 
-proactive_recommendation:
-  enabled: false                # 总开关
-  max_recommend_per_day: 10               # 每天最多推荐次数
-  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
-
-# 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
-# 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
-# enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
-# 识别方言时，在此按 host 声明；保存、校验、运行时各路径会自动补
-# endpoint_profile 透传给 core。示例：
-# endpoint_profile_overrides:
-#   "10.0.0.1": "vllm"
-# 留空表示不做任何推断；模型条目里显式配置的 endpoint_profile 始终优先。
-
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
   exporter: otlp                    # otlp / console / none
   endpoint: http://localhost:4317   # OTLP endpoint
   protocol: grpc                    # grpc / http
-  # 公共 OTLP headers，可被 traces/metrics 覆盖。留空而不是 {}：本模板同时
-  # 充当升级时的键白名单，写成映射会被当作允许的子键全集，操作员自己加的
-  # header 会被 _deep_merge 一并删掉。
-  headers:
+  # 公共 OTLP headers，可被 traces/metrics 覆盖。键必须存在，具体 header 由部署维护。
+  headers: {}
   log_messages: true                # 是否在 span event 中记录完整消息内容
   service_name: jiuwenswarm
   provider_factory:                 # 自定义 provider factory，格式：module:function
@@ -51,38 +28,15 @@ telemetry:
     exporter:                       # trace exporter，默认回退到 telemetry.exporter
     endpoint:                       # trace endpoint，默认回退到 telemetry.endpoint
     protocol:                       # trace protocol，默认回退到 telemetry.protocol
-    headers:                        # trace headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
+    headers: {}                     # trace headers，默认回退到 telemetry.headers。
   metrics:
     exporter:                       # metrics exporter，默认回退到 telemetry.exporter
     endpoint:                       # metrics endpoint，默认回退到 telemetry.endpoint
     protocol:                       # metrics protocol，默认回退到 telemetry.protocol
-    headers:                        # metrics headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
-
-session_cleanup:
-  # Automatic expiry only; explicit session archive/delete operations remain available.
-  # CLEANUP_PERIOD_DAYS overrides this setting when set.
-  retention_days: 30                # Set 0 to keep sessions and file-operation logs indefinitely.
-
-# standalone 不连接；active-standby / distributed 连接 Redis。
-redis:
-  mode: ${REDIS_MODE:-standalone}
-  host: ${REDIS_HOST:-localhost}
-  port: ${REDIS_PORT:-6379}
-  password: ${REDIS_PASSWORD:-}
-  username: ${REDIS_USER:-}
-  db: ${REDIS_DB:-0}
-  key_prefix: ${REDIS_KEY_PREFIX:-jiuwenclaw:}
-  pool_size: ${REDIS_POOL_SIZE:-10}
-  connect_timeout: ${REDIS_CONNECT_TIMEOUT:-5}
-  operation_timeout: ${REDIS_OPERATION_TIMEOUT:-10}
-  health_check_interval: ${REDIS_HEALTH_CHECK_INTERVAL:-30}
+    headers: {}                     # metrics headers，默认回退到 telemetry.headers。
 
 gateway:
   # standalone（默认）不连 Redis；distributed / active-standby 连接 Redis。
-  deployment_mode: ${DEPLOYMENT_MODE:-standalone}
-  instance_id: ${GATEWAY_INSTANCE_ID:-}
-  # SessionMap 仅用于企业claw场景，如 feishu_enterprise 等通道：将平台身份映射为 Agent 的 session_id。
-  # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: <<GATEWAY_SESSION_MAP_SCOPE>>
 
   # Cron 作业定义持久化，默认本地文件。etcd 仅 AgentOS 一体机模板配置。
@@ -132,10 +86,6 @@ gateway:
         timeout_seconds: 2
         failure_threshold: 3
     # Agent create 时宿主机 workspace 父目录；实际路径为 {workspace_root}/{user_id}
-    workspace_root: "/home/agentos/users"
-    # Agent 复用 key 字段，默认 user_id + agent_type。
-    # 可选字段：user_id、agent_type、session_id（必须包含前两项）。
-    # 示例：加入 session_id 后同一用户每个会话独立 Agent。
     agent_key_fields:
     - user_id
     - agent_type
@@ -168,51 +118,34 @@ gateway:
       port: 2222
       user_template: "yr:instance:{instance}:port=2222"
       connect_timeout_s: 30
-      client_keys_dir: "/root/.ssh"
     auth_service_url: <<AGENTOS_AUTH_SERVICE_URL>>
     timeout: <<AGENTOS_AUTH_TIMEOUT>>
     # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
     auth_enabled: true
 
-health_check:
-  # 业务探活间隔（秒），默认 3600
-  every: 3600
-  # 探活结果回传的 channel（如 "web"），
-  target: web
-  # 探活生效时间段（本地时间），start <= now < end 时探活生效
-  active_hours:
-    start: 08:00
-    end: 22:00
-
 channels:
   web:
     send_file_allowed: true
   feishu:
+    # 飞书应用配置
+    app_id:
+    app_secret:
+    encrypt_key:
+    verification_token:
+    allow_from:
+    enable_streaming: false
+    enabled: false
     send_file_allowed: true
-    apps:
-    - name: 飞书默认应用
-      # 飞书应用配置
-      app_id:
-        # 新版 JiuwenMate 可填 JM-02 同事 ID；留空时保持个人版消息路由
-      persistent_agent_id:
-      app_secret:
-      encrypt_key:
-      verification_token:
-      allow_from:
-      enable_streaming: false
-      enabled: false
-        # 群聊数字分身（默认关闭）
-      group_digital_avatar: false
-      my_user_id: ""
-      bot_name: ""
-      enable_memory: false
-        # 飞书开放平台 API 域名前缀（留空走官方默认，支持国际版/私有化切换）
-      api_base: https://open.feishu.cn
+    # 群聊数字分身（默认关闭）
+    group_digital_avatar: false
+    my_user_id: ""
+    bot_name: ""
+    enable_memory: false
   feishu_enterprise:
     # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
     # bot_a:
     #   app_id:
-    #   persistent_agent_id:  # 可选：绑定到一个 JM-02 新版同事
+    #   agent_id:  # 可选：绑定到一个 JM-02 新版同事
     #   app_secret:
     #   encrypt_key:
     #   verification_token:
@@ -220,38 +153,24 @@ channels:
     #   enable_streaming: true
     #   chat_id:
     #   enabled: false
-  welink:
-    # 一个 AI 同事绑定一个 WeLink 账号。登录凭证写在 credential_dir，由办公室扫码写入。
-    enabled: false
-    account:
-    persistent_agent_id:
-    cli_path: welink-cli
-    env: pro
-    credential_dir:
-    poll_interval_seconds: 5
   xiaoyi:
-    # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
-    # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。
-    send_file_allowed: false
-    apps:
-    - name: 小艺默认应用
-        # 华为小艺 A2A 配置
-      app_id:
-      mode: xiaoyi_channel
-      ak:
-      sk:
-      api_id:
-      push_id:
-      agent_id:
-      ws_url1: wss://hag.cloud.huawei.com/openclaw/v1/ws/link
-      ws_url2: wss://116.63.174.231/openclaw/v1/ws/link
-      enable_streaming: true
-      enabled: false
-        # xiaoyi_claw配置
-      uid:
-      api_key:
-      push_url: https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook
-      file_upload_url:
+    # 华为小艺 A2A 配置
+    mode: xiaoyi_channel
+    ak:
+    sk:
+    api_id:
+    push_id:
+    agent_id:
+    ws_url1: wss://hag.cloud.huawei.com/openclaw/v1/ws/link
+    ws_url2: wss://116.63.174.231/openclaw/v1/ws/link
+    enable_streaming: true
+    enabled: false
+    # xiaoyi_claw配置
+    uid:
+    api_key:
+    push_url:
+    file_upload_url:
+    send_file_allowed: true
   dingtalk:
     # 钉钉应用配置
     client_id:
@@ -260,8 +179,6 @@ channels:
     enabled: false
     send_file_allowed: true
     # API 域名前缀（留空走官方默认，支持私有化/国际版切换）
-    api_base: https://api.dingtalk.com      # 新版 v1.0 接口域名
-    oapi_base: https://oapi.dingtalk.com    # 旧版 media 接口域名
   telegram:
     # Telegram Bot 配置
     # 从 @BotFather 获取 bot_token
@@ -378,28 +295,6 @@ channels:
 
 browser:
   # Browser-only decisions. Existing LLM still handles fallback and final answers.
-  decision:
-    mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
-    provider: openrouter # openrouter | typesafe | custom
-    model: typesafe/jev-1.13
-    display_name: ""
-    api_base: https://openrouter.ai/api/alpha
-    # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
-    api_key_env: OPENROUTER_API_KEY
-    # TypeSafe direct: provider=typesafe, model=jev-1.13.0,
-    # api_base=https://api.typesafe.ai/v1, api_key_env=TYPESAFE_API_KEY.
-    request_timeout_ms: 3000
-    max_retries: 1
-    max_decisions: 40 # Shared across LLM handoffs and focused resume in the same task.
-    candidate_limit: 30 # Eligible controls, filtered and ranked before truncation.
-    min_confidence: 0.55 # Initial routing threshold; calibrate on your own tasks.
-    fallback_reserve_ms: 1000
-  # chrome_path can be a string or per-OS map.
-  # Example:
-  # chrome_path:
-  #   windows: "C:\\Users\\YOUR_USER\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
-  #   macos: "/Applications/Google Chrome.app"
-  #   linux: "/usr/bin/google-chrome"
   chrome_path: ""
   # true runs Chrome without a visible window; false opens a managed window.
   headless: true
@@ -411,17 +306,8 @@ updater:
   repo_owner: openJiuwen
   repo_name: jiuwenswarm
   release_api_url: ""
-  # Windows/macOS use .exe/.dmg; multiple candidates prefer a unique WorkSwarm name.
-  # One pattern per platform, each falling back to asset_name_pattern below when
-  # empty. UpdaterService reads all four and the Web settings page writes all
-  # four, so all four are listed here: a key this template omits is deleted from
-  # the operator's config on the next service start, which silently undid a
-  # pattern set from the settings page.
-  asset_name_pattern_windows: ""
-  asset_name_pattern_macos: ""
+  # AgentOS 源模板只声明 Linux 资产名。
   asset_name_pattern_linux: "JiuwenSwarm-{version}.tar.gz"
-  # Fallback for whichever platform pattern above is left empty.
-  asset_name_pattern: ""
   timeout_seconds: 20
   pypi_mirror: "https://mirrors.aliyun.com/pypi/simple/"
 
@@ -487,8 +373,6 @@ modes:
   team:
     jiuwen_team:
       enable_swarmflow: false
-      external_cli_agents: []
-      external_transport:
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -20,6 +22,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentPreCreateError,
     AgentRebuildPending,
     AgentRuntime,
+    DELETE_REASON_IDLE,
 )
 from agent_gateway.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -47,9 +50,11 @@ from agent_gateway.extensions.agentos.agentos_router.registry_client import (
 from agent_gateway.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
+    _SandboxAttempt,
     _extract_placement_ips,
     _is_agent_network_error,
     _is_ws_connect_retryable,
+    _sandbox_name,
     _third_agent_probe_port,
     _third_agent_ssh_probe_port,
     _with_default_third_agent_probes,
@@ -919,6 +924,84 @@ async def test_missing_workspace_precreate_failure_is_retryable(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_third_party_image_lookup_failure_is_precreate_retryable(
+    agentos_workspace_root: str,
+) -> None:
+    """A transient registry failure happens before create_sandbox and must not
+    be cached as a permanent FAILED runtime."""
+
+    class FlakyRegistry(FakeRegistryClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.failures = 1
+
+        async def get_image_info(self, image_name: str) -> ImageInfo:
+            if self.failures:
+                self.failures -= 1
+                raise RegistryConnectionError("registry temporarily unavailable")
+            return await super().get_image_info(image_name)
+
+    yuanrong = FakeYuanRongClient()
+    registry = FlakyRegistry()
+    manager = AgentManager()
+    client = _router_client(yuanrong, registry, manager)
+
+    with pytest.raises(AgentPreCreateError, match="image lookup failed"):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=client._create_agent,
+        )
+
+    assert await manager.list_user_agents("u1") == []
+    assert yuanrong.create_calls == 0
+
+    created = await manager.get_or_create_agent(
+        "u1", "opencode", creator=client._create_agent,
+    )
+    assert created.info.status is AgentStatus.READY
+    assert yuanrong.create_calls == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_third_party_create_429_is_precreate_retryable(
+    agentos_workspace_root: str,
+) -> None:
+    """A first-attempt 429 explicitly rejected the create, so no sandbox exists."""
+
+    class RateLimitedOnceYuanRong(FakeYuanRongClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rate_limited = True
+
+        async def create_sandbox(self, **kwargs: Any) -> SandboxInfo:
+            if self.rate_limited:
+                self.rate_limited = False
+                raise YuanrongAgentApiError(
+                    "create rate limited", status_code=429,
+                )
+            return await super().create_sandbox(**kwargs)
+
+    yuanrong = RateLimitedOnceYuanRong()
+    manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), manager)
+
+    with pytest.raises(AgentPreCreateError, match="rate limited"):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=client._create_agent,
+        )
+
+    assert await manager.list_user_agents("u1") == []
+    assert yuanrong.create_calls == 0
+
+    created = await manager.get_or_create_agent(
+        "u1", "opencode", creator=client._create_agent,
+    )
+    assert created.info.status is AgentStatus.READY
+    assert yuanrong.create_calls == 1
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_third_party_type_creates_via_yuanrong(agentos_workspace_root: str) -> None:
     class RegistryWithEnvVars(FakeRegistryClient):
         async def get_image_info(self, image_name: str) -> ImageInfo:
@@ -1605,6 +1688,264 @@ async def test_ssh_relay_holds_sandbox_until_disconnect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_failed_runtime_is_reclaimed_without_rebuild() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+    assert runtime.info.status is AgentStatus.FAILED
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 1
+
+    assert await manager.list_user_agents("u1") == []
+    assert yuanrong.create_calls == 0
+    assert yuanrong.delete_calls == []
+
+    async def good_creator(agent_info: AgentInfo) -> AgentInfo:
+        agent_info.sandbox_id = "rebuilt-sbx"
+        return agent_info
+
+    rebuilt = await manager.get_or_create_agent(
+        "u1", "opencode", creator=good_creator,
+    )
+    assert rebuilt.info.status is AgentStatus.READY
+    assert rebuilt.info.sandbox_id == "rebuilt-sbx"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_failed_runtime_retires_unused_provisioned_sandbox() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("publication failed")
+
+    with pytest.raises(RuntimeError):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+        lifecycle.provisioned_instance = "orphan-sbx"
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 1
+
+    assert yuanrong.delete_calls == ["orphan-sbx"]
+    assert await manager.list_user_agents("u1") == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alias_status", [AgentStatus.READY, AgentStatus.CREATING])
+async def test_stale_failed_runtime_keeps_sandbox_used_by_alias(alias_status) -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager(
+        key_fields=["user_id", "agent_type", "session_id"],
+    )
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def shared_creator(agent_info: AgentInfo) -> AgentInfo:
+        agent_info.sandbox_id = "shared-sbx"
+        return agent_info
+
+    ready = await manager.get_or_create_agent(
+        "u1",
+        "opencode",
+        key_values={"session_id": "one"},
+        creator=shared_creator,
+    )
+    failed = await manager.get_or_create_agent(
+        "u1",
+        "opencode",
+        key_values={"session_id": "two"},
+        creator=shared_creator,
+    )
+    assert ready.info.sandbox_id == "shared-sbx"
+    manager._runtimes[ready.key].info.status = alias_status
+    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+        lifecycle.provisioned_instance = "shared-sbx"
+    stored = manager._runtimes[failed.key]
+    stored.info.status = AgentStatus.FAILED
+    stored.info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 1
+
+    assert yuanrong.delete_calls == []
+    assert await manager.get_agent(
+        "u1", "opencode", key_values={"session_id": "one"},
+    ) is not None
+    assert await manager.get_agent(
+        "u1", "opencode", key_values={"session_id": "two"},
+    ) is None
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("create failed")
+
+    with pytest.raises(RuntimeError):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+
+    async def noop_create() -> SandboxInfo:
+        return SandboxInfo(sandbox_id="unused", metadata={})
+
+    async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
+        lifecycle.provisioned_instance = "old-sbx"
+        lifecycle.attempt = _SandboxAttempt("gen", "det", noop_create)
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 1
+
+    assert yuanrong.delete_calls == []
+    assert await manager.list_user_agents("u1") == []
+    lifecycle = client._sandbox_lifecycles.get(_sandbox_name("u1", "opencode"))
+    assert lifecycle is not None
+    assert lifecycle.attempt is not None
+    assert lifecycle.provisioned_instance == "old-sbx"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("create failed")
+
+    with pytest.raises(RuntimeError):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+
+    lifecycle_name = _sandbox_name("u1", "opencode")
+    async with client._sandbox_lifecycle(lifecycle_name) as lifecycle:
+        lifecycle.provisioned_instance = "new-sbx"
+        lifecycle.retired_instance = "old-sbx"
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 0
+    assert yuanrong.delete_calls == []
+    assert await manager.list_user_agents("u1") != []
+
+    async with client._sandbox_lifecycle(lifecycle_name) as lifecycle:
+        lifecycle.retired_instance = ""
+
+    assert await client._reap_idle_once() == 1
+    assert yuanrong.delete_calls == ["new-sbx"]
+    assert await manager.list_user_agents("u1") == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_idle_delete_emits_idle_reaper_reason(caplog) -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+    try:
+        response = await client.send_request(_envelope())
+        await asyncio.sleep(0.05)
+        assert response.ok
+
+        runtime = await manager.get_agent("u1", "jiuwenswarm")
+        assert runtime is not None
+        manager._runtimes[runtime.key].last_active_at = time.time() - 100
+
+        with caplog.at_level(logging.INFO):
+            assert await client._delete_idle_agent(
+                "u1",
+                "jiuwenswarm",
+                key_values={},
+                idle_timeout_seconds=1,
+                reason=DELETE_REASON_IDLE,
+            )
+        assert "agent.state.changed" in caplog.text
+        assert "reason=idle_reaper" in caplog.text
+        assert "to_status=deleted" in caplog.text
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_reclaim_runs_when_idle_reaper_disabled() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 1
+    assert await manager.list_user_agents("u1") == []
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
     yuanrong = FakeYuanRongClient()
     agent_manager = AgentManager()
@@ -1616,7 +1957,10 @@ async def test_idle_reaper_disabled_with_nonpositive_timeout() -> None:
     )
 
     await client.connect("http://yuanrong.test")
-    assert client._idle_reaper_task is None
+    # The reaper loop also reclaims stale FAILED runtimes, so it stays alive
+    # even when idle reclamation is disabled.
+    assert client._idle_reaper_task is not None
+    assert not client._idle_reaper_enabled()
 
     await client.send_request(_envelope(agent_type="opencode"))
     await asyncio.sleep(0.05)
@@ -3545,19 +3889,21 @@ def test_apply_remote_overrides_absent_field_does_not_roll_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_remote_overrides_stops_reaper_when_disabled() -> None:
+async def test_apply_remote_overrides_disables_idle_reclaim_but_keeps_reaper() -> None:
     client = _router_client(FakeYuanRongClient(), sandbox_idle_timeout_seconds=600.0)
     client._closed = False
     client._ensure_idle_reaper_task()
-    assert client._idle_reaper_task is not None
+    task = client._idle_reaper_task
+    assert task is not None
 
     client.apply_remote_overrides(
         {"agent_sandbox": {"idle_timeout": 0}}
     )
-    await asyncio.sleep(0)  # let the scheduled stop task run
 
     assert client._sandbox_idle_timeout_seconds == 0.0
-    assert client._idle_reaper_task is None
+    assert not client._idle_reaper_enabled()
+    assert client._idle_reaper_task is task
+    await client._stop_idle_reaper_task()
 
 
 @pytest.mark.asyncio
@@ -4728,6 +5074,41 @@ async def test_rejected_replay_retires_the_name_and_starts_a_new_generation(reco
         runtime = await _create_recovery_runtime(router)
         assert posts[2]["name"] != posts[0]["name"]
         assert runtime.info.sandbox_id == deterministic_agent_instance_id("default", posts[2]["name"])
+    finally:
+        await router.shutdown()
+
+
+async def test_rate_limited_replay_keeps_the_original_attempt(recovery_router):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        if len(posts) == 1:
+            raise YuanrongAgentTimeoutError("response lost")
+        if len(posts) == 2:
+            raise YuanrongAgentApiError(
+                "agent API failed: http_status=429",
+                status_code=429,
+            )
+        return SandboxInfo(deterministic_agent_instance_id("default", kwargs["name"]))
+
+    frontend.create_sandbox.side_effect = create
+    try:
+        with pytest.raises(AgentRebuildPending, match="unknown"):
+            await _create_recovery_runtime(router)
+        with pytest.raises(AgentRebuildPending, match="rate limited"):
+            await _create_recovery_runtime(router)
+        lifecycle = router._sandbox_lifecycles["user+jiuwenswarm"]
+        assert lifecycle.attempt is not None
+        assert frontend.delete_sandbox.await_count == 0
+        assert posts[1] == posts[0]
+
+        runtime = await _create_recovery_runtime(router)
+        assert posts[2] == posts[0]
+        assert runtime.info.sandbox_id == deterministic_agent_instance_id("default", posts[0]["name"])
+        assert frontend.delete_sandbox.await_count == 0
+        assert lifecycle.attempt is None
     finally:
         await router.shutdown()
 

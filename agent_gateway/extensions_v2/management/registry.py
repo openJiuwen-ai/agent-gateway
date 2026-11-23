@@ -31,7 +31,12 @@ from openjiuwen.core.extension.schema.records import ActivePackageRecord
 from openjiuwen.core.extension.selection import evaluate_reload, resolve_install_set
 
 from agent_gateway.common.system_plugin_recovery import SystemPluginRecovery
-from agent_gateway.extensions_v2.loader import load_gateway_package
+from agent_gateway.extensions_v2.host_compat import numeric_host_version
+from agent_gateway.extensions_v2.loader import (
+    ensure_package_supports_host,
+    load_gateway_package,
+    package_supports_host,
+)
 from agent_gateway.extensions_v2.manifest import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
@@ -96,6 +101,8 @@ class GatewayPackageManager:
         self._recovery_data_dir = recovery_data_dir
         self._inited = False
         self._stopping = False
+        self._startup_loaded = False
+        self._accepted_roots: set[Path] = set()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -113,8 +120,14 @@ class GatewayPackageManager:
     async def load_installed(self) -> list[ActivationReport]:
         """Start the Gateway packages selected by the shared startup plan."""
 
-        if self._report is None:
+        if self._report is None or self._startup_loaded:
             return []
+        # Snapshot the roots present when the host starts: a directory left
+        # behind by an interrupted copy/unpack must not be reported as an
+        # accepted package before its install operation succeeds.
+        roots = tuple(root.resolve() for root in self._store.list_installed())
+        self._startup_loaded = True
+        self._accepted_roots.update(roots)
         plan = await self._report.prepare_startup(self._store)
         reports: list[ActivationReport] = []
         for manifest in plan.ordered:
@@ -123,6 +136,13 @@ class GatewayPackageManager:
             root = self._store.version_dir(manifest.package_id, manifest.version)
             if not has_manifest(root):
                 root = self._find_root(manifest.package_id, manifest.version) or root
+            if root.resolve() not in self._accepted_roots:
+                logger.warning(
+                    "[GatewayExtensions] skip %s %s: root outside the startup snapshot",
+                    manifest.package_id,
+                    manifest.version,
+                )
+                continue
             reports.append(await self._install_manifest(manifest, root, startup=True))
         await self._report.mark_started()
         return reports
@@ -149,7 +169,13 @@ class GatewayPackageManager:
         """Every installed package in the shared store, both domains."""
 
         found: list[InstalledPackage] = []
-        for root in self._store.list_installed():
+        # Before the startup plan has been read (for example a manager created
+        # outside the runtime) the store is the only source of truth; after it
+        # the snapshot filters directories that never completed an install.
+        roots = sorted(self._accepted_roots) if self._startup_loaded else self._store.list_installed()
+        for root in roots:
+            if not root.is_dir() or not has_manifest(root):
+                continue
             try:
                 manifest = load_manifest(root, require_domain=False)
             except ExtensionFailure:
@@ -316,12 +342,21 @@ class GatewayPackageManager:
         active = self._runtime.active_record(package_id)
         if active is not None and active.version == version and source is None:
             return _success(package_id, "enable", active=active)
+        root = self._find_root(package_id, version)
+        if source is None and root is not None:
+            # Refuse an incompatible stored copy before the running version is disabled.
+            try:
+                ensure_package_supports_host(root)
+            except ExtensionFailure as exc:
+                return _failure(package_id, "enable", exc.as_error())
+            except Exception:
+                # A malformed manifest is reported by the normal load below.
+                pass
         previous = active.version if active is not None else ""
         if previous:
             report = await self._disable_version(package_id, previous)
             if report.status != "SUCCESS":
                 return report
-        root = self._find_root(package_id, version)
         if source is not None:
             if self._report is None:
                 report = await self._legacy_install_path(Path(source), allow_existing=True)
@@ -404,8 +439,19 @@ class GatewayPackageManager:
         """Keep an installed Gateway package while changing its loading state."""
 
         async with self._lock:
-            root = self._highest(package_id)
+            root = self._highest(package_id, compatible_only=enabled)
             if root is None:
+                if enabled:
+                    installed = self.gateway_installed(package_id)
+                    if installed:
+                        # Installed but excluded by this host: report why instead of "not installed".
+                        newest = max(installed, key=lambda package: _version_key(package.version)).root
+                        try:
+                            ensure_package_supports_host(newest)
+                        except ExtensionFailure as exc:
+                            return _failure(package_id, "enable", exc.as_error())
+                        except Exception:  # noqa: BLE001 - a malformed manifest is reported by the load below
+                            pass
                 return _failure(
                     package_id,
                     "enable" if enabled else "disable",
@@ -717,6 +763,8 @@ class GatewayPackageManager:
                 )
             created = root != Path(source_root).resolve()
             report = await self._publish_manifest(manifest, root, "install")
+            if report.status == "SUCCESS":
+                self._accepted_roots.add(root.resolve())
             if report.status != "SUCCESS" and created and self._runtime.active_record(
                 manifest.package_id
             ) is None:
@@ -1054,6 +1102,8 @@ class GatewayPackageManager:
         previous = self._runtime.active_record(manifest.package_id)
         try:
             await self._switch(load_gateway_package(root))
+        except ExtensionFailure as exc:
+            return _failure(manifest.package_id, operation, exc.as_error())
         except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
             logger.exception(
                 "[GatewayExtensions] cannot %s %s", operation, manifest.package_id
@@ -1127,6 +1177,7 @@ class GatewayPackageManager:
             # A disabled copy is kept but never published.
             if self._runtime.is_active_package(package_id):
                 await self._disable(root, manifest)
+            self._accepted_roots.add(root.resolve())
             return _success(package_id, "install", active=None)
         package = None
         try:
@@ -1149,6 +1200,7 @@ class GatewayPackageManager:
                 "install",
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
+        self._accepted_roots.add(root.resolve())
         return _success(
             package_id,
             "install",
@@ -1244,8 +1296,11 @@ class GatewayPackageManager:
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _highest(self, package_id: str) -> Path | None:
-        versions = self.gateway_installed(package_id)
+    def _highest(self, package_id: str, *, compatible_only: bool = True) -> Path | None:
+        versions = [
+            package for package in self.gateway_installed(package_id)
+            if not compatible_only or package_supports_host(package.root)
+        ]
         if not versions:
             return None
         return max(versions, key=lambda package: _version_key(package.version)).root
@@ -1459,9 +1514,6 @@ def _record_recovery_change(
 
 
 def _host_version() -> str | None:
-    try:
-        from importlib.metadata import version
+    """``MAJOR.MINOR.PATCH`` of the running JiuwenSwarm host, for Core's requires.host checks."""
 
-        return version("agent-gateway")
-    except Exception:  # noqa: BLE001 - a source checkout may not be installed
-        return None
+    return numeric_host_version()

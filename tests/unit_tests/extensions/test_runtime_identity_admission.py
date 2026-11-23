@@ -100,7 +100,7 @@ async def test_enterprise_chat_missing_module_is_unavailable(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enterprise,method", [(False, "chat.send"), (True, "session.create")])
+@pytest.mark.parametrize("enterprise,method", [(False, "chat.send"), (True, "initialize")])
 async def test_personal_and_non_chat_skip_resource_admission(monkeypatch, enterprise, method):
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise" if enterprise else "personal")
     checkers = Mock(side_effect=AssertionError("unexpected enterprise admission dependency"))

@@ -28,6 +28,10 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.thinking_content import (
+    is_thinking_only_content,
+    strip_think_tags,
+)
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
@@ -1073,28 +1077,9 @@ class WecomChannel(BaseChannel):
         return str(content or "").strip()
 
     @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        """移除 <think>...</think> 块及未闭合的 <think>...，避免将 Agent 的思考过程展示给用户。"""
-        if not text or not isinstance(text, str):
-            return text or ""
-        # 1. 移除完整的 <think>...</think> 块
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        # 2. 移除未闭合的 <think>...（流式场景下可能先收到 <think> 后收到 </think>）
-        text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE | re.DOTALL)
-        return text
-
-    @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
         """判断内容是否为空或仅为占位符。"""
-        if not text or not isinstance(text, str):
-            return True
-        t = text.strip()
-        if not t:
-            return True
-        # 纯省略号、纯点
-        if re.match(r"^[.．。…\s]+$", t):
-            return True
-        return False
+        return is_thinking_only_content(text)
 
     def _extract_content_from_payload(self, msg: Message) -> str | None:
         """从 chat.delta / chat.final 的 payload 提取 content，无则返回 None。"""
@@ -1220,7 +1205,7 @@ class WecomChannel(BaseChannel):
                     else:
                         entry["accumulated"] = (entry.get("accumulated") or "") + content
                     # 移除 <think>...</think> 块，不将 Agent 思考过程展示给用户
-                    to_send = self._strip_think_tags(entry["accumulated"]).strip()
+                    to_send = strip_think_tags(entry["accumulated"]).strip()
                     if not to_send or self._is_thinking_only_content(to_send):
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
@@ -1308,7 +1293,7 @@ class WecomChannel(BaseChannel):
         if self._is_reasoning_chunk(msg):
             logger.debug("[WecomChannel] 跳过 final reasoning chunk")
             return
-        content = self._strip_think_tags(self._extract_content(msg)).strip()
+        content = strip_think_tags(self._extract_content(msg)).strip()
         if not content or self._is_thinking_only_content(content):
             logger.debug("[WecomChannel] 消息内容为空或仅为思考占位，跳过发送")
             return
