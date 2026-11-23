@@ -117,6 +117,7 @@ class ChannelManager(ABC):
         self._on_config_updated = on_config_updated
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
+        self._inbound_busy = False
         self._dispatch_diag_count: int = 0
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
@@ -540,12 +541,15 @@ class ChannelManager(ABC):
 
         asyncio.create_task(self._message_handler.handle_message(msg))
 
-    async def _reject_inbound_busy(self, msg: "Message") -> None:
-        """Let the channel tell the client that the inbound queue is full."""
-        channel = self._get_channel_by_id(msg.channel_id)
-        reject = getattr(channel, "reject_inbound", None)
-        if not callable(reject):
-            return
+    async def _reject_inbound_busy(
+        self, msg: "Message", reject: Callable[..., Any],
+    ) -> bool:
+        """Let the channel tell the client that the inbound queue is full.
+
+        Returns true only when the channel actually accepted the rejection.
+        A missing peer or a failed send returns false so the caller can fall
+        back to queue backpressure instead of dropping the message.
+        """
         try:
             result = reject(
                 msg,
@@ -553,13 +557,15 @@ class ChannelManager(ABC):
                 code="SERVER_BUSY",
             )
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            return result is not False
         except Exception:  # noqa: BLE001 - rejecting is best-effort
             logger.exception(
                 "[ChannelManager] reject busy inbound failed: id=%s channel_id=%s",
                 msg.id,
                 msg.channel_id,
             )
+            return False
 
     def register_channel(self, channel: "BaseChannel") -> None:
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""
@@ -725,16 +731,27 @@ class ChannelManager(ABC):
         """
         queue_full = getattr(self._message_handler, "is_user_queue_full", None)
         if callable(queue_full) and queue_full():
-            channel = self._get_channel_by_id(msg.channel_id)
-            reject = getattr(channel, "reject_inbound", None)
-            if callable(reject):
+            if not self._inbound_busy:
                 logger.warning(
-                    "[ChannelManager] inbound queue full, reject with busy: id=%s channel_id=%s",
+                    "[ChannelManager] inbound queue full: channel_id=%s",
+                    msg.channel_id,
+                )
+                self._inbound_busy = True
+            else:
+                logger.debug(
+                    "[ChannelManager] inbound queue still full: id=%s channel_id=%s",
                     msg.id,
                     msg.channel_id,
                 )
-                await self._reject_inbound_busy(msg)
+            channel = self._get_channel_by_id(msg.channel_id)
+            reject = getattr(channel, "reject_inbound", None)
+            if callable(reject) and await self._reject_inbound_busy(msg, reject):
                 return
+            # No channel-level busy response (IM, or Web peer already gone):
+            # keep the message and apply real backpressure in handle_message.
+        elif self._inbound_busy:
+            logger.info("[ChannelManager] inbound queue recovered")
+            self._inbound_busy = False
         await self._message_handler.handle_message(msg)
 
     # ── Channel 连接事件 ──

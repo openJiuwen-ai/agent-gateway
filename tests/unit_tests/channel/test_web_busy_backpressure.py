@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -48,6 +49,54 @@ async def test_web_inbound_rejects_with_busy_when_queue_full():
     handler.handle_message.assert_not_awaited()
     channel.reject_inbound.assert_awaited_once()
     assert channel.reject_inbound.await_args.kwargs["code"] == "SERVER_BUSY"
+
+
+async def test_web_inbound_falls_back_when_reject_cannot_notify():
+    handler = SimpleNamespace(
+        is_user_queue_full=lambda: True,
+        handle_message=AsyncMock(),
+    )
+    manager = ChannelManager(handler)
+    channel = SimpleNamespace(
+        channel_id="web",
+        on_message=Mock(),
+        reject_inbound=AsyncMock(return_value=False),
+    )
+    manager.register_channel_with_inbound(
+        channel, manager.deliver_to_message_handler,
+    )
+    msg = SimpleNamespace(id="req-1", channel_id="web", metadata={})
+
+    await manager.deliver_to_message_handler(msg)
+
+    channel.reject_inbound.assert_awaited_once()
+    handler.handle_message.assert_awaited_once_with(msg)
+
+
+async def test_web_busy_warning_logs_once_per_overload(caplog):
+    handler = SimpleNamespace(
+        is_user_queue_full=lambda: True,
+        handle_message=AsyncMock(),
+    )
+    manager = ChannelManager(handler)
+    channel = SimpleNamespace(
+        channel_id="web",
+        on_message=Mock(),
+        reject_inbound=AsyncMock(return_value=True),
+    )
+    manager.register_channel_with_inbound(
+        channel, manager.deliver_to_message_handler,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await manager.deliver_to_message_handler(
+            SimpleNamespace(id="req-1", channel_id="web", metadata={}),
+        )
+        await manager.deliver_to_message_handler(
+            SimpleNamespace(id="req-2", channel_id="web", metadata={}),
+        )
+
+    assert caplog.text.count("inbound queue full") == 1
 
 
 async def test_web_inbound_enqueues_when_queue_has_room():
@@ -103,6 +152,7 @@ def test_queue_maxsize_invalid_value_uses_default(monkeypatch):
 async def test_nowait_publish_defers_when_queue_full(monkeypatch):
     handler = object.__new__(MessageHandler)
     handler._user_messages = asyncio.Queue(maxsize=1)
+    handler._deferred_put_tasks = set()
     handler._user_messages.put_nowait("first")
     monkeypatch.setattr(message_handler_module, "queue_request_trace", lambda msg: None)
     msg = SimpleNamespace(id="req-2")
@@ -111,6 +161,36 @@ async def test_nowait_publish_defers_when_queue_full(monkeypatch):
 
     assert handler._user_messages.get_nowait() == "first"
     assert await asyncio.wait_for(handler._user_messages.get(), timeout=1) is msg
+
+
+async def test_robot_nowait_publish_defers_when_queue_full(monkeypatch):
+    handler = object.__new__(MessageHandler)
+    handler._robot_messages = asyncio.Queue(maxsize=1)
+    handler._deferred_put_tasks = set()
+    handler._robot_messages.put_nowait("first")
+    monkeypatch.setattr(message_handler_module, "queue_response_trace", lambda msg: msg)
+    monkeypatch.setattr(handler, "_attach_derived_response_owner", lambda msg: None)
+    msg = SimpleNamespace(id="res-2")
+
+    handler.publish_robot_messages_nowait(msg)
+
+    assert handler._robot_messages.get_nowait() == "first"
+    assert await asyncio.wait_for(handler._robot_messages.get(), timeout=1) is msg
+
+
+async def test_web_channel_reject_inbound_without_peer_returns_false(caplog):
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    msg = SimpleNamespace(
+        id="req-1",
+        channel_id="web",
+        metadata={"ws_id": "missing"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert await channel.reject_inbound(msg) is False
+
+    assert "peer gone" in caplog.text
+    assert "ws_id=missing" in caplog.text
 
 
 async def test_web_channel_reject_inbound_sends_busy_response(monkeypatch):
@@ -129,7 +209,7 @@ async def test_web_channel_reject_inbound_sends_busy_response(monkeypatch):
         metadata={"ws_id": "ws-1"},
     )
 
-    await channel.reject_inbound(msg)
+    assert await channel.reject_inbound(msg) is True
 
     assert len(enqueued) == 1
     peer, frame = enqueued[0]

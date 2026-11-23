@@ -410,6 +410,7 @@ class MessageHandler(ABC):
         )
         self._running = False
         self._forward_task: asyncio.Task | None = None
+        self._deferred_put_tasks: set[asyncio.Task] = set()
         self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
@@ -3076,6 +3077,40 @@ class MessageHandler(ABC):
             raise RuntimeError("runtime wake host is not forwarding")
         await self.publish_user_messages(msg)
 
+    def _defer_queue_put(
+        self,
+        queue: asyncio.Queue["Message"],
+        msg: "Message",
+        *,
+        kind: str,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        async def _put() -> None:
+            await queue.put(msg)
+
+        task = asyncio.create_task(
+            _put(),
+            name=f"agentos-{kind}-deferred-{getattr(msg, 'id', '')}",
+        )
+        tasks = getattr(self, "_deferred_put_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._deferred_put_tasks = tasks
+        tasks.add(task)
+
+        def _done(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if done.cancelled() and on_cancel is not None:
+                try:
+                    on_cancel()
+                except Exception:  # noqa: BLE001 - trace cleanup is best-effort
+                    logger.debug(
+                        "[MessageHandler] deferred put trace cleanup failed",
+                        exc_info=True,
+                    )
+
+        task.add_done_callback(_done)
+
     def publish_user_messages_nowait(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（同步）.
 
@@ -3092,9 +3127,11 @@ class MessageHandler(ABC):
                 "[MessageHandler] user queue full, deferring nowait publish: id=%s",
                 getattr(msg, "id", ""),
             )
-            asyncio.create_task(
-                self._user_messages.put(msg),
-                name=f"agentos-inbound-deferred-{getattr(msg, 'id', '')}",
+            self._defer_queue_put(
+                self._user_messages,
+                msg,
+                kind="inbound",
+                on_cancel=lambda: release_message_trace(msg, requests=True),
             )
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
@@ -3302,6 +3339,17 @@ class MessageHandler(ABC):
             release_message_trace(msg)
         try:
             self._robot_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] robot queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._robot_messages,
+                msg,
+                kind="robot",
+                on_cancel=lambda: release_response_trace(msg, reason="queue_failed"),
+            )
         except BaseException:
             release_response_trace(msg, reason="queue_failed")
             raise
@@ -7034,6 +7082,13 @@ class MessageHandler(ABC):
             except asyncio.CancelledError:
                 pass
             self._forward_task = None
+
+        deferred = list(self._deferred_put_tasks)
+        for task in deferred:
+            task.cancel()
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
+        self._deferred_put_tasks.clear()
 
         release_queued_message_traces(self._user_messages, requests=True)
         manager = getattr(self, "_channel_manager", None)
