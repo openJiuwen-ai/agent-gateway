@@ -334,7 +334,6 @@ sys.exit(1)
     completed = run_dialog_capture(
         [sys.executable, "-c", script],
         # PYTHONIOENCODING above makes the child encode its stdout as UTF-8.
-        timeout=600.0,
         env=env,
     )
     if completed.returncode == 1:
@@ -395,7 +394,6 @@ sys.exit(1)
     completed = run_dialog_capture(
         [sys.executable, "-c", script],
         # PYTHONIOENCODING above makes the child encode its stdout as UTF-8.
-        timeout=600.0,
         env=env,
     )
     if completed.returncode == 1:
