@@ -5018,6 +5018,8 @@ async def test_create_that_was_not_sent_can_be_retried(recovery_router):
     # A definite rejection (e.g. workspace not prepared) also arrives as an
     # uncertain HTTP 500 with an empty body.
     YuanrongAgentCreateUncertainError("create agent result uncertain: http_status=500"),
+    # ADX surfaces HTTP status directly on its API error.
+    YuanrongAgentApiError("create agent failed: http_status=503", status_code=503),
 ])
 async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, failures, error):
     router, frontend, _ = recovery_router()

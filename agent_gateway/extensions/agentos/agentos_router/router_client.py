@@ -3533,11 +3533,19 @@ class AgentOSRouterClient(AgentServerClient):
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
-            if isinstance(exc, YuanrongAgentApiError) and getattr(exc, "status_code", None) == 429:
+            status = getattr(exc, "status_code", None)
+            if isinstance(exc, YuanrongAgentApiError) and status == 429:
                 # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
                 # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
                 raise AgentRebuildPending(
                     "AGENT_REBUILD_PENDING: replacement creation was rate limited"
+                ) from exc
+            if isinstance(exc, YuanrongAgentApiError) and (
+                status == 408 or (isinstance(status, int) and status >= 500)
+            ):
+                # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
+                raise AgentRebuildPending(
+                    "AGENT_REBUILD_PENDING: the create result is unknown"
                 ) from exc
             # Retire this name so the next request starts a new generation instead of replaying a refused create.
             lifecycle.retired_instance = attempt.deterministic_id
@@ -3568,10 +3576,17 @@ class AgentOSRouterClient(AgentServerClient):
                 # attempt. Treat it as a retryable pre-create failure instead of
                 # caching a permanent FAILED runtime. Other 4xx may be
                 # deterministic (bad runtime_spec etc.) and keep the old path.
-                if getattr(exc, "status_code", None) == 429:
+                status = getattr(exc, "status_code", None)
+                if status == 429:
                     raise AgentPreCreateError(
                         "AGENT_PRE_CREATE_RETRYABLE: sandbox create was rate "
                         f"limited: {exc}"
+                    ) from exc
+                if status == 408 or (isinstance(status, int) and status >= 500):
+                    # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
+                    lifecycle.attempt = attempt
+                    raise AgentRebuildPending(
+                        "AGENT_REBUILD_PENDING: the create result is unknown"
                     ) from exc
                 raise
 
