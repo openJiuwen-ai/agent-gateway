@@ -3196,8 +3196,22 @@ class MessageHandler(ABC):
 
         来源：``HttpSseAgentServerClient._push_loop`` 在 events/stream 连续失败
         达到 ``_PUSH_MAX_CONNECT_FAILURES`` 次后，停止推送循环前合成的 frame
-        （issue #115 现象 1）。前端收到此事件后可弹提示并重建 SSE，而不是
-        无限挂等已断开的连接。
+        （issue #115 现象 1）。
+
+        **事件性质与前端契约**：这是 **pod 级** 事件——只表示 gateway 失去对
+        某个 agentserver pod 的 push 订阅（载荷 ``affected_scope="pod"``，
+        ``api_root`` 标识具体 pod），不代表整个 gateway 不可用。受影响会话的
+        后续 server_push 可能延迟或丢失，但前端→gateway 的 WS 仍然健康。
+
+        因此前端收到此事件后 **应当只显示提示**（"推送通道暂时不可用，新消息
+        可能延迟"），**不得无条件重建 SSE/WS**——否则单个 pod 故障会引发所有
+        不相关会话的连接抖动，且 reconnect 不会触发 gateway 重新订阅 pod 的
+        push 通道（gateway 自身的 _push_loop 退避重连逻辑会处理）。
+
+        广播范围：载荷是 pod 级的，但当前实现仍广播给所有 Web 连接，因为
+        前端按 ``api_root`` 过滤的成本高于直接广播（连接数有限），事件本身
+        的处理成本（显示一条 toast）也极低。若未来 Web 连接数显著增长或
+        pod 数量增加，可在 payload 补 ``affected_sessions`` 列表做精确路由。
         """
         web_channel = self._resolve_web_channel()
         if web_channel is None:
@@ -3214,6 +3228,10 @@ class MessageHandler(ABC):
             # 失败时若只 DEBUG 级记录，生产 INFO 日志下无任何痕迹，前端会
             # 静默挂等在已断开的 SSE 上（issue #115 现象 1 原样重现）。故提
             # 升到 WARNING 并带异常信息，便于排查。
+            #
+            # 广播失败不能向上抛——_handle_agent_server_push_ordered 调用方
+            # （_push_loop / RuntimeRoutedAgentClient._handle_pod_push）不期望
+            # 一条通知帧的转发失败把推送通道整条链路炸掉。
             logger.warning(
                 "[MessageHandler] broadcast gateway.push_terminated failed: %s", exc
             )

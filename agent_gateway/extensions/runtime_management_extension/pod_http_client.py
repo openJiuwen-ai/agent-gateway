@@ -604,6 +604,11 @@ class HttpSseAgentServerClient(AgentServerClient):
         push_request_id = f"push_terminated:{api_root}"
         payload = {
             "event_type": _PUSH_TERMINATED_EVENT_TYPE,
+            # 事件作用域：pod 级。表示 gateway 失去对单个 agentserver pod
+            # 的 push 订阅，不代表整个 gateway 不可用。前端据此只显示提示，
+            # 不重建自身 WS 连接（详见 message_handler._broadcast_push_terminated
+            # 的 docstring 中事件性质与前端契约说明）。
+            "affected_scope": "pod",
             "reason": reason,
             "api_root": api_root,
             "failures": self._push_connect_failures,
