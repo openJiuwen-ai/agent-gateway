@@ -65,8 +65,7 @@ async def test_section_upsert_body_writes_body_and_increments_revision() -> None
 
     first = await repo.upsert_body({"enabled": True, "limit": 1})
     second = await repo.upsert_body(
-        {"enabled": False, "limit": 2},
-        source="manager-config",
+        {"enabled": False, "limit": 2}, source="manager-config"
     )
 
     assert first.source == "manager"

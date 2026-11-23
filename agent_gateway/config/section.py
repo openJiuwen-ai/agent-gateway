@@ -216,21 +216,23 @@ class SectionDocumentRepository:
     ) -> SectionDocument:
         """Replace the section body and advance its document revision."""
         existing = await self.get()
-        document = SectionDocument(
-            body=dict(body),
-            source=source,
-            revision=(int(existing.revision) + 1 if existing else 1),
-        )
+        document = self._document(dict(body), existing, source=source)
         return await self.upsert(document)
 
     @staticmethod
     def _document(
         body: dict[str, Any],
         existing: SectionDocument | None,
+        *,
+        source: str | None = None,
     ) -> SectionDocument:
         return SectionDocument(
             body=body,
-            source=(existing.source if existing else "local"),
+            source=(
+                source
+                if source is not None
+                else (existing.source if existing else "local")
+            ),
             revision=(int(existing.revision) + 1 if existing else 1),
         )
 
