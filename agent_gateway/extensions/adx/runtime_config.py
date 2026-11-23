@@ -41,5 +41,5 @@ def bind_adx_runtime(sandbox: dict | None, ingress_url: str, endpoint_file: str 
 def bind_runtime_sandbox(sandbox: dict | None, deployment: dict) -> dict:
     """Accept retained deployment callers using the previous compact overlay."""
     if deployment.get('type') == 'adx-environment':
-        deployment = {**deployment, **managed_sandbox_settings()}
+        deployment = {**managed_sandbox_settings(), **deployment}
     return bind_managed_sandbox(sandbox, deployment)

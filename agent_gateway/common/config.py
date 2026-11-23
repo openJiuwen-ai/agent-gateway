@@ -110,7 +110,7 @@ def resolve_env_vars(value: Any, *, _path: tuple = ()) -> Any:
                 for k, v in value.items()
             }
         return {
-            key: (item if key == "image_env" and _path == ("gateway", "adx", "builtin_launch")
+            key: (item if key == "image_env" and _path in (("sandbox",), ("gateway", "adx", "builtin_launch"))
                   else resolve_env_vars(item, _path=(*_path, key)))
             for key, item in value.items()
         }

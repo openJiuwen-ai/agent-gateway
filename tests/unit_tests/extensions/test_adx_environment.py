@@ -431,7 +431,10 @@ def test_built_in_prepared_local_rootfs_and_image_environment(monkeypatch, tmp_p
         "image_env": {"VALUE": "${USER_VALUE}", "PROFILE": "image"},
         "env": {"PROFILE": "${USER_VALUE}"},
     }
-    resolved = resolve_env_vars({"gateway": {"adx": {"builtin_launch": launch}}})
+    resolved = resolve_env_vars({
+        "gateway": {"adx": {"builtin_launch": launch}},
+        "sandbox": {"image_env": launch["image_env"], "env": launch["env"]},
+    })
     client = AdxControlClient(replace(config(monkeypatch, tmp_path), runtime_class="runsc",
                                       builtin_launch=resolved["gateway"]["adx"]["builtin_launch"]))
     body = client._creation_body("test", "alice", str(tmp_path), {}, {}, [], builtin=True)
@@ -440,6 +443,20 @@ def test_built_in_prepared_local_rootfs_and_image_environment(monkeypatch, tmp_p
     assert body["env"]["VALUE"] == "${USER_VALUE}"
     assert body["env"]["PROFILE"] == "host-value"
     assert "inheritEntrypoint" not in body
+    assert resolved["sandbox"] == {
+        "image_env": launch["image_env"], "env": {"PROFILE": "host-value"},
+    }
+
+
+def test_declared_runtime_credential_requires_a_launch_value(monkeypatch):
+    from agent_gateway.common import runtime_settings
+
+    monkeypatch.setattr(runtime_settings, "runtime_settings",
+                        lambda: {"credentials": {"EXAMPLE_SOURCE": "EXAMPLE_TARGET"}})
+    monkeypatch.delenv("EXAMPLE_SOURCE", raising=False)
+
+    with pytest.raises(ValueError, match="EXAMPLE_SOURCE is missing for EXAMPLE_TARGET"):
+        runtime_settings.prepare_runtime_environment()
 
 
 def test_third_party_web_port_is_published_only_when_requested(monkeypatch, tmp_path):

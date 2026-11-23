@@ -23,16 +23,19 @@ def prepare_runtime_environment() -> None:
     """Consume launch credentials before loading the user's shared dotenv."""
     for source, target in runtime_settings().get("credentials", {}).items():
         value = os.environ.pop(source, None)
-        if value is not None:
-            if not value.strip():
-                raise ValueError("AgentOS launch credential is empty")
-            os.environ[target] = value
+        if value is None:
+            raise ValueError(f"AgentOS launch credential {source} is missing for {target}")
+        if not value.strip():
+            raise ValueError(f"AgentOS launch credential {source} is empty for {target}")
+        os.environ[target] = value
 
 
 def bind_runtime_sandbox(sandbox: dict | None, deployment: dict) -> dict:
     """Retain static user settings while applying managed node connectivity."""
     managed = deployment.get("managed_connection")
     if not isinstance(managed, dict):
+        if "managed_connection" in deployment:
+            raise ValueError("managed_connection must be a mapping")
         return {**deployment, **sandbox} if isinstance(sandbox, dict) else deployment
     if not isinstance(sandbox, dict) or sandbox.get("type") != deployment.get("type"):
         raise ValueError("AgentOS workspace sandbox requires deployment migration before startup")
