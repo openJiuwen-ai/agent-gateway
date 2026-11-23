@@ -4519,6 +4519,8 @@ class MessageHandler(ABC):
                     run_id=str(data.get("run_id") or ""),
                     user_id=owner_user_id or None,
                     session_id=session_id,
+                    group_id=tenant_group_id or None,
+                    bot_id=tenant_bot_id or None,
                 )
             else:
                 data = {"error": f"unknown cron action: {action}"}
@@ -4531,6 +4533,8 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
                 session_id=session_id,
+                group_id=tenant_group_id or None,
+                bot_id=tenant_bot_id or None,
             )
 
         if not channel_id:
@@ -4556,6 +4560,34 @@ class MessageHandler(ABC):
         )
         await self.publish_robot_messages(out)
 
+    @staticmethod
+    def _cron_ack_route_metadata(
+        *,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """ACK 必须带对话租户，否则企业版 identity_from_envelope 会 FORBIDDEN。
+
+        develop 已补 session_id（粘 Pod）；企业版还要求真实 group/bot，
+        不能退回 ``default``。个人版缺省时仍可由 Runtime 填 default。
+        """
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
+        uid = str(user_id or "").strip()
+        gid = str(group_id or "").strip()
+        bid = str(bot_id or "").strip()
+        if not (uid or gid or bid):
+            return None
+        routing: dict[str, str] = {}
+        if uid:
+            routing["user_id"] = uid
+        if gid:
+            routing["group_id"] = gid
+        if bid:
+            routing["bot_id"] = bid
+        return apply_routing_metadata({}, routing)
+
     async def _push_cron_command_ack(
         self,
         *,
@@ -4563,6 +4595,8 @@ class MessageHandler(ABC):
         data: Any,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
@@ -4575,6 +4609,9 @@ class MessageHandler(ABC):
                 params={"command_id": command_id, "data": data},
                 is_stream=False, timestamp=time.time(), user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client, env, label="cron.command.ack"
@@ -4590,6 +4627,8 @@ class MessageHandler(ABC):
         run_id: str,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer（P2）。
 
@@ -4615,6 +4654,9 @@ class MessageHandler(ABC):
                 timestamp=time.time(),
                 user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client,
