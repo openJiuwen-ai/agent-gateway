@@ -2737,6 +2737,17 @@ class FeishuChannel(BaseChannel):
         """
         from agent_gateway.common.paths import get_agent_workspace_dir
         workspace_dir = str(get_agent_workspace_dir())
+        workspace_root = os.path.realpath(workspace_dir)
+
+        def is_workspace_file(path: str) -> bool:
+            try:
+                resolved = os.path.realpath(path)
+                return (
+                    os.path.commonpath((workspace_root, resolved)) == workspace_root
+                    and os.path.isfile(resolved)
+                )
+            except ValueError:
+                return False
 
         seen: set[str] = set()
         result: list[str] = []
@@ -2745,17 +2756,21 @@ class FeishuChannel(BaseChannel):
         # 支持 Linux (/home/xxx/.jiuwenswarm/...) 和 Windows (C:\Users\xxx\.jiuwenswarm\...)
         for m in _workspace_path_pattern(workspace_dir).findall(text):
             m = m.rstrip(".,;:!?)")
-            if m not in seen and os.path.isfile(m):
-                seen.add(m)
-                result.append(m)
+            resolved = os.path.realpath(m)
+            if resolved not in seen and is_workspace_file(resolved):
+                seen.add(resolved)
+                result.append(resolved)
 
         # 模式2：从引号或书名号中提取文件名，在 workspace 下查找
         # 匹配 '文件名.ext'、"文件名.ext"、《文件名.ext》
         for fname in _WORKSPACE_FILE_NAME_PATTERN.findall(text):
+            if "/" in fname or "\\" in fname or os.path.isabs(fname):
+                continue
             fpath = os.path.join(workspace_dir, fname)
-            if fpath not in seen and os.path.isfile(fpath):
-                seen.add(fpath)
-                result.append(fpath)
+            resolved = os.path.realpath(fpath)
+            if resolved not in seen and is_workspace_file(resolved):
+                seen.add(resolved)
+                result.append(resolved)
 
         return result
 
