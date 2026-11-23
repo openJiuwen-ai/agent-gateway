@@ -918,7 +918,7 @@ def test_mapped_route_table_unique_http_surfaces():
     assert "cron.job.list" in rpc_methods
     assert "cron.job.run_now" in rpc_methods
     assert "permissions.tools.get" in rpc_methods
-    assert "skills.enterprise.list" in rpc_methods
+    assert "skills.source.providers" in rpc_methods
     assert "harness.export" in rpc_methods
 
 
@@ -983,30 +983,6 @@ def test_permissions_tools_patch_path_param(app_with_mock):
     assert kwargs["method"] == "permissions.tools.update"
     assert kwargs["params"]["tool"] == "bash"
     assert kwargs["params"]["level"] == "deny"
-
-
-def test_skills_enterprise_list_tenant_headers(app_with_mock):
-    app, dispatch = app_with_mock
-
-    async def _disp(*args, **kwargs):
-        rid = kwargs.get("request_id") or "r"
-        peer = _FakePeer([
-            {"type": "res", "id": rid, "ok": True, "payload": {"skills": []}},
-        ])
-        return peer, rid, "s"
-
-    dispatch.side_effect = _disp
-    client = TestClient(app)
-    r = client.get(
-        "/api/v1/skills/enterprise",
-        headers={"X-Group-Id": "g1", "X-Bot-Id": "b1", "X-User-Id": "u1"},
-    )
-    assert r.status_code == 200
-    params = dispatch.await_args.kwargs["params"]
-    assert dispatch.await_args.kwargs["method"] == "skills.enterprise.list"
-    assert params["group_id"] == "g1"
-    assert params["bot_id"] == "b1"
-    assert params["user_id"] == "u1"
 
 
 def test_harness_packages_get(app_with_mock):
@@ -1216,7 +1192,7 @@ def test_openapi_includes_settings_and_workspace(app_with_mock):
     assert "/api/v1/cron/jobs" in paths
     assert "/api/v1/cron/jobs/{id}/actions/run-now" in paths
     assert "/api/v1/permissions/tools" in paths
-    assert "/api/v1/skills/enterprise" in paths
+    assert "/api/v1/skills/sources" in paths
     assert "/api/v1/harness/packages" in paths
     assert "/api/v1/catalog" in paths
 

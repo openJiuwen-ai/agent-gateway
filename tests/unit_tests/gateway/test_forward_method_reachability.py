@@ -27,11 +27,6 @@ _KNOWN_UNREACHABLE: dict[str, str] = {
     # 待 connector 作者确认真实端点后再决定「补 Agent 端点」还是「撤回映射」。
     "mcp.sources.providers": "connector 广场 SPI 未在 Agent 侧落地（commit b9a5dcae2）",
     "session.assets.remove": "协议包未发布该成员，当前无调用方",
-    "skills.enterprise.install": "企业技能仓方法待协议包发布",
-    "skills.enterprise.list": "企业技能仓方法待协议包发布",
-    "skills.enterprise.source.providers": "企业技能仓方法待协议包发布",
-    "skills.enterprise.source.search": "企业技能仓方法待协议包发布",
-    "skills.enterprise.uninstall": "企业技能仓方法待协议包发布",
     "skills.source.install": "技能来源方法待协议包发布",
     "skills.source.providers": "技能来源方法待协议包发布",
     "skills.source.search": "技能来源方法待协议包发布",

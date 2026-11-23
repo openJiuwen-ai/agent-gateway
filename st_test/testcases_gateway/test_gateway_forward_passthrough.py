@@ -383,11 +383,6 @@ def test_unreachable_forward_methods() -> None:
     expected = {
         "mcp.sources.providers",
         "session.assets.remove",
-        "skills.enterprise.install",
-        "skills.enterprise.list",
-        "skills.enterprise.source.providers",
-        "skills.enterprise.source.search",
-        "skills.enterprise.uninstall",
         "skills.source.install",
         "skills.source.providers",
         "skills.source.search",
@@ -406,7 +401,6 @@ def test_unreachable_forward_methods() -> None:
             "session.assets.remove",
             "skills.update",
             "skills.source.search",
-            "skills.enterprise.list",
         }
     ),
 )

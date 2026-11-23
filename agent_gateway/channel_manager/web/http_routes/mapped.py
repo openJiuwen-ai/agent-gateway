@@ -361,25 +361,6 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
-        "GET", "/skills/enterprise", "skills.enterprise.list",
-        "skills", "企业租户已装技能（Gateway 本地表）",
-        query_keys=_TENANT_QUERY,
-    ),
-    WebHttpMappedRoute(
-        "POST", "/skills/enterprise/actions/install", "skills.enterprise.install",
-        "skills", "企业租户安装",
-        query_keys=_TENANT_QUERY,
-        accept_body=True,
-        bind_session_param=True,
-    ),
-    WebHttpMappedRoute(
-        "POST", "/skills/enterprise/actions/uninstall", "skills.enterprise.uninstall",
-        "skills", "企业租户卸载",
-        query_keys=_TENANT_QUERY,
-        accept_body=True,
-        bind_session_param=True,
-    ),
-    WebHttpMappedRoute(
         "GET", "/skills/marketplace", "skills.marketplace.list",
         "skills", "技能市场列表",
         query_keys=_SKILL_SESSION_QUERY,
@@ -516,25 +497,6 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     WebHttpMappedRoute(
         "POST", "/skills/actions/update", "skills.update",
         "skills", "更新已安装技能",
-        query_keys=_TENANT_QUERY,
-        accept_body=True,
-        bind_session_param=True,
-    ),
-    WebHttpMappedRoute(
-        "GET", "/skills/enterprise/sources", "skills.enterprise.source.providers",
-        "skills", "列出企业技能源",
-        query_keys=_TENANT_QUERY + _SKILL_SESSION_QUERY,
-        bind_session_param=True,
-    ),
-    WebHttpMappedRoute(
-        "GET", "/skills/enterprise/sources/search", "skills.enterprise.source.search",
-        "skills", "搜索企业技能源",
-        query_keys=("source_id", "q", "page", "page_size") + _TENANT_QUERY + _SKILL_SESSION_QUERY,
-        bind_session_param=True,
-    ),
-    WebHttpMappedRoute(
-        "POST", "/skills/enterprise/sources/actions/search", "skills.enterprise.source.search",
-        "skills", "搜索企业技能源（含扩展筛选）",
         query_keys=_TENANT_QUERY,
         accept_body=True,
         bind_session_param=True,
