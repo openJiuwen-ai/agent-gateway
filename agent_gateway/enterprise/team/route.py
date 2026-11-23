@@ -222,7 +222,7 @@ class TeamRouteResolver:
         try:
             self._store.touch(team_session_id)
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("[TeamRoute] touch failed", exc_info=True)
 
 
 def extract_runtime_ready_payload(chunk: Any) -> dict[str, Any] | None:
