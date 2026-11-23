@@ -107,7 +107,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
     builtin_image = settings.get('builtin_image')
-    if 'builtin_image' not in settings and adx_router_selected(config):
+    if 'builtin_image' not in settings and not settings.get('builtin_launch'):
         builtin_image = 'jiuwenswarm-agent-runtime:latest'
     elif builtin_image not in (None, ''):
         builtin_image = _text_setting(settings, 'builtin_image')
