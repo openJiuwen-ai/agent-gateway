@@ -1,15 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Route V2 package-management requests to the Gateway or the AgentServer.
+"""Forward V2 package-management requests to the AgentServer.
 
-Gateway and AgentServer share ``extension_pkgs``; a request belongs to the
-Gateway only when every addressed source declares ``package.domain: gateway``. Anything
-else keeps the previous behaviour: the frame is proxied to the owning
-AgentServer unchanged. Management frames never enter the extension bus, so an
-extension cannot intercept its own uninstall.
-
-Package file listing and reading always go to the AgentServer, which owns
-package source resolution for both domains.
+The AgentServer owns install, uninstall, reload, enablement and every catalog
+view for both package domains. The Gateway forwards each management frame
+unchanged, then reconciles its own domain members from the shared records so
+Gateway packages load or unload exactly as they do at install time. Management
+frames never enter the extension bus, so an extension cannot intercept its own
+uninstall.
 
 The authentication gate applies to every inbound frame, including management
 frames: a request without an ``authorization`` header is answered with
@@ -20,70 +18,31 @@ reachable and the first login package can be installed.
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
-import tarfile
-import tempfile
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import fields, is_dataclass
-from pathlib import Path
-from tarfile import ReadError, TarError
+from collections.abc import Awaitable, Callable
 from typing import Any
-from zipfile import BadZipFile, ZipFile
-
-from openjiuwen.core.common.exception.codes import StatusCode
-from openjiuwen.core.extension import ActivationReport, ExtensionFailure
-from openjiuwen.core.extension.errors import operation_error
-from openjiuwen.core.extension.package_manager import PackageManager
-from openjiuwen.core.extension.versions import parse_version
 
 from e2a.message import ReqMethod
-from agent_gateway.extensions_v2.config import resolve_examples_dir
-from agent_gateway.extensions_v2.manifest import (
-    DOMAIN_AGENT_SERVER,
-    DOMAIN_GATEWAY,
-)
-from agent_gateway.extensions_v2.management.catalog import (
-    PackageNotFound,
-    catalog_facts,
-    list_installed,
-    list_presets,
-    package_detail,
-    resolve_install_source,
-)
-from agent_gateway.extensions_v2.management.notifications import notify_disabled, notify_installed
-from agent_gateway.extensions_v2.management.hub import (
-    HubPackage,
-    HubUnavailable,
-    download_package,
-    query_gateway_package,
-)
-from agent_gateway.routing.e2a_proxy import fetch_agent_unary, proxy_unary_request
-from agent_gateway.extensions_v2.management.install_state import (
-    ExtensionInstallRecord,
-    ExtensionInstallState,
-)
 
-MANAGEMENT_METHODS = frozenset(
+from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
+_SYNC_METHODS = frozenset(
     {
-        ReqMethod.EXTENSIONS_V2_QUERY.value,
-        ReqMethod.EXTENSIONS_V2_CATALOG.value,
-        ReqMethod.EXTENSIONS_V2_SHOW.value,
-        ReqMethod.EXTENSIONS_V2_IMPORT.value,
-        ReqMethod.EXTENSIONS_V2_INSTALL.value,
-        ReqMethod.EXTENSIONS_V2_UNINSTALL.value,
-        ReqMethod.EXTENSIONS_V2_RELOAD.value,
-        ReqMethod.EXTENSIONS_V2_SET_ENABLED.value,
+        ReqMethod.EXTENSIONS_V2_IMPORT,
+        ReqMethod.EXTENSIONS_V2_INSTALL,
+        ReqMethod.EXTENSIONS_V2_UNINSTALL,
+        ReqMethod.EXTENSIONS_V2_RELOAD,
+        ReqMethod.EXTENSIONS_V2_SET_ENABLED,
     }
 )
-INVALID_PARAMS_CODE = "INVALID_PARAMS"
-OPERATION_FAILED_CODE = "EXTENSION_OPERATION_FAILED"
 
 logger = logging.getLogger(__name__)
 
 
 def register_extension_package_handlers(channel: Any, resolve_client: Callable[[], Any]) -> None:
-    """Register the domain split; the Gateway still forwards agent packages."""
+    """Forward every management frame and sync this host from shared records."""
 
     def create_handler(method: ReqMethod) -> Callable[..., Awaitable[None]]:
         async def handler(
@@ -93,17 +52,23 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
             session_id: str | None,
             user_id: str | None = None,
         ) -> None:
-            if await _handle_locally(
-                channel=channel,
-                resolve_client=resolve_client,
-                ws=ws,
-                req_id=req_id,
-                params=params,
-                session_id=session_id,
-                user_id=user_id,
-                method=method,
-            ):
+            # Install/import (and enabling a container) may return pending
+            # members; load this domain while the AgentServer works, then once
+            # more before the response is sent.
+            enabling = method == ReqMethod.EXTENSIONS_V2_SET_ENABLED and params.get("enable") is True
+            if method in (ReqMethod.EXTENSIONS_V2_IMPORT, ReqMethod.EXTENSIONS_V2_INSTALL) or enabling:
+                await _forward_with_member_sync(
+                    channel=channel,
+                    resolve_client=resolve_client,
+                    ws=ws,
+                    req_id=req_id,
+                    params=params,
+                    session_id=session_id,
+                    user_id=user_id,
+                    method=method,
+                )
                 return
+            # The AgentServer owns package management for both domains.
             await proxy_unary_request(
                 channel=channel,
                 agent_client=resolve_client(),
@@ -117,9 +82,8 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
                 timeout_seconds=_request_timeout(),
                 drop_params=("session_id",),
                 preserve_error_payload=True,
-                transform_payload=(
-                    _gateway_detail_status if method is ReqMethod.EXTENSIONS_V2_SHOW else None
-                ),
+                on_done=_sync_after_management if method in _SYNC_METHODS else None,
+                transform_payload=_refresh_management_payload if method in _SYNC_METHODS else None,
             )
 
         return handler
@@ -139,907 +103,135 @@ def register_extension_package_handlers(channel: Any, resolve_client: Callable[[
         channel.register_method(method.value, create_handler(method))
 
 
-async def _handle_locally(
+_SYNC_POLL_SECONDS = 0.5
+
+
+async def _sync_gateway_members() -> None:
+    """Load or unload this host's members without failing the management frame."""
+
+    from agent_gateway.extensions_v2.assembly import get_gateway_runtime
+
+    runtime = get_gateway_runtime()
+    if runtime is None or not runtime.config.enabled:
+        return
+    try:
+        await runtime.sync_container_members()
+    except Exception:  # noqa: BLE001 - the AgentServer response stays authoritative
+        logger.warning("[GatewayExtensions] member sync after management failed", exc_info=True)
+
+
+async def _sync_after_management(ok: bool, payload: dict[str, Any]) -> None:
+    """Reconcile this host from shared records after every management response.
+
+    A failed install or version switch rolls the records back on the AgentServer;
+    the Gateway must also release anything it loaded from the temporary claims.
+    """
+
+    del ok, payload
+    await _sync_gateway_members()
+
+
+async def _forward_with_member_sync(
     *,
     channel: Any,
     resolve_client: Callable[[], Any],
     ws: Any,
     req_id: str,
-    params: Mapping[str, Any],
+    params: dict[str, Any],
     session_id: str | None,
     user_id: str | None,
     method: ReqMethod,
-) -> bool:
-    """Return True when the Gateway answered the frame itself."""
+) -> None:
+    """Forward a container request and load this domain while the AgentServer works.
 
-    from agent_gateway.extensions_v2.assembly import get_gateway_runtime
+    The metadata flag asks the AgentServer to require this host's member
+    results, so one container succeeds only when every member loaded.
+    """
 
-    if method.value not in MANAGEMENT_METHODS or not isinstance(params, Mapping):
-        return False
-    runtime = get_gateway_runtime()
-    enabled = runtime is not None and runtime.config.enabled
-    manager = runtime.packages if enabled else None
-
-    if method is ReqMethod.EXTENSIONS_V2_IMPORT:
-        await _import_local(
+    task = asyncio.create_task(
+        proxy_unary_request(
             channel=channel,
+            agent_client=resolve_client(),
             ws=ws,
             req_id=req_id,
             params=params,
             session_id=session_id,
             user_id=user_id,
-            runtime=runtime if enabled else None,
-            resolve_client=resolve_client,
+            req_method=method,
+            label=method.value,
+            timeout_seconds=_request_timeout(),
+            drop_params=("session_id",),
+            preserve_error_payload=True,
+            on_done=_sync_after_management,
+            transform_payload=_refresh_management_payload,
+            metadata={"extensions_v2_require_all_members": True},
         )
-        return True
-
-    if manager is None:
-        return False
-
-    if method is ReqMethod.EXTENSIONS_V2_QUERY:
-        package_id = params.get("package_id")
-        if package_id is None:
-            agent_client = resolve_client()
-            if agent_client is None:
-                return False
-            ok, payload = await fetch_agent_unary(
-                agent_client=agent_client,
-                req_method=method,
-                params=dict(params),
-                session_id=session_id,
-                user_id=user_id,
-                channel_id=channel.channel_id,
-                label=method.value,
-                timeout_seconds=_request_timeout(),
-            )
-            if not ok:
-                await _respond(
-                    channel,
-                    ws,
-                    req_id,
-                    ok=False,
-                    payload=payload,
-                    error=str(payload.get("error") or f"{method.value} failed"),
-                    code=str(payload.get("code") or OPERATION_FAILED_CODE),
-                )
-                return True
-            remote = payload.get("state")
-            if not isinstance(remote, Mapping):
-                await _respond(
-                    channel,
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="AgentServer returned an invalid extension query state",
-                    code=OPERATION_FAILED_CODE,
-                )
-                return True
-            await _respond(
-                channel,
-                ws,
-                req_id,
-                ok=True,
-                payload={"state": _merge_query_states(manager.query(), remote)},
-            )
-            return True
-        if not isinstance(package_id, str) or not package_id:
-            return False
-        if await manager.get_package_domain(package_id) != DOMAIN_GATEWAY:
-            return False
-        await _respond(channel, ws, req_id, ok=True, payload={"state": manager.query(package_id)})
-        return True
-
-    if method is ReqMethod.EXTENSIONS_V2_CATALOG:
-        scope = params.get("scope", "catalog")
-        if scope not in {"catalog", "mine"}:
-            return False
-        examples_dir = resolve_examples_dir()
-        state = manager.query()
-        if scope == "mine":
-            packages = list_installed(examples_dir, state)
-        else:
-            packages = list_presets(examples_dir, state)
-        cache = None
-        agent_client = resolve_client()
-        if agent_client is not None:
-            ok, payload = await fetch_agent_unary(
-                agent_client=agent_client,
-                req_method=method,
-                params=dict(params),
-                session_id=session_id,
-                user_id=user_id,
-                channel_id=channel.channel_id,
-                label=method.value,
-                timeout_seconds=_request_timeout(),
-            )
-            remote = payload.get("packages") if ok else None
-            if isinstance(remote, list):
-                packages = _merge_packages(packages, remote, state)
-                cached = payload.get("cache")
-                cache = dict(cached) if ok and isinstance(cached, Mapping) else None
-        response: dict[str, Any] = {"packages": packages}
-        if cache is not None:
-            response["cache"] = cache
-        await _respond(channel, ws, req_id, ok=True, payload=response)
-        return True
-
-    if method is ReqMethod.EXTENSIONS_V2_SHOW:
-        package_id = params.get("package_id")
-        if not isinstance(package_id, str) or not package_id:
-            return False
-        examples_dir = resolve_examples_dir()
-        store = ExtensionInstallState.for_install_dir(manager.install_dir)
-        record = store.get(package_id)
-        requested = params.get("version")
-        requested = requested.strip() if isinstance(requested, str) else ""
-        if (
-            record is not None
-            and record.origin == "hub"
-            and record.asset_id
-            and requested
-            and requested != record.version
-        ):
-            # Another Hub version is not installed locally; AgentServer serves it.
-            return False
-        try:
-            detail = package_detail(package_id, examples_dir, manager.query())
-        except PackageNotFound:
-            return False
-        await _respond(channel, ws, req_id, ok=True, payload={"package": detail})
-        return True
-
-    if method is ReqMethod.EXTENSIONS_V2_INSTALL:
-        examples_dir = resolve_examples_dir()
-        store = ExtensionInstallState.for_install_dir(manager.install_dir)
-        version = params.get("version")
-        version = version.strip() if isinstance(version, str) else ""
-        hub_packages: list[HubPackage] = []
-        if "package_ids" in params:
-            ids = params.get("package_ids")
-            if not isinstance(ids, list) or not ids or not all(isinstance(item, str) for item in ids):
-                await _respond(
-                    channel,
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="package_ids must be a nonempty array of string ids",
-                    code=INVALID_PARAMS_CODE,
-                )
-                return True
-            paths = []
-            hub_targets: list[str] = []
-            for package_id in ids:
-                install_path: Path | None = None
-                try:
-                    install_path = resolve_install_source(
-                        package_id,
-                        examples_dir=examples_dir,
-                        install_dir=manager.install_dir,
-                    )
-                except PackageNotFound:
-                    pass
-                except ValueError:
-                    await _respond(
-                        channel, ws, req_id, ok=False, error="package_ids contains an invalid id", code=INVALID_PARAMS_CODE
-                    )
-                    return True
-                installed_record = store.get(package_id)
-                if install_path is not None:
-                    stored_root = manager.install_dir / package_id / version if version else None
-                    version_missing = (
-                        bool(version)
-                        and not (stored_root and stored_root.is_dir())
-                        and _manifest_version(install_path) != version
-                    )
-                    if not (
-                        version_missing
-                        and installed_record is not None
-                        and installed_record.origin == "hub"
-                        and installed_record.asset_id
-                    ):
-                        paths.append(install_path)
-                        continue
-                hub_targets.append(
-                    installed_record.asset_id
-                    if installed_record is not None and installed_record.origin == "hub" and installed_record.asset_id
-                    else package_id
-                )
-            try:
-                hub_packages = [package for package in await _resolve_hub_packages(hub_targets, version) if package]
-            except HubUnavailable as exc:
-                logger.info("[GatewayExtensions] Hub lookup skipped: %s", exc)
-                hub_packages = []
-            if len(hub_packages) != len(hub_targets):
-                # Unknown or AgentServer-owned targets keep the previous forwarding behaviour.
-                if paths:
-                    await _respond(
-                        channel,
-                        ws,
-                        req_id,
-                        ok=False,
-                        error="gateway and agent packages cannot be installed in one request",
-                        code=INVALID_PARAMS_CODE,
-                    )
-                    return True
-                return False
-        else:
-            paths, error = _install_paths(params)
-            if error is not None:
-                await _respond(channel, ws, req_id, ok=False, error=error, code=INVALID_PARAMS_CODE)
-                return True
-        owners: list[bool] = []
-        for path in paths:
-            try:
-                owners.append(await manager.get_source_domain(path) == DOMAIN_GATEWAY)
-            except Exception:  # noqa: BLE001 - an unreadable source belongs to neither side
-                await _respond(
-                    channel,
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="install source is not a valid package",
-                    code=INVALID_PARAMS_CODE,
-                )
-                return True
-        if owners:
-            if not any(owners) and not hub_packages:
-                return False
-            if not all(owners):
-                await _respond(
-                    channel,
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="gateway and agent packages cannot be installed in one request",
-                    code=INVALID_PARAMS_CODE,
-                )
-                return True
-        if "package_ids" in params:
-            reports = []
-            for path in paths:
-                package_id = _manifest_package_id(path)
-                manifest_version = _manifest_version(path)
-                target_version = version or manifest_version
-                if not package_id or not target_version:
-                    await _respond(
-                        channel,
-                        ws,
-                        req_id,
-                        ok=False,
-                        error="install source is not a valid package",
-                        code=INVALID_PARAMS_CODE,
-                    )
-                    return True
-                stored_root = manager.install_dir / package_id / target_version
-                if not stored_root.is_dir() and manifest_version != target_version:
-                    await _respond(
-                        channel,
-                        ws,
-                        req_id,
-                        ok=False,
-                        error=f"package {package_id} version {target_version} not found",
-                        code="PACKAGE_NOT_FOUND",
-                    )
-                    return True
-                reports.append(
-                    await manager.enable_version(
-                        package_id,
-                        target_version,
-                        source=None if stored_root.is_dir() else path,
-                    )
-                )
-            hub_assets: dict[str, str] = {}
-            for package in hub_packages:
-                try:
-                    report = await _activate_hub_package(manager, package)
-                except Exception as exc:  # noqa: BLE001 - answer the frame instead of dropping it
-                    logger.exception(
-                        "[GatewayExtensions] cannot activate Hub package %s", package.package_id
-                    )
-                    report = _hub_failure(package, exc)
-                if report.status == "SUCCESS":
-                    hub_assets[package.package_id] = package.asset_id
-                reports.append(report)
-        else:
-            reports = await manager.install(paths)
-            hub_assets = {}
-        origin = _install_origin(paths, examples_dir, store) if "package_ids" in params else "user"
-        _record_installed(reports, manager, store, origin=origin, hub_assets=hub_assets)
-        ui_notified = await notify_installed(runtime, [report.package_id for report in reports if report.status == "SUCCESS"])
-        await _respond(
-            channel,
-            ws,
-            req_id,
-            ok=True,
-            payload={
-                "reports": [_encode(report) for report in reports],
-                "installed_packages": manager.query()["installed_packages"],
-                "ui_notified": ui_notified,
-            },
-        )
-        return True
-
-    package_id = params.get("package_id")
-    if not isinstance(package_id, str) or not package_id:
-        return False
-    domain = await manager.get_package_domain(package_id)
-    if domain != DOMAIN_GATEWAY and not (domain is None and manager.owns(package_id)):
-        return False
-    if method is ReqMethod.EXTENSIONS_V2_SET_ENABLED:
-        if not isinstance(params.get("enable"), bool):
-            await _respond(
-                channel,
-                ws,
-                req_id,
-                ok=False,
-                error="set enabled requires package_id and boolean enable",
-                code=INVALID_PARAMS_CODE,
-            )
-            return True
-        report = await manager.set_enabled(package_id, params["enable"])
-        payload = {"reports": [_encode(report)]}
-        if report.status == "SUCCESS":
-            store = ExtensionInstallState.for_install_dir(manager.install_dir)
-            if params["enable"]:
-                version = _active_version(manager, package_id)
-                if version:
-                    store.mark(package_id, version=version, active=True, enabled=True)
-                payload["ui_notified"] = await notify_installed(runtime, [package_id])
-            else:
-                store.mark(package_id, active=False, enabled=False)
-                payload["ui_notified"] = await notify_disabled(runtime, [package_id])
-        await _respond(channel, ws, req_id, ok=True, payload=payload)
-        return True
-    version = params.get("version")
-    version = version.strip() if isinstance(version, str) else ""
+    )
     try:
-        if method is ReqMethod.EXTENSIONS_V2_UNINSTALL:
-            report = (
-                await manager.uninstall(package_id, version)
-                if version
-                else await manager.uninstall(package_id)
-            )
-        else:
-            report = await manager.reload(package_id)
-    except Exception as exc:  # noqa: BLE001 - answer the frame instead of dropping it
-        logger.exception("[GatewayExtensions] %s failed for %s", method.value, package_id)
-        await _respond(
-            channel,
-            ws,
-            req_id,
-            ok=False,
-            error=f"{method.value} failed: {exc}",
-            code=OPERATION_FAILED_CODE,
-        )
-        return True
-    payload = {"reports": [_encode(report)]}
-    if report.status == "SUCCESS":
-        store = ExtensionInstallState.for_install_dir(manager.install_dir)
-        if method is ReqMethod.EXTENSIONS_V2_UNINSTALL:
-            store.remove(package_id, version)
-        else:
-            version = _active_version(manager, package_id)
-            if version:
-                store.mark(package_id, version=version, active=True, enabled=True)
-    if method is ReqMethod.EXTENSIONS_V2_RELOAD and report.status == "SUCCESS":
-        payload["ui_notified"] = await notify_installed(runtime, [report.package_id])
-    await _respond(channel, ws, req_id, ok=True, payload=payload)
-    return True
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=_SYNC_POLL_SECONDS)
+            if done:
+                break
+            await _sync_gateway_members()
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
 
 
-def _active_version(manager: Any, package_id: str) -> str:
-    active = manager.query(package_id).get("active") or []
-    return str(active[0].get("version") or "") if active else ""
+def _refresh_management_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite results after this host processed its domain's copies."""
 
-
-async def _resolve_hub_packages(targets: list[str], version: str) -> list[HubPackage | None]:
-    """Resolve Hub install targets in request order.
-
-    Raises ``HubUnavailable`` for transport failures. ``None`` marks a target the
-    Hub does not own (unknown asset or an AgentServer package), which keeps the
-    frame on the previous forwarding path.
-    """
-
-    return [await query_gateway_package(target, version) for target in targets]
-
-
-async def _activate_hub_package(manager: Any, package: HubPackage) -> Any:
-    """Activate a downloaded Hub version, downloading it only when it is not stored yet."""
-
-    stored_root = manager.install_dir / package.package_id / package.version
-    if stored_root.is_dir():
-        return await manager.enable_version(package.package_id, package.version)
-    with tempfile.TemporaryDirectory(prefix="gateway-hub-") as folder:
-        archive = Path(folder) / f"{package.package_id}-{package.version}.zip"
-        await download_package(package, archive)
-        return await manager.enable_version(package.package_id, package.version, source=archive)
-
-
-def _hub_failure(package: HubPackage, exc: Exception) -> ActivationReport:
-    """Turn a Hub download or activation failure into the report the frame returns."""
-
-    error = (
-        exc.as_error()
-        if isinstance(exc, ExtensionFailure)
-        else operation_error(
-            StatusCode.EXTENSION_SOURCE_INVALID,
-            package_id=package.package_id,
-            reason=str(exc) or type(exc).__name__,
-        )
-    )
-    return ActivationReport(
-        plan_id="",
-        package_id=package.package_id,
-        operation="install",
-        status="FAILED",
-        previous_generation=None,
-        current_generation=None,
-        error=error,
-    )
-
-
-async def _import_local(
-    *,
-    channel: Any,
-    ws: Any,
-    req_id: str,
-    params: Mapping[str, Any],
-    session_id: str | None,
-    user_id: str | None,
-    runtime: Any | None,
-    resolve_client: Callable[[], Any],
-) -> None:
-    """Install one local package as a Gateway extension, an Agent extension or an Agent plugin."""
-
-    raw = params.get("path")
-    if not isinstance(raw, str) or not raw.strip():
-        await _respond(channel, ws, req_id, ok=False, error="path must be a nonempty string", code=INVALID_PARAMS_CODE)
-        return
-    path = Path(raw.strip())
-    if not path.is_absolute() or not path.exists():
-        await _respond(
-            channel, ws, req_id, ok=False, error="import requires an existing absolute path", code=INVALID_PARAMS_CODE
-        )
-        return
-
-    domain = _package_domain(path)
-    if domain is None:
-        await _respond(
-            channel,
-            ws,
-            req_id,
-            ok=False,
-            error="manifest.json is missing or declares an unsupported package_type or domain",
-            code=INVALID_PARAMS_CODE,
-        )
-        return
-    if domain == DOMAIN_GATEWAY:
-        if runtime is None:
-            await _respond(
-                channel, ws, req_id, ok=False, error="gateway extensions are disabled", code=INVALID_PARAMS_CODE
-            )
-            return
-        reports = await runtime.packages.install([path])
-        failed = next((report for report in reports if report.status != "SUCCESS"), None)
-        if failed is not None:
-            message = getattr(getattr(failed, "error", None), "message", None) or "package install failed"
-            await _respond(channel, ws, req_id, ok=False, error=str(message), code="INSTALL_FAILED")
-            return
-        _record_installed(
-            reports,
-            runtime.packages,
-            ExtensionInstallState.for_install_dir(runtime.packages.install_dir),
-            origin="user",
-        )
-        ui_notified = await notify_installed(runtime, [report.package_id for report in reports])
-        await _respond(
-            channel,
-            ws,
-            req_id,
-            ok=True,
-            payload={"kind": "extension", "reports": [_encode(report) for report in reports], "ui_notified": ui_notified},
-        )
-        return
-
-    method = ReqMethod.EXTENSIONS_V2_INSTALL if domain == DOMAIN_AGENT_SERVER else ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL
-    forwarded = {"paths": [str(path)]} if domain == DOMAIN_AGENT_SERVER else {"path": str(path)}
-    ok, payload = await fetch_agent_unary(
-        agent_client=resolve_client(),
-        req_method=method,
-        params=forwarded,
-        session_id=session_id,
-        user_id=user_id,
-        channel_id=channel.channel_id,
-        label=method.value,
-        timeout_seconds=_request_timeout(),
-    )
-    if not ok:
-        await _respond(
-            channel,
-            ws,
-            req_id,
-            ok=False,
-            error=str(payload.get("error") or "package install failed"),
-            code=str(payload.get("code") or "INSTALL_FAILED"),
-        )
-        return
-    kind = "extension" if domain == DOMAIN_AGENT_SERVER else "plugin"
-    await _respond(channel, ws, req_id, ok=True, payload={**payload, "kind": kind})
-
-
-_PACKAGE_TYPES = {"plugin": "plugin", "extension": DOMAIN_AGENT_SERVER}
-_KNOWN_DOMAINS = frozenset({DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY})
-_MANIFEST_LIMIT = 64 * 1024
-
-
-def _package_domain(path: Path) -> str | None:
-    """Classify a source by ``package.domain`` and ``package_type`` without importing it."""
-
-    domain = _extension_source_domain(path)
-    if domain is not None:
-        return domain
-    manifest = _read_manifest(path)
-    if manifest is None:
-        return None
-    package = manifest.get("package")
-    domain = package.get("domain") if isinstance(package, Mapping) else None
-    if domain is not None:
-        value = domain.strip().lower() if isinstance(domain, str) else ""
-        return value if value in _KNOWN_DOMAINS else None
-    package_type = manifest.get("package_type")
-    return _PACKAGE_TYPES.get(package_type) if isinstance(package_type, str) else None
-
-
-def _extension_source_domain(path: Path) -> str | None:
-    """Read an extension source with Core's ZIP-root rules before routing it."""
-
-    try:
-        with PackageManager(path.parent).open_source(path) as opened:
-            domain = (opened.manifest.domain or "").strip().lower() or DOMAIN_AGENT_SERVER
-    except ExtensionFailure:
-        return None
-    return domain if domain in _KNOWN_DOMAINS else None
-
-
-def _read_manifest(path: Path) -> Mapping[str, Any] | None:
-    """Read ``manifest.json`` from a directory or zip source."""
-
-    try:
-        if path.is_dir():
-            raw = (path / "manifest.json").read_bytes()
-        elif any(str(path).lower().endswith(suffix) for suffix in (".tar", ".tar.gz", ".tgz")):
-            with tarfile.open(path, "r:*") as archive:
-                entry = archive.getmember("manifest.json")
-                if entry.size > _MANIFEST_LIMIT:
-                    return None
-                stream = archive.extractfile(entry)
-                raw = stream.read() if stream is not None else b""
-        else:
-            with ZipFile(path) as archive:
-                entry = archive.getinfo("manifest.json")
-                if entry.file_size > _MANIFEST_LIMIT:
-                    return None
-                raw = archive.read(entry)
-        document = json.loads(raw)
-    except (OSError, KeyError, BadZipFile, ReadError, TarError, UnicodeError, ValueError):
-        return None
-    return document if isinstance(document, Mapping) else None
-
-
-def _manifest_version(source: Path) -> str:
-    document = _read_manifest(source)
-    package = document.get("package") if document is not None else None
-    version = package.get("version") if isinstance(package, Mapping) else None
-    return version.strip() if isinstance(version, str) else ""
-
-
-def _manifest_package_id(source: Path) -> str:
-    document = _read_manifest(source)
-    package = document.get("package") if document is not None else None
-    package_id = package.get("id") if isinstance(package, Mapping) else None
-    return package_id.strip() if isinstance(package_id, str) else ""
-
-
-def _installed_version(state: Mapping[str, Any], package_id: str) -> str:
-    for record in state.get("active") or []:
-        if isinstance(record, Mapping) and record.get("package_id") == package_id:
-            return str(record.get("version") or "")
-    versions = [
-        str(item.get("version") or "")
-        for item in state.get("installed_packages") or []
-        if isinstance(item, Mapping) and item.get("package_id") == package_id
-    ]
-    return max(versions, key=_version_key, default="")
-
-
-def _version_key(version: str) -> tuple[int, int, int]:
-    try:
-        parsed = parse_version(version)
-    except (TypeError, ValueError):
-        return (0, 0, 0)
-    return (parsed.major, parsed.minor, parsed.patch)
-
-
-def _record_installed(
-    reports: list[Any],
-    manager: Any,
-    store: ExtensionInstallState,
-    *,
-    origin: str,
-    asset_id: str = "",
-    hub_assets: Mapping[str, str] | None = None,
-) -> None:
-    state = manager.query()
-    active_versions = {
-        str(item.get("package_id")): str(item.get("version") or "")
-        for item in state.get("active") or []
-        if isinstance(item, Mapping) and item.get("package_id")
-    }
-    installed = [
-        item for item in state.get("installed_packages") or [] if isinstance(item, Mapping)
-    ]
-    for report in reports:
-        if report.status != "SUCCESS":
-            continue
-        version = active_versions.get(report.package_id) or _installed_version(state, report.package_id)
-        facts = next(
-            (
-                item for item in installed
-                if item.get("package_id") == report.package_id and item.get("version") == version
-            ),
-            {},
-        )
-        if not version:
-            continue
-        record_origin = origin
-        record_asset_id = asset_id
-        if hub_assets and report.package_id in hub_assets:
-            record_origin = "hub"
-            record_asset_id = hub_assets[report.package_id]
-        record = ExtensionInstallRecord(
-            package_id=report.package_id,
-            version=version,
-            origin=record_origin,
-            asset_id=record_asset_id,
-            install_path=str(facts.get("install_path") or ""),
-            active=active_versions.get(report.package_id) == version,
-            enabled=active_versions.get(report.package_id) == version,
-        )
-        if record.active:
-            store.activate(record)
-        else:
-            store.mark(report.package_id, active=False, enabled=False)
-            store.upsert(record)
-
-
-def _install_paths(params: Mapping[str, Any]) -> tuple[list[Path], str | None]:
-    raw = params.get("paths")
-    if not isinstance(raw, list) or not raw:
-        return [], "paths must be a nonempty array of absolute ZIP paths"
-    paths: list[Path] = []
-    for item in raw:
-        if not isinstance(item, str) or not item.strip():
-            return [], "each path must be a nonempty string"
-        path = Path(item)
-        if not path.is_absolute() or path.suffix.lower() != ".zip":
-            return [], "install accepts existing .zip files only"
-        paths.append(path)
-    return paths, None
-
-
-def _merge_packages(
-    local: list[dict[str, Any]],
-    remote: list[Any],
-    state: Mapping[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """Merge Gateway cards into the AgentServer catalog, Gateway first."""
-
-    facts = catalog_facts(state or {})
-    merged: dict[str, dict[str, Any]] = {}
-    for item in local:
-        merged.setdefault(item["id"], item)
-    identities = {item["packageId"] for item in merged.values()}
-    for item in remote:
-        if not isinstance(item, Mapping):
-            continue
-        identity = str(item.get("packageId") or item.get("packageName") or item.get("id") or "")
-        if not identity or identity in identities:
-            continue
-        identities.add(identity)
-        card = dict(item)
-        status = facts.status(identity)
-        if status["installed"]:
-            card.update(status)
-        merged[str(card.get("id") or identity)] = card
-    return list(merged.values())
-
-
-def _merge_query_states(local: Mapping[str, Any], remote: Mapping[str, Any]) -> dict[str, Any]:
-    """Merge each host's current facts; do not trust AgentServer's legacy cross-domain rows."""
-
-    remote = _agentserver_query_state(remote)
-    local_packages = _gateway_query_packages(local)
-    remote_packages = _mapping_rows(remote.get("packages"))
-    packages = _unique_rows(local_packages, remote_packages, key=lambda item: str(item.get("package_id") or ""))
-    active = _unique_rows(
-        _mapping_rows(local.get("active")),
-        _mapping_rows(remote.get("active")),
-        key=lambda item: str(item.get("package_id") or item.get("root") or ""),
-    )
-    installed_packages = _unique_rows(
-        _mapping_rows(local.get("installed_packages")),
-        _mapping_rows(remote.get("installed_packages")),
-        key=lambda item: "\0".join(
-            str(item.get(name) or "") for name in ("package_id", "version", "install_path")
-        ),
-    )
-    installed = list(dict.fromkeys([
-        *[str(item) for item in local.get("installed") or [] if isinstance(item, (str, Path))],
-        *[str(item) for item in remote.get("installed") or [] if isinstance(item, (str, Path))],
-    ]))
-    package_ids = list(dict.fromkeys([
-        *[str(item.get("package_id")) for item in packages if item.get("package_id")],
-        *[str(item) for item in local.get("package_ids") or [] if isinstance(item, str) and item],
-        *[str(item) for item in remote.get("package_ids") or [] if isinstance(item, str) and item],
-    ]))
-    return {
-        "active": active,
-        "installed": installed,
-        "installed_packages": installed_packages,
-        "inflight": {**_mapping_value(remote.get("inflight")), **_mapping_value(local.get("inflight"))},
-        "published": {**_mapping_value(remote.get("published")), **_mapping_value(local.get("published"))},
-        "packages": packages,
-        "package_ids": package_ids,
-    }
-
-
-def _agentserver_query_state(state: Mapping[str, Any]) -> dict[str, Any]:
-    """Remove Gateway-owned facts from the legacy shared AgentServer report."""
-
-    gateway_ids: set[str] = set()
-    gateway_paths: set[str] = set()
-    for field in ("active", "installed_packages", "packages"):
-        for item in _mapping_rows(state.get(field)):
-            if str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY:
-                continue
-            package_id = str(item.get("package_id") or "")
-            if package_id:
-                gateway_ids.add(package_id)
-            path = str(item.get("install_path") or item.get("root") or "")
-            if path:
-                gateway_paths.add(path)
-
-    def agent_rows(field: str) -> list[dict[str, Any]]:
-        return [
-            item for item in _mapping_rows(state.get(field))
-            if str(item.get("package_id") or "") not in gateway_ids
-            and str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY
-        ]
-
-    return {
-        "active": agent_rows("active"),
-        "installed": [
-            str(item) for item in state.get("installed") or []
-            if isinstance(item, (str, Path)) and str(item) not in gateway_paths
-        ],
-        "installed_packages": agent_rows("installed_packages"),
-        "inflight": {
-            str(key): value for key, value in _mapping_value(state.get("inflight")).items()
-            if str(key) not in gateway_ids
-        },
-        "published": {
-            str(key): value for key, value in _mapping_value(state.get("published")).items()
-            if str(key) not in gateway_ids
-        },
-        "packages": agent_rows("packages"),
-        "package_ids": [
-            str(item) for item in state.get("package_ids") or []
-            if isinstance(item, str) and item and item not in gateway_ids
-        ],
-    }
-
-
-def _gateway_query_packages(state: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Project Gateway runtime and installed rows into the shared query report shape."""
-
-    active = {
-        str(item.get("package_id")): item
-        for item in _mapping_rows(state.get("active"))
-        if item.get("package_id")
-    }
-    identities = dict.fromkeys([
-        *active,
-        *[
-            str(item.get("package_id"))
-            for item in _mapping_rows(state.get("installed_packages"))
-            if item.get("package_id")
-        ],
-    ])
-    rows: list[dict[str, Any]] = []
-    for package_id in identities:
-        record = active.get(package_id)
-        requires = {}
-        if record is not None:
-            requires = {
-                str(item.get("package_id")): str(item.get("version") or "")
-                for item in _mapping_rows(record.get("requires_packages"))
-                if item.get("package_id")
-            }
-        rows.append({
-            "package_id": package_id,
-            "domain": DOMAIN_GATEWAY,
-            "process_id": None,
-            "active_version": str(record.get("version")) if record is not None else None,
-            "requires": requires,
-            # An installed row that is not active in this process is not a failure:
-            # the shared report only pairs "failed" with a concrete reason, and the
-            # install itself succeeded. Activations excluded by the host filter or
-            # disabled by the manifest land here with active_version None.
-            "status": "success",
-            "reason": None,
-            "pending": None,
-        })
-    return rows
-
-
-def _mapping_rows(value: Any) -> list[dict[str, Any]]:
-    return [dict(item) for item in value or [] if isinstance(item, Mapping)]
-
-
-def _mapping_value(value: Any) -> dict[str, Any]:
-    return {str(key): item for key, item in value.items()} if isinstance(value, Mapping) else {}
-
-
-def _unique_rows(
-    first: list[dict[str, Any]],
-    second: list[dict[str, Any]],
-    *,
-    key: Callable[[Mapping[str, Any]], str],
-) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
-    for item in (*first, *second):
-        identity = key(item)
-        if identity:
-            merged.setdefault(identity, item)
-    return list(merged.values())
-
-
-def _gateway_detail_status(payload: dict[str, Any]) -> dict[str, Any]:
-    """A Hub detail can be requested by asset ID for a locally installed Gateway package."""
     from agent_gateway.extensions_v2.assembly import get_gateway_runtime
 
-    detail = payload.get("package")
-    package_id = detail.get("packageId") if isinstance(detail, dict) else None
-    if not isinstance(package_id, str) or not package_id:
-        return payload
     runtime = get_gateway_runtime()
-    if runtime is None or not runtime.config.enabled:
+    if runtime is None:
         return payload
-    status = catalog_facts(runtime.packages.query(package_id)).status(package_id)
-    if not status["installed"]:
-        return payload
-    return {**payload, "package": {**detail, **status}}
+    from agent_gateway.extensions_v2.management import containers
+
+    store = ExtensionInstallState.for_install_dir(runtime.config.install_dir)
+    refreshed = containers.adjust_management_reports(store, dict(payload))
+    single = refreshed.get("bundle")
+    if isinstance(single, dict):
+        refreshed["bundle"] = _project_bundle(store, single)
+    bundles = refreshed.get("bundles")
+    if isinstance(bundles, list):
+        refreshed["bundles"] = [
+            _project_bundle(store, item) if isinstance(item, dict) else item for item in bundles
+        ]
+    return refreshed
 
 
-def _install_origin(
-    paths: list[Path],
-    examples_dir: Path,
-    store: ExtensionInstallState,
-) -> str:
-    """Keep the recorded source when a version switch reuses a stored package."""
+def _project_bundle(store: ExtensionInstallState, projection: dict[str, Any]) -> dict[str, Any]:
+    bundle_id = str(projection.get("bundleId") or "")
+    version = str(projection.get("version") or "")
+    record = store.get_bundle(bundle_id, version)
+    if record is None:
+        return projection
+    members: list[dict[str, Any]] = []
+    records = {item.package_id: item for item in record.member_records}
+    for member in record.members:
+        member_record = records.get(member.package_id)
+        members.append(
+            {
+                "packageId": member.package_id,
+                "version": member.version,
+                "domain": member.domain,
+                "status": member_record.status if member_record is not None else "pending",
+                "active": bool(member_record.active) if member_record is not None else False,
+                "enabled": bool(member_record.enabled) if member_record is not None else False,
+                "error": member_record.error if member_record is not None else "",
+            }
+        )
+    from agent_gateway.extensions_v2.management import containers
 
-    for path in paths:
-        record = store.get(_manifest_package_id(path))
-        if record is not None:
-            return record.origin
-    examples = examples_dir.resolve()
-    for path in paths:
-        try:
-            if not path.resolve().is_relative_to(examples):
-                return "user"
-        except OSError:
-            return "user"
-    return "preset"
+    return {
+        **projection,
+        "overallStatus": (
+            containers.frontend_status(store, record) if record.active else "disabled"
+        ),
+        "members": members,
+    }
 
 
 def _request_timeout() -> float:
@@ -1051,45 +243,3 @@ def _request_timeout() -> float:
     if runtime is None:
         return 330.0
     return float(runtime.config.dependency_timeout) + 30.0
-
-
-def _encode(value: object) -> Any:
-    """Encode Core report objects into their wire shape."""
-
-    if is_dataclass(value) and not isinstance(value, type):
-        result = {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
-        error = getattr(value, "error", None)
-        if error is not None:
-            result["error"] = {
-                "code": error.code,
-                "message": error.message,
-                "params": _encode(error.params),
-            }
-        return result
-    if isinstance(value, Mapping):
-        return {str(key): _encode(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_encode(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
-async def _respond(
-    channel: Any,
-    ws: Any,
-    req_id: str,
-    *,
-    ok: bool,
-    payload: Mapping[str, Any] | None = None,
-    error: str | None = None,
-    code: str | None = None,
-) -> None:
-    await channel.send_response(
-        ws,
-        req_id,
-        ok=ok,
-        payload=dict(payload or {}),
-        error=error,
-        code=code,
-    )
