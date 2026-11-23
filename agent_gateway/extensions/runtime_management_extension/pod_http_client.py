@@ -20,7 +20,11 @@ from e2a.constants import (
     E2A_WIRE_SERVER_PUSH_KEY,
 )
 from e2a.models import E2AEnvelope
-from e2a.wire_codec import parse_agent_server_wire_chunk
+from e2a.wire_codec import (
+    encode_agent_chunk_for_wire,
+    is_e2a_response_wire_dict,
+    parse_agent_server_wire_chunk,
+)
 
 from agent_gateway.common.security.link_mtls import LinkMTLSConfig
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
@@ -51,7 +55,7 @@ _CONNECT_TIMEOUT_SECONDS = 10.0
 _STREAM_READ_TIMEOUT = 600.0
 _PUSH_RETRY_SECONDS = 3.0
 # 企业按 Pod 订阅：连续 TCP 失败才停，避免活 Pod 闪断被立刻 drop。
-_PUSH_MAX_CONNECT_FAILURES = 3
+_PUSH_MAX_CONNECT_FAILURES = _env_int("PUSH_MAX_CONNECT_FAILURES", 3)
 # 合成的“推送循环已终止”事件的 event_type。_push_loop 放弃某 agentserver pod
 # 前合成此帧投递给 _on_server_push，Gateway 识别后向前端 SSE 发一条断开提示，让
 # 前端能感知并重建 SSE，而不是无限挂等（issue #115 现象 1：events/stream 失败
@@ -583,27 +587,39 @@ class HttpSseAgentServerClient(AgentServerClient):
 
         Without this, the frontend SSE stays attached to a gateway that no
         longer has any source to push, so the user must manually refresh to
-        rebuild the SSE (issue #115 现象 1). The synthesised wire frame uses
-        the legacy chunk shape (``request_id``/``channel_id``/``payload``/
-        ``is_complete``) so ``parse_agent_server_wire_chunk`` accepts it,
-        and carries ``event_type=gateway.push_terminated`` for the gateway
-        to detect and forward as a session-live notice.
+        rebuild the SSE (issue #115 现象 1). The synthesised wire frame reuses
+        ``encode_agent_chunk_for_wire`` (the canonical E2A chunk encoder used
+        by ``build_server_push_wire`` on the agent server side) and stamps
+        ``metadata[E2A_WIRE_SERVER_PUSH_KEY]=True`` so it traverses the same
+        parse path (``is_e2a_response_wire_dict`` → canonical inverse) as a
+        real ``server_push`` frame. It carries
+        ``event_type=gateway.push_terminated`` inside ``payload`` for the
+        gateway ``_handle_agent_server_push_ordered`` branch to detect and
+        broadcast to the web channel.
         """
         handler = self._on_server_push
         if handler is None:
             return
         api_root = self._api_root or ""
-        wire = {
-            "request_id": f"push_terminated:{api_root}",
-            "channel_id": "web",
-            "is_complete": False,
-            "payload": {
-                "event_type": _PUSH_TERMINATED_EVENT_TYPE,
-                "reason": reason,
-                "api_root": api_root,
-                "failures": self._push_connect_failures,
-            },
+        push_request_id = f"push_terminated:{api_root}"
+        payload = {
+            "event_type": _PUSH_TERMINATED_EVENT_TYPE,
+            "reason": reason,
+            "api_root": api_root,
+            "failures": self._push_connect_failures,
         }
+        chunk = AgentResponseChunk(
+            request_id=push_request_id,
+            channel_id="web",
+            payload=payload,
+            is_complete=False,
+        )
+        wire = encode_agent_chunk_for_wire(
+            chunk, response_id=push_request_id, sequence=0
+        )
+        md = dict(wire.get("metadata") or {})
+        md[E2A_WIRE_SERVER_PUSH_KEY] = True
+        wire["metadata"] = md
         try:
             await handler(wire)
         except Exception:  # noqa: BLE001
