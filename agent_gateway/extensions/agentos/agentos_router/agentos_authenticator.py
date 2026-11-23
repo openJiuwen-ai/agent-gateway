@@ -37,12 +37,21 @@ class AgentOSAuthenticator(CredentialAuthenticator):
     """
 
     def __init__(self, auth_service_url: str,  # agent-os 后端地址，例如 "http://localhost:8000"
-                 timeout: float = 10.0):  # 认证总预算秒数（含重试），上限 8 秒
+                 timeout: float = 8.0):  # 认证总预算秒数（含重试），上限 8 秒
         self._auth_service_url = auth_service_url.rstrip("/")
         # The configured value is a *total* budget, not a single-request
         # timeout. The Web/TUI handshake has a 10 s hard limit, so auth must
         # finish well before that even when retries are used.
-        self._timeout = max(0.1, min(float(timeout), _AUTH_MAX_BUDGET_SECONDS))
+        configured = float(timeout)
+        if configured > _AUTH_MAX_BUDGET_SECONDS:
+            logger.warning(
+                "IAM auth budget %.1fs exceeds the %.1fs handshake limit; "
+                "using %.1fs",
+                configured,
+                _AUTH_MAX_BUDGET_SECONDS,
+                _AUTH_MAX_BUDGET_SECONDS,
+            )
+        self._timeout = max(0.1, min(configured, _AUTH_MAX_BUDGET_SECONDS))
         self._auth_client = httpx.AsyncClient(timeout=self._timeout)
 
     @staticmethod
@@ -186,12 +195,13 @@ class AgentOSAuthenticator(CredentialAuthenticator):
             status = int(getattr(resp, "status_code", 0) or 0)
             if status == 429:
                 wait = self._retry_after_seconds(resp)
+                if wait is None:
+                    # Many rate limiters omit Retry-After. Fall back to the
+                    # normal bounded backoff instead of rejecting immediately.
+                    wait = jittered_delay(backoff)
+                    backoff *= _AUTH_BACKOFF_FACTOR
                 remaining = self._remaining(deadline)
-                if (
-                    attempt >= _AUTH_MAX_ATTEMPTS
-                    or wait is None
-                    or wait >= remaining
-                ):
+                if attempt >= _AUTH_MAX_ATTEMPTS or wait >= remaining:
                     self._log_retry(
                         attempt=attempt,
                         error="RATE_LIMITED",

@@ -1,5 +1,6 @@
 """测试 agentos_authenticator.py"""
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -33,10 +34,14 @@ class TestAgentOSAuthenticatorInit:
         auth = AgentOSAuthenticator(auth_service_url="http://localhost:8000/")
         assert auth._auth_service_url == "http://localhost:8000"
 
-    def test_init_with_custom_timeout(self):
-        """验证自定义 timeout"""
-        auth = AgentOSAuthenticator(auth_service_url="http://localhost:8000", timeout=30.0)
+    def test_init_with_custom_timeout(self, caplog):
+        """验证自定义 timeout 超上限时被钳制并告警"""
+        with caplog.at_level(logging.WARNING):
+            auth = AgentOSAuthenticator(
+                auth_service_url="http://localhost:8000", timeout=30.0,
+            )
         assert auth._timeout == 8.0
+        assert "exceeds" in caplog.text
 
     def test_init_creates_async_client(self):
         """验证初始化时创建了 AsyncClient"""
@@ -192,13 +197,18 @@ class TestAuthRetryBehavior:
         assert calls["n"] == 2
 
     @pytest.mark.asyncio
-    async def test_429_honors_retry_after(self):
+    @pytest.mark.parametrize("headers", [
+        {"Retry-After": "0"},
+        {"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"},
+        {},
+    ])
+    async def test_429_retries_with_retry_after_variants(self, headers):
         calls = {"n": 0}
 
         def handler(request):
             calls["n"] += 1
             if calls["n"] == 1:
-                return httpx.Response(429, headers={"Retry-After": "0"})
+                return httpx.Response(429, headers=headers)
             return _valid_response()
 
         async with _auth_with_transport(handler) as auth:
@@ -216,6 +226,23 @@ class TestAuthRetryBehavior:
             return httpx.Response(429, headers={"Retry-After": "999"})
 
         async with _auth_with_transport(handler) as auth:
+            result = await auth._authenticate_token("token")
+
+        assert result.success is False
+        assert result.extensions.get("error_code") == "IAM_UNAVAILABLE"
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_network_retry_gives_up_when_backoff_exceeds_budget(self, monkeypatch):
+        monkeypatch.setattr(auth_module, "jittered_delay", lambda base: 10.0)
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            raise httpx.ConnectError("connection reset", request=request)
+
+        async with _auth_with_transport(handler) as auth:
+            auth._timeout = 0.2
             result = await auth._authenticate_token("token")
 
         assert result.success is False

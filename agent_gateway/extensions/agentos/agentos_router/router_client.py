@@ -23,7 +23,7 @@ from e2a.message import ReqMethod
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.common.client.agent_client import AgentServerClient
-from agent_gateway.common.retry import jittered_sleep
+from agent_gateway.common.retry import jittered_delay
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateInterrupted,
@@ -1811,6 +1811,7 @@ class AgentOSRouterClient(AgentServerClient):
                     raise
 
                 sleep_for = min(_WS_CONNECT_RETRY_INTERVAL_SECONDS, remaining)
+                delay = min(jittered_delay(sleep_for), max(0.0, remaining))
                 retry_level = (
                     logging.WARNING if _should_log_ws_retry(attempt) else logging.DEBUG
                 )
@@ -1825,9 +1826,9 @@ class AgentOSRouterClient(AgentServerClient):
                     instance=instance_id,
                     attempt=attempt,
                     error=type(exc).__name__,
-                    sleep=f"{sleep_for:.1f}s",
+                    sleep=f"{delay:.1f}s",
                 )
-                await jittered_sleep(sleep_for)
+                await asyncio.sleep(delay)
 
     async def _wait_yuanrong_running(
         self,
