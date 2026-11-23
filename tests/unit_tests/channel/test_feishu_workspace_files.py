@@ -1,5 +1,7 @@
 """Tests for Feishu workspace file fallback detection."""
 
+import os
+
 import pytest
 
 from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
@@ -37,6 +39,21 @@ def test_detects_quoted_file_name_inside_workspace(tmp_path, monkeypatch):
     channel = _make_channel()
 
     assert channel._detect_workspace_files("see 'report.docx'") == [str(target)]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
+def test_detects_file_when_common_path_has_different_case(tmp_path, monkeypatch):
+    workspace = tmp_path / "MixedCaseWorkspace"
+    workspace.mkdir()
+    target = workspace / "report.txt"
+    target.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr(
+        "agent_gateway.common.paths.get_agent_workspace_dir", lambda: str(workspace),
+    )
+    commonpath = os.path.commonpath
+    monkeypatch.setattr(os.path, "commonpath", lambda paths: commonpath(paths).upper())
+
+    assert _make_channel()._detect_workspace_files('"report.txt"') == [str(target)]
 
 
 def test_ignores_workspace_file_without_a_path_reference(tmp_path, monkeypatch):

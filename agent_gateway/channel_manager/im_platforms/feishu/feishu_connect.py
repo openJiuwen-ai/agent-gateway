@@ -2743,7 +2743,8 @@ class FeishuChannel(BaseChannel):
             try:
                 resolved = os.path.realpath(path)
                 return (
-                    os.path.commonpath((workspace_root, resolved)) == workspace_root
+                    os.path.normcase(os.path.commonpath((workspace_root, resolved)))
+                    == os.path.normcase(workspace_root)
                     and os.path.isfile(resolved)
                 )
             except ValueError:
