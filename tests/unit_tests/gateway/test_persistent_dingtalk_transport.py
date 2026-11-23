@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -75,6 +76,33 @@ def test_workspace_file_detection_rejects_absolute_paths_outside_workspace(tmp_p
     assert _channel()._detect_workspace_files(
         f'"{outside}"', str(workspace),
     ) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not allow colons in filenames")
+def test_workspace_file_detection_accepts_colon_in_bare_filename(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    report = workspace / "a:report.pdf"
+    report.write_text("report", encoding="utf-8")
+
+    assert _channel()._detect_workspace_files('"a:report.pdf"', str(workspace)) == [str(report.resolve())]
+
+
+def test_workspace_file_detection_rejects_symlink_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_text("secret", encoding="utf-8")
+    link = workspace / "report.pdf"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        if os.name == "nt" and exc.winerror == 1314:
+            pytest.skip("Creating symlinks requires Windows privileges")
+        raise
+
+    assert _channel()._detect_workspace_files('"report.pdf"', str(workspace)) == []
+    assert _channel()._detect_workspace_files(f'"{link}"', str(workspace)) == []
 
 
 async def _send(channel, *, chat_id="staff-test", **changes):

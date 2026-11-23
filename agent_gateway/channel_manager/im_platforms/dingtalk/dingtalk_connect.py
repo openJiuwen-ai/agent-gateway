@@ -67,7 +67,7 @@ def _resolve_workspace_file(
             filename = Path(candidate)
             if (
                 filename.is_absolute()
-                or PureWindowsPath(candidate).drive
+                or (os.name == "nt" and PureWindowsPath(candidate).drive)
                 or filename.name != candidate
                 or "/" in candidate
                 or "\\" in candidate
