@@ -166,19 +166,30 @@ class TestDispatchReturnsDeliveryCount:
 class TestOriginFallbackDecision:
     def test_godview_without_subscriber_falls_back(self) -> None:
         assert ChannelManager._fanout_needs_origin_fallback(
-            _message(), [LogicalTarget(intent="godview")], 0,
+            [LogicalTarget(intent="godview")], 0,
         )
 
     def test_godview_with_delivery_does_not_fall_back(self) -> None:
         assert not ChannelManager._fanout_needs_origin_fallback(
-            _message(), [LogicalTarget(intent="godview")], 1,
+            [LogicalTarget(intent="godview")], 1,
         )
 
     def test_mention_without_match_does_not_fall_back(self) -> None:
         # 未认领成员的定向消息是正常语义，不能广播给发起者。
         assert not ChannelManager._fanout_needs_origin_fallback(
-            _message(), [LogicalTarget(intent="mention", member_names=("nobody",))], 0,
+            [LogicalTarget(intent="mention", member_names=("nobody",))], 0,
         )
 
     def test_empty_fan_out_does_not_fall_back(self) -> None:
-        assert not ChannelManager._fanout_needs_origin_fallback(_message(), [], 0)
+        assert not ChannelManager._fanout_needs_origin_fallback([], 0)
+
+
+class TestFallbackLogThrottle:
+    def test_same_session_warns_once_within_interval(self) -> None:
+        manager = object.__new__(ChannelManager)
+        manager._fanout_fallback_warned_at = {}
+
+        assert manager._should_warn_fanout_fallback("sess-1")
+        # 流式 chunk 逐帧回退，同一 session 窗口内不再刷 warning。
+        assert not manager._should_warn_fanout_fallback("sess-1")
+        assert manager._should_warn_fanout_fallback("sess-2")

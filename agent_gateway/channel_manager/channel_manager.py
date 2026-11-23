@@ -21,6 +21,9 @@ from agent_gateway.routing.keys import ChannelKey
 
 logger = logging.getLogger(__name__)
 
+# 同一 session 的 fan_out 回退告警最小间隔（秒），见 _should_warn_fanout_fallback。
+_FANOUT_FALLBACK_LOG_INTERVAL_SECONDS = 60.0
+
 if TYPE_CHECKING:
     from e2a.message import Message
 
@@ -117,6 +120,8 @@ class ChannelManager(ABC):
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
         self._dispatch_diag_count: int = 0
+        # fan_out 回退告警按 session 限流：流式 chunk 每帧都会回退，避免刷屏。
+        self._fanout_fallback_warned_at: dict[str, float] = {}
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
 
@@ -920,12 +925,17 @@ class ChannelManager(ABC):
                                 msg.session_id, msg.id,
                             )
                             continue
-                        if not self._fanout_needs_origin_fallback(msg, fan_out, delivered):
+                        if not self._fanout_needs_origin_fallback(fan_out, delivered):
                             continue
                         # 广播目标没有一个成功送达：继续落到下方常规 channel
                         # 投递，由 channel 按 metadata.ws_id / session_id 回给发起
                         # 连接。否则这条流的所有终态帧都会被静默丢弃，客户端卡死。
-                        logger.warning(
+                        log = (
+                            logger.warning
+                            if self._should_warn_fanout_fallback(msg.session_id or "")
+                            else logger.debug
+                        )
+                        log(
                             "[ChannelManager] fan_out delivered to no receiver, falling back to "
                             "origin connection: session=%s id=%s event_type=%s",
                             msg.session_id, msg.id, _et,
@@ -1081,7 +1091,7 @@ class ChannelManager(ABC):
                 logger.warning("[ChannelManager] 发送 cron 推送失败通知到 web 也失败了")
 
     @staticmethod
-    def _fanout_needs_origin_fallback(msg: "Message", fan_out: list, delivered: int) -> bool:
+    def _fanout_needs_origin_fallback(fan_out: list, delivered: int) -> bool:
         """广播目标一个接收者都没成功送达时，是否回退给发起连接。
 
         返回 True 仅当 fan_out 含 godview（会话广播）目标，且成功投递容器数为 0。
@@ -1100,6 +1110,25 @@ class ChannelManager(ABC):
         if delivered:
             return False
         return any(str(getattr(target, "intent", "")) == "godview" for target in fan_out)
+
+    def _should_warn_fanout_fallback(self, session_id: str) -> bool:
+        """回退告警按 session 限流。
+
+        流式 chunk 每帧都会走到回退分支，逐帧 warning 会刷屏；同一 session
+        在限流窗口内只记一条 warning，其余降为 debug。
+        """
+        now = time.monotonic()
+        last = self._fanout_fallback_warned_at.get(session_id)
+        if last is not None and now - last < _FANOUT_FALLBACK_LOG_INTERVAL_SECONDS:
+            return False
+        self._fanout_fallback_warned_at[session_id] = now
+        # 防止长跑进程里 session 只增不减。
+        if len(self._fanout_fallback_warned_at) > 1024:
+            cutoff = now - _FANOUT_FALLBACK_LOG_INTERVAL_SECONDS
+            for sid, ts in list(self._fanout_fallback_warned_at.items()):
+                if ts < cutoff:
+                    del self._fanout_fallback_warned_at[sid]
+        return True
 
     async def _inject_file_delivery_fanout(self, msg: "Message", event_type_str: str) -> list | None:
         """为 chat.file / chat.media 自动注入 fan_out_targets，实现跨 channel 文件投递。
