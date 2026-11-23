@@ -25,7 +25,7 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, monkeypatch, edition):
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
     monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
-    logs = tmp_path / "infra" / "logs" / "agent"
+    logs = tmp_path / "logs" / "agent"
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     frame = {
         "event": "context.usage",
@@ -42,7 +42,7 @@ async def test_web_channel_persists_frontend_context_usage_off_loop(tmp_path, mo
 def test_web_channel_rotates_frontend_context_usage_log(tmp_path, monkeypatch, edition):
     monkeypatch.setenv("JIUWENSWARM_EDITION", edition)
     monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: tmp_path)
-    logs = tmp_path / "infra" / "logs" / "agent"
+    logs = tmp_path / "logs" / "agent"
     monkeypatch.setattr(
         "agent_gateway.channel_manager.web.web_connect._CONTEXT_USAGE_MAX_BYTES",
         12,

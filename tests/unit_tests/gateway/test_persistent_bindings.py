@@ -25,9 +25,10 @@ def test_gateway_wire_method_decodes(method):
 def test_only_matching_original_session_file_can_be_delivered(tmp_path, monkeypatch):
     from agent_gateway.channel_manager import persistent_output
 
-    monkeypatch.setattr(persistent_output, "get_user_workspace_dir", lambda: tmp_path)
+    profile = tmp_path / "profile"
+    monkeypatch.setattr(persistent_output, "get_profile_data_dir", lambda: profile)
     key = "local/mate_1/sessions/session_1/output/report.txt"
-    dest = tmp_path / "jiuwenmate" / "workspaces" / key
+    dest = profile / "jiuwenmate" / "workspaces" / key
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"ok")
     digest = "sha256:" + hashlib.sha256(b"ok").hexdigest()

@@ -206,8 +206,10 @@ def _move_if_absent(old: Path, new: Path) -> None:
     并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
     if not old.exists() or old.is_symlink():
         return
+    if new.is_symlink():
+        return
     if new.exists() and old.is_dir() and new.is_dir():
-        for child in old.iterdir():
+        for child in list(old.iterdir()):
             _move_if_absent(child, new / child.name)
         try:
             old.rmdir()
@@ -243,6 +245,7 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
     """把旧平铺布局中的业务数据迁入 profile，并保留旧路径入口。
 
     系统目录（config、logs、auth、runtime 等）继续位于数据根，不做迁移。
+    未发布的 domain/infra 中间布局不属于升级路径。
     """
     global _legacy_migration_done
     if _legacy_migration_done:
@@ -268,20 +271,35 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
     legacy_business_paths.update(
         (path, profile / path.name)
         for path in root.glob("workspace_*")
-        if path.name not in legacy_business_paths
+        if path not in legacy_business_paths
     )
 
     # 两种早期平铺日志位置都迁入仍处于根目录的 logs/agent。
-    _move_if_absent(root / ".logs", get_logs_dir() / "agent")
-    _move_if_absent(root / "agent" / ".logs", get_logs_dir() / "agent")
-    for legacy, current in legacy_business_paths.items():
-        _move_if_absent(legacy, current)
-        _link_legacy_path(legacy, current)
-
-    legacy_logs = root / ".logs"
     current_logs = get_logs_dir() / "agent"
-    _link_legacy_path(legacy_logs, current_logs)
-    _link_legacy_path(profile / "agent" / ".logs", current_logs)
+    legacy_logs = root / ".logs"
+    legacy_agent_logs = root / "agent" / ".logs"
+    had_legacy_logs = legacy_logs.exists() and not legacy_logs.is_symlink()
+    had_agent_logs = legacy_agent_logs.exists() and not legacy_agent_logs.is_symlink()
+    _move_if_absent(legacy_logs, current_logs)
+    _move_if_absent(legacy_agent_logs, current_logs)
+    for legacy, current in legacy_business_paths.items():
+        if legacy == root / "agent" and not legacy.is_symlink() and (
+            legacy_agent_logs.exists() or legacy_agent_logs.is_symlink()
+        ):
+            # A conflicting log must stay Pod-local, not be moved into profile.
+            for child in list(legacy.iterdir()):
+                if child.name != ".logs":
+                    _move_if_absent(child, current / child.name)
+            continue
+        had_legacy = legacy.exists() and not legacy.is_symlink()
+        _move_if_absent(legacy, current)
+        if had_legacy:
+            _link_legacy_path(legacy, current)
+
+    if had_legacy_logs:
+        _link_legacy_path(legacy_logs, current_logs)
+    if had_agent_logs and (root / "agent").is_symlink():
+        _link_legacy_path(profile / "agent" / ".logs", current_logs)
 
 
 def get_checkpoint_dir() -> Path:

@@ -97,7 +97,7 @@ paths as ordinary directories. Runtime logs, including `context_usage.jsonl`, be
 
 On upgrade from the earlier flat layout, known durable business directories are moved
 under `profile/`; their former paths are kept as symlinks when the platform permits.
-System directories remain in place.
+System directories remain in place. The unreleased intermediate `domain/infra` layout is not a supported upgrade path.
 
 ## Exit behavior
 

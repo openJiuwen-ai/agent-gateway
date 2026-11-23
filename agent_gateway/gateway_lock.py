@@ -21,8 +21,6 @@ from typing import Any, Dict, Optional
 
 import portalocker
 
-from agent_gateway.common.paths import get_user_workspace_dir
-
 logger = logging.getLogger(__name__)
 
 # Lock filename for per-workspace Gateway singleton (held for entire lifetime)
