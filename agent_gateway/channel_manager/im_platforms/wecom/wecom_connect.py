@@ -1077,11 +1077,6 @@ class WecomChannel(BaseChannel):
         return str(content or "").strip()
 
     @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        """移除 <think>...</think> 块及未闭合的 <think>...，避免将 Agent 的思考过程展示给用户。"""
-        return strip_think_tags(text)
-
-    @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
         """判断内容是否为空或仅为占位符。"""
         return is_thinking_only_content(text)
@@ -1210,7 +1205,7 @@ class WecomChannel(BaseChannel):
                     else:
                         entry["accumulated"] = (entry.get("accumulated") or "") + content
                     # 移除 <think>...</think> 块，不将 Agent 思考过程展示给用户
-                    to_send = self._strip_think_tags(entry["accumulated"]).strip()
+                    to_send = strip_think_tags(entry["accumulated"]).strip()
                     if not to_send or self._is_thinking_only_content(to_send):
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
@@ -1298,7 +1293,7 @@ class WecomChannel(BaseChannel):
         if self._is_reasoning_chunk(msg):
             logger.debug("[WecomChannel] 跳过 final reasoning chunk")
             return
-        content = self._strip_think_tags(self._extract_content(msg)).strip()
+        content = strip_think_tags(self._extract_content(msg)).strip()
         if not content or self._is_thinking_only_content(content):
             logger.debug("[WecomChannel] 消息内容为空或仅为思考占位，跳过发送")
             return

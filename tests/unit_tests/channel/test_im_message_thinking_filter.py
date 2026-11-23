@@ -26,8 +26,6 @@ from agent_gateway.channel_manager.im_platforms.wecom.wecom_connect import Wecom
 )
 def test_strip_think_tags(text, expected) -> None:
     assert strip_think_tags(text) == expected
-    assert WechatChannel._strip_think_tags(text) == expected
-    assert WecomChannel._strip_think_tags(text) == expected
 
 
 @pytest.mark.parametrize(
