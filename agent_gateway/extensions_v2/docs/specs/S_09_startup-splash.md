@@ -8,7 +8,7 @@
 | 编号 / slug | `S_09 / startup-splash` |
 | 所属模块 | Gateway `webui/`（声明、提供者、平台帧与 `ui.closed`）；`channels/web/app_web.py`（候选提示）；Electron 主进程与预加载（启动标识）；Web 前端 `features/webui/`（门控与开场队列） |
 | 最近一次修订日期 | 2026-11-23 |
-| 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12）；开场预览（第 3.3 节）已实现（EXTV2-GW-13，[F_14](../features/F_14_splash-preview.md)）。外观声明槽位与其平台帧（第 2、3.4 节）及外观提供者的静态判定已在 Gateway 实现（EXTV2-GW-16，[F_16](../features/F_16_layered-appearance-and-brand.md)）；`app_web` 提示中的 `appearance` 字段与门控中的外观准备（第 4、5 节中标注待实现的部分）待 jiuwenswarm 实现 |
+| 契约状态 | 已实现；开场顺序、停用与 `disabled` / `removed` 原因见 [S_10](S_10_application-settings.md)（EXTV2-GW-12）；开场预览（第 3.3 节）已实现（EXTV2-GW-13，[F_14](../features/F_14_splash-preview.md)）。外观声明槽位、平台帧、提示中的 `appearance` 字段、门控中的外观准备与首帧记录（第 2、3.4、4、5 节，EXTV2-GW-16，[F_16](../features/F_16_layered-appearance-and-brand.md)）已在 Gateway 与 jiuwenswarm 实现，尚未合入 |
 | 关联文档 | [F_12](../features/F_12_startup-gate-and-splash.md)、[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_08 受控外观](S_08_appearance.md) |
 
 ## 1. 声明
@@ -121,8 +121,8 @@
 | --- | --- |
 | 启动标识 | Electron 主进程每次启动生成，经 `window.jiuwenDesktop.launchId` 提供；浏览器中取会话存储中的随机值 |
 | 已完成的启动 | 完成记录与启动标识存放在同一作用域（`workswarm.splash.completedLaunch`）：桌面端的标识由同一次启动的各窗口共享，记录在本地存储，下次启动的新标识使它失效；浏览器的标识属于一个标签页，记录在该标签页的会话存储，多个标签页互不覆盖。同一标识不再进入开场（刷新、重连、桌面端同一次启动中的新窗口） |
-| 候选提示 | `app_web` 的 `GET /extension-splash/hint` 返回 `{"candidates": <bool>, "appearance": <bool>}`（`appearance` 待实现），由 Gateway 的 `splash_hint.installed_splash_providers()` 计算：与 Gateway 相同的配置、加载器的 manifest 规则（`package.domain` 为 gateway 且声明合法的 `application.splash`）和用户开场偏好（已停用的不算），不运行包代码。只表示已安装的候选，不代表包已激活；取不到或格式不符（如开发模式由 Vite 返回页面）按“未知”处理。`appearance` 由 `splash_hint.installed_appearance_providers()` 计算：相同的配置与 manifest 规则，存在声明了合法 `application.appearance` 的 gateway 包时为 true，扩展未启用或配置无效时为 false |
-| 首帧中性层 | 本地存储记录上次判定（`workswarm.splash.expected`）；上次判定没有开场或本启动已完成时，`index.html` 的内联脚本在首帧前移除中性层。待实现：另记录上次外观准备的结果（`workswarm.appearance.expected`）与上次生效的标识（`workswarm.appearance.identity`，S_08 第 2.4 节），预期有外观时同样保留中性层；有标识记录时，中性层的名称与 Logo、浏览器标签的标题与图标先使用记录，图片加载失败时显示宿主默认 Logo |
+| 候选提示 | `app_web` 的 `GET /extension-splash/hint` 返回 `{"candidates": <bool>, "appearance": <bool>}`，由 Gateway 的 `splash_hint.installed_splash_providers()` 计算：与 Gateway 相同的配置、加载器的 manifest 规则（`package.domain` 为 gateway 且声明合法的 `application.splash`）和用户开场偏好（已停用的不算），不运行包代码。只表示已安装的候选，不代表包已激活；取不到或格式不符（如开发模式由 Vite 返回页面）按“未知”处理。`appearance` 由 `splash_hint.installed_appearance_providers()` 计算：相同的配置与 manifest 规则，存在声明了合法 `application.appearance` 的 gateway 包时为 true，扩展未启用或配置无效时为 false |
+| 首帧中性层 | 本地存储记录上次判定（`workswarm.splash.expected`）；另记录上次外观准备的结果（`workswarm.appearance.expected`）与上次生效的标识（`workswarm.appearance.identity`，S_08 第 2.4 节，只含名称与两张图片的地址）。上次判定没有开场或本启动已完成，且上次外观准备没有外观提供者时，`index.html` 的内联脚本在首帧前移除中性层。有标识记录时，中性层的名称与 Logo、浏览器标签的标题与图标先使用记录（图片只接受 `/extension-assets/` 地址），图片加载失败时显示宿主默认 Logo；门控的外观准备建立之前，前端不改动标签 |
 
 ## 5. 门控与开场队列（前端）
 
@@ -130,7 +130,7 @@
 | --- | --- |
 | 首帧 | `index.html` 显示与 Electron 加载页一致的中性层；脚本启动后由门控接管 |
 | 判定 | 本启动已完成：立即开放。提示为否：立即开放，连接后（至多 3 秒）向 Gateway 查询一次，只用结果更新首帧提示供下次启动使用，本次不再补播（用户主动预览不受影响）。提示为是：等待连接至多 30 秒后查询提供者。无法取得提示：等待连接并查询至多 3 秒。判定期间的门控层：提示为是时显示中性层（与首帧中性层一致）；提示尚未取得或未知时显示页面底色，没有开场的启动不会闪过深色层 |
-| 外观准备（待实现） | 每次打开页面都执行，与本启动是否已完成开场无关。提示中 `appearance` 为否时不等待；为是或未知时，连接建立后发送第 3.4 节的 `ui.ready` 并等待回执。只有外观需要等待时，总时限 3 秒，从门控开始计时（含等待连接）；同时有开场时，等待连接按上一行的规则，连接后等待回执至多 3 秒。回执到达或超时后更新首帧记录（`accepted` 为 true 时 `expected` 为 `1`，否则为 `0`），进入开场判定的后续阶段。提示为否时，连接后仍发送一次该 `ui.ready`，回执被接受时把 `expected` 记为 `1` 供下次使用 |
+| 外观准备 | 每次打开页面都执行，与本启动是否已完成开场无关；连接建立后发送第 3.4 节的 `ui.ready`（不指定包）。本启动已完成且上次外观准备没有外观提供者时（刷新、桌面端同一次启动中的新窗口），立即开放，不取提示也不等待。其余情况：提示中 `appearance` 为否时不等待；为是或未知时等待回执，为是时门控层显示中性层。只有外观需要等待时，总时限 3 秒，从门控开始计时（含等待连接）；同时有开场时，等待连接按上一行的规则，连接后等待回执至多 3 秒。回执到达或超时后进入开场判定的后续阶段。不指定包的 `ui.ready` 的每个回执都更新首帧记录（`accepted` 为 true 时 `expected` 为 `1`，否则为 `0`；超时未回执记为 `0`，之后的回执再更正）；包变化后只发给该包的 `ui.ready` 不更新记录。等待回执期间（每次至多 3 秒）收到的快照先暂存，回执后只显示最新一份 |
 | 顺序 | `customized` 为 false 时，配色部件的当前提供者（S_08）排在首位，其余按提供者列表顺序；为 true 时按列表顺序。外观准备超时、没有快照时使用上次记录的配色提供者（`workswarm.appearance.provider`） |
 | 准备 | 依次向每个提供者发送定向 `ui.ready`；5 秒内无回执或回执不是 `playing` 时转到下一个 |
 | 播放 | 只显示当前提供者的开场实例；媒体就绪时限 10 秒 |
@@ -154,7 +154,7 @@
 6. 平台帧不携带用户输入，不改变其他 `webui.dispatch` 与请求的策略语义。
 7. 预览只由包在自己连接上的交互中发起，只在门控开放且没有开场播放时进行；同一时刻至多一个开场。
 8. 预览不改变启动标识的完成记录与首次访问判定，不使门控重新进入启动队列。
-9. 外观准备每次打开页面都执行，至多等待 3 秒；之后到达的外观照常应用，不重新关闭门控（待前端实现）。
+9. 外观准备每次打开页面都执行，至多等待 3 秒；之后到达的外观照常应用，不重新关闭门控。
 10. 外观提供者的 `ui.ready` 不携带载荷；一个提供者出错或变慢不阻止其他提供者被通知。
 
 ## 7. 验证入口
@@ -166,4 +166,4 @@
 | 门控、队列、跳过与时限 | 前端 `test:webui-components`（开场用例） |
 | 开场预览 | `test_gateway_splash.py`（预览用例）、前端 `test:webui-components`（预览用例） |
 | 外观声明、外观提供者的 `ui.ready` 与静态判定 | `test_gateway_appearance.py`（声明、渲染拒绝、并行分派、回执与提示用例） |
-| 外观准备与首帧记录 | 前端 `test:webui-components`（待实现） |
+| 外观准备与首帧记录 | 前端 `test:webui-components`（外观准备、门控等待、首帧脚本用例）；候选提示的 `appearance` 字段见 `test_app_web_splash_hint.py` |

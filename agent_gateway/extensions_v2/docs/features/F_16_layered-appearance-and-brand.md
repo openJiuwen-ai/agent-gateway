@@ -8,16 +8,16 @@
 | 编号 / slug | `F_16 / layered-appearance-and-brand` |
 | 建档日期 | 2026-11-23 |
 | 范围 | agent-gateway `agent_gateway/extensions_v2/`（外观接口、层级与合成、声明槽位、候选提示）；jiuwenswarm `jiuwenswarm/channels/web/app_web.py` 与前端（门控、外观应用、主页四处显示） |
-| 方案成熟度 | 产品决策已确认（第 4.2 节），待模块维护者评审；Gateway 侧已实现，jiuwenswarm 侧（`app_web` 与前端）未实现 |
+| 方案成熟度 | 产品决策已确认（第 4.2 节），待模块维护者评审；Gateway 侧与 jiuwenswarm 侧（`app_web`、前端）均已实现，均未推送；agent-gateway 固定提交升级（I-11）待 Gateway 侧合入后进行 |
 | 计划条目 | [EXTV2-GW-16](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 3.1、3.3 节 |
 | 设计依据 | [S_08 受控外观](../specs/S_08_appearance.md)、[S_09 启动门控](../specs/S_09_startup-splash.md)、[S_10 第 4 节](../specs/S_10_application-settings.md)、[S_02 槽位](../specs/S_02_ui-render.md)、[S_06 浏览器桥接](../specs/S_06_local-browser-bridge.md)、[S_07 媒体容器](../specs/S_07_media-surface.md) |
 | 关联 feature | 延续 [F_11 受控外观](F_11_controlled-appearance.md)（提供者规则由本方案替代）与 [F_12 启动门控](F_12_startup-gate-and-splash.md)（门控增加外观准备） |
-| 验证摘要 | 2026-11-23 Gateway 单元验证通过（第 8.2 节）；前端、`app_web` 与真实联调未执行 |
+| 验证摘要 | 2026-11-23 Gateway、`app_web` 与前端单元验证通过，隔离实例中的浏览器预览通过（第 8.2 节）；真实 AgentServer 与桌面打包版联调未执行 |
 | Refs | 未关联 issue；需求与决策来自 2026-11-17～2026-11-23 的产品讨论 |
 
 契约已迁入主责规约：外观部件、层级与快照帧见 S_08，声明槽位、平台帧、提示与门控见 S_09（第 5.3 节列出对应位置）。
-本文维护决策、设计依据与验证记录；第 5.4～5.6 节保留合成算法与前端尚待实现部分的设计说明。
+本文维护决策、设计依据与验证记录；第 5.4～5.6 节保留合成算法与前端实现说明，实现中的调整见第 10 节。
 
 ## 2. 背景、目标与范围
 
@@ -230,13 +230,13 @@ Gateway 保留每个包在每个部件上的最近一次值。上层包撤回某
 | 契约 | 位置 | 实现状态 |
 | --- | --- | --- |
 | `ops.appearance.apply` 的部件写法、旧写法兼容与返回值（含 `shown`） | [S_08 第 1 节](../specs/S_08_appearance.md) | Gateway 已实现 |
-| 部件字段、文本与图片规则（含所有权与大小上限） | [S_08 第 2 节](../specs/S_08_appearance.md) | Gateway 已实现；前端校验待实现 |
-| 快照帧 `webui.appearance` | [S_08 第 4 节](../specs/S_08_appearance.md) | Gateway 已实现；前端待实现 |
+| 部件字段、文本与图片规则（含所有权与大小上限） | [S_08 第 2 节](../specs/S_08_appearance.md) | 已实现（两端） |
+| 快照帧 `webui.appearance` | [S_08 第 4 节](../specs/S_08_appearance.md) | 已实现（两端） |
 | 层级、叠加、释放与层级记录 | [S_08 第 5 节](../specs/S_08_appearance.md) | Gateway 已实现 |
-| 主页品牌显示 | [S_08 第 3.3 节](../specs/S_08_appearance.md) | 待实现 |
+| 主页品牌显示 | [S_08 第 3.3 节](../specs/S_08_appearance.md) | 前端已实现 |
 | 声明槽位 `application.appearance` 与其 `ui.ready` | [S_09 第 2、3.4 节](../specs/S_09_startup-splash.md) | Gateway 已实现 |
-| 候选提示的 `appearance` 字段 | [S_09 第 4 节](../specs/S_09_startup-splash.md) | Gateway 判定函数已实现；`app_web` 待实现 |
-| 外观准备与首帧记录 | [S_09 第 5 节](../specs/S_09_startup-splash.md) | 待实现 |
+| 候选提示的 `appearance` 字段 | [S_09 第 4 节](../specs/S_09_startup-splash.md) | 已实现（Gateway 判定函数、`app_web`） |
+| 外观准备与首帧记录 | [S_09 第 4、5 节](../specs/S_09_startup-splash.md) | 前端已实现 |
 
 ### 5.4 层级与合成
 
@@ -256,12 +256,15 @@ compose(connection):
 
 ### 5.5 门控中的外观准备
 
-阶段、时限与首帧记录的契约见 [S_09 第 5 节](../specs/S_09_startup-splash.md)。前端实现时另需：
+阶段、时限与首帧记录的契约见 [S_09 第 4、5 节](../specs/S_09_startup-splash.md)。前端实现：
 
-- 外观准备放在开场队列之前，开场播放时配色与品牌已经生效，开场排序也能取到本次的配色提供者。
-- 重连与重载广播（`extensions.v2.installed`）后，前端重新发送 `application.appearance` 的 `ui.ready`。等待回执期间
-  （至多 3 秒）只暂存收到的快照，回执到达后应用最新一份，避免各包先后提交造成闪动。
+- 门控（`WebUISplashGate`）在挂载时创建外观准备（`features/webui/appearance/preparation.ts`）与开场控制器；
+  外观准备放在开场队列之前，开场播放时配色与品牌已经生效，开场排序取本次快照的配色提供者。
+- 外观准备以 `application.appearance` 声明槽位挂载一个不指定包的消费者，连接、重连与上下文变化时由运行时重发
+  `ui.ready`；包变化（`extensions.v2.installed`）后运行时只向该包重发。每次发送前运行时暂存后到的快照
+  （`holdAppearance`），回执到达或 3 秒后释放，只显示最新一份，避免各包先后提交造成闪动。
 - 首帧记录只保存标识（名称与两张图片的地址），不保存配色与吉祥物：门控层盖住了它们，开放前已由本次快照替换。
+  品牌位置通过门控提供的上下文取标识：外观准备结束前为记录，之后为当前快照。
 
 ### 5.6 主页显示
 
@@ -337,7 +340,7 @@ compose(connection):
 
 | 验证 ID | 场景 | 通过条件 | 层级 |
 | --- | --- | --- | --- |
-| F_16-V-01 | 部件校验 | 共享用例中各部件、旧写法、混用、文本与地址边界在两端结论一致 | Gateway 单测 + 前端 `test:webui-contracts` |
+| F_16-V-01 | 部件校验 | 共享用例中各部件、旧写法、混用、文本与地址边界在两端结论一致 | Gateway 单测 + 前端 `test:webui-components` |
 | F_16-V-02 | `apply` 语义 | 设置、撤回单个部件、撤回全部；返回状态与 `shown`；非法调用不改变记录、不下发 | Gateway 单测 |
 | F_16-V-03 | 层级与叠加 | 两包不同部件同时生效；同部件后装在上；上层撤回或释放后下层露出；提交先后不影响结果；层级记录的追加、卸载删除、重启保留、损坏回退 | Gateway 单测 |
 | F_16-V-04 | 释放与并发 | 释放时重新合成且 `revision` 不复用；在途帧之后到达；已释放包的排队调用不下发 | Gateway 单测（沿用 F_11 的帧序构造） |
@@ -358,7 +361,10 @@ compose(connection):
 | 同上；新用例在改动前失败 | 同一提交未改动的临时工作树，只复制新的测试文件与共享用例（缺失的导入以空值代替） | 同上，只选新增与改写的用例 | 13 个行为用例全部失败；共享用例中合法用例因返回格式变化失败；非法用例在旧代码上同样被拒 | 无 |
 | 同上；V-12（Gateway 一侧） | 同上 | `python -m pytest tests/unit_tests/gateway/extensions_v2 -o addopts="--strict-markers --tb=line --asyncio-mode=auto"`，改动前后各一次 | 改动后 718 通过、43 失败；改动前 664 通过、43 失败，两次失败的用例集合完全相同 | 43 项失败来自本地 agent-core 缺少 `Manifest.enable`、`PackageManager.set_enabled` 等新接口，集中在包管理、应用设置与包数据用例，与本特性无关 |
 | 同上；全部单元用例 | 同上 | `python -m pytest tests/unit_tests --continue-on-collection-errors -o addopts="--strict-markers --tb=line --asyncio-mode=auto"`，改动前后各一次 | 改动后 4956 通过、56 失败、4 跳过、18 个收集错误；改动前 4902 通过，失败与收集错误的集合完全相同 | 18 个收集错误来自本机未安装的 `openjiuwen_runtime`、`minio` 等依赖；未在仓库锁定的依赖版本上运行 |
-| — | — | — | 未执行 | V-01（前端一侧）、V-07～V-11、V-12 的 Web 渠道与前端部分：`app_web` 与前端尚未实现 |
+| 2026-11-23；V-06（`app_web`） | jiuwenswarm develop `b9da49f` 加本特性的改动（分支 `feat/home-page-brand`），`PYTHONPATH` 指向上面的 Gateway 改动；同一隔离环境 | `python -m pytest tests/unit_tests/channels/web/test_app_web_splash_hint.py` | 5 通过（新增 2 项：外观提示的判定规则、读取失败按无） | 无 |
+| 同上；V-01（前端一侧）、V-07、V-08、V-09、V-10 | 同上；Node 22.23.4，前端依赖复用本机已有的 `node_modules`（缺 `@modelcontextprotocol/ext-apps`、`oidc-client-ts`） | `npm run test:webui-runtime`、`npm run test:webui-components` | runtime 26 通过；components 427 通过（新增 41 条共享校验用例与 12 个行为用例：提示字段、欢迎语取值、外观准备的暂存与记录、3 秒时限、刷新与开场路径、门控中性层与开场排序、针对单包的 `ui.ready`、图片回退、首帧脚本、主页四处） | 共享用例在 Gateway 与前端各存一份副本，靠复制保持一致 |
+| 同上；V-12（前端） | 同上；对照为同一提交未改动的临时工作树，`node_modules` 相同 | `package.json` 中全部 277 个 `test:*` 脚本与 `tsc --noEmit -p tsconfig.json`，改动前后各一次 | 只有 `test:webui-components`（374 → 427）与 `test:webui-runtime`（24 → 26）不同，均全部通过；其余脚本结果相同，前后都有 33 个脚本失败（缺上述两个包，或 develop 本身的失败用例）；`tsc` 前后是相同的 12 个错误，全部来自缺失的两个包 | `npm run build` 因缺包无法执行 |
+| 同上；V-09、V-10、V-11（部分） | 隔离实例 `.tools/v2-instance-brand`：上面的 Gateway（web 26000）；AgentServer 由只回 `connection.ack`、让请求立即失败的替身代替（本机 agent-core `c48b5bb` 无法启动 develop 的 AgentServer）；Vite 开发服务器（9273），两个缺失的包以本地占位模块代替；两个演示包：先装 `demo-hive-theme`（配色与吉祥物），后装 `demo-brand-logo`（标识与欢迎语） | 应用内浏览器打开首页、刷新、卸载与重装上层包，读取页面状态并截图 | 两包的部件同时生效（强调色 `#b45309`、蜜蜂吉祥物、名称 Nebula、Logo、欢迎语、标签标题与图标）；安装后不刷新即生效；刷新时中性层显示记录中的品牌，门控约 1.3 秒开放，期间标签标题保持记录；卸载上层包后不刷新即恢复宿主品牌，下层的配色与吉祥物保留，标识记录被清除 | 开发模式没有 `/extension-splash/hint`，门控只走提示未知的路径；聊天与会话不可用；吉祥物悬停图被宿主原有的悬停提示遮挡，未看清；真实 AgentServer、登录插件与桌面打包版未覆盖 |
 
 测试的整理：5 个测试文件此前使用默认的相对数据目录（`extension/gateway`）。本特性在包首次发布时写入层级记录，
 这些用例因而会在仓库目录下生成 `extension/gateway/host/appearance.json`；已改为使用各自的临时数据目录。
@@ -367,9 +373,11 @@ compose(connection):
 ### 8.3 验证结论
 
 - 已证明范围：Gateway 侧的部件校验、`apply` 语义、按安装顺序叠加、释放与在途帧、品牌图片所有权与大小、声明槽位与
-  平台帧的并行分派、候选提示的静态判定，均在单元范围内成立；其余扩展用例没有新增失败。
-- 未覆盖：前端的快照处理、门控外观准备、首帧记录与主页显示；`app_web` 的提示字段；真实浏览器与桌面打包版联调。
-- 交付判断：Gateway 侧可以提交评审；新帧格式与现有前端不兼容，须与 jiuwenswarm 侧在同一次固定提交升级中交付（第 7 节）。
+  平台帧的并行分派、候选提示的静态判定；`app_web` 的提示字段；前端的快照校验与暂存、门控外观准备、首帧记录与主页四处，
+  均在单元范围内成立，其余用例没有新增失败。浏览器预览中，两包叠加、安装与卸载后的即时更新、刷新时的首帧品牌均符合设计。
+- 未覆盖：真实 AgentServer 与登录插件下的联调、桌面打包版、提示为是或否的门控路径在真实页面中的表现、`npm run build`。
+- 交付判断：两侧可以提交评审；新帧格式与旧前端不兼容，jiuwenswarm 的 agent-gateway 固定提交（I-11）须在 Gateway 侧
+  合入后升级，并与前端改动一起交付（第 7 节）。
 
 ## 9. 风险与已知遗留
 
@@ -392,6 +400,8 @@ compose(connection):
 | 群聊创建页的横幅与品牌名 | 范围外 | 不变 | 另立条目 |
 | 暗色模式专用外观 | 沿用 F_11 遗留 | — | 概览第 1.3 节 |
 | 多语言只支持中文与英文 | 与宿主界面语言一致 | 宿主增加语言时扩充 | — |
+| 吉祥物悬停时宿主的提示气泡可能遮住吉祥物 | 宿主原有行为 | 与默认蜜蜂相同，本次不改 | — |
+| 示例包与主题插件 | I-12 未完成 | 本地预览用的两个演示包只在隔离实例目录中；最小 Logo 示例包与主题插件更新另行完成 | 第 6.1 节 I-12 |
 
 ## 10. 设计演进与修订
 
@@ -406,3 +416,24 @@ compose(connection):
 - 旧结论的效力：第 5.4 节已按新做法修改；契约以 S_08 第 5 节、S_09 第 3.4 节为准。
 - 影响与同步：S_08、S_09、S_01（释放语义）已同步；浏览器多收到一帧相同快照，按 `revision` 处理无副作用。
 - 验证：`test_releasing_the_upper_layer_shows_the_lower_one` 断言释放下层时的那一帧；第 8.2 节。
+
+### 2026-11-23 jiuwenswarm 实现中的调整
+
+- 原结论与适用范围：第 5.5 节草案与 S_09 第 5 节写的是每次打开页面都取提示并按提示等待；首帧记录由每个回执更新；
+  第 6.1 节 I-10 只列出 `SessionSidebar/index.tsx` 与 `ChatPanel/index.tsx`。
+- 新证据与原因：
+  - 本启动已完成时，原门控不取提示、同步开放；改为每次都取提示后，没有外观插件的用户每次刷新都要多等一次本地请求。
+  - 包变化后运行时只向该包重发 `ui.ready`，未声明外观的包回执“未处理”；若据此改写记录，会把仍有其他提供者的页面记为没有。
+  - 门控在外观准备建立前渲染的外观宿主，会用宿主默认标题覆盖首帧脚本按记录设的标题（浏览器预览中观察到）。
+  - `ChatPanel/index.tsx` 依赖本机缺失的包，品牌位置留在其中无法单独测试。
+- 最终变化：
+  - 本启动已完成且上次记录没有外观提供者时立即开放，不取提示；`ui.ready` 照常发送，回执更正记录。
+  - 只有不指定包的 `ui.ready` 的回执更新首帧记录。
+  - 提示中 `appearance` 为是时，门控等待期间显示中性层。
+  - 门控的外观准备建立之前，外观宿主不改动标签。
+  - 欢迎语与吉祥物移入 `ChatPanel/WelcomeBrand.tsx`，侧栏 Logo 移入 `SessionSidebar/SidebarBrandLogo.tsx`；宿主默认欢迎语移入语言资源。
+  - 运行时增加 `holdAppearance()`；挂载选项的 `onReadyStart` 与 `onReadySettled` 增加目标包参数。
+- 旧结论的效力：第 5.5 节已按实现改写；契约以 S_08 第 3.3 节、S_09 第 4、5 节为准。
+- 影响与同步：S_08、S_09 已同步；jiuwenswarm 前端 `features/webui/docs` 的 S_01、F_01 槽位说明已同步。
+- 验证：前端用例 `every page load waits for appearance providers, at most three seconds`（含刷新直接开放的断言）、
+  `a ready for one changed package does not touch the first-paint record`、外观宿主用例中的标签断言；第 8.2 节。

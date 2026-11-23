@@ -5,7 +5,7 @@
 | 项 | 说明 |
 | --- | --- |
 | 类型 | 目标设计；产品决策已确认，宿主能力部分实现，现状见第 5 节 |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-23 |
 | 责任人 | Song Haoran |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/`，并涉及 `jiuwenswarm/channels/web/`（`app_web.py` 与前端 `features/webui/`）及 `jiuwenswarm/channels/desktop/electron/` |
 | 详细设计 | 各条目的 feature；已建立：[F_08 应用级 UI 包与素材交付](../features/F_08_application-packages-and-assets.md)、[F_09 包存储与数据目录](../features/F_09_package-store-and-data.md)、[F_10 媒体容器与应用背景](../features/F_10_media-surface-and-background.md)、[F_11 受控外观](../features/F_11_controlled-appearance.md)、[F_12 启动门控与开场](../features/F_12_startup-gate-and-splash.md)、[F_13 应用级设置页](../features/F_13_application-settings-page.md)、[F_14 开场预览](../features/F_14_splash-preview.md)、[F_15 应用形态](../features/F_15_application-presentation.md)、[F_16 外观部件叠加与主页品牌](../features/F_16_layered-appearance-and-brand.md) |
@@ -99,7 +99,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 应用级 UI 包 | 在 Gateway 应用级槽位声明贡献的包 | Gateway 运行时的活动包与其 manifest `ui` 段 | 不代表包具有浏览器请求绑定或客户端操作能力 |
 | 激活代次 | 一次发布对应的随机标识 | Gateway 运行时 | 不同代次之间的迟到消息与素材互不通用 |
-| 开场提供者顺序 | 依次播放的开场列表 | Gateway 保存的宿主设置（[S_10](../specs/S_10_application-settings.md)）；用户未调整时当前外观提供者排在首位 | 不代表各提供者本次一定播放 |
+| 开场提供者顺序 | 依次播放的开场列表 | Gateway 保存的宿主设置（[S_10](../specs/S_10_application-settings.md)）；用户未调整时当前配色部件的提供者（[S_08](../specs/S_08_appearance.md)）排在首位 | 不代表各提供者本次一定播放 |
 | 启动标识 | 一次应用启动的标识 | Electron 主进程；浏览器模式使用会话存储 | 刷新、重连与新窗口不产生新的启动 |
 | 插件偏好与数据 | 插件自身的业务状态 | Core `JsonStore` 与包数据目录 | 卸载后不保留 |
 
@@ -149,8 +149,9 @@ stateDiagram-v2
 ### 3.3 切换外观与恢复默认
 
 插件在设置页收到交互后写入偏好，用媒体容器渲染 `application.background`，并调用 `ops.appearance.apply` 提交外观；
-恢复默认时清除背景并以空值撤销外观。插件停用、卸载、断线或外观提供者切换时由宿主自动撤销；
-撤销只移除贡献层，不恢复旧快照，不覆盖用户之后切换的明暗主题。
+恢复默认时清除背景并以空值撤销外观。外观按部件（配色、标识、欢迎语、吉祥物）分层叠加，后安装的包在上层：
+包撤回某个部件，或包停用、卸载时，该部件显示下一层包的值，没有下层时恢复宿主默认（[S_08](../specs/S_08_appearance.md) 第 5 节）；
+断线后由各包在重连时重新提交。撤回只改变外观贡献层，不覆盖用户之后切换的明暗主题。
 
 ## 4. 持续状态与关键约束
 
@@ -173,6 +174,6 @@ stateDiagram-v2
 | EXTV2-GW-12 | 应用级设置页、开场顺序与停用、文件导入与导出（[F_13](../features/F_13_application-settings-page.md)、[S_10](../specs/S_10_application-settings.md)） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-13 | 开场预览（[F_14](../features/F_14_splash-preview.md)、[S_09](../specs/S_09_startup-splash.md) 第 3.3 节） | 已实现，单元与浏览器验证通过 |
 | EXTV2-GW-15 | 应用形态、受控会话桥接与透明窗口（[F_15](../features/F_15_application-presentation.md)、[S_11](../specs/S_11_application-presentation.md)） | 进度见开发计划；详细验收证据见 F_15 |
-| EXTV2-GW-16 | 外观部件叠加与主页品牌（[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md)）；前端实现后修订第 2.2、3.3 节 | Gateway 侧已实现，单元验证通过；前端未实现 |
+| EXTV2-GW-16 | 外观部件叠加与主页品牌（[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_08](../specs/S_08_appearance.md)、[S_09](../specs/S_09_startup-splash.md)） | Gateway 与 jiuwenswarm 侧已实现，单元验证与浏览器预览通过；固定提交升级与真实联调未完成 |
 
 负责人和进度以[开发计划](extensions-v2-development-plan.md)为唯一维护位置；详细验证证据在对应 feature 维护。

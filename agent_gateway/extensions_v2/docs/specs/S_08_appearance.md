@@ -8,7 +8,7 @@
 | 编号 / slug | `S_08 / appearance` |
 | 所属模块 | Gateway `webui/`（接口、校验、分层记录、合成与投递）；Web 前端 `features/webui/`（派生与应用、主页品牌显示） |
 | 最近一次修订日期 | 2026-11-23 |
-| 契约状态 | 配色派生（第 3.1、3.2 节）已实现。外观部件、分层叠加与快照帧（第 1、2、4～6 节，EXTV2-GW-16）：Gateway 侧已实现；前端的快照处理与品牌显示（第 3.3 节）待实现，在此之前 Gateway 新帧与现有前端不兼容（[F_16](../features/F_16_layered-appearance-and-brand.md) 第 7 节） |
+| 契约状态 | 配色派生（第 3.1、3.2 节）已实现。外观部件、分层叠加、快照帧与主页品牌显示（第 1～6 节，EXTV2-GW-16）：Gateway 侧与 jiuwenswarm 前端均已实现，尚未合入；新帧与旧前端不兼容，两侧须随同一次 agent-gateway 固定提交升级交付（[F_16](../features/F_16_layered-appearance-and-brand.md) 第 7 节） |
 | 关联文档 | [F_11](../features/F_11_controlled-appearance.md)、[F_16](../features/F_16_layered-appearance-and-brand.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_07 媒体容器](S_07_media-surface.md)、[S_09 启动门控](S_09_startup-splash.md) |
 
 本文维护 `ops.appearance.apply` 的接口、外观部件、宿主派生与显示规则、下行帧、层级与生命周期及不变量。
@@ -168,7 +168,7 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 
 派生只读取配色部件；`colors` 缺省时使用宿主主题。
 
-### 3.3 主页品牌显示（前端，待实现）
+### 3.3 主页品牌显示
 
 | 位置 | 数据 | 规则 |
 | --- | --- | --- |
@@ -176,6 +176,11 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 | 浏览器标签 | `identity.name`、`identity.favicon` | 标题为品牌名，缺省为 “WorkSwarm”；图标缺省为宿主图标 |
 | 欢迎语 | `identity.name`、`welcome` | 高亮词为品牌名，缺省为 “WorkSwarm”；后半句按第 2.5 节取值 |
 | 吉祥物 | `mascot` | 显示区域沿用宿主尺寸，按比例完整显示；悬停交互与宿主默认吉祥物相同，有 `hoverSrc` 时在 `hoverMs` 内显示悬停图；加载失败时显示宿主默认吉祥物 |
+
+- 标识在门控的外观准备结束前取上次的首帧记录，之后取当前快照（[S_09 第 4、5 节](S_09_startup-splash.md)）；欢迎语与吉祥物只取当前快照。
+- 吉祥物悬停时宿主照常显示原有的悬停提示；没有 `hoverSrc` 时悬停不换图。部件更换后吉祥物回到静止图。
+- 图片加载失败只对该地址回退宿主图片；部件换成新地址后重新尝试。
+- 前端没有 Gateway 连接（HTTP 传输）时没有门控与外观，标签恢复宿主标题与图标。
 
 文字只按纯文本显示。门控期间的中性层与标签见 [S_09 第 5 节](S_09_startup-splash.md)。群聊创建页的欢迎区不受外观影响。
 
@@ -238,8 +243,9 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 
 | 契约 | 用例 |
 | --- | --- |
-| 部件校验（两端一致） | `gatewayAppearanceCases.json`；`test_gateway_appearance.py`；前端 `test:webui-runtime` |
+| 部件校验（两端一致） | `gatewayAppearanceCases.json`（前端 `tests/fixtures` 中为同一份副本）；`test_gateway_appearance.py`；前端 `test:webui-components`（`Gateway appearance contract` 用例） |
 | 接口、层级、叠加与释放 | `test_gateway_appearance.py` |
 | 层级记录 | `test_gateway_appearance.py`（`test_the_layer_order_is_kept_and_forgotten_on_disk`） |
 | 品牌图片所有权与大小 | `test_gateway_appearance.py` |
-| 帧处理、断线与派生 | 前端 `test:webui-runtime`、`test:webui-components`（快照格式待前端实现后更新） |
+| 帧处理、断线与派生 | 前端 `test:webui-runtime`（快照校验、版本顺序、暂存与重连）、`test:webui-components`（派生与外观宿主） |
+| 主页品牌显示 | 前端 `test:webui-components`（主页品牌位置、欢迎语取值、图片回退用例） |
