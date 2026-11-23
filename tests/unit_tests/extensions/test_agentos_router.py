@@ -1634,6 +1634,16 @@ async def test_stale_failed_runtime_is_reclaimed_without_rebuild() -> None:
     assert await manager.list_user_agents("u1") == []
     assert yuanrong.create_calls == 0
     assert yuanrong.delete_calls == []
+
+    async def good_creator(agent_info: AgentInfo) -> AgentInfo:
+        agent_info.sandbox_id = "rebuilt-sbx"
+        return agent_info
+
+    rebuilt = await manager.get_or_create_agent(
+        "u1", "opencode", creator=good_creator,
+    )
+    assert rebuilt.info.status is AgentStatus.READY
+    assert rebuilt.info.sandbox_id == "rebuilt-sbx"
     await client.shutdown()
 
 
@@ -1668,7 +1678,8 @@ async def test_stale_failed_runtime_retires_unused_provisioned_sandbox() -> None
 
 
 @pytest.mark.asyncio
-async def test_stale_failed_runtime_keeps_sandbox_used_by_ready_alias() -> None:
+@pytest.mark.parametrize("alias_status", [AgentStatus.READY, AgentStatus.CREATING])
+async def test_stale_failed_runtime_keeps_sandbox_used_by_alias(alias_status) -> None:
     yuanrong = FakeYuanRongClient()
     manager = AgentManager(
         key_fields=["user_id", "agent_type", "session_id"],
@@ -1697,6 +1708,7 @@ async def test_stale_failed_runtime_keeps_sandbox_used_by_ready_alias() -> None:
         creator=shared_creator,
     )
     assert ready.info.sandbox_id == "shared-sbx"
+    manager._runtimes[ready.key].info.status = alias_status
     async with client._sandbox_lifecycle(_sandbox_name("u1", "opencode")) as lifecycle:
         lifecycle.provisioned_instance = "shared-sbx"
     stored = manager._runtimes[failed.key]
@@ -1751,6 +1763,45 @@ async def test_stale_failed_runtime_keeps_unfinished_create_attempt() -> None:
     assert lifecycle is not None
     assert lifecycle.attempt is not None
     assert lifecycle.provisioned_instance == "old-sbx"
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+
+    async def failing_creator(agent_info: AgentInfo) -> AgentInfo:
+        raise RuntimeError("create failed")
+
+    with pytest.raises(RuntimeError):
+        await manager.get_or_create_agent(
+            "u1", "opencode", creator=failing_creator,
+        )
+    runtime = (await manager.list_user_agents("u1"))[0]
+
+    lifecycle_name = _sandbox_name("u1", "opencode")
+    async with client._sandbox_lifecycle(lifecycle_name) as lifecycle:
+        lifecycle.provisioned_instance = "new-sbx"
+        lifecycle.retired_instance = "old-sbx"
+    manager._runtimes[runtime.key].info.updated_at = time.time() - 301
+
+    assert await client._reap_idle_once() == 0
+    assert yuanrong.delete_calls == []
+    assert await manager.list_user_agents("u1") != []
+
+    async with client._sandbox_lifecycle(lifecycle_name) as lifecycle:
+        lifecycle.retired_instance = ""
+
+    assert await client._reap_idle_once() == 1
+    assert yuanrong.delete_calls == ["new-sbx"]
+    assert await manager.list_user_agents("u1") == []
     await client.shutdown()
 
 

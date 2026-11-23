@@ -328,7 +328,8 @@ _DISCONNECT_CLEANUP_MAX_ATTEMPTS = 3
 # + READY，宽限只需覆盖 release 的 touch 落地竞态，秒级即可。
 _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
 # FAILED runtime 的超龄回收阈值（秒）。过短会对“平台明确拒绝”反复重试；
-# 过长则用户等待成本过高。最坏情况下用户每 5 分钟可重试一次，而非重启进程。
+# 过长则用户等待成本过高。实际回收发生在超过阈值后的下一个巡检周期
+# （_sandbox_idle_check_interval_seconds，默认 30 秒）。
 _FAILED_RUNTIME_RECLAIM_SECONDS = 300.0
 
 # 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
@@ -3177,11 +3178,19 @@ class AgentOSRouterClient(AgentServerClient):
                         continue
                     target_instance = lifecycle.provisioned_instance
                     attempt_pending = lifecycle.attempt is not None
+                    if (
+                        target_instance
+                        and not attempt_pending
+                        and lifecycle.retired_instance
+                    ):
+                        # Defer popping while the retirement loop still owns
+                        # retired_instance; otherwise provisioned_instance would
+                        # lose its only reaper. Retry after retirement clears.
+                        continue
                     deleted_sandbox = False
                     if (
                         target_instance
                         and not attempt_pending
-                        and not lifecycle.retired_instance
                         and not await self._provisioned_instance_in_use(lifecycle, current)
                     ):
                         retired = current.info.copy()
