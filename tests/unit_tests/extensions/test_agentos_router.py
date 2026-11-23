@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -21,6 +22,7 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentPreCreateError,
     AgentRebuildPending,
     AgentRuntime,
+    DELETE_REASON_IDLE,
 )
 from agent_gateway.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -1881,6 +1883,40 @@ async def test_stale_failed_runtime_defers_pop_while_sandbox_retiring() -> None:
     assert yuanrong.delete_calls == ["new-sbx"]
     assert await manager.list_user_agents("u1") == []
     await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_idle_delete_emits_idle_reaper_reason(caplog) -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(
+        yuanrong,
+        FakeRegistryClient(),
+        manager,
+        sandbox_idle_timeout_seconds=600.0,
+    )
+    try:
+        response = await client.send_request(_envelope())
+        await asyncio.sleep(0.05)
+        assert response.ok
+
+        runtime = await manager.get_agent("u1", "jiuwenswarm")
+        assert runtime is not None
+        manager._runtimes[runtime.key].last_active_at = time.time() - 100
+
+        with caplog.at_level(logging.INFO):
+            assert await client._delete_idle_agent(
+                "u1",
+                "jiuwenswarm",
+                key_values={},
+                idle_timeout_seconds=1,
+                reason=DELETE_REASON_IDLE,
+            )
+        assert "agent.state.changed" in caplog.text
+        assert "reason=idle_reaper" in caplog.text
+        assert "to_status=deleted" in caplog.text
+    finally:
+        await client.shutdown()
 
 
 @pytest.mark.asyncio

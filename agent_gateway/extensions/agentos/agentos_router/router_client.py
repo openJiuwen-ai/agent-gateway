@@ -33,6 +33,13 @@ from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentPreCreateError,
     AgentRebuildPending,
     AgentRuntime,
+    DELETE_REASON_CREATE_NOT_RUNNING,
+    DELETE_REASON_DISCONNECT,
+    DELETE_REASON_EXPLICIT,
+    DELETE_REASON_IDLE,
+    DELETE_REASON_INSTANCE_UNAVAILABLE,
+    DELETE_REASON_NETWORK_FAILURE,
+    DELETE_REASON_WARMUP_FAILURE,
     is_third_party_agent_type,
 )
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
@@ -1067,6 +1074,7 @@ class AgentOSRouterClient(AgentServerClient):
                             runtime.info.agent_type,
                             key_values=key_values,
                             idle_timeout_seconds=_DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS,
+                            reason=DELETE_REASON_DISCONNECT,
                         )
                     finally:
                         _cleanup_trigger.reset(token)
@@ -1221,6 +1229,7 @@ class AgentOSRouterClient(AgentServerClient):
                 if existing is not None and existing.is_failed():
                     await self._agent_manager.pop_agent(
                         user_id, agent_type, expected_agent_id=existing.info.agent_id,
+                        reason=DELETE_REASON_WARMUP_FAILURE,
                     )
             except Exception:
                 logger.debug(
@@ -3140,6 +3149,7 @@ class AgentOSRouterClient(AgentServerClient):
                         agent_type,
                         key_values=values or None,
                         idle_timeout_seconds=self._sandbox_idle_timeout_seconds,
+                        reason=DELETE_REASON_IDLE,
                     )
                 finally:
                     _cleanup_trigger.reset(token)
@@ -3697,27 +3707,29 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any] | None = None,
         idle_timeout_seconds: float | None = None,
         expected_agent_id: str | None = None,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> bool:
         if _cleanup_nested_delete.get() and current_cleanup_trace() is not None:
             return await self._delete_agent_impl(
                 user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
-                expected_agent_id=expected_agent_id,
+                expected_agent_id=expected_agent_id, reason=reason,
             )
-        trigger, root = _cleanup_trigger.get()
-        if trigger == "idle_reaper" and root and idle_timeout_seconds is not None:
+        _, root = _cleanup_trigger.get()
+        if reason == DELETE_REASON_IDLE and root and idle_timeout_seconds is not None:
             return await self._delete_idle_agent(
                 user_id, agent_type, key_values=dict(key_values or {}),
-                idle_timeout_seconds=float(idle_timeout_seconds), trace_on_pop=True,
+                idle_timeout_seconds=float(idle_timeout_seconds),
+                trace_on_pop=True, reason=reason,
             )
         with trace_operation(
             "gw.agent.delete",
-            attributes={"source": trigger, "trigger": trigger, "user_id": user_id, "agent_type": agent_type},
+            attributes={"source": reason, "trigger": reason, "user_id": user_id, "agent_type": agent_type},
             root=root,
         ) as operation:
             with bind_cleanup_trace(operation):
                 return await self._delete_agent_impl(
                     user_id, agent_type, key_values=key_values, idle_timeout_seconds=idle_timeout_seconds,
-                    expected_agent_id=expected_agent_id,
+                    expected_agent_id=expected_agent_id, reason=reason,
                 )
 
     async def _delete_agent_impl(
@@ -3728,6 +3740,7 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any] | None = None,
         idle_timeout_seconds: float | None = None,
         expected_agent_id: str | None = None,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> bool:
         """Delete agent mapping, release its YuanRong sandbox, unregister registry.
 
@@ -3742,6 +3755,7 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_type,
                 key_values=resolved_key_values,
                 idle_timeout_seconds=float(idle_timeout_seconds),
+                reason=reason,
             )
 
         target_agent_id = expected_agent_id
@@ -3759,7 +3773,7 @@ class AgentOSRouterClient(AgentServerClient):
                         user_id, agent_type, key_values=resolved_key_values or None,
                         expected_agent_id=target_agent_id,
                         include_shared_sandbox=True,
-                        reason="explicit_delete",
+                        reason=reason,
                     )
                     if runtime is None:
                         _cleanup_step("runtime", "skipped", "replaced")
@@ -3785,6 +3799,7 @@ class AgentOSRouterClient(AgentServerClient):
         key_values: dict[str, Any],
         idle_timeout_seconds: float,
         trace_on_pop: bool = False,
+        reason: str = DELETE_REASON_IDLE,
     ) -> bool:
         """Atomically pop an idle agent then run shared delete cleanup."""
         key = AgentRuntime.build_key(
@@ -3793,18 +3808,12 @@ class AgentOSRouterClient(AgentServerClient):
             agent_type=agent_type,
             key_values=key_values or None,
         )
-        trigger, _ = _cleanup_trigger.get()
-        delete_reason = (
-            trigger
-            if trigger in {"idle_reaper", "disconnect_cleanup"}
-            else "idle_reclaim"
-        )
         async with self._sandbox_lifecycle(_sandbox_name(user_id, agent_type)) as lifecycle:
             runtime = await self._agent_manager.pop_if_idle(
                 key,
                 idle_timeout_seconds,
                 include_shared_sandbox=True,
-                reason=delete_reason,
+                reason=reason,
             )
             if runtime is None:
                 if not trace_on_pop:
@@ -3812,7 +3821,7 @@ class AgentOSRouterClient(AgentServerClient):
                 return False
             agent_info = runtime.info
             scope = trace_operation("gw.agent.delete", root=True, attributes={
-                "source": "idle_reaper", "trigger": "idle_reaper",
+                "source": reason, "trigger": reason,
                 "user_id": agent_info.user_id, "agent_type": agent_info.agent_type,
             }) if trace_on_pop else nullcontext(current_cleanup_trace())
             with scope as operation, bind_cleanup_trace(operation):
@@ -3891,14 +3900,19 @@ class AgentOSRouterClient(AgentServerClient):
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
         try:
-            trigger = "instance_unavailable" if reason.startswith("instance_unavailable:") else "network_failure"
-            token = _cleanup_trigger.set((trigger, False))
+            delete_reason = (
+                DELETE_REASON_INSTANCE_UNAVAILABLE
+                if reason.startswith("instance_unavailable:")
+                else DELETE_REASON_NETWORK_FAILURE
+            )
+            token = _cleanup_trigger.set((delete_reason, False))
             try:
                 await self.delete_agent(
                     info.user_id,
                     info.agent_type,
                     key_values=key_values,
                     expected_agent_id=info.agent_id,
+                    reason=delete_reason,
                 )
             finally:
                 _cleanup_trigger.reset(token)
@@ -3964,6 +3978,7 @@ class AgentOSRouterClient(AgentServerClient):
                 agent_info.agent_type,
                 key_values=key_values,
                 expected_agent_id=agent_info.agent_id,
+                reason=DELETE_REASON_CREATE_NOT_RUNNING,
             ):
                 return
         except Exception as cleanup_exc:  # noqa: BLE001 - background register must not raise
