@@ -922,11 +922,11 @@ class ChannelManager(ABC):
                             continue
                         if not self._fanout_needs_origin_fallback(msg, fan_out, delivered):
                             continue
-                        # 广播目标一个订阅者都没找到：继续落到下方常规 channel
+                        # 广播目标没有一个成功送达：继续落到下方常规 channel
                         # 投递，由 channel 按 metadata.ws_id / session_id 回给发起
                         # 连接。否则这条流的所有终态帧都会被静默丢弃，客户端卡死。
                         logger.warning(
-                            "[ChannelManager] fan_out has no receiver, falling back to "
+                            "[ChannelManager] fan_out delivered to no receiver, falling back to "
                             "origin connection: session=%s id=%s event_type=%s",
                             msg.session_id, msg.id, _et,
                         )
@@ -1082,9 +1082,11 @@ class ChannelManager(ABC):
 
     @staticmethod
     def _fanout_needs_origin_fallback(msg: "Message", fan_out: list, delivered: int) -> bool:
-        """广播目标一个接收者都没找到时，是否回退给发起连接。
+        """广播目标一个接收者都没成功送达时，是否回退给发起连接。
 
-        返回 True 仅当 fan_out 含 godview（会话广播）目标，且实际投递容器数为 0。
+        返回 True 仅当 fan_out 含 godview（会话广播）目标，且成功投递容器数为 0。
+        这里的 0 涵盖三种情况：没有订阅者、订阅对应的 channel 已缺失、channel
+        send 超时或抛异常。
 
         godview 无订阅通常意味着观察者登记缺失（例如 web 首次 chat.send 未带
         mode，Gateway 因此没有为该连接注册 GodView）。此时静默丢弃会吞掉整条流

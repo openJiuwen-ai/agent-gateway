@@ -7,6 +7,8 @@ GodView；AgentServer 仍按会话的 team 模式产出带 fan_out_targets 的�
 
 from __future__ import annotations
 
+import pytest
+
 from e2a.message import Message
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.routing.keys import AgentRef, ChannelKey, RoutingKey, make_delivery_target
@@ -24,6 +26,11 @@ class _RecordingChannel:
 
     async def send(self, msg, routing_target=None) -> None:
         self.sends.append(routing_target)
+
+
+class _FailingChannel:
+    async def send(self, msg, routing_target=None) -> None:
+        raise RuntimeError("send failed")
 
 
 class _Channels:
@@ -77,6 +84,7 @@ async def _registry(*, with_godview: bool) -> SessionSharingRegistry:
     return registry
 
 
+@pytest.mark.asyncio
 class TestDispatchReturnsDeliveryCount:
     async def test_godview_subscriber_is_counted(self) -> None:
         channel = _RecordingChannel()
@@ -107,6 +115,52 @@ class TestDispatchReturnsDeliveryCount:
 
         assert delivered == 0
         assert channel.sends == []
+
+    async def test_subscriber_with_missing_channel_reports_zero(self) -> None:
+        # 订阅还在 registry 里，但物理 channel 已注销/重建：不能算送达，
+        # 否则上层不会回退，客户端仍等不到终态帧。
+        channels = _Channels({})
+
+        delivered = await SessionDispatcher.dispatch(
+            _message(),
+            "sess-1",
+            [LogicalTarget(intent="godview")],
+            channels,
+            await _registry(with_godview=True),
+        )
+
+        assert delivered == 0
+
+    async def test_subscriber_with_failing_send_reports_zero(self) -> None:
+        channels = _Channels({ChannelKey("web", "default"): _FailingChannel()})
+
+        delivered = await SessionDispatcher.dispatch(
+            _message(),
+            "sess-1",
+            [LogicalTarget(intent="godview")],
+            channels,
+            await _registry(with_godview=True),
+        )
+
+        assert delivered == 0
+
+    async def test_session_live_web_delivery_is_counted(self) -> None:
+        # session_live 下 web 订阅被剔除出 sent_containers，但直播帧已由
+        # _deliver_session_live_once 投给 web；不计入会让上层误判无人接收，
+        # 触发 origin 回退并把同一帧二次投递给 web。
+        web = _RecordingChannel()
+        channels = _Channels({ChannelKey("web", "default"): web})
+
+        delivered = await SessionDispatcher.dispatch(
+            _message(delivery_scope="session_live"),
+            "sess-1",
+            [LogicalTarget(intent="godview")],
+            channels,
+            await _registry(with_godview=True),
+        )
+
+        assert delivered == 1
+        assert len(web.sends) == 1
 
 
 class TestOriginFallbackDecision:
