@@ -23,6 +23,9 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.message_content import (
+    select_message_content,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -1385,11 +1388,7 @@ class WechatChannel(BaseChannel):
             hb = payload.get("health_check")
             return str(hb or "").strip()
 
-        params = msg.params if isinstance(msg.params, dict) else {}
-        payload = msg.payload if isinstance(msg.payload, dict) else {}
-        content = params.get("content") or payload.get("content") or ""
-        if isinstance(content, dict):
-            content = content.get("output", str(content))
+        content = select_message_content(msg.params, msg.payload)
         return str(content or "").strip()
 
     def _save_credentials(self) -> None:
