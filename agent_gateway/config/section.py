@@ -208,6 +208,21 @@ class SectionDocumentRepository:
         document = await self.get()
         return dict(document.body) if document else {}
 
+    async def upsert_body(
+        self,
+        body: dict[str, Any],
+        *,
+        source: str = "manager",
+    ) -> SectionDocument:
+        """Replace the section body and advance its document revision."""
+        existing = await self.get()
+        document = SectionDocument(
+            body=dict(body),
+            source=source,
+            revision=(int(existing.revision) + 1 if existing else 1),
+        )
+        return await self.upsert(document)
+
     @staticmethod
     def _document(
         body: dict[str, Any],
