@@ -132,7 +132,7 @@ async def run_single(
         startup_import_phases: list[tuple[str, float]],
         preprocessor: MessagePreprocessor,
         connect_with_retry: Callable[..., Awaitable[None]],
-        required_client_type: str | None = None,
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     from agent_gateway.common.config import get_config
 

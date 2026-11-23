@@ -462,7 +462,7 @@ async def _run(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool = False,
-        required_client_type: str | None = None,
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Retain the public entrypoint while delegating to the single host."""
     from agent_gateway.application.single import run_single
@@ -489,7 +489,7 @@ async def _run_with_shutdown_signals(
     web_port: int,
     web_path: str,
     web_ws_deflate: bool = False,
-    required_client_type: str | None = None,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
@@ -557,7 +557,7 @@ def main() -> None:
     parser.add_argument(
         "--require-adx-router",
         # Accept previously generated service units; validation itself is generic.
-        dest="required_client_type", action="store_const", const="agentos_router",
+        dest="required_client_type", action="store_const", const=("agentos_router", "adx_router"),
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()

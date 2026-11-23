@@ -59,17 +59,22 @@ def _validate_agent_client_registration(
     config: dict[str, Any] | None,
     extension: Any,
     *,
-    required_type: str | None = None,
+    required_type: str | tuple[str, ...] | None = None,
 ) -> None:
     gateway = (config or {}).get("gateway") or {}
     selected = str((gateway.get("agent_client") or {}).get("type") or "websocket").strip().lower()
-    expected = required_type or selected
-    if expected == "websocket":
-        return
     registered = extension.metadata.id if extension is not None else "none"
-    if selected != expected or registered != expected or extension.get_client() is None:
+    if required_type is None and registered == "openjiuwen_runtime_management":
+        # The registry installs this override only for an explicit runtime mode.
+        if extension.get_client() is not None:
+            return
+    requirements = (required_type,) if isinstance(required_type, str) else required_type
+    if requirements is None and selected == "websocket":
+        return
+    expected = requirements or (selected,)
+    if extension is None or selected not in expected or registered != selected or extension.get_client() is None:
         raise RuntimeError(
-            f"Configured AgentServerClient {expected!r} is not registered (selected: {selected}, "
+            f"Configured AgentServerClient {' or '.join(expected)} is not registered (selected: {selected}, "
             f"registered: {registered}). Check gateway.agent_client.type and extension loading logs."
         )
 

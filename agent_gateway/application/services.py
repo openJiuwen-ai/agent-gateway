@@ -99,7 +99,7 @@ async def assemble_services(
     log_stage: Callable[[str], None],
     startup_t0: float,
     connect_with_retry: Callable[..., Awaitable[None]] = _connect_with_retry,
-    required_client_type: str | None = None,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> GatewayServices:
     from openjiuwen.core.runner import Runner
     from agent_gateway.channel_manager.channel_manager import ChannelManager
