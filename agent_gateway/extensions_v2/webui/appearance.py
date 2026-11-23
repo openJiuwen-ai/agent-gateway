@@ -34,6 +34,8 @@ MAX_WELCOME_CHARS = 64
 IMAGE_SUFFIXES = frozenset({".png", ".webp", ".svg", ".gif"})
 #: The brand name in the welcome line: one colour, or two for a left-to-right gradient.
 MAX_HIGHLIGHT_COLORS = 2
+#: What the highlight colours: the brand name only (the default) or the whole welcome line.
+HIGHLIGHT_SCOPES = frozenset({"brand", "line"})
 MIN_HOVER_MS = 500
 MAX_HOVER_MS = 10_000
 #: Largest image file of each image field, checked when the part is submitted.
@@ -178,9 +180,13 @@ def validate_identity(value: Any) -> dict[str, Any]:
 
 
 def validate_welcome(value: Any) -> dict[str, Any]:
-    """The second half of the welcome line, per work mode and as a default, and the brand name's colour."""
-    if not isinstance(value, Mapping) or not value or set(value) - {"default", "modes", "highlight"}:
-        raise ValueError("welcome accepts default, modes and highlight")
+    """The second half of the welcome line, per work mode and as a default, and the highlight colour.
+
+    The highlight colours the brand name; ``highlightScope: "line"`` extends it to the second half.
+    """
+    if (not isinstance(value, Mapping) or not value
+            or set(value) - {"default", "modes", "highlight", "highlightScope"}):
+        raise ValueError("welcome accepts default, modes, highlight and highlightScope")
     result: dict[str, Any] = {}
     if "default" in value:
         result["default"] = _localized(value["default"], MAX_WELCOME_CHARS, "welcome.default")
@@ -196,6 +202,12 @@ def validate_welcome(value: Any) -> dict[str, Any]:
                 or not all(isinstance(color, str) and _ACCENT.fullmatch(color) for color in colors)):
             raise ValueError("welcome.highlight must be one or two #RRGGBB colours")
         result["highlight"] = list(colors)
+    if "highlightScope" in value:
+        if value["highlightScope"] not in HIGHLIGHT_SCOPES:
+            raise ValueError("welcome.highlightScope must be 'brand' or 'line'")
+        if "highlight" not in result:
+            raise ValueError("welcome.highlightScope requires welcome.highlight")
+        result["highlightScope"] = value["highlightScope"]
     return result
 
 
