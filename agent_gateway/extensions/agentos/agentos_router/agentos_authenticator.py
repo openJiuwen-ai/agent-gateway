@@ -250,8 +250,10 @@ class AgentOSAuthenticator(CredentialAuthenticator):
                 backoff *= _AUTH_BACKOFF_FACTOR
                 continue
 
-            if status in (401, 403):
+            if status == 401:
                 return self._failure("Token 无效或已过期", "INVALID_TOKEN")
+            if status == 403:
+                return self._failure("无权访问登录服务", "IAM_FORBIDDEN")
             if not 200 <= status < 300:
                 self._log_retry(
                     attempt=attempt,

@@ -305,6 +305,22 @@ class TestAuthRetryBehavior:
         assert calls["n"] == 1
 
     @pytest.mark.asyncio
+    async def test_403_is_iam_forbidden_without_retry(self):
+        calls = {"n": 0}
+
+        def handler(request):
+            calls["n"] += 1
+            return httpx.Response(403, json={"error": "forbidden"})
+
+        async with _auth_with_transport(handler) as auth:
+            result = await auth._authenticate_token("token")
+
+        assert result.success is False
+        assert result.extensions.get("error_code") == "IAM_FORBIDDEN"
+        assert result.error == "无权访问登录服务"
+        assert calls["n"] == 1
+
+    @pytest.mark.asyncio
     async def test_200_without_valid_field_is_invalid_response(self):
         calls = {"n": 0}
 
