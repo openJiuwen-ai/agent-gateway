@@ -458,6 +458,41 @@ async def test_query_frame_is_answered_locally_for_gateway_packages(tmp_path, mo
     assert channel.responses[0]["payload"]["state"]["installed_packages"][0]["package_id"] == "demo.gateway"
 
 
+async def test_query_reports_an_installed_but_inactive_gateway_package_as_success(tmp_path, monkeypatch):
+    runtime = await _runtime(tmp_path)
+    await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install([_package_zip(tmp_path)])
+    runtime.unpublish("demo.gateway")
+    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
+
+    async def fake_fetch(*args, **kwargs):
+        return True, {"state": {"active": [], "installed": [], "installed_packages": [], "packages": []}}
+
+    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
+
+    handled = await extension_package_handlers._handle_locally(
+        channel=runtime.channel,
+        resolve_client=lambda: SimpleNamespace(),
+        ws=SimpleNamespace(),
+        req_id="r-inactive",
+        params={},
+        session_id=None,
+        user_id=None,
+        method=extension_package_handlers.ReqMethod.EXTENSIONS_V2_QUERY,
+    )
+
+    assert handled is True
+    assert runtime.channel.responses[0]["payload"]["state"]["packages"] == [{
+        "package_id": "demo.gateway",
+        "domain": "gateway",
+        "process_id": None,
+        "active_version": None,
+        "requires": {},
+        "status": "success",
+        "reason": None,
+        "pending": None,
+    }]
+
+
 async def test_uninstall_of_an_agent_package_is_forwarded(tmp_path, monkeypatch):
     runtime = await _runtime(tmp_path)
     monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)

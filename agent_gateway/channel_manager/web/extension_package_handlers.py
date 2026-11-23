@@ -169,8 +169,51 @@ async def _handle_locally(
 
     if method is ReqMethod.EXTENSIONS_V2_QUERY:
         package_id = params.get("package_id")
+        if package_id is None:
+            agent_client = resolve_client()
+            if agent_client is None:
+                return False
+            ok, payload = await fetch_agent_unary(
+                agent_client=agent_client,
+                req_method=method,
+                params=dict(params),
+                session_id=session_id,
+                user_id=user_id,
+                channel_id=channel.channel_id,
+                label=method.value,
+                timeout_seconds=_request_timeout(),
+            )
+            if not ok:
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    payload=payload,
+                    error=str(payload.get("error") or f"{method.value} failed"),
+                    code=str(payload.get("code") or OPERATION_FAILED_CODE),
+                )
+                return True
+            remote = payload.get("state")
+            if not isinstance(remote, Mapping):
+                await _respond(
+                    channel,
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="AgentServer returned an invalid extension query state",
+                    code=OPERATION_FAILED_CODE,
+                )
+                return True
+            await _respond(
+                channel,
+                ws,
+                req_id,
+                ok=True,
+                payload={"state": _merge_query_states(manager.query(), remote)},
+            )
+            return True
         if not isinstance(package_id, str) or not package_id:
-            # The shared report is owned by AgentServer; it returns every domain id.
             return False
         if await manager.get_package_domain(package_id) != DOMAIN_GATEWAY:
             return False
@@ -702,6 +745,156 @@ def _merge_packages(
         if status["installed"]:
             card.update(status)
         merged[str(card.get("id") or identity)] = card
+    return list(merged.values())
+
+
+def _merge_query_states(local: Mapping[str, Any], remote: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge each host's current facts; do not trust AgentServer's legacy cross-domain rows."""
+
+    remote = _agentserver_query_state(remote)
+    local_packages = _gateway_query_packages(local)
+    remote_packages = _mapping_rows(remote.get("packages"))
+    packages = _unique_rows(local_packages, remote_packages, key=lambda item: str(item.get("package_id") or ""))
+    active = _unique_rows(
+        _mapping_rows(local.get("active")),
+        _mapping_rows(remote.get("active")),
+        key=lambda item: str(item.get("package_id") or item.get("root") or ""),
+    )
+    installed_packages = _unique_rows(
+        _mapping_rows(local.get("installed_packages")),
+        _mapping_rows(remote.get("installed_packages")),
+        key=lambda item: "\0".join(
+            str(item.get(name) or "") for name in ("package_id", "version", "install_path")
+        ),
+    )
+    installed = list(dict.fromkeys([
+        *[str(item) for item in local.get("installed") or [] if isinstance(item, (str, Path))],
+        *[str(item) for item in remote.get("installed") or [] if isinstance(item, (str, Path))],
+    ]))
+    package_ids = list(dict.fromkeys([
+        *[str(item.get("package_id")) for item in packages if item.get("package_id")],
+        *[str(item) for item in local.get("package_ids") or [] if isinstance(item, str) and item],
+        *[str(item) for item in remote.get("package_ids") or [] if isinstance(item, str) and item],
+    ]))
+    return {
+        "active": active,
+        "installed": installed,
+        "installed_packages": installed_packages,
+        "inflight": {**_mapping_value(remote.get("inflight")), **_mapping_value(local.get("inflight"))},
+        "published": {**_mapping_value(remote.get("published")), **_mapping_value(local.get("published"))},
+        "packages": packages,
+        "package_ids": package_ids,
+    }
+
+
+def _agentserver_query_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove Gateway-owned facts from the legacy shared AgentServer report."""
+
+    gateway_ids: set[str] = set()
+    gateway_paths: set[str] = set()
+    for field in ("active", "installed_packages", "packages"):
+        for item in _mapping_rows(state.get(field)):
+            if str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY:
+                continue
+            package_id = str(item.get("package_id") or "")
+            if package_id:
+                gateway_ids.add(package_id)
+            path = str(item.get("install_path") or item.get("root") or "")
+            if path:
+                gateway_paths.add(path)
+
+    def agent_rows(field: str) -> list[dict[str, Any]]:
+        return [
+            item for item in _mapping_rows(state.get(field))
+            if str(item.get("package_id") or "") not in gateway_ids
+            and str(item.get("domain") or "").strip().lower() != DOMAIN_GATEWAY
+        ]
+
+    return {
+        "active": agent_rows("active"),
+        "installed": [
+            str(item) for item in state.get("installed") or []
+            if isinstance(item, (str, Path)) and str(item) not in gateway_paths
+        ],
+        "installed_packages": agent_rows("installed_packages"),
+        "inflight": {
+            str(key): value for key, value in _mapping_value(state.get("inflight")).items()
+            if str(key) not in gateway_ids
+        },
+        "published": {
+            str(key): value for key, value in _mapping_value(state.get("published")).items()
+            if str(key) not in gateway_ids
+        },
+        "packages": agent_rows("packages"),
+        "package_ids": [
+            str(item) for item in state.get("package_ids") or []
+            if isinstance(item, str) and item and item not in gateway_ids
+        ],
+    }
+
+
+def _gateway_query_packages(state: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Project Gateway runtime and installed rows into the shared query report shape."""
+
+    active = {
+        str(item.get("package_id")): item
+        for item in _mapping_rows(state.get("active"))
+        if item.get("package_id")
+    }
+    identities = dict.fromkeys([
+        *active,
+        *[
+            str(item.get("package_id"))
+            for item in _mapping_rows(state.get("installed_packages"))
+            if item.get("package_id")
+        ],
+    ])
+    rows: list[dict[str, Any]] = []
+    for package_id in identities:
+        record = active.get(package_id)
+        requires = {}
+        if record is not None:
+            requires = {
+                str(item.get("package_id")): str(item.get("version") or "")
+                for item in _mapping_rows(record.get("requires_packages"))
+                if item.get("package_id")
+            }
+        rows.append({
+            "package_id": package_id,
+            "domain": DOMAIN_GATEWAY,
+            "process_id": None,
+            "active_version": str(record.get("version")) if record is not None else None,
+            "requires": requires,
+            # An installed row that is not active in this process is not a failure:
+            # the shared report only pairs "failed" with a concrete reason, and the
+            # install itself succeeded. Activations excluded by the host filter or
+            # disabled by the manifest land here with active_version None.
+            "status": "success",
+            "reason": None,
+            "pending": None,
+        })
+    return rows
+
+
+def _mapping_rows(value: Any) -> list[dict[str, Any]]:
+    return [dict(item) for item in value or [] if isinstance(item, Mapping)]
+
+
+def _mapping_value(value: Any) -> dict[str, Any]:
+    return {str(key): item for key, item in value.items()} if isinstance(value, Mapping) else {}
+
+
+def _unique_rows(
+    first: list[dict[str, Any]],
+    second: list[dict[str, Any]],
+    *,
+    key: Callable[[Mapping[str, Any]], str],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for item in (*first, *second):
+        identity = key(item)
+        if identity:
+            merged.setdefault(identity, item)
     return list(merged.values())
 
 
