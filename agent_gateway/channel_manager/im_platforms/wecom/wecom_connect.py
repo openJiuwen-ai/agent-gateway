@@ -15,7 +15,6 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable
 
-import requests
 from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
