@@ -3586,7 +3586,7 @@ class FeishuChannel(BaseChannel):
                 return
 
             # 消息去重检查
-            if self._is_duplicate_message(message.message_id):
+            if self._message_deduplicator.is_duplicate(message.message_id):
                 return
 
             # 跳过机器人发送的消息
@@ -4069,18 +4069,6 @@ class FeishuChannel(BaseChannel):
                 target,
                 exc,
             )
-
-    def _is_duplicate_message(self, message_id: str) -> bool:
-        """
-        检查消息是否重复。
-
-        Args:
-            message_id: 消息ID
-
-        Returns:
-            bool: True表示消息重复，False表示新消息
-        """
-        return self._message_deduplicator.is_duplicate(message_id)
 
     def _parse_message_content(self, message: Any) -> str:
         """

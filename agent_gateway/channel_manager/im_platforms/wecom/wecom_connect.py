@@ -212,10 +212,6 @@ class WecomChannel(BaseChannel):
         """返回当前数字分身对应的用户 ID。"""
         return (self.config.my_user_id or "").strip()
 
-    def _is_duplicate_message(self, message_id: str) -> bool:
-        """检查消息是否重复。"""
-        return self._message_deduplicator.is_duplicate(message_id)
-
     _GROUP_PROGRESS_HINT_DELAY_SECONDS = 6.0
     _GROUP_PROGRESS_HINT_TEXTS: tuple[str, ...] = (
         "我先确认下，马上回复。",
@@ -821,7 +817,7 @@ class WecomChannel(BaseChannel):
             )
             return
 
-        if self._is_duplicate_message(req_id or chatid):
+        if self._message_deduplicator.is_duplicate(req_id or chatid):
             logger.debug("[WecomChannel] 消息去重: message_id=%s", req_id)
             return
 
