@@ -25,6 +25,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections"),
     ("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove"),
     ("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare"),
+    ("JIUWENMATE_CHANNEL_CONFIG_SYNC", "jiuwenmate.channel_config.sync"),
     ("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack"),
     ("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack"),
     ("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response"),

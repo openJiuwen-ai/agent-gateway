@@ -10,6 +10,7 @@ import re
 import shlex
 import stat
 import time
+import uuid
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, nullcontext
@@ -22,6 +23,10 @@ from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.channel_manager.channel_manager import ChannelManager
+from agent_gateway.channel_manager.web.channel_sync import (
+    merge_channel_snapshots,
+    select_channel_snapshot,
+)
 from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
@@ -129,6 +134,7 @@ from agent_gateway.routing.container_files import (
 )
 
 logger = logging.getLogger(__name__)
+_CHANNEL_SYNC_FAILURE_LIMIT = 3
 
 _ws_readiness_required: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "agentos_ws_readiness_required", default=False,
@@ -711,6 +717,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._ws_client_factory = ws_client_factory or WebSocketAgentServerClient
         self._push_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._server_config: dict[str, Any] = {}
+        self._last_channel_snapshot: dict[str, Any] = {}
+        self._channel_synced_sandboxes: set[str] = set()
+        self._channel_sync_failures: dict[str, int] = {}
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -1521,6 +1530,7 @@ class AgentOSRouterClient(AgentServerClient):
         if config:
             import copy
             self._server_config = copy.deepcopy(config)
+            self._last_channel_snapshot = {}
         self._yuanrong.set_or_update_server_config(config=config, env=env)
 
     def set_server_push_handler(
@@ -2247,6 +2257,8 @@ class AgentOSRouterClient(AgentServerClient):
                     runtime, reason=type(exc).__name__
                 )
                 return self._routing_error_response(envelope, error)
+            if envelope.method != ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value:
+                await self._sync_channel_config_for_runtime(runtime, ws_client)
             self._log_route("route.unary", envelope, runtime)
             try:
                 return await ws_client.send_request(envelope, timeout=timeout)
@@ -2263,6 +2275,129 @@ class AgentOSRouterClient(AgentServerClient):
                 return self._routing_error_response(envelope, error)
         finally:
             await self._agent_manager.release(runtime.key, expected_agent_id=runtime.info.agent_id)
+
+    async def _sync_channel_config_for_runtime(
+        self,
+        runtime: AgentRuntime,
+        ws_client: WebSocketAgentServerClient,
+    ) -> None:
+        """Send the current channel snapshot once to a newly used builtin AS."""
+        if runtime.info.agent_type != BUILTIN_AGENT_TYPE:
+            return
+        sandbox_id = str(runtime.info.sandbox_id or "").strip()
+        if not sandbox_id or sandbox_id in self._channel_synced_sandboxes:
+            return
+        if self._channel_sync_failures.get(sandbox_id, 0) >= _CHANNEL_SYNC_FAILURE_LIMIT:
+            return
+        channels = merge_channel_snapshots(
+            self._server_config.get("channels"),
+            self._last_channel_snapshot,
+        )
+        if not channels:
+            return
+
+        envelope = E2AEnvelope(
+            request_id=uuid.uuid4().hex,
+            channel="web",
+            user_id=runtime.info.user_id,
+            method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
+            params={"channels": channels},
+        )
+        runtime.attach_to_envelope(envelope)
+        try:
+            response = await ws_client.send_request(envelope, timeout=5.0)
+        except Exception as exc:  # noqa: BLE001 - retry on the next request
+            self._record_channel_sync_failure(sandbox_id)
+            logger.warning(
+                "[ChannelSync] initial sync failed user=%s: %s",
+                runtime.info.user_id,
+                type(exc).__name__,
+            )
+            return
+        if not getattr(response, "ok", False):
+            self._record_channel_sync_failure(sandbox_id)
+            logger.warning(
+                "[ChannelSync] initial sync rejected user=%s",
+                runtime.info.user_id,
+            )
+            return
+        self._channel_sync_failures.pop(sandbox_id, None)
+        self._channel_synced_sandboxes.add(sandbox_id)
+
+    def _record_channel_sync_failure(self, sandbox_id: str) -> None:
+        failures = self._channel_sync_failures.get(sandbox_id, 0) + 1
+        self._channel_sync_failures[sandbox_id] = failures
+        if failures == _CHANNEL_SYNC_FAILURE_LIMIT:
+            logger.warning(
+                "[ChannelSync] initial sync disabled after %d failures sandbox=%s",
+                failures,
+                sandbox_id,
+            )
+
+    async def sync_channel_config(self, channels: Mapping[str, Any]) -> bool:
+        """Push one global channel snapshot to every ready builtin AS."""
+        if not isinstance(channels, Mapping) or not channels:
+            return False
+        changes = select_channel_snapshot(channels)
+        if not changes:
+            return False
+        snapshot = merge_channel_snapshots(
+            self._server_config.get("channels"),
+            self._last_channel_snapshot,
+            changes,
+        )
+        if not snapshot:
+            return False
+        try:
+            runtimes = await self._agent_manager.list_all_agents()
+        except Exception:  # noqa: BLE001
+            logger.warning("[ChannelSync] cannot enumerate AgentOS runtimes", exc_info=True)
+            return False
+
+        targets = [
+            runtime for runtime in runtimes
+            if runtime.is_ready() and runtime.info.agent_type == BUILTIN_AGENT_TYPE
+        ]
+        if not targets:
+            self._last_channel_snapshot = snapshot
+            return True
+
+        async def send_one(runtime: AgentRuntime) -> bool:
+            envelope = E2AEnvelope(
+                request_id=uuid.uuid4().hex,
+                channel="web",
+                user_id=runtime.info.user_id,
+                method=ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value,
+                params={"channels": changes},
+            )
+            runtime.attach_to_envelope(envelope)
+            ws_client = await self._get_ws_client(runtime)
+            response = await ws_client.send_request(envelope, timeout=5.0)
+            if not getattr(response, "ok", False):
+                logger.warning(
+                    "[ChannelSync] AgentOS AS rejected channel snapshot user=%s",
+                    runtime.info.user_id,
+                )
+                return False
+            sandbox_id = str(runtime.info.sandbox_id or "").strip()
+            if sandbox_id:
+                self._channel_sync_failures.pop(sandbox_id, None)
+                self._channel_synced_sandboxes.add(sandbox_id)
+            return True
+
+        results = await asyncio.gather(
+            *(send_one(runtime) for runtime in targets),
+            return_exceptions=True,
+        )
+        failed = sum(result is not True for result in results)
+        if failed:
+            logger.warning(
+                "[ChannelSync] AgentOS fanout partial failure: %d/%d",
+                failed, len(targets),
+            )
+        else:
+            self._last_channel_snapshot = snapshot
+        return failed == 0
 
     async def send_request_stream(
         self, envelope: E2AEnvelope
@@ -2318,6 +2453,8 @@ class AgentOSRouterClient(AgentServerClient):
                 )
                 yield self._routing_error_chunk(envelope, error)
                 return
+            if envelope.method != ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC.value:
+                await self._sync_channel_config_for_runtime(runtime, ws_client)
             self._log_route("route.stream", envelope, runtime)
             try:
                 async for chunk in ws_client.send_request_stream(envelope):
@@ -3922,6 +4059,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._web_ready_sandboxes = {
             key for key in self._web_ready_sandboxes if key[0] != instance_id
         }
+        if instance_id:
+            self._channel_synced_sandboxes.discard(instance_id)
+            self._channel_sync_failures.pop(instance_id, None)
         await self._close_ws_client(agent_info.sandbox_id)
         if instance_id:
             await self._request_sandbox_delete(lifecycle)
