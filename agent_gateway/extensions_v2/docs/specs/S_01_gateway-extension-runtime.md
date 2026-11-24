@@ -124,12 +124,15 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 | `gateway.request` | `GatewayRequestInput` | `GatewayRequestOutput` | 校验 method，`forward` |
 | `ui.render` | `UiRenderInput` | `UiRenderOutput` | 校验并下发 |
 | `ui.ready` / `ui.click` / `ui.select` / `ui.change` / `ui.press_enter` / `ui.search` / `ui.clear` | `UiActionInput` | `UiActionOutput` | 默认未接管；浏览器分派器在触发前校验当前实例及动作 |
+| `ui.closed` | `UiActionInput` | `UiActionOutput` | 通知真实容器已关闭；开场见 S_09，应用形态的版本与容器序号校验见 S_11 |
 | `gateway.disconnect` | `GatewayDisconnectInput` | 无 | 通知插件连接结束，再清理连接资源 |
 | `ui.appearance` | `UiAppearanceInput` | `HostActionOutput` | 核对调用包当前激活与浏览器连接，设置或撤回其外观部件并下发合成快照；`HostActionOutput.shown` 列出调用包生效的部件（[S_08](S_08_appearance.md)） |
 | `ui.download` | `UiDownloadInput` | `HostActionOutput` | 核对激活与连接，签发一次性下载（[S_10](S_10_application-settings.md) 第 7 节） |
 | `ui.splash.preview` | `UiSplashPreviewInput` | `HostActionOutput` | 核对激活、开场声明与连接，请求预览（[S_09](S_09_startup-splash.md) 第 3.3 节） |
 
 后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链。调用方由 Ops 方法从调用的 Ops 解析（后台任务中同样有效），作为该链的 `trigger_context` 传给 `bus.trigger`，只有 CORE 能读取；输入只携带 `package_id`，供 USER Handler 匹配与查看，与调用方不一致或链路没有调用方时 CORE 拒绝。CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。`ops.ui.render` 同样以 `trigger_context` 携带调用方；它引起的渲染、错误与清除帧标注调用方的激活代次，宿主自行发送的帧（释放、淘汰、停机）标注当前代次。
+
+应用形态由插件通过 `ops.ui.render` 发布 `autoStart=true` 的声明，关闭时使用 `CLEAR`；显示与关闭通知的契约见 [S_11](S_11_application-presentation.md)。
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 
