@@ -4439,6 +4439,11 @@ class MessageHandler(ABC):
                         # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
                         if str(params.get(key) or "").strip() in {"", "default"}:
                             params.pop(key, None)
+                # create 刚把写库身份硬覆盖成 chat routing；顶部 tenant_* 仍是
+                # override=False 时的旧快照（可能含 LLM 注入租户）。回写后再发 ACK，
+                # 保证「落库租户」与「ACK 声明租户」一致。
+                tenant_group_id = str(params.get("group_id") or "")
+                tenant_bot_id = str(params.get("bot_id") or "")
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:

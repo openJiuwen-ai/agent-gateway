@@ -330,6 +330,54 @@ async def test_cron_push_payload_forwards_session_and_tenant_to_run_now_ack(
     }
 
 
+@pytest.mark.asyncio
+async def test_cron_create_ack_uses_chat_routing_not_forged_payload_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create 硬覆盖写库租户后，ACK 必须声明 chat routing，不能用 LLM 注入值。"""
+    captured = _capture_ack(monkeypatch)
+    handler = _bare_handler()
+    handler._stream_metadata["req-1"] = {
+        "user_id": "alice",
+        "routing": {"group_id": "g-real", "bot_id": "b-real"},
+    }
+    handler._cron_controller = SimpleNamespace(
+        create_job=AsyncMock(return_value={"id": "job-1"}),
+    )
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.is_enterprise", lambda: True
+    )
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "command_id": "cmd-1",
+            "data": {
+                "name": "job",
+                "group_id": "g-forged",
+                "bot_id": "b-forged",
+            },
+        },
+        request_id="req-1",
+        channel_id="",
+        session_id="sess-1",
+        metadata=None,
+        user_id="alice",
+    )
+
+    env = captured["env"]
+    assert env.session_id == "sess-1"
+    assert env.method == "cron.command.ack"
+    assert env.channel_context.get("routing") == {
+        "group_id": "g-real",
+        "bot_id": "b-real",
+    }
+    assert env.channel_context.get("routing") != {
+        "group_id": "g-forged",
+        "bot_id": "b-forged",
+    }
+
+
 def test_cron_snapshot_sync_fully_retired() -> None:
     """per-turn 快照推送机制整体下线：方法与门控常量都不再存在。"""
     assert not hasattr(MessageHandler, "_sync_agentos_cron_jobs")
