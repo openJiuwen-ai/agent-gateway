@@ -287,6 +287,16 @@ def _build_config_saved_callback(
             env=dict(env_updates or {}),
         )
 
+        # channel 配置走全局配置保存时，set_or_update_server_config 只更新内存
+        # 快照，不会主动 fanout；这里补一次后台同步，避免阻塞 config.save
+        # 或影响后续热重载。
+        channels = (config_payload or {}).get("channels")
+        from agent_gateway.channel_manager.web.channel_sync import (
+            schedule_channel_snapshot,
+        )
+
+        schedule_channel_snapshot(client, channels)
+
         from agent_gateway.common.config_panel.config_set_handlers import (
             needs_agent_reload,
         )
@@ -402,6 +412,10 @@ def _build_config_saved_callback(
                     last_error,
                 )
                 return False
+
+            # reload 可能重建 AS 进程或重置 channel 状态；再补一次快照，
+            # 避免 fanout 先于 reload 完成时被覆盖。后台 worker 会合并重复请求。
+            schedule_channel_snapshot(client, channels)
 
             # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
             _schedule_agent_prewarm_sync(

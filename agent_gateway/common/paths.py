@@ -142,7 +142,21 @@ def get_config_file() -> Path:
 
 
 def get_env_file() -> Path:
-    """获取 ``.env`` 路径。"""
+    """获取 ``.env`` 路径。
+
+    优先级：
+
+    1. AgentOS：``<workspace>/config/.env``，与 AgentServer 共用一份；
+    2. 个人版：``<config_dir>/.env``，保持原有行为，不跟随
+       ``JIUWENSWARM_GATEWAY_CONFIG_DIR``。
+
+    AgentOS 的 Gateway/AS 是独立进程，但仍然共用 AS 配置目录下的 env，
+    避免运行期配置面板写入后两边 env 漂移。
+    """
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        return get_user_workspace_dir() / "config" / ".env"
     return get_config_dir() / ".env"
 
 
@@ -432,6 +446,18 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     config_file = get_config_file()
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        from agent_gateway.common.agentos_migration import prepare_agentos_config
+
+        prepare_agentos_config(
+            config_file=config_file,
+            template=get_bundled_resources_dir() / "config.agentos.yaml",
+            legacy_config=get_user_workspace_dir() / "config" / "config.yaml",
+        )
+        return
+
     if not config_file.exists():
         config_file.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=config_file.parent) as temp_dir:

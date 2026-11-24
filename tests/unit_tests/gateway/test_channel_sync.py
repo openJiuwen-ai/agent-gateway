@@ -1,11 +1,13 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from agent_gateway.channel_manager.web.channel_sync import (
     merge_channel_snapshots,
+    schedule_channel_snapshot,
     select_channel_snapshot,
 )
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import BUILTIN_AGENT_TYPE
@@ -23,6 +25,56 @@ def test_select_channel_snapshot_keeps_as_channels_and_minimal_other_channels() 
         "feishu": {"apps": [{"app_id": "a"}], "send_file_allowed": True},
         "telegram": {"send_file_allowed": False},
     }
+
+
+@pytest.mark.asyncio
+async def test_schedule_channel_snapshot_runs_in_background() -> None:
+    called = asyncio.Event()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.channels = None
+
+        async def sync_channel_config(self, channels):
+            self.channels = channels
+            called.set()
+            return True
+
+    client = _Client()
+    schedule_channel_snapshot(client, {"feishu": {"apps": []}})
+
+    await asyncio.wait_for(called.wait(), timeout=1.0)
+    assert client.channels == {"feishu": {"apps": []}}
+
+
+@pytest.mark.asyncio
+async def test_schedule_channel_snapshot_coalesces_to_latest() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowClient:
+        def __init__(self) -> None:
+            self.calls = []
+            self.second = asyncio.Event()
+
+        async def sync_channel_config(self, channels):
+            self.calls.append(channels)
+            if len(self.calls) == 1:
+                started.set()
+                await release.wait()
+            else:
+                self.second.set()
+            return True
+
+    client = _SlowClient()
+    schedule_channel_snapshot(client, {"feishu": {"apps": [{"app_id": "v1"}]}})
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    schedule_channel_snapshot(client, {"feishu": {"apps": [{"app_id": "v2"}]}})
+
+    assert len(client.calls) == 1
+    release.set()
+    await asyncio.wait_for(client.second.wait(), timeout=1.0)
+    assert client.calls[-1] == {"feishu": {"apps": [{"app_id": "v2"}]}}
 
 
 def test_merge_channel_snapshots_uses_later_sections() -> None:
@@ -88,6 +140,7 @@ def _router() -> AgentOSRouterClient:
     router._last_channel_snapshot = {"feishu": {"apps": []}}
     router._channel_synced_sandboxes = set()
     router._channel_sync_failures = {}
+    router._channel_sync_generation = 0
     return router
 
 
@@ -139,3 +192,36 @@ async def test_fanout_partial_failure_keeps_last_snapshot() -> None:
     assert router._last_channel_snapshot == {
         "feishu": {"apps": [{"app_id": "old"}]}
     }
+
+
+@pytest.mark.asyncio
+async def test_fanout_does_not_mark_sandbox_when_config_changed_mid_flight() -> None:
+    router = _router()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowClient(_Client):
+        async def send_request(self, envelope, *, timeout):
+            _ = timeout
+            self.envelopes.append(envelope)
+            started.set()
+            await release.wait()
+            return SimpleNamespace(ok=True)
+
+    client = _SlowClient()
+    router._agent_manager = _Manager([_Runtime("sandbox-1")])
+
+    async def get_client(runtime):
+        return client
+
+    router._get_ws_client = get_client
+    task = asyncio.create_task(
+        router.sync_channel_config({"feishu": {"apps": []}})
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    router._channel_sync_generation += 1
+    release.set()
+
+    assert await asyncio.wait_for(task, timeout=1.0) is False
+    assert router._channel_synced_sandboxes == set()

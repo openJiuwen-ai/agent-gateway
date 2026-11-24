@@ -38,9 +38,25 @@ def test_unknown_method_not_forwarded_when_switch_is_off():
     )
 
 
-@pytest.mark.parametrize("method", ["gateway.internal.call", "admin.reset", "extension.internal.tick"])
+@pytest.mark.parametrize(
+    "method",
+    [
+        "gateway.internal.call",
+        "admin.reset",
+        "extension.internal.tick",
+        "jiuwenmate.channel_config.sync",
+    ],
+)
 def test_denied_prefixes_are_never_forwarded(method):
     assert route_req_method(method, forward_methods=set(), local_methods=set()) == ROUTE_DENIED
+
+
+def test_channel_config_sync_is_denied_even_if_marked_forward():
+    method = "jiuwenmate.channel_config.sync"
+    assert (
+        route_req_method(method, forward_methods={method}, local_methods=set())
+        == ROUTE_DENIED
+    )
 
 
 def test_channels_without_local_registry_keep_strict_behavior():
