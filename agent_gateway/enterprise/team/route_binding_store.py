@@ -110,6 +110,9 @@ class TeamRouteBindingStore(Protocol):
     def delete(self, team_session_id: str) -> bool:
         ...
 
+    def catalog_endpoints(self, limit: int, offset: int = 0) -> list[str]:
+        ...
+
     def list_all(self) -> list[TeamRouteBinding]:
         ...
 
@@ -338,6 +341,14 @@ class SqliteTeamRouteBindingStore:
                 "DELETE FROM team_route_binding WHERE team_session_id = ?", (sid,)
             )
             return cur.rowcount > 0
+
+    def catalog_endpoints(self, limit: int, offset: int = 0) -> list[str]:
+        with self._lock:
+            rows = self._connect().execute(
+                "SELECT endpoint FROM team_route_binding WHERE status = :status AND team_session_id NOT LIKE 'shared!_user!_%' ESCAPE '!' AND team_session_id NOT LIKE 'webhttp!_%' ESCAPE '!' AND endpoint LIKE 'http%' GROUP BY endpoint ORDER BY MAX(updated_at) DESC, endpoint LIMIT :limit OFFSET :offset",
+                {"status": ROUTE_STATUS_ACTIVE, "limit": limit, "offset": offset},
+            ).fetchall()
+        return [row["endpoint"] for row in rows]
 
     def list_all(self) -> list[TeamRouteBinding]:
         with self._lock:
