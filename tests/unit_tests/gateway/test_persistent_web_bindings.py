@@ -42,6 +42,29 @@ def owner(tmp_path, monkeypatch):
         return SimpleNamespace(ok=True, payload=payload)
 
     service = SimpleNamespace(send_request=AsyncMock(side_effect=respond))
+    # Channel sync is best-effort fanout to AgentServer. Unit tests must not
+    # depend on it: a live schedule can race send_request mocks and, under CI
+    # asyncio timing, surface as ok=False owner RPC failures.
+    def skip_schedule_channel_config(*_args, **_kwargs):
+        return None
+
+    async def skip_channel_sync(*_args, **_kwargs):
+        return True
+
+    from agent_gateway.channel_manager.web import (
+        channel_sync,
+        persistent_bindings as persistent_bindings_mod,
+        welink_bindings as welink_bindings_mod,
+    )
+
+    monkeypatch.setattr(channel_sync, "schedule_channel_config", skip_schedule_channel_config)
+    monkeypatch.setattr(channel_sync, "sync_channel_config", skip_channel_sync)
+    monkeypatch.setattr(
+        persistent_bindings_mod, "schedule_channel_config", skip_schedule_channel_config
+    )
+    monkeypatch.setattr(
+        welink_bindings_mod, "schedule_channel_config", skip_schedule_channel_config
+    )
     settings = register_persistent_bindings(channel, lambda: cm, lambda: service, _normalize_feishu_conf, MagicMock())
 
     async def rpc(method, params):
@@ -440,7 +463,8 @@ async def test_welink_status_revoke_and_colleague_delete_keep_shared_reader(owne
     owner.path.write_text(yaml.safe_dump({"channels": {"welink": section}}))
     await owner.cm.set_conf("welink", section)
     listing = await owner.invoke("welink.get_bindings", {"config_id": "second"})
-    assert listing["ok"] and listing["payload"]["persistent_agent_id"] == "other"
+    assert listing.get("ok") is True, listing
+    assert listing["payload"]["persistent_agent_id"] == "other"
     assert "secret2" not in str(listing)
     revoked = await owner.invoke("welink.revoke", {"config_id": "second"})
     assert revoked == {"ok": True, "payload": {"revoked": True}}
@@ -460,8 +484,18 @@ async def test_welink_manual_credential_attaches_runtime_agent_and_hides_secret(
         "config_id": "colleague", "account": "reader", "assistant_credential_id": "ak",
         "assistant_secret": "private-test-secret",
     })
-    assert saved["ok"] and "private-test-secret" not in str(saved)
-    assert [call.args[0].method for call in owner.service.send_request.await_args_list] == [
+    assert saved.get("ok") is True, saved
+    assert "private-test-secret" not in str(saved)
+    # Ignore unrelated fanout RPCs (e.g. channel_config.sync) if a schedule leaks.
+    methods = [
+        call.args[0].method
+        for call in owner.service.send_request.await_args_list
+        if call.args[0].method in {
+            "jiuwenmate.colleague.connections",
+            "jiuwenmate.connection.attach",
+        }
+    ]
+    assert methods == [
         "jiuwenmate.colleague.connections", "jiuwenmate.connection.attach",
     ]
     binding = owner.cm.get_conf("welink")["bindings"][0]

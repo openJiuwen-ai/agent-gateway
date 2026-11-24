@@ -20,6 +20,9 @@ def test_chat_send_stream_relays_terminal_event(gateway_ws, stub_agent_server) -
     assert "chat.delta" in events
     assert "chat.final" in events
 
-    envelope = stub_agent_server.requests[before]
+    envelope = next(
+        item for item in stub_agent_server.requests[before:]
+        if item.get("request_id") == "st-stream"
+    )
     assert envelope["method"] == "chat.send"
     assert envelope["is_stream"] is True

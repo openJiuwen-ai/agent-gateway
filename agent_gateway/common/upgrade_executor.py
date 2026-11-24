@@ -15,7 +15,7 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from agent_gateway.common.paths import get_infra_data_dir, get_user_workspace_dir
+from agent_gateway.common.paths import get_user_workspace_dir
 from agent_gateway.common.version import __version__
 from agent_gateway.common.version_source import normalize_pypi_index_url
 
@@ -25,7 +25,7 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 512
 
 
 def _updates_dir() -> Path:
-    path = get_infra_data_dir() / ".updates"
+    path = get_user_workspace_dir() / ".updates"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -195,7 +195,11 @@ class PipExecutor(UpgradeExecutor):
             if editable_info:
                 raise RuntimeError(editable_info)
 
-            pip_args = self._build_install_args(package, timeout)
+            # The executor config merges the updater status, so latest_version
+            # is the version the check resolved and showed to the user; pin
+            # the install to it instead of letting pip/uv re-resolve the index.
+            target_version = str(self._config.get("latest_version") or "")
+            pip_args = self._build_install_args(package, timeout, target_version)
 
             process = subprocess.Popen(
                 pip_args,
@@ -325,14 +329,26 @@ class PipExecutor(UpgradeExecutor):
             return None
         return PipExecutor._find_uv_binary()
 
-    def _build_install_args(self, package: str, timeout: int) -> list[str]:
+    def _build_install_args(
+        self, package: str, timeout: int, target_version: str = ""
+    ) -> list[str]:
         # Migrate the legacy Aliyun mirror base (issue 6288) at the final pip
         # boundary, so configs saved by older builds still upgrade correctly.
         pypi_mirror = normalize_pypi_index_url(self._config.get("pypi_mirror", ""))
+        # Pin the requirement to the version the check offered: pip and uv
+        # resolve the index themselves when handed an unpinned package, so
+        # they could install something other than the release the update page
+        # showed — a newer one published in the meantime, or an older stable
+        # when the target is a pre-release that is skipped by default (the
+        # silent "Requirement already satisfied" no-op). An explicit
+        # ``package==target`` requirement also makes both tools accept
+        # pre-release targets without ``--pre`` / ``--prerelease allow``.
+        target_version = target_version.strip()
+        requirement = f"{package}=={target_version}" if target_version else package
 
         uv_cmd = self._resolve_uv_command()
         if uv_cmd:
-            args = [uv_cmd, "pip", "install", "--upgrade", package]
+            args = [uv_cmd, "pip", "install", "--upgrade", requirement]
             if pypi_mirror:
                 args.extend(["--index-url", pypi_mirror])
             return args
@@ -340,7 +356,7 @@ class PipExecutor(UpgradeExecutor):
         args = [
             sys.executable, "-m", "pip", "install", "--upgrade",
             "--timeout", str(timeout),
-            package,
+            requirement,
         ]
         if pypi_mirror:
             args.extend(["-i", pypi_mirror])

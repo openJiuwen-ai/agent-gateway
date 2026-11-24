@@ -11,11 +11,15 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from agent_gateway.enterprise.config.manager_config.infrastructure.utils import utc_now
-
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    """本地 UTC now，避免顶层 import manager_config 触发循环依赖。"""
+    return datetime.now(timezone.utc)
 
 DEFAULT_FALLBACK_LIMIT_BYTES = 10 * 1024**4
 FALLBACK_POLICY_ID = "local_default"
@@ -199,6 +203,49 @@ def pick_policy(
     return hits[0][1]
 
 
+def snapshot_to_dict(
+    snap: QuotaSnapshot,
+    *,
+    user_id: str,
+    group_id: str,
+    bot_id: str,
+) -> dict[str, Any]:
+    """用量接口响应体（limit/status 由 Gateway 现算，不落用量表）。"""
+    return {
+        "user_id": user_id,
+        "group_id": group_id,
+        "bot_id": bot_id,
+        "used_bytes": snap.used_bytes,
+        "limit_bytes": snap.limit_bytes,
+        "percent": snap.percent,
+        "status": snap.status,
+        "source_policy_id": snap.source_policy_id,
+        "unlimited": bool(snap.unlimited),
+        "quota_enabled": True,
+    }
+
+
+def disabled_usage_payload(
+    *,
+    user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
+) -> dict[str, Any]:
+    """特性开关关闭时的固定载荷，前端据此隐藏用量条与扩容入口。"""
+    return {
+        "user_id": user_id,
+        "group_id": group_id,
+        "bot_id": bot_id,
+        "used_bytes": 0,
+        "limit_bytes": UNLIMITED_LIMIT_BYTES,
+        "percent": 0.0,
+        "status": "ok",
+        "source_policy_id": "",
+        "unlimited": True,
+        "quota_enabled": False,
+    }
+
+
 async def resolve_quota_snapshot(
     used_bytes: int,
     *,
@@ -251,7 +298,7 @@ async def upsert_usage_cache(
         logger.debug("[workspace.usage] skip cache upsert: missing user_id/bot_id")
         return
 
-    now = utc_now()
+    now = _utc_now()
     used = max(0, int(used_bytes))
     key = {"user_id": uid, "group_id": gid, "bot_id": bid}
     try:

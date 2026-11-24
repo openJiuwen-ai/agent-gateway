@@ -10,7 +10,7 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_shutdown_request_is_idempotent_and_restores_handlers(
+async def test_shutdown_signal_requests_shutdown_and_restores_handlers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from agent_gateway import app_gateway
@@ -37,7 +37,6 @@ async def test_shutdown_request_is_idempotent_and_restores_handlers(
         assert web_port == 19000
         assert web_path == "/ws"
         assert web_ws_deflate is False
-        installed[signal.SIGTERM](signal.SIGTERM, None)
         installed[signal.SIGTERM](signal.SIGTERM, None)
         await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
 

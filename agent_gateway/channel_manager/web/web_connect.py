@@ -31,6 +31,7 @@ from agent_gateway.channel_manager.base import (
     ConnectHook,
     RobotMessageRouter,
 )
+from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
@@ -222,6 +223,23 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "rsi.training.tree.delta",
         # The suggestion names the request it follows and its own id for the page's outcome events.
         "prompt_suggestion.ready",
+    }
+)
+
+# Downstream extension frames whose payload schema is fixed by the extensions v2
+# webui contract (render/clear/error, appearance, download, splash, presentation).
+# Only these names are forwarded verbatim; other webui.* events keep the reduced
+# payload because they may carry internal management data that must not reach the
+# browser.
+_WEBUI_FULL_PAYLOAD_EVENTS = frozenset(
+    {
+        "webui.render",
+        "webui.render.clear",
+        "webui.render.error",
+        "webui.appearance",
+        "webui.download",
+        "webui.splash.play",
+        "webui.presentation.start",
     }
 )
 
@@ -483,6 +501,37 @@ class WebChannel(BaseWsChannel):
             return wrapper(original, msg)
 
         self._on_message_cb = wrapped
+
+    async def reject_inbound(
+        self,
+        msg: Message,
+        *,
+        error: str = "系统繁忙，请稍后重试",
+        code: str = "SERVER_BUSY",
+    ) -> bool:
+        """Tell the originating WebSocket that its request was not queued.
+
+        Returns false when the peer is already gone; the caller then falls
+        back to normal queue backpressure instead of dropping the message.
+        """
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        ws_id = str(metadata.get("ws_id") or "").strip()
+        ws = self._lookup_peer(ws_id) if ws_id else None
+        if ws is None:
+            logger.warning(
+                "[WebChannel] reject_inbound: peer gone, id=%s ws_id=%s",
+                msg.id,
+                ws_id,
+            )
+            return False
+        await self.send_response(
+            ws,
+            str(msg.id or ""),
+            ok=False,
+            error=error,
+            code=code,
+        )
+        return True
 
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         # All unary, streamed and pushed frames converge here, after internal
@@ -930,6 +979,8 @@ class WebChannel(BaseWsChannel):
             return
         if not self.config.enabled:
             logger.warning("WebChannel 未启用（enabled=False）")
+            self._listener_start_error = RuntimeError("WebChannel is disabled")
+            self._listener_available.set()
             return
 
         self._starting = True
@@ -954,6 +1005,10 @@ class WebChannel(BaseWsChannel):
 
     async def wait_ready(self) -> None:
         """Wait for the current listener or propagate its startup failure."""
+        if self._running:
+            if self._listener is None:
+                raise RuntimeError("WebChannel stopped before becoming ready")
+            return
         await self._listener_available.wait()
         if self._listener_start_error is not None:
             raise self._listener_start_error
@@ -1233,6 +1288,11 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* frames carry target/root/revision/theme; the reduction to
+            # {session_id, content} drops them, so extension UI (for example the
+            # AgentServer token/weather widgets) never renders. Only the four
+            # contract events are forwarded in full; other webui.* stay reduced.
+            or event_name in _WEBUI_FULL_PAYLOAD_EVENTS
             or event_name == "cron.run.updated"
         )
 
@@ -1654,6 +1714,14 @@ class WebChannel(BaseWsChannel):
                 isinstance(msg.payload, dict) and msg.payload.get("cron_session_stream")
             ))
             for peer in self._peers_for_session(msg.session_id):
+                # An interrupt receipt belongs to its metadata.ws_id HTTP request.
+                # Session broadcasts (including stream-cancel notifications) must
+                # not settle another pending unary interrupt in the same session.
+                if (
+                    self._resolve_event_name(msg) == "chat.interrupt_result"
+                    and isinstance(peer, HttpJsonOutbound)
+                ):
+                    continue
                 if cron_stream and not self._matches_cron_recipient(peer, msg):
                     continue
                 ws_set.add(peer)

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import unquote
 from uuid import uuid4
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventHandlerOpsBuilder, SessionContext
@@ -29,22 +30,31 @@ from agent_gateway.extensions_v2.webui.models import (
     UiDownloadInput, UiSplashPreviewInput, valid_instance_key,
 )
 from agent_gateway.extensions_v2.webui.call_context import Caller
-from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX, UPSTREAM_EVENTS, WebUIEvent
+from agent_gateway.extensions_v2.webui.constants import ASSET_PREFIX, CODE_NO_CONTRIBUTION, UPSTREAM_EVENTS, WebUIEvent
 from agent_gateway.extensions_v2.webui.component_rules import validate_event_data
-from agent_gateway.extensions_v2.webui.appearance import AppearanceProviders, validate_appearance
-from agent_gateway.extensions_v2.webui.host_settings import SplashPreferences
+from agent_gateway.extensions_v2.webui.appearance import PARTS, AppearanceLayers, part_images, validate_appearance
+from agent_gateway.extensions_v2.webui.host_settings import AppearanceOrder, SplashPreferences
 from agent_gateway.extensions_v2.webui.settings_contributions import SETTINGS_SLOT, package_settings
 from agent_gateway.extensions_v2.webui.transfers import TransferManager
 from agent_gateway.extensions_v2.webui.presentation_control import PresentationControl, RESULT_METHOD
 
-SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", "application.splash",
-                   "application.presentation", SETTINGS_SLOT})
 SPLASH_SLOT = "application.splash"
-#: Display-only slots whose lifecycle frames bypass request policy (S_09 section 3).
-PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT})
+PRESENTATION_SLOT = "application.presentation"
+#: Declares that a package provides appearance parts; it renders nothing (S_09 section 2).
+APPEARANCE_SLOT = "application.appearance"
+SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", SPLASH_SLOT,
+                   PRESENTATION_SLOT, SETTINGS_SLOT, APPEARANCE_SLOT})
+#: Slots whose lifecycle frames bypass request policy (S_09 section 3).
+PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT, APPEARANCE_SLOT})
+#: The only fields of an ``application.appearance`` declaration.
+APPEARANCE_ITEM_FIELDS = frozenset({"type", "id", "slot"})
 SPLASH_PROVIDERS_METHOD = "webui.splash.providers"
 SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion", "preview"})
 CLOSE_REASONS = frozenset({"complete", "skip", "timeout", "error", "disabled", "removed"})
+PRESENTATION_CLOSE_REASONS = frozenset({
+    "closed", "ready_timeout", "render_failed", "load_failed", "renderer_gone",
+    "transition_failed", "open_failed",
+})
 SHARED_AGENTSERVER_READY_SLOTS = frozenset({"application.sidebar.footer"})
 MIN_SPLASH_MS = 1_000
 MAX_SPLASH_MS = 60_000
@@ -130,7 +140,8 @@ class BrowserBridge:
     def __init__(self, runtime) -> None:
         self.runtime = runtime
         self.connections: dict[str, BrowserConnection] = {}
-        self.appearance = AppearanceProviders()
+        self.appearance_order = AppearanceOrder(runtime.config.data_dir)
+        self.appearance = AppearanceLayers(self.appearance_order.rank)
         self._appearance_locks: dict[str, asyncio.Lock] = {}
         # Browser notifications started from synchronous package release.
         self._tasks: set[asyncio.Task] = set()
@@ -141,6 +152,9 @@ class BrowserBridge:
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
+        self._presentation_closes: dict[str, int] = {}
+        #: Gateway-domain package ids known to ``runtime.packages``; only positives are cached.
+        self._gateway_packages: set[str] = set()
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
 
     @property
@@ -156,6 +170,40 @@ class BrowserBridge:
     def application_enabled(self) -> bool:
         """Whether any active package contributes to a Gateway application slot."""
         return any(activation.application for activation in self.runtime.current_activations())
+
+    def _is_gateway_package(self, package_id: str) -> bool:
+        """Whether ``package_id`` belongs to the Gateway domain, active or not.
+
+        A Gateway package disabled by a snapshot restore keeps its files in the shared
+        store. Recognizing it lets a stale ``ui.*`` frame be answered locally instead of
+        being forwarded to AgentServer, which has no contribution for it and only lets
+        the request run into its unary timeout.
+        """
+        if package_id in self._gateway_packages:
+            return True
+        if not self.runtime.packages.owns(package_id):
+            return False
+        # Only positives are cached: an installed package must never stay hidden behind a
+        # stale negative, while a removal keeps the answer correct (no AgentServer
+        # contribution exists for a Gateway id either).
+        self._gateway_packages.add(package_id)
+        return True
+
+    def _inactive_gateway_target(self, params: Any) -> dict[str, Any] | None:
+        """Local receipt for a stale ``ui.*`` frame aimed at an inactive Gateway package.
+
+        Returns ``None`` for every other target so AgentServer packages keep being
+        forwarded exactly as before.
+        """
+        target = params.get("target") if isinstance(params, Mapping) else None
+        package_id = target.get("package_id", "") if isinstance(target, Mapping) else ""
+        if not isinstance(package_id, str) or not package_id:
+            return None
+        if any(package.package_id == package_id for package in self.application_packages()):
+            return None
+        if not self._is_gateway_package(package_id):
+            return None
+        return {"accepted": False, "status": "unhandled", "code": CODE_NO_CONTRIBUTION}
 
     @property
     def generations(self) -> Mapping[str, str]:
@@ -211,6 +259,7 @@ class BrowserBridge:
     def validate_package(self, package) -> None:
         """Validate browser declarations before publication."""
         package_settings(package.ui)
+        self.appearance_declaration(package)
         splash = self.splash_declaration(package)
         if splash is not None and splash["declared_max_duration_ms"] > MAX_SPLASH_MS:
             logger.warning("[GatewayExtensions] %s declares a %d ms splash; it runs for at most %d ms",
@@ -265,6 +314,20 @@ class BrowserBridge:
             raise ValueError("unsupported local application contribution")
 
     @staticmethod
+    def appearance_declaration(package) -> bool:
+        """Whether the package declares ``application.appearance`` (S_09 section 2); raises when malformed."""
+        ui = package.ui if isinstance(package.ui, Mapping) else {}
+        items = ui.get("items", [])
+        declared = False
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, Mapping) or item.get("slot") != APPEARANCE_SLOT:
+                continue
+            if item.get("type") != "web.slot.contribution" or set(item) - APPEARANCE_ITEM_FIELDS:
+                raise ValueError("application.appearance accepts only type, id and slot")
+            declared = True
+        return declared
+
+    @staticmethod
     def splash_declaration(package) -> dict[str, Any] | None:
         """Read the package's ``application.splash`` declaration (S_09 section 1)."""
         ui = package.ui if isinstance(package.ui, Mapping) else {}
@@ -310,8 +373,11 @@ class BrowserBridge:
         if method != WEBUI_DISPATCH_METHOD or not isinstance(params, Mapping):
             return False
         target = params.get("target")
-        return (isinstance(target, Mapping) and target.get("scope") == "application"
-                and target.get("slot_id") in PLATFORM_SLOTS
+        if not isinstance(target, Mapping) or target.get("scope") != "application":
+            return False
+        if target.get("slot_id") == PRESENTATION_SLOT:
+            return params.get("event") == WebUIEvent.CLOSED.value
+        return (target.get("slot_id") in PLATFORM_SLOTS
                 and params.get("event") in (WebUIEvent.READY.value, WebUIEvent.CLOSED.value))
 
     async def platform_frame(self, request, context: SessionContext) -> dict[str, Any]:
@@ -333,7 +399,17 @@ class BrowserBridge:
         event_name = params.get("event")
         package_id = target.get("package_id", "")
         invalid = UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
-        if target.get("slot_id") != SPLASH_SLOT:
+        slot_id = target.get("slot_id")
+        is_presentation = slot_id == PRESENTATION_SLOT
+        if is_presentation:
+            connection = self.runtime.channel.ws_by_id(request.connection_id)
+            if (event_name != WebUIEvent.CLOSED.value
+                    or set(params) - {"event", "target", "payload"}
+                    or set(target) - {"scope", "slot_id", "package_id", "instance_key"}
+                    or not request.connection_id
+                    or connection is None or connection.closed):
+                return invalid
+        elif slot_id != SPLASH_SLOT:
             if event_name != WebUIEvent.READY.value:
                 return invalid
             return await self.dispatch(request, context) or UiActionOutput(accepted=False, status="unhandled")
@@ -342,39 +418,64 @@ class BrowserBridge:
         instance_key = target.get("instance_key", "")
         if not valid_instance_key(instance_key):
             return invalid
-        scoped = RenderTarget(session_id="", slot_id=SPLASH_SLOT, package_id=package_id, instance_key=instance_key,
+        scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package_id, instance_key=instance_key,
                               scope="application", connection_id=request.connection_id)
         payload = params.get("payload", {})
+        invalid_payload = UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        if not isinstance(payload, Mapping):
+            return invalid_payload
         if event_name == WebUIEvent.READY.value:
-            launch_id = payload.get("launch_id") if isinstance(payload, Mapping) else None
-            if (not isinstance(payload, Mapping) or set(payload) != SPLASH_READY_FIELDS
+            launch_id = payload.get("launch_id")
+            if (set(payload) != SPLASH_READY_FIELDS
                     or not isinstance(launch_id, str) or not 0 < len(launch_id) <= 128
                     or any(not isinstance(payload[name], bool) for name in ("first_visit", "reduced_motion", "preview"))):
-                return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+                return invalid_payload
             receipt = await self.dispatch(request, context)
             if receipt is None or not receipt.accepted:
                 return UiActionOutput(accepted=False, status="unhandled")
             record = self.runtime.registry.get(scoped)
             return UiActionOutput(accepted=True, status="playing" if record and record.root is not None else "skipped")
-        reason = payload.get("reason") if isinstance(payload, Mapping) else None
-        revision = payload.get("revision") if isinstance(payload, Mapping) else None
-        if (not isinstance(payload, Mapping) or set(payload) != {"reason", "revision"}
-                or reason not in CLOSE_REASONS or type(revision) is not int):
-            return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        reason = payload.get("reason")
+        revision = payload.get("revision")
+        presentation_id = payload.get("presentation_id")
+        reasons = PRESENTATION_CLOSE_REASONS if is_presentation else CLOSE_REASONS
+        fields = {"reason", "revision", "presentation_id"} if is_presentation else {"reason", "revision"}
+        if set(payload) != fields or not isinstance(reason, str) or reason not in reasons:
+            return invalid_payload
+        if type(revision) is not int:
+            return invalid_payload
+        if is_presentation and (not 0 < revision <= 2**53 - 1
+                                or type(presentation_id) is not int or not 0 < presentation_id <= 2**53 - 1):
+            return invalid_payload
         record = self.runtime.registry.get(scoped)
         if (self.active_application_package(package_id) is None or record is None or record.root is None
-                or record.revision != revision):
+                or record.revision != revision
+                or (is_presentation and record.root.component != "ApplicationSurface")):
             return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
-        # Drop first so a repeated or concurrent close is answered as inactive.
-        self.runtime.registry.drop_instance(scoped)
+        close_payload = {"reason": reason}
+        if is_presentation:
+            if presentation_id <= self._presentation_closes.get(request.connection_id, 0):
+                return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
+            # Physical containers and published candidates have independent lifetimes.
+            self._presentation_closes[request.connection_id] = presentation_id
+            self.presentations.invalidate(target=scoped, revision=revision)
+            close_payload["revision"] = revision
+            close_payload["presentation_id"] = presentation_id
+        else:
+            # Splash closes consume their one-shot instance before notifying the package.
+            self.runtime.registry.drop_instance(scoped)
         await self.runtime.bus.trigger(Event(WebUIEvent.CLOSED.value, UiActionInput(
-            WebUIEvent.CLOSED.value, scoped, MappingProxyType({"reason": reason}), request.request_context,
+            WebUIEvent.CLOSED.value, scoped, MappingProxyType(close_payload), request.request_context,
         )), context)
         return UiActionOutput(accepted=True, status="closed")
 
     def published(self, package_id: str) -> None:
         package = self.active_application_package(package_id)
-        if package is not None and self.splash_declaration(package) is not None:
+        if package is None:
+            return
+        # Every application package may submit appearance parts; its first publication sets its layer.
+        self.appearance_order.note_installed(package_id)
+        if self.splash_declaration(package) is not None:
             self.splash_preferences.note_installed(package_id)
 
     async def close_splashes(self, package_id: str, reason: str) -> int:
@@ -452,11 +553,12 @@ class BrowserBridge:
                     for frame in frames:
                         await transport.send_clear(frame, released_generation=generation)
             for connection_id, revision in revokes:
-                # The connection lock orders the revoke after a frame that was still in flight.
+                # The connection lock orders this frame after one that was still in flight; composing it
+                # here, not at release, keeps every call that finished meanwhile.
                 async with self._appearance_locks.setdefault(connection_id, asyncio.Lock()):
-                    await transport.send_appearance(connection_id, {
-                        "package_id": package_id, "revision": revision, "appearance": None,
-                    })
+                    snapshot = self.appearance.compose(connection_id)
+                    if await transport.send_appearance(connection_id, {"revision": revision, "parts": snapshot}):
+                        self.appearance.record_delivery(connection_id, revision, snapshot)
         finally:
             pending = self._releasing.get(package_id, 0) - 1
             if pending > 0:
@@ -508,34 +610,73 @@ class BrowserBridge:
             self._tasks.difference_update(pending)
 
     async def apply_appearance(self, caller: Caller, appearance: Mapping[str, Any] | None) -> dict[str, Any]:
-        """Deliver or revoke the calling package's appearance on its browser connection (S_08)."""
+        """Set or withdraw the calling package's appearance parts on its browser connection (S_08).
+
+        Each part shows the value of the highest layer that holds it; the browser receives the
+        composed snapshot whenever it changes.
+        """
         package = self._action_package(caller)
         connection_id = caller.connection_id
         if not connection_id:
             raise ValueError("ops.appearance requires a browser connection")
-        normalized = None if appearance is None else validate_appearance(appearance)
+        changes = dict.fromkeys(PARTS) if appearance is None else validate_appearance(appearance)
+        for part, value in changes.items():
+            if value is not None:
+                self._check_images(caller, part, value)
         lock = self._appearance_locks.setdefault(connection_id, asyncio.Lock())
         async with lock:
-            # A release while this call waited reserved its revoke already; a stale
+            # A release while this call waited reserved its frame already; a stale
             # activation must not send a later revision that would outrank it.
             self._action_package(caller)
-            if normalized is None and self.appearance.provider(connection_id) != package.package_id:
-                return {"status": "unchanged", "revision": self.appearance.revision(connection_id)}
+            package_id = package.package_id
+            before = self.appearance.parts_of(connection_id, package_id)
+            after = {part: value for part, value in {**before, **changes}.items() if value is not None}
+            sets = any(value is not None for value in changes.values())
+            if not sets and after == before:
+                return self._appearance_answer("unchanged", self.appearance.revision(connection_id),
+                                               self.appearance.delivered(connection_id), package_id)
+            status = "applied" if sets else "revoked"
+            snapshot = self.appearance.compose(connection_id, (package_id, after))
+            if snapshot == self.appearance.delivered(connection_id):
+                # The call changed only layers below what the browser shows: nothing to send.
+                self.appearance.commit(connection_id, package_id, after)
+                return self._appearance_answer(status, self.appearance.revision(connection_id), snapshot, package_id)
             revision = self.appearance.next_revision(connection_id)
-            self.appearance.begin_send(connection_id, package.package_id)
+            self.appearance.begin_send(connection_id, package_id)
             try:
                 delivered = await self.runtime.webui.transport.send_appearance(connection_id, {
-                    "package_id": package.package_id, "revision": revision, "appearance": normalized,
+                    "revision": revision, "parts": snapshot,
                 })
             finally:
-                still_owned = self.appearance.finish_send(connection_id, package.package_id)
+                still_owned = self.appearance.finish_send(connection_id, package_id)
             if not delivered:
-                return {"status": "delivery_failed", "revision": revision}
-            # A release during delivery queued a later revoke; keep it authoritative. Shutdown ends
+                return self._appearance_answer("delivery_failed", revision, self.appearance.delivered(connection_id),
+                                               package_id)
+            # A release during delivery queued a later frame; keep it authoritative. Shutdown ends
             # activations without releasing in-flight records, so currency is checked as well.
             if still_owned and caller.current():
-                self.appearance.set(connection_id, package.package_id if normalized else None)
-            return {"status": "applied" if normalized else "revoked", "revision": revision}
+                self.appearance.commit(connection_id, package_id, after)
+                self.appearance.record_delivery(connection_id, revision, snapshot)
+            return self._appearance_answer(status, revision, snapshot, package_id)
+
+    @staticmethod
+    def _appearance_answer(status: str, revision: int, snapshot: Mapping[str, Any], package_id: str) -> dict[str, Any]:
+        shown = [part for part in PARTS if snapshot.get(part, {}).get("package_id") == package_id]
+        return {"status": status, "revision": revision, "shown": shown}
+
+    def _check_images(self, caller: Caller, part: str, value: Mapping[str, Any]) -> None:
+        """Brand images must be the caller's own current assets and within their size limit (S_08 section 2)."""
+        for name, path, limit in part_images(part, value):
+            segments = re.split(r"[?#]", path, maxsplit=1)[0][len(ASSET_PREFIX):].split("/", 2)
+            generations = (caller.generation, caller.generation + DATA_GENERATION_SUFFIX)
+            if len(segments) != 3 or segments[0] != caller.package_id or segments[1] not in generations:
+                raise ValueError(f"{part}.{name} must be an asset of the calling package")
+            try:
+                size = self.asset_file(segments[0], segments[1], unquote(segments[2])).stat().st_size
+            except OSError as exc:
+                raise ValueError(f"{part}.{name} cannot be read") from exc
+            if size > limit:
+                raise ValueError(f"{part}.{name} is larger than {limit} bytes")
 
     async def connect(self, ws: Any, connection_id: str) -> None:
         """Deliver trusted declarations before processing a business frame."""
@@ -569,6 +710,7 @@ class BrowserBridge:
         Activation changes triggered by management frames are not followed by a business
         frame, so the next request may not connect and refresh them in time.
         """
+        self._gateway_packages.clear()
         for connection in list(self.connections.values()):
             async with connection.lock:
                 try:
@@ -578,6 +720,7 @@ class BrowserBridge:
 
     def drop_connection(self, connection_id: str) -> None:
         self.presentations.invalidate(connection_id=connection_id)
+        self._presentation_closes.pop(connection_id, None)
         self.connections.pop(connection_id, None)
         self.appearance.drop_connection(connection_id)
         self._appearance_locks.pop(connection_id, None)
@@ -601,8 +744,13 @@ class BrowserBridge:
                     and request.method == RESULT_METHOD):
                 response = self.presentations.complete(request.connection_id, dict(request.params))
                 return GatewayRequestOutput(handled=True, route="consume", response=response)
-            if (not self.application_enabled or not isinstance(request, GatewayRequestInput)
+            if (not isinstance(request, GatewayRequestInput)
                     or request.transport != "websocket" or request.method != WEBUI_DISPATCH_METHOD):
+                return await next_handler(event)
+            if not self.application_enabled:
+                stale = self._inactive_gateway_target(request.params)
+                if stale is not None:
+                    return GatewayRequestOutput(handled=True, route="consume", response=stale)
                 return await next_handler(event)
             receipt = await self.dispatch(request, ops.session_context)
             if receipt is None or _forwards_shared_agentserver_ready(request):
@@ -677,6 +825,8 @@ class BrowserBridge:
         answer: dict[str, Any] = {"status": result.status}
         if result.revision is not None:
             answer["revision"] = result.revision
+        if result.shown is not None:
+            answer["shown"] = list(result.shown)
         if result.code:
             answer["code"] = result.code
         return answer
@@ -762,6 +912,10 @@ class BrowserBridge:
         package_id = target.get("package_id", "")
         own = self.application_packages()
         if package_id and not any(package.package_id == package_id for package in own):
+            # Installed but inactive Gateway package: AgentServer has no contribution, so
+            # forwarding would only wait for its unary timeout.
+            if isinstance(package_id, str) and self._is_gateway_package(package_id):
+                return UiActionOutput(accepted=False, status="unhandled", code=CODE_NO_CONTRIBUTION)
             return None
         slot_id = target.get("slot_id")
         if slot_id not in SLOTS:
@@ -786,7 +940,9 @@ class BrowserBridge:
         except ValueError:
             return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
         if event_name == "ui.ready":
-            accepted = False
+            if slot_id == APPEARANCE_SLOT and payload:
+                return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+            readies = []
             for package in own:
                 if package_id and package_id != package.package_id:
                     continue
@@ -795,10 +951,21 @@ class BrowserBridge:
                     continue
                 scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package.package_id,
                                       instance_key=instance_key, scope="application", connection_id=request.connection_id)
-                result = await self.runtime.bus.trigger(Event(event_name, UiActionInput(
+                readies.append(Event(event_name, UiActionInput(
                     event_name, scoped, MappingProxyType(payload), request.request_context,
-                )), context)
-                accepted = accepted or (isinstance(result, UiActionOutput) and result.accepted)
+                )))
+            if slot_id == APPEARANCE_SLOT:
+                # Appearance providers answer side by side: one slow package must not hold the others
+                # back from the startup gate, and a failing one only counts as not handled (S_09).
+                results = await asyncio.gather(*(self.runtime.bus.trigger(ready, context) for ready in readies),
+                                               return_exceptions=True)
+                for ready, result in zip(readies, results):
+                    if isinstance(result, BaseException):
+                        logger.warning("[GatewayExtensions] appearance ready of %s failed: %r",
+                                       ready.event_input.target.package_id, result)
+            else:
+                results = [await self.runtime.bus.trigger(ready, context) for ready in readies]
+            accepted = any(isinstance(result, UiActionOutput) and result.accepted for result in results)
             return UiActionOutput(accepted=accepted, status="ready" if accepted else "unhandled")
         if event_name not in UPSTREAM_EVENTS or not package_id:
             return UiActionOutput(accepted=False, status="invalid_event", code="SCHEMA_ERROR")

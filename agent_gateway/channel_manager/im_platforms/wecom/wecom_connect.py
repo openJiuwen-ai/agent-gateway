@@ -12,10 +12,8 @@ import os
 import re
 import threading
 import time
-from collections import OrderedDict
 from typing import Any, Callable
 
-import requests
 from e2a.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
@@ -28,7 +26,17 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.group_ack import (
+    DEFAULT_GROUP_ACK,
+    generate_group_ack_text,
+    normalize_group_ack_text,
+)
+from agent_gateway.channel_manager.im_platforms.message_dedup import MessageDeduplicator
 from agent_gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from agent_gateway.channel_manager.im_platforms.thinking_content import (
+    is_thinking_only_content,
+    strip_think_tags,
+)
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -93,7 +101,7 @@ class WecomChannel(BaseChannel):
         self._message_callback: Callable[[Message], None] | None = None
         self._connect_task: asyncio.Task | None = None
         self._pending_streams: dict[str, dict[str, Any]] = {}
-        self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()
+        self._message_deduplicator = MessageDeduplicator()
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._pending_message_batches: dict[tuple[str, str], dict[str, Any]] = {}
         self._pending_message_lock = asyncio.Lock()
@@ -204,18 +212,6 @@ class WecomChannel(BaseChannel):
         """返回当前数字分身对应的用户 ID。"""
         return (self.config.my_user_id or "").strip()
 
-    def _is_duplicate_message(self, message_id: str) -> bool:
-        """检查消息是否重复。"""
-        if message_id in self._message_dedup_cache:
-            return True
-
-        self._message_dedup_cache[message_id] = None
-
-        while len(self._message_dedup_cache) > 1000:
-            self._message_dedup_cache.popitem(last=False)
-
-        return False
-
     _GROUP_PROGRESS_HINT_DELAY_SECONDS = 6.0
     _GROUP_PROGRESS_HINT_TEXTS: tuple[str, ...] = (
         "我先确认下，马上回复。",
@@ -294,86 +290,21 @@ class WecomChannel(BaseChannel):
     @staticmethod
     def _fallback_group_ack() -> str:
         """群内短回复兜底文案。"""
-        return "好的，我知道了，会跟进处理。"
+        return DEFAULT_GROUP_ACK
 
     @classmethod
     def _normalize_group_ack_text(cls, target_name: str, text: str) -> str:
         """过滤掉机器人旁白式短回复。"""
-        normalized = re.split(r"[\r\n]+", (text or "").strip(), maxsplit=1)[0]
-        normalized = re.sub(r"\s+", " ", normalized).strip(' "\'""''「」')
-        if not normalized:
-            return ""
-
-        forbidden_phrases = (
-            "已提醒",
-            "已通知",
-            "私下通知",
-            "私聊",
-            "转告",
-            "提醒了",
-            "通知了",
-            "告诉了",
-            "帮你",
-            "帮您",
-            "代为",
-        )
-        if target_name and target_name in normalized:
-            return ""
-        if any(phrase in normalized for phrase in forbidden_phrases):
-            return ""
-        return normalized
+        return normalize_group_ack_text(target_name, text)
 
     def _generate_group_ack_sync(self, target_name: str, content: str) -> str:
         """调用轻量 LLM 生成群内简短确认文案。"""
-        api_key = os.getenv("API_KEY", "").strip()
-        api_base = os.getenv("API_BASE", "").strip()
-        model_name = os.getenv("MODEL_NAME", "").strip() or "GLM-4.7"
-        if not api_key or not api_base:
-            return self._fallback_group_ack()
-
-        prompt = (
-            "你是一个企业微信群聊机器人。群里有一条需要{name}关注的消息,"
-            "你已经把详细回复私发给了{name}。"
-            "现在群里需要补一句很短的话，但这句话必须像{name}本人在群里的直接回复,"
-            "而不是机器人旁白或转述。\n\n"
-            "要求：\n"
-            "- 一句话，不超过30个字\n"
-            "- 用第一人称口吻，像当事人本人在说话\n"
-            "- 不要提到{name}的名字\n"
-            "- 不要写成'我已经提醒了{name}''已通知{name}''我帮{name}处理了'这类机器人/第三人称表达\n"
-            "- 更像'好的，我知道了，会准时参加会议''收到，我会跟进这件事'\n"
-            "- 不要照搬原文，保留核心动作即可\n\n"
-            "你私发给{name}的内容是：\n{content}"
-        ).format(   
-            name=target_name,
-            content=content[:500],
+        return generate_group_ack_text(
+            target_name,
+            content,
+            platform_name="企业微信",
+            fallback=self._fallback_group_ack(),
         )
-        try:
-            resp = requests.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 80,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            choices = resp.json().get("choices") or []
-            if choices:
-                text = (choices[0].get("message") or {}).get("content", "").strip()
-                text = self._normalize_group_ack_text(target_name, text)
-                if text:
-                    return text
-        except Exception as e:
-            logger.warning("[WecomChannel] 生成群确认文案失败，使用回退: %s", e)
-
-        return self._fallback_group_ack()
 
     async def _send_group_ack(self, metadata: dict[str, Any], content: str) -> None:
         """后台生成并发送群内简短确认，不阻塞主回复。"""
@@ -886,7 +817,7 @@ class WecomChannel(BaseChannel):
             )
             return
 
-        if self._is_duplicate_message(req_id or chatid):
+        if self._message_deduplicator.is_duplicate(req_id or chatid):
             logger.debug("[WecomChannel] 消息去重: message_id=%s", req_id)
             return
 
@@ -1073,28 +1004,9 @@ class WecomChannel(BaseChannel):
         return str(content or "").strip()
 
     @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        """移除 <think>...</think> 块及未闭合的 <think>...，避免将 Agent 的思考过程展示给用户。"""
-        if not text or not isinstance(text, str):
-            return text or ""
-        # 1. 移除完整的 <think>...</think> 块
-        text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
-        # 2. 移除未闭合的 <think>...（流式场景下可能先收到 <think> 后收到 </think>）
-        text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE | re.DOTALL)
-        return text
-
-    @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
         """判断内容是否为空或仅为占位符。"""
-        if not text or not isinstance(text, str):
-            return True
-        t = text.strip()
-        if not t:
-            return True
-        # 纯省略号、纯点
-        if re.match(r"^[.．。…\s]+$", t):
-            return True
-        return False
+        return is_thinking_only_content(text)
 
     def _extract_content_from_payload(self, msg: Message) -> str | None:
         """从 chat.delta / chat.final 的 payload 提取 content，无则返回 None。"""
@@ -1220,7 +1132,7 @@ class WecomChannel(BaseChannel):
                     else:
                         entry["accumulated"] = (entry.get("accumulated") or "") + content
                     # 移除 <think>...</think> 块，不将 Agent 思考过程展示给用户
-                    to_send = self._strip_think_tags(entry["accumulated"]).strip()
+                    to_send = strip_think_tags(entry["accumulated"]).strip()
                     if not to_send or self._is_thinking_only_content(to_send):
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
@@ -1308,7 +1220,7 @@ class WecomChannel(BaseChannel):
         if self._is_reasoning_chunk(msg):
             logger.debug("[WecomChannel] 跳过 final reasoning chunk")
             return
-        content = self._strip_think_tags(self._extract_content(msg)).strip()
+        content = strip_think_tags(self._extract_content(msg)).strip()
         if not content or self._is_thinking_only_content(content):
             logger.debug("[WecomChannel] 消息内容为空或仅为思考占位，跳过发送")
             return

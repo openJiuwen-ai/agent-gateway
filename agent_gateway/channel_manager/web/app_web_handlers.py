@@ -44,6 +44,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
 
 from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
+from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -484,6 +485,7 @@ _FORWARD_REQ_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -739,6 +741,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -4292,18 +4295,28 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
-        """Return the selected AgentServer user's preferred language."""
+        """企业：读 Gateway DB 用户习惯表；个人：代理 AgentServer 读 yaml。"""
+        if _is_enterprise_edition():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                lang = await get_user_preference_service().get_language(user_id)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": lang}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.get_conf] enterprise resolve failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
         from e2a.message import ReqMethod
 
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and (
-            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
-        ):
+        if resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4318,20 +4331,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
 
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={}, session_id=session_id, user_id=user_id,
             req_method=ReqMethod.LOCALE_GET_CONF, label="locale.get_conf",
         )
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
-        """Update preferred language in the selected AgentServer directory."""
-        from e2a.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import (
-            is_legacy_shared_directory_client,
-            proxy_unary_request,
-        )
-
+        """企业：写 Gateway DB 用户习惯表；个人：代理 AgentServer 写 yaml。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -4351,10 +4357,42 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST"
             )
             return
+
+        if _is_enterprise_edition():
+            uid = str(user_id or "").strip()
+            if not uid:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="user_id is required",
+                    code="BAD_REQUEST",
+                )
+                return
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                saved = await get_user_preference_service().upsert_user_language(uid, lang)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": saved}
+                )
+            except ValueError as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.set_conf] enterprise upsert failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
+        from e2a.message import ReqMethod
+
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and (
-            resolved_client is None or is_legacy_shared_directory_client(resolved_client)
-        ):
+        if resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
@@ -4363,7 +4401,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
             return
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={"preferred_language": lang}, session_id=session_id,
             user_id=user_id, req_method=ReqMethod.LOCALE_SET_CONF,
             label="locale.set_conf",
@@ -4617,6 +4655,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.xiaoyi.set_conf] 写回 config.yaml apps 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "xiaoyi", cm.get_conf("xiaoyi"))
             await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.xiaoyi.set_conf] 异常, req_id=%s: %s", req_id, e)
@@ -4670,6 +4709,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.telegram.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "telegram", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.telegram.set_conf] %s", e)
@@ -4773,6 +4813,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.whatsapp.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "whatsapp", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.whatsapp.set_conf] %s", e)
@@ -4824,6 +4865,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.discord.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "discord", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.discord.set_conf] %s", e)
@@ -4875,6 +4917,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.slack.set_conf] failed to persist config.yaml: %s", e)
+            schedule_channel_config(_resolve(agent_client), "slack", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.slack.set_conf] %s", e)
@@ -4926,6 +4969,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wecom.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wecom", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wecom.set_conf] %s", e)
@@ -4988,6 +5032,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wechat.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wechat", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wechat.set_conf] %s", e)
@@ -6073,12 +6118,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     from agent_gateway.common.protocol_methods import ReqMethod as _FileReq
+    from agent_gateway.channel_manager.web.web_method_register import (
+        register_workspace_web_methods,
+    )
 
-    for file_method in (
-        _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,
-        _FileReq.WORKSPACE_USAGE, _FileReq.WORKSPACE_ENTRIES_DELETE,
-    ):
-        channel.register_method(file_method.value, _file_proxy(file_method))
+    channel.register_method(_FileReq.FILE_IMPORT_URL.value, _file_proxy(_FileReq.FILE_IMPORT_URL))
+    register_workspace_web_methods(channel, agent_client=lambda: _resolve(agent_client))
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)

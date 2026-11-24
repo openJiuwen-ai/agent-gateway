@@ -513,7 +513,7 @@ async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> Non
     acknowledgements: list[tuple[str, object]] = []
 
     async def _ack(
-        *, command_id: str, data: object, user_id=None, session_id=None
+        *, command_id: str, data: object, user_id=None, session_id=None, **_kwargs
     ) -> None:
         acknowledgements.append((command_id, data))
 

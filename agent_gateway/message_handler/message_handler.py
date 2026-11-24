@@ -339,6 +339,33 @@ if TYPE_CHECKING:
     from agent_gateway.routing.agent_client import AgentServerClient
 
 
+def _queue_maxsize_from_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        logger.warning(
+            "[MessageHandler] %s=%s is invalid; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+# Bounded by default. A full user queue is surfaced as "busy" on the Web
+# channel; robot_messages applies backpressure to the dispatch loop.
+_USER_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_USER_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+_ROBOT_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_ROBOT_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+
+
 # ---------- 双队列实现：入队经 AgentServerClient 发往 AgentServer ----------
 class MessageHandler(ABC):
     """
@@ -375,10 +402,15 @@ class MessageHandler(ABC):
         self.on_recommendation_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         # Chat requests that ended here before AgentServer answered: request_id -> session_id.
         self._awaiting_host_completion: dict[str, str] = {}
-        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
-        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
+        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_USER_MESSAGE_QUEUE_MAXSIZE,
+        )
+        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_ROBOT_MESSAGE_QUEUE_MAXSIZE,
+        )
         self._running = False
         self._forward_task: asyncio.Task | None = None
+        self._deferred_put_tasks: set[asyncio.Task] = set()
         self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
@@ -515,10 +547,28 @@ class MessageHandler(ABC):
         self._result_delivery_handler = handler
 
     async def _resolve_response_language(self, msg: Any) -> str | None:
-        """Read preferred language from the routed AgentServer via E2A.
+        """Resolve preferred language for review prompts.
 
-        The local config remains a fallback for no-client/legacy deployments.
+        企业：Gateway DB 用户习惯表（按消息 ``user_id``）。
+        个人：经 E2A 读 AgentServer；失败时回退本地 config。
         """
+        from agent_gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                language = await get_user_preference_service().get_language(
+                    getattr(msg, "user_id", None)
+                )
+                return language if language in {"zh", "en"} else None
+            except Exception as exc:  # noqa: BLE001 - prompt falls back to local config
+                logger.warning(
+                    "[MessageHandler] enterprise preferred_language resolve failed: %s",
+                    exc,
+                )
+                return None
+
         try:
             from e2a.gateway_normalize import e2a_from_agent_fields
             from e2a.message import ReqMethod
@@ -881,7 +931,7 @@ class MessageHandler(ABC):
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        await self._user_messages.put(msg)
         logger.debug(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
@@ -3028,6 +3078,10 @@ class MessageHandler(ABC):
 
     # ---------- user_messages ----------
 
+    def is_user_queue_full(self) -> bool:
+        """Return whether the inbound message queue has reached its limit."""
+        return self._user_messages.full()
+
     async def publish_user_messages(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（异步）."""
         queue_request_trace(msg)
@@ -3041,12 +3095,62 @@ class MessageHandler(ABC):
             raise RuntimeError("runtime wake host is not forwarding")
         await self.publish_user_messages(msg)
 
+    def _defer_queue_put(
+        self,
+        queue: asyncio.Queue["Message"],
+        msg: "Message",
+        *,
+        kind: str,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        async def _put() -> None:
+            await queue.put(msg)
+
+        task = asyncio.create_task(
+            _put(),
+            name=f"agentos-{kind}-deferred-{getattr(msg, 'id', '')}",
+        )
+        tasks = getattr(self, "_deferred_put_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._deferred_put_tasks = tasks
+        tasks.add(task)
+
+        def _done(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if done.cancelled() and on_cancel is not None:
+                try:
+                    on_cancel()
+                except Exception:  # noqa: BLE001 - trace cleanup is best-effort
+                    logger.debug(
+                        "[MessageHandler] deferred put trace cleanup failed",
+                        exc_info=True,
+                    )
+
+        task.add_done_callback(_done)
+
     def publish_user_messages_nowait(self, msg: "Message") -> None:
-        """将消息放入 user_messages 队列（同步）."""
+        """将消息放入 user_messages 队列（同步）.
+
+        队列有界后不能再假定 put_nowait 必然成功。满了就转入后台 put，
+        保留消息并形成背压，避免在同步调用点抛出 QueueFull。
+        """
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        try:
+            self._user_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] user queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._user_messages,
+                msg,
+                kind="inbound",
+                on_cancel=lambda: release_message_trace(msg, requests=True),
+            )
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
         """消费一条 user_messages；timeout 为 None 则阻塞，否则超时返回 None."""
@@ -3253,6 +3357,17 @@ class MessageHandler(ABC):
             release_message_trace(msg)
         try:
             self._robot_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] robot queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._robot_messages,
+                msg,
+                kind="robot",
+                on_cancel=lambda: release_response_trace(msg, reason="queue_failed"),
+            )
         except BaseException:
             release_response_trace(msg, reason="queue_failed")
             raise
@@ -4342,6 +4457,11 @@ class MessageHandler(ABC):
                         # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
                         if str(params.get(key) or "").strip() in {"", "default"}:
                             params.pop(key, None)
+                # create 刚把写库身份硬覆盖成 chat routing；顶部 tenant_* 仍是
+                # override=False 时的旧快照（可能含 LLM 注入租户）。回写后再发 ACK，
+                # 保证「落库租户」与「ACK 声明租户」一致。
+                tenant_group_id = str(params.get("group_id") or "")
+                tenant_bot_id = str(params.get("bot_id") or "")
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
@@ -4422,6 +4542,8 @@ class MessageHandler(ABC):
                     run_id=str(data.get("run_id") or ""),
                     user_id=owner_user_id or None,
                     session_id=session_id,
+                    group_id=tenant_group_id or None,
+                    bot_id=tenant_bot_id or None,
                 )
             else:
                 data = {"error": f"unknown cron action: {action}"}
@@ -4434,6 +4556,8 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
                 session_id=session_id,
+                group_id=tenant_group_id or None,
+                bot_id=tenant_bot_id or None,
             )
 
         if not channel_id:
@@ -4459,6 +4583,34 @@ class MessageHandler(ABC):
         )
         await self.publish_robot_messages(out)
 
+    @staticmethod
+    def _cron_ack_route_metadata(
+        *,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """ACK 必须带对话租户，否则企业版 identity_from_envelope 会 FORBIDDEN。
+
+        develop 已补 session_id（粘 Pod）；企业版还要求真实 group/bot，
+        不能退回 ``default``。个人版缺省时仍可由 Runtime 填 default。
+        """
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
+        uid = str(user_id or "").strip()
+        gid = str(group_id or "").strip()
+        bid = str(bot_id or "").strip()
+        if not (uid or gid or bid):
+            return None
+        routing: dict[str, str] = {}
+        if uid:
+            routing["user_id"] = uid
+        if gid:
+            routing["group_id"] = gid
+        if bid:
+            routing["bot_id"] = bid
+        return apply_routing_metadata({}, routing)
+
     async def _push_cron_command_ack(
         self,
         *,
@@ -4466,6 +4618,8 @@ class MessageHandler(ABC):
         data: Any,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
@@ -4478,6 +4632,9 @@ class MessageHandler(ABC):
                 params={"command_id": command_id, "data": data},
                 is_stream=False, timestamp=time.time(), user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client, env, label="cron.command.ack"
@@ -4493,6 +4650,8 @@ class MessageHandler(ABC):
         run_id: str,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer（P2）。
 
@@ -4518,6 +4677,9 @@ class MessageHandler(ABC):
                 timestamp=time.time(),
                 user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client,
@@ -6985,6 +7147,13 @@ class MessageHandler(ABC):
             except asyncio.CancelledError:
                 pass
             self._forward_task = None
+
+        deferred = list(self._deferred_put_tasks)
+        for task in deferred:
+            task.cancel()
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
+        self._deferred_put_tasks.clear()
 
         release_queued_message_traces(self._user_messages, requests=True)
         manager = getattr(self, "_channel_manager", None)

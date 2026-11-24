@@ -189,6 +189,38 @@ def test_attributes_events_and_formatter_failure(monkeypatch):
     provider.shutdown()
 
 
+def test_agent_state_event_attributes_are_preserved():
+    provider = TracerProvider()
+    exporter = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    telemetry._runtime = telemetry.GatewayTelemetry(
+        tracer=provider.get_tracer("test"), provider=provider,
+    )
+    operation = telemetry.start_request_trace(
+        "r", "agent.state.changed", channel="web", connection_id="c",
+    )
+    operation.event(
+        "agent.state.changed",
+        {
+            "from_status": "creating",
+            "to_status": "ready",
+            "reason": "create_ok",
+            "agent_type": "jiuwenswarm",
+            "payload": "secret",
+        },
+    )
+    operation.finish("success")
+    span = exporter.get_finished_spans()[0]
+    event = next(e for e in span.events if e.name == "agent.state.changed")
+    assert event.attributes == {
+        "from_status": "creating",
+        "to_status": "ready",
+        "reason": "create_ok",
+        "agent_type": "jiuwenswarm",
+    }
+    provider.shutdown()
+
+
 def test_bind_attach_failure_restores_scope(monkeypatch):
     from opentelemetry import context
     monkeypatch.setattr(context, "attach", lambda value: (_ for _ in ()).throw(RuntimeError("broken")))

@@ -156,16 +156,60 @@ async def test_multimodal_without_agent_server_uses_existing_unavailable_error(m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_enterprise_locale_routes_to_agent_server(monkeypatch, method, legacy):
+async def test_enterprise_locale_uses_user_preference_service(monkeypatch, method):
     monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
+
     def fail_local(*args, **kwargs):
-        pytest.fail("Enterprise locale must not use Gateway config")
+        pytest.fail("Enterprise locale must not use Gateway yaml")
+
     monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
     monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
-    client = WebSocketAgentServerClient() if legacy else SimpleNamespace(server_ready=True)
-    if legacy:
-        client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+
+    class _Svc:
+        async def get_language(self, user_id):
+            assert user_id == "user"
+            return "en"
+
+        async def upsert_user_language(self, user_id, lang):
+            assert user_id == "user"
+            assert lang == "en"
+            return "en"
+
+    monkeypatch.setattr(
+        "agent_gateway.config.user_preference.get_user_preference_service",
+        lambda: _Svc(),
+    )
+    send = AsyncMock(side_effect=AssertionError("enterprise locale must not E2A"))
+    channel = _bind(agent_client=SimpleNamespace(server_ready=True, send_request=send))
+    await channel.methods[method](object(), "req", {"preferred_language": " EN "}, "sess", "user")
+    assert send.await_count == 0
+    assert channel.responses[-1]["payload"] == {"preferred_language": "en"}
+    assert channel.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_enterprise_locale_set_requires_user_id(monkeypatch):
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
+    channel = _bind(agent_client=None)
+    await channel.methods["locale.set_conf"](
+        object(), "req", {"preferred_language": "en"}, "sess", None
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
+async def test_personal_locale_with_client_routes_to_agent_server(monkeypatch, method):
+    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
+
+    def fail_local(*args, **kwargs):
+        pytest.fail("Personal locale with a client must not use Gateway config")
+
+    monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
+    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
     send = AsyncMock(return_value=SimpleNamespace(ok=True, payload={"preferred_language": "en"}))
     monkeypatch.setattr(client, "send_request", send, raising=False)
     channel = _bind(agent_client=client)
@@ -175,36 +219,18 @@ async def test_enterprise_locale_routes_to_agent_server(monkeypatch, method, leg
     assert envelope.params == ({"preferred_language": "en"} if method.endswith("set_conf") else {})
     assert envelope.user_id == "user"
     assert envelope.session_id == "sess"
-    assert channel.responses[-1]["payload"] == {"preferred_language": "en"}
     assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == {"preferred_language": "en"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("state", ["missing", "not-ready", "disconnected"])
-async def test_enterprise_locale_unavailable_does_not_use_local_config(monkeypatch, method, state):
-    monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
-    def fail_local(*args, **kwargs):
-        pytest.fail("Enterprise locale must not use Gateway config")
-    monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
-    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
-    send = AsyncMock(side_effect=ConnectionError("disconnected"))
-    client = None if state == "missing" else SimpleNamespace(server_ready=state == "disconnected", send_request=send)
-    channel = _bind(agent_client=client)
-    await channel.methods[method](object(), "req", {"preferred_language": "en"}, "sess", "user")
-    assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
-    assert send.await_count == (1 if state == "disconnected" else 0)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("legacy", [False, True], ids=["missing", "legacy"])
-async def test_personal_locale_preserves_local_fallback(monkeypatch, method, legacy):
+async def test_personal_locale_without_client_uses_local_fallback(monkeypatch, method):
     monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: False)
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"preferred_language": "en"})
     saved = []
     monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", saved.append)
-    channel = _bind(agent_client=WebSocketAgentServerClient() if legacy else None)
+    channel = _bind(agent_client=None)
     await channel.methods[method](object(), "req", {"preferred_language": " EN "}, "sess", "user")
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"] == {"preferred_language": "en"}

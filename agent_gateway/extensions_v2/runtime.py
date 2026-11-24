@@ -18,6 +18,7 @@ import functools
 import inspect
 import logging
 import shutil
+import time
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ from openjiuwen.core.events import (
     EventHandlerOps,
     ExtensionEventBus,
     HandlerLevel,
+    HostPackageInstallRequest,
     PackageMetadata,
     SessionContext,
 )
@@ -75,6 +77,26 @@ logger = logging.getLogger(__name__)
 REQUEST_TIMEOUT_S = 5.0
 
 
+def _has_pending_gateway_work(store: Any) -> bool:
+    """True while this host still has a copy to load or release."""
+
+    if any(
+        record.domain == "gateway"
+        and (
+            (record.enabled and record.status == "pending")
+            or record.status == "uninstalling"
+        )
+        for record in store.packages()
+    ):
+        return True
+    if any(bundle.status == "uninstalling" for bundle in store.bundles()):
+        return True
+    return any(
+        member.enabled and member.status == "pending" and member.domain == "gateway"
+        for member in store.bundle_members()
+    )
+
+
 class GatewayRuntime:
     """Process-wide event bus, package registry and frame trigger point."""
 
@@ -108,6 +130,9 @@ class GatewayRuntime:
         # Set for good by shutdown: nothing more is prepared, and a runtime does not start twice.
         self._closed = False
         self._management: Any = None
+        self._package_retry_task: asyncio.Task[None] | None = None
+        self._package_recovery_task: asyncio.Task[None] | None = None
+        self._package_sync_lock = asyncio.Lock()
         self._started = False
         self.browser = BrowserBridge(self)
 
@@ -138,9 +163,13 @@ class GatewayRuntime:
         self._builtin_ids.extend(bootstrap.register_handlers(self.bus, self))
         self._bind_package_data()
         self.browser.splash_preferences.load()
+        self.browser.appearance_order.load()
         await self.bus.trigger(Event(OPS_BUILD_EVENT_TYPE, None))
         if self.config.report_path is not None:
             await self.packages.init(host_version=_host_version())
+            from agent_gateway.extensions_v2.management import containers
+
+            containers.register_active_managed_roots(self.packages)
             reports = await self.packages.load_installed()
             failed = [report for report in reports if report.status != "SUCCESS"]
             if failed:
@@ -149,6 +178,9 @@ class GatewayRuntime:
                     len(failed),
                     ", ".join(report.package_id for report in failed),
                 )
+            # Recovery loads members through the same sync path as install, but
+            # must not delay the channel becoming available.
+            self._package_recovery_task = asyncio.create_task(self._recover_container_members())
         else:
             for package in load_gateway_packages(self.config.install_dir):
                 try:
@@ -171,6 +203,15 @@ class GatewayRuntime:
     async def shutdown(self) -> None:
         """Unregister every handler and drop in-process state."""
 
+        for attribute in ("_package_retry_task", "_package_recovery_task"):
+            task = getattr(self, attribute)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            setattr(self, attribute, None)
         if self._management is not None:
             try:
                 await self._management.begin_shutdown()
@@ -243,6 +284,92 @@ class GatewayRuntime:
         """Public connection id used by package-management frames."""
 
         return await self._connection_id(ws)
+
+    # ── container member sync (local, independent of the AgentServer) ─────
+
+    async def _recover_container_members(self) -> None:
+        """Run startup container reconciliation in the background."""
+
+        try:
+            await self.sync_container_members()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - recovery must not affect availability
+            logger.warning("[GatewayExtensions] container recovery failed", exc_info=True)
+        finally:
+            self._package_recovery_task = None
+
+    async def sync_container_members(self, *, schedule: bool = True) -> list[Any]:
+        """Load or unload Gateway members through local package events."""
+
+        async with self._package_sync_lock:
+            return await self._sync_container_members(schedule=schedule)
+
+    async def _sync_container_members(self, *, schedule: bool) -> list[Any]:
+        from agent_gateway.extensions_v2.management import containers
+        from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+
+        store = ExtensionInstallState.for_install_dir(self.config.install_dir)
+
+        async def trigger(operation: str, package_id: str, version: str, container_id: str, container_version: str):
+            return await self.bus.trigger(
+                Event(
+                    "package.install",
+                    HostPackageInstallRequest(
+                        package_id=package_id,
+                        version=version,
+                        operation=operation,
+                        container_id=container_id,
+                        container_version=container_version,
+                    ),
+                )
+            )
+
+        results = await containers.sync_members(self.packages, store, trigger)
+        loaded = [
+            str(getattr(item, "package_id", ""))
+            for item in results
+            if getattr(item, "status", "") == "success"
+        ]
+        if loaded:
+            try:
+                from agent_gateway.extensions_v2.management.notifications import notify_installed
+
+                await notify_installed(self, loaded)
+            except Exception:  # noqa: BLE001 - UI notification does not undo a loaded member
+                logger.warning("[GatewayExtensions] member load notification failed", exc_info=True)
+        if schedule and _has_pending_gateway_work(store):
+            self._schedule_package_retry()
+        return results
+
+    def _schedule_package_retry(self) -> None:
+        """Retry pending Gateway members without blocking the caller."""
+
+        task = self._package_retry_task
+        if task is not None and not task.done():
+            return
+
+        async def loop() -> None:
+            deadline = time.monotonic() + float(self.config.dependency_timeout)
+            delay = 0.5
+            try:
+                while time.monotonic() < deadline:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 5.0)
+                    await self.sync_container_members(schedule=False)
+                    from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+
+                    store = ExtensionInstallState.for_install_dir(self.config.install_dir)
+                    if not _has_pending_gateway_work(store):
+                        return
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - retry is best effort
+                logger.warning("[GatewayExtensions] package retry failed", exc_info=True)
+            finally:
+                self._package_retry_task = None
+
+        self._package_retry_task = asyncio.create_task(loop())
 
     # ── package publication ───────────────────────────────────────────────
 
@@ -526,6 +653,7 @@ class GatewayRuntime:
             await asyncio.to_thread(shutil.rmtree, directory)
         # Host settings about the package share its data lifecycle (S_10 section 4).
         self.browser.splash_preferences.forget(package_id)
+        self.browser.appearance_order.forget(package_id)
 
     def active_packages(self) -> tuple[LoadedPackage, ...]:
         """Return the packages currently published on this runtime."""

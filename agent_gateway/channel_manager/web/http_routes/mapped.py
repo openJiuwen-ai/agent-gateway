@@ -890,7 +890,9 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "GET", "/workspace/usage", "workspace.usage", "workspace",
-        "查询本人工作区用量与配额状态", query_keys=_TENANT_QUERY,
+        "查询本人工作区用量与配额状态",
+        query_keys=("session_id", "force_refresh") + _TENANT_QUERY,
+        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "DELETE", "/workspace/entries", "workspace.entries.delete", "workspace",
@@ -902,6 +904,8 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "预览文件正文（二进制 content=null；目录 400）",
         query_keys=("relative_path", "max_bytes") + _TENANT_QUERY,
     ),
+    # workspace.download 成功返回文件流，不能走 mapped 一元 JSON；
+    # 见 agent_gateway.channel_manager.web.http_routes.workspace 的专用挂载。
 )
 
 # Connector marketplace (enterprise HTTP northbound; aligns with pod_rest_map).

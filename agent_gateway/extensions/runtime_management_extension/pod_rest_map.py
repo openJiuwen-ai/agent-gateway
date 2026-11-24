@@ -369,6 +369,10 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
+    新建 ``X-Cron-Targets`` 和 ``X-Cron-Meta`` 头：
+    - ``channel_context.targets`` → ``X-Cron-Targets`` → ``metadata["targets"]``
+    - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
+
     企业版另附 ``X-Jiuwenswarm-Package-Allowlist``。值来自发送前读到的库行，
     不采用 ``channel_context`` 里客户端自带的名单。
 
@@ -415,6 +419,14 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    cron_targets = str(channel_context.get("targets") or "").strip()
+    if cron_targets:
+        headers["X-Cron-Targets"] = cron_targets
+    cron_meta = channel_context.get("cron")
+    if isinstance(cron_meta, dict) and cron_meta:
+        headers["X-Cron-Meta"] = json.dumps(
+            cron_meta, ensure_ascii=True, separators=(",", ":"),
+        )
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
@@ -461,15 +473,12 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
         return "POST", path
     if method == "history.get" and is_stream:
         return "GET", "/sessions/{session_id}/history/stream"
-    if method in TEAM_CONTROL_METHODS and not is_enterprise():
+    found = None
+    if method not in TEAM_CONTROL_METHODS or is_enterprise():
+        found = REST_ROUTES.get(method) or _enterprise_pod_route(method)
+    if found is None:
         raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
-    found = REST_ROUTES.get(method)
-    if found is not None:
-        return found[0], found[1]
-    extra = _enterprise_pod_route(method)
-    if extra is not None:
-        return extra
-    raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
+    return found
 
 
 def _enterprise_pod_route(method: str) -> tuple[str, str] | None:

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from agent_gateway import app_gateway
+from agent_gateway.routing import protocol_runtime as runtime
 from agent_gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
 from agent_gateway.channel_manager.tui.tui_channel import TuiChannel
 from agent_gateway.channel_manager.tui.tui_connect import CliRouteBindParams, build_cli_route_binding
@@ -171,6 +171,31 @@ async def test_identical_switch_ids_complete_only_the_originating_connection(pai
 
 
 @pytest.mark.asyncio
+async def test_switch_registration_failure_replies_to_the_waiting_window(pair, monkeypatch, caplog):
+    channel = pair.route.ws_channel
+    if channel is None:
+        pytest.skip("registration commit is delegated to TuiChannel")
+
+    async def fail_register(*args, **kwargs):
+        raise RuntimeError("registration commit failed")
+
+    monkeypatch.setattr(channel, "register_ws", fail_register)
+    switch = await pair.send(0, "switch-1", "session.switch", "new-0")
+    await pair.respond(switch)
+    await pair.wait_frames(0, 1)
+    rejected = pair.sockets[0].frames[0]
+    assert (rejected["id"], rejected["ok"], rejected["code"]) == ("switch-1", False, "INTERNAL_ERROR")
+    assert rejected["error"] == "session switch registration failed"
+    assert not pair.server.is_session_bound_to_client("tui", "new-0", pair.sockets[0])
+    assert pair.server._pending_tui_switches == {}
+    warnings = [
+        record for record in caplog.records
+        if record.getMessage() == "GatewayServer TUI session.switch registration failed: channel_id=tui session_id=new-0"
+    ]
+    assert warnings
+
+
+@pytest.mark.asyncio
 async def test_switch_reply_stays_behind_frames_already_queued_for_the_window(pair):
     if pair.server.config.routes["/tui"].ws_channel is None:
         pytest.skip("ordering applies to TuiChannel's per-socket writer")
@@ -231,8 +256,8 @@ async def _settle(turns=20):
 
 @pytest.mark.asyncio
 async def test_unanswered_switch_expires_and_releases_the_target(pair, monkeypatch):
-    monkeypatch.setattr(app_gateway, "resolve_agent_request_timeout_seconds", lambda **kwargs: 0.01)
-    monkeypatch.setattr(app_gateway, "_TUI_SWITCH_DEADLINE_MARGIN_SECONDS", 0.0)
+    monkeypatch.setattr(runtime, "resolve_agent_request_timeout_seconds", lambda **kwargs: 0.01)
+    monkeypatch.setattr(runtime, "_TUI_SWITCH_DEADLINE_MARGIN_SECONDS", 0.0)
     switch = await pair.send(0, "switch-1", "session.switch", "shared")
     # No reply reaches the gateway. The deadline settles the switch as failed.
     await pair.wait_frames(0, 1)
@@ -293,13 +318,13 @@ async def test_switch_deadline_follows_the_unary_timeout_policy(pair, timeout_ms
     deadline = next(iter(pair.server._pending_tui_switches.values())).deadline
     remaining = deadline.when() - asyncio.get_running_loop().time()
     # A huge client timeout cannot reserve the target for as long.
-    assert 0 < remaining <= longest + app_gateway._TUI_SWITCH_DEADLINE_MARGIN_SECONDS
+    assert 0 < remaining <= longest + runtime._TUI_SWITCH_DEADLINE_MARGIN_SECONDS
 
 
 @pytest.mark.asyncio
 async def test_answered_unary_correlations_are_bounded_per_socket(pair, monkeypatch):
     """A window's periodic requests must not grow the correlation tables until it disconnects."""
-    monkeypatch.setattr(app_gateway, "_TUI_ANSWERED_ORIGINS_KEPT", 3)
+    monkeypatch.setattr(runtime, "_TUI_ANSWERED_ORIGINS_KEPT", 3)
     server = pair.server
     stream = await pair.send(0, "stream-1", is_stream=True)
     unary = []
@@ -387,10 +412,13 @@ async def test_reconnected_window_takes_back_its_session_and_in_flight_output(pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("who", ["another user", "another routing scope"])
+@pytest.mark.parametrize("who", ["another user", "another routing scope", "anonymous identity"])
 async def test_detached_session_is_not_handed_to_another_identity(pair, who):
+    if who == "anonymous identity":
+        pair.sockets[0]._gateway_user_id = None
+        pair.sockets[0].request_headers = {}
     stream = await _drop_mid_stream(pair)
-    stranger = _Socket("mallory" if who == "another user" else pair.sockets[0]._gateway_user_id)
+    stranger = _Socket(None if who == "anonymous identity" else "mallory" if who == "another user" else pair.sockets[0]._gateway_user_id)
     if who == "another routing scope":
         stranger._web_routing = {"group_id": "other-group"}
     await pair.request(stranger, "c2", "mode.get", "old-0")
@@ -426,7 +454,7 @@ async def test_only_a_reconnecting_windows_own_request_reattaches(pair):
 @pytest.mark.parametrize("why", ["grace expired", "user exit"])
 async def test_nothing_is_held_for_an_expired_or_exited_window(pair, monkeypatch, why):
     if why == "grace expired":
-        monkeypatch.setattr(app_gateway, "_TUI_REATTACH_GRACE_SECONDS", -1.0)
+        monkeypatch.setattr(runtime, "_TUI_REATTACH_GRACE_SECONDS", -1.0)
     else:
         pair.sockets[0]._jiuwenswarm_tui_user_exit = True
     stream = await _drop_mid_stream(pair)

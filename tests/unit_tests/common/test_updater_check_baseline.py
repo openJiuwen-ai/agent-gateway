@@ -1,0 +1,201 @@
+"""Regression tests for the update-check baseline and wheel selection.
+
+Daily wheels bump the installed distribution metadata (for example
+``workswarm 0.2.9``) without regenerating the checked-in
+``_build_config.VERSION`` constant (still ``0.2.8``), so pip checks must
+compare against ``get_runtime_version()``. Desktop checks keep the
+``_build_config`` version instead: the dist-info bundled into the frozen app
+holds the PEP 440 normalized spelling (``0.2.9b5``), which never matches the
+``v0.2.9.beta5`` release tag the timestamp lookup needs. The PyPI simple index
+lists every historical wheel, so the resolved asset must match the release
+version rather than the first entry in the list.
+"""
+
+import sys
+
+import pytest
+
+from agent_gateway.common import updater
+from agent_gateway.common.version_source import ReleaseAsset, ReleaseInfo, release_sort_key
+
+
+@pytest.fixture(autouse=True)
+def pip_install_mode(monkeypatch):
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delenv(updater.DESKTOP_ENV_FLAG, raising=False)
+
+
+def _release(version: str, *names: str) -> ReleaseInfo:
+    return ReleaseInfo(
+        version=version,
+        published_at="2026-11-13T02:36:10Z",
+        assets=[
+            ReleaseAsset(
+                name=name,
+                download_url=f"https://mirror.test/packages/{name}",
+            )
+            for name in names
+        ],
+        source_type="pypi",
+    )
+
+
+def _service(monkeypatch, release: ReleaseInfo, runtime_version: str):
+    seen: dict[str, str] = {}
+
+    class FakeSource:
+        def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
+            seen["current_version"] = current_version
+            return release
+
+    monkeypatch.setattr(updater, "__version__", "0.2.8")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: runtime_version)
+    monkeypatch.setattr(
+        updater,
+        "get_config_raw",
+        lambda: {"updater": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        updater.UpdaterService,
+        "_create_version_source",
+        staticmethod(lambda config: FakeSource()),
+    )
+    return updater.UpdaterService(), seen
+
+
+def test_check_uses_installed_version_as_baseline(monkeypatch):
+    # The installed daily wheel is 0.2.9, which is newer than the mirror's
+    # newest pre-release 0.2.9b3, so the check must not offer an update.
+    release = _release(
+        "0.2.9b3",
+        "workswarm-0.2.5-py3-none-any.whl",
+        "workswarm-0.2.9b3-py3-none-any.whl",
+    )
+    service, seen = _service(monkeypatch, release, runtime_version="0.2.9")
+
+    status = service.check()
+
+    assert seen["current_version"] == "0.2.9"
+    assert status["has_update"] is False
+    assert status["state"] == "up_to_date"
+    assert status["current_version"] == "0.2.9"
+
+
+def test_desktop_check_keeps_build_config_baseline(monkeypatch, tmp_path):
+    # The dist-info bundled into the frozen desktop app reads 0.2.9b5 (PEP 440
+    # normalized) while the release tag is v0.2.9.beta5; the desktop check
+    # must be driven by the _build_config version, otherwise the current
+    # release lookup misses and every desktop check fails with "Current
+    # desktop release timestamp is missing".
+    monkeypatch.setenv(updater.DESKTOP_ENV_FLAG, "1")
+    monkeypatch.setattr(sys, "platform", "win32")
+    # The up-to-date path runs _cleanup_obsolete_desktop_installers against
+    # the user workspace .updates directory; isolate it so the test can never
+    # delete real downloaded installers from the developer's machine.
+    monkeypatch.setattr(updater, "get_user_workspace_dir", lambda: tmp_path)
+
+    seen: dict[str, str] = {}
+
+    class FakeSource:
+        def fetch_latest(self, current_version: str = "") -> ReleaseInfo:
+            seen["current_version"] = current_version
+            release = _release(
+                "0.2.9.beta5", "WorkSwarm-0.2.9.beta5-windows.exe"
+            )
+            if current_version == "0.2.9.beta5":
+                # The tag lookup only succeeds for the raw dotted spelling.
+                release.current_release_published_at = release.published_at
+            return release
+
+    monkeypatch.setattr(updater, "__version__", "0.2.9.beta5")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.9b5")
+    monkeypatch.setattr(
+        updater,
+        "get_config_raw",
+        lambda: {"updater": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        updater.UpdaterService,
+        "_create_version_source",
+        staticmethod(lambda config: FakeSource()),
+    )
+
+    status = updater.UpdaterService().check()
+
+    assert seen["current_version"] == "0.2.9.beta5"
+    assert status["has_update"] is False
+    assert status["state"] == "up_to_date"
+
+
+def test_check_picks_wheel_matching_release_version(monkeypatch):
+    release = _release(
+        "0.2.9b3",
+        "workswarm-0.2.5-py3-none-any.whl",
+        "workswarm-0.2.8-py3-none-any.whl",
+        "workswarm-0.2.9b3-py3-none-any.whl",
+    )
+    service, seen = _service(monkeypatch, release, runtime_version="0.2.8")
+
+    status = service.check()
+
+    assert seen["current_version"] == "0.2.8"
+    assert status["has_update"] is True
+    assert status["state"] == "update_available"
+    assert status["latest_version"] == "0.2.9b3"
+    assert status["matched_asset"] == "workswarm-0.2.9b3-py3-none-any.whl"
+    assert status["download_url"].endswith("/workswarm-0.2.9b3-py3-none-any.whl")
+
+
+def test_resolve_pip_asset_falls_back_to_first_wheel(monkeypatch):
+    release = _release("0.3.0", "nightly-build.whl", "other-build.whl")
+    service = updater.UpdaterService()
+
+    service._resolve_pip_asset({}, release)  # pylint: disable=protected-access
+
+    status = service.get_status()
+    assert status["asset_name"] == "nightly-build.whl"
+    assert status["download_url"].endswith("/nightly-build.whl")
+
+
+def test_resolve_pip_asset_matches_hyphenated_distribution_names(monkeypatch):
+    # Distribution names may contain hyphens, so the wheel version cannot be
+    # taken as the second "-"-separated segment; taking the first wheel again
+    # would restore the historical-wheel mispick this PR fixes.
+    release = _release(
+        "0.2.9b3",
+        "my-workswarm-0.2.5-py3-none-any.whl",
+        "my-workswarm-0.2.9b3-py3-none-any.whl",
+    )
+    service = updater.UpdaterService()
+
+    service._resolve_pip_asset({}, release)  # pylint: disable=protected-access
+
+    status = service.get_status()
+    assert status["asset_name"] == "my-workswarm-0.2.9b3-py3-none-any.whl"
+    assert status["download_url"].endswith("/my-workswarm-0.2.9b3-py3-none-any.whl")
+
+
+def test_wheel_version_key_normalizes_prerelease_spellings():
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.3b1-py3-none-any.whl"
+    ) == updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.3.beta1-py3-none-any.whl"
+    )
+    assert updater._wheel_version_key("not-a-wheel") is None  # pylint: disable=protected-access
+
+
+def test_wheel_version_key_locates_version_from_the_right():
+    # The version segment is anchored on the python/abi/platform tag triplet,
+    # not on the distribution name, so hyphenated distributions and build
+    # tags keep resolving to the version.
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "zope-interface-5.10-py3-none-any.whl"
+    ) == release_sort_key("5.10")
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.9b3-1-py3-none-any.whl"
+    ) == release_sort_key("0.2.9b3")
+    # A digit-only segment is only a build tag when a version still sits to
+    # its left; single-digit versions without a build tag stay put.
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "sample-3-py3-none-any.whl"
+    ) == release_sort_key("3")

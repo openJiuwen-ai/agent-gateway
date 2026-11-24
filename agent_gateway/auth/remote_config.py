@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import re
 import threading
 import time
@@ -39,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from agent_gateway.auth.net import requests_request
+from agent_gateway.common.retry import jittered_delay
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +178,6 @@ _RETRY_AFTER_FAILURE_S = 30.0
 #: 固定 30 秒会把压力钉在"在线数 ÷ 30 秒"，恢复瞬间还会一起涌上来；封顶 10 分钟既把持续
 #: 故障的压力降一个量级，也保证恢复后最迟 10 分钟入口自己回来。
 _RETRY_BACKOFF_MAX_S = 600.0
-#: 冷却期上下浮动这么多，错开各客户端的重试时刻。
-_RETRY_JITTER = 0.2
 #: 这次失败要等多久才允许再试（含抖动）；0 = 没在冷却
 _retry_after_s: float = 0.0
 #: 下一次失败的冷却基准，成功后复位
@@ -251,7 +249,7 @@ def _fetch_once(url: str) -> RemoteConfig | None:
 
 
 def _backoff(base: float) -> tuple[float, float]:
-    return base * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER), min(base * 2, _RETRY_BACKOFF_MAX_S)
+    return jittered_delay(base), min(base * 2, _RETRY_BACKOFF_MAX_S)
 
 
 def _record_failure() -> None:

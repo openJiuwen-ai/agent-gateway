@@ -224,6 +224,11 @@ async def test_closed_is_delivered_once_for_the_current_revision(tmp_path):
             _, response = await _frame(runtime, ws, "webui.dispatch",
                                        _dispatch("application.splash", "ui.closed", "test.play", payload))
             assert response["payload"]["accepted"] is False, payload
+        for stale_revision in (0, -1, 2**53):
+            _, response = await _frame(runtime, ws, "webui.dispatch", _dispatch(
+                "application.splash", "ui.closed", "test.play", {"reason": "skip", "revision": stale_revision},
+            ))
+            assert response["payload"] == {"accepted": False, "status": "inactive", "code": "TARGET_INACTIVE"}
         _, response = await _frame(runtime, ws, "webui.dispatch",
                                    _dispatch("application.splash", "ui.closed", "test.play", {"reason": "skip", "revision": revision}))
         assert response["payload"] == {"accepted": True, "status": "closed"}

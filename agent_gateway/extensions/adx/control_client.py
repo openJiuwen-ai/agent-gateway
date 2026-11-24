@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 
 class AdxControlError(YuanrongAgentApiError):
     """Environment failure compatible with the existing Gateway lifecycle contract."""
-    def __init__(self, message: str, *, code: str = 'SERVICE_UNAVAILABLE') -> None:
-        super().__init__(message)
+    def __init__(self, message: str, *, code: str = 'SERVICE_UNAVAILABLE',
+                 status_code: int | None = None) -> None:
+        super().__init__(message, status_code=status_code)
         self.code = code
 
 
@@ -78,16 +79,26 @@ class AdxControlClient:
         except httpx.RequestError as exc:
             error = AdxCreateTimeout if method == 'POST' and path.endswith('/environments') else AdxControlError
             raise error('ADX operation outcome is unknown; reuse the same instance') from exc
-        if missing_ok and response.status_code == 404:
+        status = response.status_code
+        if missing_ok and status == 404:
             return None
         try:
             value = response.json()
         except ValueError as exc:
+            if status >= 300:
+                raise AdxControlError(
+                    f'ADX {method} returned HTTP {status}',
+                    status_code=status,
+                ) from exc
             raise AdxControlError('Invalid ADX response') from exc
-        if response.status_code >= 300:
+        if status >= 300:
             error = value.get('error') if isinstance(value, dict) else None
             code = error.get('code', 'SERVICE_UNAVAILABLE') if isinstance(error, dict) else 'SERVICE_UNAVAILABLE'
-            raise AdxControlError(f'ADX {method} returned HTTP {response.status_code}', code=code)
+            raise AdxControlError(
+                f'ADX {method} returned HTTP {status}',
+                code=code,
+                status_code=status,
+            )
         if isinstance(value, dict) and 'data' in value and 'code' in value:
             if value['code'] not in (200, 201):
                 raise AdxControlError('ADX operation failed')
@@ -223,10 +234,22 @@ class AdxControlClient:
             self._creates.pop(instance, None)
         body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        previous_operation = self._creates.get(instance)
         operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
         if digest != original_digest:
             raise AdxControlError('Create specification changed while its outcome is unknown', code='CONFLICT')
-        result = await self._request('POST', '/api/environment/v1/environments', body=body, request_id=operation)
+        try:
+            result = await self._request(
+                'POST', '/api/environment/v1/environments', body=body, request_id=operation,
+            )
+        except AdxControlError as exc:
+            if getattr(exc, 'status_code', None) == 429 and previous_operation is None:
+                # A first-attempt 429 explicitly rejected this create. Forget
+                # the operation so a later generation does not leave an orphan
+                # _creates entry. On replay, keep it: the earlier POST may have
+                # created the instance even if its response was lost.
+                self._creates.pop(instance, None)
+            raise
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxControlError('ADX create returned an unexpected Environment ID')
         return await self._ready_sandbox_info(instance)

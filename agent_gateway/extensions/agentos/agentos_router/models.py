@@ -16,6 +16,26 @@ class AgentStatus(str, Enum):
     DELETED = "deleted"
 
 
+# Runtime lifecycle transitions that are legal by construction. ``DELETED`` is a
+# terminal snapshot (it never stays in ``AgentManager``), and ``FAILED`` has no
+# way back to ``READY`` or ``CREATING``.
+_ALLOWED_STATUS_TRANSITIONS: dict[AgentStatus, frozenset[AgentStatus]] = {
+    AgentStatus.CREATING: frozenset(
+        {AgentStatus.READY, AgentStatus.FAILED, AgentStatus.DELETED}
+    ),
+    AgentStatus.READY: frozenset({AgentStatus.DELETED}),
+    AgentStatus.FAILED: frozenset({AgentStatus.DELETED}),
+    AgentStatus.DELETED: frozenset(),
+}
+
+
+def is_allowed_status_transition(
+    current: AgentStatus, target: AgentStatus,
+) -> bool:
+    """Return whether ``current -> target`` is an allowed runtime transition."""
+    return target in _ALLOWED_STATUS_TRANSITIONS.get(current, frozenset())
+
+
 @dataclass
 class ImageInfo:
     image_name: str

@@ -51,6 +51,87 @@ Tests: `test_uvicorn_listener.py`, `test_websocket_listener.py`,
 `test_gateway_listener_lifecycle.py` and the corresponding process lifecycle ST.
 They cover archives, live connections, cancellation, bind failure and port reuse.
 
+## P2-B: protocol runtime
+
+`routing/protocol_runtime.py` owns ProtocolRuntime, ProtocolRuntimeConfig,
+RouteConfig, the ACP bridge and request/session/connection indexes. The old
+GatewayServer and GatewayServerConfig exports from `app_gateway` and
+`routing.gateway_server` remain aliases to the same classes.
+
+The latest develop TUI correlation, session switching, disconnection grace,
+reconnection and routing isolation remain intact. Client request IDs are mapped
+to unique internal upstream IDs and restored on replies; an old connection must
+not deliver a late result into a replacement window. New modules and tests use
+the current `e2a` package, not the retired `openjiuwen_protocol` import path.
+Cold imports do not initialize the legacy entrypoint or eagerly load ACP.
+
+Tests: `test_protocol_runtime_import_contract.py`,
+`test_tui_request_correlation.py`, `test_tui_lifecycle_routing.py` and the existing
+`test_app_gateway_acp.py` compatibility suite.
+
+## P2-C: single-process assembly
+
+`app_gateway._run()` delegates explicit save-factory, restart, preprocessing,
+connection and startup-timing inputs to `application/single.py`.
+
+- `services.py` constructs one client, MessageHandler, ChannelManager and shared
+  service graph, preserving extension selection, enterprise storage initialization
+  and teardown, provider binding and the AgentOS configuration updater.
+- Client selection retains the current agent-client mode validation and direct
+  extension-client behavior; file-backed Cron migration uses the AgentServer model
+  catalog instead of the local catalog.
+- `web.py` wires the original WebChannel, handlers, plugins, Git watcher,
+  recommendation callbacks and first-request gate without binding a listener.
+- `tui_acp.py` constructs TuiChannel, the ACP queue and one ProtocolRuntime after
+  Web readiness. Client subscription follows channel registration.
+- `inbound.py`, `connection.py` and `configuration.py` retain preprocessing,
+  retry/readiness and configuration helpers. Legacy helper imports remain
+  compatible; patch private globals at their defining modules.
+- Inbound preprocessing preserves `app_id` and the current Web local-method route:
+  forced forwarding wins, registered local handlers stay local, denied prefixes
+  never leave the Gateway, and unknown Web methods remain forwardable by default.
+- `single.py` starts Web before dispatch/Cron and preserves configuration-updater
+  start/stop ordering and the existing yield before TUI/ACP assembly.
+  The Web readiness budget defaults to the process cold-start budget and can be
+  overridden with `GATEWAY_WEB_READY_TIMEOUT_SECONDS`. A value of `0` does not
+  wait: only a listener that is already ready passes the check.
+
+Private monkeypatch targets follow the defining module after this extraction:
+
+| Legacy `app_gateway` target | Canonical target |
+| --- | --- |
+| `configure_gateway_telemetry` | `agent_gateway.application.services.configure_gateway_telemetry` |
+| `_agent_prewarm_enabled` / `_AGENT_PREWARM_EXCLUDED_CHANNELS` | `agent_gateway.application.single` |
+| `_stop_web_runtime` / `_wait_for_web_channel_listening` | `agent_gateway.application.connection` |
+| `_reject_removed_agent_client_type` | `agent_gateway.application.services` |
+| `_build_acp_route_binding` / `_build_route_config_map` | `agent_gateway.application.tui_acp` |
+| inbound preprocessing helpers | `agent_gateway.application.inbound` |
+
+For operational log searches, the TUI/ACP background task is named
+`tui-acp-protocol-runtime`.
+
+Optional channels are extracted before single-process assembly. The legacy
+entrypoint owns them first; this stage transfers the same calls to single.
+Assembly tests are in
+`test_application_assembly_contract.py`; real process restart/lock tests are in
+`st_test/testcases_gateway/test_gateway_single_lifecycle.py`. Normal shutdown
+does not imply transactional cleanup for every early startup failure.
+
+## P2-D: optional-channel lifecycle
+
+`application/optional_channels.py::OptionalChannels` owns IM, SSH, A2A and Web
+Proxy configuration, instances and tasks. The host supplies explicit
+dependencies and retains lazy SDK imports, per-channel failure isolation and
+revision-aware retries. Shutdown has three boundaries: configuration/retry work,
+A2A, then other channels after TUI/Web. Background cancellation waiters are
+joined. Prewarming remains in the host; WebChannel.stop owns Web Proxy cleanup.
+
+`test_optional_channels_lifecycle.py` checks ownership, retries and cleanup.
+The process test `test_gateway_optional_channels_lifecycle.py` checks the host's
+startup and shutdown boundaries before and after assembly extraction. AgentOS
+Web Proxy uses the current runtime Cron settings helper without a test-only
+replacement. Real accounts/SDKs and frozen packages still need separate acceptance.
+
 ## Verification and rollback
 
 Use a fresh per-worktree `.venv` with develop's unchanged lockfile. Record the

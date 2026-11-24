@@ -6,9 +6,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 最终 ID 的形态：32 位十六进制（仅用于信封显式提供的顶层字段）。
+_FINAL_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
+
+
+def is_final_invoke_id(value: str) -> bool:
+    """``value`` 是否已经是最终 ID（32 位 hex），不再需要哈希。"""
+    return bool(_FINAL_ID_PATTERN.match(str(value or "").strip()))
 
 
 def _default_invoke_ids(group_id: str, bot_id: str, user_id: str) -> tuple[str, str]:
@@ -42,9 +51,16 @@ def _default_workspace_key(group_id: str, bot_id: str, user_id: str) -> str:
     return f"{group_id}{bot_id}{user_id}".strip()
 
 
-def _md5_invoke_id(value: str) -> str:
-    """逻辑 ID → MD5 32 位 hex。"""
+def _md5_invoke_id(value: str, *, explicit: bool = True) -> str:
+    """逻辑 ID → MD5 32 位 hex；已经是最终 ID 的原样返回。
+
+    幂等是关键：``apply_invoke_ids_to_envelope`` 可能对同一信封执行多次
+    （重试、重放、多跳转发），若无条件哈希，第二次就会把上一次的结果
+    再哈希一遍，租户/工作区命名空间静默错位且不可逆。
+    """
     text = str(value or "").strip()
+    if explicit and is_final_invoke_id(text):
+        return text
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
@@ -127,9 +143,9 @@ def apply_invoke_ids_to_envelope(envelope: Any) -> Any:
         agent_id=getattr(envelope, "agent_id", None),
         workspace_key=getattr(envelope, "workspace_key", None),
     )
-    hashed_service_id = _md5_invoke_id(service_id)
-    hashed_agent_id = _md5_invoke_id(agent_id)
-    hashed_workspace_key = _md5_invoke_id(workspace_key)
+    hashed_service_id = _md5_invoke_id(service_id, explicit=bool(getattr(envelope, "service_id", None)))
+    hashed_agent_id = _md5_invoke_id(agent_id, explicit=bool(getattr(envelope, "agent_id", None)))
+    hashed_workspace_key = _md5_invoke_id(workspace_key, explicit=bool(getattr(envelope, "workspace_key", None)))
 
     logger.debug(
         "[invoke_ids] envelope tenant ids: "

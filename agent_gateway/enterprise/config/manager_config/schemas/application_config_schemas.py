@@ -24,6 +24,14 @@ class CronPolicyUpsertRequest(BaseModel):
     max_jobs_per_user: int = Field(..., ge=0)
 
 
+class UserPreferenceDefaultUpsertRequest(BaseModel):
+    """集群默认语言：写入 Gateway ``user_preference`` 的 ``__default__`` 行。"""
+
+    preferred_language: Literal["zh", "en"] = Field(...)
+    # 未传=不覆盖库内 extras；显式 null=清空；对象=覆盖（exclude_unset 区分）。
+    extras: dict[str, Any] | None = Field(default=None)
+
+
 class AdvancedConfigUpsertRequest(BaseModel):
     """对齐 advanced_config：按 agent_template_id 绑定的高级开关。"""
 

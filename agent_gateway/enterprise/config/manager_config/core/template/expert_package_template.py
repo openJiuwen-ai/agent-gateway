@@ -15,19 +15,11 @@ from agent_gateway.common.expert_packages import HIDDEN_HUB_ASSET_IDS
 from ...infrastructure.repository_access import require_enterprise_repository
 from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import ExpertPackageTemplateUpdateRequest
+from .template_id import normalize_template_id
 
 _TABLE = EXPERT_PACKAGE_TEMPLATE_TABLE_DEF.table_name
 _PACKAGE_KINDS = frozenset({"agent_template", "agent_group"})
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 def _normalize_asset_id(value: Any) -> str:
@@ -99,13 +91,13 @@ def _normalize_row_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _get_row(repo: EnterpriseRecordRepository, template_id: str) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 def _build_row(template: dict[str, Any], *, now: Any) -> dict[str, Any]:
     fields = _normalize_row_fields(template)
     return {
-        "template_id": _normalize_template_id(template.get("template_id")),
+        "template_id": normalize_template_id(template.get("template_id")),
         **fields,
         "created_at": now,
         "updated_at": now,
@@ -114,7 +106,7 @@ def _build_row(template: dict[str, Any], *, now: Any) -> dict[str, Any]:
 
 async def _upsert(repo: EnterpriseRecordRepository, template: dict[str, Any]) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row(repo, tid)
     row_data = _build_row(template, now=now)
     if existing is None:
@@ -135,7 +127,7 @@ async def update_expert_package_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row(repo, tid)
     if row is None:
         return None
@@ -158,7 +150,7 @@ async def update_expert_package_template(
 
 
 async def delete_expert_package_template(repo: EnterpriseRecordRepository, template_id: str) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row(repo, tid)
     if existing is None:
         return False
@@ -171,7 +163,7 @@ class ExpertPackageTemplateService:
             raise ValueError("expert_package_templates.create requires template object")
         repo = require_enterprise_repository(_TABLE)
         await _upsert(repo, template)
-        result = {"template_id": _normalize_template_id(template.get("template_id"))}
+        result = {"template_id": normalize_template_id(template.get("template_id"))}
         logger.info(
             "[ManagerConfigReceiver] expert_package_templates create template_id=%s",
             result["template_id"],
@@ -184,7 +176,7 @@ class ExpertPackageTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("expert_package_templates.update requires non-empty updates")
         req = ExpertPackageTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         existing = await _get_row(repo, tid)
         row = await update_expert_package_template(repo, tid, req, existing=existing)
@@ -198,7 +190,7 @@ class ExpertPackageTemplateService:
     async def delete(self, template_id: str) -> None:
         if not template_id:
             raise ValueError("expert_package_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_expert_package_template(repo, tid)
         logger.info(

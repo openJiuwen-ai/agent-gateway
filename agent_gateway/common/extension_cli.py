@@ -19,9 +19,6 @@ logger = logging.getLogger(__name__)
 METHODS = frozenset({"install", "query", "reload", "uninstall"})
 MAX_FRAME = 8 * 1024 * 1024
 ENV_PREFIX = "JIUWENSWARM_EXTENSION_CLI_"
-#: manifest ``package.domain`` 空间的取值；与 ``context_path`` 的传输域
-#: （``agent_server`` / ``gateway``）不是同一套命名，不可互相传入。
-MANIFEST_DOMAIN_AGENT_SERVER = "agentserver"
 Handler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
@@ -229,34 +226,3 @@ class LocalControl:
                 pass
             if task is not None:
                 self._tasks.discard(task)
-
-
-def source_domain(path: Path) -> str:
-    """Read the declared host without importing package code.
-
-    Returns a value in the manifest ``package.domain`` space (``gateway`` /
-    ``agentserver``), not the transport domain accepted by ``context_path``.
-    """
-    import json
-    from zipfile import BadZipFile, ZipFile
-
-    try:
-        if path.is_dir():
-            manifest_path = path / "manifest.json"
-            if manifest_path.stat().st_size > 65536:
-                raise ValueError("manifest exceeds 64 KiB")
-            raw = manifest_path.read_bytes()
-        else:
-            with ZipFile(path) as archive:
-                entry = archive.getinfo("manifest.json")
-                if entry.file_size > 65536:
-                    raise ValueError("manifest exceeds 64 KiB")
-                raw = archive.read(entry)
-        manifest = json.loads(raw)
-    except (OSError, KeyError, BadZipFile, ValueError, UnicodeError) as error:
-        raise ValueError("Cannot read package manifest") from error
-    package = manifest.get("package") if isinstance(manifest, dict) else None
-    domain = package.get("domain") if isinstance(package, dict) else None
-    return "gateway" if isinstance(domain, str) and domain.strip().lower() == "gateway" else (
-        MANIFEST_DOMAIN_AGENT_SERVER
-    )

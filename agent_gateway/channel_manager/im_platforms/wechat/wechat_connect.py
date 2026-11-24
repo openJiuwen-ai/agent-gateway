@@ -23,6 +23,10 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.thinking_content import (
+    is_thinking_only_content,
+    strip_think_tags,
+)
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
 
@@ -568,7 +572,7 @@ class WechatChannel(BaseChannel):
         if self._is_reasoning_chunk(msg):
             return
 
-        content_str = self._strip_think_tags(self._extract_content(msg)).strip()
+        content_str = strip_think_tags(self._extract_content(msg)).strip()
         if not content_str or self._is_thinking_only_content(content_str):
             logger.debug("WechatChannel 消息内容为空或仅为思考占位，跳过发送")
             return
@@ -610,7 +614,7 @@ class WechatChannel(BaseChannel):
             self._delta_leading.pop(sk, None)
 
     async def _send_text_chunks_to_user(self, msg: Message, text: str) -> None:
-        cleaned = self._strip_think_tags(str(text or "")).strip()
+        cleaned = strip_think_tags(str(text or "")).strip()
         if not cleaned or self._is_thinking_only_content(cleaned):
             return
         user_id = self._extract_platform_user_id(msg)
@@ -734,7 +738,7 @@ class WechatChannel(BaseChannel):
         )
 
     def _stash_overflow_content(self, msg: Message, content: str) -> None:
-        text = self._strip_think_tags(str(content or "")).strip()
+        text = strip_think_tags(str(content or "")).strip()
         if not text or self._is_thinking_only_content(text):
             return
         sk = self._message_session_key(msg)
@@ -810,25 +814,8 @@ class WechatChannel(BaseChannel):
             )
 
     @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        if not text or not isinstance(text, str):
-            return text or ""
-        text = re.sub(
-            r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL
-        )
-        text = re.sub(r"<think>[\s\S]*$", "", text, flags=re.IGNORECASE | re.DOTALL)
-        return text
-
-    @staticmethod
     def _is_thinking_only_content(text: str) -> bool:
-        if not text or not isinstance(text, str):
-            return True
-        t = text.strip()
-        if not t:
-            return True
-        if re.match(r"^[.．。…\s]+$", t):
-            return True
-        return False
+        return is_thinking_only_content(text)
 
     @staticmethod
     def _is_reasoning_chunk(msg: Message) -> bool:

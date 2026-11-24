@@ -25,6 +25,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Mapping, TypedDict
 
+from agent_gateway.common.retry import jittered_delay
+
 TRACE_ID_HEADER = "X-Trace-Id"
 AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
 _TRACE_ID_MAX_LEN = 128
@@ -376,6 +378,13 @@ class SandboxInfo:
 
 class YuanrongAgentApiError(RuntimeError):
     """Raised when YuanRong /api/agent returns a non-success response."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        # Preserve the HTTP status so callers can distinguish e.g. a 429
+        # (definitely rejected, safe to retry before any sandbox exists)
+        # from an uncertain create result.
+        self.status_code = status_code
 
 
 class YuanrongAgentRequestNotSentError(YuanrongAgentApiError):
@@ -884,6 +893,7 @@ class YuanrongFrontendAgentClient:
                 if remaining <= 0:
                     raise_wait_timeout()
                 sleep_for = min(interval_s, remaining)
+                delay = min(jittered_delay(sleep_for), max(0.0, remaining))
                 logger.debug(
                     "[YuanrongFrontendAgentClient] GET not running yet: "
                     "instance_id=%s attempt=%s status=%s sleep=%.1fs last_error=%s "
@@ -891,11 +901,11 @@ class YuanrongFrontendAgentClient:
                     normalized_id,
                     attempt,
                     status or "empty",
-                    sleep_for,
+                    delay,
                     type(last_error).__name__ if last_error is not None else "-",
                     poll_trace_id,
                 )
-                await asyncio.sleep(sleep_for)
+                await asyncio.sleep(delay)
 
     async def upload_agent_file(
         self,
@@ -1545,17 +1555,20 @@ class YuanrongFrontendAgentClient:
             parsed = json.loads(body) if body else {}
         except Exception as exc:
             raise YuanrongAgentApiError(
-                f"invalid agent API response: status={status}, body={body!r}"
+                f"invalid agent API response: status={status}, body={body!r}",
+                status_code=status,
             ) from exc
         if not isinstance(parsed, dict):
             raise YuanrongAgentApiError(
-                f"invalid agent API response shape: status={status}, body={body!r}"
+                f"invalid agent API response shape: status={status}, body={body!r}",
+                status_code=status,
             )
         code = parsed.get("code")
         if not (200 <= status < 300) or code not in (200, "200"):
             message = parsed.get("message") or parsed.get("status") or body
             raise YuanrongAgentApiError(
-                f"agent API failed: http_status={status}, code={code}, message={message!r}"
+                f"agent API failed: http_status={status}, code={code}, message={message!r}",
+                status_code=status,
             )
         return parsed
 

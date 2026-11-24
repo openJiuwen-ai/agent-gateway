@@ -234,7 +234,8 @@ class TraceOperation:
             self._event_count += 1
             allowed = {"elapsed_ms", "reason", "outcome", "status", "status_code", "count", "size", "duration_ms",
                        "lock_wait_ms", "send_ms", "queue_wait_ms", "response_wait_ms",
-                       "response_received", "error_type", "instance_id", "attempt"}
+                       "response_received", "error_type", "instance_id", "attempt",
+                       "from_status", "to_status", "agent_type"}
             attrs = {
                 k: v for k, v in (attributes or {}).items()
                 if k in allowed and isinstance(v, (str, int, float, bool))

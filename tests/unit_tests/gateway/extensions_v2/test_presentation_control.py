@@ -31,6 +31,12 @@ def setup_control(timeout=0.1):
     return control, runtime, record, send, params
 
 
+def test_query_only_returns_candidate_identity_and_title():
+    control, _, _, _, _ = setup_control()
+    candidate = control.query({})["payload"]["candidates"][0]
+    assert set(candidate) == {"connection_id", "package_id", "instance_key", "revision", "title"}
+
+
 @pytest.mark.asyncio
 async def test_start_only_succeeds_after_same_connection_receipt():
     control, _, _, send, params = setup_control()
@@ -92,6 +98,19 @@ async def test_timeout_and_failed_delivery_do_not_retry():
     assert (await control.start(params))["payload"]["status"] == "unknown"
     send.assert_awaited_once()
     assert not control.pending
+
+
+@pytest.mark.asyncio
+async def test_close_invalidation_cannot_release_another_instance_or_revision():
+    control, _, record, _, params = setup_control()
+    task = asyncio.create_task(control.start(params))
+    await asyncio.sleep(0)
+    other = RenderTarget("", "application.presentation", "test.forms", "capsule", "application", "window-1")
+    control.invalidate(target=other, revision=params["revision"])
+    control.invalidate(target=record.target, revision=params["revision"] - 1)
+    assert not task.done()
+    control.invalidate(target=record.target, revision=params["revision"])
+    assert (await task)["payload"]["status"] == "unknown"
 
 
 @pytest.mark.asyncio

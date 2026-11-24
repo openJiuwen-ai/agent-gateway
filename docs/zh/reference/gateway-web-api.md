@@ -1797,6 +1797,10 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 ### 10.1 配置与模型
 
+个人版不支持 `GATEWAY_AGENT_CLIENT_MODE=runtime`；请不设置该变量，使用默认的 WebSocket 客户端。显式选择 runtime 会在扩展加载前报错，不会回落到 WebSocket。
+
+**企业版 runtime 管理目标与升级**：无会话路由的管理请求（例如 `initialize`、`agent.reload_config`）依次使用 `GATEWAY_RUNTIME_DEFAULT_HTTP_BASE`、`AGENT_SERVER_HOST` / `AGENT_HTTP_PORT` 指定的 Agent HTTP 地址。它们不使用 WebSocket 端口。升级前若依赖未配置环境变量时的 `127.0.0.1:8766` 默认值，同机部署需显式设置 `GATEWAY_RUNTIME_COLOCATED_AGENT=1`，或配置 `GATEWAY_RUNTIME_DEFAULT_HTTP_BASE=http://127.0.0.1:8766`；独立 Pod 部署必须配置可达的 Agent HTTP 地址。未配置目标时，流式和非流式请求均在发送前报告 `SERVICE_UNAVAILABLE`，不会猜测目标或回落到 WebSocket。此规则仅用于 runtime 的无会话管理请求，不改变其它客户端的默认地址。
+
 **分发契约（A4g/A5）**：`config.get/set/save_all/validate_model`、`models.*`、`model_groups.*`、`multimodal.*`（6 个，§10.1）、`session.selection.set` 经 `_register_config_proxy` 注册——**个人版统一经 E2A 在目标 AgentServer 执行，不回落网关本地**；企业版仅 RuntimeRouted/无 client/legacy 共享目录走本地 handler（`app_web_handlers.py:5714-5759`）。`config.moa_status` 与 `models.refresh_status` **恒 E2A**（无本地 handler）。`vendors.*`、`openai_account.*`、`connection.status`、`locale.*` 为网关本地 handler。转发前删客户端传入的 `_auth_session` 键、改注入连接登录会话（`:5735-5746`）。企业版写保护（WS 与 HTTP 双入口共用 `invoke.is_enterprise_write_forbidden` 统一 guard，`invoke.py:79`）：`config.set/save_all`、`models.replace_all/save/remove/set_active`、`multimodal.models.upsert/delete`、`multimodal.tools.update`、`multimodal.config.apply` → `FORBIDDEN "企业版配置由管理面统一下发"`（multimodal 读接口 list/get 放行）。
 
 #### config.get

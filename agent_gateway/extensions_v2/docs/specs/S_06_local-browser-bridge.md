@@ -1,6 +1,6 @@
 # 浏览器客户端能力接入规约
 
-最近修订：2026-11-12。状态：已实现通用接入。
+最近修订：2026-11-23。状态：已实现通用接入。
 关联规约：[Gateway 运行时](S_01_gateway-extension-runtime.md)、[渲染服务](S_02_ui-render.md)。
 
 ## 范围
@@ -9,7 +9,7 @@ Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分�
 
 - **应用级 UI 包**：至少一项 `web.slot.contribution` 指向 Gateway 应用级槽位（`application.entry`、
   `application.sidebar.footer`、`application.background`、`application.splash`、`application.settings`、
-  `application.presentation`）的活动包。`application.settings` 与 AgentServer 共用，Gateway 只认领其包声明的配置项实例（S_10 第 2 节）。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
+  `application.presentation`、`application.appearance`）的活动包。`application.settings` 与 AgentServer 共用，Gateway 只认领其包声明的配置项实例（S_10 第 2 节）。取得激活代次、所声明槽位的 `ui.ready` 与交互分派、`ops.ui.asset_url`
   及本包素材，并按激活代次拦截迟到调用。不需要声明 `client`。
 - **客户端能力包**：声明 `client` 的应用级 UI 包。安装并激活后在上述能力之外直接具备请求绑定、
   `client.declarations` 与 `ops.client.*`（浏览器存储写删与页面刷新）；无需额外权限声明、Gateway 授权配置或确认，
@@ -22,7 +22,7 @@ Gateway 包可声明 `ui.items` 及 `client.requestBindings`。两类能力分�
 
 ## 请求分派
 
-除显示型槽位的生命周期帧外（[S_09 第 3 节](S_09_startup-splash.md)：`webui.splash.providers` 以及 `application.background`、`application.splash` 的 `ui.ready` / `ui.closed`），所有主 WebSocket 请求先触发 `gateway.request`，包括 `webui.dispatch`。USER 插件先处理请求策略：
+除显示型槽位的生命周期帧外（[S_09 第 3 节](S_09_startup-splash.md)：`webui.splash.providers` 以及 `application.background`、`application.splash` 的 `ui.ready` / `ui.closed`，`application.appearance` 的 `ui.ready`），所有主 WebSocket 请求先触发 `gateway.request`，包括 `webui.dispatch`。USER 插件先处理请求策略：
 返回 `deny` 或 `consume` 时按原路由契约应答；调用 `next_handler(event)` 时，客户端能力包的
 entry/footer 交互进入 BUILTIN 浏览器分派器，再触发对应 `ui.*` 事件并返回通用回执。
 不属于本 Gateway 应用级 UI 包的目标继续已有请求链。未指定 `package_id` 的
@@ -70,7 +70,7 @@ HTTP 消费路径是 **fail-closed**：扩展链抛错、超时（5 秒）或返
 - `ops.ui.asset_url(path, source="data")` 生成 `/extension-assets/<package_id>/<activation_generation>.data/<path>`，
   指向包数据目录（[S_01 第 3.1 节](S_01_gateway-extension-runtime.md)）中 `public/` 内的普通文件；
   `source` 只接受 `package`（默认）与 `data`。代次、越界与响应头规则同包内素材。
-- `ops.appearance.apply(appearance)` 供应用级 UI 包为当前连接提交或撤销受控外观，接口与生命周期见 [S_08](S_08_appearance.md)。
+- `ops.appearance.apply(appearance)` 供应用级 UI 包为当前连接设置或撤回自己的外观部件，接口、层级与生命周期见 [S_08](S_08_appearance.md)。
 - Web UI 静态服务将 `/extension-assets/` 请求按原路径转发到 WebChannel HTTP 服务，与 Vite 开发服务保持一致。
   GET/HEAD 保留后端状态码、内容类型和缓存策略；无效或过期素材返回后端的 404，不返回 SPA HTML。
   打包版前端由 `channels/web/app_web.py` 将 `/extension-assets/` 与 `/api` 一同转发到 WebChannel，响应按块写回。

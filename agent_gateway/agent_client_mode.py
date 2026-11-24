@@ -31,13 +31,28 @@ def is_runtime_agent_client(client: Any) -> bool:
 
 
 def validate_agent_client_configuration(config: dict[str, Any], *, mode: str) -> None:
-    """在扩展加载前拒绝 Runtime 与配置选择的其他路由器冲突。"""
+    """在扩展加载前拒绝不成立/互相冲突的客户端选择。
+
+    两类错误都在启动期暴露，而不是等第一个请求才失败：
+    1. 个人版选了 runtime —— 个人版没有 config.*/models.* 的南向端点，
+       配置面板必然不可用；
+    2. runtime 与配置里的 router 客户端同时命中 —— 谁后加载谁生效。
+    """
     gateway = config.get("gateway") or {}
     selected = str((gateway.get("agent_client") or {}).get("type") or "").strip().lower()
-    if mode == "runtime" and selected in ROUTER_CLIENT_TYPES:
-        raise AgentClientModeError(
-            f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
-        )
+    if mode == "runtime":
+        if selected in ROUTER_CLIENT_TYPES:
+            raise AgentClientModeError(
+                f"GATEWAY_AGENT_CLIENT_MODE=runtime conflicts with gateway.agent_client.type={selected}"
+            )
+        from agent_gateway.enterprise.edition import is_enterprise
+
+        if not is_enterprise():
+            raise AgentClientModeError(
+                "GATEWAY_AGENT_CLIENT_MODE=runtime 仅支持企业版，启动失败。"
+                "个人版没有 config.*/models.* 的南向端点，配置面板会不可用；"
+                "请改用默认 websocket 模式（不设置该环境变量）。"
+            )
 
 
 def resolve_agent_server_client(

@@ -105,6 +105,7 @@ async def test_idle_guard_rejections_create_no_trace_and_preserve_parent(monkeyp
     client._agent_manager = SimpleNamespace(
         key_fields=["user_id", "agent_type"],
         list_keys=AsyncMock(return_value=[("user", "test")]),
+        list_failed_agents=AsyncMock(return_value=[]),
         pop_if_idle=AsyncMock(return_value=None),
     )
     try:

@@ -26,8 +26,29 @@ _DEBOUNCE_SECONDS = 2.0
 _config_update_handle: asyncio.TimerHandle | None = None
 
 
+def _invalidate_gateway_enterprise_config_caches() -> None:
+    """失效 Gateway 进程内企业配置缓存。
+
+    Manager 写库后立刻清掉本进程 ``effective.loader`` 的 TTL 缓存，
+    避免后续读配置仍命中旧数据。
+    """
+    try:
+        from agent_gateway.enterprise.config.effective.loader import (
+            invalidate_enterprise_config_caches,
+        )
+
+        invalidate_enterprise_config_caches()
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "[ManagerConfigReceiver] invalidate gateway enterprise config cache failed",
+            exc_info=True,
+        )
+
+
 def trigger_runtime_config_update() -> None:
-    """企业配置变更：防抖后请求 agent-runtime 强制刷新（日落老 Pod + 按新配置重建）。"""
+    """企业配置变更：先失效本进程缓存，再防抖请求 agent-runtime 强制刷新（日落老 Pod + 按新配置重建）。"""
+    # 必须在任何 early-return 之前：即便 Runtime URL 未配置，本进程读配置也要看到新库。
+    _invalidate_gateway_enterprise_config_caches()
     base = _read_env("GATEWAY_RUNTIME_MANAGER_URL")
     if not base:
         try:

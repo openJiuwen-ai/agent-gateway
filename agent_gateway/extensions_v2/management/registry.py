@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
@@ -31,7 +32,12 @@ from openjiuwen.core.extension.schema.records import ActivePackageRecord
 from openjiuwen.core.extension.selection import evaluate_reload, resolve_install_set
 
 from agent_gateway.common.system_plugin_recovery import SystemPluginRecovery
-from agent_gateway.extensions_v2.loader import load_gateway_package
+from agent_gateway.extensions_v2.host_compat import numeric_host_version
+from agent_gateway.extensions_v2.loader import (
+    ensure_package_supports_host,
+    load_gateway_package,
+    package_supports_host,
+)
 from agent_gateway.extensions_v2.manifest import DOMAIN_AGENT_SERVER, DOMAIN_GATEWAY
 
 if TYPE_CHECKING:
@@ -96,6 +102,8 @@ class GatewayPackageManager:
         self._recovery_data_dir = recovery_data_dir
         self._inited = False
         self._stopping = False
+        self._startup_loaded = False
+        self._accepted_roots: set[Path] = set()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -113,8 +121,15 @@ class GatewayPackageManager:
     async def load_installed(self) -> list[ActivationReport]:
         """Start the Gateway packages selected by the shared startup plan."""
 
-        if self._report is None:
+        if self._report is None or self._startup_loaded:
             return []
+        # Snapshot the roots present when the host starts: a directory left
+        # behind by an interrupted copy/unpack must not be reported as an
+        # accepted package before its install operation succeeds.
+        roots = tuple(root.resolve() for root in self._store.list_installed())
+        self._startup_loaded = True
+        self._accepted_roots.update(roots)
+        self._prefer_managed_roots()
         plan = await self._report.prepare_startup(self._store)
         reports: list[ActivationReport] = []
         for manifest in plan.ordered:
@@ -123,6 +138,13 @@ class GatewayPackageManager:
             root = self._store.version_dir(manifest.package_id, manifest.version)
             if not has_manifest(root):
                 root = self._find_root(manifest.package_id, manifest.version) or root
+            if root.resolve() not in self._accepted_roots:
+                logger.warning(
+                    "[GatewayExtensions] skip %s %s: root outside the startup snapshot",
+                    manifest.package_id,
+                    manifest.version,
+                )
+                continue
             reports.append(await self._install_manifest(manifest, root, startup=True))
         await self._report.mark_started()
         return reports
@@ -149,7 +171,13 @@ class GatewayPackageManager:
         """Every installed package in the shared store, both domains."""
 
         found: list[InstalledPackage] = []
-        for root in self._store.list_installed():
+        # Before the startup plan has been read (for example a manager created
+        # outside the runtime) the store is the only source of truth; after it
+        # the snapshot filters directories that never completed an install.
+        roots = sorted(self._accepted_roots) if self._startup_loaded else self._store.list_installed()
+        for root in roots:
+            if not root.is_dir() or not has_manifest(root):
+                continue
             try:
                 manifest = load_manifest(root, require_domain=False)
             except ExtensionFailure:
@@ -173,6 +201,79 @@ class GatewayPackageManager:
             if package.domain == DOMAIN_GATEWAY
             and (package_id is None or package.package_id == package_id)
         ]
+
+    def active_records(self) -> tuple[Any, ...]:
+        """Facts of the packages currently published on this runtime."""
+
+        return self._runtime.active_package_records()
+
+    def register_managed_root(self, package_id: str, version: str, root: Path) -> Path:
+        """Let Core load one package root that lives inside a bundle copy."""
+
+        registered = self._store.register_managed_root(package_id, version, root)
+        # A member claim must resolve to this root, not to a same-version
+        # standalone copy that the startup snapshot also accepted.
+        self._accepted_roots.add(registered.resolve())
+        self._accepted_roots.discard(
+            (Path(self.install_dir) / package_id / version).resolve()
+        )
+        return registered
+
+    def accept_version(self, package_id: str, version: str) -> None:
+        """Accept a standalone copy the AgentServer wrote after this host's startup snapshot."""
+
+        # A standalone claim must not resolve to the member root registered for
+        # the same id/version. Unregistering it makes version_dir() and
+        # _find_root() agree on the standard copy.
+        managed = self._store.version_dir(package_id, version)
+        if self._store.is_managed_root(managed):
+            self._store.unregister_managed_root(package_id, version)
+            self._accepted_roots.discard(managed.resolve())
+        root = self.install_dir / package_id / version
+        if root.is_dir() and has_manifest(root):
+            self._accepted_roots.add(root.resolve())
+
+    def unregister_managed_root(
+        self, package_id: str, version: str, *, root: Path | None = None,
+    ) -> None:
+        candidate = (
+            Path(root).expanduser().resolve()
+            if root is not None
+            else self._store.version_dir(package_id, version)
+        )
+        managed = self._store.is_managed_root(candidate)
+        self._store.unregister_managed_root(package_id, version, root=root)
+        if managed:
+            self._accepted_roots.discard(candidate)
+
+    def _prefer_managed_roots(self) -> None:
+        """Keep one accepted root per id/version, preferring a registered member.
+
+        The startup snapshot accepts standard copies and registered member
+        roots. When both exist for the same id/version, the member claim must
+        resolve to the member root, never to the standalone copy.
+        """
+
+        managed: dict[tuple[str, str], Path] = {}
+        for root in self._accepted_roots:
+            if not self._store.is_managed_root(root):
+                continue
+            try:
+                manifest = load_manifest(root, require_domain=False)
+            except ExtensionFailure:
+                continue
+            managed[(manifest.package_id, manifest.version)] = root
+        if not managed:
+            return
+        for root in list(self._accepted_roots):
+            if self._store.is_managed_root(root):
+                continue
+            try:
+                manifest = load_manifest(root, require_domain=False)
+            except ExtensionFailure:
+                continue
+            if (manifest.package_id, manifest.version) in managed:
+                self._accepted_roots.discard(root)
 
     def owns(self, package_id: str) -> bool:
         """True when ``package_id`` has a Gateway copy in the shared store."""
@@ -293,16 +394,20 @@ class GatewayPackageManager:
 
     async def enable_version(
         self, package_id: str, version: str, *, source: Path | None = None,
+        skip_dependencies: bool = False,
     ) -> ActivationReport:
         """Load one stored version and keep every other version on disk, unloaded.
 
         ``source`` installs a package copy that is not in the store yet; a stored
         version is re-activated in place. The target is persisted as enabled and
-        the previously active version as disabled.
+        the previously active version as disabled. Bundle members pass
+        ``skip_dependencies`` because the container layer already checked them.
         """
 
         async with self._lock:
-            report = await self._enable_version_locked(package_id, version, source=source)
+            report = await self._enable_version_locked(
+                package_id, version, source=source, skip_dependencies=skip_dependencies,
+            )
         _record_recovery_change(
             self.install_dir, self._recovery_data_dir, "enable", (report,),
         )
@@ -310,18 +415,28 @@ class GatewayPackageManager:
 
     async def _enable_version_locked(
         self, package_id: str, version: str, *, source: Path | None = None,
+        skip_dependencies: bool = False,
     ) -> ActivationReport:
         """``enable_version`` body; callers already hold ``self._lock``."""
 
         active = self._runtime.active_record(package_id)
         if active is not None and active.version == version and source is None:
             return _success(package_id, "enable", active=active)
+        root = self._find_root(package_id, version)
+        if source is None and root is not None:
+            # Refuse an incompatible stored copy before the running version is disabled.
+            try:
+                ensure_package_supports_host(root)
+            except ExtensionFailure as exc:
+                return _failure(package_id, "enable", exc.as_error())
+            except Exception:
+                # A malformed manifest is reported by the normal load below.
+                pass
         previous = active.version if active is not None else ""
         if previous:
             report = await self._disable_version(package_id, previous)
             if report.status != "SUCCESS":
                 return report
-        root = self._find_root(package_id, version)
         if source is not None:
             if self._report is None:
                 report = await self._legacy_install_path(Path(source), allow_existing=True)
@@ -344,6 +459,7 @@ class GatewayPackageManager:
                     root,
                     load_manifest(root, require_domain=True),
                     True,
+                    skip_dependencies=skip_dependencies,
                 )
         else:
             report = _failure(
@@ -357,7 +473,9 @@ class GatewayPackageManager:
             )
         if report.status != "SUCCESS":
             if previous:
-                await self._restore_version(package_id, previous)
+                await self._restore_version(
+                    package_id, previous, skip_dependencies=skip_dependencies,
+                )
             return report
         if self._report is not None and self._runtime.active_record(package_id) is None:
             stored = self._find_root(package_id, version)
@@ -366,10 +484,13 @@ class GatewayPackageManager:
                     stored,
                     load_manifest(stored, require_domain=True),
                     True,
+                    skip_dependencies=skip_dependencies,
                 )
                 if report.status != "SUCCESS":
                     if previous:
-                        await self._restore_version(package_id, previous)
+                        await self._restore_version(
+                            package_id, previous, skip_dependencies=skip_dependencies,
+                        )
                     return report
         return report
 
@@ -385,7 +506,9 @@ class GatewayPackageManager:
             return await _run_to_end(self._set_enabled_reported(root, manifest, False))
         return await self._disable(root, manifest)
 
-    async def _restore_version(self, package_id: str, version: str) -> None:
+    async def _restore_version(
+        self, package_id: str, version: str, *, skip_dependencies: bool = False,
+    ) -> None:
         """Best-effort return to the version that was active before a failed switch."""
 
         try:
@@ -396,7 +519,9 @@ class GatewayPackageManager:
             if self._report is None:
                 await self._legacy_install_path(root, allow_existing=True)
             else:
-                await self._set_enabled_reported(root, manifest, True)
+                await self._set_enabled_reported(
+                    root, manifest, True, skip_dependencies=skip_dependencies,
+                )
         except Exception:  # noqa: BLE001 - keep the original switch failure
             logger.warning("[GatewayExtensions] failed to restore %s@%s", package_id, version, exc_info=True)
 
@@ -404,8 +529,19 @@ class GatewayPackageManager:
         """Keep an installed Gateway package while changing its loading state."""
 
         async with self._lock:
-            root = self._highest(package_id)
+            root = self._highest(package_id, compatible_only=enabled)
             if root is None:
+                if enabled:
+                    installed = self.gateway_installed(package_id)
+                    if installed:
+                        # Installed but excluded by this host: report why instead of "not installed".
+                        newest = max(installed, key=lambda package: _version_key(package.version)).root
+                        try:
+                            ensure_package_supports_host(newest)
+                        except ExtensionFailure as exc:
+                            return _failure(package_id, "enable", exc.as_error())
+                        except Exception:  # noqa: BLE001 - a malformed manifest is reported by the load below
+                            pass
                 return _failure(
                     package_id,
                     "enable" if enabled else "disable",
@@ -446,6 +582,12 @@ class GatewayPackageManager:
             )
         return report
 
+    async def disable_version(self, package_id: str, version: str) -> ActivationReport:
+        """Release one stored version without deleting its copy."""
+
+        async with self._lock:
+            return await self._disable_version(package_id, version)
+
     async def uninstall(self, package_id: str, version: str = "") -> ActivationReport:
         """Release the handlers and delete one version or every installed copy.
 
@@ -468,6 +610,89 @@ class GatewayPackageManager:
                 (report,),
             )
         return report
+
+    async def remove_standalone_copy(self, package_id: str, version: str) -> ActivationReport:
+        """Delete a standalone copy that this host is not running.
+
+        The loaded instance of the same id may be a bundle member, so the
+        runtime is left untouched and ``remove_installed`` is not used: core
+        resolves it through ``version_dir`` and would target the managed root.
+        """
+
+        root = Path(self.install_dir) / package_id / version
+        if not root.exists() and not root.is_symlink():
+            return _success(
+                package_id, "uninstall", active=self._runtime.active_record(package_id),
+            )
+        if self._report is None:
+            try:
+                await asyncio.to_thread(
+                    self._remove_standalone_directory, package_id, version,
+                )
+            except ExtensionFailure as exc:
+                return _failure(package_id, "uninstall", exc.as_error())
+            except OSError as exc:
+                return _failure(
+                    package_id,
+                    "uninstall",
+                    operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+                )
+            return _success(
+                package_id, "uninstall", active=self._runtime.active_record(package_id),
+            )
+        try:
+            manifest = load_manifest(root, require_domain=False)
+        except ExtensionFailure as exc:
+            return _failure(package_id, "uninstall", exc.as_error())
+        service = self._report
+        token: PackageOperationToken | None = None
+        report: ActivationReport | None = None
+        try:
+            token = await service.begin_operation(manifest, "uninstall")
+            await service.validate_operation(token, manifest, "uninstall")
+            with service.operation_scope(token):
+                await run_file_operation(
+                    lambda: self._remove_standalone_directory(package_id, version)
+                )
+            report = _success(
+                package_id, "uninstall", active=self._runtime.active_record(package_id),
+            )
+        except ExtensionFailure as exc:
+            report = _failure(package_id, "uninstall", exc.as_error())
+        except Exception as exc:  # noqa: BLE001 - a local failure is a report, not a crash
+            logger.exception("[GatewayExtensions] cannot remove the copy of %s/%s", package_id, version)
+            report = _failure(
+                package_id,
+                "uninstall",
+                operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
+            )
+        finally:
+            if token is not None:
+                await _finish_operation(
+                    service,
+                    token,
+                    report=report,
+                    active=self._runtime.active_record(package_id),
+                    cleanup_pending=False,
+                )
+        return report or _failure(
+            package_id,
+            "uninstall",
+            operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason="package copy was not removed"),
+        )
+
+    async def remove_bundle_version(self, bundle_id: str, version: str) -> str:
+        """Delete one released bundle copy; return an error message or ``""``."""
+
+        try:
+            await asyncio.to_thread(
+                self._remove_standalone_directory, bundle_id, version,
+            )
+        except ExtensionFailure as exc:
+            return exc.message
+        except OSError as exc:
+            return str(exc)
+        return ""
 
     async def _uninstall_version(self, package_id: str, version: str) -> ActivationReport:
         """Delete one version copy; every other stored version keeps its files."""
@@ -717,6 +942,8 @@ class GatewayPackageManager:
                 )
             created = root != Path(source_root).resolve()
             report = await self._publish_manifest(manifest, root, "install")
+            if report.status == "SUCCESS":
+                self._accepted_roots.add(root.resolve())
             if report.status != "SUCCESS" and created and self._runtime.active_record(
                 manifest.package_id
             ) is None:
@@ -754,7 +981,8 @@ class GatewayPackageManager:
         )
 
     async def _set_enabled_reported(
-        self, root: Path, manifest: Manifest, enabled: bool,
+        self, root: Path, manifest: Manifest, enabled: bool, *,
+        skip_dependencies: bool = False,
     ) -> ActivationReport:
         assert self._report is not None
         service = self._report
@@ -765,7 +993,9 @@ class GatewayPackageManager:
         token: PackageOperationToken | None = None
         report: ActivationReport | None = None
         try:
-            token = await service.begin_operation(target, admission)
+            token = await service.begin_operation(
+                target, admission, skip_dependencies=skip_dependencies,
+            )
             if enabled:
                 await service.wait_for_dependencies(token)
             await service.validate_operation(token, target, admission)
@@ -1054,6 +1284,8 @@ class GatewayPackageManager:
         previous = self._runtime.active_record(manifest.package_id)
         try:
             await self._switch(load_gateway_package(root))
+        except ExtensionFailure as exc:
+            return _failure(manifest.package_id, operation, exc.as_error())
         except Exception as exc:  # noqa: BLE001 - one bad package must surface as a report
             logger.exception(
                 "[GatewayExtensions] cannot %s %s", operation, manifest.package_id
@@ -1127,6 +1359,7 @@ class GatewayPackageManager:
             # A disabled copy is kept but never published.
             if self._runtime.is_active_package(package_id):
                 await self._disable(root, manifest)
+            self._accepted_roots.add(root.resolve())
             return _success(package_id, "install", active=None)
         package = None
         try:
@@ -1149,6 +1382,7 @@ class GatewayPackageManager:
                 "install",
                 operation_error(StatusCode.EXTENSION_LOAD_FAILED, reason=str(exc)),
             )
+        self._accepted_roots.add(root.resolve())
         return _success(
             package_id,
             "install",
@@ -1244,8 +1478,11 @@ class GatewayPackageManager:
 
     # ── internals ─────────────────────────────────────────────────────────
 
-    def _highest(self, package_id: str) -> Path | None:
-        versions = self.gateway_installed(package_id)
+    def _highest(self, package_id: str, *, compatible_only: bool = True) -> Path | None:
+        versions = [
+            package for package in self.gateway_installed(package_id)
+            if not compatible_only or package_supports_host(package.root)
+        ]
         if not versions:
             return None
         return max(versions, key=lambda package: _version_key(package.version)).root
@@ -1289,6 +1526,14 @@ class GatewayPackageManager:
         return _success(package_id, "disable", active=None)
 
     def _find_root(self, package_id: str, version: str) -> Path | None:
+        managed = self._store.version_dir(package_id, version)
+        if self._store.is_managed_root(managed):
+            # The id/version claim belongs to a bundle member registered for
+            # this host. A broken member must fail instead of silently loading
+            # a same-version standalone copy.
+            if managed.is_dir() and has_manifest(managed):
+                return managed
+            return None
         for package in self.gateway_installed(package_id):
             if package.version == version:
                 return package.root
@@ -1333,6 +1578,57 @@ class GatewayPackageManager:
                 domain=DOMAIN_GATEWAY,
             )
         return None
+
+    def _remove_standalone_directory(self, package_id: str, version: str) -> None:
+        """Delete exactly ``<store>/<id>/<version>``, never a registered member root."""
+
+        for part in (package_id, version):
+            if not part or part in {".", ".."} or "/" in part or "\\" in part:
+                raise ExtensionFailure(
+                    StatusCode.EXTENSION_INSTALL_COPY_FAILED,
+                    reason="refusing to delete a package path with invalid components",
+                )
+        store = Path(self.install_dir).resolve()
+        package_dir = store / package_id
+        target = package_dir / version
+        unsafe = (
+            target.parent.parent != store
+            or package_dir.is_symlink()
+            or target.is_symlink()
+        )
+        if unsafe:
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_INSTALL_COPY_FAILED,
+                reason="refusing to delete a path outside the install store",
+            )
+        if not target.exists():
+            return
+        if not target.is_dir() or not has_manifest(target):
+            raise ExtensionFailure(
+                StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED,
+                package_id=package_id,
+                reason=f"install store has no {package_id} {version}",
+            )
+        for entry in target.rglob("*"):
+            if entry.is_symlink():
+                raise ExtensionFailure(
+                    StatusCode.EXTENSION_INSTALL_COPY_FAILED,
+                    reason=f"symbolic links are not allowed in a package: {entry}",
+                )
+        for attempt in range(1, _DELETE_ATTEMPTS + 1):
+            try:
+                shutil.rmtree(target)
+                break
+            except FileNotFoundError:
+                break
+            except OSError:
+                if attempt == _DELETE_ATTEMPTS:
+                    raise
+                time.sleep(_DELETE_BACKOFF_SECONDS * attempt)
+        try:
+            package_dir.rmdir()
+        except OSError:
+            pass
 
     def _remove_with_retry(
         self, package_id: str, version: str, *, missing_ok: bool = False,
@@ -1459,9 +1755,6 @@ def _record_recovery_change(
 
 
 def _host_version() -> str | None:
-    try:
-        from importlib.metadata import version
+    """``MAJOR.MINOR.PATCH`` of the running JiuwenSwarm host, for Core's requires.host checks."""
 
-        return version("agent-gateway")
-    except Exception:  # noqa: BLE001 - a source checkout may not be installed
-        return None
+    return numeric_host_version()

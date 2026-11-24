@@ -793,34 +793,29 @@ class XiaoyiChannel(BaseChannel):
             append = False
             last_chunk = True
             final = not hold_team_task
+            # 非流式：payload 即完整消息，没有需要续接的历史片段
+            previous_text = ""
         else:
-            # 流式模式：按事件类型计算增量与是否结束
-            is_delta = msg.event_type == EventType.CHAT_DELTA
+            # 流式模式：按事件类型计算是否结束
             last_chunk = msg.event_type == EventType.CHAT_FINAL
             is_final = msg.payload.get("is_complete", False)
             last_chunk = True if is_final else last_chunk
 
-            # 获取之前发送的文本
-            previous_text = self._accumulated_texts.get(session_id, "")
-
-            # 累积当前文本
-            self._accumulated_texts[session_id] = content
-
-            # 计算增量文本
-            if is_delta:
-                incremental_text = content[len(previous_text):]
-            else:
-                incremental_text = content
-
             # 在消息流中，总是使用 append=true, isFinal=false
             append = True
-            final = False
-            last_chunk = last_chunk
             final = bool(is_final and not hold_team_task)
 
-        # Get accumulated text for this session (for push notification)
-        accumulated_text = self._accumulated_texts.get(session_id, "")
-        self._accumulated_texts[session_id] = content
+            # 取上一段已发送的文本，必须在写回累积值之前读取
+            previous_text = self._accumulated_texts.get(session_id, "") if session_id else ""
+
+        # payload.content 是本次的文本片段（与 _send_team、飞书 _cardkit_buffers
+        # 的增量拼接语义一致），按片段累积，供后台任务完成推送取摘要使用。
+        # session_id 为空时不做累积：这类消息没有回发地址，也永远走不到下面的
+        # final 清理分支（那里要求 session_id 为真），写进空 key 只会在字典里
+        # 留下永不释放的残留。
+        accumulated_text = previous_text + content if append else content
+        if session_id:
+            self._accumulated_texts[session_id] = accumulated_text
 
         # Send to all active connections
         for url_key, ws in self._ws_connections.items():
@@ -1541,6 +1536,9 @@ class XiaoyiChannel(BaseChannel):
                 key for key in self._team_task_holds
                 if key[0] not in {top_session_id, conversation_id}
             }
+            # 同一套"新请求覆盖旧状态"的约定：上一轮若被中断（无 final / error），
+            # 残留的累积文本会让下一轮的后台推送摘要取到上一轮内容。
+            self._reset_accumulated_text(top_session_id, conversation_id)
             if push_id:
                 self.config.push_id = push_id  # 内存态保持最新，供 cron 推送兜底
 
@@ -1821,10 +1819,22 @@ class XiaoyiChannel(BaseChannel):
             "marked_at": time.time(),
         }
 
+    def _reset_accumulated_text(self, *session_ids: str) -> None:
+        """丢弃指定会话残留的流式累积文本（跳过空 session_id）.
+
+        累积缓冲按 session 复用，只在该轮 final / error 时清理；取消、强制清理
+        或新一轮请求中断上一轮时，缓冲不会自然释放，残留文本会占据下一轮后台
+        推送摘要的开头（摘要取 ``accumulated_text[:30]``），因此这些入口显式重置。
+        """
+        for session_id in session_ids:
+            if session_id:
+                self._accumulated_texts.pop(session_id, None)
+
     def _force_cleanup_session(self, session_id: str) -> None:
         """强制清理会话."""
         self._sessions_marked_for_cleanup.pop(session_id, None)
         self._session_task_map.pop(session_id, None)
+        self._reset_accumulated_text(session_id)
 
     async def _handle_clear_context(self, message: dict[str, Any]) -> None:
         """处理清空上下文请求."""
@@ -1871,6 +1881,8 @@ class XiaoyiChannel(BaseChannel):
         self._clear_session_timeout(session_id)
         self._clear_session_waiting_for_push(session_id, task_id)
         self._mark_session_completed(session_id)
+        # 取消的轮次不会再收到 final / error，累积缓冲必须在这里释放
+        self._reset_accumulated_text(session_id)
 
     async def _send_text_response(
             self,

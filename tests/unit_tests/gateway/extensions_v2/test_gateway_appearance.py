@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Controlled appearance: validation, providers and package release (F_11)."""
+"""Controlled appearance: validation, layered parts and package release (F_11, F_16)."""
 
 import asyncio
 import json
@@ -13,17 +13,23 @@ from openjiuwen.core.events import Event, SessionContext
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig
 from agent_gateway.extensions_v2.loader import LoadedPackage
 from agent_gateway.extensions_v2.management.registry import GatewayPackageManager
+from agent_gateway.extensions_v2.models import GatewayRequestOutput
 from agent_gateway.extensions_v2.registry import HandlerDeclaration
 from agent_gateway.extensions_v2.runtime import GatewayRuntime
-from agent_gateway.extensions_v2.webui.appearance import validate_appearance
+from agent_gateway.extensions_v2.splash_hint import installed_appearance_providers
+from agent_gateway.extensions_v2.webui.appearance import APPEARANCE_FIELDS, validate_appearance
+from agent_gateway.extensions_v2.webui.host_settings import AppearanceOrder
 from agent_gateway.extensions_v2.webui.models import (
     RenderNode, RenderStatus, RenderTarget, UiActionInput, UiActionOutput, UiRenderInput,
 )
 
 THEME = "test.theme"
 OTHER = "test.other-theme"
+LOGO = "test.logo"
 PLAIN = "test.plain"
 BACKGROUND_UI = {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "slot": "application.background"}]}
+APPEARANCE_UI = {"apiVersion": 1, "items": [{"type": "web.slot.contribution", "id": "brand",
+                                             "slot": "application.appearance"}]}
 CASES = json.loads((
     Path(__file__).parent / "fixtures/gatewayAppearanceCases.json"
 ).read_text(encoding="utf-8"))
@@ -31,11 +37,14 @@ CASES = json.loads((
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["name"])
 def test_appearance_validation_matches_browser(case):
+    appearance = case["appearance"]
     if case["valid"]:
-        assert validate_appearance(case["appearance"]) == case["appearance"]
+        expected = case.get("normalized") or (
+            {"colors": appearance} if set(appearance) <= APPEARANCE_FIELDS else appearance)
+        assert validate_appearance(appearance) == expected
     else:
         with pytest.raises(ValueError):
-            validate_appearance(case["appearance"])
+            validate_appearance(appearance)
 
 
 def _channel():
@@ -77,9 +86,14 @@ class Theme:
         self.calls.clear()
         return UiActionOutput(accepted=True, status="ready")
 
-    def package(self, root: Path) -> LoadedPackage:
+    def package(self, root: Path, assets: dict[str, int] | None = None) -> LoadedPackage:
+        """``assets`` maps file names under ``assets/`` to their size in bytes."""
         root.mkdir(parents=True, exist_ok=True)
         (root / "assets").mkdir(exist_ok=True)
+        for name, size in (assets or {}).items():
+            path = root / "assets" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"\0" * size)
         return LoadedPackage(
             package_id=self.package_id, version="1.0.0", root=root, client={}, ui=self.ui,
             handlers=(HandlerDeclaration("ui.ready", self.ready, {"target.package_id": self.package_id}, "ready"),),
@@ -90,6 +104,23 @@ def _apply(appearance):
     async def call(ops, event):
         return await ops.appearance.apply(appearance)
     return call
+
+
+def _apply_assets(build):
+    """Apply an appearance whose image paths come from the caller's own ``ops.ui.asset_url``."""
+    async def call(ops, event):
+        async def asset(path, source="package"):
+            return await ops.ui.asset_url(path, source=source)
+        return await ops.appearance.apply(await build(asset))
+    return call
+
+
+def _part(package_id: str, value: dict) -> dict:
+    return {"package_id": package_id, "value": value}
+
+
+def _answer(status: str, revision: int, *shown: str) -> dict:
+    return {"status": status, "revision": revision, "shown": list(shown)}
 
 
 def _capture(captured: list):
@@ -138,35 +169,193 @@ def _frames(runtime: GatewayRuntime, event: str = "webui.appearance"):
     return [(connection, payload) for connection, name, payload in runtime.channel.events if name == event]
 
 
-async def test_apply_revoke_and_provider_switch(tmp_path):
+async def test_a_part_shows_the_highest_layer_and_the_lower_one_returns(tmp_path):
     theme, other = Theme(THEME), Theme(OTHER)
     runtime = await _start(tmp_path)
     try:
         runtime.publish(theme.package(tmp_path / "theme"))
-        runtime.publish(other.package(tmp_path / "other"))
+        runtime.publish(other.package(tmp_path / "other"))  # installed later: the higher layer
         ws = SimpleNamespace(closed=False)
         accent = {"accent": "#b45309", "surface": "translucent", "surfaceOpacity": 0.8}
-        theme.calls.append(_apply(accent))
+        theme.calls.append(_apply(accent))  # the plain color fields are the colors part
         await _ready(runtime, ws, THEME)
-        assert theme.results == [{"status": "applied", "revision": 1}]
-        assert _frames(runtime) == [("browser-1", {"package_id": THEME, "revision": 1, "appearance": accent})]
+        assert theme.results == [_answer("applied", 1, "colors")]
+        assert _frames(runtime) == [("browser-1", {"revision": 1, "parts": {"colors": _part(THEME, accent)}})]
 
-        other.calls.append(_apply({"accent": "#2f6fae"}))
+        other.calls.append(_apply({"colors": {"accent": "#2f6fae"}}))
         await _ready(runtime, ws, OTHER)
-        assert other.results == [{"status": "applied", "revision": 2}]
+        assert other.results == [_answer("applied", 2, "colors")]
         assert runtime.browser.appearance.provider("browser-1") == OTHER
 
-        # The replaced provider cannot clear the current appearance.
-        theme.calls.append(_apply(None))
+        # A lower layer may still change its own value; the browser keeps showing the upper one.
+        theme.calls.append(_apply({"accent": "#0f766e"}))
         await _ready(runtime, ws, THEME)
-        assert theme.results[-1] == {"status": "unchanged", "revision": 2}
+        assert theme.results[-1] == _answer("applied", 2)
         assert len(_frames(runtime)) == 2
 
+        # Withdrawing the upper layer shows the lower layer's latest value again.
         other.calls.append(_apply(None))
         await _ready(runtime, ws, OTHER)
-        assert other.results[-1] == {"status": "revoked", "revision": 3}
-        assert _frames(runtime)[-1] == ("browser-1", {"package_id": OTHER, "revision": 3, "appearance": None})
+        assert other.results[-1] == _answer("revoked", 3)
+        assert _frames(runtime)[-1] == ("browser-1", {
+            "revision": 3, "parts": {"colors": _part(THEME, {"accent": "#0f766e"})}})
+
+        theme.calls.extend([_apply({"colors": None}), _apply({"colors": None})])
+        await _ready(runtime, ws, THEME)
+        assert theme.results[-2:] == [_answer("revoked", 4), _answer("unchanged", 4)]
+        assert _frames(runtime)[-1] == ("browser-1", {"revision": 4, "parts": {}})
         assert runtime.browser.appearance.provider("browser-1") is None
+    finally:
+        await runtime.shutdown()
+
+
+async def test_packages_that_provide_different_parts_are_shown_together(tmp_path):
+    theme, logo = Theme(THEME), Theme(LOGO, ui=APPEARANCE_UI)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(logo.package(tmp_path / "logo", assets={"logo.svg": 64}))
+        runtime.publish(theme.package(tmp_path / "theme", assets={"idle.png": 64}))  # theme above the logo
+        ws = SimpleNamespace(closed=False)
+
+        async def theme_parts(asset):
+            return {"colors": {"accent": "#b45309"}, "mascot": {"src": await asset("idle.png")}}
+
+        async def logo_parts(asset):
+            return {"identity": {"name": "Acme", "logo": await asset("logo.svg")},
+                    "welcome": {"default": {"zh": "让工作更轻松", "en": "makes work easier"}}}
+
+        theme.calls.append(_apply_assets(theme_parts))
+        await _ready(runtime, ws, THEME)
+        logo.calls.append(_apply_assets(logo_parts))
+        await _ready(runtime, ws, LOGO, slot="application.appearance")
+        assert logo.results == [_answer("applied", 2, "identity", "welcome")]
+        _, frame = _frames(runtime)[-1]
+        assert {part: entry["package_id"] for part, entry in frame["parts"].items()} == {
+            "colors": THEME, "identity": LOGO, "welcome": LOGO, "mascot": THEME}
+        logo_url = frame["parts"]["identity"]["value"]["logo"]
+        assert frame["parts"]["identity"]["value"] == {"name": "Acme", "logo": logo_url, "favicon": logo_url}
+
+        # Withdrawing one part keeps the package's other parts.
+        logo.calls.append(_apply({"welcome": None}))
+        await _ready(runtime, ws, LOGO, slot="application.appearance")
+        assert logo.results[-1] == _answer("revoked", 3, "identity")
+        assert set(_frames(runtime)[-1][1]["parts"]) == {"colors", "identity", "mascot"}
+    finally:
+        await runtime.shutdown()
+
+
+async def test_layers_follow_the_install_order_not_the_order_of_calls(tmp_path):
+    first, second = Theme(THEME), Theme(OTHER)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(first.package(tmp_path / "first", assets={"a.png": 8}))
+        runtime.publish(second.package(tmp_path / "second", assets={"b.png": 8}))
+        ws = SimpleNamespace(closed=False)
+
+        def mascot(name):
+            async def build(asset):
+                return {"mascot": {"src": await asset(name)}}
+            return build
+
+        second.calls.append(_apply_assets(mascot("b.png")))
+        await _ready(runtime, ws, OTHER)
+        first.calls.append(_apply_assets(mascot("a.png")))  # a later call from the lower layer
+        await _ready(runtime, ws, THEME)
+        assert first.results == [_answer("applied", 1)]
+        assert runtime.browser.appearance.provider("browser-1", "mascot") == OTHER
+        assert json.loads((tmp_path / "data" / "host" / "appearance.json").read_text(encoding="utf-8")) == {
+            "version": 1, "installed": [THEME, OTHER]}
+
+        # A reload keeps the package's place: the reloaded lower layer stays below.
+        runtime.publish(Theme(THEME).package(tmp_path / "first", assets={"a.png": 8}))
+        await runtime.browser.settle()
+        assert runtime.browser.appearance_order.installed == [THEME, OTHER]
+    finally:
+        await runtime.shutdown()
+
+
+def test_the_layer_order_is_kept_and_forgotten_on_disk(tmp_path):
+    order = AppearanceOrder(tmp_path)
+    order.note_installed("a")
+    order.note_installed("b")
+    order.note_installed("a")
+    reloaded = AppearanceOrder(tmp_path)
+    reloaded.load()
+    assert reloaded.installed == ["a", "b"]
+    assert [reloaded.rank(package_id) for package_id in ("a", "b", "unknown")] == [0, 1, -1]
+    reloaded.forget("a")
+    assert json.loads(reloaded.path.read_text(encoding="utf-8")) == {"version": 1, "installed": ["b"]}
+
+    reloaded.path.write_text('{"version": 1, "installed": ["b", "b"]}', encoding="utf-8")
+    reloaded.load()
+    assert reloaded.installed == [], "an unreadable record counts as empty"
+
+
+async def test_brand_images_must_be_the_callers_own_readable_assets(tmp_path):
+    theme, other = Theme(THEME), Theme(OTHER)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(other.package(tmp_path / "other", assets={"logo.svg": 8}))
+        runtime.publish(theme.package(tmp_path / "theme", assets={
+            "logo.svg": 8, "big.png": (1 << 20) + 1, "fly.webp": 4 << 20}))
+        ws = SimpleNamespace(closed=False)
+        borrowed = []
+
+        async def keep_other_url(ops, event):
+            borrowed.append(await ops.ui.asset_url("logo.svg"))
+        other.calls.append(keep_other_url)
+        await _ready(runtime, ws, OTHER)
+
+        def own(name):
+            async def build(asset):
+                return {"identity": {"logo": await asset(name)}}
+            return build
+
+        async def stale(asset):
+            segments = (await asset("logo.svg")).split("/")  # ['', 'extension-assets', package, generation, file]
+            segments[3] = "retired"
+            return {"identity": {"logo": "/".join(segments)}}
+
+        async def missing(asset):
+            url = await asset("logo.svg")
+            return {"identity": {"logo": url.replace("logo.svg", "none.svg")}}
+
+        async def large_mascot_is_fine(asset):
+            return {"mascot": {"src": await asset("logo.svg"), "hoverSrc": await asset("fly.webp"), "hoverMs": 2000}}
+
+        theme.calls.extend([
+            _apply({"identity": {"logo": borrowed[0]}}),
+            _apply_assets(stale),
+            _apply_assets(missing),
+            _apply_assets(own("big.png")),
+            _apply_assets(large_mascot_is_fine),
+            _apply_assets(own("logo.svg")),
+        ])
+        await _ready(runtime, ws, THEME)
+        assert [type(result) for result in theme.results[:4]] == [ValueError] * 4
+        assert "calling package" in str(theme.results[0])
+        assert "larger than" in str(theme.results[3])
+        assert theme.results[4:] == [_answer("applied", 1, "mascot"), _answer("applied", 2, "identity", "mascot")]
+    finally:
+        await runtime.shutdown()
+
+
+async def test_data_assets_of_the_caller_are_accepted(tmp_path):
+    theme = Theme(THEME)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        public = runtime.package_data_dir(THEME) / "public"
+        public.mkdir(parents=True)
+        (public / "logo.png").write_bytes(b"\0" * 16)
+
+        async def build(asset):
+            return {"identity": {"logo": await asset("logo.png", source="data")}}
+
+        theme.calls.append(_apply_assets(build))
+        await _ready(runtime, SimpleNamespace(closed=False), THEME)
+        assert theme.results == [_answer("applied", 1, "identity")]
+        assert ".data/logo.png" in _frames(runtime)[-1][1]["parts"]["identity"]["value"]["logo"]
     finally:
         await runtime.shutdown()
 
@@ -215,7 +404,7 @@ async def test_release_revokes_appearance_and_clears_views(tmp_path):
         clears = _frames(runtime, "webui.render.clear")
         assert [payload["revision"] for _, payload in clears] == [rendered + 1]
         assert clears[0][1]["reason"] == "released"
-        assert _frames(runtime)[-1] == ("browser-1", {"package_id": THEME, "revision": 2, "appearance": None})
+        assert _frames(runtime)[-1] == ("browser-1", {"revision": 2, "parts": {}})
         assert runtime.browser.appearance.provider("browser-1") is None
 
         # The re-render of the new activation starts above the clear the browser accepted.
@@ -227,8 +416,37 @@ async def test_release_revokes_appearance_and_clears_views(tmp_path):
         await _ready(runtime, ws, THEME)
         runtime.unpublish(THEME)  # uninstall
         await runtime.browser.settle()
-        assert _frames(runtime)[-1][1] == {"package_id": THEME, "revision": 4, "appearance": None}
+        assert _frames(runtime)[-1][1] == {"revision": 4, "parts": {}}
         assert _frames(runtime, "webui.render.clear")[-1][1]["revision"] == rendered + 3
+    finally:
+        await runtime.shutdown()
+
+
+async def test_releasing_the_upper_layer_shows_the_lower_one(tmp_path):
+    theme, other = Theme(THEME), Theme(OTHER)
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(theme.package(tmp_path / "theme"))
+        runtime.publish(other.package(tmp_path / "other"))
+        ws = SimpleNamespace(closed=False)
+        theme.calls.append(_apply({"accent": "#b45309"}))
+        await _ready(runtime, ws, THEME)
+        other.calls.append(_apply({"accent": "#2f6fae"}))
+        await _ready(runtime, ws, OTHER)
+        runtime.unpublish(OTHER)
+        await runtime.browser.settle()
+        assert _frames(runtime)[-1] == ("browser-1", {
+            "revision": 3, "parts": {"colors": _part(THEME, {"accent": "#b45309"})}})
+
+        # Releasing a lower layer forgets its parts; the frame it reserved repeats what the browser shows.
+        runtime.publish(other.package(tmp_path / "other"))  # republished, it keeps its upper place
+        other.calls.append(_apply({"accent": "#2f6fae"}))
+        await _ready(runtime, ws, OTHER)
+        runtime.unpublish(THEME)
+        await runtime.browser.settle()
+        assert [(payload["revision"], payload["parts"]["colors"]["package_id"])
+                for _, payload in _frames(runtime)[-2:]] == [(4, OTHER), (5, OTHER)]
+        assert runtime.browser.appearance.parts_of("browser-1", THEME) == {}
     finally:
         await runtime.shutdown()
 
@@ -242,7 +460,7 @@ async def test_release_during_the_first_send_still_revokes_the_appearance(tmp_pa
     started, resume = asyncio.Event(), asyncio.Event()
 
     async def slow_send(ws, event, payload):
-        if event == "webui.appearance" and payload["appearance"] is not None:
+        if event == "webui.appearance" and payload["parts"]:
             started.set()
             await resume.wait()
         await sent(ws, event, payload)
@@ -260,8 +478,8 @@ async def test_release_during_the_first_send_still_revokes_the_appearance(tmp_pa
         await runtime.browser.settle()
         frames = [payload for _, payload in _frames(runtime)]
         assert frames == [
-            {"package_id": THEME, "revision": 1, "appearance": {"accent": "#b45309"}},
-            {"package_id": THEME, "revision": 2, "appearance": None},
+            {"revision": 1, "parts": {"colors": _part(THEME, {"accent": "#b45309"})}},
+            {"revision": 2, "parts": {}},
         ]
         assert runtime.browser.appearance.provider("browser-1") is None
     finally:
@@ -300,8 +518,8 @@ async def test_a_request_queued_behind_the_release_cannot_outrun_the_revoke(tmp_
         await runtime.browser.settle()
         frames = [payload for _, payload in _frames(runtime)]
         assert frames == [
-            {"package_id": THEME, "revision": 1, "appearance": {"accent": "#b45309"}},
-            {"package_id": THEME, "revision": 2, "appearance": None},
+            {"revision": 1, "parts": {"colors": _part(THEME, {"accent": "#b45309"})}},
+            {"revision": 2, "parts": {}},
         ]
         assert runtime.browser.appearance.provider("browser-1") is None
     finally:
@@ -342,7 +560,7 @@ async def test_a_queued_request_of_a_released_package_without_provider_sends_not
         with pytest.raises(ValueError):
             await queued
         await runtime.browser.settle()
-        assert [payload["package_id"] for _, payload in _frames(runtime)] == [OTHER]
+        assert [payload["parts"]["colors"]["package_id"] for _, payload in _frames(runtime)] == [OTHER]
         assert runtime.browser.appearance.provider("browser-1") == OTHER
     finally:
         resume.set()
@@ -383,7 +601,7 @@ async def test_uninstall_does_not_wait_for_another_packages_browser_notification
     sent, gate = channel.send_event, asyncio.Event()
 
     async def stuck_revoke(ws, event, payload):
-        if event == "webui.appearance" and payload["appearance"] is None:
+        if event == "webui.appearance" and not payload["parts"]:
             await gate.wait()
         await sent(ws, event, payload)
 
@@ -519,3 +737,144 @@ async def test_evicted_application_target_resumes_above_its_clear_revision(tmp_p
         assert resumed.revision > clear["revision"]
     finally:
         await runtime.shutdown()
+
+
+def _deny_everything(root: Path) -> LoadedPackage:
+    async def deny(event, ops, next_handler):
+        return GatewayRequestOutput(handled=True, route="deny", error={"code": "AUTH_REQUIRED", "message": "login"})
+    root.mkdir(parents=True, exist_ok=True)
+    return LoadedPackage(package_id="test.policy", version="1.0.0", root=root, client={}, ui={},
+                         handlers=(HandlerDeclaration("gateway.request", deny, {}, "deny"),))
+
+
+async def _appearance_ready(runtime: GatewayRuntime, ws, payload=None) -> dict:
+    """The startup gate's ``ui.ready`` to every appearance provider, answered as a platform frame."""
+    answers = []
+
+    async def send_response(ws, req_id, *, ok, payload=None, error=None, code=None):
+        answers.append({"ok": ok, "payload": payload, "error": error})
+
+    runtime.channel.send_response = send_response
+    visited, _ = await runtime.intercept(ws, "gate", "webui.dispatch", {
+        "event": "ui.ready", "payload": {} if payload is None else payload,
+        "target": {"scope": "application", "slot_id": "application.appearance", "instance_key": "main"},
+    })
+    assert visited is True
+    return answers[-1]
+
+
+@pytest.mark.parametrize("item", [
+    {"type": "web.slot.contribution", "slot": "application.appearance", "parts": ["identity"]},
+    {"type": "web.slot.contribution", "slot": "application.appearance", "splash": {"skippable": True}},
+    {"type": "web.panel", "slot": "application.appearance"},
+])
+async def test_invalid_appearance_declarations_fail_publication(tmp_path, item):
+    runtime = await _start(tmp_path)
+    try:
+        with pytest.raises(ValueError):
+            runtime.publish(Theme("test.bad", ui={"apiVersion": 1, "items": [item]}).package(tmp_path / "bad"))
+        assert not runtime.active_packages()
+    finally:
+        await runtime.shutdown()
+
+
+async def test_nothing_renders_into_the_appearance_slot(tmp_path):
+    logo = Theme(LOGO, ui=APPEARANCE_UI)
+    runtime = await _start(tmp_path)
+
+    async def render(ops, event):
+        target = event.event_input.target
+        return await ops.ui.render(UiRenderInput(
+            target=RenderTarget(session_id="", slot_id=target.slot_id, instance_key=target.instance_key),
+            root=RenderNode(component="Text", props={"content": "Acme"}),
+        ))
+
+    try:
+        runtime.publish(logo.package(tmp_path / "logo"))
+        logo.calls.append(render)
+        await _ready(runtime, SimpleNamespace(closed=False), LOGO, slot="application.appearance")
+        assert logo.results[0].status == RenderStatus.REJECTED
+        assert runtime.registry.snapshot() == ()
+    finally:
+        await runtime.shutdown()
+
+
+async def test_the_gate_ready_reaches_every_provider_side_by_side_past_a_denying_policy(tmp_path):
+    first, second = Theme(LOGO, ui=APPEARANCE_UI), Theme(THEME, ui=APPEARANCE_UI)
+    background = Theme(OTHER)  # declares only the background: not asked by the gate
+    both_running = asyncio.Event()
+    entered = []
+
+    async def wait_for_the_other(ops, event):
+        entered.append(event.event_input.target.package_id)
+        if len(entered) == 2:
+            both_running.set()
+        await asyncio.wait_for(both_running.wait(), 2)  # only finishes when the calls run side by side
+        return await ops.appearance.apply({"identity": {"name": event.event_input.target.package_id}})
+
+    runtime = await _start(tmp_path)
+    try:
+        runtime.publish(_deny_everything(tmp_path / "policy"))
+        runtime.publish(first.package(tmp_path / "first"))
+        runtime.publish(second.package(tmp_path / "second"))
+        runtime.publish(background.package(tmp_path / "bg"))
+        first.calls.append(wait_for_the_other)
+        second.calls.append(wait_for_the_other)
+        background.calls.append(_apply({"accent": "#b45309"}))
+        answer = await _appearance_ready(runtime, SimpleNamespace(closed=False))
+        assert answer == {"ok": True, "payload": {"accepted": True, "status": "ready"}, "error": None}
+        assert sorted(entered) == sorted([LOGO, THEME]) and background.calls
+        # Both submitted before the answer; the later install shows its identity.
+        assert _frames(runtime)[-1][1]["parts"]["identity"] == _part(THEME, {"name": THEME})
+    finally:
+        await runtime.shutdown()
+
+
+async def test_the_gate_ready_answers_unhandled_payloads_and_failing_providers(tmp_path):
+    failing, working = Theme(LOGO, ui=APPEARANCE_UI), Theme(THEME, ui=APPEARANCE_UI)
+
+    async def fail(ops, event):
+        raise RuntimeError("provider crashed")
+
+    runtime = await _start(tmp_path)
+    try:
+        ws = SimpleNamespace(closed=False)
+        answer = await _appearance_ready(runtime, ws)
+        assert answer["payload"] == {"accepted": False, "status": "unhandled"}
+
+        runtime.publish(failing.package(tmp_path / "failing"))
+        failing.ready = fail
+        runtime.publish(failing.package(tmp_path / "failing"))
+        runtime.publish(working.package(tmp_path / "working"))
+        answer = await _appearance_ready(runtime, ws, payload={"launch_id": "x"})
+        assert answer["payload"] == {"accepted": False, "status": "invalid_payload", "code": "SCHEMA_ERROR"}
+
+        working.calls.append(_apply({"identity": {"name": "Acme"}}))
+        answer = await _appearance_ready(runtime, ws)
+        assert answer["payload"] == {"accepted": True, "status": "ready"}, "a failing provider only counts as unhandled"
+        assert working.results == [_answer("applied", 1, "identity")]
+    finally:
+        await runtime.shutdown()
+
+
+def _install(root: Path, package_id: str, ui: dict, domain: str = "gateway") -> None:
+    root.mkdir(parents=True)
+    (root / "main.py").write_text("", encoding="utf-8")
+    (root / "manifest.json").write_text(json.dumps({
+        "package_type": "extension", "schemaVersion": 1,
+        "package": {"id": package_id, "version": "1.0.0", "domain": domain},
+        "extensions": [{"id": "main", "runtime": "backend", "module": "main.py"}], "ui": ui,
+    }), encoding="utf-8")
+
+
+def test_the_hint_lists_installed_appearance_providers_without_running_them(tmp_path):
+    install = tmp_path / "install"
+    _install(install / "brand", "test.brand", APPEARANCE_UI)
+    _install(install / "theme", "test.theme", BACKGROUND_UI)
+    _install(install / "agent", "test.agent", APPEARANCE_UI, domain="agentserver")
+    _install(install / "broken", "test.broken", {"apiVersion": 1, "items": [
+        {"type": "web.slot.contribution", "slot": "application.appearance", "parts": []}]})
+    config = GatewayExtensionConfig(install_dir=install, data_dir=tmp_path / "data")
+    assert installed_appearance_providers(config) == ["test.brand"]
+    disabled = GatewayExtensionConfig(install_dir=install, data_dir=tmp_path / "data", enabled=False)
+    assert installed_appearance_providers(disabled) == []

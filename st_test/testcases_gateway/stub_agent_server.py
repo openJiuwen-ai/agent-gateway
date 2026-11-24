@@ -38,6 +38,19 @@ _UNARY_PAYLOADS: dict[str, dict[str, Any]] = {
     "connection.status": {"server_ready": True, "agent_ready": True},
     "config.get": {"config": {}},
     "cron.job.list": {"jobs": [], "total": 0},
+    "models.list": {
+        "models": [{
+            "model_id": "mdl_st_default",
+            "model_name": "st-model",
+            "model_provider": "OpenAI",
+            "api_base": "https://example.com/v1",
+            "api_key": "st-key",
+            "is_default": True,
+        }],
+        "active_model": "st-model",
+    },
+    "locale.get_conf": {"preferred_language": "en"},
+    "locale.set_conf": {"preferred_language": "en"},
 }
 
 

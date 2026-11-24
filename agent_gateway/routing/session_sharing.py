@@ -423,13 +423,17 @@ async def dispatch_to_session(
     fan_out: list,           # list[LogicalTarget]
     channel_manager,         # ChannelManager
     registry: SessionSharingRegistry,
-) -> None:
+) -> int:
     """响应分发入口 —— 由 _dispatch_robot_messages() 调用。
 
     薄封装，转调 SessionDispatcher.dispatch，保留模块级函数签名以兼容现有调用方。
     逻辑见 SessionDispatcher。
+
+    Returns:
+        成功投递的物理容器数。0 表示 fan_out 中没有任何目标成功收到消息
+        （无订阅者、channel 缺失或发送失败）。
     """
-    await SessionDispatcher.dispatch(msg, session_id, fan_out, channel_manager, registry)
+    return await SessionDispatcher.dispatch(msg, session_id, fan_out, channel_manager, registry)
 
 
 class SessionDispatcher:
@@ -456,23 +460,32 @@ class SessionDispatcher:
         fan_out: list,           # list[LogicalTarget]
         channel_manager,
         registry: SessionSharingRegistry,
-    ) -> None:
+    ) -> int:
         """对每个 LogicalTarget 查 Registry → 按物理容器去重 → 组装 RoutingTarget →
         调 channel.send(msg, routing_target=RoutingTarget)。
+
+        Returns:
+            成功投递的物理容器数。0 表示 fan_out 中没有任何目标成功收到消息
+            （无订阅者、channel 缺失或发送失败），调用方可据此回退到发起连接，
+            而不是把广播帧静默丢弃。
         """
         if not fan_out:
-            return
+            return 0
 
         # 企业版团队直播按 session_id 交给浏览器订阅，不按每次 chat.send 的 ws_id
         # 各写一遍。Web 先投一次，后面的 fan-out 不再进入 web 容器。
         session_live = SessionDispatcher._is_session_live(msg)
+        live_delivered = False
         if session_live:
-            await SessionDispatcher._deliver_session_live_once(msg, channel_manager)
+            live_delivered = await SessionDispatcher._deliver_session_live_once(msg, channel_manager)
 
         godview_subs = registry.lookup_member(session_id, SubRole.GODVIEW)
         # 已发送的物理容器集合，跨 intent 去重：broadcast 的 fan_out=[godview, mention_all]
         # 可能打到同一个 IM 群，godview 先发到群 G、mention_all 又发到群 G → 重复
         sent_containers: set[SessionDispatcher._ContainerKey] = set()
+        # 与 sent_containers 不同：只统计 send 成功的容器。channel 缺失 / 超时 /
+        # 抛异常都不算投递，否则上层无法从「找到订阅者」区分「接收者真的收到了」。
+        delivered = 0
 
         for target in fan_out:
             subs = SessionDispatcher._select_subs(target, godview_subs, registry, session_id)
@@ -485,9 +498,17 @@ class SessionDispatcher:
                 if container_key in sent_containers:
                     continue
                 sent_containers.add(container_key)
-                await SessionDispatcher._send_to_container(
+                if await SessionDispatcher._send_to_container(
                     msg, target, group_subs, container_key, channel_manager,
-                )
+                ):
+                    delivered += 1
+
+        # session_live 的 web 投递已经交付给浏览器订阅（该次投递被上面的 web
+        # 过滤排除在 sent_containers 之外），必须计入，否则会被误判为无人接收
+        # 而触发 origin 回退，造成同一批 peer 二次收到帧。
+        if live_delivered:
+            delivered += 1
+        return delivered
 
     @staticmethod
     def _is_session_live(msg) -> bool:
@@ -499,15 +520,18 @@ class SessionDispatcher:
         return getattr(msg, "app_id", None) or getattr(msg, "bot_id", None) or "default"
 
     @staticmethod
-    async def _deliver_session_live_once(msg, channel_manager) -> None:
+    async def _deliver_session_live_once(msg, channel_manager) -> bool:
         """把直播帧交给消息所属的 Web channel 一次。
 
         WebChannel.send 看到 delivery_scope=session_live 后按 session_id 写入订阅，
         不再使用 routing_target 里已经结束的 chat.send 连接号。
+
+        Returns:
+            True 表示已成功交给 web channel。
         """
         channel_id = str(getattr(msg, "channel_id", "") or "")
         if channel_id != "web":
-            return
+            return False
         app_id = SessionDispatcher._resolve_app_id(msg)
         channel = channel_manager.get_channel(ChannelKey(channel_id, app_id))
         if channel is None:
@@ -518,7 +542,7 @@ class SessionDispatcher:
                 app_id,
                 getattr(msg, "session_id", ""),
             )
-            return
+            return False
         try:
             await asyncio.wait_for(channel.send(msg), timeout=10.0)
         except asyncio.TimeoutError:
@@ -527,12 +551,15 @@ class SessionDispatcher:
                 app_id,
                 getattr(msg, "session_id", ""),
             )
+            return False
         except Exception:
             logger.exception(
                 "[dispatch] session live send failed: app_id=%s session_id=%s",
                 app_id,
                 getattr(msg, "session_id", ""),
             )
+            return False
+        return True
 
     @staticmethod
     def _select_subs(
@@ -581,11 +608,15 @@ class SessionDispatcher:
         group_subs: list[Subscription],
         container_key: "_ContainerKey",
         channel_manager,
-    ) -> None:
+    ) -> bool:
         """向单个物理容器发送一条消息（组装 RoutingTarget 后调 channel.send）.
 
         delivery 取 group_subs[0].delivery（同容器同 channel/app，组内等价），
         避免把 _group_by_container 的同源字段重复作为参数传入。
+
+        Returns:
+            True 表示 channel 存在且 send 未超时、未抛异常；channel 缺失、
+            超时和发送失败均返回 False，供上层区分「找到订阅者」与「真正送达」。
         """
         delivery = group_subs[0].delivery
         from agent_gateway.telemetry import bind_request_trace, get_message_trace
@@ -618,7 +649,7 @@ class SessionDispatcher:
                 container_key.channel_id, container_key.app_id,
                 channel_manager.enabled_channels,
             )
-            return
+            return False
 
         routing_target = SessionDispatcher._build_routing_target(target, group_subs, delivery)
         try:
@@ -635,6 +666,7 @@ class SessionDispatcher:
                 " — skipping to unblock dispatch loop",
                 container_key.channel_id, container_key.app_id, target.intent,
             )
+            return False
         except Exception:
             if operation is not None:
                 operation.record_outcome("incomplete", reason="fanout_failed")
@@ -642,6 +674,8 @@ class SessionDispatcher:
                 "[dispatch] send failed: channel=%s app=%s intent=%s",
                 container_key.channel_id, container_key.app_id, target.intent,
             )
+            return False
+        return True
 
     @staticmethod
     def _build_routing_target(

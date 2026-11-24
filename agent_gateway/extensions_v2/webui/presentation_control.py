@@ -74,7 +74,7 @@ class PresentationControl:
         return {"ok": True, "payload": {"status": "queried", "candidates": candidates}}
 
     async def start(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Start an exact candidate once and wait for the native ready receipt."""
+        """Start an exact candidate once and wait for the selected host ready receipt."""
         if (
             set(params) != {"connection_id", "package_id", "instance_key", "revision"}
             or any(not isinstance(params.get(key), str) or not params[key] or len(params[key].encode("utf-8")) > 200
@@ -127,12 +127,15 @@ class PresentationControl:
         pending.result.set_result(params["code"] if self._current(pending) else "UNKNOWN")
         return {"accepted": True}
 
-    def invalidate(self, *, connection_id: str | None = None, package_id: str | None = None) -> None:
-        """Release all matching waiters when their connection or package ends."""
+    def invalidate(self, *, connection_id: str | None = None, package_id: str | None = None,
+                   target: RenderTarget | None = None, revision: int | None = None) -> None:
+        """Release matching waiters when their owner ends or their rendered instance closes."""
         for pending in self.pending.values():
             if (
                 (connection_id is None or pending.target.connection_id == connection_id)
                 and (package_id is None or pending.target.package_id == package_id)
+                and (target is None or pending.target == target)
+                and (revision is None or pending.revision == revision)
                 and not pending.result.done()
             ):
                 pending.result.set_result("UNKNOWN")

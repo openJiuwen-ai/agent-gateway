@@ -20,6 +20,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.configuration import (
 from agent_gateway.common.config import get_config_raw, resolve_env_vars
 from agent_gateway.common.im_binding_lock import im_binding_lock
 from agent_gateway.config.channel.access import edit_channel_body
+from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
             await cm.set_conf(platform, runtime_conf)
         except Exception as exc:
             raise BindingError("CHANNEL_APPLY_FAILED", "configuration saved but the channel could not restart") from exc
+        schedule_channel_config(client(), platform, runtime_conf)
         clear_cache(method)
         if platform in {"feishu", "feishu_enterprise"}:
             def groups(current):
@@ -399,7 +401,7 @@ def register_persistent_bindings(channel, manager, client, normalize_feishu, cle
 
     from agent_gateway.channel_manager.web.welink_bindings import register_welink_bindings
 
-    register_welink_bindings(channel, manager, request, colleague_lock, lock)
+    register_welink_bindings(channel, manager, request, colleague_lock, lock, client)
 
     async def delete_colleague(ws, req_id, params, session_id):
         from agent_gateway.enterprise import is_enterprise

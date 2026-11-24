@@ -99,14 +99,7 @@ class PermissionsConfigRepository:
         *,
         source: str = "manager",
     ) -> SectionDocument:
-        """企业配置 upsert：整段替换 body 并递增 revision。"""
-        existing = await self.get()
-        document = SectionDocument(
-            body=dict(body),
-            source=source,
-            revision=(int(existing.revision) + 1 if existing else 1),
-        )
-        return await self._inner.upsert(document)
+        return await self._inner.upsert_body(body, source=source)
 
     async def replace(self, body: dict[str, Any]) -> SectionDocument:
         return await self._inner.replace(body)

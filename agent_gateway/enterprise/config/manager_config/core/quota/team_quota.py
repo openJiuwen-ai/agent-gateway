@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from agent_gateway.common.match_expr import coerce_match_expr
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
 from agent_gateway.enterprise.db.team_store_actor import (
     get_team_store_actor,
@@ -66,20 +67,6 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _parse_match_expr(raw: Any) -> Any:
-    if raw is None or raw == "":
-        return []
-    if isinstance(raw, (list, dict)):
-        return raw
-    text = str(raw).strip()
-    if not text:
-        return []
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return text
-
-
 def _updated_at_rank(raw: Any) -> str:
     if raw is None or raw == "":
         return ""
@@ -94,7 +81,7 @@ def _policy_rank(row: dict[str, Any]) -> tuple[int, str]:
 
 
 def _is_unconditional(expr: Any) -> bool:
-    canon = _parse_match_expr(expr)
+    canon = coerce_match_expr(expr)
     if canon in (None, [], ""):
         return True
     if isinstance(canon, str):
@@ -103,7 +90,7 @@ def _is_unconditional(expr: Any) -> bool:
 
 
 def _expr_blob(expr: Any) -> str:
-    canon = _parse_match_expr(expr)
+    canon = coerce_match_expr(expr)
     if canon in (None, [], ""):
         return ""
     if isinstance(canon, list):
@@ -147,7 +134,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         if not bool(row.get("enabled", True)):
             continue
         try:
-            if matches(_parse_match_expr(row.get("match_expr")), ident):
+            if matches(coerce_match_expr(row.get("match_expr")), ident):
                 hits.append(row)
         except Exception:  # noqa: BLE001 - 单条策略非法不应影响整体用量
             continue
@@ -188,7 +175,7 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
         if not bool(row.get("enabled", True)) or not _is_org_policy(row.get("match_expr")):
             continue
         try:
-            if matches(_parse_match_expr(row.get("match_expr")), ident):
+            if matches(coerce_match_expr(row.get("match_expr")), ident):
                 hits.append(row)
         except Exception:  # noqa: BLE001 - 单条策略非法不应影响整体用量
             continue

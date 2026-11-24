@@ -4,11 +4,14 @@ import logging
 
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.channel_manager.web.persistent_bindings import BindingError
+from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 
 logger = logging.getLogger(__name__)
 
 
-def register_welink_bindings(channel, manager, request, colleague_lock, welink_authorization_lock):
+def register_welink_bindings(
+    channel, manager, request, colleague_lock, welink_authorization_lock, client,
+):
 
     async def _connection_request(method, params):
         try:
@@ -160,6 +163,7 @@ def register_welink_bindings(channel, manager, request, colleague_lock, welink_a
                 cm = manager()
                 if cm is not None:
                     await cm.set_conf("welink", stored)
+                    schedule_channel_config(client(), "welink", stored)
                 return view
 
     async def _persist_welink_login_step(login_session, kind: str) -> dict:

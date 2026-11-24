@@ -8,7 +8,7 @@
 | 编号 / slug | `S_01 / gateway-extension-runtime` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/` |
 | 设计依据 | [详细架构](../designs/extensions-v2-architecture.md) |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-23 |
 | 契约状态 | 已实现；本文是 Gateway 扩展对外契约的唯一维护位置 |
 
 本文维护 Gateway 扩展运行时的对外契约：入口函数、事件数据类、路由语义、错误码、配置键与不变量。具体实现方案与决策历史见对应 feature 文档。
@@ -88,7 +88,7 @@ Handler 接收 `(event, ops, next_handler)`，事件输入位于 `event.event_in
 ### 3.2 包释放与浏览器通知
 
 包被释放（卸载、重载、发布失败前的替换）时，运行时除注销 Handler 外，还向浏览器发送该包各应用级实例的清除帧
-（原因 `released`，并预留该版本号，之后的渲染从更高版本开始），并撤销该包作为提供者的外观（[S_08](S_08_appearance.md)）。
+（原因 `released`，并预留该版本号，之后的渲染从更高版本开始），并删除该包的外观部件、向受影响的连接下发重新合成的外观快照（[S_08](S_08_appearance.md) 第 5 节）。
 这些通知在释放后异步发送；声明 `client` 的包其清除帧携带被释放激活的代次，浏览器仍持有该声明时才能接受，随后再撤回
 `client.declarations`（[S_06](S_06_local-browser-bridge.md)）。Web 管理入口的 import / install / reload / enable 与本机 CLI 的 install / reload / enable
 成功后，先等待释放通知发出并同步声明，再广播 `extensions.v2.installed`，已挂载的槽位据此重新发送 `ui.ready`。
@@ -124,12 +124,15 @@ Gateway 过了提交点会先完成收尾再抛出取消，调用方收到的仍
 | `gateway.request` | `GatewayRequestInput` | `GatewayRequestOutput` | 校验 method，`forward` |
 | `ui.render` | `UiRenderInput` | `UiRenderOutput` | 校验并下发 |
 | `ui.ready` / `ui.click` / `ui.select` / `ui.change` / `ui.press_enter` / `ui.search` / `ui.clear` | `UiActionInput` | `UiActionOutput` | 默认未接管；浏览器分派器在触发前校验当前实例及动作 |
+| `ui.closed` | `UiActionInput` | `UiActionOutput` | 通知真实容器已关闭；开场见 S_09，应用形态的版本与容器序号校验见 S_11 |
 | `gateway.disconnect` | `GatewayDisconnectInput` | 无 | 通知插件连接结束，再清理连接资源 |
-| `ui.appearance` | `UiAppearanceInput` | `HostActionOutput` | 核对调用包当前激活与浏览器连接，投递或撤销外观（[S_08](S_08_appearance.md)） |
+| `ui.appearance` | `UiAppearanceInput` | `HostActionOutput` | 核对调用包当前激活与浏览器连接，设置或撤回其外观部件并下发合成快照；`HostActionOutput.shown` 列出调用包生效的部件（[S_08](S_08_appearance.md)） |
 | `ui.download` | `UiDownloadInput` | `HostActionOutput` | 核对激活与连接，签发一次性下载（[S_10](S_10_application-settings.md) 第 7 节） |
 | `ui.splash.preview` | `UiSplashPreviewInput` | `HostActionOutput` | 核对激活、开场声明与连接，请求预览（[S_09](S_09_startup-splash.md) 第 3.3 节） |
 
 后三项是宿主动作：包经 `ops.appearance.apply`、`ops.ui.download`、`ops.splash.preview` 触发新链。调用方由 Ops 方法从调用的 Ops 解析（后台任务中同样有效），作为该链的 `trigger_context` 传给 `bus.trigger`，只有 CORE 能读取；输入只携带 `package_id`，供 USER Handler 匹配与查看，与调用方不一致或链路没有调用方时 CORE 拒绝。CORE 拒绝时返回 `status="rejected"` 与 `INVALID_ACTION`，USER Handler 可以拒绝或接管。`ops.ui.render` 同样以 `trigger_context` 携带调用方；它引起的渲染、错误与清除帧标注调用方的激活代次，宿主自行发送的帧（释放、淘汰、停机）标注当前代次。
+
+应用形态由插件通过 `ops.ui.render` 发布 `autoStart=true` 的声明，关闭时使用 `CLEAR`；显示与关闭通知的契约见 [S_11](S_11_application-presentation.md)。
 
 所有事件名满足 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`；重复注册同名事件返回 `EVENTS_REGISTRATION_INVALID`。
 

@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI, WebSocket
@@ -218,6 +219,71 @@ async def test_stop_bounds_shutdown_with_inflight_streaming_request(
             except Exception:
                 pass
         await listener.stop()
+
+
+async def test_stop_bounds_a_framework_task_that_never_shuts_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_gateway.transport import uvicorn_listener
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    monkeypatch.setattr(uvicorn_listener, "_STOP_TIMEOUT_SECONDS", 0.05)
+    listener = UvicornListener(FastAPI(), host="127.0.0.1", port=0, ws_per_message_deflate=False)
+    task = asyncio.create_task(asyncio.Event().wait())
+    listener._task = task
+    listener._server = SimpleNamespace(
+        should_exit=True,
+        started=True,
+        bound_addresses=(("127.0.0.1", 19000),),
+        servers=[],
+    )
+
+    started = time.monotonic()
+    await asyncio.wait_for(listener.stop(), 0.5)
+
+    assert time.monotonic() - started < 0.4
+    assert task.cancelled()
+
+
+async def test_stop_returns_when_cancelled_task_does_not_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_gateway.transport import uvicorn_listener
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    monkeypatch.setattr(uvicorn_listener, "_STOP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(uvicorn_listener, "_CANCEL_TIMEOUT_SECONDS", 0.05)
+    listener = UvicornListener(FastAPI(), host="127.0.0.1", port=0, ws_per_message_deflate=False)
+
+    async def never_finishing_task() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(never_finishing_task())
+    listener._task = task
+    listener._server = SimpleNamespace(
+        should_exit=True,
+        started=True,
+        bound_addresses=(("127.0.0.1", 19000),),
+        servers=[],
+    )
+
+    started = time.monotonic()
+    await asyncio.wait_for(listener.stop(), 0.5)
+
+    assert time.monotonic() - started < 0.4
+    assert not task.done()
+
+
+async def test_wait_ready_fails_when_start_was_never_called() -> None:
+    from agent_gateway.transport.uvicorn_listener import UvicornListener
+
+    listener = UvicornListener(FastAPI(), host="127.0.0.1", port=0, ws_per_message_deflate=False)
+    await listener.stop()
+    with pytest.raises(RuntimeError, match="stopped"):
+        await asyncio.wait_for(listener.wait_ready(), 0.1)
 
 
 async def test_cancelled_ready_and_closed_waiters_do_not_stop_listener() -> None:
