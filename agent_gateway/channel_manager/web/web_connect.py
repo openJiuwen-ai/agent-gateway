@@ -2528,22 +2528,6 @@ class WebChannel(BaseWsChannel):
                 )
                 return
 
-        # Apply the enterprise write policy before extension interception or
-        # request preprocessing so a forbidden method cannot cause side effects.
-        from agent_gateway.channel_manager.web.invoke import (
-            is_enterprise_write_forbidden,
-        )
-
-        if method not in GUARDED_METHODS and is_enterprise_write_forbidden(method):
-            await self.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="企业版配置由管理面统一下发",
-                code="FORBIDDEN",
-            )
-            return
-
         # 企业版上传窄门禁：skills.import_upload 拒绝，skills.upload.finalize 走
         # manager 复核；HTTP 与 WS 必须一致。
         if method in GUARDED_METHODS:
@@ -2567,6 +2551,22 @@ class WebChannel(BaseWsChannel):
                 )
                 await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
+
+        # Keep the specialized upload error code first, then apply the shared
+        # enterprise write policy before extension interception or preprocessing.
+        from agent_gateway.channel_manager.web.invoke import (
+            is_enterprise_write_forbidden,
+        )
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="企业版配置由管理面统一下发",
+                code="FORBIDDEN",
+            )
+            return
 
         # 扩展运行时先于原生方法分发处理 Gateway 域扩展事件；无 handler 时
         # 原样返回 params，路径与未接入扩展完全一致。request_context.headers

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web import invoke as web_invoke
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.enterprise.capabilities.skill_upload.guard import RETIRED_CODE
 
@@ -38,6 +39,38 @@ async def test_ws_rejects_enterprise_write_before_extension_interception(monkeyp
     )
     channel.ensure_extensions.assert_not_awaited()
     callback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ws_upload_gate_falls_back_to_enterprise_write_guard(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(
+        web_invoke,
+        "enterprise_skill_upload_denial",
+        AsyncMock(return_value=None),
+    )
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    channel.send_response = AsyncMock()
+    channel.ensure_extensions = AsyncMock()
+    ws = SimpleNamespace()
+
+    await channel._handle_request_message(
+        ws,
+        {"is_stream": False},
+        {},
+        "req-upload-passed",
+        "skills.import_upload",
+        {},
+    )
+
+    channel.send_response.assert_awaited_once_with(
+        ws,
+        "req-upload-passed",
+        ok=False,
+        error="企业版配置由管理面统一下发",
+        code="FORBIDDEN",
+    )
+    channel.ensure_extensions.assert_not_awaited()
 
 
 @pytest.mark.asyncio
