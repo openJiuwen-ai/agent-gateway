@@ -373,6 +373,26 @@ class PermissionsTemplateCreateRequest(PermissionsTemplateUpdateRequest):
     )
 
 
+class ReactTemplateUpdateRequest(SafeTextMixin):
+    """对齐 react_template：body 为传输格式，落库时整段写入 data JSON 列。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    enabled: bool = Field(default=None)
+    body: dict[str, Any] = Field(default=None)
+
+
+class ReactTemplateCreateRequest(ReactTemplateUpdateRequest):
+    template_id: str = Field(..., min_length=1, max_length=100)
+    template_name: str = Field(..., min_length=1, max_length=128)
+    body: dict[str, Any] = Field(
+        ...,
+        description=(
+            "完整 react 段，结构与 config.yaml::react 一致（不含模型三键）"
+        ),
+    )
+
+
 class AgentTemplateUpdateRequest(SafeTextMixin):
     """对齐 agent_template：NOT NULL 列用 ``T = Field(default=None)``。"""
 
