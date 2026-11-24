@@ -2,7 +2,7 @@
 import asyncio
 import logging
 
-from agent_gateway.enterprise import is_enterprise
+from agent_gateway import enterprise
 from agent_gateway.channel_manager.web.persistent_bindings import BindingError
 from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 
@@ -21,7 +21,7 @@ def register_welink_bindings(
 
     def owner_handler(handler):
         async def owner(ws, req_id, params, session_id):
-            if is_enterprise():
+            if enterprise.is_enterprise():
                 await channel.send_response(ws, req_id, ok=False, error="企业版配置由管理面统一下发", code="FORBIDDEN")
                 return
             await handler(ws, req_id, params, session_id)
