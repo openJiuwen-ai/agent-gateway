@@ -120,6 +120,65 @@ async def test_create_timeout_retries_same_operation_and_never_changes_instance(
     await client.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('status', 'code'), [(429, 'RATE_LIMITED'), (503, 'UNAVAILABLE')])
+async def test_create_http_error_preserves_status(monkeypatch, tmp_path, status, code):
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-alice+jiuwenswarm'
+
+    def handle(request):
+        if request.method == 'GET':
+            return httpx.Response(404)
+        return httpx.Response(status, json={'error': {'code': code}})
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    try:
+        with pytest.raises(AdxControlError) as caught:
+            await client.create_sandbox(
+                namespace='test', name='alice+jiuwenswarm', workspace='/mnt/users/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}, 'cpu': 1000, 'memory': 512},
+            )
+        assert caught.value.status_code == status
+        if status == 429:
+            assert instance not in client._creates
+        else:
+            assert instance in client._creates
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_on_replay_keeps_create_operation(monkeypatch, tmp_path):
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-alice+jiuwenswarm'
+    posts = {'n': 0}
+
+    def handle(request):
+        if request.method == 'GET':
+            return httpx.Response(404)
+        posts['n'] += 1
+        if posts['n'] == 1:
+            raise httpx.ReadTimeout('response lost', request=request)
+        return httpx.Response(429, json={'error': {'code': 'RATE_LIMITED'}})
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    args = dict(
+        namespace='test', name='alice+jiuwenswarm', workspace='/mnt/users/alice',
+        runtime_spec={'rootfs': {'imageurl': 'app:1'}, 'cpu': 1000, 'memory': 512},
+    )
+    try:
+        with pytest.raises(AdxControlError):
+            await client.create_sandbox(**args)
+        operation = client._creates[instance]
+
+        with pytest.raises(AdxControlError):
+            await client.create_sandbox(**args)
+
+        assert client._creates[instance] == operation
+    finally:
+        await client.close()
+
+
 async def test_environment_query_rejects_mismatched_tenant_and_identity(monkeypatch, tmp_path):
     cfg = config(monkeypatch, tmp_path)
     for view in [

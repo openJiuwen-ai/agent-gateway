@@ -17,6 +17,7 @@ from e2a.message import ReqMethod
 
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import _proxy_http
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
+    AgentCreateFailed,
     AgentCreating,
     AgentManager,
     AgentPreCreateError,
@@ -50,6 +51,7 @@ from agent_gateway.extensions.agentos.agentos_router.registry_client import (
 from agent_gateway.extensions.agentos.agentos_router.router_client import (
     USER_DIRECTORY_ENV_KEY,
     AgentOSRouterClient,
+    _MAX_UNCERTAIN_CREATE_ATTEMPTS,
     _SandboxAttempt,
     _extract_placement_ips,
     _is_agent_network_error,
@@ -5018,6 +5020,8 @@ async def test_create_that_was_not_sent_can_be_retried(recovery_router):
     # A definite rejection (e.g. workspace not prepared) also arrives as an
     # uncertain HTTP 500 with an empty body.
     YuanrongAgentCreateUncertainError("create agent result uncertain: http_status=500"),
+    # ADX surfaces HTTP status directly on its API error.
+    YuanrongAgentApiError("create agent failed: http_status=503", status_code=503),
 ])
 async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, failures, error):
     router, frontend, _ = recovery_router()
@@ -5045,6 +5049,41 @@ async def test_uncertain_create_is_replayed_with_the_same_name(recovery_router, 
         assert [call.args for call in frontend.wait_until_running.await_args_list] == [(instance_id,)]
         lifecycle = router._sandbox_lifecycles.get("user+jiuwenswarm")
         assert lifecycle is None or lifecycle.attempt is None
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize("error", [
+    YuanrongAgentTimeoutError("response lost"),
+    YuanrongAgentApiError("create agent failed: http_status=503", status_code=503),
+])
+async def test_persistent_uncertain_create_fails_after_replay_limit(recovery_router, error):
+    router, frontend, _ = recovery_router()
+    posts = []
+
+    async def create(**kwargs):
+        posts.append(kwargs)
+        raise error
+
+    frontend.create_sandbox.side_effect = create
+    try:
+        for _ in range(_MAX_UNCERTAIN_CREATE_ATTEMPTS - 1):
+            with pytest.raises(AgentRebuildPending, match="unknown"):
+                await _create_recovery_runtime(router)
+        with pytest.raises(AgentCreateFailed, match="stayed uncertain"):
+            await _create_recovery_runtime(router)
+
+        assert len(posts) == _MAX_UNCERTAIN_CREATE_ATTEMPTS
+        assert all(post == posts[0] for post in posts)
+        retired_id = deterministic_agent_instance_id("default", posts[0]["name"])
+        assert any(call.args == (retired_id,) for call in frontend.delete_sandbox.await_args_list)
+
+        runtime = await router._agent_manager.get_agent("user", "jiuwenswarm")
+        assert runtime is not None and runtime.is_failed()
+        assert str(error) in (runtime.info.error or "")
+        lifecycle = router._sandbox_lifecycles.get("user+jiuwenswarm")
+        assert lifecycle is not None
+        assert lifecycle.attempt is None
     finally:
         await router.shutdown()
 
