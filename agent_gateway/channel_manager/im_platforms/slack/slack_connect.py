@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import time
@@ -16,6 +15,10 @@ from agent_gateway.channel_manager.base import (
     ChannelMetadata,
     RobotMessageRouter,
     is_web_only_telemetry_event,
+)
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
 )
 from agent_gateway.routing.keys import SlackDeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -248,12 +251,12 @@ class SlackChannel(BaseChannel):
             },
         )
 
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(req)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(req)
+        await dispatch_inbound_message(
+            req,
+            router=self.bus,
+            callback=self._on_message_cb,
+            await_mode=CallbackAwaitMode.COROUTINE,
+        )
 
     def _remember_event(self, event_id: str) -> bool:
         if event_id in self._seen_event_ids:

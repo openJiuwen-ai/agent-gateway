@@ -23,6 +23,10 @@ from agent_gateway.channel_manager.base import (
     RobotMessageRouter,
     is_web_only_telemetry_event,
 )
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
+)
 from agent_gateway.channel_manager.im_platforms.thinking_content import (
     is_thinking_only_content,
     strip_think_tags,
@@ -1281,12 +1285,12 @@ class WechatChannel(BaseChannel):
             },
         )
 
-        if self._message_callback:
-            result = self._message_callback(msg)
-            if asyncio.iscoroutine(result):
-                await result
-        else:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._message_callback,
+            await_mode=CallbackAwaitMode.COROUTINE,
+        )
 
     def _headers(self) -> dict[str, str]:
         if not self.config.bot_token:

@@ -26,6 +26,10 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service i
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
+)
 from agent_gateway.common.paths import get_agent_workspace_dir
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -660,10 +664,12 @@ class DingTalkChannel(BaseChannel):
         """处理来自钉钉通道的传入消息"""
         msg = self._build_user_message(chat_id, sender_id, content, conversation_id, conversation_type, metadata, files)
 
-        if self._gateway_callback:
-            self._gateway_callback(msg)
-        else:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._gateway_callback,
+            await_mode=CallbackAwaitMode.NONE,
+        )
 
     def _validate_config(self) -> bool:
         """验证配置是否有效"""

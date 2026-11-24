@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 import logging
 import os
@@ -19,6 +18,9 @@ from agent_gateway.channel_manager.base import (
     ChannelMetadata,
     RobotMessageRouter,
     is_web_only_telemetry_event,
+)
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    dispatch_inbound_message,
 )
 from agent_gateway.routing.keys import DeliveryTarget
 from agent_gateway.routing.session_sharing import RoutingTarget
@@ -327,15 +329,12 @@ class WhatsAppChannel(BaseChannel):
         except Exception:
             pass
 
-        handled = False
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(msg)
-            if inspect.isawaitable(result):
-                result = await result
-            handled = bool(result)
-
-        if not handled:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._on_message_cb,
+            fallback_on_false=True,
+        )
 
     def _handle_status_message(self, data: dict[str, Any]) -> None:
         state = str(data.get("state") or data.get("status") or "").strip().lower()

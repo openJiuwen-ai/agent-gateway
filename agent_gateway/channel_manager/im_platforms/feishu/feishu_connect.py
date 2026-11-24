@@ -29,6 +29,10 @@ from agent_gateway.channel_manager.base import (
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
+    dispatch_inbound_message,
+)
 from agent_gateway.channel_manager.im_platforms.group_ack import (
     DEFAULT_GROUP_ACK,
     generate_group_ack_text,
@@ -551,10 +555,12 @@ class FeishuChannel(BaseChannel):
                         enable_memory=self.config.enable_memory,
                         enable_streaming=False,
                     )
-                    if self._message_callback:
-                        self._message_callback(resume_msg)
-                    else:
-                        await self.bus.route_user_message(resume_msg)
+                    await dispatch_inbound_message(
+                        resume_msg,
+                        router=self.bus,
+                        callback=self._message_callback,
+                        await_mode=CallbackAwaitMode.NONE,
+                    )
                     return
 
         _effective_group_digital_avatar = self.config.group_digital_avatar and _is_group
@@ -577,10 +583,12 @@ class FeishuChannel(BaseChannel):
             enable_memory=self.config.enable_memory,
             enable_streaming=_msg_enable_streaming,
         )
-        if self._message_callback:
-            self._message_callback(msg)
-        else:
-            await self.bus.route_user_message(msg)
+        await dispatch_inbound_message(
+            msg,
+            router=self.bus,
+            callback=self._message_callback,
+            await_mode=CallbackAwaitMode.NONE,
+        )
 
     async def start(self) -> None:
         """启动飞书机器人，使用WebSocket长连接接收消息。"""
@@ -3945,10 +3953,12 @@ class FeishuChannel(BaseChannel):
             # 保留上下文也换不来可成功的重试，只会让提示语自相矛盾。
             self._drop_card_context(request_id)
             try:
-                if self._message_callback:
-                    self._message_callback(msg)
-                else:
-                    await self.bus.route_user_message(msg)
+                await dispatch_inbound_message(
+                    msg,
+                    router=self.bus,
+                    callback=self._message_callback,
+                    await_mode=CallbackAwaitMode.NONE,
+                )
             except Exception as exc:  # noqa: BLE001 - 投递失败要告知用户
                 logger.error(
                     "[FeishuChannel] 审批回执投递失败: request_id=%s error=%s",
