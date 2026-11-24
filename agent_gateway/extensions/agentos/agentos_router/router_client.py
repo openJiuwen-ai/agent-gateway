@@ -737,6 +737,9 @@ class AgentOSRouterClient(AgentServerClient):
         self._last_channel_snapshot: dict[str, Any] = {}
         self._channel_synced_sandboxes: set[str] = set()
         self._channel_sync_failures: dict[str, int] = {}
+        # 每次全局配置保存自增；在途 fanout 只有仍属于最新一代时才能更新
+        # 快照/已同步标记，避免旧 fanout 晚到后覆盖新配置。
+        self._channel_sync_generation: int = 0
 
     def set_channel_manager(self, channel_manager: ChannelManager) -> None:
         """Attach handshake IAM for Web/TUI and subscribe channel disconnect events."""
@@ -1548,8 +1551,13 @@ class AgentOSRouterClient(AgentServerClient):
     ) -> None:
         if config:
             import copy
+            self._channel_sync_generation += 1
             self._server_config = copy.deepcopy(config)
             self._last_channel_snapshot = {}
+            # 全局配置变化后，已同步过的 sandbox 也必须重新收到 channel 快照。
+            # 只清 _last_channel_snapshot 会让老 sandbox 因 synced 标记被跳过。
+            self._channel_synced_sandboxes.clear()
+            self._channel_sync_failures.clear()
         self._yuanrong.set_or_update_server_config(config=config, env=env)
 
     def set_server_push_handler(
@@ -2316,6 +2324,7 @@ class AgentOSRouterClient(AgentServerClient):
         if not channels:
             return
 
+        generation = self._channel_sync_generation
         envelope = E2AEnvelope(
             request_id=uuid.uuid4().hex,
             channel="web",
@@ -2327,7 +2336,8 @@ class AgentOSRouterClient(AgentServerClient):
         try:
             response = await ws_client.send_request(envelope, timeout=5.0)
         except Exception as exc:  # noqa: BLE001 - retry on the next request
-            self._record_channel_sync_failure(sandbox_id)
+            if generation == self._channel_sync_generation:
+                self._record_channel_sync_failure(sandbox_id)
             logger.warning(
                 "[ChannelSync] initial sync failed user=%s: %s",
                 runtime.info.user_id,
@@ -2335,11 +2345,14 @@ class AgentOSRouterClient(AgentServerClient):
             )
             return
         if not getattr(response, "ok", False):
-            self._record_channel_sync_failure(sandbox_id)
+            if generation == self._channel_sync_generation:
+                self._record_channel_sync_failure(sandbox_id)
             logger.warning(
                 "[ChannelSync] initial sync rejected user=%s",
                 runtime.info.user_id,
             )
+            return
+        if generation != self._channel_sync_generation:
             return
         self._channel_sync_failures.pop(sandbox_id, None)
         self._channel_synced_sandboxes.add(sandbox_id)
@@ -2368,6 +2381,7 @@ class AgentOSRouterClient(AgentServerClient):
         )
         if not snapshot:
             return False
+        generation = self._channel_sync_generation
         try:
             runtimes = await self._agent_manager.list_all_agents()
         except Exception:  # noqa: BLE001
@@ -2379,8 +2393,10 @@ class AgentOSRouterClient(AgentServerClient):
             if runtime.is_ready() and runtime.info.agent_type == BUILTIN_AGENT_TYPE
         ]
         if not targets:
-            self._last_channel_snapshot = snapshot
-            return True
+            if generation == self._channel_sync_generation:
+                self._last_channel_snapshot = snapshot
+                return True
+            return False
 
         async def send_one(runtime: AgentRuntime) -> bool:
             envelope = E2AEnvelope(
@@ -2399,18 +2415,29 @@ class AgentOSRouterClient(AgentServerClient):
                     runtime.info.user_id,
                 )
                 return False
-            sandbox_id = str(runtime.info.sandbox_id or "").strip()
-            if sandbox_id:
-                self._channel_sync_failures.pop(sandbox_id, None)
-                self._channel_synced_sandboxes.add(sandbox_id)
+            if generation == self._channel_sync_generation:
+                sandbox_id = str(runtime.info.sandbox_id or "").strip()
+                if sandbox_id:
+                    self._channel_sync_failures.pop(sandbox_id, None)
+                    self._channel_synced_sandboxes.add(sandbox_id)
             return True
 
         results = await asyncio.gather(
             *(send_one(runtime) for runtime in targets),
             return_exceptions=True,
         )
+        if generation != self._channel_sync_generation:
+            # 配置在 fanout 期间又被保存：让最新一代的 fanout 决定最终状态。
+            return False
         failed = sum(result is not True for result in results)
         if failed:
+            # 失败 target 不能继续保留“已同步”标记，否则后续请求不会重试。
+            for runtime, result in zip(targets, results):
+                if result is True:
+                    continue
+                sandbox_id = str(runtime.info.sandbox_id or "").strip()
+                if sandbox_id:
+                    self._channel_synced_sandboxes.discard(sandbox_id)
             logger.warning(
                 "[ChannelSync] AgentOS fanout partial failure: %d/%d",
                 failed, len(targets),

@@ -65,7 +65,6 @@ def owner(tmp_path, monkeypatch):
     monkeypatch.setattr(
         welink_bindings_mod, "schedule_channel_config", skip_schedule_channel_config
     )
-    monkeypatch.setattr(welink_bindings_mod, "is_enterprise", lambda: False)
     settings = register_persistent_bindings(channel, lambda: cm, lambda: service, _normalize_feishu_conf, MagicMock())
 
     async def rpc(method, params):
