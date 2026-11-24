@@ -21,6 +21,7 @@ from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, ExtensionEventBus, Hand
 
 from agent_gateway.extensions_v2.core_handlers.request_core import build_request_core_handler
 from agent_gateway.extensions_v2.event_types.gateway import register_gateway_request_events
+from agent_gateway.extensions_v2.event_types.package import register_package_lifecycle_events
 from agent_gateway.extensions_v2.handler_ops.gateway_ops import build_gateway_ops_build_handler
 from agent_gateway.extensions_v2.handler_ops.data_ops import build_data_ops_build_handler
 from agent_gateway.extensions_v2.handler_ops.http_ops import build_http_ops_build_handler
@@ -43,6 +44,7 @@ def register_event_types(bus: ExtensionEventBus, runtime: GatewayRuntime) -> Non
 
     runtime.webui.register_event_types(bus)
     register_gateway_request_events(bus, build_request_core_handler())
+    register_package_lifecycle_events(bus, runtime)
     runtime.browser.register_events(bus)
     register_webui_action_events(
         bus,
