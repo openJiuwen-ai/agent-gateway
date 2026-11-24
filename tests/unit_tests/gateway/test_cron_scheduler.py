@@ -202,6 +202,7 @@ class _TestableScheduler(CronSchedulerService):
         cron_meta,
         mode,
         timeout_seconds,
+        state=None,
     ):
         return await self._run_team_stream_job(
             envelope=envelope,
@@ -209,7 +210,11 @@ class _TestableScheduler(CronSchedulerService):
             cron_meta=cron_meta,
             mode=mode,
             timeout_seconds=timeout_seconds,
+            state=state,
         )
+
+    def publish_team_idle_to_exec_channel(self, state):
+        return self._publish_team_idle_to_exec_channel(state)
 
     @property
     def events(self):
@@ -4251,3 +4256,227 @@ def test_an_answer_resumes_a_cron_pause_only_when_it_answers_something():
 
     resume.params["answers"] = []
     assert not _MessageHandlerStreamTestApi.is_permission_resume(resume, "cron_job-1")
+
+
+class _RecordingNowaitHandler(FakeMessageHandler):
+    """FakeMessageHandler that also records sync-enqueued messages."""
+
+    def __init__(self):
+        super().__init__()
+        self.nowait_published = []
+
+    def publish_robot_messages_nowait(self, msg):
+        self.nowait_published.append(msg)
+        return True
+
+
+class _RecordingLiveScheduler(_TestableScheduler):
+    """Record cron-live frames instead of publishing into the global bus.
+
+    The singleton bus keeps a Redis worker bound to the event loop that created
+    it; using it from several function-scoped loops pollutes unrelated tests.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.live_frames = []
+
+    def _publish_cron_execution_live(self, state, event_name, payload):
+        self.live_frames.append((event_name, payload))
+
+
+def _team_idle_state(
+    *,
+    run_id="run-idle-1",
+    channel_id="web",
+    session_id="cron_exec_idle_1",
+):
+    return CronRunState(
+        run_id=run_id,
+        job_id="job-idle",
+        wake_at_iso="2026-11-12T09:00:00+08:00",
+        push_at_iso="2026-11-12T09:00:00+08:00",
+        exec_mode="team",
+        exec_channel_id=channel_id,
+        exec_session_id=session_id,
+    )
+
+
+def _cron_status_frames(handler, run_id):
+    return [
+        msg
+        for msg in handler.nowait_published
+        if getattr(msg, "id", "") == f"cron-status-{run_id}"
+    ]
+
+
+class TestCronTeamIdlePublish:
+    """team 收尾必须把 idle 交给执行渠道，否则 WebChannel 的 busy 停住。
+
+    team 定时任务的收尾广播在流被取消时跳过，scheduler 只把终态帧发到
+    cron live；WebChannel 的 ``_session_busy`` 永远停在 true，刷新后仍是
+    「执行中」。补发同一事件让 WebChannel 自己把会话标回空闲。
+    """
+
+    def test_web_exec_channel_publishes_idle_frame(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = _RecordingNowaitHandler()
+        svc = _make_scheduler(store, handler)
+        state = _team_idle_state(run_id="run-idle-web")
+
+        svc.publish_team_idle_to_exec_channel(state)
+
+        frames = _cron_status_frames(handler, "run-idle-web")
+        assert len(frames) == 1
+        msg = frames[0]
+        assert msg.channel_id == "web"
+        assert msg.session_id == "cron_exec_idle_1"
+        assert msg.event_type == EventType.CHAT_PROCESSING_STATUS
+        assert msg.payload["event_type"] == "chat.processing_status"
+        assert msg.payload["session_id"] == "cron_exec_idle_1"
+        assert msg.payload["is_processing"] is False
+        assert msg.payload["is_complete"] is True
+        assert msg.payload["cron"] == {"job_id": "job-idle", "run_id": "run-idle-web"}
+        assert msg.metadata["source"] == "cron"
+
+    def test_internal_channel_gets_no_idle_frame(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = _RecordingNowaitHandler()
+        svc = _make_scheduler(store, handler)
+        state = _team_idle_state(
+            run_id="run-idle-internal",
+            channel_id="__cron__",
+            session_id="__cron___exec_1",
+        )
+
+        svc.publish_team_idle_to_exec_channel(state)
+
+        assert _cron_status_frames(handler, "run-idle-internal") == []
+
+    def test_missing_exec_session_gets_no_idle_frame(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = _RecordingNowaitHandler()
+        svc = _make_scheduler(store, handler)
+        state = _team_idle_state(run_id="run-idle-nosid", session_id="  ")
+
+        svc.publish_team_idle_to_exec_channel(state)
+
+        assert _cron_status_frames(handler, "run-idle-nosid") == []
+
+    def test_handler_without_nowait_publish_is_ignored(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler)
+
+        # 没有同步入队入口时静默跳过，不能因为收尾补帧把整轮任务拖挂。
+        svc.publish_team_idle_to_exec_channel(_team_idle_state(run_id="run-idle-nohandler"))
+
+        assert handler.published == []
+
+    def test_publish_failure_is_swallowed(self, tmp_path):
+        """补帧失败只记日志，不能把已完成的 team 任务改判失败。"""
+
+        class _FailingHandler(_RecordingNowaitHandler):
+            def publish_robot_messages_nowait(self, msg):
+                raise RuntimeError("queue full")
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        svc = _make_scheduler(store, _FailingHandler())
+
+        svc.publish_team_idle_to_exec_channel(_team_idle_state(run_id="run-idle-fail"))
+
+    @pytest.mark.asyncio
+    async def test_team_stream_end_publishes_idle_to_web(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = _RecordingNowaitHandler()
+        svc = _RecordingLiveScheduler(
+            store=store,
+            agent_client=FakeAgentClient(),
+            message_handler=handler,
+        )
+        state = _team_idle_state(run_id="run-stream-web")
+        envelope = SimpleNamespace(
+            request_id="cron-team-idle:1",
+            channel="web",
+            channel_context={},
+            params={},
+            user_id="owner",
+        )
+
+        text, ok = await svc.run_team_stream_job(
+            envelope=envelope,
+            exec_session_id="cron_exec_idle_1",
+            cron_meta={"job_id": state.job_id, "run_id": state.run_id},
+            mode="team",
+            timeout_seconds=0.5,
+            state=state,
+        )
+
+        assert (text, ok) == ("team result", True)
+        # 收尾帧仍然进 cron live，两条路都要有。
+        processing_frames = [
+            payload
+            for name, payload in svc.live_frames
+            if name == "chat.processing_status"
+        ]
+        assert [item["is_processing"] for item in processing_frames] == [True, False]
+        frames = _cron_status_frames(handler, state.run_id)
+        assert len(frames) == 1
+        assert frames[0].payload["is_processing"] is False
+
+    @pytest.mark.asyncio
+    async def test_paused_team_stream_keeps_the_session_busy(self, tmp_path, monkeypatch):
+        """停在等人点的一轮不算收尾：不能补发 idle 把会话标错。"""
+        monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
+
+        class _InterruptingClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={
+                        "event_type": "chat.ask_user_question",
+                        "request_id": "req-idle-1",
+                        "source": "ask_user_interrupt",
+                        "questions": [{"question": "继续吗？"}],
+                    },
+                    is_complete=False,
+                )
+                await asyncio.Event().wait()
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        handler = _RecordingNowaitHandler()
+        svc = _RecordingLiveScheduler(
+            store=store,
+            agent_client=_InterruptingClient(),
+            message_handler=handler,
+        )
+        state = _team_idle_state(run_id="run-stream-paused")
+        state.manually_triggered = True
+        envelope = SimpleNamespace(
+            request_id="cron-team-idle-paused:1",
+            channel="web",
+            channel_context={},
+            params={},
+            user_id="owner",
+        )
+
+        text, ok = await svc.run_team_stream_job(
+            envelope=envelope,
+            exec_session_id="cron_exec_idle_1",
+            cron_meta={"job_id": state.job_id, "run_id": state.run_id},
+            mode="team",
+            timeout_seconds=0.5,
+            state=state,
+        )
+
+        assert (text, ok) == ("", True)
+        assert state.status == "awaiting_approval"
+        idle_frames = [
+            payload
+            for name, payload in svc.live_frames
+            if name == "chat.processing_status" and payload["is_processing"] is False
+        ]
+        assert idle_frames == []
+        assert _cron_status_frames(handler, state.run_id) == []
