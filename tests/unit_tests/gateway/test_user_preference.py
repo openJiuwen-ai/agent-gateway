@@ -55,18 +55,81 @@ async def test_resolve_order_user_default_yaml(monkeypatch):
         lambda: "en",
     )
 
+    # 无用户行、无默认行 → yaml；并固化为用户行
     assert await svc.get_language("u1") == "en"
+    assert store.rows["u1"]["preferred_language"] == "en"
 
+    # 之后改集群默认，已固化用户不再跟随
     store.rows[DEFAULT_USER_ID] = {
         "user_id": DEFAULT_USER_ID,
         "preferred_language": "zh",
         "revision": 1,
     }
-    assert await svc.get_language("u1") == "zh"
-
-    store.rows["u1"] = {"user_id": "u1", "preferred_language": "en", "revision": 1}
     cache.clear()
     assert await svc.get_language("u1") == "en"
+
+    # 显式用户行仍优先
+    store.rows["u1"] = {"user_id": "u1", "preferred_language": "zh", "revision": 2}
+    cache.clear()
+    assert await svc.get_language("u1") == "zh"
+
+
+@pytest.mark.asyncio
+async def test_get_language_materializes_from_cluster_default(monkeypatch):
+    store = _FakeStore()
+    cache = UserPreferenceCache(ttl_seconds=60)
+    svc = UserPreferenceService(cache=cache)
+    monkeypatch.setattr(
+        "agent_gateway.config.user_preference.service.get_persistent_store",
+        lambda: store,
+    )
+    store.rows[DEFAULT_USER_ID] = {
+        "user_id": DEFAULT_USER_ID,
+        "preferred_language": "zh",
+        "revision": 1,
+    }
+
+    assert await svc.get_language("alice") == "zh"
+    assert store.rows["alice"]["preferred_language"] == "zh"
+    assert store.rows["alice"].get("created_at") is not None
+
+    store.rows[DEFAULT_USER_ID]["preferred_language"] = "en"
+    cache.clear()
+    assert await svc.get_language("alice") == "zh"
+
+
+@pytest.mark.asyncio
+async def test_get_language_empty_user_id_does_not_write(monkeypatch):
+    store = _FakeStore()
+    svc = UserPreferenceService(cache=UserPreferenceCache())
+    monkeypatch.setattr(
+        "agent_gateway.config.user_preference.service.get_persistent_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(svc, "_yaml_fallback_language", lambda: "en")
+
+    assert await svc.get_language(None) == "en"
+    assert await svc.get_language("") == "en"
+    assert await svc.get_language(DEFAULT_USER_ID) == "en"
+    assert store.rows == {}
+
+
+@pytest.mark.asyncio
+async def test_get_language_materialize_failure_still_returns(monkeypatch):
+    store = _FakeStore()
+    svc = UserPreferenceService(cache=UserPreferenceCache())
+    monkeypatch.setattr(
+        "agent_gateway.config.user_preference.service.get_persistent_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(svc, "_yaml_fallback_language", lambda: "en")
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(svc, "_db_insert_if_absent", boom)
+    assert await svc.get_language("bob") == "en"
+    assert "bob" not in store.rows
 
 
 @pytest.mark.asyncio
