@@ -324,12 +324,19 @@ def test_rsi_session_id_injected(gateway_ws, stub_agent_server) -> None:
 def _request_and_expect_error(
     gateway_ws: GatewayWsClient, stub_agent_server: Any, method: str, params: dict[str, Any], code: str
 ) -> None:
+    rid = f"st-err-{method}-{code}"
     before = len(stub_agent_server.requests)
-    frames = gateway_ws.request(method, params, rid=f"st-err-{method}-{code}")
+    frames = gateway_ws.request(method, params, rid=rid)
     res = frames[-1]
     assert res["type"] == "res" and res["ok"] is False
     assert res.get("code") == code, res
-    assert len(stub_agent_server.requests) == before, "被拒请求不应触达 AgentServer"
+    # gateway 有 2s 生命周期轮询，后台请求会追加到 stub；只校验本次请求没有被转发。
+    forwarded = [
+        entry
+        for entry in stub_agent_server.requests[before:]
+        if entry.get("request_id") == rid or entry.get("method") == method
+    ]
+    assert not forwarded, "被拒请求不应触达 AgentServer"
 
 
 def test_frame_rejects_non_string_mode(gateway_ws, stub_agent_server) -> None:
