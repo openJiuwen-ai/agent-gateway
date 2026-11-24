@@ -101,7 +101,7 @@ CRON_INTERRUPT_EVENT_TYPES = frozenset(
     }
 )
 
-CRON_INTERRUPT_RESULT_TEXT = "[cron] 任务执行遇到审批中断，未返回结果内容"
+CRON_INTERRUPT_RESULT_TEXT = "[cron] 定时任务不支持审批， 请修改任务提示词。"
 
 # 调度器自己收智能体的流时，这些帧要进正在看的执行会话直播。
 # 终稿单独放：直播里先有终稿，页面再用它盖住逐字拼出来的正文。
