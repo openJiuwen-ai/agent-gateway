@@ -388,11 +388,6 @@ def test_unreachable_forward_methods() -> None:
         "skills.enterprise.source.providers",
         "skills.enterprise.source.search",
         "skills.enterprise.uninstall",
-        "skills.source.install",
-        "skills.source.providers",
-        "skills.source.search",
-        "skills.update",
-        "skills.updates.check",
     }
     assert unreachable == expected, (
         f"不可达方法集合变化（协议包/网关 shim 已补枚举？请同步更新文档标注）: {unreachable ^ expected}"
@@ -404,9 +399,8 @@ def test_unreachable_forward_methods() -> None:
     sorted(
         {
             "session.assets.remove",
-            "skills.update",
-            "skills.source.search",
             "skills.enterprise.list",
+            "mcp.sources.providers",
         }
     ),
 )
