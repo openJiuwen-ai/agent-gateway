@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # These methods are handled inside Gateway and therefore do not pass through
 # AgentServer's E2A normalization. Local handlers only receive ``params``, so
 # merge ``metadata.routing`` into the handler params copy (not Message.params).
-_LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "skills.enterprise.", "workspace.")
+_LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "workspace.")
 _LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
     "models.list",
     "project.get_sessions",
@@ -64,11 +64,6 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     # 按包上传审批：stage 暂存、finalize 安装（finalize 另有 manager 复核）。
     SKILL_UPLOAD_STAGE,
     SKILL_UPLOAD_FINALIZE,
-    "skills.enterprise.list",
-    "skills.enterprise.install",
-    "skills.enterprise.uninstall",
-    "skills.enterprise.source.providers",
-    "skills.enterprise.source.search",
 })
 
 

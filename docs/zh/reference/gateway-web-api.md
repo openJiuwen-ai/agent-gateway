@@ -2376,7 +2376,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 以下方法在 `_FORWARD_REQ_METHODS` 白名单中、无本地 handler，经 E2A 转发 AgentServer（`app_web_handlers.py:459-696`），传输层契约同 §3.2（成功透传、失败透传 payload.code 缺省 BAD_REQUEST）。**注意两域特例**：a4p 转发带网关前置检查（`AGENT_NOT_READY` / `A4P_WEB_SESSION_REQUIRED`，`app_web_handlers.py:5826-5859`）；rsi.\* 一律由网关注入 `session_id`（`rsi.artifact.download` 另注入 `_download_user_id`）。
 
-其中 §10.6.1-§10.6.5（skills）与 §10.6.9（专家团/装备包）为**逐参数契约**（参数表含类型/必填/默认与校验/说明 + 响应字段 + 错误码），依据 AgentServer 仓 develop `475e3a3b64` 的 handler 实现逐行核对——这些小节内的行号引用相对该仓 `server/` 目录。布尔参数普遍为 Python 真值判断（`bool(params.get(...))`）：WS 路径无字符串布尔强转，**传字符串 "false" 会被当作 true**；严格布尔与宽松字符串解析的例外已在参数行逐处标注。另有 11 个白名单在册方法（`session.assets.remove`、`skills.enterprise/source` 系列、`skills.update/updates.check`）因钉定协议包缺枚举成员**当前不可达**（帧级 METHOD_NOT_FOUND，附录 F.1），无接口章节。
+其中 §10.6.1-§10.6.5（skills）与 §10.6.9（专家团/装备包）为**逐参数契约**（参数表含类型/必填/默认与校验/说明 + 响应字段 + 错误码），依据 AgentServer 仓 develop `475e3a3b64` 的 handler 实现逐行核对——这些小节内的行号引用相对该仓 `server/` 目录。布尔参数普遍为 Python 真值判断（`bool(params.get(...))`）：WS 路径无字符串布尔强转，**传字符串 "false" 会被当作 true**；严格布尔与宽松字符串解析的例外已在参数行逐处标注。另有 6 个白名单在册方法（`session.assets.remove`、`skills.source` 系列、`skills.update/updates.check`）因钉定协议包缺枚举成员**当前不可达**（帧级 METHOD_NOT_FOUND，附录 F.1），无接口章节。
 
 #### 10.6.1 skills 基础
 
@@ -4314,7 +4314,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 > 方法级「透传 / 网关处理 / 不可达」标注与自动化透传验证见**附录 F**。
 
-当前全集 495 个 WS 方法（个人版 488；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`multimodal.*`（6 个，E2A 代理 + preserve_error_payload，§10.1）、`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`（企业版另有 `skills.enterprise.*`）、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
+当前全集 495 个 WS 方法（个人版 488；企业版另注册 team 控制面 7 个，见 §5.2）。相对旧基线的新增域：`multimodal.*`（6 个，E2A 代理 + preserve_error_payload，§10.1）、`jiuwenmate.*`（46 个转发 + 1 个本地）、`client.*`、`mcp_app.*`、`group.execution.*` / `group.file.*` / `group.history.clear`、`skills.source.*` / `skills.update` / `skills.updates.check`、`channel.feishu|dingtalk.bind_agent/unbind_agent`、`channel.feishu.get_bindings/revoke`、`channel.welink.*`（7 个，均 local_only 不经转发）。应用插件（extensions registry）还可动态注册额外方法，插件禁用时统一回 `APPLICATION_PLUGIN_DISABLED`。
 
 ## 附录 B. 事件类型总表（EventType，协议包 `e2a/message.py` + 网关 shim `common/protocol_compat.py`，共 50 个）
 
@@ -4844,7 +4844,7 @@ ws.addEventListener('open', async () => {
 | 网关薄包装转发 | 10 | topic_starters.\*（8）、prompt_suggestion.\*（2） | RPC 名改写为 `action` 字段经 `recommendation.job` 转发（注入 auth_session）；与纯本地/纯透传均不同 |
 
 > **逐方法标注**：全量 495 个方法的分类与处理要点见 **F.6 逐方法标注总表**（程序化生成，与注册表同口径）。
-| **不可达** | 11 | session.assets.remove、skills.enterprise.{list,install,uninstall,source.providers,source.search}、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
+| **不可达** | 6 | session.assets.remove、skills.source.{providers,search,install}、skills.update、skills.updates.check | 白名单在册但钉定协议包 `ReqMethod` 无对应成员 → 帧级即 `METHOD_NOT_FOUND`；ST 用例锁定该集合，协议包补枚举后用例失败以提醒同步文档 |
 | 企业版专用 | 7 | team.create / team.get / team.stop / team.member.join / leave / team.members.list / team.quota.get | 个人版从白名单与注册表双双剔除 → `METHOD_NOT_FOUND`；HTTP 路由同步过滤 |
 | /ws/git 封闭协议 | 6 | project.git.diff_watch / diff_files_watch / diff_detail_watch / diff_unwatch / discard_turn_changes / redo_turn_changes | 独立分发：网关 busy 预检 + 转发 + `preserve_error_payload` |
 | local_only（注册但不转发） | 14 | channel.feishu/dingtalk.bind_agent/unbind_agent、channel.feishu.get_bindings/revoke、channel.welink.\*（7）、jiuwenmate.colleague.delete | 网关本地执行；企业版拦截为 **handler 内自检**（区别于 invoke 管道统一写保护的拦截位置——两者同为 WS/HTTP 双入口，§1.3）：绑定/撤销与 welink 全部方法 → FORBIDDEN（feishu.get_bindings 放行） |
@@ -5795,11 +5795,6 @@ ws.addEventListener('open', async () => {
 | `skills.clawhub.search` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
 | `skills.clawhub.set_token` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
 | `skills.create_from_knowledge` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
-| `skills.enterprise.install` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
-| `skills.enterprise.list` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
-| `skills.enterprise.source.providers` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
-| `skills.enterprise.source.search` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
-| `skills.enterprise.uninstall` | **不可达** | 白名单在册但协议枚举缺失 → 帧级 METHOD_NOT_FOUND |
 | `skills.evolution.get` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
 | `skills.evolution.save` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
 | `skills.evolution.status` | **透传** | params 逐键原样（仅 F.2 通用归一化） |
