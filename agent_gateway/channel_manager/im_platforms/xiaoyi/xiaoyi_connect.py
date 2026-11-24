@@ -30,6 +30,7 @@ from agent_gateway.channel_manager.base import (
     is_web_only_telemetry_event,
 )
 from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
+    CallbackAwaitMode,
     dispatch_inbound_message,
 )
 from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.formatter import (
@@ -1682,6 +1683,7 @@ class XiaoyiChannel(BaseChannel):
             router=self.bus,
             callback=self._on_message_cb,
             fallback_on_false=True,
+            await_mode=CallbackAwaitMode.AWAITABLE,
         )
 
         # Start session heartbeat to prevent xiaoyi client timeout

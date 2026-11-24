@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import types
 
+import pytest
 from e2a.message import Message
 
 from agent_gateway.channel_manager.base import RobotMessageRouter
@@ -10,6 +12,8 @@ from agent_gateway.channel_manager.im_platforms.inbound_dispatch import (
     CallbackAwaitMode,
     dispatch_inbound_message,
 )
+
+pytestmark = pytest.mark.asyncio
 
 
 def _message() -> Message:
@@ -173,6 +177,29 @@ async def test_dispatch_coroutine_mode_awaits_coroutine() -> None:
     )
 
     assert callback_completed is True
+
+
+async def test_dispatch_coroutine_mode_keeps_legacy_generator_coroutine_behavior() -> None:
+    router = RobotMessageRouter()
+    callback_completed = []
+
+    @types.coroutine
+    def callback_result():
+        yield from asyncio.sleep(0).__await__()
+        callback_completed.append(True)
+        return True
+
+    result = callback_result()
+
+    await dispatch_inbound_message(
+        _message(),
+        router=router,
+        callback=lambda _: result,
+        await_mode=CallbackAwaitMode.COROUTINE,
+    )
+
+    assert callback_completed == []
+    result.close()
 
 
 async def test_dispatch_coroutine_mode_does_not_await_future() -> None:
