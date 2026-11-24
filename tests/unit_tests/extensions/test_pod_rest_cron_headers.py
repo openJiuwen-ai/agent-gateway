@@ -30,6 +30,6 @@ def test_identity_headers_forward_cron_targets_and_meta() -> None:
     assert headers["X-Cron-Meta"] == (
         '{"job_id":"job-1","run_id":"job-1:1","timezone":"Asia/Shanghai"}'
     )
-    assembled = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766")
+    assembled = assemble_rest_request(envelope, base_url="http://agentserver.test:8766")
     assert assembled.headers["X-Cron-Meta"] == headers["X-Cron-Meta"]
     assert "cron" not in (assembled.json_body or {})
