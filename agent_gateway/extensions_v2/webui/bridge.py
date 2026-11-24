@@ -39,10 +39,11 @@ from agent_gateway.extensions_v2.webui.transfers import TransferManager
 from agent_gateway.extensions_v2.webui.presentation_control import PresentationControl, RESULT_METHOD
 
 SPLASH_SLOT = "application.splash"
+PRESENTATION_SLOT = "application.presentation"
 #: Declares that a package provides appearance parts; it renders nothing (S_09 section 2).
 APPEARANCE_SLOT = "application.appearance"
 SLOTS = frozenset({"application.entry", "application.sidebar.footer", "application.background", SPLASH_SLOT,
-                   "application.presentation", SETTINGS_SLOT, APPEARANCE_SLOT})
+                   PRESENTATION_SLOT, SETTINGS_SLOT, APPEARANCE_SLOT})
 #: Slots whose lifecycle frames bypass request policy (S_09 section 3).
 PLATFORM_SLOTS = frozenset({"application.background", SPLASH_SLOT, APPEARANCE_SLOT})
 #: The only fields of an ``application.appearance`` declaration.
@@ -50,6 +51,10 @@ APPEARANCE_ITEM_FIELDS = frozenset({"type", "id", "slot"})
 SPLASH_PROVIDERS_METHOD = "webui.splash.providers"
 SPLASH_READY_FIELDS = frozenset({"launch_id", "first_visit", "reduced_motion", "preview"})
 CLOSE_REASONS = frozenset({"complete", "skip", "timeout", "error", "disabled", "removed"})
+PRESENTATION_CLOSE_REASONS = frozenset({
+    "closed", "ready_timeout", "render_failed", "load_failed", "renderer_gone",
+    "transition_failed", "open_failed",
+})
 SHARED_AGENTSERVER_READY_SLOTS = frozenset({"application.sidebar.footer"})
 MIN_SPLASH_MS = 1_000
 MAX_SPLASH_MS = 60_000
@@ -147,6 +152,7 @@ class BrowserBridge:
         self.splash_preferences = SplashPreferences(runtime.config.data_dir)
         self.transfers = TransferManager(runtime)
         self.presentations = PresentationControl(runtime)
+        self._presentation_closes: dict[str, int] = {}
         #: Gateway-domain package ids known to ``runtime.packages``; only positives are cached.
         self._gateway_packages: set[str] = set()
         self.gateway_id = hashlib.sha256(str(runtime.config.install_dir.resolve()).encode()).hexdigest()
@@ -367,8 +373,11 @@ class BrowserBridge:
         if method != WEBUI_DISPATCH_METHOD or not isinstance(params, Mapping):
             return False
         target = params.get("target")
-        return (isinstance(target, Mapping) and target.get("scope") == "application"
-                and target.get("slot_id") in PLATFORM_SLOTS
+        if not isinstance(target, Mapping) or target.get("scope") != "application":
+            return False
+        if target.get("slot_id") == PRESENTATION_SLOT:
+            return params.get("event") == WebUIEvent.CLOSED.value
+        return (target.get("slot_id") in PLATFORM_SLOTS
                 and params.get("event") in (WebUIEvent.READY.value, WebUIEvent.CLOSED.value))
 
     async def platform_frame(self, request, context: SessionContext) -> dict[str, Any]:
@@ -390,7 +399,17 @@ class BrowserBridge:
         event_name = params.get("event")
         package_id = target.get("package_id", "")
         invalid = UiActionOutput(accepted=False, status="invalid_target", code="SCHEMA_ERROR")
-        if target.get("slot_id") != SPLASH_SLOT:
+        slot_id = target.get("slot_id")
+        is_presentation = slot_id == PRESENTATION_SLOT
+        if is_presentation:
+            connection = self.runtime.channel.ws_by_id(request.connection_id)
+            if (event_name != WebUIEvent.CLOSED.value
+                    or set(params) - {"event", "target", "payload"}
+                    or set(target) - {"scope", "slot_id", "package_id", "instance_key"}
+                    or not request.connection_id
+                    or connection is None or connection.closed):
+                return invalid
+        elif slot_id != SPLASH_SLOT:
             if event_name != WebUIEvent.READY.value:
                 return invalid
             return await self.dispatch(request, context) or UiActionOutput(accepted=False, status="unhandled")
@@ -399,33 +418,54 @@ class BrowserBridge:
         instance_key = target.get("instance_key", "")
         if not valid_instance_key(instance_key):
             return invalid
-        scoped = RenderTarget(session_id="", slot_id=SPLASH_SLOT, package_id=package_id, instance_key=instance_key,
+        scoped = RenderTarget(session_id="", slot_id=slot_id, package_id=package_id, instance_key=instance_key,
                               scope="application", connection_id=request.connection_id)
         payload = params.get("payload", {})
+        invalid_payload = UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        if not isinstance(payload, Mapping):
+            return invalid_payload
         if event_name == WebUIEvent.READY.value:
-            launch_id = payload.get("launch_id") if isinstance(payload, Mapping) else None
-            if (not isinstance(payload, Mapping) or set(payload) != SPLASH_READY_FIELDS
+            launch_id = payload.get("launch_id")
+            if (set(payload) != SPLASH_READY_FIELDS
                     or not isinstance(launch_id, str) or not 0 < len(launch_id) <= 128
                     or any(not isinstance(payload[name], bool) for name in ("first_visit", "reduced_motion", "preview"))):
-                return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+                return invalid_payload
             receipt = await self.dispatch(request, context)
             if receipt is None or not receipt.accepted:
                 return UiActionOutput(accepted=False, status="unhandled")
             record = self.runtime.registry.get(scoped)
             return UiActionOutput(accepted=True, status="playing" if record and record.root is not None else "skipped")
-        reason = payload.get("reason") if isinstance(payload, Mapping) else None
-        revision = payload.get("revision") if isinstance(payload, Mapping) else None
-        if (not isinstance(payload, Mapping) or set(payload) != {"reason", "revision"}
-                or reason not in CLOSE_REASONS or type(revision) is not int):
-            return UiActionOutput(accepted=False, status="invalid_payload", code="SCHEMA_ERROR")
+        reason = payload.get("reason")
+        revision = payload.get("revision")
+        presentation_id = payload.get("presentation_id")
+        reasons = PRESENTATION_CLOSE_REASONS if is_presentation else CLOSE_REASONS
+        fields = {"reason", "revision", "presentation_id"} if is_presentation else {"reason", "revision"}
+        if set(payload) != fields or not isinstance(reason, str) or reason not in reasons:
+            return invalid_payload
+        if type(revision) is not int:
+            return invalid_payload
+        if is_presentation and (not 0 < revision <= 2**53 - 1
+                                or type(presentation_id) is not int or not 0 < presentation_id <= 2**53 - 1):
+            return invalid_payload
         record = self.runtime.registry.get(scoped)
         if (self.active_application_package(package_id) is None or record is None or record.root is None
-                or record.revision != revision):
+                or record.revision != revision
+                or (is_presentation and record.root.component != "ApplicationSurface")):
             return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
-        # Drop first so a repeated or concurrent close is answered as inactive.
-        self.runtime.registry.drop_instance(scoped)
+        close_payload = {"reason": reason}
+        if is_presentation:
+            if presentation_id <= self._presentation_closes.get(request.connection_id, 0):
+                return UiActionOutput(accepted=False, status="inactive", code="TARGET_INACTIVE")
+            # Physical containers and published candidates have independent lifetimes.
+            self._presentation_closes[request.connection_id] = presentation_id
+            self.presentations.invalidate(target=scoped, revision=revision)
+            close_payload["revision"] = revision
+            close_payload["presentation_id"] = presentation_id
+        else:
+            # Splash closes consume their one-shot instance before notifying the package.
+            self.runtime.registry.drop_instance(scoped)
         await self.runtime.bus.trigger(Event(WebUIEvent.CLOSED.value, UiActionInput(
-            WebUIEvent.CLOSED.value, scoped, MappingProxyType({"reason": reason}), request.request_context,
+            WebUIEvent.CLOSED.value, scoped, MappingProxyType(close_payload), request.request_context,
         )), context)
         return UiActionOutput(accepted=True, status="closed")
 
@@ -680,6 +720,7 @@ class BrowserBridge:
 
     def drop_connection(self, connection_id: str) -> None:
         self.presentations.invalidate(connection_id=connection_id)
+        self._presentation_closes.pop(connection_id, None)
         self.connections.pop(connection_id, None)
         self.appearance.drop_connection(connection_id)
         self._appearance_locks.pop(connection_id, None)
