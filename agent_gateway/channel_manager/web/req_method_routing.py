@@ -11,10 +11,14 @@ import os
 from typing import AbstractSet
 
 #: 无论如何都不转发的 Web 方法前缀：Gateway 内部与保留命名空间。
+#:
+#: ``jiuwenmate.channel_config.`` 是 Gateway 内部 channel 同步协议，
+#: 不应由 Web 用户转发给 AgentOS。
 DENIED_REQ_PREFIXES: tuple[str, ...] = (
     "gateway.",
     "admin.",
     "extension.internal.",
+    "jiuwenmate.channel_config.",
 )
 
 #: 关闭后恢复“仅静态白名单转发”的严格模式，用于灰度与回滚。
@@ -54,10 +58,12 @@ def route_req_method(
     Returns:
         ``ROUTE_FORWARD`` / ``ROUTE_FORWARD_UNKNOWN`` / ``ROUTE_LOCAL`` / ``ROUTE_DENIED``。
     """
-    if method in forward_methods:
-        return ROUTE_FORWARD
+    # 硬拒绝优先于 forward_methods：即使该方法被误注册成强制转发，
+    # 也不能让用户入口把内部 channel 同步协议透传出去。
     if method.startswith(DENIED_REQ_PREFIXES):
         return ROUTE_DENIED
+    if method in forward_methods:
+        return ROUTE_FORWARD
     if local_methods is None:
         return ROUTE_LOCAL
     if method in local_methods:
