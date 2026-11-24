@@ -2703,74 +2703,13 @@ class WebChannel(BaseWsChannel):
         from agent_gateway.telemetry import attach_message_trace
         attach_message_trace(user_message)
 
-        # 发布到 route 或回调
-        # WS 分发与 HTTP 共享企业拦截语义：HTTP 走 invoke.dispatch_web_request
-        # 已在入口检查；本内联分发此前漏检，企业版禁写方法（config.set 等）
-        # 会经 WS 旁路到达本地 handler。拦截响应对齐 HTTP 的 FORBIDDEN 文案。
-        from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
+        from agent_gateway.channel_manager.web.invoke import dispatch_web_message
 
-        if is_enterprise_write_forbidden(method):
-            await self.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="企业版配置由管理面统一下发",
-                code="FORBIDDEN",
-            )
-            return
-
-        handler = self._method_handlers.get(method)
-        if method in self._local_only_methods:
-            if handler is None:
-                await self.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error=f"unknown method: {method}",
-                    code="METHOD_NOT_FOUND",
-                )
-                return
-            invocation = _MethodHandlerInvocation(
-                ws, method, req_id, params, session_id, handler,
-            )
-            await self._invoke_method_handler(invocation)
-            return
-        handler_already_called = False
-        if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
-            handler_already_called = await self._invoke_method_handler(
-                _MethodHandlerInvocation(
-                    ws, method, req_id, params, session_id, handler,
-                ),
-            )
-            if not handler_already_called:
-                return
-
-        handled_by_callback = False
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(user_message)
-            if inspect.isawaitable(result):
-                result = await result
-            handled_by_callback = bool(result)
-        else:
-            await self.bus.publish_user_messages(user_message)
-
-        if handled_by_callback:
-            return
-        if handler_already_called:
-            return
-
-        # 路由到已注册的方法处理器
-        if handler is not None:
-            await self._invoke_method_handler(
-                _MethodHandlerInvocation(
-                    ws, method, req_id, params, session_id, handler,
-                ),
-            )
-        else:
-            await self.send_response(
-                ws, req_id, ok=False,
-                error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
-            )
+        await dispatch_web_message(
+            self, method=method, params=params, request_id=req_id,
+            outbound=ws, session_id=session_id, user_message=user_message,
+            websocket=True,
+        )
 
     @staticmethod
     def _write_frontend_context_usage(serialized: str) -> None:

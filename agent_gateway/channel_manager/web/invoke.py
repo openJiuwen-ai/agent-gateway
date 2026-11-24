@@ -152,11 +152,6 @@ async def dispatch_web_request(
     """
     # 安装结果回写不在这里：finalize 的 res 无论是走 WS 还是 HTTP，都由
     # WebChannel.send() 的 res 分支统一调度 schedule_pending_install_result。
-    # Lazy import: avoid import cycle with web_connect.
-    from agent_gateway.channel_manager.web.web_connect import (
-        _HANDLER_BEFORE_CALLBACK_METHODS,
-    )
-
     denial = await enterprise_skill_upload_denial(
         method=method,
         params=params,
@@ -177,6 +172,28 @@ async def dispatch_web_request(
         )
         return
 
+    await dispatch_web_message(
+        channel, method=method, params=params, request_id=request_id,
+        outbound=outbound, session_id=session_id, user_message=user_message,
+    )
+
+
+async def dispatch_web_message(
+    channel: Any,
+    *,
+    method: str,
+    params: dict[str, Any],
+    request_id: str,
+    outbound: Any,
+    session_id: str,
+    user_message: Message,
+    websocket: bool = False,
+) -> None:
+    """Dispatch a validated message after transport-specific preprocessing."""
+    from agent_gateway.channel_manager.web.web_connect import (
+        _HANDLER_BEFORE_CALLBACK_METHODS,
+    )
+
     if is_enterprise_write_forbidden(method):
         await channel.send_response(
             outbound, request_id, ok=False,
@@ -185,17 +202,23 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
-    if handler is not None and method in getattr(channel, "_local_only_methods", ()):
-        await _invoke_handler(
-            channel, outbound=outbound, method=method, request_id=request_id,
-            params=params, session_id=session_id, handler=handler,
-        )
+    if method in getattr(channel, "_local_only_methods", ()) and (handler is not None or websocket):
+        if handler is None:
+            await channel.send_response(
+                outbound, request_id, ok=False,
+                error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
+            )
+        else:
+            await _invoke_handler(
+                channel, outbound=outbound, method=method, request_id=request_id,
+                params=params, session_id=session_id, handler=handler,
+            )
         return
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None
     )
-    if not routing.get("bot_id"):
+    if is_enterprise() and not routing.get("bot_id"):
         logger.warning(
             "[WebChannel] missing bot_id in metadata.routing method=%s request_id=%s routing=%s",
             method,
@@ -203,7 +226,7 @@ async def dispatch_web_request(
             routing,
         )
     handler_params = params
-    if (
+    if not websocket and (
         method in _LOCAL_ROUTING_IDENTITY_METHODS
         or method.startswith(_LOCAL_ROUTING_IDENTITY_PREFIXES)
     ):
