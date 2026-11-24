@@ -28,8 +28,8 @@ _SPECIAL_CASED = frozenset({"chat.send", "chat.resume", "history.get"})
 #: Gateway 有、协议包还没有的方法。新增项必须写明为什么、以及跟谁对齐。
 _GATEWAY_ONLY: dict[str, str] = {
     "mcp.sources.providers": (
-        "企业连接器广场：Gateway 单方面加了北向路由与转发名单，"
-        "Agent 侧尚无对应 HTTP 端点（见 review 第 65 条 mcp.sources.providers）"
+        "企业连接器广场：协议包尚未发布该成员；Gateway 已 shim 枚举并转发，"
+        "南向 path 与 Agent /mcp/actions/sources-providers 对齐"
     ),
 }
 
