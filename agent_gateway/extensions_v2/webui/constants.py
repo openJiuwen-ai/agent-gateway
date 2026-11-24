@@ -98,6 +98,8 @@ SLOT_SPECS: Final[Mapping[str, SlotSpec]] = MappingProxyType(
         "application.splash": _slot("single", SlotScope.APPLICATION),
         "application.settings": _slot("list", SlotScope.APPLICATION),
         "application.presentation": _slot("list", SlotScope.APPLICATION),
+        # Declares appearance parts for the startup gate; nothing renders into it (S_09 section 2).
+        "application.appearance": _slot("list", SlotScope.APPLICATION),
     }
 )
 

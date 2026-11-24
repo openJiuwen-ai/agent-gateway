@@ -194,7 +194,7 @@ async def test_a_chain_started_inside_a_host_action_does_not_inherit_its_caller(
         [inner] = nested
         assert inner.status == "rejected" and inner.code == "INVALID_ACTION"
         frames = [payload for name, payload in runtime.channel.events if name == "webui.appearance"]
-        assert [frame["appearance"]["accent"] for frame in frames] == ["#b45309"]
+        assert [frame["parts"]["colors"]["value"]["accent"] for frame in frames] == ["#b45309"]
     finally:
         await runtime.shutdown()
 

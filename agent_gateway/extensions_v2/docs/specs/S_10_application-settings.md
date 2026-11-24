@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | `S_10 / application-settings` |
 | 所属模块 | Gateway `webui/`（设置槽位、宿主方法、开场偏好、导入与导出）、`management/`（包释放前关闭开场）；`channels/web/app_web.py`（导入与导出的转发）；Web 前端 `features/settings/`（插件设置贡献）与 `features/webui/`（`FileImport`、导入导出服务、开场顺序） |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-23 |
 | 契约状态 | 已实现（2026-11-05 修订：导入与导出对远程浏览器同样开放；2026-11-06 修订：插件设置页在设置导航中单独成项；2026-11-07 修订：标题取 `display.name` 并按语言显示；插件设置改用 S_18 共享目录，移除 `application.settings.page` 与 `webui.settings.pages`） |
 | 关联文档 | [F_13](../features/F_13_application-settings-page.md)、[S_09 启动门控与开场](S_09_startup-splash.md)、[S_06 浏览器桥接](S_06_local-browser-bridge.md)、[S_01 运行时](S_01_gateway-extension-runtime.md)、S_17 组件属性（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/specs/S_17_webui-component-props.md`） §4.25 |
 
@@ -106,7 +106,7 @@ S_09 第 3.1 节的返回改为：只含启用的提供者，按生效顺序，�
 | 安装顺序 | 提供者首次发布时追加到记录末尾；记录建立前已安装的包按首次启动时的发布顺序 |
 | 生效顺序 | 有用户顺序时：用户顺序中的活动提供者，其后是其余活动提供者（按安装顺序）；没有用户顺序时：安装顺序 |
 | `customized` | 是否存在用户顺序 |
-| 前端合并 | `customized` 为 false 时，最近一次的外观提供者（S_08）排在首位，其余按返回顺序；为 true 时按返回顺序 |
+| 前端合并 | `customized` 为 false 时，配色部件的当前提供者（S_08）排在首位，其余按返回顺序；为 true 时按返回顺序（前端随 EXTV2-GW-16 更新，见 S_09 第 5 节） |
 | 停用 | 停用的提供者不出现在 `webui.splash.providers` 中，不收到开场 `ui.ready`；包的背景与外观不受影响 |
 | 保存位置 | `<data_dir>/host/splash.json`：`{"version": 1, "installed": [...], "order": [...] 或 null, "disabled": [...]}`，原子替换写入 |
 | 生命周期 | 重载、升级与重启保留；卸载时从三项记录中删除该包；文件无法读取时按空记录处理并记录警告 |

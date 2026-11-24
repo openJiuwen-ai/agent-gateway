@@ -43,12 +43,14 @@ def _core(event_name: str, input_type: type, act: Callable[..., Awaitable[dict]]
             answer = await act(request, caller)
         except ValueError as exc:
             return HostActionOutput(status="rejected", code=CODE_INVALID_ACTION, message=str(exc))
-        return HostActionOutput(status=answer["status"], revision=answer.get("revision"))
+        shown = answer.get("shown")
+        return HostActionOutput(status=answer["status"], revision=answer.get("revision"),
+                                shown=tuple(shown) if shown is not None else None)
     return core
 
 
 def build_appearance_core_handler(browser: BrowserBridge) -> EventHandler:
-    """Deliver or revoke the caller's appearance (S_08)."""
+    """Set or withdraw the caller's appearance parts (S_08)."""
 
     async def act(request: UiAppearanceInput, caller: Caller) -> dict:
         return await browser.apply_appearance(caller, request.appearance)
