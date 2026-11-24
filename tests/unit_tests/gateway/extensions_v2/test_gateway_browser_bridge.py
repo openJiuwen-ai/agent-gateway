@@ -48,7 +48,7 @@ def _channel():
 
 
 async def _runtime(tmp_path: Path, policy=None, action=None):
-    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data"))
     await runtime.start()
 
     async def ready(event, ops, next_handler):

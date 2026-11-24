@@ -8,7 +8,7 @@
 | 编号 / slug | `S_02 / ui-render` |
 | 所属模块 | `jiuwenswarm/gateway/extensions_v2/webui/`、`event_types/webui.py`、`handler_ops/ui.py` |
 | 设计依据 | [详细架构第 6 节](../designs/extensions-v2-architecture.md)、AgentServer F_06（jiuwenswarm 仓 `jiuwenswarm/extensions_v2/docs/features/F_06_render-service.md`） |
-| 最近一次修订日期 | 2026-11-10 |
+| 最近一次修订日期 | 2026-11-23 |
 | 契约状态 | 已实现；本文是 Gateway 侧 `ui.render` 与 Ops 契约的唯一维护位置 |
 
 本文维护 Gateway 侧渲染的对外契约：事件与 Ops 形状、槽位表、组件目录、下行帧、尺寸上限与错误码。平台不预置任何视图：`ui.render` 只负责校验并投递扩展包提交的树。与 AgentServer 同名的模型保持字段一致；差异只在第 6 节列出的必要项。
@@ -55,6 +55,7 @@ Gateway 只接受自己能按 WebSocket 寻址的槽位：
 | `application.splash` | `application` | `single` | 启动开场，只接受 `MediaSurface` 根；声明、时机与平台帧见 [S_09](S_09_startup-splash.md) |
 | `application.settings` | `application` | `list` | 与 AgentServer 共用的设置槽位；Gateway 只渲染其包按 S_18 声明的 application 范围配置项，接受普通组件树；见 [S_10](S_10_application-settings.md) |
 | `application.presentation` | `application` | `list` | 桌面应用形态，只接受 `ApplicationSurface` 根；生命周期与沙箱动作见 [S_11](S_11_application-presentation.md) |
+| `application.appearance` | `application` | `list` | 只声明外观提供者，不接受渲染；`ui.ready` 为平台帧，见 [S_09 第 3.4 节](S_09_startup-splash.md) |
 
 槽位是通用能力：任何 Gateway 包都可以渲染这些槽位，平台不规定其内容。未知槽位返回 `SCHEMA_ERROR`。会话槽位由 AgentServer 渲染，Gateway 侧一律拒绝。
 
