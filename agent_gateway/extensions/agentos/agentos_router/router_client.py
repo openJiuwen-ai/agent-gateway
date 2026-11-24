@@ -205,6 +205,7 @@ class _SandboxAttempt:
     deterministic_id: str
     create: Callable[[], Awaitable[SandboxInfo]]
     sandbox: SandboxInfo | None = None
+    uncertain_attempts: int = 0
 
 
 @dataclass
@@ -345,6 +346,10 @@ _DISCONNECT_CLEANUP_IDLE_GRACE_SECONDS = 1.0
 # 过长则用户等待成本过高。实际回收发生在超过阈值后的下一个巡检周期
 # （_sandbox_idle_check_interval_seconds，默认 30 秒）。
 _FAILED_RUNTIME_RECLAIM_SECONDS = 300.0
+
+# 同一个 attempt 的创建结果不确定时，首次 + 最多 3 次同名重放；超限后
+# 退役当前实例并转 FAILED，避免确定性 5xx 让用户永远停在 pending。
+_MAX_UNCERTAIN_CREATE_ATTEMPTS = 4
 
 # 注册中心写操作的指数退避重试：初始 1s、倍率 2、上限 30s。
 # 连接类错误（RegistryConnectionError / 5xx）按此退避重试直至成功、agent 被
@@ -3524,6 +3529,33 @@ class AgentOSRouterClient(AgentServerClient):
                 raise AgentRebuildPending("AGENT_REBUILD_PENDING: old sandbox deletion was rejected")
         return False
 
+    async def _replay_or_fail_uncertain_create(
+        self,
+        lifecycle: _SandboxLifecycle,
+        attempt: _SandboxAttempt,
+        exc: Exception,
+    ) -> None:
+        """Replay an uncertain create with the same name, up to a hard limit.
+
+        The same name cannot create a second sandbox, but a deterministic 5xx
+        would otherwise replay forever and never let the runtime reach FAILED.
+        """
+        attempt.uncertain_attempts += 1
+        if attempt.uncertain_attempts < _MAX_UNCERTAIN_CREATE_ATTEMPTS:
+            lifecycle.attempt = attempt
+            raise AgentRebuildPending(
+                "AGENT_REBUILD_PENDING: the create result is unknown"
+            ) from exc
+
+        lifecycle.retired_instance = attempt.deterministic_id
+        lifecycle.delete_retry_at = None
+        lifecycle.attempt = None
+        await self._request_sandbox_delete(lifecycle)
+        raise AgentCreateFailed(
+            "sandbox create stayed uncertain after "
+            f"{attempt.uncertain_attempts} attempts: {exc}"
+        ) from exc
+
     async def _post_sandbox_attempt(
         self, lifecycle: _SandboxLifecycle, attempt: _SandboxAttempt, deadline: float,
     ) -> None:
@@ -3531,14 +3563,20 @@ class AgentOSRouterClient(AgentServerClient):
             async with asyncio.timeout_at(deadline):
                 attempt.sandbox = await attempt.create()
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
-            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
+            await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
         except (ValueError, YuanrongAgentApiError) as exc:
-            if isinstance(exc, YuanrongAgentApiError) and getattr(exc, "status_code", None) == 429:
+            status = getattr(exc, "status_code", None)
+            if isinstance(exc, YuanrongAgentApiError) and status == 429:
                 # 429 未创建新沙箱，但上一次结果不确定的 POST 可能已经建好实例。
                 # 保留 attempt 让下次请求重放，不要退役并删除这个可能存活的实例。
                 raise AgentRebuildPending(
                     "AGENT_REBUILD_PENDING: replacement creation was rate limited"
                 ) from exc
+            if isinstance(exc, YuanrongAgentApiError) and (
+                status == 408 or (isinstance(status, int) and status >= 500)
+            ):
+                # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
+                await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
             # Retire this name so the next request starts a new generation instead of replaying a refused create.
             lifecycle.retired_instance = attempt.deterministic_id
             lifecycle.attempt = None
@@ -3558,8 +3596,7 @@ class AgentOSRouterClient(AgentServerClient):
             except (YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
                 # Keep this attempt so later callers replay the same name
                 # instead of minting a generation that could orphan this POST.
-                lifecycle.attempt = attempt
-                raise AgentRebuildPending("AGENT_REBUILD_PENDING: the create result is unknown") from exc
+                await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
             except asyncio.CancelledError:
                 lifecycle.attempt = attempt
                 raise
@@ -3568,11 +3605,15 @@ class AgentOSRouterClient(AgentServerClient):
                 # attempt. Treat it as a retryable pre-create failure instead of
                 # caching a permanent FAILED runtime. Other 4xx may be
                 # deterministic (bad runtime_spec etc.) and keep the old path.
-                if getattr(exc, "status_code", None) == 429:
+                status = getattr(exc, "status_code", None)
+                if status == 429:
                     raise AgentPreCreateError(
                         "AGENT_PRE_CREATE_RETRYABLE: sandbox create was rate "
                         f"limited: {exc}"
                     ) from exc
+                if status == 408 or (isinstance(status, int) and status >= 500):
+                    # 408/5xx 的结果不确定：保留 attempt，下一次请求重放同一名称。
+                    await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
                 raise
 
         deadline = asyncio.get_running_loop().time() + self._probe_settings.wait_running_timeout_seconds
