@@ -400,7 +400,6 @@ def test_unreachable_forward_methods() -> None:
     """白名单中无协议枚举成员的方法，运行期通过动态登记转发（不再帧级拒绝）。"""
     _, _, unreachable = _forward_registry()
     expected = {
-        "mcp.sources.providers",
         "session.assets.remove",
         "skills.enterprise.install",
         "skills.enterprise.list",
@@ -419,7 +418,6 @@ def test_unreachable_forward_methods() -> None:
         {
             "session.assets.remove",
             "skills.enterprise.list",
-            "mcp.sources.providers",
         }
     ),
 )

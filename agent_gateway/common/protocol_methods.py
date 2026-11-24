@@ -91,3 +91,6 @@ _ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
 _ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
 _ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
 _ensure_req_method("SKILLS_UPDATE", "skills.update")
+# 企业连接器广场多源：与 Agent 侧 message.py 的 MCP_SOURCES_PROVIDERS 对齐。
+# 缺失时 mcp.sources.providers 在转发门禁被 METHOD_NOT_FOUND，前端显示「加载连接器源失败」。
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
