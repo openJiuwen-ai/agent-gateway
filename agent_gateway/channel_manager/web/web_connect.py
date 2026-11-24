@@ -40,7 +40,6 @@ from agent_gateway.enterprise.capabilities.skill_upload.guard import (
     schedule_pending_install_result,
 )
 from agent_gateway.common.paths import get_logs_dir
-from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
@@ -2691,7 +2690,9 @@ class WebChannel(BaseWsChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=parse_request_method(method),
+            # 协议包尚未发布的业务方法在此动态登记，否则 req_method=None 会在
+            # 转发门禁（application/inbound.py）处被短路成 METHOD_NOT_FOUND。
+            req_method=self._parse_req_method(method),
             mode=self._parse_mode(params.get("mode")),
             is_stream=bool(data.get("is_stream", False)),
             app_id=_app_id,
@@ -2886,6 +2887,12 @@ class WebChannel(BaseWsChannel):
 
     @staticmethod
     def _parse_req_method(method: str) -> ReqMethod | None:
+        # 个人版的团队控制面必须保持“未知方法”语义：这些方法不在转发白名单里，
+        # 一旦允许动态登记就会被默认透传绕过 edition 门禁。
+        from agent_gateway.common.protocol_methods import is_dynamic_req_method_denied
+
+        if is_dynamic_req_method_denied(method):
+            return None
         for item in ReqMethod:
             if item.value == method:
                 return item
