@@ -1,3 +1,4 @@
+from .a2ui_config import A2UIConfigService
 from .advanced_config import AdvancedConfigService
 from .audit_log_config import AuditLogConfigService
 from .cron_policy import CronPolicyService
@@ -7,6 +8,7 @@ from .memory_config import MemoryConfigService
 from .task_memory_config import TaskMemoryConfigService
 
 __all__ = (
+    "A2UIConfigService",
     "AdvancedConfigService",
     "AuditLogConfigService",
     "CronPolicyService",

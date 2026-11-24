@@ -211,6 +211,63 @@ ADVANCED_CONFIG_TABLE_DEF = TableDefinition(
     ],
 )
 
+# A2UI 配置表：管理面按 agent_template 下发；对应本地 config.yaml 顶层 a2ui 段。
+# 不含 non_web_fallback_enabled（该字段已废弃，仅 yaml 兼容保留）。
+A2UI_CONFIG_TABLE_DEF = TableDefinition(
+    table_name="a2ui_config",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition(
+            "agent_template_id",
+            "string",
+            length=100,
+            nullable=False,
+        ),
+        # 对应 config.yaml: a2ui.enabled
+        ColumnDefinition(
+            "enabled",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        # 对应 config.yaml: a2ui.protocol_version；当前仅允许 0.8
+        ColumnDefinition(
+            "protocol_version",
+            "string",
+            length=16,
+            nullable=False,
+            default="0.8",
+        ),
+        # 对应 config.yaml: a2ui.stream_validation_enabled
+        ColumnDefinition(
+            "stream_validation_enabled",
+            "boolean",
+            nullable=False,
+            default=True,
+        ),
+        # 对应 config.yaml: a2ui.dev_smoke_tools_enabled
+        ColumnDefinition(
+            "dev_smoke_tools_enabled",
+            "boolean",
+            nullable=False,
+            default=False,
+        ),
+        # 预留扩展：后续 a2ui 字段可先塞进 data，再按需升列
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["agent_template_id"], unique=True),
+    ],
+)
+
 CRON_POLICY_TABLE_DEF = TableDefinition(
     table_name="cron_policy",
     columns=[
