@@ -70,3 +70,10 @@ _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
 _ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
 _ensure_req_method("VIDEO_CONVERSATION_APPEND", "video.conversation.append")
+# 企业技能广场 / 技能源 SPI：与 Agent 侧 message.py 对齐。缺失时 HTTP
+# /skills/sources* 会在 Gateway 被映射成 skills.source.* 后直接 METHOD_NOT_FOUND。
+_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
+_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
+_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
+_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
+_ensure_req_method("SKILLS_UPDATE", "skills.update")

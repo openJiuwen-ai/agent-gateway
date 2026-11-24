@@ -22,6 +22,7 @@ import time
 _SUBPROCESS_TIMEOUT_SECONDS = 180.0
 
 # 协议包尚未发布、gateway 侧也没有补齐的方法。键是方法名，值是「为何还在名单里」。
+# skills.source.* / skills.update* 已在 protocol_methods 登记，勿再列入。
 _KNOWN_UNREACHABLE: dict[str, str] = {
     # 企业连接器广场：gateway 单方面加了北向路由与转发名单，Agent 侧无端点。
     # 待 connector 作者确认真实端点后再决定「补 Agent 端点」还是「撤回映射」。
@@ -32,11 +33,6 @@ _KNOWN_UNREACHABLE: dict[str, str] = {
     "skills.enterprise.source.providers": "企业技能仓方法待协议包发布",
     "skills.enterprise.source.search": "企业技能仓方法待协议包发布",
     "skills.enterprise.uninstall": "企业技能仓方法待协议包发布",
-    "skills.source.install": "技能来源方法待协议包发布",
-    "skills.source.providers": "技能来源方法待协议包发布",
-    "skills.source.search": "技能来源方法待协议包发布",
-    "skills.update": "技能更新方法待协议包发布",
-    "skills.updates.check": "技能更新方法待协议包发布",
 }
 
 
