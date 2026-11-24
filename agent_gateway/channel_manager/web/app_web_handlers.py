@@ -6118,12 +6118,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     from agent_gateway.common.protocol_methods import ReqMethod as _FileReq
+    from agent_gateway.channel_manager.web.web_method_register import (
+        register_workspace_web_methods,
+    )
 
-    for file_method in (
-        _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,
-        _FileReq.WORKSPACE_USAGE, _FileReq.WORKSPACE_ENTRIES_DELETE,
-    ):
-        channel.register_method(file_method.value, _file_proxy(file_method))
+    channel.register_method(_FileReq.FILE_IMPORT_URL.value, _file_proxy(_FileReq.FILE_IMPORT_URL))
+    register_workspace_web_methods(channel, agent_client=lambda: _resolve(agent_client))
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)

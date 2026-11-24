@@ -197,6 +197,7 @@ def _envelope_from_res(
     status = {
         "BAD_REQUEST": 400,
         "UNAUTHORIZED": 401,
+        "IDENTITY_CONFLICT": 400,
         "FORBIDDEN": 403,
         "NOT_FOUND": 404,
         "METHOD_NOT_FOUND": 404,
@@ -237,11 +238,13 @@ def register_web_http_api_routes(
     """
     enterprise_mode = is_enterprise() if enterprise is None else bool(enterprise)
     mapped_routes = mapped_routes_for_edition(enterprise=enterprise_mode)
+    from agent_gateway.channel_manager.web.http_routes import register_special_http_routes
     from agent_gateway.channel_manager.web.http_routes.share_jobs import (
         register_share_job_routes,
     )
 
     register_share_job_routes(app)
+    register_special_http_routes(app, channel)
 
     @app.get("/api/v1/health", tags=["health"], summary="探活")
     async def health(request: Request) -> JSONResponse:

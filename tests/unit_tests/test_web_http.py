@@ -86,8 +86,13 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
             monkeypatch.setitem(sys.modules, pkg, m)
 
     # http_routes package so the real mapped table can load as a submodule.
+    # Package __init__ is replaced by this stub; expose special-route hook used by
+    # register_web_http_api_routes (workspace download is covered elsewhere).
     routes_pkg = ModuleType("agent_gateway.channel_manager.web.http_routes")
     routes_pkg.__path__ = [str(ROUTES_PATH.parent)]  # type: ignore[attr-defined]
+    routes_pkg.register_special_http_routes = (  # type: ignore[attr-defined]
+        lambda app, channel: None
+    )
     monkeypatch.setitem(sys.modules, "agent_gateway.channel_manager.web.http_routes", routes_pkg)
 
     # Real mapped table (no Gateway imports) so routes can be registered.
