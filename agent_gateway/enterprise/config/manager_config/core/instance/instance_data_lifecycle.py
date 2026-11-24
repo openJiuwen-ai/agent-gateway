@@ -30,6 +30,7 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "expert_package_template",
     "mcp_template",
     "permissions_template",
+    "react_template",
     "a2a_outbound_template",
     "a2a_access_policy_template",
     "a2a_outbound_user_state",
