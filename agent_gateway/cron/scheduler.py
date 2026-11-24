@@ -3220,6 +3220,7 @@ class CronSchedulerService:
                             "request_id": str(getattr(envelope, "request_id", "") or ""),
                         },
                     )
+                    self._publish_team_idle_to_exec_channel(state)
 
             if consume_meta.get("paused"):
                 return "", True
@@ -3765,6 +3766,57 @@ class CronSchedulerService:
         from agent_gateway.cron.live_bus import cron_live_bus
 
         cron_live_bus.publish(sid, {"event": name, "payload": body})
+
+    def _publish_team_idle_to_exec_channel(self, state: CronRunState) -> None:
+        """team 收尾时把 idle 也交给执行渠道，和起跑帧走同一条路。
+
+        team 的起跑帧经 AgentServer 的流由 ``publish_stream_chunk`` 发到
+        WebChannel 的；收尾帧却只在 scheduler 里发到 cron live。两条路不对称，
+        WebChannel 的 ``_session_busy`` 就停在 true，``session.get_metadata``
+        一直把「执行中」还给刷新后的页面。补发同一个事件，让 WebChannel 按它
+        自己的规则把会话标回空闲。
+        """
+        channel_id = str(getattr(state, "exec_channel_id", "") or "").strip()
+        # 只有 WebChannel 维护 session busy 表；非 Agent 的 __cron__ 等内部
+        # 通道没有这个状态，补发没有意义。
+        if channel_id != "web":
+            return
+        sid = str(getattr(state, "exec_session_id", "") or "").strip()
+        # 收尾可能发生在超时取消中，此时 await 会立刻再次抛 CancelledError。
+        # 用同步入队保证这一帧一定发得出去。
+        publish = getattr(self._message_handler, "publish_robot_messages_nowait", None)
+        if not sid or not callable(publish):
+            return
+        cron_meta = {"job_id": state.job_id, "run_id": state.run_id}
+        try:
+            publish(
+                Message(
+                    id=f"cron-status-{state.run_id}",
+                    type="event",
+                    channel_id=channel_id,
+                    session_id=sid,
+                    params={},
+                    timestamp=self._now_fn(),
+                    ok=True,
+                    payload={
+                        "event_type": "chat.processing_status",
+                        "session_id": sid,
+                        "is_processing": False,
+                        "is_complete": True,
+                        "cron": cron_meta,
+                    },
+                    event_type=EventType.CHAT_PROCESSING_STATUS,
+                    metadata={"source": "cron", "cron": cron_meta},
+                )
+            )
+        except Exception:  # noqa: BLE001
+            # 收尾补帧是尽力而为：同步入队失败不能把已完成的 team 任务改判失败。
+            logger.warning(
+                "[Cron] publish team idle failed session_id=%s run_id=%s",
+                sid,
+                state.run_id,
+                exc_info=True,
+            )
 
     def _mirror_cron_live(self, state: CronRunState, payload: dict | None) -> None:
         """推送路径上的终稿也进同一条直播。占位和已经放过的终稿不再重复放。"""
