@@ -191,6 +191,13 @@ async def dispatch_web_request(
             params=params, session_id=session_id, handler=handler,
         )
         return
+    if method in getattr(channel, "_local_only_methods", ()):
+        # local_only 且未注册本地 handler 的请求不应再进入 bus/回调转发。
+        await channel.send_response(
+            outbound, request_id, ok=False,
+            error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
+        )
+        return
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None
