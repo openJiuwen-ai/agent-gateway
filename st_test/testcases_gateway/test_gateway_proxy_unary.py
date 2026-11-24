@@ -14,7 +14,10 @@ def test_session_list_is_proxied_to_agent_server(gateway_ws, stub_agent_server) 
     assert res["ok"] is True
     assert res["payload"] == {"sessions": [], "total": 0}
 
-    envelope = stub_agent_server.requests[before]
+    envelope = next(
+        item for item in stub_agent_server.requests[before:]
+        if item.get("request_id") == "st-sessions"
+    )
     assert envelope["method"] == "session.list"
     assert envelope["channel"] == "web"
     assert envelope["is_stream"] is False
