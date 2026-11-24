@@ -1,82 +1,102 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Local CLI adapter owned exclusively by the Gateway runtime."""
+"""Local CLI adapter owned by the Gateway runtime.
+
+Package management belongs to the AgentServer; the Gateway CLI forwards its
+actions over the same E2A channel the Web entry uses instead of deciding the
+package domain locally.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
-from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.core.extension.errors import OperationError
+from e2a.message import ReqMethod
 
-from agent_gateway.common.extension_cli import METHODS, LocalControl, source_domain
-from agent_gateway.extensions_v2.management.notifications import notify_installed
+from agent_gateway.common.extension_cli import METHODS, LocalControl
+from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+logger = logging.getLogger(__name__)
+
+_PACKAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 async def start_local_cli(runtime: Any) -> LocalControl:
-    """Start a domain-restricted adapter for this live Gateway manager."""
+    """Start a CLI adapter that forwards package actions to the AgentServer."""
+
     async def handle(action: str, params: dict[str, Any]) -> dict[str, Any]:
         if action == "presentation.query":
             return runtime.browser.presentations.query(params)
         if action == "presentation.start":
             return await runtime.browser.presentations.start(params)
-        manager = runtime.packages
-        package_id = params.get("package_id")
+        if action not in METHODS:
+            return _error("INVALID_PARAMS", "不支持的包管理动作。")
+        if action == "query":
+            try:
+                package_id = params.get("package_id")
+                if package_id is None:
+                    if set(params):
+                        raise ValueError("query accepts an optional package_id")
+                    package_id = ""
+                else:
+                    package_id = _package_id(package_id)
+            except ValueError:
+                return _error("INVALID_PARAMS", "包管理参数或 ZIP 路径无效。")
+            return {"ok": True, "payload": {"state": runtime.packages.query(package_id or None)}}
+        client = getattr(runtime.channel, "agent_client", None)
+        if client is None:
+            return _error("HOST_UNAVAILABLE", "当前实例没有可用的 AgentServer 连接。")
         try:
-            if action == "install":
-                raw_paths = params.get("paths")
-                if set(params) != {"paths"} or not isinstance(raw_paths, list) or not raw_paths:
-                    raise ValueError("install requires paths")
-                paths: list[Path] = []
-                for value in raw_paths:
-                    if not isinstance(value, str):
-                        raise ValueError("path must be a string")
-                    path = Path(value)
-                    if not path.is_absolute() or path.suffix.lower() != ".zip" or not path.is_file():
-                        raise ValueError("path must be an existing absolute ZIP")
-                    if await asyncio.to_thread(source_domain, path) != "gateway":
-                        return _error("DOMAIN_MISMATCH", "该 ZIP 不属于 Gateway。")
-                    paths.append(path)
-            else:
-                if set(params) - {"package_id"}:
-                    raise ValueError("only package_id is accepted")
-                if "package_id" in params and (
-                    not isinstance(package_id, str)
-                    or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", package_id) is None
-                    or ".." in package_id
-                ):
-                    raise ValueError("invalid package_id")
-                if action != "query" and not package_id:
-                    raise ValueError("package_id is required")
-        except (OSError, ValueError, KeyError):
-            return _error("INVALID_PARAMS", "包管理参数或 ZIP manifest 无效。")
-        try:
-            if action == "query":
-                return {"ok": True, "payload": {"state": manager.query(package_id)}}
-            if action == "install":
-                reports = await manager.install(paths)
-            else:
-                if not manager.owns(package_id):
-                    return _error("PACKAGE_NOT_FOUND", "Gateway 没有该包的安装副本。")
-                # Map every known action explicitly: a new method added to METHODS must
-                # never fall through to an uninstall by accident.
-                operations = {"reload": manager.reload, "uninstall": manager.uninstall}
-                operation = operations.get(action)
-                if operation is None:
-                    return _error("INVALID_PARAMS", f"未知的包管理动作：{action}")
-                reports = [await operation(package_id)]
-            payload = {"reports": [_encode(report) for report in reports]}
-            succeeded = [report.package_id for report in reports if report.status == "SUCCESS"]
-            if action in ("install", "reload") and succeeded:
-                payload["ui_notified"] = await notify_installed(runtime, succeeded)
-            return {"ok": True, "payload": payload}
-        except Exception:  # noqa: BLE001 - the CLI must preserve an uncertain mutation result
-            result = _error("INTERNAL_ERROR", "包管理结果未确认。")
-            result["payload"]["outcome"] = "unknown"
-            return result
+            request_params = _forward_params(action, params)
+        except ValueError:
+            return _error("INVALID_PARAMS", "包管理参数或 ZIP 路径无效。")
+        method = ReqMethod(f"extensions.v2.{action}")
+        forwarding = asyncio.create_task(
+            fetch_agent_unary(
+                agent_client=client,
+                req_method=method,
+                params=request_params,
+                session_id=None,
+                user_id=None,
+                channel_id=getattr(runtime.channel, "channel_id", "web"),
+                label=method.value,
+                timeout_seconds=float(getattr(runtime.config, "dependency_timeout", 300.0)) + 30.0,
+                metadata=(
+                    {"extensions_v2_require_all_members": True}
+                    if action == "install"
+                    else None
+                ),
+            )
+        )
+        if action == "install":
+            # The AgentServer waits for this host's members; keep reconciling
+            # while it works so an install reports one result for both domains.
+            while True:
+                done, _ = await asyncio.wait({forwarding}, timeout=0.5)
+                if done:
+                    break
+                try:
+                    await runtime.sync_container_members()
+                except Exception:  # noqa: BLE001 - the forwarded request stays authoritative
+                    logger.warning("[GatewayExtensions] CLI member sync failed", exc_info=True)
+        ok, payload = await forwarding
+        if not ok:
+            return {"ok": False, "payload": dict(payload)}
+        if action != "query":
+            try:
+                await runtime.sync_container_members()
+                from agent_gateway.extensions_v2.management import containers
+                from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+
+                store = ExtensionInstallState.for_install_dir(runtime.config.install_dir)
+                payload = containers.adjust_management_reports(store, dict(payload))
+            except Exception:  # noqa: BLE001 - the AgentServer result already committed
+                logger.warning("[GatewayExtensions] CLI member sync failed", exc_info=True)
+        return {"ok": True, "payload": dict(payload)}
 
     control = LocalControl("gateway", handle, methods=METHODS | {"presentation.query", "presentation.start"})
     try:
@@ -87,18 +107,35 @@ async def start_local_cli(runtime: Any) -> LocalControl:
     return control
 
 
-def _encode(value: Any) -> Any:
-    if isinstance(value, OperationError):
-        return {"code": value.code, "message": value.message, "params": _encode(value.params)}
-    if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _encode(getattr(value, field.name)) for field in fields(value)}
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _encode(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_encode(item) for item in value]
+def _forward_params(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Validate CLI params and convert them to the AgentServer request shape."""
+
+    if action == "install":
+        raw_paths = params.get("paths")
+        if set(params) != {"paths"} or not isinstance(raw_paths, list) or not raw_paths:
+            raise ValueError("install requires paths")
+        paths = [_zip_path(value) for value in raw_paths]
+        return {"paths": paths}
+    if set(params) - {"package_id"}:
+        raise ValueError("only package_id is accepted")
+    if "package_id" not in params:
+        raise ValueError("package_id is required")
+    return {"package_id": _package_id(params["package_id"])}
+
+
+def _package_id(value: object) -> str:
+    if not isinstance(value, str) or _PACKAGE_ID.fullmatch(value) is None or ".." in value:
+        raise ValueError("invalid package_id")
     return value
+
+
+def _zip_path(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("path must be a string")
+    path = Path(value)
+    if not path.is_absolute() or path.suffix.lower() != ".zip" or not path.is_file():
+        raise ValueError("path must be an existing absolute ZIP")
+    return str(path)
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
