@@ -22,11 +22,8 @@ import time
 _SUBPROCESS_TIMEOUT_SECONDS = 180.0
 
 # 协议包尚未发布、gateway 侧也没有补齐的方法。键是方法名，值是「为何还在名单里」。
-# skills.source.* / skills.update* 已在 protocol_methods 登记，勿再列入。
+# skills.source.* / skills.update* / mcp.sources.providers 已在 protocol_methods 登记，勿再列入。
 _KNOWN_UNREACHABLE: dict[str, str] = {
-    # 企业连接器广场：gateway 单方面加了北向路由与转发名单，Agent 侧无端点。
-    # 待 connector 作者确认真实端点后再决定「补 Agent 端点」还是「撤回映射」。
-    "mcp.sources.providers": "connector 广场 SPI 未在 Agent 侧落地（commit b9a5dcae2）",
     "session.assets.remove": "协议包未发布该成员，当前无调用方",
     "skills.enterprise.install": "企业技能仓方法待协议包发布",
     "skills.enterprise.list": "企业技能仓方法待协议包发布",

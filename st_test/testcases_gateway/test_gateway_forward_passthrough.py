@@ -388,7 +388,6 @@ def test_unreachable_forward_methods() -> None:
     """白名单中无协议枚举成员的方法当前不可达（帧级 METHOD_NOT_FOUND）——与文档标注一致。"""
     _, _, unreachable = _forward_registry()
     expected = {
-        "mcp.sources.providers",
         "session.assets.remove",
         "skills.enterprise.install",
         "skills.enterprise.list",
@@ -407,7 +406,6 @@ def test_unreachable_forward_methods() -> None:
         {
             "session.assets.remove",
             "skills.enterprise.list",
-            "mcp.sources.providers",
         }
     ),
 )
