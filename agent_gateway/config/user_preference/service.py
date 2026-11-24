@@ -55,8 +55,27 @@ class UserPreferenceService:
             logger.debug("read yaml preferred_language failed", exc_info=True)
         return "en"
 
+    async def _resolve_cluster_or_yaml_language(self) -> str:
+        """``__default__`` → yaml → ``en``（不写用户行）。"""
+        cached_default = self._cache.get(DEFAULT_USER_ID, touch=True)
+        if cached_default:
+            return cached_default
+        default_row = await self._db_get(DEFAULT_USER_ID)
+        default_lang = normalize_preferred_language(
+            (default_row or {}).get("preferred_language") if default_row else None
+        )
+        if default_lang:
+            self._cache.put(DEFAULT_USER_ID, default_lang, touch=True)
+            return default_lang
+        return self._yaml_fallback_language()
+
     async def get_language(self, user_id: str | None) -> str:
-        """用户行 → ``__default__`` → yaml → ``en``；命中缓存会刷新 last_used_at。"""
+        """用户行 → ``__default__`` → yaml → ``en``；命中缓存会刷新 last_used_at。
+
+        合法 ``user_id`` 且用户行不存在时，将当前解析结果 insert-if-absent
+        固化为该用户配置，避免之后集群默认变更导致语言「飘」。
+        写库失败不挡返回；下次查询会再尝试固化。
+        """
         uid = str(user_id or "").strip()
         if uid and uid != DEFAULT_USER_ID:
             cached = self._cache.get(uid, touch=True)
@@ -70,17 +89,62 @@ class UserPreferenceService:
                 self._cache.put(uid, lang, touch=True)
                 return lang
 
-        cached_default = self._cache.get(DEFAULT_USER_ID, touch=True)
-        if cached_default:
-            return cached_default
-        default_row = await self._db_get(DEFAULT_USER_ID)
-        default_lang = normalize_preferred_language(
-            (default_row or {}).get("preferred_language") if default_row else None
-        )
-        if default_lang:
-            self._cache.put(DEFAULT_USER_ID, default_lang, touch=True)
-            return default_lang
-        return self._yaml_fallback_language()
+            resolved = await self._resolve_cluster_or_yaml_language()
+            await self._materialize_user_language(uid, resolved)
+            return resolved
+
+        return await self._resolve_cluster_or_yaml_language()
+
+    async def _materialize_user_language(self, user_id: str, language: str) -> None:
+        """用户行缺失时写入；已有行绝不覆盖。失败只打日志。"""
+        try:
+            inserted = await self._db_insert_if_absent(user_id, language)
+            if inserted:
+                self._cache.put(user_id, language, touch=True)
+                return
+            row = await self._db_get(user_id)
+            existing = normalize_preferred_language(
+                (row or {}).get("preferred_language") if row else None
+            )
+            if existing:
+                self._cache.put(user_id, existing, touch=True)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "[UserPreference] materialize failed user_id=%s language=%s",
+                user_id,
+                language,
+            )
+
+    async def _db_insert_if_absent(self, user_id: str, language: str) -> bool:
+        """仅当行不存在时 create；返回是否由本调用插入。"""
+        store = get_persistent_store()
+        if store is None:
+            return False
+        await store.ensure_ready()
+        key = {"user_id": user_id}
+        existing = await store.get(USER_PREFERENCE_STORE, key)
+        if existing is not None:
+            return False
+        now = self._utc_now()
+        record: dict[str, Any] = {
+            "user_id": user_id,
+            "preferred_language": language,
+            "revision": 1,
+            "created_at": now,
+            "updated_at": now,
+            "extras": None,
+        }
+        try:
+            await store.create(USER_PREFERENCE_STORE, record)
+            return True
+        except Exception:  # noqa: BLE001
+            # 并发首次查询可能同时 create；视为未由本调用插入，由调用方再读库。
+            logger.info(
+                "[UserPreference] insert-if-absent raced or failed user_id=%s",
+                user_id,
+                exc_info=True,
+            )
+            return False
 
     async def upsert_user_language(
         self,
