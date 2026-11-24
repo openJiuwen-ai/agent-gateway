@@ -1,8 +1,5 @@
 # 应用形态
 
-最近修订：2026-11-10。实施与验证记录见 [F_15](../features/F_15_application-presentation.md)。
-本文定义已选定的目标契约，实现验收状态由 F_15 维护。
-
 ## 槽位与身份
 
 AP-01：`application.presentation` 是 Gateway 所有、按可信 Web 连接隔离的应用级列表槽位。
@@ -11,28 +8,48 @@ AP-01：`application.presentation` 是 Gateway 所有、按可信 Web 连接隔�
 插件的静态页面必须使用同包、当前激活代次的 `/extension-assets/` URL。
 
 AP-02：每个已发布的 `ApplicationSurface` 实例登记一个形态候选，身份由包与 instance_key 决定。
-桌面宿主保留系统原生窗口标题栏，在工作台页面右下角提供“切换应用形态”悬浮按钮，菜单列出全部候选；选择后只打开该候选的小窗。
-安装、资源导入及设置保存只登记或更新候选，不自动进入；资源包格式、导入和配置由插件定义。
+桌面宿主保留系统原生窗口标题栏，在工作台页面右下角提供“切换应用形态”悬浮按钮，菜单列出需手动启动的候选；选择后只打开该候选的小窗。
+默认情况下安装、资源导入及设置保存只登记或更新候选，不自动进入；资源包格式、导入和配置由插件定义。
+autoStart 缺省 false；两种 mode 设为 true 时随挂载直接显示且不进入切换菜单，停用或卸载时关闭，应用重载后重新显示。
 用户或智能体可以在安装成功后另行调用下述本机启动入口，复用菜单选择的同一窗口流程。
-浏览器端明确提示该能力需要桌面客户端。
+形态根的 mode 缺省为 desktop，仅此模式需要桌面客户端。overlay 在浏览器和桌面客户端内运行，工作台始终可见。
 主窗口继续拥有连接和聊天状态，隐藏期间保持后台调度；小窗不创建聊天连接。收到沙箱 `ready` 后才隐藏主窗口。
 工作台恢复、窗口关闭、插件停用或卸载、主页面重载与窗口加载失败均结束当前窗口代次；过期消息不执行。
 断线时停止接受写入并恢复工作台。错误须可见，不能把未知发送结果当作成功后自动重发。
 
-## 本机启动入口
+## 应用内悬浮承载
 
-本节的实现与验证范围见 F_15。
+AP-09：overlay 覆盖应用视口，切换页面和会话保留同一 iframe，最小化时随所属窗口隐藏；复用原候选、会话快照、沙箱和请求协议。
+一个连接只激活一个形态，切换先结束旧形态。mode 或 src 更新结束当前容器，autoStart=true 时按新声明显示；config 更新保留页面。
+关闭、清除、停用、卸载、断线或加载失败释放容器及资源。手动关闭后普通更新不重新显示，可显式启动、重新启用或重载应用；自动启动不替换已有活动形态，容量占用时提示关闭当前形态后重新启用。
+容器矩形内由插件接收输入，外部由应用接收；透明像素不提供逐像素点击穿透。拖动接入示例见 Swarm 的 `docs/zh/application-presentation.md`。
+
+## 插件设置与关闭通知
+
+插件通过 `ui.change` 处理设置，用 `ops.ui.render` 发布 autoStart 声明或 CLEAR，并维护显示状态；开启时保留当前页面。`DELIVERED` 仅表示帧已下发，`visible_when` 仅控制挂载条件。
+容器关闭后通过 `webui.dispatch` 发送 `ui.closed`，target 指定原包、实例和 application 作用域，payload 严格包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `reason` | `closed`（含返回主工作台时关闭桌面形态）、`ready_timeout`、`render_failed`、`load_failed`、`renderer_gone`、`transition_failed` 或 `open_failed` |
+| `revision` | 容器关闭时对应的渲染版本，正安全整数 |
+| `presentation_id` | 连接内递增的正安全整数；每次打开分配新值 |
+
+ready 前的打开失败报告 `open_failed`；替换、清除及宿主释放不重复通知。Gateway 核对活动连接、包、实例和版本，拒绝重复或过期关闭，结束匹配的启动等待；候选由插件决定是否 CLEAR。插件核对当前版本后更新显示状态和设置页。
+关闭通知绕过 USER 请求策略，处理预算 5 秒，容器关闭不依赖处理结果。断线通知 `gateway.disconnect` 后清理连接及关闭记录。
+
+## 本机启动入口
 
 `jiuwenswarm presentation query [package_id] --json` 查询当前实例 Gateway 已发布的形态候选。
 每项包含 `connection_id`、`package_id`、`instance_key`、`revision` 和双语 `title`，不包含会话正文或凭据。
-浏览器连接也可能发布候选；启动到浏览器时明确返回 `DESKTOP_REQUIRED`。
+desktop 候选启动到浏览器时返回 `DESKTOP_REQUIRED`。
 
 `jiuwenswarm presentation start <package_id> <instance_key> --connection-id <id> --revision <revision> --json`
 只启动查询中明确指定的连接及版本，不猜测首个连接或最新资源。DMG/EXE 使用
 `JIUWENSWARM_EXECUTABLE` 对应后端程序，参数不变；本机实例发现与授权复用 extension CLI。
 
 Gateway 重新校验连接、活动包和当前候选，将一次性请求发送给该连接。
-Web Client 再校验当前渲染版本，复用菜单的 activate；原生窗口 ready、会话选择成功后才回报 `started`。
+Web Client 再校验当前渲染版本，复用菜单的 activate；对应承载容器 ready、会话选择成功后才回报 `started`。
 同一连接同时只允许一次启动；启动中返回 `BUSY`。目标已更新、释放或连接结束时拒绝旧请求。
 已启动的同一候选再次显式启动不重建窗口。安装、导入及保存不会自行调用此入口。
 
@@ -53,8 +70,8 @@ AP-03：沙箱允许脚本和表单，不允许同源身份、顶层导航、Nod
 
 | 方向 / type | 字段与语义 |
 | --- | --- |
-| 插件 → 宿主 / `ready` | 确认消息监听器已注册；可选 `transition: {durationMs}`，整数 200..2000，申请窗口过渡 |
-| 宿主 → 插件 / `state` | `state`：语言、主题语义 token、连接状态、选中视图键、可见会话列表；`config`：插件声明的配置；可选 `initialWorkArea`：本窗口创建时所在显示器的正常桌面工作区，仅用于初始摆放，不随会话更新重置位置 |
+| 插件 → 宿主 / `ready` | 确认消息监听器已注册；可选 `transition: {durationMs}`，整数 200..2000，仅 desktop 可申请窗口过渡 |
+| 宿主 → 插件 / `state` | `state`：语言、主题语义 token、连接状态、选中视图键、可见会话列表；`config`：插件声明的配置；`initialWorkArea`：首次创建时的工作区，desktop 为显示器正常桌面，overlay 为应用视口；overlay 另附 `host.bounds` 与 `host.workArea`，随容器几何变化更新 |
 | 宿主 → 插件 / `transition` | `transition`：本代次唯一 id、direction（compact / workspace）、工作台 PNG data URL、workspace / surface 局部矩形、viewport 尺寸、workArea 正常桌面工作区；插件预加载并绘制首帧 |
 | 插件 → 宿主 / `transition-ready` | `id`：确认该过渡首帧已就绪；宿主显示透明过渡区域并发出 `transition-start` |
 | 宿主 → 插件 / `transition-start` | `id`：原生区域已经交接，插件开始计时绘制 |
@@ -64,6 +81,8 @@ AP-03：沙箱允许脚本和表单，不允许同源身份、顶层导航、Nod
 | 插件 → 宿主 / `request` | `id`：本窗口代次内单调递增的正安全整数；`action`：下表枚举；`params`：严格匹配动作的对象 |
 | 宿主 → 插件 / `result` | 原 `id`；`ok`；成功的 `value` 或失败的 `error`（稳定 code 与当前语言 message） |
 
+overlay 的 `state` 消息附带 `host: {mode: "overlay", bounds: {x,y,width,height}, workArea: {x:0,y:0,width,height}}`，坐标为应用视口的 CSS px。`host` 随容器与视口变化更新，`initialWorkArea` 保留首次创建时的工作区。
+
 | action | params | 行为 |
 | --- | --- | --- |
 | `select` | `conversationKey` | 只选择仍可见的完整会话目标；不恢复工作台 |
@@ -72,10 +91,10 @@ AP-03：沙箱允许脚本和表单，不允许同源身份、顶层导航、Nod
 | `stop` | `conversationKey` | 使用已有停止入口 |
 | `reply` | `conversationKey`, `replyId`, `offset`，可选 `role`（user / assistant，默认 assistant） | 读取选中会话最近一条用户消息或最后一条完整公开回复的一段；仅最近一条用户消息和最后回复，不是历史分页。offset 为 UTF-16 偏移，返回 `content` 和下一个偏移 `nextOffset`（结束时为 null）。 |
 | `model` | `conversationKey`, `modelId` | 从宿主公开的可用单模型目录选择；运行中禁止切换，与工作台共用模型选择与 `session.selection.set` 保存入口；错误明确显示。 |
-| `workspace` | 可选 `conversationKey`、`transition: {durationMs}` | 选择目标后恢复完整工作台；transition 的时长限制同 ready |
-| `resize` | `width`, `height` | 整数，宽 160..960、高 120..960；按当前显示器工作区约束实际窗口 |
-| `move` | `deltaX`, `deltaY` | 有限整数、各 -4096..4096；移动当前形态窗口并约束在工作区 |
-| `hitTest` | `interactive` | 布尔值；指针位于插件交互区域时接收点击，透明空白区域将点击传给桌面；宿主继续转发移动观察 |
+| `workspace` | 可选 `conversationKey`、`transition: {durationMs}` | desktop 选择目标后恢复完整工作台；overlay 定位会话并保留悬浮层；transition 仅 desktop 支持，时长限制同 ready，overlay 返回 UNSUPPORTED_ACTION |
+| `resize` | `width`, `height` | 整数，宽 160..960、高 120..960；desktop 按显示器工作区约束；overlay 保留右下锚点并约束到应用视口，实际尺寸可小于请求值 |
+| `move` | `deltaX`, `deltaY` | 有限整数、各 -4096..4096；移动当前承载容器；desktop 约束在显示器工作区，overlay 约束在应用视口 |
+| `hitTest` | `interactive` | desktop：布尔值，交互区域接收点击，透明空白区域将点击传给桌面；宿主继续转发移动观察。overlay 返回 UNSUPPORTED_ACTION |
 
 AP-08：窗口过渡仅在本地 Electron 与当前沙箱之间传递，提供给插件的截图仅包含本应用工作台；
 宿主内部交接面可保持当前工作台或当前形态窗口的画面。
@@ -124,16 +143,15 @@ AP-07：示例插件的蜜蜂与胶囊提供运行状态、最后完整回复、
 需要回答问题或工具授权时打开原应用处理。全部历史、用户/助手消息列表与面板内回答/授权不属于当前版本。
 当前仅提供单 Agent 会话，不提供模式切换；新会话固定为单 Agent。模型目录只公开稳定 ID 与展示名，不公开 API 地址和凭据。
 
-## 不变量与验证入口
+## 不变量
 
 - AP-I-01：插件样式、素材、轮播与布局不进入 Electron、Gateway 或聊天运行态。
-- AP-I-02：只有主窗口能发布快照；只有当前形态窗口能请求其有限原生能力；子 frame 不能调用原生 IPC。
+- AP-I-02：只有主窗口能发布快照；只有当前形态代次能请求其有限承载能力；子 frame 不能调用原生 IPC。
 - AP-I-03：插件卸载或小窗失败后，完整工作台仍可访问。
 - AP-I-04：发送目标始终是请求中已校验的完整会话视图，不受随后提醒或工作台选择变化影响。
-- AP-I-05：真实 DMG 验收须覆盖安装、三形态、真实工具状态、回复、恢复及卸载；模拟测试只能证明对应协议分支。
 
 展开面板在同一滚动区域显示最近用户消息与最后回复全文。输入框右侧按钮在空闲时发送，运行或等待确认时显示方形停止图标；Enter 仅发送，不触发停止。状态行不放停止操作。
 
 展开面板标题及会话选择菜单只切换桌面会话，不隐式打开主应用；独立“打开工作台”按钮显式定位会话。
 
-胶囊的锚点位置、展开方向和拖动区域由资源页面管理，调用既有 `resize` / `move`；本轮不新增宿主接口。
+胶囊的锚点位置、展开方向和拖动区域由资源页面管理，通过 `resize` / `move` 调整窗口尺寸和位置。

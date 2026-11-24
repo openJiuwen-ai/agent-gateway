@@ -29,6 +29,8 @@ def test_presentation_is_connection_scoped_and_accepts_its_own_package():
     {"title": {"zh": "蜜蜂"}}, {"title": {"zh": "", "en": "Bee"}},
     {"config": {"expression": float("nan")}},
     {"config": {"large": "a" * 16384}}, {"style": {}},
+    {"mode": "floating"}, {"mode": None}, {"mode": True},
+    {"mode": "overlay", "autoStart": "true"}, {"mode": "overlay", "autoStart": None},
 ])
 def test_invalid_presentation_properties_are_rejected(props):
     assert not validate_root(surface(**props)).ok
@@ -39,3 +41,15 @@ def test_presentation_rejects_foreign_assets_and_ordinary_slot_roots():
     assert not validate_request(UiRenderInput(target=target, root=surface())).ok
     assert not validate_request(UiRenderInput(target=target, root=RenderNode(component="Box"))).ok
     assert not validate_root(RenderNode(component="Box", children=(surface(),))).ok
+
+
+@pytest.mark.parametrize("mode", ["desktop", "overlay"])
+def test_presentation_accepts_explicit_host_modes(mode):
+    assert validate_root(surface(mode=mode)).ok
+
+
+@pytest.mark.parametrize("mode", ["desktop", "overlay"])
+def test_presentation_accepts_automatic_start_in_either_host(mode):
+    assert validate_root(surface(mode=mode, autoStart=True)).ok
+    assert validate_root(surface(autoStart=True)).ok
+    assert validate_root(surface(autoStart=False)).ok

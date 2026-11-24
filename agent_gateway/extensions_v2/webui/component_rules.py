@@ -247,6 +247,8 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
     }, "required": ("kind", "src", "title")},
     "ApplicationSurface": {"props": {
         "src": TEXT, "title": LOCALIZED_TEXT,
+        "mode": token("desktop", "overlay"),
+        "autoStart": BOOL,
         "width": {"kind": "number", "integer": True, "min": 160, "max": 960},
         "height": {"kind": "number", "integer": True, "min": 120, "max": 960},
         "config": {"kind": "record", "value": _JSON_VALUE},
