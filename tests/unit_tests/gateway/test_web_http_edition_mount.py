@@ -211,6 +211,7 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
 
     routes_pkg = ModuleType("agent_gateway.channel_manager.web.http_routes")
     routes_pkg.__path__ = []  # type: ignore[attr-defined]
+    routes_pkg.register_special_http_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, routes_pkg.__name__, routes_pkg)
     share_jobs = ModuleType(routes_pkg.__name__ + ".share_jobs")
     share_jobs.register_share_job_routes = lambda app: None
