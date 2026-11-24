@@ -2,10 +2,10 @@
 
 """转发方法可达性门禁。
 
-`_FORWARD_REQ_METHODS` 里的方法必须先能被 `parse_request_method` 解析，否则转发
-门禁拿到空串直接短路，请求退化成 ``METHOD_NOT_FOUND`` —— 用户侧看到的是「未知方法」，
-而不是「方法未实现」，排障成本很高。这类回归曾真实发生（team.* 七方法与
-mcp.sources.providers），本测试把它变成 CI 门禁。
+`_FORWARD_REQ_METHODS` 里的方法在 Web 入站会先经 `parse_request_method` 解析；协议包
+尚未发布的方法由入站动态登记后转发（见 web_connect._parse_req_method），不再退化成
+帧级 ``METHOD_NOT_FOUND``。本测试仍锁住「白名单在册、但协议包与网关 shim 都未声明」
+的名单，避免它无声漂移；个人版另要求 team.* 七方法始终不可解析（edition 门禁）。
 
 白名单只允许「明确知道为何暂不可达、且有人在跟」的条目；新增项必须写理由。
 """

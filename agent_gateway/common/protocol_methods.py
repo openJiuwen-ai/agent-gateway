@@ -17,8 +17,8 @@ SKILL_UPLOAD_FINALIZE = "skills.upload.finalize"
 
 # 企业版团队控制面：协议包尚未发布这 7 个方法，先在此登记（与 Agent 侧
 # ``jiuwenswarm/common/schema/message.py`` 的 ``ensure_team_control_req_methods``
-# 同名同值对齐）。缺失时 ``parse_request_method`` 返回 None，转发门禁直接短路，
-# 请求会退化成 METHOD_NOT_FOUND 而不是发往 Agent。
+# 同名同值对齐）。企业版由启动流程登记后转发；个人版保持“未知方法”语义，
+# 不允许通过 Web 入站的动态登记绕过 edition 门禁。
 _TEAM_CONTROL_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("TEAM_CREATE", "team.create"),
     ("TEAM_GET", "team.get"),
@@ -49,6 +49,19 @@ def register_edition_req_methods() -> None:
 
     if is_enterprise():
         ensure_team_control_req_methods()
+
+
+def is_dynamic_req_method_denied(value: str) -> bool:
+    """个人版禁止通过动态登记暴露企业版团队控制面方法。
+
+    个人版已把这 7 个方法从转发白名单剔除；若允许 Web 入站动态登记，默认透传
+    会绕过 edition 门禁，因此这里保持“未知方法”语义。
+    """
+    if value not in TEAM_CONTROL_METHODS:
+        return False
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    return not is_enterprise()
 
 
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
