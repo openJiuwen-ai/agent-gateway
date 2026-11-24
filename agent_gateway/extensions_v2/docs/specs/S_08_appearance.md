@@ -175,7 +175,9 @@ r、g、b 为 0～255 的整数，a 为 0～1 的数，逗号两侧可有空格�
 | 位置 | 数据 | 规则 |
 | --- | --- | --- |
 | 侧栏 Logo | `identity.logo` | 宿主固定尺寸，按比例完整显示；加载失败时显示宿主 Logo |
-| 浏览器标签 | `identity.name`、`identity.favicon` | 标题为品牌名，缺省为 “WorkSwarm”；图标缺省为宿主图标 |
+| 连接授权弹窗 Logo | `identity.logo` | 与侧栏相同，跟随当前快照 |
+| 登录页 Logo | 首帧记录中的 `identity.logo` | 登录前没有 Gateway 连接，取上次记录的标识（[S_09 第 5 节](S_09_startup-splash.md)）；没有记录或加载失败时显示宿主 Logo |
+| 浏览器标签 | `identity.name`、`identity.favicon` | 标题为品牌名，缺省为 “WorkSwarm”；图标缺省为宿主的 PNG 图标。部分浏览器不显示 SVG 标签图标，包宜在 `favicon` 中提供 PNG。图标加载成功后才替换当前图标，失败时回到宿主图标；宿主每次替换都新建图标元素，以减少浏览器沿用缓存 |
 | 欢迎语 | `identity.name`、`welcome` | 高亮词为品牌名，缺省为 “WorkSwarm”；后半句按第 2.5 节取值。有 `highlight` 时品牌名使用该颜色或渐变，`highlightScope` 为 `line` 时后半句同样使用（两段各自从左到右渐变）：宿主把每个颜色向黑或白调整，直到与页面底色（`--color-surface-page`）的对比度不低于 3:1（大字号标准），主题、明暗模式或外观变化时重新计算；字体不受影响 |
 | 吉祥物 | `mascot` | 显示区域沿用宿主尺寸，按比例完整显示；悬停交互与宿主默认吉祥物相同，有 `hoverSrc` 时在 `hoverMs` 内显示悬停图；加载失败时显示宿主默认吉祥物 |
 
