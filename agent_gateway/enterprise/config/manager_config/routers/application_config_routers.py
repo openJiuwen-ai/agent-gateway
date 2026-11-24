@@ -14,6 +14,9 @@ from ..core.application_config.log_masking_rule import LogMaskingRuleService
 from ..core.application_config.logging_config import LoggingConfigService
 from ..core.application_config.memory_config import MemoryConfigService
 from ..core.application_config.task_memory_config import TaskMemoryConfigService
+from ..core.application_config.user_preference_default import (
+    UserPreferenceDefaultService,
+)
 from ..schemas.application_config_schemas import (
     AdvancedConfigUpsertRequest,
     AuditLogUpsertRequest,
@@ -23,6 +26,7 @@ from ..schemas.application_config_schemas import (
     LogMaskingRuleUpdateRequest,
     MemoryConfigUpsertRequest,
     TaskMemoryUpsertRequest,
+    UserPreferenceDefaultUpsertRequest,
 )
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import make_sync_body
@@ -43,6 +47,9 @@ AuditLogSyncBody = make_sync_body("AuditLogSyncBody", AuditLogUpsertRequest)
 CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertRequest)
 AdvancedConfigSyncBody = make_sync_body(
     "AdvancedConfigSyncBody", AdvancedConfigUpsertRequest
+)
+UserPreferenceDefaultSyncBody = make_sync_body(
+    "UserPreferenceDefaultSyncBody", UserPreferenceDefaultUpsertRequest
 )
 LogMaskingCreateSyncBody = make_sync_body(
     "LogMaskingCreateSyncBody", LogMaskingRuleCreateRequest
@@ -185,6 +192,25 @@ async def delete_cron_policy(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@application_config_router.put(
+    "/user-preference-default", response_model=ResponseModel
+)
+async def upsert_user_preference_default(
+    sync: Annotated[SyncContext, Depends(verify_sync(UserPreferenceDefaultSyncBody))],
+):
+    """写 ``__default__`` 行；不清 AS（无 ``trigger_runtime_config_update``）。"""
+    try:
+        result = await UserPreferenceDefaultService().upsert(**sync.business)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=500,
+            detail=f"user preference default upsert failed: {exc}",
+        ) from exc
+    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
 
 
 @application_config_router.put("/advanced-config", response_model=ResponseModel)

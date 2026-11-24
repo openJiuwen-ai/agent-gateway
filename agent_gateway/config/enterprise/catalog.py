@@ -51,6 +51,7 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "advanced_config": EnterpriseRecordSpec(key_fields=("agent_template_id",)),
     "cron_policy": EnterpriseRecordSpec(key_fields=()),
     "audit_log_config": EnterpriseRecordSpec(key_fields=()),
+    "user_preference": EnterpriseRecordSpec(key_fields=("user_id",)),
     "manager_sign_pubkey": EnterpriseRecordSpec(
         key_fields=("id",),
         scope_field=None,

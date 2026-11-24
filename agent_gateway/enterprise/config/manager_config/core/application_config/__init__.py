@@ -5,6 +5,7 @@ from .log_masking_rule import LogMaskingRuleService
 from .logging_config import LoggingConfigService
 from .memory_config import MemoryConfigService
 from .task_memory_config import TaskMemoryConfigService
+from .user_preference_default import UserPreferenceDefaultService
 
 __all__ = (
     "AdvancedConfigService",
@@ -14,4 +15,5 @@ __all__ = (
     "LoggingConfigService",
     "MemoryConfigService",
     "TaskMemoryConfigService",
+    "UserPreferenceDefaultService",
 )
