@@ -1,9 +1,13 @@
 """Behavior at the independent Gateway's resource and storage boundaries."""
 from __future__ import annotations
 
+from contextlib import closing
 from pathlib import Path
+import os
+import sqlite3
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import yaml
 import pytest
@@ -46,7 +50,7 @@ def test_legacy_logs_and_checkpoints_migrate_once_without_replacing_new_data(mon
     assert (root / "profile/agent/.checkpoint/state").read_text() == "old state"
     assert (root / "logs/agent/old.log").read_text() == "old logs"
     paths._migrate_legacy_checkpoint_and_logs()
-    assert legacy.is_symlink()
+    assert legacy.samefile(root / "profile/agent/.checkpoint")
     assert legacy.resolve() == root / "profile/agent/.checkpoint"
 
 
@@ -82,7 +86,7 @@ def test_flat_layout_migration_merges_business_data_and_preserves_system_paths(m
     # Simulate a new process, not just the same-process guard.
     monkeypatch.setattr(paths, "_legacy_migration_done", False)
     paths._migrate_legacy_checkpoint_and_logs()
-    assert (root / "agent").is_symlink()
+    assert (root / "agent").samefile(root / "profile/agent")
     assert (root / "agent/.logs/agent.log").read_text() == "legacy agent"
 
 
@@ -93,15 +97,17 @@ def test_migration_preserves_conflicts_and_keeps_legacy_logs_local(monkeypatch):
     _write_file(root / "agent/sessions/other.json", "other")
     legacy_log = _write_file(root / "agent/.logs/agent.log", "old log")
     current_log = _write_file(root / "logs/agent/agent.log", "new log")
+    _write_file(root / "agent/.checkpoint/state", "checkpoint")
     monkeypatch.setattr(paths, "_legacy_migration_done", False)
     paths._migrate_legacy_checkpoint_and_logs()
     assert conflicting.read_text() == "old"
     assert target.read_text() == "new"
     assert (root / "profile/agent/sessions/other.json").read_text() == "other"
-    assert not (root / "agent").is_symlink()
+    assert not (root / "agent").samefile(root / "profile/agent")
     assert legacy_log.read_text() == "old log"
     assert current_log.read_text() == "new log"
     assert not (root / "profile/agent/.logs").exists()
+    assert (root / "agent/.checkpoint/state").samefile(root / "profile/agent/.checkpoint/state")
 
 
 def test_migration_preserves_directory_when_destination_is_file(monkeypatch):
@@ -122,11 +128,55 @@ def test_migration_succeeds_when_symlinks_are_unavailable(monkeypatch, caplog):
         raise OSError("symlink unavailable")
 
     monkeypatch.setattr(Path, "symlink_to", unavailable)
+    monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(paths, "_legacy_migration_done", False)
     paths._migrate_legacy_checkpoint_and_logs()
     assert (root / "profile/agent/sessions/session.json").read_text() == "retained"
     assert not (root / "agent").exists()
+    assert not paths._legacy_migration_done
     assert "could not create legacy path link" in caplog.text
+
+
+@pytest.mark.parametrize("layout", ["legacy", "migrated", "retained_logs", "failed_junction"])
+def test_windows_migration_keeps_legacy_checkpoint_accessible(monkeypatch, layout):
+    root = paths.get_user_workspace_dir()
+    old = root / "agent/.checkpoint/state.db"
+    new = root / "profile/agent/.checkpoint/state.db"
+    database = old if layout in {"legacy", "failed_junction"} else new
+    database.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(database)) as conn, conn:
+        conn.execute("CREATE TABLE checkpoint (value TEXT)")
+        conn.execute("INSERT INTO checkpoint VALUES ('retained')")
+    if layout == "retained_logs":
+        _write_file(root / "agent/.logs/agent.log", "legacy")
+        _write_file(root / "logs/agent/agent.log", "current")
+
+    # Exercise native junction creation on Windows; simulate it on POSIX.
+    if sys.platform == "win32":
+        import _winapi
+        create_junction = _winapi.CreateJunction
+    else:
+        create_junction = lambda src, dst: os.symlink(src, dst, target_is_directory=True)
+    monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(CreateJunction=create_junction))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    monkeypatch.setattr(Path, "symlink_to", lambda *a, **kw: pytest.fail("Windows directory must use junction"))
+    if layout == "failed_junction":
+        def unavailable(*args):
+            raise OSError("junction unavailable")
+
+        monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(CreateJunction=unavailable))
+        monkeypatch.setattr(paths, "_legacy_migration_done", False)
+        paths._migrate_legacy_checkpoint_and_logs()
+        assert new.is_file()
+        assert not paths._legacy_migration_done
+        monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(CreateJunction=create_junction))
+    for _ in range(2):
+        monkeypatch.setattr(paths, "_legacy_migration_done", False)
+        paths._migrate_legacy_checkpoint_and_logs()
+        assert old.samefile(new)
+        with closing(sqlite3.connect(old)) as conn:
+            assert conn.execute("SELECT value FROM checkpoint").fetchone() == ("retained",)
 
 
 def test_quota_policy_round_trip_uses_profile_database():
@@ -214,7 +264,11 @@ setup_gateway_logger().warning(sys.argv[1])
 '''
     for index, root in enumerate(roots):
         root.mkdir()
-        (root / "profile").symlink_to(shared_profile, target_is_directory=True)
+        if sys.platform == "win32":
+            import _winapi
+            _winapi.CreateJunction(str(shared_profile), str(root / "profile"))
+        else:
+            (root / "profile").symlink_to(shared_profile, target_is_directory=True)
         env = dict(os.environ, JIUWENSWARM_DATA_DIR=str(root), JIUWENSWARM_EDITION=edition)
         env.pop("AGENTOS_GATEWAY_LOG_DIR", None)
         result = subprocess.run([sys.executable, "-c", script, f"pod-{index}"], env=env, capture_output=True, text=True)
