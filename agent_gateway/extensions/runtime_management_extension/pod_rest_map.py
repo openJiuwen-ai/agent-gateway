@@ -369,6 +369,10 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
+    新建 ``X-Cron-Targets`` 和 ``X-Cron-Meta`` 头：
+    - ``channel_context.targets`` → ``X-Cron-Targets`` → ``metadata["targets"]``
+    - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
+
     企业版另附 ``X-Jiuwenswarm-Package-Allowlist``。值来自发送前读到的库行，
     不采用 ``channel_context`` 里客户端自带的名单。
 
@@ -415,6 +419,14 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    cron_targets = str(channel_context.get("targets") or "").strip()
+    if cron_targets:
+        headers["X-Cron-Targets"] = cron_targets
+    cron_meta = channel_context.get("cron")
+    if isinstance(cron_meta, dict) and cron_meta:
+        headers["X-Cron-Meta"] = json.dumps(
+            cron_meta, ensure_ascii=True, separators=(",", ":"),
+        )
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
