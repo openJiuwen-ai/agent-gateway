@@ -78,3 +78,31 @@ async def test_evict_previous_still_unlinks_old_keys() -> None:
     assert channel._id_by_ws[id(ws)] == getattr(ws, "_jiuwen_ws_id")
 
     await channel.unregister_ws(ws)
+
+
+class _RecordingWs(_FakeWs):
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, data: str) -> None:
+        self.sent.append(data)
+
+
+@pytest.mark.parametrize("routing_key", [_key("s1"), None])
+async def test_register_after_ensure_ws_id_still_delivers_frames(routing_key: RoutingKey | None) -> None:
+    """Extensions may assign the ws_id first; registration must still build the writer."""
+    channel = _Channel(None, None)
+    ws = _RecordingWs()
+    ws_id = await channel.ensure_ws_id(ws)
+    await channel.register_ws(ws, routing_key)
+
+    assert channel._id_by_ws[id(ws)] == ws_id
+    assert ws_id in channel._send_queues
+    assert ws_id in channel._writers
+
+    channel._enqueue_send(ws, {"type": "event"})
+    await channel.unregister_ws(ws)
+
+    assert ws.sent == ['{"type": "event"}']
+    assert ws_id not in channel._send_queues
+    assert ws_id not in channel._writers

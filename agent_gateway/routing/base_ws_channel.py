@@ -119,7 +119,7 @@ class BaseWsChannel(BaseWebChannel):
 
         扩展运行时在请求拦截阶段可能早于 ``register_ws`` 使用连接 ID
         （如 webui.dispatch 的 metadata.ws_id），这里保证同一 ws 始终得到
-        同一个值。
+        同一个值。这里只分配 ID；出站队列与 writer 仍由 ``register_ws`` 建立。
         """
         ws_id = getattr(ws, "_jiuwen_ws_id", "")
         if isinstance(ws_id, str) and ws_id:
@@ -179,7 +179,9 @@ class BaseWsChannel(BaseWebChannel):
                 setattr(ws, "_jiuwen_ws_id", ws_id)
                 self._ws_by_id[ws_id] = ws
                 self._id_by_ws[ws_key] = ws_id
-                # 新 ws：建出站队列 + 起常驻 writer 协程
+            # 首次注册：建出站队列 + 起常驻 writer 协程。ensure_ws_id 可能已先
+            # 分配 ws_id 但不建队列，因此按"缺队列"而非"新 ws_id"判断。
+            if ws_id not in self._send_queues:
                 self._send_queues[ws_id] = asyncio.Queue(maxsize=_SEND_QUEUE_MAX_FRAMES)
                 self._writers[ws_id] = asyncio.create_task(
                     self._writer_loop(ws, ws_id), name=f"ws-writer-{ws_id}"
