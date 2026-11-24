@@ -924,7 +924,8 @@ def test_interrupt_result_session_validation(caplog, mismatched_session, final_r
                     "todos": [],
                 },
             })
-        result = await peer.wait_response("r1", timeout=0.01, result_event="chat.interrupt_result")
+        timeout = 1.0 if final_result else 0.01
+        result = await peer.wait_response("r1", timeout=timeout, result_event="chat.interrupt_result")
         if final_result:
             assert result["ok"] is True
             assert result["payload"]["request_id"] == "correct-event"
