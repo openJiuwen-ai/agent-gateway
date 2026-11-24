@@ -3291,7 +3291,54 @@ class MessageHandler(ABC):
             await web_channel.broadcast_event("models.updated", {})
             logger.info("[MessageHandler] broadcasted models.updated")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+            # 与 _broadcast_push_terminated 一致：models.updated 是前端刷新可用
+            # 模型列表的唯一通道，失败须在生产 INFO 级日志可查。
+            logger.warning("[MessageHandler] broadcast models.updated failed: %s", exc)
+
+    async def _broadcast_push_terminated(self, payload: dict[str, Any]) -> None:
+        """把 ``gateway.push_terminated`` 推送给所有 Web 连接。
+
+        来源：``HttpSseAgentServerClient._push_loop`` 在 events/stream 连续失败
+        达到 ``_PUSH_MAX_CONNECT_FAILURES`` 次后，停止推送循环前合成的 frame
+        （issue #115 现象 1）。
+
+        **事件性质与前端契约**：这是 **pod 级** 事件——只表示 gateway 失去对
+        某个 agentserver pod 的 push 订阅（载荷 ``affected_scope="pod"``，
+        ``api_root`` 标识具体 pod），不代表整个 gateway 不可用。受影响会话的
+        后续 server_push 可能延迟或丢失，但前端→gateway 的 WS 仍然健康。
+
+        因此前端收到此事件后 **应当只显示提示**（"推送通道暂时不可用，新消息
+        可能延迟"），**不得无条件重建 SSE/WS**——否则单个 pod 故障会引发所有
+        不相关会话的连接抖动，且 reconnect 不会触发 gateway 重新订阅 pod 的
+        push 通道（gateway 自身的 _push_loop 退避重连逻辑会处理）。
+
+        广播范围：载荷是 pod 级的，但当前实现仍广播给所有 Web 连接，因为
+        前端按 ``api_root`` 过滤的成本高于直接广播（连接数有限），事件本身
+        的处理成本（显示一条 toast）也极低。若未来 Web 连接数显著增长或
+        pod 数量增加，可在 payload 补 ``affected_sessions`` 列表做精确路由。
+        """
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("gateway.push_terminated", payload)
+            logger.info(
+                "[MessageHandler] broadcasted gateway.push_terminated: reason=%s api_root=%s",
+                payload.get("reason"),
+                payload.get("api_root"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # gateway.push_terminated 是通知前端「推送已永久终止」的唯一通道；
+            # 失败时若只 DEBUG 级记录，生产 INFO 日志下无任何痕迹，前端会
+            # 静默挂等在已断开的 SSE 上（issue #115 现象 1 原样重现）。故提
+            # 升到 WARNING 并带异常信息，便于排查。
+            #
+            # 广播失败不能向上抛——_handle_agent_server_push_ordered 调用方
+            # （_push_loop / RuntimeRoutedAgentClient._handle_pod_push）不期望
+            # 一条通知帧的转发失败把推送通道整条链路炸掉。
+            logger.warning(
+                "[MessageHandler] broadcast gateway.push_terminated failed: %s", exc
+            )
 
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
@@ -3963,6 +4010,15 @@ class MessageHandler(ABC):
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "gateway.push_terminated":
+            # ``HttpSseAgentServerClient._push_loop`` synthesises this frame
+            # right before it gives up on an agentserver pod (issue #115
+            # 现象 1): without it, the frontend SSE stays attached to a
+            # gateway that has no source to push, so the user must refresh
+            # manually. Broadcast it so the web client can show a reconnect
+            # prompt / rebuild the SSE.
+            await self._broadcast_push_terminated(chunk.payload)
             return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
