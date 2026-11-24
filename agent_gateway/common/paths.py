@@ -216,17 +216,17 @@ _legacy_migration_done: bool = False
 
 
 def _is_directory_link(path: Path) -> bool:
-    if path.is_symlink():
-        return True
-    # Junctions are not symbolic links on Windows. Python 3.11 has no
-    # Path.is_junction(), so inspect the reparse tag without following it.
-    if sys.platform == "win32":
-        try:
+    try:
+        if path.is_symlink():
+            return True
+        # Junctions are not symbolic links on Windows. Python 3.11 has no
+        # Path.is_junction(), so inspect the reparse tag without following it.
+        if sys.platform == "win32":
             return getattr(path.lstat(), "st_reparse_tag", None) == getattr(
                 stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003
             )
-        except FileNotFoundError:
-            return False
+    except OSError:
+        return False
     return False
 
 
@@ -278,26 +278,7 @@ def _link_legacy_path(legacy: Path, current: Path) -> bool:
     return True
 
 
-def _migrate_legacy_checkpoint_and_logs() -> None:
-    """把旧平铺布局中的业务数据迁入 profile，并保留旧路径入口。
-
-    系统目录（config、logs、auth、runtime 等）继续位于数据根，不做迁移。
-    未发布的 domain/infra 中间布局不属于升级路径。
-    """
-    global _legacy_migration_done
-    if _legacy_migration_done:
-        return
-    links_ok = True
-
-    root = get_user_workspace_dir()
-    profile = get_profile_data_dir()
-    # Repair missing compatibility entries left by earlier Windows migrations.
-    # Do not synthesize legacy paths into a shared enterprise profile mount.
-    repair_missing_links = (
-        sys.platform == "win32"
-        and os.getenv("JIUWENSWARM_EDITION", "").strip().lower() != "enterprise"
-        and not _is_directory_link(profile)
-    )
+def _legacy_business_paths(root: Path, profile: Path) -> dict[Path, Path]:
     legacy_business_paths = {
         root / "agent": profile / "agent",
         root / ".checkpoint": profile / "agent" / ".checkpoint",
@@ -317,6 +298,36 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
         for path in root.glob("workspace_*")
         if path not in legacy_business_paths
     )
+    return legacy_business_paths
+
+
+def repair_windows_legacy_links() -> None:
+    """Repair missing Windows compatibility links after loading runtime dotenv."""
+    if sys.platform != "win32":
+        return
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    profile = get_profile_data_dir()
+    if is_enterprise() or _is_directory_link(profile):
+        return
+    for legacy, current in _legacy_business_paths(get_user_workspace_dir(), profile).items():
+        _link_legacy_path(legacy, current)
+
+
+def _migrate_legacy_checkpoint_and_logs() -> None:
+    """把旧平铺布局中的业务数据迁入 profile，并保留旧路径入口。
+
+    系统目录（config、logs、auth、runtime 等）继续位于数据根，不做迁移。
+    未发布的 domain/infra 中间布局不属于升级路径。
+    """
+    global _legacy_migration_done
+    if _legacy_migration_done:
+        return
+    links_ok = True
+
+    root = get_user_workspace_dir()
+    profile = get_profile_data_dir()
+    legacy_business_paths = _legacy_business_paths(root, profile)
 
     # 两种早期平铺日志位置都迁入仍处于根目录的 logs/agent。
     current_logs = get_logs_dir() / "agent"
@@ -337,7 +348,7 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
             continue
         had_legacy = legacy.exists() and not _is_directory_link(legacy)
         _move_if_absent(legacy, current)
-        if had_legacy or repair_missing_links:
+        if had_legacy:
             links_ok = _link_legacy_path(legacy, current) and links_ok
 
     # A retained legacy agent directory (e.g. conflicting logs) must still
@@ -536,6 +547,7 @@ __all__ = [
     "get_xy_tmp_dir",
     "logger",
     "prepare_runtime_workspace",
+    "repair_windows_legacy_links",
     "resolve_git_branch",
     "set_user_home",
 ]

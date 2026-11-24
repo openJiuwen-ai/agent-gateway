@@ -174,9 +174,65 @@ def test_windows_migration_keeps_legacy_checkpoint_accessible(monkeypatch, layou
     for _ in range(2):
         monkeypatch.setattr(paths, "_legacy_migration_done", False)
         paths._migrate_legacy_checkpoint_and_logs()
+        paths.repair_windows_legacy_links()
         assert old.samefile(new)
         with closing(sqlite3.connect(old)) as conn:
             assert conn.execute("SELECT value FROM checkpoint").fetchone() == ("retained",)
+
+
+@pytest.mark.parametrize("error", [NotADirectoryError, PermissionError, OSError])
+def test_windows_directory_link_probe_handles_os_errors(monkeypatch, tmp_path, error):
+    def unavailable(*args, **kwargs):
+        raise error("cannot inspect path")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    monkeypatch.setattr(Path, "lstat", unavailable)
+    assert not paths._is_directory_link(tmp_path / "agent")
+
+
+@pytest.mark.parametrize("edition,shared_profile,should_repair", [
+    ("personal", False, True),
+    ("enterprise", False, False),
+    ("personal", True, False),
+])
+def test_windows_missing_links_repair_uses_loaded_edition(
+    monkeypatch, tmp_path, edition, shared_profile, should_repair,
+):
+    from agent_gateway.startup.bootstrap import apply_group_environment
+
+    root = paths.get_user_workspace_dir()
+    profile = root / "profile"
+    if sys.platform == "win32":
+        import _winapi
+        create_junction = _winapi.CreateJunction
+    else:
+        create_junction = lambda src, dst: os.symlink(src, dst, target_is_directory=True)
+    if shared_profile:
+        root.mkdir(parents=True, exist_ok=True)
+        shared = tmp_path / "shared-profile"
+        shared.mkdir()
+        create_junction(str(shared), str(profile))
+    state = _write_file(profile / "agent/.checkpoint/state", "retained")
+    env_file = _write_file(root / "config/.env", f"JIUWENSWARM_EDITION={edition}\n")
+    monkeypatch.setattr(paths, "get_env_file", lambda: env_file)
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(CreateJunction=create_junction))
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    paths._migrate_legacy_checkpoint_and_logs()
+    assert not (root / "agent").exists()
+    apply_group_environment(lambda _: None)
+
+    assert os.environ["JIUWENSWARM_EDITION"] == edition
+    if should_repair:
+        assert (root / "agent/.checkpoint/state").samefile(state)
+    else:
+        assert not (root / "agent").exists()
+        assert not (root / ".checkpoint").exists()
+        assert not paths._is_directory_link(root / "agent")
+        assert not paths._is_directory_link(root / ".checkpoint")
 
 
 def test_quota_policy_round_trip_uses_profile_database():
@@ -282,4 +338,4 @@ setup_gateway_logger().warning(sys.argv[1])
         assert (root / "profile/agent/workspace/pod-0").is_file()
         assert (root / "profile/agent/workspace/pod-1").is_file()
     assert not (shared_profile / "logs").exists()
-    assert not (shared_profile / "agent/.logs").is_symlink()
+    assert not paths._is_directory_link(shared_profile / "agent/.logs")
