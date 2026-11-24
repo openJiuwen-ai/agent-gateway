@@ -8,12 +8,12 @@
 | 编号 / slug | `F_16 / layered-appearance-and-brand` |
 | 建档日期 | 2026-11-23 |
 | 范围 | agent-gateway `agent_gateway/extensions_v2/`（外观接口、层级与合成、声明槽位、候选提示）；jiuwenswarm `jiuwenswarm/channels/web/app_web.py` 与前端（门控、外观应用、主页四处显示） |
-| 方案成熟度 | 产品决策已确认（第 4.2 节），待模块维护者评审；Gateway 侧与 jiuwenswarm 侧（`app_web`、前端）均已实现，均未推送；agent-gateway 固定提交升级（I-11）待 Gateway 侧合入后进行 |
+| 方案成熟度 | 产品决策已确认（第 4.2 节），待模块维护者评审；Gateway 侧与 jiuwenswarm 侧（`app_web`、前端）均已实现，2026-11-24 已变基到两仓当日的 develop，均未推送；agent-gateway 固定提交升级（I-11）待 Gateway 侧合入后进行 |
 | 计划条目 | [EXTV2-GW-16](../designs/extensions-v2-development-plan.md) |
 | 整体设计 | [应用级界面能力设计概览](../designs/application-surfaces-overview.md) 第 3.1、3.3 节 |
 | 设计依据 | [S_08 受控外观](../specs/S_08_appearance.md)、[S_09 启动门控](../specs/S_09_startup-splash.md)、[S_10 第 4 节](../specs/S_10_application-settings.md)、[S_02 槽位](../specs/S_02_ui-render.md)、[S_06 浏览器桥接](../specs/S_06_local-browser-bridge.md)、[S_07 媒体容器](../specs/S_07_media-surface.md) |
 | 关联 feature | 延续 [F_11 受控外观](F_11_controlled-appearance.md)（提供者规则由本方案替代）与 [F_12 启动门控](F_12_startup-gate-and-splash.md)（门控增加外观准备） |
-| 验证摘要 | 2026-11-23 Gateway、`app_web` 与前端单元验证通过，隔离实例中的浏览器预览通过（第 8.2 节）；真实 AgentServer 与桌面打包版联调未执行 |
+| 验证摘要 | 2026-11-24 变基后 Gateway 扩展用例、`app_web`、前端 WebUI 各套件、`tsc` 与 `npm run build` 全部通过；真实 AgentServer 的隔离完整实例中主题插件的四个部件验证通过（第 8.2 节）；双包叠加的真实联调、登录插件场景与桌面打包版未执行 |
 | Refs | 未关联 issue；需求与决策来自 2026-11-17～2026-11-23 的产品讨论 |
 
 契约已迁入主责规约：外观部件、层级与快照帧见 S_08，声明槽位、平台帧、提示与门控见 S_09（第 5.3 节列出对应位置）。
@@ -375,6 +375,9 @@ compose(connection):
 | 同上；V-12（前端） | 同上；对照为同一提交未改动的临时工作树，`node_modules` 相同 | `package.json` 中全部 277 个 `test:*` 脚本与 `tsc --noEmit -p tsconfig.json`，改动前后各一次 | 只有 `test:webui-components`（374 → 427）与 `test:webui-runtime`（24 → 26）不同，均全部通过；其余脚本结果相同，前后都有 33 个脚本失败（缺上述两个包，或 develop 本身的失败用例）；`tsc` 前后是相同的 12 个错误，全部来自缺失的两个包 | `npm run build` 因缺包无法执行 |
 | 同上；V-09、V-10、V-11（部分） | 隔离实例 `.tools/v2-instance-brand`：上面的 Gateway（web 26000）；AgentServer 由只回 `connection.ack`、让请求立即失败的替身代替（本机 agent-core `c48b5bb` 无法启动 develop 的 AgentServer）；Vite 开发服务器（9273），两个缺失的包以本地占位模块代替；两个演示包：先装 `demo-hive-theme`（配色与吉祥物），后装 `demo-brand-logo`（标识与欢迎语） | 应用内浏览器打开首页、刷新、卸载与重装上层包，读取页面状态并截图 | 两包的部件同时生效（强调色 `#b45309`、蜜蜂吉祥物、名称 Nebula、Logo、欢迎语、标签标题与图标）；安装后不刷新即生效；刷新时中性层显示记录中的品牌，门控约 1.3 秒开放，期间标签标题保持记录；卸载上层包后不刷新即恢复宿主品牌，下层的配色与吉祥物保留，标识记录被清除 | 开发模式没有 `/extension-splash/hint`，门控只走提示未知的路径；聊天与会话不可用；吉祥物悬停图被宿主原有的悬停提示遮挡，未看清；真实 AgentServer、登录插件与桌面打包版未覆盖 |
 
+| 2026-11-24；V-01～V-10、V-12（变基后复验） | agent-gateway develop `764cff7a` 加本特性（分支 `feature/appearance-parts`），jiuwenswarm develop `040357f` 加本特性（分支 `feat/home-page-brand`）；Python 3.11.17，隔离环境 `.venv-full`（jiuwenswarm 依赖经 `uv sync --frozen` 安装，agent-gateway 以可编辑方式指向分支，agent-core 为 develop `8e9e6df`）；Node 22.23.4，`npm ci` 安装的完整前端依赖 | `pytest tests/unit_tests/gateway/extensions_v2`；`pytest tests/unit_tests/channels/web/test_app_web_splash_hint.py tests/unit_tests/channels/web/test_app_web_extension_assets.py`；`tsc --noEmit`；10 组 `test:webui-*`；`npm run build` | Gateway 816 通过（11-23 记录的 43 项失败来自旧的本地 agent-core，换环境后不再出现）；`app_web` 16 通过；`tsc` 0 错误；components 453、client 43、contracts 179、events 93、plugin-panels 28、runtime 26、renderer 17、protocol 14、input 12、transport 9，全部通过；构建通过。变基前另以 `git merge-tree` 合成的提交复验一次，结果相同 | 按仓库规则未运行 lint；未在仓库锁定的 agent-core `02b2ce4` 上运行 |
+| 2026-11-23～24；V-09、V-10、V-11（部分） | 隔离完整实例 `.tools/v2-instance-full`：真实 AgentServer（27092）、Gateway（27000 / 27001）、`app_web` 提供构建后的前端（9373），代码同上一行；主题壁纸插件 2.2.0～2.2.1（配色、标识、欢迎语、吉祥物四个部件，声明 `application.appearance`） | 应用内浏览器打开、刷新、切换工作模式与主题，读取页面状态并截图 | 侧栏 Logo、标签 PNG 图标、欢迎语（按工作模式取值）、品牌名高亮渐变（对比度调整后的颜色）、吉祥物均为插件内容；用户欢迎语保存、恢复与整句着色开关即时生效；提示为是的门控路径中开场与外观同时生效。旧 Gateway 曾以 `welcome accepts default and modes` 拒绝带 `highlight` 的整次提交，插件改为逐项降级后配色不再受影响 | 双包叠加与停用上层后下层露出只在替身 AgentServer 的预览中验证；登录插件场景（登录页 Logo 读取首帧记录）、Safari 标签图标缓存、桌面打包版（macOS、Windows）未覆盖 |
+
 测试的整理：5 个测试文件此前使用默认的相对数据目录（`extension/gateway`）。本特性在包首次发布时写入层级记录，
 这些用例因而会在仓库目录下生成 `extension/gateway/host/appearance.json`；已改为使用各自的临时数据目录。
 `test_gateway_host_actions.py` 中一处断言改读新的快照格式。
@@ -384,9 +387,12 @@ compose(connection):
 - 已证明范围：Gateway 侧的部件校验、`apply` 语义、按安装顺序叠加、释放与在途帧、品牌图片所有权与大小、声明槽位与
   平台帧的并行分派、候选提示的静态判定；`app_web` 的提示字段；前端的快照校验与暂存、门控外观准备、首帧记录与主页四处，
   均在单元范围内成立，其余用例没有新增失败。浏览器预览中，两包叠加、安装与卸载后的即时更新、刷新时的首帧品牌均符合设计。
-- 未覆盖：真实 AgentServer 与登录插件下的联调、桌面打包版、提示为是或否的门控路径在真实页面中的表现、`npm run build`。
-- 交付判断：两侧可以提交评审；新帧格式与旧前端不兼容，jiuwenswarm 的 agent-gateway 固定提交（I-11）须在 Gateway 侧
-  合入后升级，并与前端改动一起交付（第 7 节）。
+- 2026-11-24 补充：变基到当日 develop 后各套件与构建全部通过；真实 AgentServer 的完整实例中，单个主题插件的四个部件、
+  欢迎语按模式取值与整句着色、提示为是的门控路径均符合设计。
+- 未覆盖：真实实例中的双包叠加与停用后露出、登录插件场景、提示为否的门控路径在真实页面中的表现、桌面打包版、
+  在仓库锁定的 agent-core 上运行。
+- 交付判断：Gateway 侧可以提交评审；jiuwenswarm 侧须在 Gateway 侧合入后，于同一 PR 升级 agent-gateway 固定提交（I-11，
+  `pyproject.toml` 与 `uv.lock`）并与前端改动一起交付：新前端拒绝旧帧格式，只合前端会使现有外观插件失效（第 7 节）。
 
 ## 9. 风险与已知遗留
 
