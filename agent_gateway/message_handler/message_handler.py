@@ -515,10 +515,28 @@ class MessageHandler(ABC):
         self._result_delivery_handler = handler
 
     async def _resolve_response_language(self, msg: Any) -> str | None:
-        """Read preferred language from the routed AgentServer via E2A.
+        """Resolve preferred language for review prompts.
 
-        The local config remains a fallback for no-client/legacy deployments.
+        企业：Gateway DB 用户习惯表（按消息 ``user_id``）。
+        个人：经 E2A 读 AgentServer；失败时回退本地 config。
         """
+        from agent_gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                language = await get_user_preference_service().get_language(
+                    getattr(msg, "user_id", None)
+                )
+                return language if language in {"zh", "en"} else None
+            except Exception as exc:  # noqa: BLE001 - prompt falls back to local config
+                logger.warning(
+                    "[MessageHandler] enterprise preferred_language resolve failed: %s",
+                    exc,
+                )
+                return None
+
         try:
             from e2a.gateway_normalize import e2a_from_agent_fields
             from e2a.message import ReqMethod

@@ -4292,13 +4292,28 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
-        """Return the selected AgentServer user's preferred language."""
+        """企业：读 Gateway DB 用户习惯表；个人：代理 AgentServer 读 yaml。"""
+        if _is_enterprise_edition():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                lang = await get_user_preference_service().get_language(user_id)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": lang}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.get_conf] enterprise resolve failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
         from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and resolved_client is None:
+        if resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4313,17 +4328,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
 
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={}, session_id=session_id, user_id=user_id,
             req_method=ReqMethod.LOCALE_GET_CONF, label="locale.get_conf",
         )
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
-        """Update preferred language in the selected AgentServer directory."""
-        from e2a.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
-
+        """企业：写 Gateway DB 用户习惯表；个人：代理 AgentServer 写 yaml。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -4343,8 +4354,42 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST"
             )
             return
+
+        if _is_enterprise_edition():
+            uid = str(user_id or "").strip()
+            if not uid:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="user_id is required",
+                    code="BAD_REQUEST",
+                )
+                return
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                saved = await get_user_preference_service().upsert_user_language(uid, lang)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": saved}
+                )
+            except ValueError as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.set_conf] enterprise upsert failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
+        from e2a.message import ReqMethod
+
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and resolved_client is None:
+        if resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
@@ -4353,7 +4398,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
             return
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={"preferred_language": lang}, session_id=session_id,
             user_id=user_id, req_method=ReqMethod.LOCALE_SET_CONF,
             label="locale.set_conf",
