@@ -2,8 +2,11 @@
 
 """Web 请求方法路由：本地白名单 + 默认透传。"""
 
+import json
+
 import pytest
 
+from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.req_method_routing import (
     ROUTE_DENIED,
     ROUTE_FORWARD,
@@ -11,6 +14,7 @@ from agent_gateway.channel_manager.web.req_method_routing import (
     ROUTE_LOCAL,
     route_req_method,
 )
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 def test_forward_list_wins_over_local_registration():
@@ -82,3 +86,64 @@ def test_ensure_req_method_rejects_invalid_value():
 
     assert ensure_req_method("") is None
     assert ensure_req_method("!!!") is None
+
+
+def test_personal_edition_does_not_register_team_control(monkeypatch):
+    """个人版不能通过动态登记绕过团队控制面的 edition 门禁。"""
+    from agent_gateway.enterprise import edition
+
+    monkeypatch.setattr(edition, "is_enterprise", lambda: False)
+    assert WebChannel._parse_req_method("team.create") is None
+
+
+def test_enterprise_edition_registers_team_control(monkeypatch):
+    from agent_gateway.enterprise import edition
+
+    monkeypatch.setattr(edition, "is_enterprise", lambda: True)
+    member = WebChannel._parse_req_method("team.create")
+    assert member is not None
+    assert member.value == "team.create"
+
+
+class _ClientSocket:
+    """A browser tab double: records frames the Gateway writes back."""
+
+    closed = False
+
+    def __init__(self, port: int) -> None:
+        self.remote_address = ("127.0.0.1", port)
+        self.sent: list[dict] = []
+
+    async def send(self, value: str) -> None:
+        self.sent.append(json.loads(value))
+
+
+@pytest.mark.asyncio
+async def test_web_channel_registers_unknown_method_before_forwarding():
+    """协议包没有的业务方法：Web 入站先动态登记 ReqMethod，再交给转发回调。"""
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    received = []
+
+    async def record(msg):
+        received.append(msg)
+        return True
+
+    channel.on_message(record)
+    tab = _ClientSocket(1001)
+    channel._resolve_connection_user_id({"user_id": "alice"}, tab)
+    frame = json.dumps(
+        {
+            "type": "req",
+            "id": "req-new-method",
+            "method": "models.multimodal.list",
+            "params": {"session_id": "s-1"},
+        }
+    )
+
+    await channel._handle_raw_message(tab, frame, {})
+
+    assert len(received) == 1
+    assert received[0].req_method is not None
+    assert received[0].req_method.value == "models.multimodal.list"
+    # 转发回调返回 True，网关不再回 METHOD_NOT_FOUND。
+    assert tab.sent == []
