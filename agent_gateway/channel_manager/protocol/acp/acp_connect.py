@@ -905,7 +905,11 @@ class AcpChannel(BaseChannel):
             params.setdefault("query", text)
             req_method = ReqMethod.CHAT_SEND
         if req_method is None:
-            raise ValueError(f"unsupported ACP/E2A method: {method or '<empty>'}")
+            # 方法枚举归 AgentServer：网关不认识的方法保持原字符串交给
+            # ProtocolRuntime 判定是转发还是拦截，这里只拒绝空方法名。
+            if not method:
+                raise ValueError("unsupported ACP/E2A method: <empty>")
+            req_method = method
 
         if req_method == ReqMethod.CHAT_SEND:
             params.setdefault("query", params.get("content", ""))
@@ -1642,7 +1646,8 @@ class AcpChannel(BaseChannel):
         if msg.mode is not None:
             params.setdefault("mode", msg.mode.to_runtime_mode())
 
-        req_method = getattr(msg.req_method, "value", None)
+        raw_method = msg.req_method
+        req_method = raw_method.value if isinstance(raw_method, ReqMethod) else raw_method
         if not isinstance(req_method, str) or not req_method:
             raise ValueError("gateway forward requires req_method")
 
