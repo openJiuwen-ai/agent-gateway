@@ -31,12 +31,14 @@ async def test_shutdown_signal_requests_shutdown_and_restores_handlers(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool,
+        required_client_type: str | None = None,
     ) -> None:
         assert agent_server_url == "ws://127.0.0.1:18092"
         assert web_host == "127.0.0.1"
         assert web_port == 19000
         assert web_path == "/ws"
         assert web_ws_deflate is False
+        assert required_client_type == "agentos_router"
         installed[signal.SIGTERM](signal.SIGTERM, None)
         await asyncio.wait_for(shutdown_event.wait(), timeout=1.0)
 
@@ -50,6 +52,7 @@ async def test_shutdown_signal_requests_shutdown_and_restores_handlers(
         web_host="127.0.0.1",
         web_port=19000,
         web_path="/ws",
+        required_client_type="agentos_router",
     )
 
     assert installed == old
@@ -78,6 +81,7 @@ async def test_run_failure_restores_handlers_and_awaits_cleanup(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool,
+        required_client_type: str | None = None,
     ) -> None:
         assert agent_server_url == "ws://127.0.0.1:18092"
         assert web_host == "127.0.0.1"
