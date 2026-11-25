@@ -185,6 +185,20 @@ async def test_poll_refresh_updates_language_without_touch(monkeypatch):
     assert cache._entries["bob"].last_used_at == entry_before
 
 
+def test_cache_evicts_only_entries_past_ttl_in_insertion_order(monkeypatch):
+    cache = UserPreferenceCache(ttl_seconds=60)
+    now = 10.0
+    monkeypatch.setattr(time, "monotonic", lambda: now)
+    for key in ("older", "recently-used", "old"):
+        cache.put(key, "en")
+    now = 20.0
+    cache.get("recently-used")
+
+    assert cache.evict_expired(now=80.0) == ["older", "old"]
+    assert cache.keys() == ["recently-used"]
+    assert cache.evict_expired(now=80.0) == []
+
+
 @pytest.mark.asyncio
 async def test_poll_evicts_expired_before_refresh(monkeypatch):
     store = _FakeStore()

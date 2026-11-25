@@ -60,12 +60,13 @@ class UserPreferenceCache:
     def evict_expired(self, *, now: float | None = None) -> list[str]:
         """删除使用超时的条目，返回被删的 user_id。"""
         ts = time.monotonic() if now is None else float(now)
-        removed: list[str] = []
         with self._lock:
-            for key, entry in list(self._entries.items()):
-                if ts - entry.last_used_at > self._ttl:
-                    self._entries.pop(key, None)
-                    removed.append(key)
+            removed = [
+                key for key, entry in self._entries.items()
+                if ts - entry.last_used_at > self._ttl
+            ]
+            for key in removed:
+                del self._entries[key]
         return removed
 
     def keys(self) -> list[str]:
