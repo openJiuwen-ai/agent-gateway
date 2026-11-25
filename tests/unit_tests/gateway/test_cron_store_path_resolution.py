@@ -30,7 +30,7 @@ def test_cron_always_reads_home_even_when_gateway_file_exists(workspace):
     gateway_dir = workspace / "gateway"
     gateway_dir.mkdir(parents=True)
     (gateway_dir / "cron_jobs.json").write_text("{}", encoding="utf-8")
-    assert get_cron_jobs_path() == workspace / "domain" / "agent" / "home" / "cron_jobs.json"
+    assert get_cron_jobs_path() == workspace / "agent" / "home" / "cron_jobs.json"
 
 
 def test_fresh_workspace_uses_home(workspace):

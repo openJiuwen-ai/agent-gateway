@@ -16,10 +16,12 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -83,19 +85,120 @@ _root_dir: Path | None = None
 _initialized: bool = False
 
 
+_BUSINESS_ENTRIES = (
+    "agent", "gateway", "application_plugins", ".agent_teams", ".organizations",
+    "jiuwenmate", ".trace", ".agent_history", "agents", ".personal_context", "runtime_state",
+)
+
+
+def _is_directory_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    if sys.platform == "win32":
+        try:
+            return getattr(path.lstat(), "st_reparse_tag", None) == getattr(
+                stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003
+            )
+        except OSError:
+            return False
+    return False
+
+
+def _restore_profile_alias(legacy: Path, current: Path) -> None:
+    """Restore a missing alias from an earlier profile upgrade without moving data."""
+    if not current.exists():
+        raise RuntimeError(f"Invalid profile data path: {current}")
+    if legacy.exists() or _is_directory_link(legacy):
+        if legacy.exists() and current.exists() and legacy.samefile(current):
+            return
+        raise RuntimeError(f"Conflicting personal layout: {legacy} and {current}; preserve both before rollback")
+    try:
+        if sys.platform == "win32" and current.is_dir():
+            import _winapi
+
+            _winapi.CreateJunction(str(current.absolute()), str(legacy.absolute()))
+        else:
+            legacy.symlink_to(current.absolute(), target_is_directory=current.is_dir())
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise RuntimeError(f"Could not restore legacy data alias: {legacy} -> {current}") from exc
+    if not legacy.exists() or not legacy.samefile(current):
+        raise RuntimeError(f"Could not restore legacy data alias: {legacy} -> {current}")
+
+
+@lru_cache(maxsize=32)
+def _personal_storage_roots(root: Path) -> tuple[Path, Path]:
+    """Reuse existing personal data without another on-disk layout migration."""
+    domain = root / _DOMAIN_DIR_NAME
+    infra = root / _INFRA_DIR_NAME
+    profile = root / "profile"
+    if _is_directory_link(domain) or _is_directory_link(infra):
+        return domain, infra
+
+    names = set(_BUSINESS_ENTRIES)
+    for location in (root, profile, domain):
+        names.update(path.name for path in location.glob("workspace_*"))
+
+    def entries(location: Path) -> set[str]:
+        return {name for name in names if (location / name).exists() or _is_directory_link(location / name)}
+
+    flat_entries = entries(root)
+    # Existing flat configuration is authoritative for Swarm. If only the
+    # partitioned config exists, keep reading it instead of seeding a new one.
+    system_root = root if (root / "config").exists() or not (infra / "config").exists() else infra
+    profile_entries = entries(profile)
+    domain_entries = entries(domain)
+    if profile_entries:
+        for name in domain_entries:
+            other = domain / name
+            target = profile / name if name in profile_entries else root / name
+            if not target.exists() or not other.exists() or not other.samefile(target):
+                raise RuntimeError(f"Conflicting personal layout: {other} and {target}; preserve both")
+
+        for name in profile_entries:
+            legacy = root / name
+            current = profile / name
+            if name == "agent" and legacy.is_dir() and not _is_directory_link(legacy):
+                # The old Swarm can have its log directory open here. Keep it
+                # local and restore only missing business directory aliases.
+                for child in current.iterdir():
+                    if child.name != ".logs":
+                        _restore_profile_alias(legacy / child.name, child)
+            else:
+                _restore_profile_alias(legacy, current)
+        return root, system_root
+
+    if flat_entries:
+        for name in domain_entries:
+            other = domain / name
+            target = root / name
+            if not target.exists() or not other.exists() or not other.samefile(target):
+                raise RuntimeError(f"Conflicting personal layout: {other} and {target}; preserve both")
+        return root, system_root
+    if (root / "config").is_dir():
+        return (domain if domain_entries else root), root
+    return domain, infra
+
+
+def _storage_roots() -> tuple[Path, Path]:
+    from agent_gateway.enterprise.edition import is_enterprise
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    root = get_user_workspace_dir()
+    if is_enterprise() or is_agentos_runtime():
+        return root / _DOMAIN_DIR_NAME, root / _INFRA_DIR_NAME
+    return _personal_storage_roots(root)
+
+
 def get_domain_data_dir() -> Path:
-    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
-    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
+    """Return the existing personal business root or the configured domain partition."""
+    return _storage_roots()[0]
 
 
 def get_infra_data_dir() -> Path:
-    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
-    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
-    周期），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _INFRA_DIR_NAME
+    """Return the existing personal system root or the configured infra partition."""
+    return _storage_roots()[1]
 
 
 def get_bundled_resources_dir() -> Path:
@@ -228,11 +331,14 @@ def _move_if_absent(old: Path, new: Path) -> None:
     """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
 
     并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
+    if _is_directory_link(old) or _is_directory_link(new):
+        logger.warning("Skipping legacy directory link migration: %s -> %s", old, new)
+        return
     if not old.exists() or new.exists():
         return
     new.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.move(str(old), str(new))
+        old.rename(new)
     except FileNotFoundError:
         pass
 
@@ -240,8 +346,9 @@ def _move_if_absent(old: Path, new: Path) -> None:
 def _migrate_legacy_checkpoint_and_logs() -> None:
     """数据根旧平铺路径一次性搬迁。
 
-    - ``.checkpoint``（业务态）→ ``domain/agent/``
-    - ``.logs``（系统日志）→ ``infra/logs/agent/``
+    - ``.checkpoint`` → 当前业务根的 ``agent/``
+    - ``.logs`` → 当前系统根的 ``logs/agent/``
+    已有平铺/profile 数据继续原位使用，回退版本不做跨布局搬迁。
     """
     global _legacy_migration_done
     if _legacy_migration_done:

@@ -15,7 +15,7 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from agent_gateway.common.paths import get_infra_data_dir, get_user_workspace_dir
+from agent_gateway.common.paths import get_infra_data_dir
 from agent_gateway.common.version import __version__
 from agent_gateway.common.version_source import normalize_pypi_index_url
 

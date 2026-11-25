@@ -18,7 +18,7 @@
 
 - ``ST_WORKSWARM_HOME``：复用已初始化的工作区；默认每轮建临时目录。
 - ``ST_WORKSWARM_CHAT=1``：启用真实模型对话用例；临时工作区会从
-  ``ST_WORKSWARM_CONFIG_SRC``（默认 ``~/.jiuwenswarm/config``）复制模型配置。
+  ``ST_WORKSWARM_CONFIG_SRC``（默认 ``~/.jiuwenswarm/infra/config``，兼容旧平铺配置）复制模型配置。
 """
 
 from __future__ import annotations
@@ -60,15 +60,18 @@ class WorkswarmService:
 
 
 def _seed_model_config(home: Path) -> None:
-    default_src = Path.home() / ".jiuwenswarm" / "config"
+    default_src = Path.home() / ".jiuwenswarm" / "infra" / "config"
+    if not default_src.is_dir():
+        default_src = Path.home() / ".jiuwenswarm" / "config"
     src = Path(os.environ.get("ST_WORKSWARM_CONFIG_SRC", "") or default_src).expanduser()
     if not src.is_dir():
         return
-    dst = home / ".jiuwenswarm" / "config"
-    dst.mkdir(parents=True, exist_ok=True)
-    for name in ("config.yaml", ".env"):
-        if (src / name).exists():
-            shutil.copy2(src / name, dst / name)
+    root = home / ".jiuwenswarm"
+    for dst in (root / "infra" / "config", root / "config"):
+        dst.mkdir(parents=True, exist_ok=True)
+        for name in ("config.yaml", ".env"):
+            if (src / name).exists():
+                shutil.copy2(src / name, dst / name)
 
 
 @pytest.fixture(scope="session")

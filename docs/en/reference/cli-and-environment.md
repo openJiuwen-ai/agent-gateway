@@ -89,6 +89,8 @@ health_check:
 
 `<root>` is `JIUWENSWARM_DATA_DIR` when set, otherwise `JIUWENSWARM_HOME/.jiuwenswarm`.
 
+The rollback release reads existing personal flat or profile data in place and restores missing compatibility aliases when necessary, without moving data into the partitioned layout. Conflicting business directories in different layouts are reported at startup and retained.
+
 Enterprise deployments mount only `<root>/domain/` on shared PVC/NFS storage and keep
 `<root>/infra/` private to each Pod; do not mount the entire data root. Personal
 deployments use the same paths as ordinary directories. Runtime logs, including

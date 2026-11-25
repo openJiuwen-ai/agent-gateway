@@ -1,7 +1,6 @@
 """Behavior at the independent Gateway's resource and storage boundaries."""
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 import sys
 
@@ -47,6 +46,100 @@ def test_legacy_logs_and_checkpoints_migrate_once_without_replacing_new_data(mon
     assert (root / "infra/logs/agent/old.log").read_text() == "old logs"
     paths._migrate_legacy_checkpoint_and_logs()
     assert not legacy.exists()
+
+
+def _write_test_file(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_rollback_reads_existing_flat_personal_data(monkeypatch):
+    root = paths.get_user_workspace_dir()
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    config = _write_test_file(root / "config/config.yaml", "custom: retained")
+    db = _write_test_file(root / "agent/.checkpoint/state", "checkpoint")
+    workspace = _write_test_file(root / "agent/workspace/USER.md", "document")
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    paths._migrate_legacy_checkpoint_and_logs()
+    paths.prepare_runtime_workspace(cleanup_stale_descs=False)
+
+    assert paths.get_config_file() == config
+    assert (paths.get_checkpoint_dir() / "state").samefile(db)
+    assert (paths.get_agent_workspace_dir() / "USER.md").samefile(workspace)
+    assert config.read_text() == "custom: retained"
+    assert not (root / "domain").exists()
+
+
+def test_rollback_reads_existing_profile_data_in_place(monkeypatch):
+    root = paths.get_user_workspace_dir()
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    config = _write_test_file(root / "config/config.yaml", "custom: retained")
+    db = _write_test_file(root / "profile/agent/.checkpoint/state", "checkpoint")
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    paths._migrate_legacy_checkpoint_and_logs()
+
+    assert paths.get_config_file() == config
+    assert (paths.get_checkpoint_dir() / "state").samefile(db)
+    assert (root / "agent/.checkpoint/state").samefile(db)
+    assert not (root / "domain").exists()
+
+
+def test_rollback_recovers_mixed_profile_and_flat_directories(monkeypatch):
+    root = paths.get_user_workspace_dir()
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    db = _write_test_file(root / "profile/agent/.checkpoint/state", "checkpoint")
+    logs = _write_test_file(root / "agent/.logs/full.log", "old logs")
+    doc = _write_test_file(root / "agent/workspace/USER.md", "document")
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    paths._migrate_legacy_checkpoint_and_logs()
+
+    assert (root / "agent/.checkpoint/state").samefile(db)
+    assert (paths.get_checkpoint_dir() / "state").samefile(db)
+    assert logs.read_text() == "old logs"
+    assert (paths.get_agent_workspace_dir() / "USER.md").samefile(doc)
+    assert not (root / "domain").exists()
+
+
+def test_rollback_rejects_conflicting_personal_layouts(monkeypatch):
+    root = paths.get_user_workspace_dir()
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    old = _write_test_file(root / "agent/.checkpoint/state", "old")
+    new = _write_test_file(root / "profile/agent/.checkpoint/state", "new")
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    with pytest.raises(RuntimeError, match="Conflicting personal layout"):
+        paths._migrate_legacy_checkpoint_and_logs()
+    assert old.read_text() == "old"
+    assert new.read_text() == "new"
+
+
+def test_rollback_does_not_move_existing_directory_links(monkeypatch):
+    root = paths.get_user_workspace_dir()
+    db = _write_test_file(root / "profile/agent/.checkpoint/state", "checkpoint")
+    old = root / ".checkpoint"
+    if sys.platform == "win32":
+        import _winapi
+        _winapi.CreateJunction(str(db.parent), str(old))
+    else:
+        old.symlink_to(db.parent, target_is_directory=True)
+    monkeypatch.setattr(paths, "_legacy_migration_done", False)
+
+    paths._migrate_legacy_checkpoint_and_logs()
+
+    assert paths._is_directory_link(old)
+    assert (old / "state").samefile(db)
+    assert paths.get_checkpoint_dir().samefile(db.parent)
+
+
+def test_personal_storage_assembly_can_create_file_backend(monkeypatch):
+    from agent_gateway.storage_assembly.setup import _create_persistent
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    assert _create_persistent() is not None
 
 
 def test_quota_policy_round_trip_uses_infra_database():
@@ -134,7 +227,11 @@ setup_gateway_logger().warning(sys.argv[1])
 '''
     for index, root in enumerate(roots):
         root.mkdir()
-        (root / "domain").symlink_to(shared_domain, target_is_directory=True)
+        if sys.platform == "win32":
+            import _winapi
+            _winapi.CreateJunction(str(shared_domain), str(root / "domain"))
+        else:
+            (root / "domain").symlink_to(shared_domain, target_is_directory=True)
         env = dict(os.environ, JIUWENSWARM_DATA_DIR=str(root), JIUWENSWARM_EDITION=edition)
         env.pop("AGENTOS_GATEWAY_LOG_DIR", None)
         result = subprocess.run([sys.executable, "-c", script, f"pod-{index}"], env=env, capture_output=True, text=True)

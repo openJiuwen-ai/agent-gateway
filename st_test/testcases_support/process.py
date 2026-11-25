@@ -205,7 +205,9 @@ def _config_candidates():
     override = os.environ.get("ST_GATEWAY_CONFIG_SRC", "").strip()
     if override:
         yield Path(override).expanduser()
+    yield Path.home() / ".jiuwenswarm" / "infra" / "config" / "config.yaml"
     yield Path.home() / ".jiuwenswarm" / "config" / "config.yaml"
+    yield Path(__file__).resolve().parents[2] / "agent_gateway" / "resources" / "config.yaml"
     spec = importlib.util.find_spec("jiuwenswarm")
     if spec is None or not spec.origin:
         return
@@ -219,7 +221,11 @@ def _seed_gateway_config(home: Path) -> None:
     ``resources`` 或仓库根目录 ``config/``，而流水线把 workswarm 装在
     ``.st-src`` 下，两条回退都找不到，进程会以 exit 70 退出。
     """
-    target = home / ".jiuwenswarm" / "config" / "config.yaml"
+    root = home / ".jiuwenswarm"
+    # AgentServer may already use the legacy flat layout.
+    target = root / "infra" / "config" / "config.yaml"
+    if (root / "config").is_dir() or (root / "agent").exists():
+        target = root / "config" / "config.yaml"
     if target.exists():
         return
     for source in _config_candidates():

@@ -11,7 +11,7 @@ environment stays untouched. openjiuwen finds the provider through the
 ``openjiuwen.harness_providers`` entry point once that directory is on
 ``sys.path``; :func:`activate_custom_agent_paths` puts it there.
 
-Layout under ``<user workspace>/runtime/custom-agents``::
+Layout under ``<infra data dir>/runtime/custom-agents``::
 
     agents.json                 registry: name -> distribution, version, summary, cli_path
     <name>/site-packages/       the extracted provider wheel
