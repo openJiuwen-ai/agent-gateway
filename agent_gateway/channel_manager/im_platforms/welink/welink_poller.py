@@ -220,8 +220,8 @@ class WelinkPoller:
         if now < self._recent_backoff_until:
             return list(self._snapshot)
         recent = self._runner.query_recent_conversations()
-        detail = redact_cli_failure(getattr(recent, "stderr", "") or getattr(recent, "stdout", ""))
         if getattr(recent, "returncode", 0) not in (0, None):
+            detail = redact_cli_failure(getattr(recent, "stderr", "") or getattr(recent, "stdout", ""))
             logger.warning(
                 "[Welink] query-recent-conversation failed: code=%s %s",
                 getattr(recent, "returncode", None),
@@ -325,8 +325,8 @@ class WelinkPoller:
             logger.warning("[Welink] query-group-member failed: group_id=%s", group_id)
             self._member_hold[group_id] = now + self._member_error_seconds
             return
-        detail = redact_cli_failure(getattr(result, "stderr", "") or getattr(result, "stdout", ""))
         if getattr(result, "returncode", 0) not in (0, None):
+            detail = redact_cli_failure(getattr(result, "stderr", "") or getattr(result, "stdout", ""))
             logger.warning("[Welink] query-group-member failed: group_id=%s %s", group_id, detail)
             if "429" in detail:
                 self._member_backoff_until = now + self._rate_limit_backoff_seconds
@@ -392,15 +392,15 @@ class WelinkPoller:
             if returncode not in (0, None) or code not in (None, 0, "0") or not isinstance(payload, (dict, list)):
                 self._group_holds[group_id] = time.monotonic() + self._rate_limit_backoff_seconds
                 return []
-        detail = redact_cli_failure(getattr(history, "stderr", "") or getattr(history, "stdout", ""))
         if getattr(history, "returncode", 0) not in (0, None):
+            detail = redact_cli_failure(getattr(history, "stderr", "") or getattr(history, "stdout", ""))
             logger.warning("[Welink] query-history-message failed: group_id=%s %s", group_id, detail)
             self._history_deferred.add(group_id)
             if "429" in detail:
                 self._history_backoff_until = now + self._rate_limit_backoff_seconds
             return []
         self._latest_catchup.discard(group_id)
-        messages = parse_history_messages(parse_cli_json(getattr(history, "stdout", "") or ""), group_id=group_id)
+        messages = parse_history_messages(payload, group_id=group_id)
         if self._registered_groups is not None:
             # Without member discovery, skip digital-assistant echoes by their
             # platform account shape. Human reader messages remain inbound.
