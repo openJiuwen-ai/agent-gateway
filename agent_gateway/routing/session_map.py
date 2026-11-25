@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 from enum import Enum
 from pathlib import Path
 
@@ -79,16 +80,24 @@ class SessionMap:
 
     def _save(self) -> None:
         try:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
             # Replace the checkpoint itself, not a symlink pointing to it.
             target = self._store_path.resolve()
+            target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(dir=target.parent) as temp_dir:
                 staged = Path(temp_dir) / target.name
                 with staged.open("w", encoding="utf-8") as f:
                     json.dump(self._mapping, f, ensure_ascii=False, indent=2)
                 if target.exists():
                     shutil.copymode(target, staged)
-                staged.replace(target)
+                # Windows readers can briefly deny replacement of an open file.
+                for attempt in range(5):
+                    try:
+                        staged.replace(target)
+                        break
+                    except PermissionError as exc:
+                        if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 4:
+                            raise
+                        time.sleep(0.005 * (attempt + 1))
         except Exception as exc:  # noqa: BLE001
             logger.warning("SessionMap save failed: %s", exc)
 

@@ -13,6 +13,8 @@ The gateway resolves its runtime directory from two environment variables:
 
 Each instance root contains a workspace lock (`.gateway.lock`): only one gateway process may serve a given root, which prevents duplicate cron scheduling. Different roots can run in parallel.
 
+The personal edition replaces `session_map.json` atomically. The gateway needs permission to create and rename files in the checkpoint directory. For container volumes, mount the checkpoint directory, not the individual JSON file.
+
 ## Option 1: Environment isolation (recommended)
 
 Instance A (terminals 1 and 2):

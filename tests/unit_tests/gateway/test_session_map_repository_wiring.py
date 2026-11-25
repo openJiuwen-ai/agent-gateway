@@ -137,6 +137,29 @@ def test_checkpoint_update_preserves_link_and_target_permissions(tmp_path, monke
     assert SessionMap(scope=SessionMapScope.PER_CHAT_BOT).find_session_id(*identity) == "session"
 
 
+def test_checkpoint_retries_transient_windows_sharing_violation(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_gateway.routing.session_map.get_checkpoint_dir", lambda: tmp_path)
+    identity = ("feishu", "chat", "bot", "user")
+    sm = SessionMap(scope=SessionMapScope.PER_CHAT_BOT)
+    sm.set_session_id(*identity, "first")
+    replace = Path.replace
+    attempts = 0
+
+    def busy_once(source, target):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            exc = PermissionError("file is in use")
+            exc.winerror = 32
+            raise exc
+        return replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", busy_once)
+    sm.set_session_id(*identity, "second")
+    assert attempts == 2
+    assert SessionMap(scope=SessionMapScope.PER_CHAT_BOT).find_session_id(*identity) == "second"
+
+
 def test_session_map_repository_roundtrip() -> None:
     store = _DictPersistentStore()
     repo = SessionMapRepository(store)
