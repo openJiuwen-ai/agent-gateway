@@ -2251,14 +2251,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        if enabled is None:
-            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+        if not isinstance(enabled, bool):
+            await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
         try:
             owner_ids = _cron_lookup_ids(ws, params, user_id)
             job = await cc.toggle_job(
                 job_id,
-                bool(enabled),
+                enabled,
                 user_id=owner_ids["user_id"],
                 group_id=owner_ids["group_id"],
                 bot_id=owner_ids["bot_id"],
