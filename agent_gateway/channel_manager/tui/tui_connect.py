@@ -2251,9 +2251,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        if enabled is None:
-            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
-            return
         if not isinstance(enabled, bool):
             await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
