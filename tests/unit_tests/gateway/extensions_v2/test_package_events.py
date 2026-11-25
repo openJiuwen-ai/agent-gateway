@@ -241,6 +241,61 @@ async def test_sync_releases_an_instance_without_a_claim(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_sync_keeps_a_loaded_package_that_no_record_names(tmp_path: Path) -> None:
+    # A package copied into the install folder before start is loaded by
+    # ``load_installed`` and has no record in the shared install state.
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    manager.active.append(SimpleNamespace(package_id="demo.gw", version="1.0.0"))
+
+    results = await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert results == []
+    assert manager.calls == []
+    assert [(item.package_id, item.version) for item in manager.active] == [("demo.gw", "1.0.0")]
+    assert store.packages() == []
+
+
+@pytest.mark.asyncio
+async def test_sync_releases_a_loaded_package_claimed_by_the_agentserver(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    manager.active.append(SimpleNamespace(package_id="demo.gw", version="1.0.0"))
+    store.upsert(
+        ExtensionInstallRecord(
+            package_id="demo.gw", version="1.0.0", origin="user",
+            active=True, enabled=True, domain="agentserver", status="active",
+        )
+    )
+
+    await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert ("disable_version", "demo.gw", "1.0.0") in manager.calls
+    assert manager.active == []
+
+
+@pytest.mark.asyncio
+async def test_sync_replaces_a_loaded_package_when_a_record_claims_another_version(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    manager.active.append(SimpleNamespace(package_id="demo.gw", version="1.0.0"))
+    _standalone(store, "demo.gw", version="2.0.0")
+
+    await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert ("install", "demo.gw") in manager.calls
+    assert ("demo.gw", "2.0.0") in [(item.package_id, item.version) for item in manager.active]
+    record = store.get("demo.gw", "2.0.0")
+    assert record is not None and (record.status, record.active) == ("active", True)
+
+
+@pytest.mark.asyncio
 async def test_sync_reloads_a_pending_claimed_standalone(tmp_path: Path) -> None:
     install_dir = tmp_path / "extension_pkgs"
     store = ExtensionInstallState.for_install_dir(install_dir)

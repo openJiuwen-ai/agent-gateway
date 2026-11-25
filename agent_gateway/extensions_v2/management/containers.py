@@ -98,6 +98,11 @@ async def sync_members(manager: Any, store: ExtensionInstallState, trigger: Trig
     for package_id in sorted(package_ids):
         loaded = active.get(package_id)
         claim = store.active_instance(package_id)
+        if claim is None and loaded is not None and package_id not in by_package:
+            # No record names this id: the package was put into the install
+            # folder before start and ``load_installed`` loaded it. Nothing
+            # else owns the id, so it stays loaded, as on the AgentServer.
+            continue
         if claim is None:
             claim = _recover_standby_claim(store, by_package.get(package_id, ()))
         target = _instance_for_claim(instances, claim) if claim is not None else None
