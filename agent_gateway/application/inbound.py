@@ -18,6 +18,7 @@ from agent_gateway.channel_manager.web.req_method_routing import (
     route_req_method,
 )
 from agent_gateway.common.protocol_methods import ReqMethod
+from agent_gateway.common.request_method import request_method_name
 from agent_gateway.telemetry import trace_stage
 
 logger = logging.getLogger("gateway")
@@ -84,7 +85,7 @@ def _normalize_gateway_message(msg, *, apply_model_auth: bool = True):
         req_method = ReqMethod.CHAT_CANCEL
         params.setdefault("intent", "resume")
 
-    method_val = req_method.value
+    method_val = request_method_name(req_method)
     is_stream = bool(
         msg.is_stream
         or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
@@ -232,7 +233,7 @@ class MessagePreprocessor:
 
     async def forward(self, msg: Any, channel_manager: Any) -> bool:
         normalized = await self._prepare(msg)
-        method = getattr(getattr(msg, "req_method", None), "value", None) or ""
+        method = request_method_name(getattr(msg, "req_method", None))
         if method == "session.create":
             self.inject_work_mode(normalized)
         await channel_manager.deliver_to_message_handler(normalized)
@@ -251,7 +252,7 @@ class MessagePreprocessor:
             req_method = getattr(msg, "req_method", None)
             if req_method is None:
                 return False
-            method = getattr(req_method, "value", None) or ""
+            method = request_method_name(req_method)
             route = route_req_method(
                 method,
                 forward_methods=forward_methods,
