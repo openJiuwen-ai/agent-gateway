@@ -61,6 +61,9 @@ from agent_gateway.common.config import (
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import models_handlers
+from agent_gateway.common.enterprise_methods import (
+    ENTERPRISE_TEAM_CONTROL_METHODS as _ENTERPRISE_TEAM_CONTROL_METHODS,
+)
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -708,17 +711,6 @@ _FORWARD_REQ_METHODS = frozenset({
     # 主动推荐反馈（点赞/点踩）：经 E2A 转发到 AgentServer 的
     # _handle_proactive_feedback，写入 recommendation.json 的 feedback_buffer。
     "proactive.feedback",
-})
-
-# 企业团队控制面方法。个人版进程不把它们放进转发名单。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({

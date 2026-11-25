@@ -16,6 +16,9 @@ from agent_gateway.common.config import (
     get_config,
 )
 from agent_gateway.common.config_panel import tui_models_handlers
+from agent_gateway.common.enterprise_methods import (
+    ENTERPRISE_TEAM_CONTROL_METHODS as _ENTERPRISE_TEAM_CONTROL_METHODS,
+)
 from agent_gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
@@ -386,16 +389,6 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "issue.delete",
     }
 )
-
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
 
 if not _is_enterprise_edition():
     CLI_FORWARD_REQ_METHODS = CLI_FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS

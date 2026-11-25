@@ -3,14 +3,19 @@
 """Gateway Web HTTP mapped-route table (settings + workspace modules).
 
 Each row is the contract: HTTP verb+path → WebChannel ``register_method`` name.
-Handlers stay transport-agnostic; this module has no FastAPI / Gateway imports
-so it can be unit-tested and used as the OpenAPI/catalog source of truth.
+Handlers stay transport-agnostic; this module imports only a pure-data constant
+from ``agent_gateway.common`` and no FastAPI / runtime Gateway modules, so it
+can be unit-tested and used as the OpenAPI/catalog source of truth.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
+
+from agent_gateway.common.enterprise_methods import (
+    ENTERPRISE_TEAM_CONTROL_METHODS as _ENTERPRISE_TEAM_CONTROL_METHODS,
+)
 
 
 @dataclass(frozen=True)
@@ -1078,18 +1083,6 @@ MAPPED_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *WORKSPACE_ROUTES,
     *_TEAM_ROUTES,
 )
-
-
-# 个人版已有 team.list / team.delete 等旧方法。这 7 个是企业控制面新增协议。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
 
 
 def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, ...]:
