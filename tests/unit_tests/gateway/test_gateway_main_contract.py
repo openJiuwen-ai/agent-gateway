@@ -106,7 +106,7 @@ def _patch_main_boundaries(
     from agent_gateway.routing import mcp_remote, session_metadata_remote
 
     monkeypatch.setenv("WEB_WS_PERMESSAGE_DEFLATE", "0")
-    monkeypatch.setattr(app_gateway, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(app_gateway, "get_infra_data_dir", lambda: tmp_path)
     monkeypatch.setattr(app_gateway, "_run_with_shutdown_signals", run)
     monkeypatch.setattr(app_gateway, "install_crash_exit_handler", Mock())
     monkeypatch.setattr(app_gateway, "install_async_dump_handler", Mock())

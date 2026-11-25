@@ -19,7 +19,7 @@ from agent_gateway.common.config import get_config
 from agent_gateway.common.paths import (
     get_agent_sessions_dir,
     get_agent_workspace_dir,
-    get_profile_data_dir,
+    get_user_workspace_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,6 +90,11 @@ def cleanup_old_sessions() -> dict[str, int]:
             removed, errors, cutoff,
         )
     return {"removed": removed, "errors": errors}
+
+
+def get_profile_data_dir() -> Path:
+    """Compatibility entry point for Swarm callers from the profile release."""
+    return get_user_workspace_dir()
 
 
 def cleanup_orphan_file_ops() -> dict[str, int]:

@@ -46,7 +46,10 @@ MODEL2_BLOCK = (
     "      alias: ${MODEL2_MODEL_NAME}\n"
 )
 
-DEFAULT_ENV = Path("~/.jiuwenswarm/config/.env").expanduser()
+DEFAULT_ENV = Path("~/.jiuwenswarm/infra/config/.env").expanduser()
+LEGACY_ENV = Path("~/.jiuwenswarm/config/.env").expanduser()
+if not DEFAULT_ENV.is_file() and LEGACY_ENV.is_file():
+    DEFAULT_ENV = LEGACY_ENV
 
 # 只匹配键行，不碰注释里的同名字样。
 _SWARMFLOW_LINE = re.compile(r"^(\s*)enable_swarmflow:\s*false\s*$", re.MULTILINE)

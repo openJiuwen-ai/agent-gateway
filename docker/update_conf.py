@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """企业版 gateway config.yaml 生成器
-用法：python3 update_conf.py [config_dir]（缺省 = ~/.jiuwenswarm/config；config.yaml 文件名固定）
+用法：python3 update_conf.py [config_dir]（缺省 = ~/.jiuwenswarm/infra/config；config.yaml 文件名固定）
 模板：agent_gateway/resources/config.yaml
 """
 
@@ -18,11 +18,11 @@ logger = logging.getLogger("update_conf")
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SRC_FILE = REPO_ROOT / "agent_gateway" / "resources" / "config.yaml"
-DEFAULT_CONFIG_DIR = Path.home() / ".jiuwenswarm" / "config"
+DEFAULT_CONFIG_DIR = Path.home() / ".jiuwenswarm" / "infra" / "config"
 
 
 def config_dir() -> Path:
-    """配置目录：CLI 参数（argv[1]）> 默认目录（数据根 config）。"""
+    """配置目录：CLI 参数（argv[1]）> 默认目录（数据根 infra/config）。"""
     if len(sys.argv) > 1:
         return Path(sys.argv[1]).expanduser()
     return DEFAULT_CONFIG_DIR

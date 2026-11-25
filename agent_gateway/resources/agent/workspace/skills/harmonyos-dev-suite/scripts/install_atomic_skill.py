@@ -151,7 +151,6 @@ def main(argv: list[str]) -> int:
             from agent_gateway.common.paths import get_agent_skills_dir
         except ModuleNotFoundError:
             parser.error("--target is required when agent-gateway is not installed")
-
         target = get_agent_skills_dir()
 
     result = install_skill(

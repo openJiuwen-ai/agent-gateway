@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -73,20 +74,131 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-# --- Business profile under the legacy flat data root ---
-# ``profile/`` contains user-owned durable data. System-managed paths remain
-# at their established root locations (config/, logs/, runtime/, and so on).
-# Gateway computes the profile path locally and does not import JiuwenSwarm.
-_PROFILE_DIR_NAME = "profile"
+# --- 数据根分区（domain/infra 两区，与 jiuwenswarm.common.utils 同契约）---
+# gateway 包自包含：分区根由本模块手工推导（同 get_user_workspace_dir 的
+# env/home 语义），不 import jiuwenswarm。
+_DOMAIN_DIR_NAME = "domain"
+_INFRA_DIR_NAME = "infra"
 _config_dir: Path | None = None
 _workspace_dir: Path | None = None
 _root_dir: Path | None = None
 _initialized: bool = False
 
 
-def get_profile_data_dir() -> Path:
-    """Return the durable user-data directory shared by enterprise Pods."""
-    return get_user_workspace_dir() / _PROFILE_DIR_NAME
+_BUSINESS_ENTRIES = (
+    "agent", "gateway", "application_plugins", ".agent_teams", ".organizations",
+    "jiuwenmate", ".trace", ".agent_history", "agents", ".personal_context", "runtime_state",
+)
+
+
+def _is_directory_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    if sys.platform == "win32":
+        try:
+            return getattr(path.lstat(), "st_reparse_tag", None) == getattr(
+                stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003
+            )
+        except OSError:
+            return False
+    return False
+
+
+def _restore_profile_alias(legacy: Path, current: Path) -> None:
+    """Restore a missing alias from an earlier profile upgrade without moving data."""
+    if not current.exists():
+        raise RuntimeError(f"Invalid profile data path: {current}")
+    if legacy.exists() or _is_directory_link(legacy):
+        if legacy.exists() and current.exists() and legacy.samefile(current):
+            return
+        raise RuntimeError(f"Conflicting personal layout: {legacy} and {current}; preserve both before rollback")
+    try:
+        if sys.platform == "win32" and current.is_dir():
+            import _winapi
+
+            _winapi.CreateJunction(str(current.absolute()), str(legacy.absolute()))
+        else:
+            legacy.symlink_to(current.absolute(), target_is_directory=current.is_dir())
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise RuntimeError(f"Could not restore legacy data alias: {legacy} -> {current}") from exc
+    if not legacy.exists() or not legacy.samefile(current):
+        raise RuntimeError(f"Could not restore legacy data alias: {legacy} -> {current}")
+
+
+@lru_cache(maxsize=32)
+def _personal_storage_roots(root: Path) -> tuple[Path, Path]:
+    """Reuse existing personal data without another on-disk layout migration."""
+    domain = root / _DOMAIN_DIR_NAME
+    infra = root / _INFRA_DIR_NAME
+    profile = root / "profile"
+    if _is_directory_link(domain) or _is_directory_link(infra):
+        return domain, infra
+
+    names = set(_BUSINESS_ENTRIES)
+    for location in (root, profile, domain):
+        names.update(path.name for path in location.glob("workspace_*"))
+
+    def entries(location: Path) -> set[str]:
+        return {name for name in names if (location / name).exists() or _is_directory_link(location / name)}
+
+    flat_entries = entries(root)
+    # Existing flat configuration is authoritative for Swarm. If only the
+    # partitioned config exists, keep reading it instead of seeding a new one.
+    system_root = root if (root / "config").exists() or not (infra / "config").exists() else infra
+    profile_entries = entries(profile)
+    domain_entries = entries(domain)
+    if profile_entries:
+        for name in domain_entries:
+            other = domain / name
+            target = profile / name if name in profile_entries else root / name
+            if not target.exists() or not other.exists() or not other.samefile(target):
+                raise RuntimeError(f"Conflicting personal layout: {other} and {target}; preserve both")
+
+        for name in profile_entries:
+            legacy = root / name
+            current = profile / name
+            if name == "agent" and legacy.is_dir() and not _is_directory_link(legacy):
+                # The old Swarm can have its log directory open here. Keep it
+                # local and restore only missing business directory aliases.
+                for child in current.iterdir():
+                    if child.name != ".logs":
+                        _restore_profile_alias(legacy / child.name, child)
+            else:
+                _restore_profile_alias(legacy, current)
+        return root, system_root
+
+    if flat_entries:
+        for name in domain_entries:
+            other = domain / name
+            target = root / name
+            if not target.exists() or not other.exists() or not other.samefile(target):
+                raise RuntimeError(f"Conflicting personal layout: {other} and {target}; preserve both")
+        return root, system_root
+    if (root / "config").is_dir():
+        return (domain if domain_entries else root), root
+    return domain, infra
+
+
+def _storage_roots() -> tuple[Path, Path]:
+    from agent_gateway.enterprise.edition import is_enterprise
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    root = get_user_workspace_dir()
+    if is_enterprise() or is_agentos_runtime():
+        return root / _DOMAIN_DIR_NAME, root / _INFRA_DIR_NAME
+    return _personal_storage_roots(root)
+
+
+def get_domain_data_dir() -> Path:
+    """Return the existing personal business root or the configured domain partition."""
+    return _storage_roots()[0]
+
+
+def get_infra_data_dir() -> Path:
+    """Return the existing personal system root or the configured infra partition."""
+    return _storage_roots()[1]
 
 
 def get_bundled_resources_dir() -> Path:
@@ -101,8 +213,8 @@ def _resolve_paths() -> None:
         return
 
     _root_dir = get_user_workspace_dir()
-    _config_dir = get_user_workspace_dir() / "config"
-    _workspace_dir = get_profile_data_dir() / "agent" / "workspace"
+    _config_dir = get_infra_data_dir() / "config"
+    _workspace_dir = get_domain_data_dir() / "agent" / "workspace"
 
     _initialized = True
 
@@ -168,7 +280,7 @@ def env_url(name: str, default: str) -> str:
 
 # --- agent 工作区子目录 ---
 def get_agent_root_dir() -> Path:
-    return get_profile_data_dir() / "agent"
+    return get_domain_data_dir() / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -176,7 +288,7 @@ def get_agent_home_dir() -> Path:
 
 
 def get_agent_workspace_dir() -> Path:
-    """DeepAgent 标准工作区：``~/.jiuwenswarm/profile/agent/workspace``。"""
+    """DeepAgent 标准工作区：``~/.jiuwenswarm/domain/agent/workspace``。"""
     return get_agent_root_dir() / "workspace"
 
 
@@ -206,7 +318,7 @@ def get_cron_jobs_path() -> Path:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_user_workspace_dir() / "tmp" / "xiaoyi"
+    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -215,155 +327,37 @@ def get_xy_tmp_dir() -> Path:
 _legacy_migration_done: bool = False
 
 
-def _is_directory_link(path: Path) -> bool:
-    try:
-        if path.is_symlink():
-            return True
-        # Junctions are not symbolic links on Windows. Python 3.11 has no
-        # Path.is_junction(), so inspect the reparse tag without following it.
-        if sys.platform == "win32":
-            return getattr(path.lstat(), "st_reparse_tag", None) == getattr(
-                stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003
-            )
-    except OSError:
-        return False
-    return False
-
-
 def _move_if_absent(old: Path, new: Path) -> None:
-    """迁移旧路径且不覆盖目标数据；两侧目录并存时递归合并（幂等）。
+    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
 
     并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
-    if not old.exists() or _is_directory_link(old):
+    if _is_directory_link(old) or _is_directory_link(new):
+        logger.warning("Skipping legacy directory link migration: %s -> %s", old, new)
         return
-    if _is_directory_link(new):
-        return
-    if new.exists() and old.is_dir() and new.is_dir():
-        for child in list(old.iterdir()):
-            _move_if_absent(child, new / child.name)
-        try:
-            old.rmdir()
-        except OSError:
-            # A conflicting file remains at the legacy path; never overwrite it.
-            return
-        return
-    if new.exists():
+    if not old.exists() or new.exists():
         return
     new.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.move(str(old), str(new))
+        old.rename(new)
     except FileNotFoundError:
         pass
 
 
-def _link_legacy_path(legacy: Path, current: Path) -> bool:
-    if legacy.exists() or _is_directory_link(legacy) or not current.exists():
-        return True
-    try:
-        if sys.platform == "win32" and current.is_dir():
-            # Native directory junctions do not require symbolic-link privileges.
-            # Avoid invoking cmd.exe with user-controlled filesystem paths.
-            import _winapi
-
-            _winapi.CreateJunction(str(current.absolute()), str(legacy.absolute()))
-        else:
-            legacy.symlink_to(current.absolute(), target_is_directory=current.is_dir())
-    except FileExistsError:
-        pass
-    except OSError as exc:
-        logger.warning(
-            "could not create legacy path link %s -> %s: %s", legacy, current, exc
-        )
-        return False
-    return True
-
-
-def _legacy_business_paths(root: Path, profile: Path) -> dict[Path, Path]:
-    legacy_business_paths = {
-        root / "agent": profile / "agent",
-        root / ".checkpoint": profile / "agent" / ".checkpoint",
-        root / "gateway": profile / "gateway",
-        root / "application_plugins": profile / "application_plugins",
-        root / ".agent_teams": profile / ".agent_teams",
-        root / ".organizations": profile / ".organizations",
-        root / "jiuwenmate": profile / "jiuwenmate",
-        root / ".trace": profile / ".trace",
-        root / ".agent_history": profile / ".agent_history",
-        root / "agents": profile / "agents",
-        root / ".personal_context": profile / ".personal_context",
-        root / "runtime_state": profile / "runtime_state",
-    }
-    legacy_business_paths.update(
-        (path, profile / path.name)
-        for path in root.glob("workspace_*")
-        if path not in legacy_business_paths
-    )
-    return legacy_business_paths
-
-
-def repair_windows_legacy_links() -> None:
-    """Repair missing Windows compatibility links after loading runtime dotenv."""
-    if sys.platform != "win32":
-        return
-    from agent_gateway.enterprise.edition import is_enterprise
-
-    profile = get_profile_data_dir()
-    if is_enterprise() or _is_directory_link(profile):
-        return
-    for legacy, current in _legacy_business_paths(get_user_workspace_dir(), profile).items():
-        _link_legacy_path(legacy, current)
-
-
 def _migrate_legacy_checkpoint_and_logs() -> None:
-    """把旧平铺布局中的业务数据迁入 profile，并保留旧路径入口。
+    """数据根旧平铺路径一次性搬迁。
 
-    系统目录（config、logs、auth、runtime 等）继续位于数据根，不做迁移。
-    未发布的 domain/infra 中间布局不属于升级路径。
+    - ``.checkpoint`` → 当前业务根的 ``agent/``
+    - ``.logs`` → 当前系统根的 ``logs/agent/``
+    已有平铺/profile 数据继续原位使用，回退版本不做跨布局搬迁。
     """
     global _legacy_migration_done
     if _legacy_migration_done:
         return
-    links_ok = True
+    _legacy_migration_done = True
 
-    root = get_user_workspace_dir()
-    profile = get_profile_data_dir()
-    legacy_business_paths = _legacy_business_paths(root, profile)
-
-    # 两种早期平铺日志位置都迁入仍处于根目录的 logs/agent。
-    current_logs = get_logs_dir() / "agent"
-    legacy_logs = root / ".logs"
-    legacy_agent_logs = root / "agent" / ".logs"
-    had_legacy_logs = legacy_logs.exists() and not _is_directory_link(legacy_logs)
-    had_agent_logs = legacy_agent_logs.exists() and not _is_directory_link(legacy_agent_logs)
-    _move_if_absent(legacy_logs, current_logs)
-    _move_if_absent(legacy_agent_logs, current_logs)
-    for legacy, current in legacy_business_paths.items():
-        if legacy == root / "agent" and not _is_directory_link(legacy) and (
-            legacy_agent_logs.exists() or _is_directory_link(legacy_agent_logs)
-        ):
-            # A conflicting log must stay Pod-local, not be moved into profile.
-            for child in list(legacy.iterdir()):
-                if child.name != ".logs":
-                    _move_if_absent(child, current / child.name)
-            continue
-        had_legacy = legacy.exists() and not _is_directory_link(legacy)
-        _move_if_absent(legacy, current)
-        if had_legacy:
-            links_ok = _link_legacy_path(legacy, current) and links_ok
-
-    # A retained legacy agent directory (e.g. conflicting logs) must still
-    # expose checkpoint data that was successfully moved into profile.
-    legacy_agent = root / "agent"
-    if legacy_agent.is_dir() and not _is_directory_link(legacy_agent):
-        links_ok = _link_legacy_path(
-            legacy_agent / ".checkpoint", profile / "agent" / ".checkpoint"
-        ) and links_ok
-
-    if had_legacy_logs:
-        links_ok = _link_legacy_path(legacy_logs, current_logs) and links_ok
-    if had_agent_logs and _is_directory_link(root / "agent"):
-        links_ok = _link_legacy_path(profile / "agent" / ".logs", current_logs) and links_ok
-    _legacy_migration_done = links_ok
+    workspace = get_user_workspace_dir()
+    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
+    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
 
 
 def get_checkpoint_dir() -> Path:
@@ -372,7 +366,7 @@ def get_checkpoint_dir() -> Path:
 
 def get_logs_dir() -> Path:
     """Return the Pod-local log root; component logs use subdirectories here."""
-    return get_user_workspace_dir() / "logs"
+    return get_infra_data_dir() / "logs"
 
 
 def get_gateway_log_dir() -> Optional[Path]:
@@ -535,11 +529,12 @@ __all__ = [
     "get_config_file",
     "get_cron_jobs_path",
     "get_deepagent_user_md_path",
+    "get_domain_data_dir",
     "get_env_file",
     "get_gateway_log_dir",
+    "get_infra_data_dir",
     "get_interactions_dir",
     "get_logs_dir",
-    "get_profile_data_dir",
     "get_root_dir",
     "get_user_home",
     "get_user_workspace_dir",
@@ -547,7 +542,6 @@ __all__ = [
     "get_xy_tmp_dir",
     "logger",
     "prepare_runtime_workspace",
-    "repair_windows_legacy_links",
     "resolve_git_branch",
     "set_user_home",
 ]

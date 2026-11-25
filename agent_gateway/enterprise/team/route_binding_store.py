@@ -15,7 +15,7 @@ the endpoint fails the caller falls back to ``route()`` and refreshes the row
 (``route_version`` increments). Rows are keyed by ``team_session_id`` because a
 binding exists before the team id is known (first ``chat.send`` of a session).
 
-Storage: SQLite file (default ``<workspace>/profile/gateway/team_route_bindings.db``),
+Storage: SQLite file (default ``<workspace>/infra/gateway/team_route_bindings.db``),
 behind the ``TeamRouteBindingStore`` protocol.
 """
 
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from agent_gateway.common.local_env_config import read_env
-from agent_gateway.common.paths import get_profile_data_dir
+from agent_gateway.common.paths import get_infra_data_dir
 
 ROUTE_STATUS_CREATING = "creating"
 ROUTE_STATUS_ACTIVE = "active"
@@ -163,7 +163,7 @@ class SqliteTeamRouteBindingStore:
         if path is None:
             explicit = read_env("GATEWAY_TEAM_ROUTE_DB", "").strip()
             path = Path(explicit) if explicit else (
-                get_profile_data_dir() / "gateway" / "team_route_bindings.db"
+                get_infra_data_dir() / "gateway" / "team_route_bindings.db"
             )
         self._path = path
         self._lock = threading.RLock()

@@ -39,7 +39,7 @@ The flow is implemented in `auth/account_kit.py` (`AccountKitFlow`) and `auth/se
 
 `auth/session_store.py` (`AuthSessionStore`):
 
-- **Storage**: in-memory plus an AES-256-GCM encrypted file `~/.jiuwenswarm/auth/sessions.json` (affected by `JIUWENSWARM_DATA_DIR`). The key is the per-machine `.install_key` (32 bytes, mode 0600, rebuilt on corruption). The archive contains the `refresh_token`; storing it in plain text would hand over the account.
+- **Storage**: in-memory plus an AES-256-GCM encrypted file `~/.jiuwenswarm/infra/auth/sessions.json` (affected by `JIUWENSWARM_DATA_DIR`). The key is the per-machine `.install_key` (32 bytes, mode 0600, rebuilt on corruption). The archive contains the `refresh_token`; storing it in plain text would hand over the account.
 - **Multi-process sharing**: Gateway writes, AgentServer reads. Reloads follow the archive mtime; every write re-reads first so one process never overwrites another's update with a stale snapshot.
 - **Binding**: `session_id` (random 24-byte urlsafe) maps to `user_id` (Huawei account openid). **One session per account** — logging in again evicts the old session.
 - **Lifecycle**: session TTL is 30 days; the `id_token` rotates roughly hourly and is refreshed in the background when less than 5 minutes remain (concurrent refreshes for the same user are merged under a lock); logout deletes the session.
@@ -189,7 +189,7 @@ Enterprise management-plane routes (`/api/v1/*` templates, config sync) are guar
 | Variable / config | Purpose | Default |
 | --- | --- | --- |
 | `JIUWENSWARM_CONFIG_URL` | Remote config (login switch, OAuth parameters, APIG endpoints, model allow/deny lists); empty or `off` disables login | production endpoint |
-| `JIUWENSWARM_DATA_DIR` | Data root; determines the `auth/` session directory | `~/.jiuwenswarm` |
+| `JIUWENSWARM_DATA_DIR` | Data root; determines the `infra/auth/` session directory | `~/.jiuwenswarm` |
 | `JIUWENSWARM_SSL_VERIFY` | TLS verification for outbound requests | on |
 | `JIUWENSWARM_ENABLE_ORIGIN_CHECK` | WebSocket / HTTP origin check switch (`1` enables) | off |
 | `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` | Allowed Origin hostnames (comma-separated; `none` admits requests without Origin) | empty |
