@@ -444,6 +444,28 @@ def test_pending_gateway_work_includes_pending_bundle_members(tmp_path: Path) ->
     assert _has_pending_gateway_work(store) is True
 
 
+def test_pending_gateway_work_reads_one_snapshot_per_poll(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_gateway.extensions_v2.runtime import _has_pending_gateway_work
+
+    store = ExtensionInstallState.for_install_dir(tmp_path)
+    member = BundleMemberRecord("demo.gw", "1", "gateway", enabled=True, status="pending")
+    bundle = ExtensionBundleRecord("suite", "1", "user", member_records=(member,))
+    package = ExtensionInstallRecord("demo.gw", "1", "user", domain="gateway", status="pending")
+    # Work moves from a bundle member to a standalone package before it finishes.
+    snapshots = [({}, {"suite@1": bundle}), ({"demo.gw@1": package}, {}), ({}, {})]
+    reads = 0
+
+    def load():
+        nonlocal reads
+        snapshot = snapshots[min(reads, len(snapshots) - 1)]
+        reads += 1
+        return snapshot
+
+    monkeypatch.setattr(store, "_load", load)
+    assert [_has_pending_gateway_work(store) for _ in snapshots] == [True, True, False]
+    assert reads == len(snapshots)
+
+
 @pytest.mark.asyncio
 async def test_runtime_schedules_a_retry_for_pending_bundle_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
