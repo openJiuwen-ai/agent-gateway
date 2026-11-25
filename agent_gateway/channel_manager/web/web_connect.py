@@ -2552,6 +2552,22 @@ class WebChannel(BaseWsChannel):
                 await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
 
+        # Keep the specialized upload error code first, then apply the shared
+        # enterprise write policy before extension interception or preprocessing.
+        from agent_gateway.channel_manager.web.invoke import (
+            is_enterprise_write_forbidden,
+        )
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="企业版配置由管理面统一下发",
+                code="FORBIDDEN",
+            )
+            return
+
         # 扩展运行时先于原生方法分发处理 Gateway 域扩展事件；无 handler 时
         # 原样返回 params，路径与未接入扩展完全一致。request_context.headers
         # 随帧透传，认证类扩展据此判断 authorization 是否存在。
@@ -2705,21 +2721,6 @@ class WebChannel(BaseWsChannel):
         attach_message_trace(user_message)
 
         # 发布到 route 或回调
-        # WS 分发与 HTTP 共享企业拦截语义：HTTP 走 invoke.dispatch_web_request
-        # 已在入口检查；本内联分发此前漏检，企业版禁写方法（config.set 等）
-        # 会经 WS 旁路到达本地 handler。拦截响应对齐 HTTP 的 FORBIDDEN 文案。
-        from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
-
-        if is_enterprise_write_forbidden(method):
-            await self.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="企业版配置由管理面统一下发",
-                code="FORBIDDEN",
-            )
-            return
-
         handler = self._method_handlers.get(method)
         if method in self._local_only_methods:
             if handler is None:
