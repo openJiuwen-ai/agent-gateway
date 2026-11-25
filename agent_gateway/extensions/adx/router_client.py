@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Mapping
-from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from e2a.agent_models import AgentResponse
 from e2a.models import E2AEnvelope
@@ -14,6 +13,7 @@ from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.adx.control_adapter import AdxControl
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
 from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
@@ -63,6 +63,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             ws_client_factory=ws_client_factory,
         )
         self._closed = True
+        self._managed_control = AdxControl(self._control, config.ingress_url)
         self.set_or_update_server_config(config={})
 
     async def shutdown(self) -> None:
@@ -91,10 +92,8 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return super()._tool_sandbox_env()
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
-        origin = urlsplit(self._config.ingress_url)
-        target = 'urn:adx:instance:' + quote(instance, safe='')
-        return urlunsplit(('wss' if protocol == 'ws' else 'https', origin.netloc,
-                          f'/agent/{protocol}', urlencode({'target': target, 'port': port}), ''))
+        return (self._managed_control.ws_url(instance, port) if protocol == 'ws'
+                else self._managed_control.http_url(instance, port))
 
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
         return self._agent_url(instance_id, agent_port, 'ws')

@@ -35,8 +35,12 @@ class ManagedControl(Protocol[CreateRequest, Resource, QueryResult]):
 
     async def query(self, instance_id: str) -> QueryResult: ...
 
-    async def delete(self, instance_id: str, *, generation: str) -> None:
-        """Delete only the specified physical instance/generation."""
+    async def delete(self, instance_id: str) -> None:
+        """Delete the exact retired physical instance, never a logical key.
+
+        The manager fences generations before calling this operation; neither
+        platform supports an atomic generation precondition on DELETE.
+        """
         ...
 
 
