@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_gateway.common.xiaoyi_apps import find_xiaoyi_app
 from agent_gateway.config.channel.codec import ChannelConfigCodec
 from agent_gateway.config.channel.models import (
     CHANNEL_CONFIG_STORE_NAME,
@@ -32,30 +33,6 @@ def _with_body(
         status=existing.status,
         revision=existing.revision,
     )
-
-
-def _find_xiaoyi_app(
-    apps: list[Any],
-    api_id: str,
-    agent_id: str,
-) -> dict[str, Any] | None:
-    """``apps[]`` 匹配：api_id → agent_id → is_default → 唯一 app。"""
-    api_id = str(api_id or "").strip()
-    agent_id = str(agent_id or "").strip()
-    if api_id:
-        for app in apps:
-            if isinstance(app, dict) and str(app.get("api_id") or "").strip() == api_id:
-                return app
-    if agent_id:
-        for app in apps:
-            if isinstance(app, dict) and str(app.get("agent_id") or "").strip() == agent_id:
-                return app
-    for app in apps:
-        if isinstance(app, dict) and app.get("is_default", False):
-            return app
-    if len(apps) == 1 and isinstance(apps[0], dict):
-        return apps[0]
-    return None
 
 
 class ChannelConfigRepository:
@@ -256,7 +233,7 @@ class ChannelConfigRepository:
             if push_id:
                 apps = body.get("apps")
                 if isinstance(apps, list) and apps:
-                    target = _find_xiaoyi_app(apps, api_id, agent_id)
+                    target = find_xiaoyi_app(apps, api_id, agent_id)
                     if target is not None:
                         target["push_id"] = str(push_id)
             return await self.upsert(_with_body(existing, "xiaoyi", body))

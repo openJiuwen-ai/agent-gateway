@@ -26,6 +26,7 @@ from agent_gateway.common.paths import (
     get_config_file,
 )
 from agent_gateway.common.runtime_model_config import apply_runtime_model_config
+from agent_gateway.common.xiaoyi_apps import find_xiaoyi_app
 from agent_gateway.extensions.base_crypto import get_crypto_provider
 
 logger = logging.getLogger(__name__)
@@ -464,26 +465,7 @@ def update_xiaoyi_runtime_in_config(
         plain_push_id = _as_plain_yaml_str(str(push_id))
         apps = section.get("apps")
         if isinstance(apps, list) and apps:
-            target: dict[str, Any] | None = None
-            api_id = str(api_id or "").strip()
-            agent_id = str(agent_id or "").strip()
-            if api_id:
-                for app in apps:
-                    if isinstance(app, dict) and str(app.get("api_id") or "").strip() == api_id:
-                        target = app
-                        break
-            if target is None and agent_id:
-                for app in apps:
-                    if isinstance(app, dict) and str(app.get("agent_id") or "").strip() == agent_id:
-                        target = app
-                        break
-            if target is None:
-                for app in apps:
-                    if isinstance(app, dict) and app.get("is_default", False):
-                        target = app
-                        break
-            if target is None and len(apps) == 1 and isinstance(apps[0], dict):
-                target = apps[0]
+            target = find_xiaoyi_app(apps, api_id, agent_id)
             if target is not None:
                 target["push_id"] = plain_push_id
 
