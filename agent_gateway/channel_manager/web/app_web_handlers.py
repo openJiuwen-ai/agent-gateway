@@ -5545,8 +5545,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        # 与 heartbeat toggle 一致：只接受真正的 JSON boolean。
+        # 缺省与类型分开报错；类型侧只接受真正的 JSON boolean。
         # bool({"not":"boolean"}) 为 True，会把禁用任务误启用（TC_SDS_CR_079）。
+        if enabled is None:
+            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+            return
         if not isinstance(enabled, bool):
             await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return

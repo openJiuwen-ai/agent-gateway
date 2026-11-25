@@ -298,18 +298,18 @@ async def test_cron_query_paths_routing_overrides_stale_body_tenant_ids() -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "enabled",
+    ("enabled", "error"),
     [
-        {"not": "boolean"},
-        "true",
-        "false",
-        1,
-        0,
-        None,
+        (None, "enabled is required"),
+        ({"not": "boolean"}, "enabled must be boolean"),
+        ("true", "enabled must be boolean"),
+        ("false", "enabled must be boolean"),
+        (1, "enabled must be boolean"),
+        (0, "enabled must be boolean"),
     ],
 )
-async def test_cron_toggle_rejects_non_boolean_enabled(enabled) -> None:
-    """非布尔 enabled 必须拒绝，且不得调用控制器（避免 bool(对象)=True 误启用）。"""
+async def test_cron_toggle_rejects_non_boolean_enabled(enabled, error) -> None:
+    """缺省 / 非布尔 enabled 必须拒绝，且不得调用控制器（避免 bool(对象)=True 误启用）。"""
     channel = _FakeWebChannel()
     cron = _TenantCaptureCronController()
     _bind(channel, cron)
@@ -326,7 +326,7 @@ async def test_cron_toggle_rejects_non_boolean_enabled(enabled) -> None:
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
-    assert channel.responses[-1]["error"] == "enabled must be boolean"
+    assert channel.responses[-1]["error"] == error
     assert cron.calls == []
 
 
