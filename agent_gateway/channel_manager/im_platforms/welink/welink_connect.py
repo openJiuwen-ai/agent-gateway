@@ -8,7 +8,6 @@ import asyncio
 import logging
 import hashlib
 import json
-import os
 import re
 import time
 from urllib.parse import urlparse
@@ -19,6 +18,7 @@ from typing import Any, Awaitable, Callable
 
 from agent_gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from agent_gateway.channel_manager.im_platforms.welink.welink_assistant_link import AssistantLink, Mention
+from agent_gateway.channel_manager.im_platforms.welink.welink_checkpoint import read_checkpoint, write_checkpoint
 from agent_gateway.channel_manager.im_platforms.welink.welink_cli import WelinkCli
 from agent_gateway.channel_manager.im_platforms.welink.welink_messages import (
     WelinkHistoryMessage,
@@ -147,7 +147,7 @@ class WelinkChannel(BaseChannel):
         )
         pending: list[WelinkHistoryMessage] = []
         if pending_path.is_file():
-            for raw in json.loads(pending_path.read_text(encoding="utf-8")):
+            for raw in read_checkpoint(pending_path):
                 raw["media"] = tuple(WelinkMedia(**item) for item in raw.get("media", ()))
                 pending.append(WelinkHistoryMessage(**raw))
         while self._running:
@@ -183,14 +183,7 @@ class WelinkChannel(BaseChannel):
 
     @staticmethod
     def _save_pending(path: Path, messages: list[WelinkHistoryMessage]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            temporary.chmod(0o600)
-            json.dump([asdict(message) for message in messages], stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
+        write_checkpoint(path, [asdict(message) for message in messages])
 
     async def stop(self) -> None:
         self._running = False

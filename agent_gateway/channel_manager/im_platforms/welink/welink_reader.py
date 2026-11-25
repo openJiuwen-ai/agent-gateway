@@ -6,12 +6,12 @@ import asyncio
 import hashlib
 import json
 import logging
-import os
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .welink_checkpoint import read_checkpoint, write_checkpoint
 from .welink_connect import WelinkChannel, auth_recheck_due
 from .welink_messages import WelinkHistoryMessage, WelinkMedia, select_new_messages
 from .welink_poller import CursorStore, WelinkPoller
@@ -38,9 +38,9 @@ class WelinkReader:
         self._pending_path = self.directory / 'fanout-pending.json'
         self._seen_path = self.directory / 'assistant-observations.json'
         self._aliases_path = self.directory / 'message-aliases.json'
-        self._aliases = json.loads(self._aliases_path.read_text()) if self._aliases_path.exists() else {}
-        self._seen = set(json.loads(self._seen_path.read_text()) if self._seen_path.exists() else [])
-        self._pending = json.loads(self._pending_path.read_text()) if self._pending_path.exists() else []
+        self._aliases = read_checkpoint(self._aliases_path) if self._aliases_path.exists() else {}
+        self._seen = set(read_checkpoint(self._seen_path)) if self._seen_path.exists() else set()
+        self._pending = read_checkpoint(self._pending_path) if self._pending_path.exists() else []
         # Upgrade the old single-reader pending batch without dropping unaccepted messages.
         old = self.directory / ('pending-' + hashlib.sha256(account.encode()).hexdigest()[:24] + '.json')
         if not self._pending_path.exists() and old.exists():
@@ -48,7 +48,7 @@ class WelinkReader:
                 raise ValueError('legacy WeLink pending batch has ambiguous assistant ownership')
             self._pending = [{'message': raw, 'targets': list(channels),
                               'target_agents': self._target_agents(channels), 'commit': True}
-                             for raw in json.loads(old.read_text())]
+                             for raw in read_checkpoint(old)]
             self._save(self._pending_path, self._pending)
         for job in self._pending:
             if 'target_agents' not in job:
@@ -58,16 +58,7 @@ class WelinkReader:
             self._save(self._pending_path, self._pending)
         self._auth_ok_at = 0.0
 
-    @staticmethod
-    def _save(path: Path, value) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix('.tmp')
-        with temporary.open('w', encoding='utf-8') as stream:
-            temporary.chmod(0o600)
-            json.dump(value, stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
+    _save = staticmethod(write_checkpoint)
 
     @staticmethod
     def _message(raw) -> WelinkHistoryMessage:
