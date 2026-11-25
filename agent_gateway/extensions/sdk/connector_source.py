@@ -91,10 +91,6 @@ class ConnectorDownloadError(RuntimeError):
         self.code = code
 
 
-async def _read_response_body_capped(resp: httpx.Response, max_bytes: int) -> bytes:
-    return await read_response_body_capped(resp, max_bytes, ConnectorDownloadError)
-
-
 @dataclass(frozen=True)
 class ConnectorVerificationResult:
     """Outcome of a successful or skipped connector artifact verification.
@@ -469,7 +465,9 @@ class ConnectorSourceProvider(ABC):
                         "连接器下载不支持自动跳转，请提供最终制品地址",
                     )
                 resp.raise_for_status()
-                body = await _read_response_body_capped(resp, policy.max_bytes)
+                body = await read_response_body_capped(
+                    resp, policy.max_bytes, ConnectorDownloadError
+                )
         except httpx.HTTPError as exc:
             raise ConnectorDownloadError(
                 "network_error",

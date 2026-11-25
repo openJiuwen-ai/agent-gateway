@@ -274,10 +274,6 @@ class SkillDownloadError(RuntimeError):
         self.code = code
 
 
-async def _read_response_body_capped(resp: httpx.Response, max_bytes: int) -> bytes:
-    return await read_response_body_capped(resp, max_bytes, SkillDownloadError)
-
-
 @dataclass(frozen=True)
 class SkillVerificationResult:
     """Outcome of a successful skill artifact verification.
@@ -458,7 +454,9 @@ class SkillSourceProvider(ABC):
                         "skill 下载不支持自动跳转，请提供最终制品地址",
                     )
                 resp.raise_for_status()
-                body = await _read_response_body_capped(resp, policy.max_bytes)
+                body = await read_response_body_capped(
+                    resp, policy.max_bytes, SkillDownloadError
+                )
         except httpx.HTTPError as exc:
             raise SkillDownloadError(
                 "network_error",
