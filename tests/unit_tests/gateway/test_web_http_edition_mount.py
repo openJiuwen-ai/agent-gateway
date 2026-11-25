@@ -206,7 +206,6 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     # Stub dispatch before loading web_http_routes.
     dispatch_mod = ModuleType("agent_gateway.channel_manager.web.web_http_dispatch")
     dispatch_mod.dispatch_http_request = MagicMock()  # type: ignore[attr-defined]
-    dispatch_mod._trust_client_tenant_headers = lambda client_host=None: True  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, dispatch_mod.__name__, dispatch_mod)
 
     routes_pkg = ModuleType("agent_gateway.channel_manager.web.http_routes")

@@ -14,9 +14,13 @@
      ``Message.user_id`` / ``E2AEnvelope.user_id``
    - ``metadata["routing"] = {group_id, bot_id, gateway_id}``—— 路由维
      （E2A 上对应 ``channel_context.routing``）
+   - ``metadata["agent_identity"] = {agent_template_id}``—— 本次上传门禁使用的
+     Agent 配置模板 id（客户端声明，由上传门禁回查 Manager 校验）
 
    Gateway 入口用 :func:`normalize_routing_identity` + :func:`apply_routing_metadata`
    写一次；下游用 :func:`web_routing_identity` 一次读全（含顶层 ``user_id``）。
+   展示身份由 :func:`normalize_agent_identity` + :func:`apply_agent_identity_metadata`
+   写入，AgentServer 用 :func:`read_agent_identity` 读取。
 
 3. **不要**：把身份写入业务 ``params``；不要把 ``group_id``/``bot_id``/``gateway_id``
    摊到 metadata 顶层；不要把 ``user_id`` 放进 ``routing``。
@@ -45,6 +49,81 @@ from e2a.identity import (
     web_routing_identity,
 )
 
+AGENT_IDENTITY_METADATA_KEY = "agent_identity"
+# 本次上传门禁只需要 Agent 配置模板 id；保留分组结构便于后续扩展。
+AGENT_IDENTITY_FIELDS = ("agent_template_id",)
+
+
+def _identity_value(value: Any) -> str | None:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _pick_field(mapping: Mapping[str, Any], field: str) -> str | None:
+    return _identity_value(mapping.get(field))
+
+
+def normalize_agent_identity(
+    *sources: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """从若干 mapping 归一化 Agent 模板 id（先出现的非空值为准）。
+
+    与路由身份不同，这里没有必填项；缺失时返回空 dict，由上传门禁按
+    “无法确认”处理。
+    """
+    identity: dict[str, str] = {}
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for field in AGENT_IDENTITY_FIELDS:
+            if field in identity:
+                continue
+            value = _pick_field(source, field)
+            if value:
+                identity[field] = value
+    return identity
+
+
+def normalize_agent_identity_query(
+    query: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """归一化 WS 握手 query 中的 Agent 模板 id。"""
+    if not isinstance(query, Mapping):
+        return {}
+    return normalize_agent_identity(
+        {
+            "agent_template_id": query.get("agent_template_id"),
+        }
+    )
+
+
+def apply_agent_identity_metadata(
+    metadata: Mapping[str, Any] | None,
+    identity: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    """把 Agent 模板 id 写入 ``metadata.agent_identity``（空身份则移除）。"""
+    meta = dict(metadata or {})
+    cleaned = normalize_agent_identity(identity)
+    if cleaned:
+        meta[AGENT_IDENTITY_METADATA_KEY] = cleaned
+    else:
+        meta.pop(AGENT_IDENTITY_METADATA_KEY, None)
+    return meta
+
+
+def read_agent_identity(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    """读取 ``metadata.agent_identity``；缺失或结构不符时返回空 dict。"""
+    if not isinstance(metadata, Mapping):
+        return {}
+    raw = metadata.get(AGENT_IDENTITY_METADATA_KEY)
+    if not isinstance(raw, Mapping):
+        return {}
+    return normalize_agent_identity(raw)
+
 
 def merge_routing_into_params(
     params: Mapping[str, Any] | None,
@@ -62,11 +141,17 @@ def merge_routing_into_params(
 
 __all__ = (
     "ROUTING_METADATA_KEY",
+    "AGENT_IDENTITY_METADATA_KEY",
     "USER_ID_FIELD",
     "WEB_ROUTING_ID_FIELDS",
     "WEB_IDENTITY_FIELDS",
+    "AGENT_IDENTITY_FIELDS",
     "normalize_routing_identity",
     "apply_routing_metadata",
     "merge_routing_into_params",
     "web_routing_identity",
+    "normalize_agent_identity",
+    "normalize_agent_identity_query",
+    "apply_agent_identity_metadata",
+    "read_agent_identity",
 )
