@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import pytest
+from e2a.models import E2AEnvelope
 from starlette.requests import Request
 
 from agent_gateway.channel_manager.web.http_routes.mapped import (
@@ -13,12 +14,28 @@ from agent_gateway.channel_manager.web.http_routes.mapped import (
 )
 from agent_gateway.channel_manager.web.web_http_routes import _params_from_mapped_route
 from agent_gateway.common.request_method import parse_request_method
+from agent_gateway.extensions.runtime_management_extension.pod_rest_map import assemble_rest_request
 
 _ASSET_ROUTES = (
     ("GET", "/sessions/{session_id}/assets", "session.assets.list"),
     ("POST", "/sessions/{session_id}/assets", "session.assets.register"),
     ("PATCH", "/sessions/{session_id}/assets/{asset_id}", "session.assets.rename"),
 )
+
+
+@pytest.mark.parametrize(("verb", "path", "method"), _ASSET_ROUTES)
+def test_session_asset_routes_forward_to_agentserver(verb: str, path: str, method: str) -> None:
+    bodies = {"GET": {}, "POST": {"items": [{"path": "/tmp/a.png"}]}, "PATCH": {"name": "renamed"}}
+    params = dict(bodies[verb])
+    if verb == "PATCH":
+        params["asset_id"] = "asset-1"
+    envelope = E2AEnvelope(
+        request_id="req-1", channel="web", method=method, session_id="sess-1", params=params,
+    )
+    request = assemble_rest_request(envelope, base_url="http://agentserver:8766")
+    assert request.verb == verb
+    assert request.url == "http://agentserver:8766/api/v1" + path.format(session_id="sess-1", asset_id="asset-1")
+    assert request.json_body == (bodies[verb] or None)
 
 
 def _route(http_method: str, path: str):
