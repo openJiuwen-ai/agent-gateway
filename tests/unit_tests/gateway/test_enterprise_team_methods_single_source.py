@@ -27,18 +27,12 @@ _EXPECTED = frozenset({
 
 def test_team_control_methods_have_a_single_definition():
     assert ENTERPRISE_TEAM_CONTROL_METHODS == _EXPECTED
+    assert tui_connect.ENTERPRISE_TEAM_CONTROL_METHODS is ENTERPRISE_TEAM_CONTROL_METHODS
     assert (
-        tui_connect._ENTERPRISE_TEAM_CONTROL_METHODS
+        app_web_handlers.ENTERPRISE_TEAM_CONTROL_METHODS
         is ENTERPRISE_TEAM_CONTROL_METHODS
     )
-    assert (
-        app_web_handlers._ENTERPRISE_TEAM_CONTROL_METHODS
-        is ENTERPRISE_TEAM_CONTROL_METHODS
-    )
-    assert (
-        mapped._ENTERPRISE_TEAM_CONTROL_METHODS
-        is ENTERPRISE_TEAM_CONTROL_METHODS
-    )
+    assert mapped.ENTERPRISE_TEAM_CONTROL_METHODS is ENTERPRISE_TEAM_CONTROL_METHODS
 
 
 def test_personal_edition_hides_team_control_routes():

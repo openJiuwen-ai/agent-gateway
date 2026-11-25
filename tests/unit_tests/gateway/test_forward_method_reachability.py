@@ -56,13 +56,13 @@ def test_enterprise_team_forwarding_contract(tmp_path):
     code = """
 from agent_gateway.app_gateway import ReqMethod
 from agent_gateway.channel_manager.web.app_web_handlers import (
-    _ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
+    ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
 )
 from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import _lookup_route
 from e2a.runtime_http_routes import resolve_runtime_http_route
 
-for method in _ENTERPRISE_TEAM_CONTROL_METHODS:
+for method in ENTERPRISE_TEAM_CONTROL_METHODS:
     assert method in _FORWARD_REQ_METHODS, method
     assert parse_request_method(method) is ReqMethod(method), method
     declared = resolve_runtime_http_route(method)
@@ -84,14 +84,14 @@ def test_personal_team_control_is_not_enabled(tmp_path):
     code = """
 import agent_gateway.app_gateway
 from agent_gateway.channel_manager.web.app_web_handlers import (
-    _ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
+    ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
 )
 from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled, _lookup_route,
 )
-assert _ENTERPRISE_TEAM_CONTROL_METHODS.isdisjoint(_FORWARD_REQ_METHODS)
-for method in _ENTERPRISE_TEAM_CONTROL_METHODS:
+assert ENTERPRISE_TEAM_CONTROL_METHODS.isdisjoint(_FORWARD_REQ_METHODS)
+for method in ENTERPRISE_TEAM_CONTROL_METHODS:
     assert parse_request_method(method) is None, method
     try:
         _lookup_route(method, is_stream=False)

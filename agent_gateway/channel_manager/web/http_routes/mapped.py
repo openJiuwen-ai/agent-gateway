@@ -13,9 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
-from agent_gateway.common.enterprise_methods import (
-    ENTERPRISE_TEAM_CONTROL_METHODS as _ENTERPRISE_TEAM_CONTROL_METHODS,
-)
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 
 
 @dataclass(frozen=True)
@@ -1091,7 +1089,7 @@ def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, 
         return tuple(
             route
             for route in routes
-            if route.rpc_method not in _ENTERPRISE_TEAM_CONTROL_METHODS
+            if route.rpc_method not in ENTERPRISE_TEAM_CONTROL_METHODS
         )
     from agent_gateway.enterprise.capabilities.experts.http_routes import northbound_routes
 
