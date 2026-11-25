@@ -24,6 +24,8 @@ def trust_client_identity_headers(client_host: object) -> bool:
     ``X-Runtime-Template-Id``/``X-Agent-Template-Id``) and the WebSocket agent
     display identity (``agent_name``/``agent_identity_id``/
     ``runtime_template_id``/``agent_template_id``) from the handshake query.
+    The agent display identity is additionally enterprise-only: personal
+    deployments never accept it, even from trusted loopback clients.
 
     The WebSocket routing identity (``group_id``/``bot_id``/``gateway_id`` from
     the handshake query) is not gated by this switch; it keeps its existing

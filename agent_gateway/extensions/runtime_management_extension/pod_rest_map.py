@@ -436,18 +436,21 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
         headers["X-Cron-Meta"] = json.dumps(
             cron_meta, ensure_ascii=True, separators=(",", ":"),
         )
-    # 展示身份只透传可用于跨进程的 id / 模板 id；``X-Agent-Id`` 已被路由层
-    # Agent id 占用，展示 id 改用 ``X-Agent-Identity-Id``。``agent_name`` 是
-    # 人类可读展示名，可能含非 ASCII/控制字符，只保留在 metadata，不进入 HTTP 头。
-    display_identity = read_agent_identity(channel_context)
-    for field, header_name in (
-        ("agent_id", "X-Agent-Identity-Id"),
-        ("runtime_template_id", "X-Runtime-Template-Id"),
-        ("agent_template_id", "X-Agent-Template-Id"),
-    ):
-        value = display_identity.get(field)
-        if value:
-            headers[header_name] = value
+    # 展示身份只透传可用于跨进程的 id / 模板 id，且仅企业版透传：个人版
+    # 请求即使 channel_context 携带 agent_identity 也不下发。``X-Agent-Id``
+    # 已被路由层 Agent id 占用，展示 id 改用 ``X-Agent-Identity-Id``。
+    # ``agent_name`` 是人类可读展示名，可能含非 ASCII/控制字符，只保留在
+    # metadata，不进入 HTTP 头。
+    if is_enterprise():
+        display_identity = read_agent_identity(channel_context)
+        for field, header_name in (
+            ("agent_id", "X-Agent-Identity-Id"),
+            ("runtime_template_id", "X-Runtime-Template-Id"),
+            ("agent_template_id", "X-Agent-Template-Id"),
+        ):
+            value = display_identity.get(field)
+            if value:
+                headers[header_name] = value
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext

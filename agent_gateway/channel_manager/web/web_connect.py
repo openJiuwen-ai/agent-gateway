@@ -26,7 +26,6 @@ import aiohttp
 from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.base import (
     ChannelMetadata,
     ConnectHook,
@@ -2182,8 +2181,9 @@ class WebChannel(BaseWsChannel):
         setattr(ws, "_web_routing", _routing)
         # 展示身份（Manager 计算的 agent_name/agent_id/模板 id）随连接保存，
         # 每条消息再写入 metadata.agent_identity 供 AgentServer 落盘。
-        # 与 HTTP 入口共用同一个信任开关：显式关闭时两个入口都不采信客户端身份。
-        if trust_client_identity_headers(remote):
+        # 与 HTTP 入口共用同一个信任开关，且仅企业版采信：个人版（含回环与
+        # 显式开启信任开关）不接收展示身份，metadata 与 REST 透传均不携带。
+        if is_enterprise() and trust_client_identity_headers(remote):
             setattr(ws, "_web_agent_identity", normalize_agent_identity_query(_flat_query))
         if is_enterprise() and not _routing.get("bot_id"):
             logger.warning(

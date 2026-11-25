@@ -15,8 +15,9 @@
    - ``metadata["routing"] = {group_id, bot_id, gateway_id}``—— 路由维
      （E2A 上对应 ``channel_context.routing``）
    - ``metadata["agent_identity"] = {agent_name, agent_id, runtime_template_id,
-     agent_template_id}``—— 平台展示身份（无业务路由含义，仅用于工作区落盘）；
-     其中 ``agent_template_id`` 同时由技能上传门禁回查 Manager 校验
+     agent_template_id}``—— 平台展示身份（无业务路由含义，仅用于工作区落盘），
+     仅企业版入口采信并透传，个人版不写入；其中 ``agent_template_id`` 同时由
+     技能上传门禁回查 Manager 校验
 
    Gateway 入口用 :func:`normalize_routing_identity` + :func:`apply_routing_metadata`
    写一次；下游用 :func:`web_routing_identity` 一次读全（含顶层 ``user_id``）。
