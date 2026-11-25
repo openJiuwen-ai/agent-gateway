@@ -92,6 +92,11 @@ def cleanup_old_sessions() -> dict[str, int]:
     return {"removed": removed, "errors": errors}
 
 
+def get_profile_data_dir() -> Path:
+    """Compatibility entry point for Swarm callers from the profile release."""
+    return get_user_workspace_dir()
+
+
 def cleanup_orphan_file_ops() -> dict[str, int]:
     """Remove orphan file-operation logs unless retention is disabled.
 
@@ -110,7 +115,7 @@ def cleanup_orphan_file_ops() -> dict[str, int]:
     removed = 0
     errors = 0
 
-    for base_dir in (get_agent_workspace_dir(), get_user_workspace_dir()):
+    for base_dir in (get_agent_workspace_dir(), get_profile_data_dir()):
         hist_dir = base_dir / ".agent_history"
         if not hist_dir.is_dir():
             continue
