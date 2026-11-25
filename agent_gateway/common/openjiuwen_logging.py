@@ -3,7 +3,7 @@
 """openjiwen / openjiuwen_runtime 日志引导（gateway 自包含版本）。
 
 与母仓 ``jiuwenswarm.common.utils.configure_*`` 语义一致；gateway 包不依赖
-jiuwenswarm，独立安装时同样把第三方日志钉到平铺根目录的 logs/，避免相对 cwd 落盘。
+jiuwenswarm，独立安装时同样把第三方日志钉到 infra 区，避免相对 cwd 落盘。
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def configure_openjiuwen_runtime_logging() -> None:
-    """把 openjiuwen_runtime foundation 文件日志钉到 logs/runtime。
+    """把 openjiuwen_runtime foundation 文件日志钉到 infra/logs/runtime。
 
     SDK 自带 logging.yaml 的 file handler filename 相对进程 cwd 解析，须在
     首次 ``get_logger()`` 之前调用；入口进程应在模块顶部调用。
@@ -35,10 +35,10 @@ def configure_openjiuwen_runtime_logging() -> None:
 
 
 def configure_openjiuwen_core_logging(*, suppress_level: Optional[int] = None) -> bool:
-    """把 openjiwen core LogManager 日志钉到 logs/core。
+    """把 openjiwen core LogManager 日志钉到 infra/logs/core。
 
     默认 ``log_path`` 相对进程 cwd 解析，须在任何 ``LogManager.get_logger()``
-    之前调用：``config/logging.yaml`` 存在则整份加载，否则按备用 dict
+    之前调用：``infra/config/logging.yaml`` 存在则整份加载，否则按备用 dict
     配置（jiuwen.log 与 interface/、performance/ 子目录均相对 log_path 落盘）。
     失败仅告警，不抛出。
 

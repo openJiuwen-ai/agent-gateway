@@ -47,15 +47,10 @@ def prepare_group_workspace(mark: StageMarker) -> None:
 
 def apply_group_environment(mark: StageMarker) -> None:
     """Apply persisted environment and compatible startup migrations."""
-    from agent_gateway.common.paths import (
-        apply_free_search_runtime_defaults,
-        get_env_file,
-        repair_windows_legacy_links,
-    )
+    from agent_gateway.common.paths import apply_free_search_runtime_defaults, get_env_file
     from agent_gateway.dotenv_early import load_dotenv_runtime
 
     env_file = get_env_file()
     load_dotenv_runtime(dotenv_path=env_file, override=True)
-    repair_windows_legacy_links()
     apply_free_search_runtime_defaults()
     mark("runtime_environment_applied")

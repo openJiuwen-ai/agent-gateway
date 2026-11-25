@@ -53,7 +53,9 @@ def _prepare_paths(monkeypatch, tmp_path: Path):
 def _prepare_same_path(monkeypatch, tmp_path: Path) -> Path:
     workspace = tmp_path / "workspace"
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
-    monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
+    # The reverted layout defaults to infra/config. Explicitly select the
+    # legacy shared file to exercise the in-place migration guard.
+    monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(workspace / "config"))
     monkeypatch.setattr(paths, "get_user_workspace_dir", lambda: workspace)
     monkeypatch.setattr(paths, "get_agent_workspace_dir", lambda: tmp_path / "agent-workspace")
     monkeypatch.setattr(paths, "get_agent_home_dir", lambda: tmp_path / "agent-home")

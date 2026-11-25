@@ -22,7 +22,6 @@ from agent_gateway.common.paths import (  # noqa: F401
     get_config_file,
     get_env_file,
     get_logs_dir,
-    get_profile_data_dir,
     get_root_dir,
     get_user_home,
     get_user_workspace_dir,
