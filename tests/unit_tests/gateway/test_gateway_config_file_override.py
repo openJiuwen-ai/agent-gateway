@@ -11,21 +11,21 @@ def test_gateway_config_file_env_override(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
     monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", str(target))
 
-    assert get_config_file() == target / "config.yaml"
+    assert get_config_file() == target / "config-gateway.yaml"
 
 
-def test_gateway_config_file_defaults_to_config_yaml(monkeypatch) -> None:
+def test_gateway_config_file_defaults_to_config_gateway_yaml(monkeypatch) -> None:
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
     monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
 
-    assert get_config_file().name == "config.yaml"
+    assert get_config_file().name == "config-gateway.yaml"
 
 
 def test_gateway_config_file_relative_override(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(paths, "get_config_dir", lambda: tmp_path)
     monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", "gateway-config")
 
-    assert get_config_file() == tmp_path / "gateway-config" / "config.yaml"
+    assert get_config_file() == tmp_path / "gateway-config" / "config-gateway.yaml"
 
 
 def test_gateway_env_file_ignores_absolute_override(monkeypatch, tmp_path) -> None:
@@ -53,7 +53,7 @@ def test_agentos_env_file_is_shared_with_agentserver(monkeypatch, tmp_path) -> N
 
 
 def test_prepare_runtime_workspace_seeds_config(monkeypatch, tmp_path) -> None:
-    target = tmp_path / "config.yaml"
+    target = tmp_path / "config-gateway.yaml"
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
     monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
     monkeypatch.setattr(paths, "get_config_file", lambda: target)
@@ -67,7 +67,7 @@ def test_prepare_runtime_workspace_seeds_config(monkeypatch, tmp_path) -> None:
 
 
 def test_prepare_runtime_workspace_keeps_existing_config(monkeypatch, tmp_path) -> None:
-    target = tmp_path / "config.yaml"
+    target = tmp_path / "config-gateway.yaml"
     target.write_text("custom: true\n", encoding="utf-8")
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
     monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
