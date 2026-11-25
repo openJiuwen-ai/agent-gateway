@@ -387,7 +387,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
         "agent_gateway.enterprise.capabilities.audit.audit_emit.emit_audit_ua",
         _capture_ua,
     )
-    monkeypatch.setattr(disp, "is_enterprise", lambda: True)
+    from agent_gateway.channel_manager.web import client_trust
+
+    monkeypatch.setattr(client_trust, "is_enterprise", lambda: True)
 
     async def _handler(ws, req_id, params, session_id, **kwargs):
         await channel.send_response(ws, req_id, ok=True, payload={"id": "s1"})

@@ -13,10 +13,20 @@ import httpx
 import pytest
 
 import agent_gateway.enterprise as enterprise_pkg
+from agent_gateway.channel_manager.web import invoke as web_invoke
 from agent_gateway.enterprise.capabilities.skill_upload import client as upload_client
-from agent_gateway.enterprise.capabilities.skill_upload import guard
+from agent_gateway.enterprise.capabilities.skill_upload import guard, policy
 
 UPLOAD_ID = "a" * 32
+
+
+def test_import_upload_passes_enterprise_write_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(web_invoke, "is_enterprise", lambda: True)
+
+    assert web_invoke.is_enterprise_write_forbidden("skills.import_upload") is False
+    assert web_invoke.is_enterprise_write_forbidden("config.set") is True
 
 
 def _params() -> dict[str, str]:
@@ -61,7 +71,56 @@ async def test_non_enterprise_passes_every_method(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_import_upload_is_retired_in_enterprise(
+async def test_import_upload_allowed_by_template_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(enterprise_pkg, "is_enterprise", lambda: True)
+    query = AsyncMock(return_value=True)
+    monkeypatch.setattr(policy, "query_allow_local_skill_upload", query)
+    params = _params()
+
+    denial = await guard.enterprise_skill_upload_denial(
+        method="skills.import_upload",
+        params=params,
+        request_id="req-template-allowed",
+        authorization="Bearer token",
+        jiuwenclaw_id="cluster_a",
+        agent_template_id="tpl_a",
+    )
+
+    assert denial is None
+    query.assert_awaited_once_with(
+        authorization="Bearer token",
+        jiuwenclaw_id="cluster_a",
+        agent_template_id="tpl_a",
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_upload_rejects_disabled_template(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(enterprise_pkg, "is_enterprise", lambda: True)
+    monkeypatch.setattr(
+        policy, "query_allow_local_skill_upload", AsyncMock(return_value=False)
+    )
+    params = _params()
+
+    denial = await guard.enterprise_skill_upload_denial(
+        method="skills.import_upload",
+        params=params,
+        request_id="req-template-disabled",
+        authorization="Bearer token",
+        jiuwenclaw_id="cluster_a",
+        agent_template_id="tpl_a",
+    )
+
+    assert denial is not None
+    assert denial[1] == policy.LOCAL_SKILL_DISABLED
+
+
+@pytest.mark.asyncio
+async def test_import_upload_rejects_missing_template(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(enterprise_pkg, "is_enterprise", lambda: True)
@@ -69,12 +128,65 @@ async def test_import_upload_is_retired_in_enterprise(
     denial = await guard.enterprise_skill_upload_denial(
         method="skills.import_upload",
         params=_params(),
-        request_id="req-retired",
+        request_id="req-missing-template",
         authorization="Bearer token",
         jiuwenclaw_id="cluster_a",
     )
 
-    assert denial == ("企业版已停止使用该上传方式", guard.RETIRED_CODE)
+    assert denial is not None
+    assert denial[1] == policy.POLICY_UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_import_upload_ignores_client_supplied_template_in_params(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """客户端在请求体里自报 agent_template_id 不能绕过受信通道。"""
+    monkeypatch.setattr(enterprise_pkg, "is_enterprise", lambda: True)
+    query = AsyncMock(return_value=True)
+    monkeypatch.setattr(policy, "query_allow_local_skill_upload", query)
+    params = {**_params(), "agent_template_id": "tpl_client_supplied"}
+
+    denial = await guard.enterprise_skill_upload_denial(
+        method="skills.import_upload",
+        params=params,
+        request_id="req-forged-template",
+        authorization="Bearer token",
+        jiuwenclaw_id="cluster_a",
+    )
+
+    assert denial is not None
+    assert denial[1] == policy.POLICY_UNAVAILABLE
+    query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_import_upload_policy_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(enterprise_pkg, "is_enterprise", lambda: True)
+    monkeypatch.setattr(
+        policy,
+        "query_allow_local_skill_upload",
+        AsyncMock(
+            side_effect=policy.SkillUploadPolicyError(
+                policy.POLICY_UNAVAILABLE, "manager down"
+            )
+        ),
+    )
+    params = _params()
+
+    denial = await guard.enterprise_skill_upload_denial(
+        method="skills.import_upload",
+        params=params,
+        request_id="req-policy-down",
+        authorization="Bearer token",
+        jiuwenclaw_id="cluster_a",
+        agent_template_id="tpl_a",
+    )
+
+    assert denial is not None
+    assert denial[1] == policy.POLICY_UNAVAILABLE
 
 
 @pytest.mark.asyncio

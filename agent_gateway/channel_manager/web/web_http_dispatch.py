@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
 from typing import Any
@@ -56,19 +55,12 @@ def _cookie_value(headers: dict[str, str], name: str) -> str:
     return ""
 
 
+from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
+
+
 def _trust_client_tenant_headers(client_host: str | None) -> bool:
-    explicit = os.getenv("GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS", "").strip().lower()
-    if explicit in {"1", "true", "yes"}:
-        return True
-    if explicit in {"0", "false", "no"}:
-        return False
-    # 企业用户面通过 NodePort/Web Pod 访问时，客户端地址不是回环地址。
-    # 企业版的身份边界由上游认证和 ``is_enterprise()`` 控制，必须把选中的
-    # user/group/bot 透传给 Runtime 路由；个人版继续只信任本机请求。
-    if is_enterprise():
-        return True
-    host = str(client_host or "").strip().lower()
-    return host in {"127.0.0.1", "::1", "localhost"}
+    """HTTP compatibility wrapper; the policy is shared with the WS entry."""
+    return trust_client_identity_headers(client_host)
 
 
 def _build_http_ext(
@@ -190,19 +182,33 @@ async def dispatch_http_request(
     agent_id = str(params.get("agent_id") or "default")
 
     from agent_gateway.common.request_identity import (
+        apply_agent_identity_metadata,
         apply_routing_metadata,
+        normalize_agent_identity,
     )
 
     _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
-    _meta = apply_routing_metadata(
-        {
-            "query": query,
-            "method": method,
-            "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
-            "transport": "web-http",
-        },
-        _routing,
+    _agent_identity = (
+        normalize_agent_identity(
+            {
+                "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
+            }
+        )
+        if trust_tenant_headers
+        else {}
+    )
+    _meta = apply_agent_identity_metadata(
+        apply_routing_metadata(
+            {
+                "query": query,
+                "method": method,
+                "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
+                "transport": "web-http",
+            },
+            _routing,
+        ),
+        _agent_identity,
     )
 
     from agent_gateway.channel_manager.web.web_connect import WebChannel
