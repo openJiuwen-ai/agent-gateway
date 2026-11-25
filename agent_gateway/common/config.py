@@ -13,7 +13,7 @@ import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TextIO
 
 import portalocker
 import yaml
@@ -158,31 +158,26 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
 # request path. Deliberately not caching past the parse keeps env var changes
 # (``load_dotenv_runtime`` runs with override=True before some reads) taking
 # effect immediately, so this needs no explicit invalidation hook.
-_YAML_PARSE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_YamlStamp = tuple[int, int, int, int]
+_YAML_PARSE_CACHE: dict[str, tuple[_YamlStamp, dict[str, Any]]] = {}
 _YAML_PARSE_CACHE_LOCK = threading.Lock()
 
 
-def _yaml_file_stamp(filepath: Path) -> tuple[int, int] | None:
-    """Return the identity a cached parse of this file is keyed on.
-
-    Args:
-        filepath: YAML file to stamp.
-
-    Returns:
-        ``(mtime_ns, size)``, or None when the file cannot be stat'd — in which
-        case the caller must not use or populate the cache.
-    """
+def _yaml_file_stamp(source: Path | TextIO) -> _YamlStamp | None:
+    """Identify the file behind a path or open stream; skip caching without a file ID."""
     try:
-        stat_result = filepath.stat()
+        stat_result = source.stat() if isinstance(source, Path) else os.fstat(source.fileno())
     except OSError:
         return None
-    return stat_result.st_mtime_ns, stat_result.st_size
+    if not stat_result.st_ino:
+        return None
+    return stat_result.st_dev, stat_result.st_ino, stat_result.st_mtime_ns, stat_result.st_size
 
 
 def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     """读取 YAML，遇解析错误重试（应对跨进程写竞态）。
 
-    解析结果按文件身份（mtime + size）缓存；调用方会就地修改返回值
+    解析结果按文件标识、修改时间和大小缓存；调用方会就地修改返回值
     （``_normalize_config`` 即是），故命中与写入缓存时都做深拷贝，
     保证各调用方拿到互不影响的副本。
 
@@ -208,10 +203,12 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     for attempt in range(max_attempts):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
+                # The path may have been replaced since the lookup or between retries.
+                parsed_stamp = _yaml_file_stamp(f)
                 parsed = yaml.safe_load(f) or {}
-            if stamp is not None:
+            if parsed_stamp is not None:
                 with _YAML_PARSE_CACHE_LOCK:
-                    _YAML_PARSE_CACHE[cache_key] = (stamp, deepcopy(parsed))
+                    _YAML_PARSE_CACHE[cache_key] = (parsed_stamp, deepcopy(parsed))
             return parsed
         except yaml.YAMLError:
             if attempt < max_attempts - 1:
