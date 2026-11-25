@@ -476,6 +476,27 @@ def test_http_sse_unregister_on_cancel():
     asyncio.run(_run())
 
 
+@pytest.mark.asyncio
+async def test_session_peer_lookup_prunes_closed_http_outbounds():
+    from agent_gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+
+    registry = WebDeliveryRegistry()
+    first = outbound_mod.HttpSseOutbound(session_id="session")
+    second = outbound_mod.HttpSseOutbound(session_id="session")
+    other = outbound_mod.HttpSseOutbound(session_id="other")
+    first_id, second_id, other_id = (registry.register(peer) for peer in (first, second, other))
+
+    await first.close()
+    assert registry.peers_for_session("session") == {second}
+    assert first_id not in registry.request_outbounds
+    assert registry.session_request_outbounds["session"] == {second_id}
+
+    await second.close()
+    assert registry.peers_for_session("session") == set()
+    assert registry.session_request_outbounds == {"other": {other_id}}
+    assert registry.request_outbounds == {other_id: other}
+
+
 def test_sse_idle_timeout_ends_stream():
     async def _run():
         peer = outbound_mod.HttpSseOutbound()
