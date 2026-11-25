@@ -47,7 +47,7 @@ def _prepare_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(paths, "get_agent_workspace_dir", lambda: tmp_path / "agent-workspace")
     monkeypatch.setattr(paths, "get_agent_home_dir", lambda: tmp_path / "agent-home")
     _reset_path_cache(monkeypatch)
-    return workspace, gateway_dir / "config.yaml"
+    return workspace, gateway_dir / "config-gateway.yaml"
 
 
 def _prepare_same_path(monkeypatch, tmp_path: Path) -> Path:
@@ -58,7 +58,16 @@ def _prepare_same_path(monkeypatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(paths, "get_agent_workspace_dir", lambda: tmp_path / "agent-workspace")
     monkeypatch.setattr(paths, "get_agent_home_dir", lambda: tmp_path / "agent-home")
     _reset_path_cache(monkeypatch)
-    return workspace / "config" / "config.yaml"
+    # 新契约下 Gateway 落盘 config-gateway.yaml，与 AgentServer config.yaml
+    # 同目录并存；须拒绝的仅剩目标文件解析到旧共享文件本身的别名形态（软链）。
+    shared = workspace / "config" / "config.yaml"
+    target = workspace / "config" / "config-gateway.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        target.symlink_to(shared)
+    except OSError:
+        pytest.skip("symlink creation unavailable on this host")
+    return shared
 
 
 def test_split_premise_uses_gateway_config_dir(
@@ -158,7 +167,6 @@ def test_startup_refuses_to_rewrite_shared_config_in_place(
     monkeypatch, tmp_path: Path
 ) -> None:
     shared = _prepare_same_path(monkeypatch, tmp_path)
-    shared.parent.mkdir(parents=True)
     original = yaml.safe_dump({"gateway": {"agent_client": {"type": "websocket"}}})
     shared.write_text(original, encoding="utf-8")
 
@@ -182,7 +190,6 @@ def test_startup_keeps_shared_agentos_config_in_place(
     monkeypatch, tmp_path: Path
 ) -> None:
     shared = _prepare_same_path(monkeypatch, tmp_path)
-    shared.parent.mkdir(parents=True)
     shared.write_text(
         yaml.safe_dump({"gateway": {"agent_client": {"type": "agentos_router"}}}),
         encoding="utf-8",

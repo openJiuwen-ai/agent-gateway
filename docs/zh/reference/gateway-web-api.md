@@ -1397,9 +1397,11 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 三套体系**相互独立**：`cron.job.*`（通用定时任务，Gateway 本地实现+进程内调度）、`heartbeat.job.*`（心跳续跑任务，AgentServer Rail 运行时持有、Gateway 代理）、`schedule.*`（AutoHarness 演化管线任务，转发 AgentServer）。
 
-### 8.1 cron.job.*（Gateway 本地，注册于 `app_web_handlers.py:5374-5382`）
+### 8.1 cron.job.*（Gateway 本地，注册于 `app_web_handlers.py`）
 
 通用：`cron_controller` 不可用 → `INTERNAL_ERROR "cron not available"`；单 job 操作先过 `_get_owned_cron_job` 鉴权（§8.1.10）。
+
+**企业版租户身份（三元）**：`group_id` / `bot_id` / `user_id` 必须齐全（HTTP 优先取 `X-Group-Id` / `X-Bot-Id` / 连接 `user_id`，写入 `_web_routing` 后回填；body 残留旧值不可覆盖路由）。缺任一 → `BAD_REQUEST "enterprise cron requires group_id, bot_id and user_id"`（含 `cron.job.list`，**不得**用 200 空列表掩盖漏传）。三元齐全但对不上任务属主 → 仍按「找不到」处理（`NOT_FOUND` / 空结果），不泄露存在性。个人版不强制三元，空串按空身份过滤。
 
 #### 8.1.1 cron.job.list
 
@@ -1411,13 +1413,17 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 ← {"type": "res", "id": "req_x", "ok": true, "payload": {"jobs": []}}
 ```
 
+HTTP：`GET /api/v1/cron/jobs` → `cron.job.list`。
+
 
 - **参数**：
 
 | 参数 | 类型 | 必填 | 默认/校验 | 说明 |
 |------|------|------|----------|------|
 | `project_id` | string | 否 | 缺省不过滤——返回当前用户全部可见任务；支持虚拟项目 `default`/`default_code`（精确匹配），或空 project_id 的 job 按 work_mode 消歧 | 项目过滤 |
+| `group_id` / `bot_id` / `user_id` | string | 企业版是（通常来自请求头/连接，不必写在 body） | 企业版：trim 后均须非空，缺一 `BAD_REQUEST`；个人版：可选，空串按空身份筛 | 多租户身份 |
 - **响应**：`{jobs: [CronJob]}`。**按连接 user_id 过滤**：带 user_id 的连接只见 `job.user_id` 精确相等的任务；user_id 为空（单用户）返回全部；隐藏项目任务不出现在列表；企业版每个 job 附 `active_session_id`。
+- **错误（企业版）**：三元身份缺一 → `BAD_REQUEST "enterprise cron requires group_id, bot_id and user_id"`。
 
 #### 8.1.2 cron.job.meta
 
@@ -1447,7 +1453,8 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 | 参数 | 类型 | 必填 | 默认/校验 | 说明 |
 |------|------|------|----------|------|
 | `id` | string | 是 | 经 `str()` 强转 | 任务 id |
-- **响应**：`{job: CronJob}`。**错误**：`NOT_FOUND "job not found"`（不存在或**不属于当前用户**——不泄露存在性）。
+| `group_id` / `bot_id` / `user_id` | string | 企业版是（头/连接优先） | 同 §8.1 企业版三元规则 | 多租户身份 |
+- **响应**：`{job: CronJob}`。**错误**：企业版三元缺一 → `BAD_REQUEST`；`NOT_FOUND "job not found"`（不存在或**不属于当前身份**——不泄露存在性）。
 
 #### 8.1.4 cron.job.create
 
@@ -1481,6 +1488,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 | `project_id` / `project_dir` / `work_mode` | string | 否 | 项目归属解析（显式 id > (work_mode, dir) > 默认项目）；`work_mode` 枚举 `code/work`，design 拒绝 |
 | `id` | string | 否 | `uuid4().hex`（显式指定用） |
 | `user_id` / `_auth_session` | — | 服务端注入 | 连接 user_id / 登录会话（客户端传值被覆盖） |
+| `group_id` / `bot_id` / `user_id` | string | **企业版是** | 企业版创建必须三元齐全（同 §8.1）；缺一 `BAD_REQUEST "enterprise cron requires group_id, bot_id and user_id"`；个人版可空 | 多租户身份 |
 
 **字段详解**（`runtime/cron/models.py`、`runtime/cron/controller.py`）：
 
@@ -1514,7 +1522,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 |------|------|------|----------|------|
 | `id` | string | 是 | `str()` 强转；不存在/非本人 → `NOT_FOUND` | 任务 id |
 | `patch` | dict | 是 | 可改字段：name/cron_expr/timezone/description/enabled/wake_offset_seconds/targets/mode/model_name/model_selection/mcp/session_id/project 字段（身份字段不可改——sticky 剥离）；work_mode 单独 patch / 无 marker 的项目字段 patch 被拒 | 补丁 |
-- **响应**：`{job}`。cron 变更时重新试算；model 变更时重算凭据绑定。**错误**：`NOT_FOUND`/`BAD_REQUEST`/`SERVICE_UNAVAILABLE`。
+- **响应**：`{job}`。cron 变更时重新试算；model 变更时重算凭据绑定。**错误**：企业版三元缺一 → `BAD_REQUEST`；`NOT_FOUND`/`BAD_REQUEST`/`SERVICE_UNAVAILABLE`。
 
 #### 8.1.6 cron.job.delete
 
@@ -1531,7 +1539,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 |------|------|------|----------|------|
 | `id` | string | 是 | `str()` 强转 | 任务 id |
 - **行为**：停用 → 取消在途执行（并发 CHAT_CANCEL）→ 经 E2A 删除该 job 的执行会话（失败抛带 code 的 RuntimeError，如 `SESSION_BUSY`；**企业版跳过会话级联**只删 store 记录）→ 删 store。`proactive.tick` 内置任务拒绝面板删除（`BAD_REQUEST`）。
-- **响应**：`{deleted: true}`。
+- **响应**：`{deleted: true}`。**错误**：企业版三元缺一 → `BAD_REQUEST`；找不到/`NOT_FOUND`。
 
 #### 8.1.7 cron.job.toggle
 
@@ -1548,7 +1556,7 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 |------|------|------|----------|------|
 | `id` | string | 是 | `str()` 强转；`proactive.tick` 拒绝 | 任务 id |
 | `enabled` | bool | 是 | **严格布尔**（None 拒绝） | 目标状态 |
-- **响应**：`{job}`（内部即 update enabled）。enable 时复查项目闸门。
+- **响应**：`{job}`（内部即 update enabled）。enable 时复查项目闸门。**错误**：企业版三元缺一 → `BAD_REQUEST`。
 
 #### 8.1.8 cron.job.preview
 
@@ -1586,7 +1594,8 @@ Gateway 注册（`lifecycle_handlers.py:164-172`）：`session.archive` / `sessi
 
 #### 8.1.10 cron 权限与内部行为
 
-- **owner**：`CronJob.user_id`（创建者，不可变；空串=agent 工具创建/历史数据）。单 job 操作（get/update/delete/toggle/preview/run_now）全部经 `_get_owned_cron_job`——认证连接访问他人或无主历史 job 一律 `NOT_FOUND`。
+- **企业版三元身份**：`list` / `get` / `create` / `update` / `delete` / `toggle` / `preview` / `run_now` 在企业版均要求 `group_id`、`bot_id`、`user_id` 非空；缺一 `BAD_REQUEST`（见 §8.1 开头）。HTTP 身份以 `X-Group-Id` / `X-Bot-Id` 与连接 user 为准。
+- **owner**：`CronJob.user_id`（创建者，不可变；空串=agent 工具创建/历史数据）。单 job 操作（get/update/delete/toggle/preview/run_now）在三元齐全后经 `_get_owned_cron_job` / `_owns_job` 比对属主——认证连接访问他人或无主历史 job 一律 `NOT_FOUND`（对不上≠缺身份）。
 - **项目闸门**：隐藏项目不放行（不到点触发、不可手动启用/立即执行）；`project.remove` 级联停用其下全部任务（不按 user_id 过滤），恢复后默认停用。
 - **执行模型**：每次触发**预建独立执行会话**（`session.create` 带 `cron_id`、`create_token="cron:<run_id>"`），随后以 `chat.send`（强制流式）发送 job.description；单 agent 模式执行渠道固定 `__cron__`，team 模式走 team 流并把结果按 `targets` 渠道回传。中断类事件（ask_user_question 等）无人可答，立即失败收场。
 - **结果推送**：执行完成以带 `cron` 块的 `chat.final` 事件推送（按 `payload.user_id` 限定接收者，支持关 tab/换设备后重连收取；企业版恒按连接 user_id 过滤）；**web 渠道不再推占位"正在执行中"**（占位仅 IM 渠道，`cron/scheduler.py:3393-3399`）。

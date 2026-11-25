@@ -5280,10 +5280,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     app_ids = _personal_cron_app_ids()
                     if app_ids:
                         identity["personal_app_ids"] = app_ids
-        jobs = await cc.list_jobs(
-            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-            **identity,
-        )
+        try:
+            jobs = await cc.list_jobs(
+                project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+                **identity,
+            )
+        except ValueError as e:
+            # 企业版三元身份缺一（Cron023）：不返回 200 空列表掩盖漏传。
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         # 连接上带了用户时再对一下，避免列表里混进别的用户。
         if uid_str:
             jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
@@ -5344,7 +5349,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if job is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5507,7 +5516,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5520,6 +5533,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             deleted = await cc.delete_job(job_id, **_cron_owner_ids(ws, user_id, params))
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
         except Exception as exc:
             from agent_gateway.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
@@ -5551,7 +5567,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5565,6 +5585,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             job = await cc.toggle_job(job_id, enabled, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
 
