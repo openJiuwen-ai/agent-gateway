@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from contextlib import aclosing
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from e2a.models import E2AEnvelope
 from agent_gateway.common.security.link_mtls import LinkMTLSConfig
@@ -25,7 +25,8 @@ Connection = WebSocketConnection | HttpSseConnection
 class AgentDataTransport:
     """No platform lookup, request replay or business retry decisions."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, websocket_factory: Callable[[], WebSocketConnection] = WebSocketConnection) -> None:
+        self._websocket_factory = websocket_factory
         self._pool = ConnectionPool(self._open, self._disconnect)
 
     async def start(self) -> None:
@@ -35,7 +36,7 @@ class AgentDataTransport:
         if target.transport is TransportKind.WEBSOCKET:
             if target.binding is not None:
                 raise ValueError("WebSocket binding is not supported by this connection engine")
-            client = WebSocketConnection()
+            client = self._websocket_factory()
         elif target.transport is TransportKind.HTTP_SSE:
             config = LinkMTLSConfig.from_env()
             if target.binding is not None and target.binding != config.identity:
@@ -128,3 +129,35 @@ class AgentDataTransport:
         client = self._pool.peek(target)
         if client is not None:
             await client.stop_push()
+
+
+class StaticWebSocketTransport(AgentDataTransport):
+    """One fixed WebSocket connection with synchronous readiness and push hooks."""
+
+    def __init__(self, target: ConnectionTarget, *, ping_interval: float = 20.0,
+                 ping_timeout: float = 600.0) -> None:
+        self._target = target
+        self._connection = WebSocketConnection(ping_interval=ping_interval, ping_timeout=ping_timeout)
+        super().__init__(websocket_factory=lambda: self._connection)
+
+    async def _open(self, target: ConnectionTarget) -> Connection:
+        if target != self._target:
+            raise ValueError("transport target does not match the configured AgentServer")
+        return await super()._open(target)
+
+    @property
+    def server_ready(self) -> bool:
+        return self._connection.server_ready
+
+    @property
+    def agent_ready(self) -> bool:
+        return self._connection.agent_ready
+
+    @property
+    def can_reconnect(self) -> bool:
+        return self._connection.can_reconnect
+
+    def set_push_handler(self, handler: PushHandler | None) -> None:
+        self._connection.set_server_push_handler(
+            sourced_push_handler(self._target, handler) if handler is not None else None,
+        )

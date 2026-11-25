@@ -38,6 +38,7 @@ from agent_gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
 )
+from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -60,7 +61,7 @@ def _agent_unavailable(agent_client: Any) -> bool:
     if getattr(agent_client, "server_ready", True) is not False:
         return False
     return not (
-        isinstance(agent_client, WebSocketAgentServerClient)
+        is_legacy_shared_directory_client(agent_client)
         and agent_client.can_reconnect
     )
 
@@ -109,7 +110,7 @@ def is_legacy_shared_directory_client(agent_client: Any) -> bool:
     layout from remote/AgentOS clients.  It does not authorize a Gateway-side
     adapter substitute for AgentServer RPCs.
     """
-    return isinstance(agent_client, WebSocketAgentServerClient)
+    return isinstance(agent_client, (WebSocketAgentServerClient, SouthboundAgentClient))
 
 
 @contextmanager
