@@ -6860,7 +6860,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and replacement["requestId"] != request_id
         )
         if payload.get("ok") is True and (authorize_completion or replaced):
-            channel.forget_a4p_route(route, request_id)
+            # HTTP Outbound without a WS routing key uses ``route = True`` as a
+            # sentinel so forwarding can proceed; forget only applies to a real
+            # RoutingKey cache entry (``route.user_id`` would raise on bool).
+            from agent_gateway.routing.keys import RoutingKey as _RoutingKey
+
+            if isinstance(route, _RoutingKey):
+                channel.forget_a4p_route(route, request_id)
         await channel.send_response(
             ws,
             req_id,

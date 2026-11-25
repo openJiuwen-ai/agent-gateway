@@ -57,6 +57,7 @@ class FakeWebChannel:
         self.routing_keys: list[RoutingKey] = []
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
+        self.forgotten: list[tuple[object, object]] = []
 
     def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
@@ -89,7 +90,7 @@ class FakeWebChannel:
         return set()
 
     def forget_a4p_route(self, route, request_id):
-        pass
+        self.forgotten.append((route, request_id))
 
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
@@ -556,6 +557,41 @@ async def test_a4p_pending_http_outbound_allows_empty_agent_ref_without_route() 
         "user_id": "alice",
         "routing": {"group_id": "group-1", "bot_id": "bot-1"},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    "a4p.authorization.complete",
+    "a4p.authorization.reject",
+])
+async def test_a4p_http_outbound_complete_without_route_does_not_crash(method) -> None:
+    """HTTP authorize after Agent 200 must not call forget_a4p_route on bool sentinel."""
+
+    class _AgentClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    _bind(channel, agent_client=_AgentClient())
+    ws = SimpleNamespace(
+        _jiuwen_ws_id="http-out-1",
+        is_http_outbound=True,
+        _web_routing={"user_id": "alice", "group_id": "group-1", "bot_id": "bot-1"},
+    )
+
+    await channel.methods[method](
+        ws,
+        "rpc-1",
+        {"requestId": "intent-1"},
+        "session-1",
+        user_id="alice",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.forgotten == []
+    assert channel.rebounds == [("session-1", "http-out-1")]
 
 
 @pytest.mark.asyncio
