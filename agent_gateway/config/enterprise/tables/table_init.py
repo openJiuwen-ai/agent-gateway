@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from openjiuwen_runtime.foundation.db.handler import DBHandler
 from openjiuwen_runtime.foundation.db.table_def import TableDefinition
+from openjiuwen_runtime.foundation.log import get_logger
 
 from .a2a_migration import ensure_dispatch_user_column, ensure_user_state_identity
 from .a2a_models import (
@@ -46,6 +47,8 @@ from .template_models import (
     SKILL_PREBUILT_TEMPLATE_TABLE_DEF,
     EXPERT_PACKAGE_TEMPLATE_TABLE_DEF,
 )
+
+_log = get_logger(__name__)
 
 # Team control and quota tables are created by TeamStoreActor.start().
 # Initializing them here as well takes a metadata lock while a chat
@@ -132,6 +135,63 @@ async def _ensure_user_preference_extras_column(handler: DBHandler) -> None:
                 raise
 
 
+async def _drop_model_template_retired_flags(handler: DBHandler) -> None:
+    """删除已下线的 model_template 布尔列，避免旧库 NOT NULL 无默认值导致写入失败。
+
+    ``enable_streaming`` / ``enable_function_calling`` 已从 TableDefinition 移除，
+    但既有 MariaDB/MySQL 表仍可能保留这两列且无 DEFAULT。
+
+    DROP 失败只记 warning 并继续启动：新代码已不再读写这两列。
+    """
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import DBAPIError
+
+    retired = ("enable_streaming", "enable_function_calling")
+    table_name = MODEL_TEMPLATE_TABLE_DEF.table_name
+
+    def migrate(connection) -> None:
+        inspector = inspect(connection)
+        if not inspector.has_table(table_name):
+            return
+        columns = {col["name"] for col in inspector.get_columns(table_name)}
+        quote = connection.dialect.identifier_preparer.quote
+        dropped: list[str] = []
+        for column in retired:
+            if column not in columns:
+                continue
+            connection.execute(
+                text(
+                    f"ALTER TABLE {quote(table_name)} "
+                    f"DROP COLUMN {quote(column)}"
+                )
+            )
+            dropped.append(column)
+        if dropped:
+            _log.info("dropped model_template columns: %s", ", ".join(dropped))
+
+    try:
+        async with handler.get_engine().begin() as connection:
+            await connection.run_sync(migrate)
+    except DBAPIError as exc:
+        dialect = handler.get_engine().dialect.name
+        sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(
+            exc.orig, "pgcode", None
+        )
+        errno = exc.orig.args[0] if exc.orig.args else None
+        message = str(exc.orig).lower()
+        already_dropped = (
+            (dialect == "postgresql" and sqlstate == "42703")
+            or (dialect == "mysql" and errno == 1091)
+            or "no such column" in message
+            or "does not exist" in message
+        )
+        if not already_dropped:
+            _log.warning(
+                "drop model_template.enable_streaming/enable_function_calling failed: %s",
+                exc,
+            )
+
+
 async def init_all_tables(handler: DBHandler) -> None:
     """对已连接的 ``handler`` 依次 ``init_table``，幂等（表已存在则跳过创建逻辑）。"""
     for table_def in ALL_TABLE_DEFINITIONS:
@@ -141,3 +201,4 @@ async def init_all_tables(handler: DBHandler) -> None:
             await ensure_dispatch_user_column(handler.get_engine())
         await handler.init_table(table_def)
     await _ensure_user_preference_extras_column(handler)
+    await _drop_model_template_retired_flags(handler)
