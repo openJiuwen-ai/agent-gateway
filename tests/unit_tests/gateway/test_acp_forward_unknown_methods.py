@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from types import SimpleNamespace
@@ -100,6 +101,42 @@ async def test_acp_enterprise_write_is_rejected_on_passthrough(monkeypatch):
 
     monkeypatch.setattr(invoke_module, "is_enterprise", lambda: True)
     server = build_server()
+    ws = FakeWebSocket()
+    seen = []
+
+    async def on_message(msg):
+        seen.append(msg)
+
+    server.on_message(on_message)
+
+    await server.handle_raw_message_public(ws, _request_frame("agents.create"))
+
+    assert seen == []
+    assert len(ws.sent_frames) == 1
+    frame = ws.sent_frames[0]
+    assert frame["ok"] is False
+    assert frame["code"] == "FORBIDDEN"
+    assert frame["error"] == "企业版配置由管理面统一下发"
+
+
+@pytest.mark.asyncio
+async def test_acp_enterprise_write_is_rejected_for_registered_method(monkeypatch):
+    """已登记的转发方法同样要过企业版禁写，不能只在透传分支判定。
+
+    ``build_server`` 的 /acp 路由只登记了 chat/history 两个方法，覆盖不到生产
+    集合；这里换成 ``_FORWARD_REQ_METHODS``，确认 ``agents.create`` 这类
+    ``ROUTE_FORWARD`` 方法也被拦住。
+    """
+    monkeypatch.delenv("AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS", raising=False)
+    from agent_gateway.channel_manager.web import invoke as invoke_module
+    from agent_gateway.channel_manager.web.app_web_handlers import _FORWARD_REQ_METHODS
+
+    assert "agents.create" in _FORWARD_REQ_METHODS
+    monkeypatch.setattr(invoke_module, "is_enterprise", lambda: True)
+    server = build_server()
+    server.config.routes["/acp"] = dataclasses.replace(
+        server.config.routes["/acp"], forward_methods=_FORWARD_REQ_METHODS,
+    )
     ws = FakeWebSocket()
     seen = []
 

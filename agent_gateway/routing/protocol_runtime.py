@@ -1412,6 +1412,17 @@ class ProtocolRuntime(BaseWebChannel):
                 error=f"method not allowed: {method}", code="METHOD_NOT_ALLOWED",
             )
             return
+        # ACP 的所有方法都要过企业版禁写，已登记转发与未登记透传一视同仁；
+        # 判定复用 Web 入口，避免 ACP 绕过管理面。非 ACP 通道为 None。
+        if acp_decision is not None:
+            from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
+
+            if is_enterprise_write_forbidden(method):
+                await self.send_response(
+                    ws, req_id, ok=False,
+                    error="企业版配置由管理面统一下发", code="FORBIDDEN",
+                )
+                return
 
         explicit_session_id = bool(str(params.get("session_id") or "").strip())
         session_id = (str(params.get("session_id") or "").strip()) or req_id
@@ -1430,15 +1441,6 @@ class ProtocolRuntime(BaseWebChannel):
         forward_unknown = acp_decision == ROUTE_FORWARD_UNKNOWN
         if method in route.forward_methods or forward_unknown:
             if forward_unknown:
-                # 透传分支复用 Web 入口的企业版禁写判定，避免 ACP 绕过管理面。
-                from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
-
-                if is_enterprise_write_forbidden(method):
-                    await self.send_response(
-                        ws, req_id, ok=False,
-                        error="企业版配置由管理面统一下发", code="FORBIDDEN",
-                    )
-                    return
                 # 方法枚举归 AgentServer；网关不认识时保持原字符串。
                 req_method = parse_request_method(method) or method
             else:
