@@ -27,7 +27,7 @@ import logging
 import os
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, defaultdict, deque
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -200,6 +200,13 @@ def _queue_put(queue: asyncio.Queue[dict[str, Any]], frame: dict[str, Any]) -> b
             return False
 
 
+def _remember_fingerprint(window: OrderedDict[str, None], fingerprint: str, limit: int) -> None:
+    """Keep the most recently inserted distinct keys; duplicate hits do not refresh them."""
+    window[fingerprint] = None
+    if len(window) > limit:
+        window.popitem(last=False)
+
+
 class CronLiveBus:
     """Session-keyed queues with local + optional Redis replay/fanout."""
 
@@ -218,13 +225,9 @@ class CronLiveBus:
         self._queue_size = max(1, int(queue_size))
         self._origin = _gateway_origin_id()
         self._bridge_tasks: dict[str, asyncio.Task[None]] = {}
-        self._seen: dict[str, deque[str]] = {}
-        # Fingerprints already delivered live to one specific subscriber queue.
-        # Replay dedupes against this per-queue set: a frame that went out live
-        # while the Redis backlog was being read must not be queued a second time
-        # with the replay marker, while frames delivered to a previous (already
-        # unsubscribed) queue must still replay to the new one.
-        self._queue_seen: dict[asyncio.Queue[dict[str, Any]], deque[str]] = {}
+        self._seen: defaultdict[str, OrderedDict[str, None]] = defaultdict(OrderedDict)
+        # Only pending Redis replays need to remember live deliveries to their queue.
+        self._queue_seen: dict[asyncio.Queue[dict[str, Any]], OrderedDict[str, None]] = {}
         # Track fingerprints for a full replay window (plus headroom for in-flight).
         self._seen_size = max(256, self._replay_size * 2)
 
@@ -276,7 +279,10 @@ class CronLiveBus:
             # Cross-pod late join: Redis list may hold frames this process never saw.
             # Dedup fingerprints drop overlap with the local buffer above.
             if _redis_client() is not None:
-                self._schedule(self._redis_replay_into(sid, queue, replay_seen))
+                task = self._schedule(self._redis_replay_into(sid, queue, replay_seen))
+                if task is not None and not task.done():
+                    self._queue_seen[queue] = OrderedDict()
+                    task.add_done_callback(lambda _: self._queue_seen.pop(queue, None))
         self._subscribers.setdefault(sid, set()).add(queue)
         self._replay_deadline.pop(sid, None)
         self._schedule(self._ensure_redis_bridge(sid))
@@ -314,21 +320,21 @@ class CronLiveBus:
 
     def _fanout_local(self, sid: str, frame: dict[str, Any], *, mark_seen: bool) -> None:
         # Dedup once per frame, then deliver to every local subscriber.
-        if mark_seen and self._frame_already_seen(sid, frame):
+        fingerprint = _frame_fingerprint(frame)
+        if mark_seen and fingerprint in self._seen.get(sid, ()):
             return
         delivered = False
-        fingerprint = _frame_fingerprint(frame)
         for queue in list(self._subscribers.get(sid, ())):
             if not _queue_put(queue, frame):
                 continue
             delivered = True
-            bucket = self._queue_seen.setdefault(queue, deque(maxlen=self._seen_size))
-            if fingerprint not in bucket:
-                bucket.append(fingerprint)
+            window = self._queue_seen.get(queue)
+            if window is not None:
+                _remember_fingerprint(window, fingerprint, self._seen_size)
         # Only remember after a successful put — otherwise QueueFull + mark_seen
         # would permanently erase the frame (Redis same-origin echo is skipped too).
         if mark_seen and delivered:
-            self._remember_frame(sid, frame)
+            _remember_fingerprint(self._seen[sid], fingerprint, self._seen_size)
         elif mark_seen and not delivered and self._subscribers.get(sid):
             logger.warning(
                 "[CronLiveBus] drop frame: all subscriber queues full session_id=%s event=%s",
@@ -365,22 +371,10 @@ class CronLiveBus:
         replay_seen.add(fingerprint)
         # Still remember globally: a live Redis echo of this frame must not be
         # delivered a second time while the subscriber is attached.
-        self._remember_frame(sid, frame)
-
-    def _frame_already_seen(self, sid: str, frame: dict[str, Any]) -> bool:
-        fp = _frame_fingerprint(frame)
-        bucket = self._seen.get(sid)
-        return bool(bucket is not None and fp in bucket)
-
-    def _remember_frame(self, sid: str, frame: dict[str, Any]) -> None:
-        """Record fingerprint after a frame was successfully queued."""
-        fp = _frame_fingerprint(frame)
-        bucket = self._seen.setdefault(sid, deque(maxlen=self._seen_size))
-        if fp not in bucket:
-            bucket.append(fp)
+        _remember_fingerprint(self._seen[sid], fingerprint, self._seen_size)
 
     @staticmethod
-    def _schedule(coro: Any) -> None:
+    def _schedule(coro: Any) -> asyncio.Task[Any] | None:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -388,8 +382,8 @@ class CronLiveBus:
             close = getattr(coro, "close", None)
             if callable(close):
                 close()
-            return
-        loop.create_task(coro)
+            return None
+        return loop.create_task(coro)
 
     async def _redis_publish(self, sid: str, frame: dict[str, Any]) -> None:
         client = _redis_client()
