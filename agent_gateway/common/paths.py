@@ -89,6 +89,13 @@ def get_profile_data_dir() -> Path:
     return get_user_workspace_dir() / _PROFILE_DIR_NAME
 
 
+def get_application_plugins_dir() -> Path:
+    """获取运维部署的应用插件目录：部署期资产、运行期只读；企业版随
+    profile 共享卷跨 Pod 存活，各副本共享同一目录。
+    """
+    return get_profile_data_dir() / "application_plugins"
+
+
 def get_bundled_resources_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "resources"
 
@@ -102,7 +109,7 @@ def _resolve_paths() -> None:
 
     _root_dir = get_user_workspace_dir()
     _config_dir = get_user_workspace_dir() / "config"
-    _workspace_dir = get_profile_data_dir() / "agent" / "workspace"
+    _workspace_dir = get_agent_workspace_dir()
 
     _initialized = True
 
@@ -128,8 +135,9 @@ def get_root_dir() -> Path:
 def get_config_file() -> Path:
     """获取 Gateway 配置文件路径。
 
-    默认 ``<config_dir>/config.yaml``；拆分部署时可用
-    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config.yaml``。
+    默认 ``<config_dir>/config-gateway.yaml``（gateway 专属配置，与 AgentServer
+    ``config/config.yaml`` 分离）；拆分部署时可用
+    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config-gateway.yaml``。
 
     该环境变量必须在 Gateway 进程启动、config 模块导入前设置，运行中修改不受支持。
     """
@@ -138,8 +146,8 @@ def get_config_file() -> Path:
         path = Path(override).expanduser()
         if not path.is_absolute():
             path = get_config_dir() / path
-        return path / "config.yaml"
-    return get_config_dir() / "config.yaml"
+        return path / "config-gateway.yaml"
+    return get_config_dir() / "config-gateway.yaml"
 
 
 def get_env_file() -> Path:
@@ -512,7 +520,9 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         config_file.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=config_file.parent) as temp_dir:
             staged = Path(temp_dir) / config_file.name
-            shutil.copyfile(get_bundled_resources_dir() / config_file.name, staged)
+            # 模板资源名固定为 config.yaml（未随落盘名 config-gateway.yaml
+            # 改名）；staged 用落盘名，硬链接落位后即 config-gateway.yaml
+            shutil.copyfile(get_bundled_resources_dir() / "config.yaml", staged)
             try:
                 os.link(staged, config_file)
             except FileExistsError:
@@ -535,6 +545,7 @@ __all__ = [
     "get_config_file",
     "get_cron_jobs_path",
     "get_deepagent_user_md_path",
+    "get_user_workspace_dir",
     "get_env_file",
     "get_gateway_log_dir",
     "get_interactions_dir",

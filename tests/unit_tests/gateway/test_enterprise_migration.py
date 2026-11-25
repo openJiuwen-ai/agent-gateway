@@ -23,7 +23,8 @@ from e2a.models import E2AEnvelope
 def test_fresh_workspace_installs_own_template_without_overwriting_user_config():
     root = paths.get_user_workspace_dir()
     paths.prepare_runtime_workspace(cleanup_stale_descs=False)
-    config = root / "config" / "config.yaml"
+    # Gateway 模板落盘为 config-gateway.yaml（与 AgentServer config.yaml 共目录并存）
+    config = root / "config" / "config-gateway.yaml"
     assert config.is_file()
     assert paths.get_config_file() == config
     assert paths.get_workspace_dir() == root / "profile" / "agent" / "workspace"
