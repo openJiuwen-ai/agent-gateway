@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import agent_gateway.config_poll.scheduler as scheduler_mod
@@ -110,3 +112,47 @@ async def test_scheduler_stop_before_start_is_safe() -> None:
 
     assert sched._running is False
     assert sched._task is None
+
+
+@pytest.mark.asyncio
+async def test_restart_during_stop_waits_for_previous_poll(monkeypatch) -> None:
+    sched = ConfigPollScheduler(enabled=True)
+    entered = asyncio.Event()
+    cleaning_up = asyncio.Event()
+    release = asyncio.Event()
+    restarted = asyncio.Event()
+    polls = []
+
+    async def run_once():
+        polls.append(asyncio.current_task())
+        if len(polls) == 1:
+            entered.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cleaning_up.set()
+                await release.wait()
+        else:
+            restarted.set()
+            await asyncio.Future()
+
+    monkeypatch.setattr(sched._syncer, "run_once", run_once)
+    try:
+        async with asyncio.timeout(5):
+            await sched.start()
+            await entered.wait()
+            async with asyncio.TaskGroup() as group:
+                group.create_task(sched.stop())
+                await cleaning_up.wait()
+                # Start now, but let the old poll finish on the next loop turn.
+                asyncio.get_running_loop().call_soon(release.set)
+                await sched.start()
+                assert polls[0].done()
+            await restarted.wait()
+            await sched.stop()
+            assert polls[1].done()
+    finally:
+        release.set()
+        for task in polls:
+            task.cancel()
+        await asyncio.gather(*polls, return_exceptions=True)
