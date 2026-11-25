@@ -32,6 +32,9 @@ from agent_gateway.channel_manager.web.web_http_timeouts import (
     resolve_web_http_sse_timeout,
     resolve_web_http_unary_timeout,
 )
+from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
+    RestAssemblyError,
+)
 
 _HEADER_TO_PARAM = {
     "x-user-id": "user_id",
@@ -752,6 +755,22 @@ async def _unary(
             status = 201
         return JSONResponse(
             body, status_code=status, headers=_response_headers(req_id, method),
+        )
+    except RestAssemblyError as exc:
+        # 缺路径占位符等入参错误：勿落成 500，与 _envelope_from_res(BAD_REQUEST) 一致。
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {
+                    "code": "BAD_REQUEST",
+                    "message": str(exc),
+                    "details": {},
+                },
+                "metadata": _web_http_metadata(method),
+            },
+            status_code=400,
+            headers=_response_headers(req_id, method),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)
