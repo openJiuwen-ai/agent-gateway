@@ -1,14 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Reuse Gateway business routing with ADX Environment lifecycle and forwarding."""
+"""ADX-specific capabilities composed with the shared managed router."""
+
 from __future__ import annotations
 
-import asyncio
-import logging
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import aclosing
 
-from e2a.agent_models import AgentResponse
+from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
+from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
@@ -16,27 +17,16 @@ from agent_gateway.extensions.adx.control_client import AdxControlClient
 from agent_gateway.extensions.adx.control_adapter import AdxControl
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import BUILTIN_AGENT_TYPE, AgentManager
-from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
-    AgentOSAuthenticator,
-)
+from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
-from agent_gateway.extensions.agentos.agentos_router.router_client import (
-    AgentOSRouterClient,
-    is_ws_connect_retryable,
-    ws_connect_ready_timeout_seconds,
-    ws_connect_retry_interval_seconds,
-)
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
-from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
+from agent_gateway.southbound.orchestration.agent_manager import AgentManager
+from agent_gateway.southbound.orchestration.managed_router import ManagedRouter
 
 
-logger = logging.getLogger(__name__)
-
-
-class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
-    """Keep Registry, launch-spec assembly and user routing in the business Gateway."""
+class AdxRouterClient(AdxFileMixin, AgentServerClient):
+    """ADX platform entry point, with lifecycle and request coordination delegated."""
 
     def __init__(self, config: AdxRouterConfig, *, ws_client_factory: Callable | None = None,
                  control_client: AdxControlClient | None = None,
@@ -45,8 +35,9 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         self._config = config
         self._control = control_client or AdxControlClient(config)
         settings = config.router
-        super().__init__(
-            self._control, registry_client or RegistryClient(settings.registry),
+        self._router = ManagedRouter(
+            AdxControl(self._control),
+            registry_client or RegistryClient(settings.registry),
             AgentManager(
                 creating_timeout_seconds=settings.creating_timeout_seconds, key_fields=settings.agent_key_fields,
             ),
@@ -61,29 +52,27 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             probe_settings=settings.probes, auth_client=auth_client,
             ssh_relay=AdxSshRelay(config), ssh_channel_endpoint=settings.ssh_channel,
             ws_client_factory=ws_client_factory,
+            strict_ws_headers=True,
         )
-        self._closed = True
-        self._managed_control = AdxControl(self._control)
+        self._router._closed = True
         self.set_or_update_server_config(config={})
 
-    async def _create_sandbox_for_agent(self, agent_info, *, web_port=None, **kwargs):
-        return await self._control.create_sandbox(
-            builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, web_port=web_port, **kwargs,
-        )
+    def __getattr__(self, name):
+        """Retain optional managed-client capabilities for existing callers."""
+        return getattr(object.__getattribute__(self, "_router"), name)
 
-    async def _wait_for_replacement(self, sandbox, generation: str, deadline: float) -> None:
-        # create_sandbox returns this placement only after our POST or a generation check.
-        await self._control.wait_until_running(
-            sandbox.sandbox_id, expected_generation=generation, deadline=deadline,
-            confirmed_runtime_id=sandbox.metadata.get("runtime_id"),
-        )
+    async def connect(self, uri: str) -> None:
+        await self._router.connect(uri)
+
+    async def disconnect(self) -> None:
+        await self._router.disconnect()
 
     async def shutdown(self) -> None:
-        await super().shutdown()
+        await self._router.shutdown()
         await self._control.close()
 
     def set_channel_manager(self, channel_manager) -> None:
-        super().set_channel_manager(channel_manager)
+        self._router.set_channel_manager(channel_manager, authenticate_http=self.authenticate_http)
         channel = channel_manager.get_channel(ChannelType.WEB)
         if channel is not None:
             channel.container_file_client = self
@@ -92,66 +81,25 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                                 channel: str = 'file-api', allow_query_token: bool = True) -> AuthResult:
         if channel == 'file-api':
             self._begin_file_transfer()
-        return await super().authenticate_http(
+        return await self._router.authenticate_http(
             path=path, headers=headers, remote=remote, channel=channel,
             allow_query_token=allow_query_token,
         )
 
     def set_or_update_server_config(self, *, config: dict, env: dict | None = None) -> None:
-        super().set_or_update_server_config(config=config, env=env)
-
-    def _tool_sandbox_env(self) -> dict[str, str]:
-        return super()._tool_sandbox_env()
-
-    def _agent_url(self, instance: str, port: int, protocol: str) -> str:
-        return (self._managed_control.ws_url(instance, port) if protocol == 'ws'
-                else self._managed_control.http_url(instance, port))
-
-    def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'ws')
-
-    def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'http')
-
-    def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_ws_url(instance_id, agent_port)
-
-    async def _connect_ws_until_ready(self, *, instance_id: str, agent_port: int,
-                                      user_id: str = '', session_id: str = '', agent_type: str = ''):
-        uri = self._agent_ws_url(instance_id, agent_port)
-        deadline = asyncio.get_running_loop().time() + ws_connect_ready_timeout_seconds()
-        headers = apply_trace_header({'Authorization': 'Bearer ' + self._config.token})
-        while True:
-            client = self._ws_client_factory()
-            if self._push_handler is not None:
-                client.set_server_push_handler(self._push_handler)
-            try:
-                await client.connect(uri, extra_headers=headers)
-                self._register_ws_disconnect_handler(client, user_id=user_id, session_id=session_id,
-                                                     agent_type=agent_type, instance_id=instance_id)
-                return client
-            except asyncio.CancelledError:
-                try:
-                    await asyncio.shield(client.disconnect())
-                except BaseException:
-                    logger.warning('ADX WebSocket cancellation cleanup failed', exc_info=True)
-                raise
-            except Exception as exc:
-                try:
-                    await client.disconnect()
-                except Exception:
-                    logger.warning('ADX WebSocket cleanup failed', exc_info=True)
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0 or not is_ws_connect_retryable(exc):
-                    raise
-                await asyncio.sleep(min(ws_connect_retry_interval_seconds(), remaining))
+        self._router.set_or_update_server_config(config=config, env=env)
 
     async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
         if envelope.channel == HEALTH_CHECK_CHANNEL_ID:
-            if self._closed:
+            if self._router._closed:
                 raise AdxRoutingError('ADX router is closed', code='ADX_ROUTER_CLOSED')
             return AgentResponse(
                 envelope.request_id, envelope.channel,
                 payload={"health_check": f"{HEALTH_CHECK_OK}: mocked by adx_router"},
             )
-        return await super().send_request(envelope, timeout=timeout)
+        return await self._router.send_request(envelope, timeout=timeout)
+
+    async def send_request_stream(self, envelope: E2AEnvelope) -> AsyncIterator[AgentResponseChunk]:
+        async with aclosing(self._router.send_request_stream(envelope)) as stream:
+            async for chunk in stream:
+                yield chunk

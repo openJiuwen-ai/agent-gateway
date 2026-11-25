@@ -45,6 +45,30 @@ def _business_authenticator():
     return SimpleNamespace(authenticate=AsyncMock(side_effect=authenticate))
 
 
+async def test_composed_adx_client_mounts_file_routes(monkeypatch):
+    from fastapi import FastAPI
+    from agent_gateway.channel_manager.web.container_file_http import attach_container_file_routes
+    from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+    from agent_gateway.southbound.orchestration.managed_router import ManagedRouter
+
+    router, control = _files(monkeypatch, auth_client=_business_authenticator())
+    assert not isinstance(router, AgentOSRouterClient)
+    assert isinstance(router._router, ManagedRouter)
+    app = FastAPI()
+    attach_container_file_routes(app, _file_channel(router))
+    await router.connect('')
+    try:
+        control.invoke.return_value = {'entries': []}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://gateway',
+                                     headers={'Authorization': 'Bearer business-test-token'}) as client:
+            response = await client.get('/file-api/list-files', params={'dir': '/home/agentos', 'user_id': 'alice'})
+            assert response.status_code == 200
+        runtime = await router._agent_manager.get_agent('alice', 'jiuwenswarm')
+        assert runtime.task_count == 0
+    finally:
+        await router.shutdown()
+
+
 @pytest.mark.parametrize('connected', [True, False])
 async def test_gateway_health_check_is_mocked_without_activation(monkeypatch, connected):
     from agent_gateway.health_check import (

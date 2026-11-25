@@ -70,7 +70,8 @@ async def test_delete_records_swallowed_failure_and_preserves_parent(monkeypatch
     registry = SimpleNamespace(unregister_agent=AsyncMock())
     client = AgentOSRouterClient(frontend, registry, manager)
     socket = SimpleNamespace(disconnect=AsyncMock())
-    client._ws_clients = {"sandbox": socket}
+    client._ws_pool = router_client.ManagedWebSocketPool()
+    client._ws_pool.clients["sandbox"] = socket
     try:
         with telemetry.bind_request_trace(parent):
             assert await client.delete_agent("user", "test") is True
@@ -181,8 +182,7 @@ async def test_independent_cleanup_jobs_do_not_inherit_request_or_cleanup_contex
         decrement_user_connections=lambda _: 0,
         get_user_connection_count=lambda _: 0,
     )
-    client._ws_clients = {}
-    client._ws_clients_lock = asyncio.Lock()
+    client._ws_pool = router_client.ManagedWebSocketPool()
     seen = []
 
     async def observe(*args):
@@ -381,7 +381,7 @@ async def cleanup_setup(monkeypatch):
             entered.set()
             await release.wait()
 
-    router._ws_clients['instance-1'] = Socket()
+    router._ws_pool.clients['instance-1'] = Socket()
     yield SimpleNamespace(router=router, manager=manager, frontend=frontend, registry=registry,
                           events=events, exporter=exporter, response=response, seed=seed,
                           entered=entered, release=release, registry_response=registry_response)

@@ -4,10 +4,30 @@
 
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from agent_gateway.southbound.control.managed import ManagedSandboxControl
+from agent_gateway.southbound.control.managed import ManagedSandboxControl, SandboxCreateRequest, SandboxInfo
+from agent_gateway.extensions.adx.control_client import AdxControlClient
+from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
 
 
 class AdxControl(ManagedSandboxControl):
+    backend: AdxControlClient
+
+    async def create(self, request: SandboxCreateRequest) -> SandboxInfo:
+        return await self.backend.create_sandbox(
+            namespace=request.namespace, name=request.name, workspace=request.workspace,
+            runtime_spec=request.runtime_spec, env_vars=request.env_vars,
+            builtin=request.builtin, web_port=request.web_port,
+        )
+
+    async def verify_generation(self, sandbox: SandboxInfo, *, generation: str, deadline: float) -> None:
+        await self.backend.wait_until_running(
+            sandbox.sandbox_id, expected_generation=generation, deadline=deadline,
+            confirmed_runtime_id=sandbox.metadata.get("runtime_id"),
+        )
+
+    def ws_headers(self) -> dict[str, str]:
+        return apply_trace_header({'Authorization': 'Bearer ' + self.backend.config.token})
+
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
         target = 'urn:adx:instance:' + quote(instance_id, safe='')
