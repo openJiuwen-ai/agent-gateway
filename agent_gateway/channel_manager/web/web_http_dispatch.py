@@ -14,6 +14,7 @@ from e2a.message import Message
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
 from agent_gateway.enterprise import is_enterprise
+from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from agent_gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
@@ -55,14 +56,6 @@ def _cookie_value(headers: dict[str, str], name: str) -> str:
     return ""
 
 
-from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
-
-
-def _trust_client_tenant_headers(client_host: str | None) -> bool:
-    """HTTP compatibility wrapper; the policy is shared with the WS entry."""
-    return trust_client_identity_headers(client_host)
-
-
 def _build_http_ext(
     hdrs: dict[str, str],
     query: dict[str, list[str]],
@@ -87,7 +80,7 @@ def resolve_http_routing_identity(headers: Any, client_host: str | None) -> dict
     from agent_gateway.common.request_identity import normalize_routing_identity
 
     hdrs = _header_map(headers)
-    if not _trust_client_tenant_headers(client_host):
+    if not trust_client_identity_headers(client_host):
         return {}
     return normalize_routing_identity({
         "user_id": _get_header(hdrs, "X-User-Id"),
@@ -128,7 +121,7 @@ async def dispatch_http_request(
         header_session_id=_get_header(hdrs, "X-Session-Id"),
         bind_param=bind_session_param,
     )
-    trust_tenant_headers = _trust_client_tenant_headers(client_host)
+    trust_tenant_headers = trust_client_identity_headers(client_host)
     user_id = _get_header(hdrs, "X-User-Id") if trust_tenant_headers else None
     channel_id_hdr = _get_header(hdrs, "X-Channel-Id") or "web"
     app_id = _get_header(hdrs, "X-App-Id") or "default"

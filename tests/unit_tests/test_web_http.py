@@ -59,14 +59,10 @@ class _FakePeer:
 def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     # Stub dispatch module before loading web_http_routes.
     # Use monkeypatch.setitem so xdist workers restore the real module after
-    # this fixture (otherwise later file-api tests ImportError on
-    # ``_trust_client_tenant_headers`` from a leftover bare ModuleType stub).
+    # this fixture (otherwise later file-api tests import the bare stub).
     dispatch_mod = ModuleType("agent_gateway.channel_manager.web.web_http_dispatch")
     dispatch_mock = AsyncMock()
     dispatch_mod.dispatch_http_request = dispatch_mock  # type: ignore[attr-defined]
-    dispatch_mod._trust_client_tenant_headers = (  # type: ignore[attr-defined]
-        lambda client_host=None: True
-    )
     monkeypatch.setitem(
         sys.modules,
         "agent_gateway.channel_manager.web.web_http_dispatch",
