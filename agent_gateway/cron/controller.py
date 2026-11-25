@@ -90,6 +90,19 @@ def _required_enterprise_tenant_id(raw: Any) -> str:
     raise ValueError("enterprise cron requires group_id, bot_id and user_id")
 
 
+def _require_enterprise_cron_identity(
+    group_id: Any,
+    bot_id: Any,
+    user_id: Any,
+) -> tuple[str, str, str]:
+    """企业版查改删列开关等路径：三元身份缺一即 ``ValueError``（对外 400）。"""
+    return (
+        _required_enterprise_tenant_id(group_id),
+        _required_enterprise_tenant_id(bot_id),
+        _required_enterprise_tenant_id(user_id),
+    )
+
+
 def _serialize_mutation(method):
     """Keep project fencing/cleanup and cron creation in one admission order."""
 
@@ -421,15 +434,13 @@ class CronController:
     def _owns_job(job: Any, *, user_id: str, group_id: str, bot_id: str) -> bool:
         """改、删、预览前核对三个身份。
 
-        个人版没填保持空串再比。企业版缺一个就当不是这条任务，不补 ``default``。
+        个人版没填保持空串再比。企业版缺一个直接 ``ValueError``（不补 ``default``、
+        也不伪装成「找不到」）；三元齐全但对不上才返回 False。
         """
         if is_enterprise():
-            try:
-                wanted_group = _required_enterprise_tenant_id(group_id)
-                wanted_bot = _required_enterprise_tenant_id(bot_id)
-                wanted_user = _required_enterprise_tenant_id(user_id)
-            except ValueError:
-                return False
+            wanted_group, wanted_bot, wanted_user = _require_enterprise_cron_identity(
+                group_id, bot_id, user_id
+            )
             if str(getattr(job, "group_id", "") or "").strip() != wanted_group:
                 return False
             if str(getattr(job, "bot_id", "") or "").strip() != wanted_bot:
@@ -452,12 +463,16 @@ class CronController:
     ) -> list[dict[str, Any]]:
         """按用户、群、机器人筛选。项目编号可以再收窄。
 
-        身份空串就是空串，不收成 ``default``。默认 ``user_id=""``（严格匹配空用户）。
+        个人版：身份空串就是空串，不收成 ``default``。默认 ``user_id=""``（严格匹配空用户）。
         显式 ``user_id=None`` 才跳过用户维。本机个人版 Web 可额外查询服务端选定的个人 IM 应用任务。
+        企业版：``group_id`` / ``bot_id`` / ``user_id`` 缺一即 ``ValueError``（对外 400），
+        避免漏传身份被当成「空列表成功」。
         ``project_id`` 不传表示这个人的全部项目；传空字符串才只要默认项目。
         筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
         同一个项目、同一个用户只问一次。
         """
+        if is_enterprise():
+            _require_enterprise_cron_identity(group_id, bot_id, user_id)
         jobs = []
         for job in await self._store.list_jobs():
             if self._matches_list_filter(
@@ -558,10 +573,13 @@ class CronController:
     ) -> dict[str, Any] | None:
         """按编号取出一条任务，再用和列表相同的条件核对。
 
-        身份空串就是空串，不收成 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
+        个人版：身份空串就是空串，不收成 ``default``。项目编号不传（这个函数的默认值）或传空字符串，
         都表示只要默认项目。传 ``None`` 表示不按项目筛，网页上的立即执行、编辑、删除走这条。
-        对不上就当没有这条任务。这里不查项目现在能不能跑。
+        企业版：三元身份缺一即 ``ValueError``（对外 400）；齐全但对不上就当没有这条任务。
+        这里不查项目现在能不能跑。
         """
+        if is_enterprise():
+            _require_enterprise_cron_identity(group_id, bot_id, user_id)
         job = await self._store.get_job(job_id)
         if job is None:
             return None
@@ -1092,10 +1110,13 @@ class CronController:
     ) -> str:
         """立刻跑一次。个人版和企业版都先核对用户、群、机器人。
 
-        没传的按空串（严格匹配空身份，不收成 ``default``）。
+        个人版：没传的按空串（严格匹配空身份，不收成 ``default``）。
+        企业版：三元身份缺一即 ``ValueError``（对外 400）。
         任务不存在，或身份对不上，都当作找不到。
         通过之后才交给调度器。这里不查项目编号。
         """
+        if is_enterprise():
+            _require_enterprise_cron_identity(group_id, bot_id, user_id)
         job = await self._store.get_job(job_id)
         if job is None or not self._matches_tenant(
             job, user_id=user_id, group_id=group_id, bot_id=bot_id
