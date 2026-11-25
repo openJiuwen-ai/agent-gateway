@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -89,6 +91,50 @@ def test_session_map_falls_back_to_json_without_repository(
 
     sm2 = SessionMap(scope=SessionMapScope.PER_CHAT_BOT)
     assert sm2.find_session_id("feishu", "chat-2", "bot-2", "user-2") == "sess-file-1"
+
+
+@pytest.mark.parametrize("failure", ["serialize", "replace"])
+def test_failed_checkpoint_save_preserves_previous_mapping(tmp_path, monkeypatch, failure):
+    monkeypatch.setattr("agent_gateway.routing.session_map.get_checkpoint_dir", lambda: tmp_path)
+    sm = SessionMap(scope=SessionMapScope.PER_CHAT_BOT)
+    identity = ("feishu", "chat", "bot", "user")
+    sm.set_session_id(*identity, "first")
+    path = tmp_path / "session_map.json"
+    previous = path.read_bytes()
+
+    def fail_dump(mapping, stream, **kwargs):
+        stream.write("{")
+        raise OSError("interrupted write")
+
+    def fail_replace(source, target):
+        raise OSError("replacement failed")
+
+    if failure == "serialize":
+        monkeypatch.setattr("agent_gateway.routing.session_map.json.dump", fail_dump)
+    else:
+        monkeypatch.setattr(Path, "replace", fail_replace)
+    sm.set_session_id(*identity, "second")
+
+    assert sm.find_session_id(*identity) == "second"
+    assert path.read_bytes() == previous
+    assert list(tmp_path.iterdir()) == [path]
+    assert SessionMap(scope=SessionMapScope.PER_CHAT_BOT).find_session_id(*identity) == "first"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX symlinks and permissions")
+def test_checkpoint_update_preserves_link_and_target_permissions(tmp_path, monkeypatch):
+    monkeypatch.setattr("agent_gateway.routing.session_map.get_checkpoint_dir", lambda: tmp_path)
+    target = tmp_path / "persisted.json"
+    target.write_text("{}", encoding="utf-8")
+    target.chmod(0o640)
+    path = tmp_path / "session_map.json"
+    path.symlink_to(target)
+
+    identity = ("feishu", "chat", "bot", "user")
+    SessionMap(scope=SessionMapScope.PER_CHAT_BOT).set_session_id(*identity, "session")
+    assert path.is_symlink()
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+    assert SessionMap(scope=SessionMapScope.PER_CHAT_BOT).find_session_id(*identity) == "session"
 
 
 def test_session_map_repository_roundtrip() -> None:
