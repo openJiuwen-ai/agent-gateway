@@ -99,6 +99,7 @@ async def assemble_services(
     log_stage: Callable[[str], None],
     startup_t0: float,
     connect_with_retry: Callable[..., Awaitable[None]] = _connect_with_retry,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> GatewayServices:
     from openjiuwen.core.runner import Runner
     from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -121,6 +122,7 @@ async def assemble_services(
         logger=logger,
     )
     from agent_gateway.agent_client_mode import (
+        _validate_agent_client_registration,
         read_agent_client_mode,
         resolve_agent_server_client,
         validate_agent_client_configuration,
@@ -161,9 +163,10 @@ async def assemble_services(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或其他扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
     full_cfg = get_config()
+    _validate_agent_client_registration(full_cfg, agent_server_ext, required_type=required_client_type)
     configure_gateway_telemetry(
         full_cfg or {},
         user_id_formatter=lambda value: mask_sensitive(f"user_id={value}").removeprefix("user_id="),
