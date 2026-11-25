@@ -7,8 +7,8 @@ import asyncio
 import json
 import re
 import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -116,11 +116,13 @@ class FilePersistentBackend:
         registry: StoreRegistry,
         file_lock_timeout: float = _FILE_LOCK_TIMEOUT_SEC,
         on_write: Callable[[Path], None] | None = None,
+        extra_write_locks: Mapping[Path, Callable[[float], AbstractContextManager]] | None = None,
     ) -> None:
         """``FileLayout.path`` 须为绝对路径或绝对模板；本 backend 只替换 ``{field}``。"""
         self._registry = registry
         self._file_lock_timeout = float(file_lock_timeout)
         self._on_write = on_write
+        self._extra_write_locks = dict(extra_write_locks or {})
         self._lock = asyncio.Lock()
 
     async def ensure_ready(self) -> None:
@@ -217,7 +219,12 @@ class FilePersistentBackend:
     def _with_file_lock(self, path: Path, fn: Any) -> Any:
         """持有文件锁后执行同步写操作。"""
         path.parent.mkdir(parents=True, exist_ok=True)
-        with portalocker.Lock(str(self._lock_path(path)), timeout=self._file_lock_timeout):
+        # 共享文件先进入其拥有者的写事务，再取后端原有的旁路锁。
+        lock = self._extra_write_locks.get(path)
+        with (
+            lock(self._file_lock_timeout) if lock is not None else nullcontext(),
+            portalocker.Lock(str(self._lock_path(path)), timeout=self._file_lock_timeout),
+        ):
             return fn()
 
     @staticmethod
