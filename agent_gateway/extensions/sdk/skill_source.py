@@ -13,14 +13,15 @@ import hashlib
 import io
 import zipfile
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from agent_gateway.extensions.sdk._response_body import read_response_body_capped
 from agent_gateway.extensions.sdk.base import BaseExtension
-
 
 SKILL_CAPABILITIES = frozenset(
     {"search", "get_artifact", "check_updates", "get_detail"}
@@ -273,41 +274,6 @@ class SkillDownloadError(RuntimeError):
         self.code = code
 
 
-async def _read_response_body_capped(resp: httpx.Response, max_bytes: int) -> bytes:
-    """Stream ``resp`` into memory while enforcing ``max_bytes`` as a peak cap.
-
-    Uses ``Content-Length`` for an early reject when present and parseable; always
-    accumulates via ``aiter_bytes`` so a missing or forged header cannot bypass
-    the limit. Raises ``SkillDownloadError(content_too_large)`` as soon as
-    the cap would be exceeded.
-    """
-    content_length = resp.headers.get("content-length")
-    if content_length is not None:
-        try:
-            declared = int(content_length)
-        except ValueError:
-            declared = -1
-        if declared > max_bytes:
-            raise SkillDownloadError(
-                "content_too_large",
-                "下载内容超过来源允许的最大大小",
-            )
-
-    chunks: list[bytes] = []
-    total = 0
-    async for chunk in resp.aiter_bytes():
-        if not chunk:
-            continue
-        total += len(chunk)
-        if total > max_bytes:
-            raise SkillDownloadError(
-                "content_too_large",
-                "下载内容超过来源允许的最大大小",
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
-
-
 @dataclass(frozen=True)
 class SkillVerificationResult:
     """Outcome of a successful skill artifact verification.
@@ -481,15 +447,16 @@ class SkillSourceProvider(ABC):
         try:
             async with httpx.AsyncClient(
                 timeout=timeout, follow_redirects=False, verify=self.verify_ssl
-            ) as client:
-                async with client.stream("GET", download_url) as resp:
-                    if resp.is_redirect:
-                        raise SkillDownloadError(
-                            "redirect_forbidden",
-                            "skill 下载不支持自动跳转，请提供最终制品地址",
-                        )
-                    resp.raise_for_status()
-                    body = await _read_response_body_capped(resp, policy.max_bytes)
+            ) as client, client.stream("GET", download_url) as resp:
+                if resp.is_redirect:
+                    raise SkillDownloadError(
+                        "redirect_forbidden",
+                        "skill 下载不支持自动跳转，请提供最终制品地址",
+                    )
+                resp.raise_for_status()
+                body = await read_response_body_capped(
+                    resp, policy.max_bytes, SkillDownloadError
+                )
         except httpx.HTTPError as exc:
             raise SkillDownloadError(
                 "network_error",
