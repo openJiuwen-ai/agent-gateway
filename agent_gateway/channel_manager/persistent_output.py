@@ -6,7 +6,7 @@ import re
 import stat
 from pathlib import Path
 
-from agent_gateway.common.paths import get_profile_data_dir
+from agent_gateway.common.paths import get_user_workspace_dir
 
 
 def resolve_output_file(key: object, file_ref: object, size: object) -> Path | None:
@@ -20,7 +20,7 @@ def resolve_output_file(key: object, file_ref: object, size: object) -> Path | N
         or not isinstance(file_ref, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", file_ref)
     ):
         return None
-    path = get_profile_data_dir()
+    path = get_user_workspace_dir()
     try:
         for part in ("jiuwenmate", "workspaces", *parts[:-1]):
             path = path / part

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_gateway.common.match_expr import coerce_match_expr
-from agent_gateway.common.paths import get_profile_data_dir
+from agent_gateway.common.paths import get_infra_data_dir
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
 
 logger = logging.getLogger(__name__)
@@ -317,7 +317,7 @@ class TeamQuotaPolicyStore:
 
     @staticmethod
     def _default_sqlite_path() -> Path:
-        return get_profile_data_dir() / "agent" / "teams" / "team_control.db"
+        return get_infra_data_dir() / "agent" / "teams" / "team_control.db"
 
     @staticmethod
     def _quota_config() -> dict[str, Any]:

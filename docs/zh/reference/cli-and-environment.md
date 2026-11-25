@@ -67,7 +67,7 @@
 
 ## 配置文件
 
-默认路径：`$JIUWENSWARM_DATA_DIR/config/config.yaml`；未设置 `JIUWENSWARM_DATA_DIR` 时为 `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。
+默认路径：`$JIUWENSWARM_DATA_DIR/infra/config/config.yaml`；未设置 `JIUWENSWARM_DATA_DIR` 时为 `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`。
 
 Gateway 可用 `JIUWENSWARM_GATEWAY_CONFIG_DIR` 指定独立配置目录；文件名固定为 `config.yaml`，首次缺失时从内置 `config.yaml` 初始化，已存在文件不会被覆盖。`logging.yaml` 仍按配置目录读取，不跟随该变量。
 
@@ -86,21 +86,18 @@ health_check:
 
 | 路径 | 内容 |
 | --- | --- |
-| `<root>/config/config.yaml` | Gateway / 频道配置 |
-| `<root>/profile/agent/sessions/` | 会话数据（由 AgentServer 写入） |
-| `<root>/logs/agent/` | Gateway、AgentServer 与汇总日志 |
-| `<root>/.gateway.lock` | 工作区单例锁 |
-| `<root>/profile/agent/home/cron_jobs.json` | 定时任务存储（Gateway 维护） |
+| `<root>/infra/config/config.yaml` | Gateway / 频道配置 |
+| `<root>/domain/agent/sessions/` | 会话数据（由 AgentServer 写入） |
+| `<root>/infra/logs/agent/` | Gateway、AgentServer 与汇总日志 |
+| `<root>/infra/.gateway.lock` | 工作区单例锁 |
+| `<root>/domain/agent/home/cron_jobs.json` | 定时任务存储（Gateway 维护） |
 
 其中 `<root>` = `JIUWENSWARM_DATA_DIR`（若设置），否则为 `JIUWENSWARM_HOME/.jiuwenswarm`。
 
-企业版只将 `<root>/profile/` 挂到共享 PVC/NFS；`config/`、`logs/`、`auth/`、`runtime/`
-等系统路径仍位于平铺数据根，并由各 Pod 私有持有，不挂载整个数据根。个人版使用相同
-路径。运行日志即使包含业务事件也属于系统运行态；例如 `context_usage.jsonl` 写入
-`logs/agent/`，企业版通过 stdout 采集留存。
-
-从早期平铺版本升级时，已知的持久业务目录会迁入 `profile/`；在平台支持时，旧路径会
-保留为软链接。系统目录留在原位。未发布的 `domain/infra` 中间布局不属于支持的升级路径。
+企业版只将 `<root>/domain/` 挂到共享 PVC/NFS，`<root>/infra/` 为各 Pod 的私有目录，
+不挂载整个数据根。个人版使用相同路径，两区均为普通子目录。运行日志即使包含业务事件
+也属于系统区；例如 `context_usage.jsonl` 写入 `infra/logs/agent/`，企业版通过 stdout
+采集留存。
 
 ## 退出行为
 
