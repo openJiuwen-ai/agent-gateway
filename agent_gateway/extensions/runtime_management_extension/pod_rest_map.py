@@ -129,6 +129,12 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
     ("a4p.config.get", "GET", "/a4p/config"),
     ("a4p.config.update", "PUT", "/a4p/config"),
+    # A4P User Authorizer RPCs: AgentServer already exposes these paths; the
+    # protocol package has not published them in RUNTIME_HTTP_ROUTES yet.
+    ("a4p.authorization.pending", "GET", "/a4p/authorization/pending"),
+    ("a4p.authorization.complete", "POST", "/a4p/authorization/actions/complete"),
+    ("a4p.authorization.reject", "POST", "/a4p/authorization/actions/reject"),
+    ("a4p.authorization.reprepare", "POST", "/a4p/authorization/actions/reprepare"),
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
