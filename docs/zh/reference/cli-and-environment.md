@@ -39,6 +39,7 @@
 | `GATEWAY_HOST` | `127.0.0.1` | TUI 路由绑定地址 |
 | `GATEWAY_PORT` | `19001` | TUI 路由端口；固定默认值，同机并行多实例时需显式分配 |
 | `GATEWAY_URL` | 未设置 | 部分扩展使用的 Gateway 对外地址 |
+| `AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS` | 开启 | Web（`/ws`）与 ACP（`/acp`）入口是否把网关未登记的方法按原方法名透传给 AgentServer。方法集合归 AgentServer，网关只拦截保留前缀与企业版禁写方法。设为 `0` / `false` / `no` / `off` 恢复“仅静态白名单转发”的严格模式，用于灰度与回滚；`/tui` 不受此开关影响 |
 | `A2A_SERVER_ENABLED` | 未启用 | 设为 `1` / `true` 时启用 A2A 入口 |
 | `A2A_SERVER_HOST` | `127.0.0.1` | A2A 监听地址 |
 | `A2A_SERVER_PORT` | `19100` | A2A 监听端口 |
