@@ -5933,6 +5933,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # config.get/set/save_all：本仓不携带本地 handler——企业版在
     # invoke.is_enterprise_write_forbidden 统一拦截（配置由管理面下发）；
     # 个人版不带本地 handler，经 E2A 代理到目标 AgentServer（ConfigAdapter）执行。
+    from agent_gateway.common.protocol_methods import ReqMethod as _MemoryReq
+
+    # Always open through the target AgentServer; Gateway owns no memory Runtime.
+    _register_config_proxy("memory.portal.open", _MemoryReq.MEMORY_PORTAL_OPEN)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
