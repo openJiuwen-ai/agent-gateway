@@ -331,7 +331,7 @@ class RestAssemblyError(ValueError):
     """REST 路径无法从信封拼出（缺 method / 缺路径占位符）。"""
 
 
-class HttpMethodNotHandled(RestAssemblyError):
+class HttpMethodNotHandled(Exception):
     """这个方法没有专用 HTTP 网址，Gateway 不再改走 /rpc。"""
 
 
@@ -492,6 +492,22 @@ def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
     return pod_http_routes().get(method)
 
 
+_PATH_SEGMENT_NON_SCALAR = (list, tuple, dict, set)
+
+
+def _normalize_path_segment(key: str, value: Any) -> str:
+    """路径占位符只接受标量；拒绝 list/dict 等，避免 ``[]`` 被编成 ``%5B%5D``（#169）。"""
+    if isinstance(value, _PATH_SEGMENT_NON_SCALAR) or isinstance(value, bool):
+        raise RestAssemblyError(
+            f"REST 路径占位符 '{key}' 类型非法: {type(value).__name__}"
+        )
+    raw = value if isinstance(value, str) else str(value)
+    if raw in (".", "..") or "/" in raw or "\\" in raw:
+        # 与 AgentServer ``_safe_path_name`` 对齐；含分隔符会破坏单段路径。
+        raise RestAssemblyError(f"REST 路径占位符 '{key}' 含非法路径片段: {raw!r}")
+    return raw
+
+
 def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]:
     used: set[str] = set()
     missing: list[str] = []
@@ -501,8 +517,9 @@ def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]
         if key not in values or values[key] is None or values[key] == "":
             missing.append(key)
             return match.group(0)
+        raw = _normalize_path_segment(key, values[key])
         used.add(key)
-        return quote(str(values[key]), safe="")
+        return quote(raw, safe="")
 
     filled = _PATH_PLACEHOLDER.sub(_replace, template)
     if missing:
