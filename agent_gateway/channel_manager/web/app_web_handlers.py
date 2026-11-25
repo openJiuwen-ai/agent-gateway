@@ -61,6 +61,7 @@ from agent_gateway.common.config import (
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import models_handlers
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -710,17 +711,6 @@ _FORWARD_REQ_METHODS = frozenset({
     "proactive.feedback",
 })
 
-# 企业团队控制面方法。个人版进程不把它们放进转发名单。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     *_JIUWENMATE_FORWARD_METHODS,
     'group.create',
@@ -945,9 +935,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 })
 
 if not _is_enterprise_edition():
-    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     _FORWARD_NO_LOCAL_HANDLER_METHODS = (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+        _FORWARD_NO_LOCAL_HANDLER_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     )
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
