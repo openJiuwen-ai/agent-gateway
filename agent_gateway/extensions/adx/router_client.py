@@ -16,7 +16,7 @@ from agent_gateway.extensions.adx.control_client import AdxControlClient
 from agent_gateway.extensions.adx.control_adapter import AdxControl
 from agent_gateway.extensions.adx.errors import AdxRoutingError
 from agent_gateway.extensions.adx.file_client import AdxFileMixin
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import BUILTIN_AGENT_TYPE, AgentManager
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
@@ -65,6 +65,18 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         self._closed = True
         self._managed_control = AdxControl(self._control)
         self.set_or_update_server_config(config={})
+
+    async def _create_sandbox_for_agent(self, agent_info, *, web_port=None, **kwargs):
+        return await self._control.create_sandbox(
+            builtin=agent_info.agent_type == BUILTIN_AGENT_TYPE, web_port=web_port, **kwargs,
+        )
+
+    async def _wait_for_replacement(self, sandbox, generation: str, deadline: float) -> None:
+        # create_sandbox returns this placement only after our POST or a generation check.
+        await self._control.wait_until_running(
+            sandbox.sandbox_id, expected_generation=generation, deadline=deadline,
+            confirmed_runtime_id=sandbox.metadata.get("runtime_id"),
+        )
 
     async def shutdown(self) -> None:
         await super().shutdown()

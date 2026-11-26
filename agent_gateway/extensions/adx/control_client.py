@@ -190,7 +190,8 @@ class AdxControlClient:
         return generation.strip() or None if isinstance(generation, str) else None
 
     async def wait_until_running(self, instance_id: str, *, trace_id: str | None = None,
-                                 expected_generation: str | None = None, deadline: float | None = None) -> dict:
+                                 expected_generation: str | None = None, deadline: float | None = None,
+                                 confirmed_runtime_id: str | None = None) -> dict:
         trace_id = _resolve_trace_id(trace_id)
         loop = asyncio.get_running_loop()
         expires = deadline if deadline is not None else loop.time() + self.config.connect_timeout_seconds
@@ -207,18 +208,24 @@ class AdxControlClient:
                         await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
                         continue
                     observed = True
+                    terminal = value.get('status') in ('failed', 'deleted', 'deleting')
                     if expected_generation is not None:
                         generation_pending = True
                         actual = await self._instance_generation(instance_id, value, trace_id=trace_id)
                         generation_pending = actual is None
                         if actual is not None and actual != expected_generation:
                             raise AgentGenerationMismatchError('ADX Environment generation mismatch')
+                        if actual is None and terminal:
+                            if confirmed_runtime_id and confirmed_runtime_id == value.get('runtime_id'):
+                                raise AgentFailedError('ADX replacement Environment is not available')
+                            # This name alone cannot authorize deletion of another incarnation.
+                            raise AdxCreateUncertain('Terminal ADX Environment ownership is unknown', outcome='unknown')
                         if actual is None:
                             await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
                             continue
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
                         return value
-                    if value.get('status') in ('failed', 'deleted', 'deleting'):
+                    if terminal:
                         if expected_generation is not None:
                             raise AgentFailedError('ADX replacement Environment is not available')
                         raise AdxControlError('ADX Environment is not available')

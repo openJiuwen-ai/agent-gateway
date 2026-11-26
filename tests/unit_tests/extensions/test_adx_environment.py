@@ -482,3 +482,26 @@ async def test_deployment_default_rootfs_is_reserved_for_builtin_agents(monkeypa
             client._creation_body(*args, builtin=False)
     finally:
         await client.close()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime,confirmed,known", [
+    ("runtime-a", "runtime-a", True), ("runtime-b", "runtime-a", False), ("", None, False),
+])
+async def test_redacted_failed_candidate_requires_confirmed_runtime(monkeypatch, tmp_path, runtime, confirmed, known):
+    from agent_gateway.extensions.agentos.agentos_router.backend import AgentFailedError
+
+    cfg = config(monkeypatch, tmp_path)
+    requests = []
+
+    def handle(request):
+        requests.append(request.method)
+        return httpx.Response(200, json=[{"id": "test-alice", "tenant_id": cfg.tenant,
+                                          "status": "failed", "runtime_id": runtime}])
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    try:
+        with pytest.raises(AgentFailedError if known else AdxCreateUncertain):
+            await client.wait_until_running("test-alice", expected_generation="ours", confirmed_runtime_id=confirmed)
+        assert requests == ["GET"]
+    finally:
+        await client.close()

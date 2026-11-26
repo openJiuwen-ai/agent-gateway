@@ -268,12 +268,12 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
     from agent_gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
     router, _clients = _router(_config(monkeypatch, builtin_image='registry.example/builtin:1'))
-    spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:8080']},
+    spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:2222']},
             'cmds': [['/app/worker', '--serve']], 'code_path': '/work', 'cpu': 500, 'memory': 1024,
-            'probes': {'startup': {'tcpSocket': {'port': 8080}, 'failureThreshold': 3}}}
+            'probes': {'startup': {'tcpSocket': {'port': 2222}, 'failureThreshold': 3}}}
     router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
         image_name='third', image_uri='registry.example/third:2',
-        metadata={'runtime_spec': spec, 'env_vars': {'MODEL_ENDPOINT': 'http://model/v1'}}))
+        metadata={'runtime_spec': spec, 'web_port': 8080, 'env_vars': {'MODEL_ENDPOINT': 'http://model/v1'}}))
     await router.connect('')
     try:
         runtime = await router._agent_manager.get_or_create_agent('alice', 'third', creator=router._create_agent)
@@ -287,7 +287,9 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
         assert body['name'] == f'gateway-{generation}'
         assert env == {'MODEL_ENDPOINT': 'http://model/v1'}
         assert Path(body['mounts'][0]['host_path']).name == 'alice'
-        assert body['readinessProbe']['tcpSocket']['port'] == 8080
+        assert body['readinessProbe']['tcpSocket']['port'] == 2222
+        assert {'2222', '8080'} <= set(body['ports'])
+        assert body['dataPlane']['portForwardSecurityMode'] == 'tls'
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
     finally:
         await router.shutdown()
