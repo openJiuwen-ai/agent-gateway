@@ -3,6 +3,7 @@
 import asyncio
 import os
 import socket
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -45,12 +46,56 @@ def identity() -> ControlServiceIdentity:
     )
 
 
-def channel_pair() -> tuple[ControlServiceChannel, ControlServiceChannel]:
+def channel_pair(
+    *, send_timeout: float = 1.0
+) -> tuple[ControlServiceChannel, ControlServiceChannel]:
     worker_socket, control_socket = socket.socketpair()
     return (
-        ControlServiceChannel(worker_socket),
-        ControlServiceChannel(control_socket),
+        ControlServiceChannel(worker_socket, send_timeout=send_timeout),
+        ControlServiceChannel(control_socket, send_timeout=send_timeout),
     )
+
+
+async def wait_until(predicate, timeout: float = 1.0) -> None:
+    async def poll() -> None:
+        while not predicate():
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(poll(), timeout)
+
+
+def ack_message() -> dict:
+    """Build a valid client-to-control frame that the control side treats as late."""
+    return {
+        "protocol_version": 1,
+        "group_id": "gateway-group",
+        "slot_id": 0,
+        "generation": 1,
+        "type": "EVENT_ACK",
+        "event_id": "0123456789abcdef0123456789abcdef",
+        "status": "OK",
+        "error_code": None,
+    }
+
+
+def response_message() -> dict:
+    """Build a valid control-to-client frame that the client side treats as late."""
+    return {
+        "protocol_version": 1,
+        "group_id": "gateway-group",
+        "slot_id": 0,
+        "generation": 1,
+        "type": "RESPONSE",
+        "request_id": "0123456789abcdef0123456789abcdef",
+        "status": "ERROR",
+        "result": None,
+        "error_code": "CONTROL_SERVICE_FAILED",
+    }
+
+
+def oversized_object() -> dict:
+    """Build an object that passes the JSON limits but not the 64 KiB frame limit."""
+    return {"values": ["x" * 4096 for _ in range(16)]}
 
 
 async def start_services(
@@ -68,6 +113,22 @@ async def stop_services(
     await server.stop()
 
 
+class CancelFirstTaskSet(set):
+    """Cancel the first added task before the event loop runs its first step."""
+
+    def __init__(self) -> None:
+        """Start with the first cancellation still armed."""
+        super().__init__()
+        self.cancel_first = True
+
+    def add(self, task: asyncio.Task[None]) -> None:
+        """Add the task, cancelling it first when the arm is still set."""
+        super().add(task)
+        if self.cancel_first:
+            self.cancel_first = False
+            task.cancel()
+
+
 async def test_admission_is_synchronous_and_bounded(isolated_environment) -> None:
     admission = ControlServiceAdmission(limit=2)
 
@@ -80,6 +141,16 @@ async def test_admission_is_synchronous_and_bounded(isolated_environment) -> Non
     admission.release()
 
 
+def test_control_service_failures_have_distinct_fixed_messages() -> None:
+    assert str(ControlServiceError()) == "control service connection failed"
+    assert str(ControlServiceBusy()) == "control service budget exhausted"
+
+    error = ControlServiceOperationError("CONTROL_SERVICE_FAILED")
+
+    assert str(error) == "control service operation failed"
+    assert error.error_code == "CONTROL_SERVICE_FAILED"
+
+
 def test_control_services_rejects_non_reserved_handler(isolated_environment) -> None:
     async def handler(arguments: dict) -> dict:
         return {}
@@ -90,6 +161,60 @@ def test_control_services_rejects_non_reserved_handler(isolated_environment) -> 
     assert ControlServices().handlers == {}
     assert ControlServices().max_handlers == 8
     assert ControlServices().max_group_handlers == 16
+
+
+def test_control_services_validates_and_owns_its_configuration() -> None:
+    async def handler(arguments: dict) -> dict:
+        return {}
+
+    async def handlers_factory(identity: ControlServiceIdentity) -> dict:
+        return {"bindings.lookup": handler}
+
+    def on_connect(server: ControlServiceServer) -> None:
+        return None
+
+    def on_disconnect(identity: ControlServiceIdentity) -> None:
+        return None
+
+    handlers = {"bindings.lookup": handler}
+    services = ControlServices(
+        handlers=handlers,
+        handlers_factory=handlers_factory,
+        on_connect=on_connect,
+        on_disconnect=on_disconnect,
+        max_handlers=4,
+        max_group_handlers=8,
+    )
+    assert set(services.handlers) == {"bindings.lookup"}
+    assert services.handlers_factory is handlers_factory
+    assert services.on_connect is on_connect
+    assert services.on_disconnect is on_disconnect
+    assert services.max_handlers == 4
+    assert services.max_group_handlers == 8
+
+    # The record keeps a read-only copy, not the caller's mapping.
+    handlers.clear()
+    assert set(services.handlers) == {"bindings.lookup"}
+    with pytest.raises(TypeError):
+        services.handlers["bindings.lookup"] = handler
+    with pytest.raises(FrozenInstanceError):
+        services.max_handlers = 9
+
+    for field, value, message in (
+        ("handlers", object(), "handlers must be a mapping of reserved operations"),
+        (
+            "handlers",
+            {"bindings.lookup": "not-callable"},
+            "control handlers must be callable",
+        ),
+        ("handlers_factory", "not-callable", "handlers_factory must be callable"),
+        ("on_connect", "not-callable", "on_connect must be callable"),
+        ("on_disconnect", "not-callable", "on_disconnect must be callable"),
+        ("max_handlers", 0, "max_handlers must be a positive integer"),
+        ("max_group_handlers", 0, "max_group_handlers must be a positive integer"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            ControlServices(**{field: value})
 
 
 async def test_recent_identifiers_are_bounded_and_expire(
@@ -186,6 +311,289 @@ async def test_local_and_group_handler_limits_return_busy(isolated_environment) 
         assert await first == {}
         await stop_services(client, server)
         release.clear()
+
+
+async def test_handler_cancelled_before_start_keeps_admission_available(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        return {"value": "ok"}
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"bindings.lookup": handler},
+        admission=ControlServiceAdmission(limit=1),
+    )
+    await start_services(client, server)
+    server._handler_tasks = CancelFirstTaskSet()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await client.call("bindings.lookup", {}, timeout=0.1)
+    assert await client.call("bindings.lookup", {}, timeout=1.0) == {"value": "ok"}
+
+    await stop_services(client, server)
+
+
+async def test_event_handler_cancelled_before_start_keeps_admission_available(
+    isolated_environment,
+) -> None:
+    handled: list[dict] = []
+
+    async def event_handler(arguments: dict) -> None:
+        handled.append(arguments)
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(
+        worker_channel,
+        identity(),
+        max_pending=1,
+        event_handlers={"credentials.invalidate": event_handler},
+    )
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+    client._event_tasks = CancelFirstTaskSet()
+
+    with pytest.raises(asyncio.TimeoutError):
+        await server.notify("credentials.invalidate", {"attempt": 1}, timeout=0.1)
+    await server.notify("credentials.invalidate", {"attempt": 2}, timeout=1.0)
+
+    assert handled == [{"attempt": 2}]
+    await stop_services(client, server)
+
+
+async def test_event_admission_limit_returns_busy(isolated_environment) -> None:
+    event_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def event_handler(arguments: dict) -> None:
+        if arguments.get("mode") == "fast":
+            return
+        event_started.set()
+        await release.wait()
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(
+        worker_channel,
+        identity(),
+        max_pending=1,
+        event_handlers={"credentials.invalidate": event_handler},
+    )
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    held = asyncio.create_task(
+        server.notify("credentials.invalidate", {"mode": "held"}, timeout=2.0),
+    )
+    await asyncio.wait_for(event_started.wait(), timeout=1.0)
+    with pytest.raises(ControlServiceBusy):
+        await server.notify("credentials.invalidate", {"mode": "fast"}, timeout=1.0)
+
+    release.set()
+    await asyncio.wait_for(held, timeout=1.0)
+    await stop_services(client, server)
+
+
+async def test_oversized_handler_result_is_an_error_not_a_service_failure(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        if arguments.get("mode") == "ok":
+            return {"value": "ok"}
+        return oversized_object()
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"catalog.list_login_models": handler},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    with pytest.raises(ControlServiceOperationError) as raised:
+        await client.call("catalog.list_login_models", {"mode": "big"}, timeout=1.0)
+
+    assert raised.value.error_code == "CONTROL_SERVICE_FAILED"
+    assert control_channel.closed is False
+    assert server._failure is None
+    assert await client.call(
+        "catalog.list_login_models", {"mode": "ok"}, timeout=1.0
+    ) == {"value": "ok"}
+
+    await stop_services(client, server)
+
+
+async def test_oversized_arguments_are_rejected_without_failing_the_service(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        return {"value": "ok"}
+
+    async def event_handler(arguments: dict) -> None:
+        return None
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(
+        worker_channel,
+        identity(),
+        event_handlers={"credentials.invalidate": event_handler},
+    )
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"bindings.lookup": handler},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    with pytest.raises(ControlProtocolError, match="frame limit"):
+        await client.call("bindings.lookup", oversized_object(), timeout=1.0)
+    assert client._pending == {}
+    with pytest.raises(ControlProtocolError, match="frame limit"):
+        await server.notify("credentials.invalidate", oversized_object(), timeout=1.0)
+    assert server._event_pending == {}
+
+    assert worker_channel.closed is False
+    assert client._failure is None
+    assert server._failure is None
+    assert await client.call("bindings.lookup", {}, timeout=1.0) == {"value": "ok"}
+
+    await stop_services(client, server)
+
+
+async def test_full_send_queue_is_backpressure_not_a_service_failure(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        return {"value": "ok"}
+
+    worker_channel, control_channel = channel_pair(send_timeout=5.0)
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"bindings.lookup": handler},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    # Holding the write lock stands in for a peer that drains slowly.
+    async with worker_channel._send_lock:
+        queued = [asyncio.create_task(client._send(ack_message())) for _ in range(32)]
+        await wait_until(lambda: len(worker_channel._send_tasks) == 32)
+
+        with pytest.raises(ControlServiceBusy):
+            await client._send(ack_message())
+
+        assert worker_channel.closed is False
+        assert client._failure is None
+    await asyncio.gather(*queued)
+
+    assert await client.call("bindings.lookup", {}, timeout=1.0) == {"value": "ok"}
+
+    await stop_services(client, server)
+
+
+async def test_full_send_queue_does_not_kill_reader_owned_replies(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        return {"value": "ok"}
+
+    worker_channel, control_channel = channel_pair(send_timeout=5.0)
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"bindings.lookup": handler},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    async with control_channel._send_lock:
+        queued = [
+            asyncio.create_task(server._send(response_message())) for _ in range(32)
+        ]
+        await wait_until(lambda: len(control_channel._send_tasks) == 32)
+
+        # No handler is registered, so the reader itself has to answer.
+        with pytest.raises(asyncio.TimeoutError):
+            await client.call("catalog.list_login_models", {}, timeout=0.1)
+
+        assert control_channel.closed is False
+        assert server._failure is None
+    await asyncio.gather(*queued)
+
+    assert await client.call("bindings.lookup", {}, timeout=1.0) == {"value": "ok"}
+
+    await stop_services(client, server)
+
+
+async def test_full_send_queue_makes_outgoing_requests_busy(
+    isolated_environment,
+) -> None:
+    async def handler(arguments: dict) -> dict:
+        return {"value": "ok"}
+
+    async def event_handler(arguments: dict) -> None:
+        return None
+
+    worker_channel, control_channel = channel_pair(send_timeout=5.0)
+    client = ControlServiceClient(
+        worker_channel,
+        identity(),
+        event_handlers={"credentials.invalidate": event_handler},
+    )
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={"bindings.lookup": handler},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+
+    async with worker_channel._send_lock:
+        queued = [asyncio.create_task(client._send(ack_message())) for _ in range(32)]
+        await wait_until(lambda: len(worker_channel._send_tasks) == 32)
+
+        with pytest.raises(ControlServiceBusy):
+            await client.call("bindings.lookup", {}, timeout=1.0)
+
+        assert client._pending == {}
+        assert client._failure is None
+    await asyncio.gather(*queued)
+
+    async with control_channel._send_lock:
+        queued = [
+            asyncio.create_task(server._send(response_message())) for _ in range(32)
+        ]
+        await wait_until(lambda: len(control_channel._send_tasks) == 32)
+
+        with pytest.raises(ControlServiceBusy):
+            await server.notify("credentials.invalidate", {}, timeout=1.0)
+
+        assert server._event_pending == {}
+        assert server._failure is None
+    await asyncio.gather(*queued)
+
+    assert await client.call("bindings.lookup", {}, timeout=1.0) == {"value": "ok"}
+    await server.notify("credentials.invalidate", {}, timeout=1.0)
+
+    await stop_services(client, server)
 
 
 async def test_client_pending_limit_returns_busy_without_dispatch(isolated_environment) -> None:
@@ -297,6 +705,7 @@ async def test_handler_failure_is_sanitized(isolated_environment) -> None:
     assert raised.value.error_code == "CONTROL_SERVICE_FAILED"
     assert "credential-token-value" not in str(raised.value)
     assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
 
     await stop_services(client, server)
 
@@ -438,6 +847,84 @@ async def test_quiesce_stop_pending_eof_and_idempotence(isolated_environment) ->
     await server.stop()
     assert worker_channel.closed is True
     assert control_channel.closed is True
+
+
+@pytest.mark.parametrize("stopped_side", ["client", "server"])
+async def test_local_stop_is_not_recorded_as_a_service_failure(
+    isolated_environment, stopped_side: str,
+) -> None:
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+    stopped, peer = (client, server) if stopped_side == "client" else (server, client)
+
+    await asyncio.wait_for(stopped.stop(), timeout=1.0)
+    await asyncio.wait_for(stopped.wait(), timeout=1.0)
+
+    await asyncio.wait_for(peer.stop(), timeout=1.0)
+
+
+async def test_local_stop_during_reader_owned_send_is_not_a_failure(
+    isolated_environment, monkeypatch,
+) -> None:
+    send_entered = asyncio.Event()
+
+    async def held_send_frame(frame: bytes, *, deadline: float) -> None:
+        send_entered.set()
+        await asyncio.Future()
+
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+    monkeypatch.setattr(control_channel, "_send_frame", held_send_frame)
+
+    # No handler is registered, so the reader itself owns the error response.
+    pending = asyncio.create_task(
+        client.call("catalog.list_login_models", {}, timeout=2.0),
+    )
+    await asyncio.wait_for(send_entered.wait(), timeout=1.0)
+
+    await asyncio.wait_for(server.stop(), timeout=1.0)
+    await asyncio.wait_for(server.wait(), timeout=1.0)
+
+    with pytest.raises(ControlServiceError):
+        await asyncio.wait_for(pending, timeout=1.0)
+    await asyncio.wait_for(client.stop(), timeout=1.0)
+
+
+@pytest.mark.parametrize("failed_side", ["client", "server"])
+async def test_peer_disconnect_is_still_recorded_as_a_service_failure(
+    isolated_environment, failed_side: str,
+) -> None:
+    worker_channel, control_channel = channel_pair()
+    client = ControlServiceClient(worker_channel, identity())
+    server = ControlServiceServer(
+        control_channel,
+        identity(),
+        handlers={},
+        admission=ControlServiceAdmission(),
+    )
+    await start_services(client, server)
+    failed, peer = (client, server) if failed_side == "client" else (server, client)
+
+    peer.channel.close()
+
+    with pytest.raises(ControlServiceError):
+        await asyncio.wait_for(failed.wait(), timeout=1.0)
+    await asyncio.wait_for(failed.stop(), timeout=1.0)
+    await asyncio.wait_for(peer.stop(), timeout=1.0)
 
 
 async def test_start_failure_closes_channel(isolated_environment) -> None:

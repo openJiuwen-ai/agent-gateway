@@ -12,10 +12,14 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from agent_gateway.processes.control_channel import ControlServiceChannel
+from agent_gateway.processes.control_channel import (
+    ControlChannelSendQueueFull,
+    ControlServiceChannel,
+)
 from agent_gateway.processes.control_protocol import (
     EVENTS,
     OPERATIONS,
+    ControlFrameTooLarge,
     ControlProtocolError,
     validate_message,
 )
@@ -87,21 +91,24 @@ class ControlServiceIdentity:
 
 
 class ControlServiceError(ConnectionError):
-    """A safe, fixed-message control-service connection failure."""
+    """A safe, fixed-message control-service failure."""
+
+    _message = "control service connection failed"
 
     def __init__(self) -> None:
-        super().__init__("control service connection failed")
+        super().__init__(self._message)
 
 
 class ControlServiceBusy(ControlServiceError):
     """The local or remote control-service budget is exhausted."""
 
-    def __init__(self) -> None:
-        super().__init__()
+    _message = "control service budget exhausted"
 
 
 class ControlServiceOperationError(ControlServiceError):
     """A remote control operation failed with a protocol error code."""
+
+    _message = "control service operation failed"
 
     def __init__(self, error_code: str) -> None:
         super().__init__()
@@ -164,7 +171,13 @@ class _RecentIdentifiers:
 
 @dataclass(frozen=True)
 class ControlServices:
-    """Explicit production configuration for control-service handlers."""
+    """Validated, immutable configuration for the control-service handlers.
+
+    ``handlers`` names the operations served directly and is copied into a
+    read-only mapping. ``handlers_factory``, ``on_connect``, ``on_disconnect``
+    and ``max_group_handlers`` are only validated here: the process pool that
+    creates the server endpoints reads them.
+    """
 
     handlers: Mapping[str, Handler] = field(default_factory=dict)
     handlers_factory: Callable[[ControlServiceIdentity], Mapping[str, Handler]] | None = None
@@ -218,6 +231,7 @@ class _ControlServiceEndpoint:
         self._stop_task: asyncio.Task[None] | None = None
 
     async def wait(self) -> None:
+        """Return after a local ``stop``, or raise when the service failed."""
         if self._reader is None:
             raise ControlServiceError()
         await asyncio.shield(self._reader)
@@ -297,14 +311,21 @@ class _ControlServiceEndpoint:
                     await self.channel.receive(),
                     expected=self.identity.__dict__,
                 )
-                await self._dispatch(message)
+                try:
+                    await self._dispatch(message)
+                except ControlServiceBusy:
+                    # A reply the reader sends itself met a full local send
+                    # queue. Dropping that one reply lets the peer time out on
+                    # it instead of losing the whole connection.
+                    continue
         except asyncio.CancelledError:
             self._fail_pending(ControlServiceError())
             if not self._stopped:
                 self._fail_service()
             return
         except Exception:
-            self._fail_service()
+            if not self._stopped:
+                self._fail_service()
 
     async def _dispatch(self, message: dict[str, Any]) -> None:
         raise ControlProtocolError("unexpected control message")
@@ -316,8 +337,15 @@ class _ControlServiceEndpoint:
             if not self._stopped and not self._quiescing:
                 self._fail_service()
             raise
+        except ControlChannelSendQueueFull:
+            raise ControlServiceBusy() from None
+        except ControlFrameTooLarge:
+            # Both refusals happen before anything reaches the socket, so the
+            # stream is intact and the service has not failed.
+            raise
         except Exception:
-            self._fail_service()
+            if not self._stopped:
+                self._fail_service()
             raise ControlServiceError() from None
 
 
@@ -444,9 +472,13 @@ class ControlServiceClient(_ControlServiceEndpoint):
             self._seen_responses.remember(request_id)
             self._pending.pop(request_id, None)
             raise
-        except Exception:
+        except Exception as error:
             self._seen_responses.remember(request_id)
             self._pending.pop(request_id, None)
+            if isinstance(error, ControlChannelSendQueueFull):
+                raise ControlServiceBusy() from None
+            if isinstance(error, ControlFrameTooLarge):
+                raise
             raise ControlServiceError() from None
 
         try:
@@ -499,9 +531,6 @@ class ControlServiceClient(_ControlServiceEndpoint):
         if event_handler is None:
             await self._send_event_ack(event_id, "ERROR", "EVENT_NOT_ENABLED")
             return
-        if not self._event_admission.acquire():
-            await self._send_event_ack(event_id, "ERROR", "CONTROL_SERVICE_BUSY")
-            return
 
         event_task = asyncio.create_task(
             self._run_event_handler(event_id, event, event_handler, message["arguments"])
@@ -516,6 +545,14 @@ class ControlServiceClient(_ControlServiceEndpoint):
         event_handler: EventHandler,
         arguments: dict[str, Any],
     ) -> None:
+        # Acquire here, not in the reader: a task cancelled before its first
+        # step never runs the ``finally`` below and would leak the slot.
+        if not self._event_admission.acquire():
+            try:
+                await self._send_event_ack(event_id, "ERROR", "CONTROL_SERVICE_BUSY")
+            except Exception:
+                return
+            return
         try:
             await event_handler(arguments)
             await self._send_event_ack(event_id, "OK", None)
@@ -710,9 +747,13 @@ class ControlServiceServer(_ControlServiceEndpoint):
             self._seen_event_acks.remember(event_id)
             self._event_pending.pop(event_id, None)
             raise
-        except Exception:
+        except Exception as error:
             self._seen_event_acks.remember(event_id)
             self._event_pending.pop(event_id, None)
+            if isinstance(error, ControlChannelSendQueueFull):
+                raise ControlServiceBusy() from None
+            if isinstance(error, ControlFrameTooLarge):
+                raise
             raise ControlServiceError() from None
 
         try:
@@ -762,14 +803,6 @@ class ControlServiceServer(_ControlServiceEndpoint):
                 "CONTROL_SERVICE_BUSY",
             )
             return
-        if not self._admission.acquire():
-            await self._send_response(
-                request_id,
-                "ERROR",
-                None,
-                "CONTROL_SERVICE_BUSY",
-            )
-            return
 
         self._active_request_ids.add(request_id)
         handler_task = asyncio.create_task(
@@ -785,6 +818,20 @@ class ControlServiceServer(_ControlServiceEndpoint):
         handler: Handler,
         arguments: dict[str, Any],
     ) -> None:
+        # Acquire here, not in the reader: a task cancelled before its first
+        # step never runs the ``finally`` below and would leak the slot.
+        if not self._admission.acquire():
+            self._active_request_ids.discard(request_id)
+            try:
+                await self._send_response(
+                    request_id,
+                    "ERROR",
+                    None,
+                    "CONTROL_SERVICE_BUSY",
+                )
+            except Exception:
+                return
+            return
         try:
             result = await handler(arguments)
             if not isinstance(result, dict):

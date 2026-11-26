@@ -13,6 +13,10 @@ class ControlProtocolError(ValueError):
     """Raised when a control service message violates the wire protocol."""
 
 
+class ControlFrameTooLarge(ControlProtocolError):
+    """Raised when a locally built frame exceeds the configured frame limit."""
+
+
 CONTROL_PROTOCOL_VERSION = 1
 DEFAULT_FRAME_LIMIT = 65536
 
@@ -180,7 +184,7 @@ def encode_message(
 
     frame = struct.pack(">I", len(payload)) + payload
     if len(frame) > frame_limit:
-        raise ControlProtocolError(
+        raise ControlFrameTooLarge(
             f"encoded control frame is {len(frame)} bytes, exceeding the "
             f"{frame_limit}-byte frame limit"
         )

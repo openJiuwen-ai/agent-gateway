@@ -4,11 +4,15 @@ import asyncio
 import json
 import socket
 import struct
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from agent_gateway.processes.control_channel import (
     ControlChannelClosed,
+    ControlChannelSendQueueFull,
     ControlServiceChannel,
 )
 from agent_gateway.processes.control_protocol import ControlProtocolError
@@ -248,9 +252,11 @@ async def test_owned_send_tasks_are_bounded_at_thirty_two() -> None:
     await asyncio.sleep(0)
 
     assert len(sender._send_tasks) == 32
-    with pytest.raises(ControlProtocolError, match="send queue is full"):
+    with pytest.raises(ControlChannelSendQueueFull, match="send queue is full"):
         await sender.send(base_message())
 
+    # Callers tell local backpressure apart from a protocol violation.
+    assert issubclass(ControlChannelSendQueueFull, ControlProtocolError)
     assert sender.closed is False
     await sender.stop()
     await asyncio.gather(*callers, return_exceptions=True)
@@ -290,6 +296,82 @@ async def test_stop_cleans_owned_send_tasks_and_is_idempotent() -> None:
     with pytest.raises((ControlChannelClosed, asyncio.CancelledError)):
         await blocked_sender
     await receiver.stop()
+
+
+async def test_stop_waits_for_the_registered_reader() -> None:
+    sender, receiver = create_pair()
+    reader = asyncio.create_task(receiver.receive())
+    await asyncio.sleep(0)
+    assert receiver._reader_task is reader
+
+    await receiver.stop()
+
+    assert reader.done()
+    with pytest.raises(ControlChannelClosed):
+        await reader
+    assert receiver._reader_task is None
+    await sender.stop()
+
+
+def test_stop_from_the_registered_reader_does_not_await_itself() -> None:
+    # A task that awaits itself can neither finish nor be cancelled, so this
+    # has to run in a child process that the test can time out.
+    script = """
+import asyncio
+import socket
+from agent_gateway.processes.control_channel import ControlServiceChannel
+
+async def main():
+    left, right = socket.socketpair()
+    channel = ControlServiceChannel(left)
+    peer = ControlServiceChannel(right)
+    channel._reader_task = asyncio.current_task()
+    await channel.stop()
+    assert channel.closed
+    await peer.stop()
+
+asyncio.run(main())
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(Path(__file__).resolve().parents[3]),
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("field", ["send_timeout", "read_timeout"])
+@pytest.mark.parametrize(
+    "value",
+    [0, -1, float("nan"), float("inf"), float("-inf"), True, "1", None],
+)
+def test_channel_rejects_timeouts_that_are_not_positive_finite_numbers(
+    field: str, value: object,
+) -> None:
+    left_socket, right_socket = socket.socketpair()
+    try:
+        with pytest.raises(ControlProtocolError, match=field):
+            ControlServiceChannel(left_socket, **{field: value})
+    finally:
+        left_socket.close()
+        right_socket.close()
+
+
+@pytest.mark.parametrize("field", ["send_timeout", "read_timeout"])
+@pytest.mark.parametrize("value", [1, 0.5, 10**400], ids=["int", "float", "large-int"])
+async def test_channel_accepts_positive_finite_timeouts(
+    field: str, value: object,
+) -> None:
+    left_socket, right_socket = socket.socketpair()
+    channel = ControlServiceChannel(left_socket, **{field: value})
+    peer = ControlServiceChannel(right_socket)
+
+    await channel.stop()
+    await peer.stop()
 
 
 async def test_receive_rejects_invalid_json_and_hides_payload_details() -> None:

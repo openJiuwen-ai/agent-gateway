@@ -2,6 +2,7 @@
 """Async framing channel for the private control service protocol."""
 
 import asyncio
+import math
 import socket
 from typing import Any
 
@@ -15,6 +16,10 @@ from agent_gateway.processes.control_protocol import (
 
 class ControlChannelClosed(ConnectionError):
     """Raised when a control channel is closed or reaches EOF."""
+
+
+class ControlChannelSendQueueFull(ControlProtocolError):
+    """Raised when the bounded send queue is full; the channel stays usable."""
 
 
 _MAX_SEND_TASKS = 32
@@ -63,7 +68,7 @@ class ControlServiceChannel:
         if self._closed:
             raise ControlChannelClosed("control channel is closed")
         if len(self._send_tasks) >= _MAX_SEND_TASKS:
-            raise ControlProtocolError("control channel send queue is full")
+            raise ControlChannelSendQueueFull("control channel send queue is full")
 
         loop = asyncio.get_running_loop()
         send_task = asyncio.create_task(
@@ -154,10 +159,15 @@ class ControlServiceChannel:
                 send_task.cancel()
 
     async def stop(self) -> None:
+        """Close the channel and wait for every task it still owns."""
+        reader_task = self._reader_task
         self.close()
-        send_tasks = tuple(self._send_tasks)
-        if send_tasks:
-            await asyncio.gather(*send_tasks, return_exceptions=True)
+        owned_tasks = tuple(self._send_tasks)
+        # A task that awaits itself can neither finish nor be cancelled.
+        if reader_task is not None and reader_task is not asyncio.current_task():
+            owned_tasks += (reader_task,)
+        if owned_tasks:
+            await asyncio.gather(*owned_tasks, return_exceptions=True)
 
     async def _send_frame(self, frame: bytes, *, deadline: float) -> None:
         loop = asyncio.get_running_loop()
@@ -205,9 +215,7 @@ class ControlServiceChannel:
 
 
 def _is_positive_finite_number(value: object) -> bool:
-    return (
-        type(value) in {int, float}
-        and value > 0
-        and value != float("inf")
-        and value == value
-    )
+    # Every integer is finite; converting a large one to float would overflow.
+    if type(value) is int:
+        return value > 0
+    return type(value) is float and value > 0 and math.isfinite(value)

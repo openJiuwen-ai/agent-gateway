@@ -12,6 +12,7 @@ from agent_gateway.processes.control_protocol import (
     ERROR_CODES,
     EVENTS,
     OPERATIONS,
+    ControlFrameTooLarge,
     ControlProtocolError,
     decode_message,
     encode_message,
@@ -402,6 +403,18 @@ def test_encode_message_rejects_frames_over_the_configured_budget() -> None:
         encode_message(message, frame_limit=len(baseline) - 1)
 
     assert "x" * 256 not in str(error.value)
+
+
+def test_encode_message_reports_oversized_frames_with_a_distinct_type() -> None:
+    message = base_message("REQUEST")
+    message["arguments"] = {"value": "x" * 256}
+    baseline = encode_message(message)
+
+    # Callers tell a frame refused before any I/O from a protocol violation.
+    with pytest.raises(ControlFrameTooLarge, match="frame limit"):
+        encode_message(message, frame_limit=len(baseline) - 1)
+
+    assert issubclass(ControlFrameTooLarge, ControlProtocolError)
 
 
 def test_decode_message_rejects_duplicate_json_keys_without_secret_context() -> None:
