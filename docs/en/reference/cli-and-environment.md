@@ -39,6 +39,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `GATEWAY_HOST` | `127.0.0.1` | TUI route bind host |
 | `GATEWAY_PORT` | `19001` | TUI route port; a fixed default, assign a distinct port when running several instances on one host |
 | `GATEWAY_URL` | unset | Gateway public URL used by some extensions |
+| `AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS` | On | Whether the Web (`/ws`) and ACP (`/acp`) entry points forward methods the Gateway has not registered to AgentServer under their original name. AgentServer owns the method set; the Gateway only blocks reserved prefixes and enterprise write-protected methods. Set to `0` / `false` / `no` / `off` to restore the strict "static allowlist only" mode for staged rollout and rollback; `/tui` is not affected by this switch |
 | `A2A_SERVER_ENABLED` | disabled | Set to `1` / `true` to enable A2A ingress |
 | `A2A_SERVER_HOST` | `127.0.0.1` | A2A bind host |
 | `A2A_SERVER_PORT` | `19100` | A2A port |

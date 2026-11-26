@@ -66,6 +66,9 @@ GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名�
   旧导入兼容，patch 私有变量时应指向实际定义模块。
 - 入站预处理保留 `app_id` 与当前 Web 本地方法路由：强制转发优先，已注册本地 handler
   留在本地，拒绝前缀不外发，未知 Web 方法默认仍可透传。
+  `/acp` 复用同一套判定：拒绝前缀回 `METHOD_NOT_ALLOWED`，未登记方法按原方法名透传，
+  其余方法（含已登记转发）先过企业版禁写判定，未登记方法再按原方法名透传；
+  `/tui` 仍只转发已登记方法。
 - `single.py` 在 dispatch/Cron 前启动 Web，保留配置轮询启停顺序和 TUI/ACP 装配前的原让步阶段。
   Web 就绪预算默认与进程冷启动预算一致，可用 `GATEWAY_WEB_READY_TIMEOUT_SECONDS` 覆盖。
   `0` 表示不等待，仅已经 ready 的监听可以通过检查。
