@@ -168,6 +168,7 @@ def pick_policy(
     user_id: str,
     group_id: str,
     bot_id: str,
+    agent_id: str = "",
 ) -> dict[str, Any] | None:
     """命中 enabled 策略中 priority 最小的一条。"""
     from agent_gateway.config.enterprise.expressions import matches
@@ -176,6 +177,7 @@ def pick_policy(
         "user_id": str(user_id or ""),
         "group_id": str(group_id or ""),
         "bot_id": str(bot_id or ""),
+        "agent_id": str(agent_id or ""),
     }
     hits: list[tuple[int, dict[str, Any]]] = []
     for row in policies:
@@ -252,9 +254,16 @@ async def resolve_quota_snapshot(
     user_id: str,
     group_id: str,
     bot_id: str,
+    agent_id: str = "",
 ) -> QuotaSnapshot:
     policies = await list_enabled_policies()
-    policy = pick_policy(policies, user_id=user_id, group_id=group_id, bot_id=bot_id)
+    policy = pick_policy(
+        policies,
+        user_id=user_id,
+        group_id=group_id,
+        bot_id=bot_id,
+        agent_id=agent_id,
+    )
     if policy is None:
         # 无命中策略：环境变量 AGENT_WORKSPACE_QUOTA_DEFAULT_LIMIT_BYTES，默认 10 TiB。
         return compute_quota_status(

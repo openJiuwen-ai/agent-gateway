@@ -144,12 +144,13 @@ class WorkspaceIdentityError(Exception):
         self.field = field
 
 
-def _identity_from_params(params: dict[str, Any] | None) -> tuple[str, str, str]:
+def _identity_from_params(params: dict[str, Any] | None) -> tuple[str, str, str, str]:
     p = params if isinstance(params, dict) else {}
     return (
         str(p.get("user_id") or "").strip(),
         str(p.get("group_id") or "").strip(),
         str(p.get("bot_id") or "").strip(),
+        str(p.get("agent_id") or "").strip(),
     )
 
 
@@ -191,7 +192,7 @@ def _identity_for_forward(
     routing = getattr(ws, "_web_routing", None)
     if not isinstance(routing, dict):
         routing = {}
-    p_uid, p_gid, p_bid = _identity_from_params(params)
+    p_uid, p_gid, p_bid, _agent_id = _identity_from_params(params)
     trusted_uid = _trusted_user_id(ws, user_id)
     trusted_gid = str(routing.get("group_id") or "").strip()
     trusted_bid = str(routing.get("bot_id") or "").strip()
@@ -433,7 +434,7 @@ def _local_usage_bytes(params: dict[str, Any]) -> int:
         _WorkspaceService,
     ) = _import_local_workspace()
     svc = _local_service(params)
-    uid, gid, bid = _identity_from_params(params)
+    uid, gid, bid, _aid = _identity_from_params(params)
     raw = params.get("force_refresh")
     force = raw is True or raw == 1
     if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
@@ -460,7 +461,7 @@ def _local_delete_and_usage(
         _WorkspaceError,
         _WorkspaceService,
     ) = _import_local_workspace()
-    uid, gid, bid = _identity_from_params(params)
+    uid, gid, bid, _aid = _identity_from_params(params)
     # DELETE 路由无 force_refresh；删除后必须 measure，否则 get_cached_used
     # 仍是删前值，upsert 会把过期用量当最新上报写回。
     used = measure_and_cache(
@@ -485,12 +486,13 @@ async def _usage_payload_from_used(
     used_bytes: int,
     params: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    user_id, group_id, bot_id = _identity_from_params(params)
+    user_id, group_id, bot_id, agent_id = _identity_from_params(params)
     snap = await resolve_quota_snapshot(
         used_bytes,
         user_id=user_id,
         group_id=group_id,
         bot_id=bot_id,
+        agent_id=agent_id,
     )
     await upsert_usage_cache(
         user_id=user_id,
