@@ -64,6 +64,7 @@ def is_dynamic_req_method_denied(value: str) -> bool:
     return not is_enterprise()
 
 
+_ensure_req_method("MEMORY_PORTAL_OPEN", "memory.portal.open")
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
 _ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
 _ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
