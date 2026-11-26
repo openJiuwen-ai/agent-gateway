@@ -202,9 +202,11 @@ async def assemble_services(
         mode=agent_client_mode,
         websocket_factory=lambda: (
             WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
-            if is_enterprise() else build_static_client(agent_server_url)
+            if is_enterprise() else build_static_client(agent_server_url, shared_directory_layout=True)
         ),
     )
+    if isinstance(client, WebSocketAgentServerClient):
+        client.shared_directory_layout = agent_server_ext is None and not is_enterprise()
     if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
 

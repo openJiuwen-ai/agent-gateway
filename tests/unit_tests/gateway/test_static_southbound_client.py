@@ -75,8 +75,9 @@ def sockets(monkeypatch):
     return created
 
 
-async def test_static_client_preserves_unary_stream_push_and_reconnect(sockets):
-    client = build_static_client(URL)
+@pytest.mark.parametrize("shared_directory_layout", [False, True])
+async def test_static_client_preserves_unary_stream_push_and_reconnect(sockets, shared_directory_layout):
+    client = build_static_client(URL, shared_directory_layout=shared_directory_layout)
     pushed = asyncio.Event()
     received = []
 
@@ -86,7 +87,7 @@ async def test_static_client_preserves_unary_stream_push_and_reconnect(sockets):
 
     try:
         assert isinstance(client, SouthboundAgentClient)
-        assert is_legacy_shared_directory_client(client)
+        assert is_legacy_shared_directory_client(client) is shared_directory_layout
         assert _agent_unavailable(client)
         await client.connect(URL)
         assert client.server_ready and client.agent_ready
@@ -121,6 +122,12 @@ async def test_static_client_preserves_unary_stream_push_and_reconnect(sockets):
     assert _agent_unavailable(client)
     with pytest.raises(RuntimeError):
         await client.send_request(E2AEnvelope(method="session.list", request_id="closed"))
+
+
+def test_shared_directory_layout_is_explicit_for_static_client():
+    assert not is_legacy_shared_directory_client(build_static_client(URL))
+    assert not is_legacy_shared_directory_client(build_static_client(URL, shared_directory_layout=False))
+    assert is_legacy_shared_directory_client(build_static_client(URL, shared_directory_layout=True))
 
 
 async def test_connect_retry_after_failed_handshake(monkeypatch, sockets):

@@ -18,10 +18,12 @@ from agent_gateway.southbound.orchestration.interfaces import RoutePolicy, Route
 class SouthboundAgentClient(AgentServerClient):
     """Personal-mode orchestration using an immutable local target."""
 
-    def __init__(self, control: StaticControl, router: RoutePolicy, transport: StaticWebSocketTransport) -> None:
+    def __init__(self, control: StaticControl, router: RoutePolicy, transport: StaticWebSocketTransport,
+                 *, shared_directory_layout: bool = False) -> None:
         self._control = control
         self._router = router
         self._transport = transport
+        self.shared_directory_layout = shared_directory_layout
 
     @property
     def server_ready(self) -> bool:

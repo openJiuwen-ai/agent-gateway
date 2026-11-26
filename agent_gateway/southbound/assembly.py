@@ -9,7 +9,10 @@ from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.southbound.orchestration.static_router import StaticRouter
 
 
-def build_static_client(uri: str) -> SouthboundAgentClient:
+def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> SouthboundAgentClient:
     target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
     control = FixedTargetControl(target)
-    return SouthboundAgentClient(control, StaticRouter(control), StaticWebSocketTransport(target))
+    return SouthboundAgentClient(
+        control, StaticRouter(control), StaticWebSocketTransport(target),
+        shared_directory_layout=shared_directory_layout,
+    )

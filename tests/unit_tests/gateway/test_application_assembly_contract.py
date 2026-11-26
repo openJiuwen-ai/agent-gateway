@@ -303,9 +303,10 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
             self.set_or_update_server_config = Mock()
     monkeypatch.setattr(agent_client, 'WebSocketAgentServerClient', Client)
     class StaticClient(Client):
-        def __init__(self, uri):
+        def __init__(self, uri, *, shared_directory_layout=False):
             assert uri == 'ws://example/ws'
             super().__init__()
+            self.shared_directory_layout = shared_directory_layout
     monkeypatch.setattr(southbound_client, 'SouthboundAgentClient', StaticClient)
     monkeypatch.setattr(southbound_assembly, 'build_static_client', StaticClient)
     selected = SimpleNamespace(connect=AsyncMock(side_effect=lambda uri: events.append('extension.connected')), set_or_update_server_config=Mock())
@@ -357,6 +358,7 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     value = await services.assemble_services('ws://example/ws', log_stage=events.append, startup_t0=0.0, connect_with_retry=retry)
     try:
         assert value.client is selected if extension_client else type(value.client) is (Client if enterprise else StaticClient)
+        assert getattr(value.client, 'shared_directory_layout', False) is (not enterprise and not extension_client)
         assert value.third_agent is third
         assert value.storage_ctx is storage if enterprise else value.storage_ctx is None
         assert value.message_handler is handler and value.channel_manager is cm
