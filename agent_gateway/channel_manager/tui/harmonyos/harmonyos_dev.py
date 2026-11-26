@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.channel_manager.tui.harmonyos._state_file import write_state_json
 from agent_gateway.channel_manager.tui.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
     inspect_harmonyos_project,
@@ -591,20 +592,7 @@ def _write_suite_metadata(target: Path, source_digest: str) -> None:
         "version": HARMONYOS_DEV_SUITE_VERSION,
         "sourceDigest": source_digest,
     }
-    metadata_path = target / HARMONYOS_DEV_SUITE_METADATA
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{HARMONYOS_DEV_SUITE_METADATA}.", dir=str(target)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_name, metadata_path)
-    finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+    write_state_json(target / HARMONYOS_DEV_SUITE_METADATA, payload)
 
 
 def _replace_suite_atomically(source: Path, target: Path, source_digest: str) -> None:
