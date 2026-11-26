@@ -23,6 +23,7 @@ import logging
 import os
 import time
 import urllib.parse
+import weakref
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
@@ -100,7 +101,11 @@ _WEB_PROXY_REFRESH_TTL_SECONDS = 30.0
 _WEB_PROXY_REFRESH_FAILURE_TTL_SECONDS = 5.0
 _WEB_PROXY_REFRESH_CACHE: dict[str, tuple[str, float]] = {}
 _WEB_PROXY_REFRESH_FAILURES: dict[str, float] = {}
-_WEB_PROXY_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
+# 锁只在刷新期间需要被共享；用完没有协程引用时由弱引用字典自动回收，
+# 避免按 refresh token 无限累积。
+_WEB_PROXY_REFRESH_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _WEB_PROXY_REFRESH_LOCKS_GUARD = asyncio.Lock()
 
 
