@@ -37,6 +37,7 @@ from agent_gateway.message_handler.message_handler import (
     MessageHandler,
     _VALID_MODE_INPUTS,
 )
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _FakeAgentClient:
@@ -61,7 +62,10 @@ class _TestMessageHandler(MessageHandler):
             del MessageHandler._singleton_initialized
         if "_singleton_initialized" in cls.__dict__:
             del cls._singleton_initialized
-        handler = cls(_FakeAgentClient())
+        handler = cls(
+            _FakeAgentClient(),
+            session_login_bindings=NullSessionLoginBindings(),
+        )
         handler.published = []
         # _get_config_raw 由 set_outbound_pipeline 赋值；测试不调 pipeline，
         # 这里直接给个返回空配置的 stub 供 _get_channel_default_state 调用。

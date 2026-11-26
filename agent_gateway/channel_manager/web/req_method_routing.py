@@ -52,7 +52,7 @@ def route_req_method(
         forward_methods: 强制转发给 AgentServer 的方法集合；同一方法本地也有
             handler 时以转发为准，保持既有语义。
         local_methods: 本地已注册 handler 的方法集合；为 ``None`` 表示调用方
-            未启用默认透传（TUI/ACP 等通道），未知方法一律按本地处理。
+            未启用默认透传（TUI 等通道），未知方法一律按本地处理。
         forward_unknown: 覆盖默认透传开关；``None`` 时读取环境变量。
 
     Returns:

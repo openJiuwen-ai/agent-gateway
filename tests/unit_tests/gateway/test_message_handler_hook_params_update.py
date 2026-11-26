@@ -7,6 +7,7 @@ import pytest
 from e2a.message import EventType, Message, ReqMethod
 from agent_gateway.extensions.registry import ExtensionRegistry
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _FakeAgentClient:
@@ -37,7 +38,7 @@ def _chat_send_message(params: dict[str, object]) -> Message:
 def _new_handler() -> MessageHandler:
     # 与兄弟测试一致：重置单例，避免拿到其它测试留下的实例（含队列残留）。
     setattr(MessageHandler, "_instance", None)
-    return MessageHandler(_FakeAgentClient())
+    return MessageHandler(_FakeAgentClient(), session_login_bindings=NullSessionLoginBindings())
 
 
 async def _trigger_hook_and_collect(msg: Message, monkeypatch, mutate):  # noqa: ANN001

@@ -10,6 +10,10 @@ from dataclasses import dataclass
 import logging
 from typing import AbstractSet, Any, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess
+
+from agent_gateway.auth.credential_access import LOGIN_REFRESH_WAIT_S
 from e2a.message import Message
 from agent_gateway.channel_manager.web.req_method_routing import (
     ROUTE_DENIED,
@@ -22,7 +26,7 @@ from agent_gateway.common.request_method import request_method_name
 from agent_gateway.telemetry import trace_stage
 
 logger = logging.getLogger("gateway")
-_LOGIN_REFRESH_WAIT_S = 20.0
+_LOGIN_REFRESH_WAIT_S = LOGIN_REFRESH_WAIT_S
 
 def _auth_session_id(msg) -> str | None:
     """从入站消息里取调用方的**登录会话** id（不是对话 session_id）。
@@ -85,6 +89,7 @@ def _normalize_gateway_message(msg, *, apply_model_auth: bool = True):
         req_method = ReqMethod.CHAT_CANCEL
         params.setdefault("intent", "resume")
 
+    # 上游方法可能是枚举，也可能是 ACP 透传的未知方法字符串。
     method_val = request_method_name(req_method)
     is_stream = bool(
         msg.is_stream
@@ -225,11 +230,42 @@ class MessagePreprocessor:
     refresh_credentials: Callable[[Any], Awaitable[None]]
     normalize: Callable[[Any], Any]
     inject_work_mode: Callable[[Any], None]
+    credential_access: CredentialAccess | None = None
+
+    def with_credential_access(self, access: CredentialAccess) -> MessagePreprocessor:
+        """Bind explicit credential access and take over normalization and lookup.
+
+        Legacy callbacks remain for instances without credential access. Once access is
+        bound, this instance intentionally uses the shared normalization and the explicit
+        access port instead of those callbacks.
+        """
+        return MessagePreprocessor(self.refresh_credentials, self.normalize, self.inject_work_mode, access)
 
     async def _prepare(self, msg: Any) -> Any:
+        if self.credential_access is None:
+            with trace_stage("preprocess.credentials"):
+                await self.refresh_credentials(msg)
+            return self.normalize(msg)
+        from agent_gateway.auth.passthrough import MODEL_AUTH_PARAM_KEY
+
+        # Never let caller-supplied credentials survive a failed lookup.
+        if isinstance(msg.params, dict):
+            if msg.params.pop(MODEL_AUTH_PARAM_KEY, None) is not None:
+                logger.warning(
+                    "[ModelAuth] 客户端请求里带了 %s，已丢弃（该键只允许服务端写）",
+                    MODEL_AUTH_PARAM_KEY,
+                )
+        normalized = _normalize_gateway_message(msg, apply_model_auth=False)
+        model_name = str(normalized.params.get('model_name') or '').strip()
         with trace_stage("preprocess.credentials"):
-            await self.refresh_credentials(msg)
-        return self.normalize(msg)
+            try:
+                auth = await self.credential_access.request_model_auth(_auth_session_id(msg), model_name)
+            except Exception:  # Login availability must not break request forwarding.
+                logger.debug('[App] Credential lookup failed; forwarding without login credentials', exc_info=True)
+                auth = None
+        if auth is not None:
+            normalized.params[MODEL_AUTH_PARAM_KEY] = auth.to_params()
+        return normalized
 
     async def forward(self, msg: Any, channel_manager: Any) -> bool:
         normalized = await self._prepare(msg)

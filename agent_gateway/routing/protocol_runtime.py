@@ -21,6 +21,11 @@ from e2a.message import Message, Mode
 from websockets.exceptions import ConnectionClosedError
 
 from agent_gateway.channel_manager.base import BaseWebChannel
+from agent_gateway.channel_manager.web.req_method_routing import (
+    ROUTE_DENIED,
+    ROUTE_FORWARD_UNKNOWN,
+    route_req_method,
+)
 from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.common.security.ws_origin import extract_handshake_request, get_header_value
 from agent_gateway.common.ws_diagnostics import (
@@ -102,6 +107,22 @@ class RouteConfig:
     # 到该 Channel.send（按 delivery.ws_id 物理寻址）。None 表示该 route 无需委托
     # （如 acp 自带 _session_to_client 反查，web 有独立 WebChannel 不经此路径）。
     ws_channel: Any = None
+
+
+def _acp_route_decision(route: RouteConfig, method: str) -> str | None:
+    """ACP 通道的转发判定。
+
+    ACP 的方法集合归 AgentServer，网关只回答两个问题：这个方法是不是网关
+    自己要处理的、要不要拦截；其余方法一律当作不透明字符串传给上游。
+    未登记的方法按 ``AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS`` 决定是否透传。
+    """
+    if route.channel_id != "acp":
+        return None
+    return route_req_method(
+        method,
+        forward_methods=route.forward_methods,
+        local_methods=frozenset(route.local_handlers),
+    )
 
 
 @dataclass(frozen=True)
@@ -1384,6 +1405,25 @@ class ProtocolRuntime(BaseWebChannel):
             )
             return
 
+        acp_decision = _acp_route_decision(route, method)
+        if acp_decision == ROUTE_DENIED:
+            await self.send_response(
+                ws, req_id, ok=False,
+                error=f"method not allowed: {method}", code="METHOD_NOT_ALLOWED",
+            )
+            return
+        # ACP 的所有方法都要过企业版禁写，已登记转发与未登记透传一视同仁；
+        # 判定复用 Web 入口，避免 ACP 绕过管理面。非 ACP 通道为 None。
+        if acp_decision is not None:
+            from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
+
+            if is_enterprise_write_forbidden(method):
+                await self.send_response(
+                    ws, req_id, ok=False,
+                    error="企业版配置由管理面统一下发", code="FORBIDDEN",
+                )
+                return
+
         explicit_session_id = bool(str(params.get("session_id") or "").strip())
         session_id = (str(params.get("session_id") or "").strip()) or req_id
         session_key = self._client_route_key(route.channel_id, session_id) if explicit_session_id else None
@@ -1396,18 +1436,23 @@ class ProtocolRuntime(BaseWebChannel):
             explicit_session_id and self._tui_request_reattaches(ws, method, session_id)
         )
 
-        # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler
-        if method in route.forward_methods:
-            req_method = parse_request_method(method)
-
-            if req_method is None:
-                await ws.send(
-                    json.dumps(
-                        {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
-                        ensure_ascii=False,
+        # 1. forward 优先：方法在 forward_methods 中则转发到 MessageHandler。
+        # ACP 的未登记方法也走这里，按不透明字符串透传（除非显式关闭）。
+        forward_unknown = acp_decision == ROUTE_FORWARD_UNKNOWN
+        if method in route.forward_methods or forward_unknown:
+            if forward_unknown:
+                # 方法枚举归 AgentServer；网关不认识时保持原字符串。
+                req_method = parse_request_method(method) or method
+            else:
+                req_method = parse_request_method(method)
+                if req_method is None:
+                    await ws.send(
+                        json.dumps(
+                            {"type": "res", "id": req_id, "ok": False, "error": f"unknown method: {method}"},
+                            ensure_ascii=False,
+                        )
                     )
-                )
-                return
+                    return
 
             # V2: 提取 agent_ref 用于路由键（支撑场景 2 同 session 切 mode 不串窗）。
             # 客户端未发送 agent_ref 时不合成——保持 2 元组注册，与响应查找侧

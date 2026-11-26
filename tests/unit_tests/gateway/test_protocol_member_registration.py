@@ -39,6 +39,7 @@ def test_register_member_rejects_duplicate_value():
 
 
 def test_module_level_req_methods_still_registered():
+    assert protocol_methods.ReqMethod.MEMORY_PORTAL_OPEN.value == "memory.portal.open"
     assert protocol_methods.ReqMethod.SKILLS_UPLOAD_FINALIZE.value == protocol_methods.SKILL_UPLOAD_FINALIZE
     assert protocol_methods.ReqMethod.VIDEO_CONVERSATION_APPEND.value == "video.conversation.append"
 
