@@ -1,6 +1,50 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pure local business identity rules, without authentication or worker selection."""
+"""Pure local business identity rules, without authentication or worker selection.
+
+``local-v1`` is one rule for the raw query and header bytes of a handshake or a
+request. Both processes apply it to the same bytes, so the slot an Acceptor
+chooses and the business user a Worker serves cannot disagree. It only reads what
+the client declares; it never authenticates anyone.
+
+The rules:
+
+* ``user_id`` may be declared once in the URL query, percent-encoded as UTF-8,
+  and once in ``X-User-Id``. When both are present they must name the same user.
+* ``X-User-Id`` carries ASCII only, without its optional whitespace. HTTP stacks
+  decode other bytes differently: websockets reads them as ASCII with surrogate
+  escapes and aiohttp as UTF-8 with surrogate escapes. A non-ASCII user can only
+  be declared in the query, where Web and HTTP accept it.
+* A user is stripped, normalized to NFC, has no control characters and takes at
+  most 256 UTF-8 bytes. TUI and ACP accept ``[A-Za-z0-9_-]+`` only.
+* A malformed, repeated or conflicting declaration is refused with HTTP 400. It
+  is never ignored or repaired: a dropped declaration would move the connection
+  to another user or to the anonymous bucket without anyone noticing.
+
+A connection that declares no user joins one anonymous bucket. Nothing tells two
+anonymous clients apart across reconnects, or between the WebSocket and the HTTP
+requests of one client. A key made up per connection would therefore scatter one
+client over slots whose state is not shared and cut it off from its own sessions.
+The price is that anonymous traffic does not spread, and it may be much of the
+traffic: the personal Web client declares no user until its page URL has carried
+``user_id`` once. A deployment that needs this traffic spread must have its
+clients declare a user.
+
+No entry uses this contract yet. Once a runtime adopts it, it replaces the
+per-entry readers, which changes behavior on purpose:
+
+* Web ``/ws`` reads the query before the header and accepts any text
+  (``WebChannel._resolve_connection_user_id``).
+* TUI and ACP read the header before the query and skip a value outside
+  ``[A-Za-z0-9_-]+`` (``ProtocolRuntime._extract_ws_user_id``).
+* ``e2a.identity.normalize_routing_identity`` keeps the first non-empty value of
+  a field, with no length limit. It still normalizes routing metadata; a consumer
+  of this contract must take the business user of a connection from the resolved
+  identity instead of reading the handshake again.
+
+Refusing an ambiguous declaration follows the AgentOS IAM handshake, which
+already refuses repeated or mismatched ``user_id`` declarations.
+"""
 
 from __future__ import annotations
 
@@ -47,9 +91,10 @@ class LocalIdentityPolicy:
 
 
 def _normalize_user(value: str) -> str | None:
-    if any(unicodedata.category(character) == 'Cc' for character in value):
+    normalized = unicodedata.normalize('NFC', value)
+    if any(unicodedata.category(character) == 'Cc' for character in normalized):
         raise IngressIdentityError()
-    normalized = value.strip()
+    normalized = normalized.strip()
     if not normalized:
         return None
     try:
@@ -127,7 +172,8 @@ def resolve_local_identity(
 
     Args:
         query: Raw ASCII URL query, without the leading question mark.
-        headers: Raw header pairs, preserving duplicates; values decode as Latin-1.
+        headers: Raw header pairs, preserving duplicates; ``X-User-Id`` is ASCII
+            once its optional whitespace is removed.
         entry: Business entry kind; TUI and ACP retain their ASCII user rules.
         policy: Explicit local contract and identity namespace.
 
@@ -148,7 +194,12 @@ def resolve_local_identity(
     header_values = [value for name, value in headers if name.lower() == b'x-user-id']
     if len(header_values) > 1:
         raise IngressIdentityError()
-    header_user = _normalize_user(header_values[0].decode('latin1')) if header_values else None
+    header_user = None
+    if header_values:
+        raw_header_user = header_values[0].strip(b' \t')
+        if not raw_header_user.isascii():
+            raise IngressIdentityError()
+        header_user = _normalize_user(raw_header_user.decode('ascii'))
     if query_user is not None and header_user is not None and query_user != header_user:
         raise IngressIdentityError()
     user = query_user or header_user
