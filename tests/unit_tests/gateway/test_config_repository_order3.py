@@ -12,6 +12,7 @@ from agent_gateway.config.channel.access import (
     clear_channel_config_repository,
     get_channel_config_repository,
 )
+from agent_gateway.config.channel.repository import find_xiaoyi_app
 from agent_gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
 from agent_gateway.config.logging.access import (
     clear_logging_config_repository,
@@ -163,6 +164,14 @@ def test_enterprise_record_repositories_cover_catalog(monkeypatch: pytest.Monkey
     store = _DictPersistentStore()
     repos = create_enterprise_record_repositories(store)
     assert set(repos) == set(ENTERPRISE_RECORD_STORE_NAMES)
+
+
+def test_find_xiaoyi_app_updates_selected_app_and_ignores_invalid_apps() -> None:
+    apps = [{"agent_id": "agent"}, {"api_id": "api"}]
+
+    assert find_xiaoyi_app(None, "api", "agent", push_id="new") is None
+    assert find_xiaoyi_app(apps, "api", "agent", push_id="new") is apps[1]
+    assert apps[1]["push_id"] == "new"
 
 
 @pytest.mark.asyncio

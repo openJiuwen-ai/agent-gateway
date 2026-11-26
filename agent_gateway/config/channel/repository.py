@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_gateway.common.xiaoyi_apps import find_xiaoyi_app
 from agent_gateway.config.channel.codec import ChannelConfigCodec
 from agent_gateway.config.channel.models import (
     CHANNEL_CONFIG_STORE_NAME,
@@ -14,6 +13,57 @@ from agent_gateway.config.channel.models import (
 )
 from agent_gateway.storage.protocols.persistent import PersistentStore
 from agent_gateway.storage.revision import retry_on_revision_conflict
+
+
+def find_xiaoyi_app(
+    apps: Any,
+    api_id: str,
+    agent_id: str,
+    *,
+    push_id: Any = None,
+) -> dict[str, Any] | None:
+    """Find the runtime app and update its push ID when supplied."""
+    if not isinstance(apps, list) or not apps:
+        return None
+
+    api_id = str(api_id or "").strip()
+    agent_id = str(agent_id or "").strip()
+    target = next(
+        (
+            app for app in apps
+            if (
+                api_id
+                and isinstance(app, dict)
+                and str(app.get("api_id") or "").strip() == api_id
+            )
+        ),
+        None,
+    )
+    if target is None:
+        target = next(
+            (
+                app for app in apps
+                if (
+                    agent_id
+                    and isinstance(app, dict)
+                    and str(app.get("agent_id") or "").strip() == agent_id
+                )
+            ),
+            None,
+        )
+    if target is None:
+        target = next(
+            (
+                app for app in apps
+                if isinstance(app, dict) and app.get("is_default", False)
+            ),
+            None,
+        )
+    if target is None and len(apps) == 1 and isinstance(apps[0], dict):
+        target = apps[0]
+    if target is not None and push_id is not None:
+        target["push_id"] = push_id
+    return target
 
 
 def _with_body(
@@ -230,15 +280,15 @@ class ChannelConfigRepository:
             body = dict(existing.body) if existing else {}
             body.update(conf)
             push_id = conf.get("push_id")
-            if push_id:
-                apps = body.get("apps")
-                if isinstance(apps, list) and apps:
-                    target = find_xiaoyi_app(apps, api_id, agent_id)
-                    if target is not None:
-                        target["push_id"] = str(push_id)
+            find_xiaoyi_app(
+                body.get("apps"),
+                api_id,
+                agent_id,
+                push_id=str(push_id) if push_id else None,
+            )
             return await self.upsert(_with_body(existing, "xiaoyi", body))
 
         return await retry_on_revision_conflict(once)
 
 
-__all__ = ["ChannelConfigRepository"]
+__all__ = ["ChannelConfigRepository", "find_xiaoyi_app"]

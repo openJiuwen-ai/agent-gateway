@@ -26,7 +26,6 @@ from agent_gateway.common.paths import (
     get_config_file,
 )
 from agent_gateway.common.runtime_model_config import apply_runtime_model_config
-from agent_gateway.common.xiaoyi_apps import find_xiaoyi_app
 from agent_gateway.extensions.base_crypto import get_crypto_provider
 
 logger = logging.getLogger(__name__)
@@ -460,14 +459,15 @@ def update_xiaoyi_runtime_in_config(
     for k, v in conf.items():
         section[k] = _as_plain_yaml_str(v)
 
+    from agent_gateway.config.channel.repository import find_xiaoyi_app
+
     push_id = conf.get("push_id")
-    if push_id:
-        plain_push_id = _as_plain_yaml_str(str(push_id))
-        apps = section.get("apps")
-        if isinstance(apps, list) and apps:
-            target = find_xiaoyi_app(apps, api_id, agent_id)
-            if target is not None:
-                target["push_id"] = plain_push_id
+    find_xiaoyi_app(
+        section.get("apps"),
+        api_id,
+        agent_id,
+        push_id=_as_plain_yaml_str(str(push_id)) if push_id else None,
+    )
 
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
