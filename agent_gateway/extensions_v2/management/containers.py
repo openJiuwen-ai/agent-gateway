@@ -126,6 +126,15 @@ async def sync_members(manager: Any, store: ExtensionInstallState, trigger: Trig
                     )
             continue
 
+        if not _enabled_on_disk(target) and target.status not in {"standby", "pending"}:
+            # Restore/disable writes manifest.enable; never load such a copy
+            # from the sync path. Standby/pending copies are seeded unloaded
+            # but remain loadable when promoted.
+            if loaded is not None:
+                await _release_runtime(manager, store, package_id, loaded.version)
+            await _mark_instance_disabled(store, target)
+            continue
+
         state = _dependency_state(store, target.root)
         if state == "waiting":
             continue
@@ -316,6 +325,31 @@ async def _finalize_uninstalls(manager: Any, store: ExtensionInstallState) -> No
             store.mark, record.package_id, version=record.version,
             active=False, enabled=False, status="uninstalling", error=str(error),
         )
+
+
+def _enabled_on_disk(target: _Instance) -> bool:
+    """Return the manifest loading flag; unreadable or mismatched copies stay loadable."""
+    try:
+        manifest = load_manifest(target.root)
+    except Exception:  # noqa: BLE001 - the normal load path reports the real error
+        return True
+    if manifest.package_id != target.package_id or manifest.version != target.version:
+        return True
+    return manifest.enable
+
+
+async def _mark_instance_disabled(store: ExtensionInstallState, target: _Instance) -> None:
+    """Persist the store side of a disabled copy so the UI and next sync agree."""
+    if target.kind == "bundle":
+        await asyncio.to_thread(
+            store.mark_bundle_member, target.bundle_id, target.bundle_version,
+            target.package_id, enabled=False, active=False, status="disabled", error="",
+        )
+        return
+    await asyncio.to_thread(
+        store.mark, target.package_id, version=target.version,
+        enabled=False, active=False, status="disabled", error="",
+    )
 
 
 def _instances(store: ExtensionInstallState, install_dir: Path) -> list[_Instance]:
