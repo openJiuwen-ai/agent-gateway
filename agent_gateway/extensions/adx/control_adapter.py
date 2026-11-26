@@ -4,16 +4,12 @@
 
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from agent_gateway.extensions.agentos.agentos_router.control_adapter import ManagedSandboxControl, SandboxBackend
+from agent_gateway.southbound.control.managed import ManagedSandboxControl
 
 
 class AdxControl(ManagedSandboxControl):
-    def __init__(self, backend: SandboxBackend, ingress_url: str) -> None:
-        super().__init__(backend)
-        self._ingress_url = ingress_url
-
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
-        origin = urlsplit(self._ingress_url)
+        origin = urlsplit(self.backend.frontend_endpoint)
         target = 'urn:adx:instance:' + quote(instance_id, safe='')
         return urlunsplit(('wss' if protocol == 'ws' else 'https', origin.netloc,
                           f'/agent/{protocol}', urlencode({'target': target, 'port': port}), ''))

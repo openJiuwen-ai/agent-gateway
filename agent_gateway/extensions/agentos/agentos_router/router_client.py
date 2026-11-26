@@ -130,9 +130,8 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
     extract_trace_id,
 )
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-from agent_gateway.extensions.agentos.agentos_router.control_adapter import (
-    SandboxCreateRequest, YuanRongControl,
-)
+from agent_gateway.extensions.agentos.agentos_router.control_adapter import YuanRongControl
+from agent_gateway.southbound.control.managed import SandboxCreateRequest
 from agent_gateway.telemetry import (
     TraceOperation, bind_request_trace, current_request_trace, inject_request_headers,
     start_gateway_trace, trace_operation, bind_cleanup_trace, current_cleanup_trace,
@@ -3254,7 +3253,7 @@ class AgentOSRouterClient(AgentServerClient):
     async def _startup_cleanup_sandboxes(self) -> None:
         try:
             await cleanup_stale_sandboxes(
-                yuanrong=self._yuanrong,
+                control=self._managed_control,
                 registry=self._registry,
                 agent_manager=self._agent_manager,
                 is_closed=lambda: self._closed,
@@ -3796,7 +3795,7 @@ class AgentOSRouterClient(AgentServerClient):
         # generation must never reuse the ID addressed by a previous DELETE.
         generation = agent_info.agent_id
         physical_name = f"gateway-{generation}"
-        namespace = self._yuanrong.agent_namespace
+        namespace = self._managed_control.backend.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
             return await self._managed_control.create(SandboxCreateRequest(

@@ -63,7 +63,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             ws_client_factory=ws_client_factory,
         )
         self._closed = True
-        self._managed_control = AdxControl(self._control, config.ingress_url)
+        self._managed_control = AdxControl(self._control)
         self.set_or_update_server_config(config={})
 
     async def shutdown(self) -> None:

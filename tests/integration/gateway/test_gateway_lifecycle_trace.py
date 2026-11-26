@@ -90,6 +90,8 @@ async def test_gateway_startup_sweep_tracing_is_configured_before_connect(monkey
             runtime.provider.add_span_processor(SimpleSpanProcessor(exporter))
 
     router._yuanrong = SimpleNamespace(connect=connect_frontend, delete_sandbox=AsyncMock())
+    from agent_gateway.southbound.control.managed import ManagedSandboxControl
+    router._managed_control = ManagedSandboxControl(router._yuanrong)
 
     class Client:
         async def connect(self, uri):
