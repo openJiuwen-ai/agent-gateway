@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import aclosing
+from pathlib import Path
 
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
+from agent_gateway.common.agentos_runtime import is_agentos_runtime
 from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
@@ -21,8 +24,27 @@ from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator impor
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
 from agent_gateway.extensions.auth.credential_authenticator import AuthResult
 from agent_gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
-from agent_gateway.southbound.orchestration.agent_manager import AgentManager
-from agent_gateway.southbound.orchestration.managed_router import ManagedRouter
+from agent_gateway.southbound.orchestration.agent_manager import AgentManager, AgentPreCreateError, BUILTIN_AGENT_TYPE
+from agent_gateway.southbound.orchestration.managed_router import ManagedRouter, resolve_agent_workspace, sandbox_name
+
+
+class _AdxManagedRouter(ManagedRouter):
+    def _sandbox_physical_name(self, agent_info) -> str:
+        return f'{sandbox_name(agent_info.user_id, agent_info.agent_type)}-{agent_info.agent_id[:12]}'
+
+    async def _create_agent_impl(self, agent_info, operation):
+        if agent_info.agent_type == BUILTIN_AGENT_TYPE:
+            from agent_gateway.extensions.adx.workspace import check_workspace_config
+            try:
+                workspace = resolve_agent_workspace(agent_info.user_id, workspace_root=self._workspace_root)
+                await asyncio.to_thread(check_workspace_config,
+                    Path(workspace) / '.jiuwenswarm/config/config.yaml',
+                    require_prepared=is_agentos_runtime())
+            except ValueError as exc:
+                # No Environment was requested. A later successful deployment
+                # can admit this user without restarting Gateway or clearing caches.
+                raise AgentPreCreateError(str(exc)) from exc
+        return await super()._create_agent_impl(agent_info, operation)
 
 
 class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
@@ -38,7 +60,7 @@ class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
         self._config = config
         self._control = control_client or AdxControlClient(config)
         settings = config.router
-        self._router = ManagedRouter(
+        self._router = _AdxManagedRouter(
             AdxControl(self._control, config),
             registry_client or RegistryClient(settings.registry),
             AgentManager(
@@ -91,6 +113,7 @@ class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
 
     def set_or_update_server_config(self, *, config: dict, env: dict | None = None) -> None:
         self._router.set_or_update_server_config(config=config, env=env)
+        self._control.agent_idle_timeout_seconds = self._router._sandbox_idle_timeout_seconds
 
     async def send_request(self, envelope: E2AEnvelope, *, timeout: float | None = None) -> AgentResponse:
         if envelope.channel == HEALTH_CHECK_CHANNEL_ID:
@@ -98,7 +121,7 @@ class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
                 raise AdxRoutingError('ADX router is closed', code='ADX_ROUTER_CLOSED')
             return AgentResponse(
                 envelope.request_id, envelope.channel,
-                payload={"health_check": f"{HEALTH_CHECK_OK}: mocked by adx_router"},
+                payload={"health_check": f"{HEALTH_CHECK_OK}: mocked by ADX backend"},
             )
         return await self._router.send_request(envelope, timeout=timeout)
 

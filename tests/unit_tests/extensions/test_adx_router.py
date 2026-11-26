@@ -4,22 +4,26 @@ import asyncio
 import base64
 import json
 import tempfile
+from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
 import pytest
+
 from e2a.models import E2AEnvelope
 from e2a.agent_models import AgentResponse
-
 from agent_gateway.extensions.adx.config import load_router_config
+from agent_gateway.extensions.adx.runtime_config import managed_sandbox_settings
 from agent_gateway.extensions.adx.control_client import AdxControlClient
 from agent_gateway.extensions.adx.router_client import AdxRouterClient
+from agent_gateway.extensions.agentos.agentos_router.registry_client import InstanceRecord
+from agent_gateway.extensions.agentos.agentos_router.backend import AGENT_GENERATION_ENV
 
 
-def _config(monkeypatch, **overrides):
+def _config(monkeypatch, *, sandbox=None, **overrides):
     monkeypatch.setenv('TEST_ADX_KEY', 'platform-secret')
     root = Path(tempfile.mkdtemp(prefix='adx-env-gateway-'))
     for user in ('alice', 'bob'):
@@ -28,9 +32,30 @@ def _config(monkeypatch, **overrides):
                 'connect_timeout_seconds': 2}
     settings.update(overrides)
     return load_router_config({'gateway': {
-        'agent_client': {'type': 'adx_router', 'agent_namespace': 'test'},
+        'agent_client': {'type': 'agentos_router', 'agent_namespace': 'test'},
         'adx': settings, 'agentos': {'workspace_root': str(root)},
-    }})
+    }, 'sandbox': sandbox})
+
+
+def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
+    config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
+    router = AdxRouterClient(config)
+    local_url = urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092))
+    assert local_url.scheme == 'ws'
+    assert local_url.path == '/test-alice%2Bjiuwenswarm/18092'
+    assert urlsplit(router._agent_http_url('test-third', 8080)).path == '/test-third/8080'
+    assert urlsplit(router._agent_http_url('test-alice+jiuwenswarm', 18092)).scheme == 'http'
+    secure = AdxRouterClient(_config(monkeypatch))
+    assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
+    for protocol, url in [
+        ('ws', secure._agent_ws_url('test-alice+jiuwenswarm', 18092)),
+        ('http', secure._agent_http_url('test-alice+jiuwenswarm', 18092)),
+    ]:
+        parsed = urlsplit(url)
+        target = parse_qs(parsed.query)['target'][0]
+        assert parsed.path == f'/agent/{protocol}'
+        assert target == 'urn:adx:instance:test-alice%2Bjiuwenswarm'
+        assert unquote(target.removeprefix('urn:adx:instance:')) == 'test-alice+jiuwenswarm'
 
 
 class EnvironmentAPI:
@@ -110,6 +135,70 @@ def _router(config, *, auth_client=None):
     return router, clients
 
 
+@pytest.mark.parametrize('failure', ['migration', 'uninitialized'])
+async def test_workspace_failure_blocks_only_its_user_and_is_retryable(monkeypatch, failure):
+    from agent_gateway.extensions.adx.workspace import MIGRATION_ERROR_FILE
+    monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
+    config = _config(monkeypatch)
+    healthy_folder = Path(config.router.workspace_root) / 'bob/.jiuwenswarm/config'
+    healthy_folder.mkdir(parents=True)
+    (healthy_folder / 'config.yaml').write_text('sandbox: {type: adx-environment}\n')
+    folder = Path(config.router.workspace_root) / 'alice/.jiuwenswarm/config'
+    folder.mkdir(parents=True)
+    marker = folder / MIGRATION_ERROR_FILE
+    if failure == 'migration':
+        (folder / 'config.yaml').write_text('sandbox: {type: adx-environment}\n')
+        marker.write_text(json.dumps({'reason': 'sandbox.files requires explicit migration to ADX policy/mounts'}))
+    router, _ = _router(config)
+    await router.connect('')
+    try:
+        failed, healthy = await asyncio.gather(router.send_request(_request('alice')),
+                                             router.send_request(_request('bob')))
+        assert not failed.ok
+        assert 'WORKSPACE_CONFIG_INVALID' in failed.payload['error']
+        reason = 'sandbox.files' if failure == 'migration' else 'application workspace initialization required'
+        assert reason in failed.payload['error']
+        assert healthy.ok
+        assert len(router.test_api.creates) == 1
+        assert 'bob' in router.test_api.creates[0]['name']
+        marker.unlink(missing_ok=True)
+        (folder / 'config.yaml').write_text('sandbox: {type: adx-environment}\n')
+        assert (await router.send_request(_request('alice', rid='after-migration'))).ok
+        assert len(router.test_api.creates) == 2
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.parametrize('runtime,status', [
+    ('runsc', 'running'), ('runsc', 'paused'),
+    ('supervisor', 'running'), ('conch', 'running'),
+])
+async def test_startup_cleanup_retires_untracked_environments_for_all_runtimes(
+    monkeypatch, runtime, status,
+):
+    router, _ = _router(_config(monkeypatch, runtime_class=runtime))
+    instance = 'test-alice+jiuwenswarm'
+    router.test_api.environments[instance] = {'id': instance, 'status': status}
+    registry = SimpleNamespace(
+        enabled=True,
+        list_instances=AsyncMock(return_value=[InstanceRecord(
+            service_id='existing-service', instance_id=instance, user='alice', framework='jiuwenswarm',
+        )]),
+        unregister_instance=AsyncMock(return_value={'deleted': True}),
+        close=AsyncMock(),
+    )
+    router._router._registry = registry
+    try:
+        await router.connect('')
+        if router._stale_cleanup_task is not None:
+            await asyncio.wait_for(router._stale_cleanup_task, timeout=2)
+        assert instance not in router.test_api.environments
+        registry.unregister_instance.assert_awaited_once()
+        registry.list_instances.assert_awaited()
+    finally:
+        await router.shutdown()
+
+
 def _request(user='alice', rid='same-id', **params):
     return E2AEnvelope(request_id=rid, user_id=user, channel='web', method='chat.send', params=params)
 
@@ -173,6 +262,11 @@ async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
             assert client.headers['Authorization'] == 'Bearer platform-secret'
             assert 'X-ADX-Parameters' not in client.headers
         assert all(body['rootfs']['imageurl'] == 'registry.example/agentserver:1' for body in router.test_api.creates)
+        for body in router.test_api.creates:
+            user = Path(body['mounts'][0]['host_path']).name
+            generation = body['env'][AGENT_GENERATION_ENV]
+            assert len(generation) == 32
+            assert body['name'] == f'{user}+jiuwenswarm-{generation[:12]}'
         mounts = [body['mounts'][0]['host_path'] for body in router.test_api.creates]
         assert len(set(mounts)) == 2 and all(Path(path).is_dir() for path in mounts)
         assert all(body['process']['commands'][0][-1].startswith('exec jiuwenswarm-agentserver')
@@ -180,18 +274,12 @@ async def test_users_and_first_creates_are_isolated_and_coalesced(monkeypatch):
     finally:
         await router.shutdown()
 
+
 @pytest.mark.parametrize('remote_deleted', [False, True])
-async def test_unknown_delete_fences_retired_instance_until_absence_confirmed(monkeypatch, remote_deleted):
-    config = _config(monkeypatch)
-    config = replace(config, router=replace(
-        config.router,
-        probes=replace(
-            config.router.probes,
-            wait_running_interval_seconds=0.01,
-            wait_running_timeout_seconds=0.2,
-        ),
-    ))
-    router, clients = _router(config)
+async def test_unknown_delete_retains_operation_until_lookup_confirms_result(monkeypatch, remote_deleted):
+    router, clients = _router(_config(monkeypatch))
+    router._router._probe_settings = replace(router._probe_settings,
+        wait_running_timeout_seconds=0.2, wait_running_interval_seconds=0.01)
     await router.connect('')
     try:
         await router.send_request(_request())
@@ -202,31 +290,36 @@ async def test_unknown_delete_fences_retired_instance_until_absence_confirmed(mo
         router.test_api.delete_committed = remote_deleted
         assert await router.delete_agent('alice', 'jiuwenswarm')
         instance = next(iter(router._control._deletes))
+        delete_operation = router._control._deletes[instance]
         clients[0].disconnect.assert_awaited_once()
         assert await router._agent_manager.get_agent('alice', 'jiuwenswarm') is None
         router._registry.unregister_agent.assert_awaited_once()
-
+        # An unknown DELETE must never hand its old target back to a caller.
         response = await router.send_request(_request(rid='next'))
+        assert response.ok is remote_deleted
+        assert len(router.test_api.creates) == (2 if remote_deleted else 1)
         if remote_deleted:
-            # Absence was confirmed, so the retired ID is never reused.
-            assert response.ok
-            assert clients[-1].uri != first_url
-            assert len(router.test_api.creates) == 2
             assert instance not in router._control._deletes
-        else:
-            # The old instance is still visible: never publish a replacement.
-            assert not response.ok
+        if not remote_deleted:
             assert 'AGENT_REBUILD_PENDING' in response.payload['error']
-            assert len(router.test_api.creates) == 1
-            assert instance in router._control._deletes
-
-            router.test_api.delete_error = False
-            lifecycle = router._sandbox_lifecycles['alice+jiuwenswarm']
-            await router._delete_retired_sandbox(lifecycle)
-            assert instance not in router._control._deletes
-            assert (await router.send_request(_request(rid='after-delete'))).ok
-            assert len(router.test_api.creates) == 2
-            assert clients[-1].uri != first_url
+            assert router._control._deletes[instance] == delete_operation
+        router.test_api.delete_error = False
+        if not remote_deleted:
+            for lifecycle in router._sandbox_lifecycles.values():
+                lifecycle.delete_retry_at = 0
+            assert (await router.send_request(_request(rid='delete-confirmed'))).ok
+            retries = [request for request in router.test_api.requests if request.method == 'DELETE'
+                       and request.url.path.endswith('/' + instance)]
+            assert all(request.headers['x-request-id'] == delete_operation for request in retries)
+        assert len(router.test_api.creates) == 2
+        assert clients[-1].uri != first_url
+        assert router.test_api.creates[0]['mounts'] == router.test_api.creates[1]['mounts']
+        assert await router.delete_agent('alice', 'jiuwenswarm')
+        assert (await router.send_request(_request(rid='after-delete'))).ok
+        assert len(router.test_api.creates) == 3
+        create_ids = [request.headers['x-request-id'] for request in router.test_api.requests
+                      if request.method == 'POST']
+        assert len(set(create_ids)) == 3
     finally:
         await router.shutdown()
 
@@ -257,17 +350,18 @@ async def test_terminal_environment_is_cleaned_and_next_request_recreates(monkey
         await router.shutdown()
 
 
-@pytest.mark.parametrize('url', ['http://adx.example', 'https://user:secret@adx.example', 'https://adx.example/path',
+@pytest.mark.parametrize('url', ['ftp://adx.example', 'https://user:secret@adx.example', 'https://adx.example/path',
                                   'https://adx.example?token=x', 'https://adx.example/#fragment'])
 def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
     with pytest.raises(ValueError):
         _config(monkeypatch, ingress_url=url)
 
 
-async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch):
+@pytest.mark.parametrize('ingress_url', ['https://adx.example', 'http://127.0.0.1:8080'])
+async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch, ingress_url):
     from agent_gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
-    router, _clients = _router(_config(monkeypatch, builtin_image='registry.example/builtin:1'))
+    router, _clients = _router(_config(monkeypatch, ingress_url=ingress_url, builtin_image='registry.example/builtin:1'))
     spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:2222']},
             'cmds': [['/app/worker', '--serve']], 'code_path': '/work', 'cpu': 500, 'memory': 1024,
             'probes': {'startup': {'tcpSocket': {'port': 2222}, 'failureThreshold': 3}}}
@@ -283,8 +377,8 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
         assert body['process'] == {'commands': spec['cmds'], 'user': '10001:10001', 'cwd': '/work'}
         assert body['cpu'] == 500 and body['memory'] == 1024
         env = dict(body['env'])
-        generation = env.pop('JIUWEN_GATEWAY_SANDBOX_GENERATION')
-        assert body['name'] == f'gateway-{generation}'
+        generation = env.pop(AGENT_GENERATION_ENV)
+        assert body['name'] == f'alice+third-{generation[:12]}'
         assert env == {'MODEL_ENDPOINT': 'http://model/v1'}
         assert Path(body['mounts'][0]['host_path']).name == 'alice'
         assert body['readinessProbe']['tcpSocket']['port'] == 2222
@@ -293,7 +387,6 @@ async def test_registry_launch_spec_is_forwarded_to_environment_without_template
         assert all('/api/agent/' not in request.url.path for request in router.test_api.requests)
     finally:
         await router.shutdown()
-
 
 
 @pytest.mark.parametrize('existing', [False, True])
@@ -336,3 +429,104 @@ async def test_native_placement_is_available_to_strict_registry_on_first_post(mo
     finally:
         await control.close()
         await registry.close()
+
+
+async def test_config_request_retains_adx_warmup_failure(monkeypatch):
+    from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentRuntime
+
+    router, _ = _router(_config(monkeypatch))
+    await router.connect('')
+    started = asyncio.Event()
+    release_create = asyncio.Event()
+    joined = asyncio.Event()
+    release_waiter = asyncio.Event()
+    wait = AgentRuntime.wait_until_settled
+    request = router._control.http.request
+    detail = 'requested cgroup v1 backend is unavailable'
+
+    async def create(method, url, **kwargs):
+        if method == 'POST' and url.endswith('/environments'):
+            started.set()
+            await release_create.wait()
+            return httpx.Response(409, json={
+                'message': detail,
+                'error': {'code': 'CONFLICT', 'outcome': 'terminal', 'requestId': 'create-test'},
+            })
+        return await request(method, url, **kwargs)
+
+    async def wait_for_create(runtime, timeout):
+        joined.set()
+        await wait(runtime, timeout)
+        await release_waiter.wait()
+
+    monkeypatch.setattr(router._control.http, 'request', create)
+    monkeypatch.setattr(AgentRuntime, 'wait_until_settled', wait_for_create)
+    warmup = asyncio.create_task(router._warmup_user_agent('alice'))
+    envelope = _request()
+    envelope.method = 'config.get'
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        pending = asyncio.create_task(router.send_request(envelope))
+        await asyncio.wait_for(joined.wait(), 2)
+        release_create.set()
+        await warmup
+        release_waiter.set()
+        response = await pending
+        assert not response.ok
+        assert 'AGENT_CREATE_FAILED' in response.payload['error']
+        assert detail in response.payload['error']
+        assert 'create-test' in response.payload['error']
+    finally:
+        release_create.set()
+        release_waiter.set()
+        await router.shutdown()
+
+
+async def test_adx_gateway_does_not_broadcast_its_tool_ingress_to_another_node(monkeypatch):
+    router, _ = _router(_config(monkeypatch))
+    router.set_or_update_server_config(config={"sandbox": {
+        "enabled": True, "type": "adx-environment", "url": "https://master:8443",
+        "startup_mode": "external", "image": "workspace:v1", "runtime": "conch",
+        "rootfs": {"type": "local", "path": "/objects/workspace/rootfs"},
+        "mounts": [{"host_path": "/opt/python", "target": "/opt/python", "options": ["ro"]}],
+        "env": {"PATH": "/opt/python/bin:/usr/bin", "ADX_TOKEN": "not-for-tools", "JIUWENSWARM_ADX_NODE_CONTEXT_FILE": "/private-node.json"},
+    }})
+    await router.connect("")
+    try:
+        assert (await router.send_request(_request())).ok
+        env = router.test_api.creates[0]["env"]
+        assert router._server_config["sandbox"]["type"] == "adx-environment"
+        assert router._server_config["sandbox"]["enabled"]
+        deployment = json.loads(env["JIUWENSWARM_AGENTOS_SANDBOX_CONFIG"])
+        assert "url" not in deployment
+        assert "startup_mode" not in deployment
+        assert "JIUWENSWARM_ADX_NODE_INGRESS_URL" not in env
+        assert deployment == managed_sandbox_settings()
+    finally:
+        await router.shutdown()
+
+
+async def test_loader_registers_one_canonical_router_for_adx_backend(monkeypatch):
+    from agent_gateway.extensions.agentos.agentos_router import extension
+    from agent_gateway.extensions.loader import ExtensionLoader
+
+    monkeypatch.setenv('ROUTER_BACKEND_TEST_TOKEN', 'test-only-token')
+    settings = {'gateway': {'agent_client': {'type': 'agentos_router'}, 'adx': {
+        'ingress_url': 'https://node.example', 'tenant': 'test', 'token_env': 'ROUTER_BACKEND_TEST_TOKEN',
+    }}}
+    monkeypatch.setattr(extension, 'get_config', lambda: settings)
+    clients = []; third = []
+    registry = SimpleNamespace(config={}, register_agent_server_client=clients.append,
+                               register_third_agent=third.append)
+    loader = ExtensionLoader(registry)
+    package = Path(extension.__file__).parents[2]
+    loader.add_search_path(package)
+    roots = loader.discover_extension_roots()
+    assert package / 'adx' not in roots
+    loaded = await loader.load_extension(package / 'agentos')
+    try:
+        assert len(loaded) == 1 and loaded == clients == third
+        assert loaded[0].metadata.id == 'agentos_router'
+        assert isinstance(loaded[0].get_client(), AdxRouterClient)
+    finally:
+        await loaded[0].shutdown()
