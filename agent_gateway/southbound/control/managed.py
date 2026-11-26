@@ -49,7 +49,7 @@ class SandboxCreateRequest:
     workspace: str
     runtime_spec: AgentRuntimeSpec | Mapping[str, Any]
     env_vars: dict[str, str] | None = None
-    builtin: bool = False
+    builtin: bool | None = None
     web_port: int | None = None
 
 

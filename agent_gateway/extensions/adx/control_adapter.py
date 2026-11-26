@@ -13,11 +13,13 @@ from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
 class AdxControl(ManagedSandboxControl):
     backend: AdxControlClient
 
-    def __init__(self, backend: AdxControlClient, config: AdxRouterConfig) -> None:
+    def __init__(self, backend: AdxControlClient, config: AdxRouterConfig | None = None) -> None:
         super().__init__(backend)
         self._config = config
 
     async def create(self, request: SandboxCreateRequest) -> SandboxInfo:
+        if request.builtin is None and request.web_port is None:
+            return await super().create(request)
         return await self.backend.create_sandbox(
             namespace=request.namespace, name=request.name, workspace=request.workspace,
             runtime_spec=request.runtime_spec, env_vars=request.env_vars,
@@ -31,7 +33,8 @@ class AdxControl(ManagedSandboxControl):
         )
 
     def ws_headers(self) -> dict[str, str]:
-        return apply_trace_header({'Authorization': 'Bearer ' + self._config.token})
+        config = self._config if self._config is not None else self.backend.config
+        return apply_trace_header({'Authorization': 'Bearer ' + config.token})
 
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
