@@ -44,6 +44,10 @@ from agent_gateway.telemetry import (
 
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7
+# 单请求在途响应帧上限。队列原来无上限，下游（慢客户端 / 阻塞的 SSE 写）
+# 消费跟不上时，接收循环会把整条流缓存在内存里；到上限后判该请求失败并
+# 丢弃积压帧，把「慢消费者」从无界内存占用变成可观测的错误。
+_MAX_BUFFERED_WIRE_MESSAGES = 512
 AGENT_REQUEST_TIMEOUT_SECONDS: float = 600.0
 _UNARY_REQUEST_TIMEOUT_SECONDS = AGENT_REQUEST_TIMEOUT_SECONDS
 
@@ -102,11 +106,55 @@ class _ReceiverFailure:
         self.exc = exc
 
 
+class AgentServerResponseBacklogExceeded(RuntimeError):
+    """单个请求的在途响应帧超过缓冲上限：下游消费太慢，已丢弃整条流。
+
+    继承 ``RuntimeError`` 与断连路径保持一致，调用方的兜底 ``except
+    RuntimeError`` 仍能捕获；单独成类型便于调用方区分「连接断了」和
+    「自己读得太慢」。
+    """
+
+    def __init__(self, request_id: str, max_backlog: int) -> None:
+        super().__init__(
+            "WebSocketAgentServerClient: response backlog exceeded for "
+            f"request_id={request_id!r} (buffered frames > {max_backlog}); "
+            "the consumer is not draining the stream fast enough."
+        )
+        self.request_id = request_id
+        self.max_backlog = max_backlog
+
+
+def _raise_receiver_failure(data: "_ReceiverFailure") -> None:
+    """接收侧失败标记 → 抛出对应异常（积压溢出保留原始类型，其余视为断连）."""
+    if isinstance(data.exc, AgentServerResponseBacklogExceeded):
+        raise data.exc
+    raise RuntimeError("AgentServer WebSocket connection closed") from data.exc
+
+
 def _wire_request_id_key(request_id: Any) -> str:
     """与 AgentServer 回包 ``request_id`` 对齐：统一为 str，避免 JSON 数字/字符串导致队列键不一致。"""
     if request_id is None:
         return ""
     return str(request_id)
+
+
+def _deliver_receiver_failure(queue: asyncio.Queue, exc: BaseException) -> int:
+    """把 ``_ReceiverFailure`` 投递到响应队列，队列满时先丢弃最老的积压帧.
+
+    返回被丢弃的帧数。不会阻塞：失败信号必须能送到等待方，即便下游已经
+    停止消费，也不能让接收循环卡在 ``await put`` 上（那会连累所有请求）。
+    """
+    drained = 0
+    while True:
+        try:
+            queue.put_nowait(_ReceiverFailure(exc))
+            return drained
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                return drained
 
 
 def _to_json(data: Any) -> str:
@@ -421,7 +469,27 @@ class WebSocketAgentServerClient(AgentServerClient):
                             continue
 
                         if request_id and request_id in self._message_queues:
-                            await self._message_queues[request_id].put(data)
+                            queue = self._message_queues[request_id]
+                            try:
+                                queue.put_nowait(data)
+                            except asyncio.QueueFull:
+                                # 下游消费太慢：丢弃积压帧并让等待方立刻失败，
+                                # 而不是把整条流无限缓存在内存里。同时把 rid
+                                # 记为已取消，后续到达的帧一并丢弃。
+                                self._cancelled_request_ids.add(request_id)
+                                drained = _deliver_receiver_failure(
+                                    queue,
+                                    AgentServerResponseBacklogExceeded(
+                                        request_id, queue.maxsize
+                                    ),
+                                )
+                                logger.error(
+                                    "[WebSocketAgentServerClient] 响应积压超过上限，已终止该请求: "
+                                    "request_id=%s max_backlog=%s discarded=%d",
+                                    request_id,
+                                    queue.maxsize,
+                                    drained,
+                                )
                         else:
                             # 没有对应的队列（非预期情况）——可能是 E2A 编解码导致
                             # request_id 不匹配，此时 send_request 会等满自身超时
@@ -515,7 +583,11 @@ class WebSocketAgentServerClient(AgentServerClient):
         failure = _ReceiverFailure(exc)
         async with self._queue_lock:
             for queue in self._message_queues.values():
-                queue.put_nowait(failure)
+                try:
+                    queue.put_nowait(failure)
+                except asyncio.QueueFull:
+                    # 满队列说明消费方已严重滞后；清空后重投，保证失败信号可达。
+                    _deliver_receiver_failure(queue, exc)
         logger.info("[WebSocketAgentServerClient] 接收任务已停止并通知等待队列: %s", detail)
         self._fire_disconnect_handler(exc)
 
@@ -677,8 +749,8 @@ class WebSocketAgentServerClient(AgentServerClient):
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
 
-        # 创建该请求的消息队列
-        queue = asyncio.Queue()
+        # 创建该请求的消息队列（有界：见 _MAX_BUFFERED_WIRE_MESSAGES）
+        queue = asyncio.Queue(maxsize=_MAX_BUFFERED_WIRE_MESSAGES)
         self._message_queues[rid] = queue
 
         operation = current_request_trace()
@@ -717,7 +789,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             try:
                 data = await asyncio.wait_for(queue.get(), timeout=effective_timeout)
                 if isinstance(data, _ReceiverFailure):
-                    raise RuntimeError("AgentServer WebSocket connection closed") from data.exc
+                    _raise_receiver_failure(data)
             except asyncio.TimeoutError as e:
                 logger.warning(
                     "[WebSocketAgentServerClient] 非流式请求超时: request_id=%s timeout=%ss",
@@ -829,8 +901,8 @@ class WebSocketAgentServerClient(AgentServerClient):
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
 
-        # 创建该请求的消息队列
-        queue = asyncio.Queue()
+        # 创建该请求的消息队列（有界：见 _MAX_BUFFERED_WIRE_MESSAGES）
+        queue = asyncio.Queue(maxsize=_MAX_BUFFERED_WIRE_MESSAGES)
         self._message_queues[rid] = queue
 
         operation = current_request_trace()
@@ -877,7 +949,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                 else:
                     data = await queue.get()
                 if isinstance(data, _ReceiverFailure):
-                    raise RuntimeError("AgentServer WebSocket connection closed") from data.exc
+                    _raise_receiver_failure(data)
                 if chunk_count == 0 and operation is not None:
                     operation.event("response.first", {
                         "response_wait_ms": round((monotonic() - response_started) * 1000, 3),
