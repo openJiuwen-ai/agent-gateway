@@ -13,7 +13,7 @@ import uuid
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Optional, TextIO
+from typing import Any, Optional
 
 import portalocker
 import yaml
@@ -163,15 +163,25 @@ _YAML_PARSE_CACHE: dict[str, tuple[_YamlStamp, dict[str, Any]]] = {}
 _YAML_PARSE_CACHE_LOCK = threading.Lock()
 
 
-def _yaml_file_stamp(source: Path | TextIO) -> _YamlStamp | None:
-    """Identify the file behind a path or open stream; skip caching without a file ID."""
-    try:
-        stat_result = source.stat() if isinstance(source, Path) else os.fstat(source.fileno())
-    except OSError:
-        return None
+def _yaml_stamp_from_stat(stat_result: os.stat_result) -> _YamlStamp | None:
+    """Return a cache identity from stat data; skip caching without a file ID."""
     if not stat_result.st_ino:
         return None
-    return stat_result.st_dev, stat_result.st_ino, stat_result.st_mtime_ns, stat_result.st_size
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_mtime_ns,
+        stat_result.st_size,
+    )
+
+
+def _yaml_file_stamp(filepath: Path) -> _YamlStamp | None:
+    """Return the identity used for the cache lookup before opening the file."""
+    try:
+        stat_result = filepath.stat()
+    except OSError:
+        return None
+    return _yaml_stamp_from_stat(stat_result)
 
 
 def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
@@ -204,7 +214,10 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 # The path may have been replaced since the lookup or between retries.
-                parsed_stamp = _yaml_file_stamp(f)
+                try:
+                    parsed_stamp = _yaml_stamp_from_stat(os.fstat(f.fileno()))
+                except OSError:
+                    parsed_stamp = None
                 parsed = yaml.safe_load(f) or {}
             if parsed_stamp is not None:
                 with _YAML_PARSE_CACHE_LOCK:
