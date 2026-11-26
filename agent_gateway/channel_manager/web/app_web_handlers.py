@@ -88,6 +88,12 @@ _OPENAI_ACCOUNT_SDK_NAMES = frozenset({
 })
 
 
+def _openai_account_error_types(name: str) -> tuple[type[Exception], ...]:
+    """Match loaded SDK errors without importing the SDK while handling an error."""
+    error_type = globals().get(name)
+    return (error_type,) if isinstance(error_type, type) and issubclass(error_type, Exception) else ()
+
+
 def _load_openai_account_sdk() -> None:
     from agent_gateway.common.openjiuwen_logging import ensure_openjiuwen_core_logging
 
@@ -369,7 +375,7 @@ def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
         manager = OpenAIAccountAuthManager()
         try:
             tokens = manager.poll_device_login(job.device_code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             if exc.relogin_required:
                 _remove_openai_account_login_job(login_id)
             raise
@@ -2905,7 +2911,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.status] %s", exc)
             await channel.send_response(
                 ws,
@@ -2931,7 +2937,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.start_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -2952,7 +2958,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=True, payload=payload)
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.pending_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -2985,7 +2991,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.poll_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -3011,7 +3017,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.logout] %s", exc)
             await channel.send_response(
                 ws,
@@ -3037,7 +3043,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         except LifecycleError as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(
                 ws,
@@ -3047,7 +3053,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code=exc.code,
                 payload=_openai_account_auth_error_payload(exc),
             )
-        except OpenAIAccountModelListError as exc:
+        except _openai_account_error_types("OpenAIAccountModelListError") as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="MODEL_LIST_ERROR")
         except _OPENAI_ACCOUNT_LOCAL_ERRORS as exc:

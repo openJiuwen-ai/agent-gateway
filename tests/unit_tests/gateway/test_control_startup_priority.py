@@ -97,6 +97,31 @@ async def test_callback_single_flight_keeps_owner_loop_and_registration_order() 
         await registry.trigger("event")
 
 
+async def test_failed_callback_import_can_retry_without_losing_registrations() -> None:
+    from agent_gateway.extensions.registry import ExtensionRegistry
+
+    attempts = []
+
+    def preload():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise OSError("temporary SDK import failure")
+
+    framework = SimpleNamespace(register_sync=Mock(), trigger=AsyncMock())
+    registry = ExtensionRegistry(None, {}, Mock(), lambda: framework, preload)
+    handler = Mock()
+    registry.register("event", handler)
+    try:
+        with pytest.raises(OSError, match="temporary SDK import failure"):
+            await registry.trigger("event")
+        await registry.trigger("event")
+        assert len(attempts) == 2
+        framework.register_sync.assert_called_once_with("event", handler, priority=100)
+        framework.trigger.assert_awaited_once_with("event")
+    finally:
+        await registry.aclose()
+
+
 async def test_registry_close_does_not_publish_after_cancelled_import() -> None:
     from agent_gateway.extensions.registry import ExtensionRegistry
 

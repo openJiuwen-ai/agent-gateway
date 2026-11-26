@@ -202,6 +202,31 @@ async def test_account_sdk_failure_responds_without_sdk_error_types(monkeypatch,
     assert channel.responses[0]['code'] == 'SERVICE_UNAVAILABLE'
 
 
+@pytest.mark.parametrize('method,payload_function', [
+    ('openai_account.auth.status', '_openai_account_auth_status_payload'),
+    ('openai_account.auth.start_login', '_openai_account_start_login_payload'),
+    ('openai_account.auth.pending_login', '_openai_account_pending_login_payload'),
+    ('openai_account.auth.poll_login', '_openai_account_poll_login_payload'),
+    ('openai_account.auth.logout', '_openai_account_logout_payload'),
+    ('openai_account.models.list', '_openai_account_models_payload'),
+])
+async def test_account_unexpected_error_reaches_dispatcher_before_sdk_ready(
+    monkeypatch, method, payload_function,
+):
+    """Unknown errors retain their identity for the shared channel dispatcher."""
+    for name in app_web_handlers._OPENAI_ACCOUNT_SDK_NAMES:
+        monkeypatch.delitem(vars(app_web_handlers), name, raising=False)
+
+    def fail_before_sdk(*_args, **_kwargs):
+        raise RuntimeError('unexpected OAuth failure')
+
+    monkeypatch.setattr(app_web_handlers, payload_function, fail_before_sdk)
+    channel = _bind()
+    with pytest.raises(RuntimeError, match='unexpected OAuth failure'):
+        await channel.methods[method](object(), 'unexpected', {'login_id': 'test'}, 'session')
+    assert channel.responses == []
+
+
 @pytest.mark.parametrize('method,params', [
     ('cron.job.create', {}), ('cron.job.update', {'id':'job', 'patch':{}}),
     ('cron.job.delete', {'id':'job'}), ('cron.job.toggle', {'id':'job','enabled':True}),

@@ -14,7 +14,7 @@ Gateway-side copy: keep behavior in step with
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
@@ -343,6 +343,12 @@ class ExtensionInstallState:
         if not records:
             return None
         return max(records, key=_record_preference)
+
+    def record_snapshot(self) -> tuple[Collection[ExtensionInstallRecord], Collection[ExtensionBundleRecord]]:
+        """Return unordered package and bundle records from one read of the shared file."""
+
+        packages, bundles = self._load()
+        return packages.values(), bundles.values()
 
     def packages(self) -> list[ExtensionInstallRecord]:
         """Return every package record, including both host domains."""

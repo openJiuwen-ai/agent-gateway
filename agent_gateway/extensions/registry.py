@@ -155,12 +155,21 @@ class ExtensionRegistry:
         if self._closed:
             raise RuntimeError("Extension registry is closed")
         if self._callback_framework is None and self._callback_preloader is not None:
-            if self._callback_import_task is None:
-                self._callback_import_task = asyncio.create_task(
+            task = self._callback_import_task
+            if task is None:
+                task = asyncio.create_task(
                     asyncio.to_thread(self._callback_preloader), name="gateway-sdk-import",
                 )
+                self._callback_import_task = task
             # One cancelled caller must not cancel another caller's SDK preparation.
-            await asyncio.shield(self._callback_import_task)
+            try:
+                await asyncio.shield(task)
+            except Exception:
+                # A temporary import failure must not poison all later hooks.
+                # Another waiter may already have started the replacement task.
+                if self._callback_import_task is task:
+                    self._callback_import_task = None
+                raise
         return self.callback_framework
 
     async def aclose(self) -> None:

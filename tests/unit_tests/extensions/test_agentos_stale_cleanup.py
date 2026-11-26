@@ -16,6 +16,7 @@ from agent_gateway.extensions.agentos.agentos_router.router_client import AgentO
 from agent_gateway.extensions.agentos.agentos_router.stale_cleanup import (
     cleanup_stale_sandboxes,
 )
+from agent_gateway.southbound.control.managed import ManagedSandboxControl
 from tests.unit_tests.extensions.test_agentos_router import (
     FakeRegistryClient,
     FakeYuanRongClient,
@@ -86,7 +87,7 @@ async def test_cleanup_deletes_all_listed_sandboxes_and_unregisters() -> None:
     ]
     registry = _CleanupRegistry(records)
     processed = await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=AgentManager(),
     )
@@ -116,7 +117,7 @@ async def test_cleanup_continues_after_one_record_fails() -> None:
             return await super().list_all_agents()
 
     processed = await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=_FlakyManager(),
     )
@@ -158,7 +159,7 @@ async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> N
     yuanrong = _YuanRongCreatesLiveOnDelete()
     registry = _CleanupRegistry([stale, other])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -187,7 +188,7 @@ async def test_cleanup_cas_skips_unregister_when_row_retargeted() -> None:
 
     yuanrong = _YuanRongUpsertsRowOnDelete()
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -225,7 +226,7 @@ async def test_cleanup_cas_skips_sibling_upsert_during_unregister() -> None:
     registry = _RegistrySiblingUpsert([stale, other])
     yuanrong = FakeYuanRongClient()
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=AgentManager(),
     )
@@ -256,7 +257,7 @@ async def test_cleanup_unregisters_when_live_service_refresh_fails_after_delete(
     stale = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-stale")
     registry = _CleanupRegistry([stale])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=_FailAfterFirstSnapshot(),
     )
@@ -283,7 +284,7 @@ async def test_cleanup_keeps_registry_row_when_live_sandbox_refresh_fails() -> N
     live = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-live")
     registry = _CleanupRegistry([live])
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
@@ -320,7 +321,7 @@ async def test_cleanup_skips_live_sandbox_and_service() -> None:
     ]
     registry = _CleanupRegistry(records)
     await cleanup_stale_sandboxes(
-        yuanrong=yuanrong,
+        control=ManagedSandboxControl(yuanrong),
         registry=registry,  # type: ignore[arg-type]
         agent_manager=manager,
     )
