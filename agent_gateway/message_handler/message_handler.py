@@ -40,6 +40,7 @@ from agent_gateway.telemetry import (
     release_response_trace, retain_request_continuation, trace_stage,
 )
 from agent_gateway.channel_manager.base import ChannelType
+from agent_gateway.common.bounded_cache import BoundedLruCache
 from agent_gateway.common.hooks_config import load_hooks_config
 from agent_gateway.common.host_services import (
     install_runtime_wake_handler,
@@ -130,6 +131,11 @@ _SINGLE_USER_CHANNEL_IDS = frozenset({
 })
 _TUI_DISCONNECT_CANCEL_GRACE_SECONDS = 60.0
 _DEFAULT_INLINE_FILE_SIZE_LIMIT = 128 * 1024
+# 会话级"最近一次用户提问/发起者"是纯兜底缓存：命中用，miss 只退化到空值，
+# 因此可以按 LRU 淘汰。若不设上限，长跑进程会按「见过的会话数」永久累积
+# ——单条 query 最多 8000 字符，2048 条即约 16 MB 常驻。
+_SESSION_LAST_QUERY_CACHE_SIZE = 2048
+_SESSION_LAST_ORIGINATOR_CACHE_SIZE = 2048
 # 匹配消息文本中的 ``@path`` / ``@"quoted path"`` 文件引用，可带 ``#L10-20``
 # 行号后缀（当前实现忽略行号，按整文件读取）。
 _AT_FILE_REFERENCE_PATTERN = re.compile(
@@ -451,11 +457,15 @@ class MessageHandler(ABC):
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
         self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
-        self._session_last_user_query: dict[str, str] = {}
+        self._session_last_user_query: BoundedLruCache[str, str] = BoundedLruCache(
+            _SESSION_LAST_QUERY_CACHE_SIZE
+        )
         # session_id -> 最近一次人类发起请求的 (channel_id, member_name)。
         # team 模式下 file msg 不携带发起者身份（rid 固定为建会话那轮），send_file 定向
         # 投递时按 session_id 取最近发起者兜底（并发时可能取到另一 human，仅投错人不泄漏）。
-        self._session_last_originator: dict[str, tuple[str, str]] = {}
+        self._session_last_originator: BoundedLruCache[str, tuple[str, str]] = (
+            BoundedLruCache(_SESSION_LAST_ORIGINATOR_CACHE_SIZE)
+        )
         self._acp_session_aliases: dict[str, str] = {}  # external_session_id -> internal_session_id
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
@@ -7222,6 +7232,7 @@ class MessageHandler(ABC):
         self._disconnect_cancel_tasks.clear()
         self._evolution_approval.clear_all()
         self._session_last_user_query.clear()
+        self._session_last_originator.clear()
 
         # 取消转发循环
         if self._forward_task is not None:
