@@ -8,7 +8,13 @@ import asyncio
 import logging
 from typing import Any
 
+from agent_gateway.lifecycle_errors import LifecycleError
+
 logger = logging.getLogger("gateway")
+_MIGRATION_ATTEMPTS = 3
+_CATALOG_TIMEOUT_SECONDS = 3.0
+_RETRY_DELAY_SECONDS = 1.0
+_READY_TIMEOUT_SECONDS = 5.0
 
 
 class CronStartup:
@@ -23,13 +29,32 @@ class CronStartup:
 
     def start(self) -> None:
         if self._closed:
-            raise RuntimeError("Cron startup is closed")
+            raise LifecycleError("SERVICE_UNAVAILABLE", "Cron startup is closed")
         if self._task is None:
             self._task = asyncio.create_task(self._run(), name="cron-startup")
+            self._task.add_done_callback(self._observe_completion)
+
+    @staticmethod
+    def _observe_completion(task: asyncio.Task) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("[App] Cron scheduler startup failed", exc_info=(type(error), error, error.__traceback__))
 
     async def wait_ready(self) -> None:
         self.start()
-        await asyncio.shield(self._task)
+        try:
+            # A timed-out/disconnected caller must not cancel shared startup or
+            # an atomic migration write that another caller is waiting for.
+            await asyncio.wait_for(asyncio.shield(self._task), _READY_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            raise LifecycleError("SERVICE_UNAVAILABLE", "Cron is still initializing; retry shortly") from exc
+        except asyncio.CancelledError as exc:
+            if self._closed:
+                raise LifecycleError("SERVICE_UNAVAILABLE", "Cron is shutting down") from exc
+            raise
+        except Exception as exc:
+            raise LifecycleError("SERVICE_UNAVAILABLE", "Cron startup failed; restart Gateway to retry") from exc
+        if self._closed:
+            raise LifecycleError("SERVICE_UNAVAILABLE", "Cron is shutting down")
 
     async def _migrate(self) -> None:
         from agent_gateway.common.model_migration import migrate_legacy_cron_selections
@@ -39,8 +64,9 @@ class CronStartup:
         if not any(job.model_selection is None and job.model_name for job in jobs):
             return
         # No controller/store lock is held across the remote request.
-        rows = await fetch_agent_model_rows(
-            agent_client=self.client, channel_id="gateway-cron-migration",
+        rows = await asyncio.wait_for(
+            fetch_agent_model_rows(agent_client=self.client, channel_id="gateway-cron-migration"),
+            _CATALOG_TIMEOUT_SECONDS,
         )
         if rows is None:
             raise RuntimeError("AgentServer model catalog is unavailable")
@@ -52,18 +78,24 @@ class CronStartup:
             )
 
     async def _run(self) -> None:
-        while True:
+        for attempt in range(_MIGRATION_ATTEMPTS if self.migrate_file else 0):
             try:
-                if self.migrate_file:
-                    await self._migrate()
-                await self.scheduler.start()
-                logger.info("[App] deferred Cron scheduler ready")
-                return
+                await self._migrate()
+                break
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.warning("[App] Cron startup deferred; retrying in 5s", exc_info=True)
-                await asyncio.sleep(5)
+                if attempt + 1 == _MIGRATION_ATTEMPTS:
+                    # Preserve develop's best-effort migration contract. The
+                    # scheduler already forwards legacy model_name unchanged;
+                    # failed migration must not disable all existing jobs.
+                    logger.warning("[App] Cron model-selection migration deferred; retaining legacy model names", exc_info=True)
+                else:
+                    await asyncio.sleep(_RETRY_DELAY_SECONDS)
+        # Scheduler initialization is never part of the migration retry loop.
+        # A partial failure is reported to callers, not retried on a live graph.
+        await self.scheduler.start()
+        logger.info("[App] deferred Cron scheduler ready")
 
     async def stop(self) -> None:
         self._closed = True

@@ -1038,16 +1038,22 @@ class CronSchedulerService:
         self._boot_time = self._now_fn()
         try:
             await self.reload()
+            self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
+            if bool(getattr(self._store, "supports_watch", False)):
+                self._watch_task = asyncio.create_task(
+                    self._watch_store(),
+                    name="cron-store-watch",
+                )
+            logger.info("[Cron] scheduler started")
         except BaseException:
             self._running = False
+            tasks = [task for task in (self._watch_task, self._task) if task is not None]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._watch_task = self._task = None
             raise
-        self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
-        if bool(getattr(self._store, "supports_watch", False)):
-            self._watch_task = asyncio.create_task(
-                self._watch_store(),
-                name="cron-store-watch",
-            )
-        logger.info("[Cron] scheduler started")
 
     async def _watch_store(self) -> None:
         watch = getattr(self._store, "watch", None)

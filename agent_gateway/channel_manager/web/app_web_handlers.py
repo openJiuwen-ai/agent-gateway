@@ -80,6 +80,7 @@ from agent_gateway.common.work_mode import (
 )
 from agent_gateway.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from agent_gateway.dotenv_early import load_dotenv_runtime
+from agent_gateway.lifecycle_errors import LifecycleError
 
 _OPENAI_ACCOUNT_SDK_NAMES = frozenset({
     "OpenAIAccountAuthError", "OpenAIAccountAuthManager", "OpenAIAccountDeviceCode",
@@ -90,12 +91,16 @@ _OPENAI_ACCOUNT_SDK_NAMES = frozenset({
 def _load_openai_account_sdk() -> None:
     from agent_gateway.common.openjiuwen_logging import ensure_openjiuwen_core_logging
 
-    ensure_openjiuwen_core_logging()
-    from openjiuwen.extensions.external_provider.openai_auth import openai_account_auth, openai_account_models
+    try:
+        ensure_openjiuwen_core_logging()
+        from openjiuwen.extensions.external_provider.openai_auth import openai_account_auth, openai_account_models
 
-    for name in _OPENAI_ACCOUNT_SDK_NAMES:
-        module = openai_account_models if name in {"OpenAIAccountModelCatalog", "OpenAIAccountModelListError"} else openai_account_auth
-        globals().setdefault(name, getattr(module, name))
+        for name in _OPENAI_ACCOUNT_SDK_NAMES:
+            module = openai_account_models if name in {"OpenAIAccountModelCatalog", "OpenAIAccountModelListError"} else openai_account_auth
+            globals().setdefault(name, getattr(module, name))
+    except Exception as exc:
+        logger.warning("[openai_account] SDK preparation failed", exc_info=True)
+        raise LifecycleError("SERVICE_UNAVAILABLE", "OpenAI account SDK is unavailable") from exc
 
 
 def __getattr__(name: str):
@@ -2894,11 +2899,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_status(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del params, session_id
         try:
             payload = await asyncio.to_thread(_openai_account_auth_status_payload)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.auth.status] %s", exc)
             await channel.send_response(
@@ -2914,7 +2920,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_start_login(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del params, session_id
         try:
             payload = await asyncio.to_thread(_openai_account_start_login_payload)
@@ -2924,6 +2929,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.auth.start_login] %s", exc)
             await channel.send_response(
@@ -2939,11 +2946,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_pending_login(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del params, session_id
         try:
             payload = await asyncio.to_thread(_openai_account_pending_login_payload)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.auth.pending_login] %s", exc)
             await channel.send_response(
@@ -2959,7 +2967,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_poll_login(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del session_id
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
@@ -2976,6 +2983,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.auth.poll_login] %s", exc)
             await channel.send_response(
@@ -2991,7 +3000,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_auth_logout(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del params, session_id
         try:
             payload = await asyncio.to_thread(_openai_account_logout_payload)
@@ -3001,6 +3009,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.auth.logout] %s", exc)
             await channel.send_response(
@@ -3016,7 +3026,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     async def _openai_account_models_list(ws, req_id, params, session_id):
-        await asyncio.to_thread(_load_openai_account_sdk)
         del params, session_id
         try:
             payload = await asyncio.to_thread(_openai_account_models_payload)
@@ -3026,6 +3035,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except OpenAIAccountAuthError as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(
@@ -5449,6 +5460,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     params["project_id"] = resolve_default_project_id(bind_work_mode)
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
 
@@ -5513,6 +5526,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             job = await cc.update_job(job_id, patch, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except Exception as e:  # noqa: BLE001
@@ -5600,6 +5615,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             job = await cc.toggle_job(job_id, enabled, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except KeyError:
@@ -5663,6 +5680,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["awaiting_approval"] = True
                 payload["reused_pending_session"] = True
             await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except ValueError as e:
