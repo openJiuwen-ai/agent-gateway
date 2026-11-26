@@ -17,6 +17,7 @@ from pydantic import (
     model_validator,
 )
 
+from .advanced_config_fields import DEFAULT_ADVANCED_CONFIG_SWITCHES
 from .safe_text import SafeTextMixin
 
 
@@ -385,6 +386,38 @@ class ExecutionGuardTemplateCreateRequest(ExecutionGuardTemplateUpdateRequest):
     body: dict[str, Any] = Field(
         ...,
         description="完整 execution_guard 段，含模型异常检测与循环断路器",
+    )
+
+
+class AdvancedConfigTemplateUpdateRequest(SafeTextMixin):
+    """对齐 advanced_config_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    enabled: bool = Field(default=None)
+    progressive_tool_enabled: bool = Field(default=None)
+    progressive_tool_optimize: bool = Field(default=None)
+    a4p_enabled: bool = Field(default=None)
+    auto_memory_enabled: bool = Field(default=None)
+    enable_kv_cache_affinity: bool = Field(default=None)
+    data: dict[str, Any] | None = None
+
+
+class AdvancedConfigTemplateCreateRequest(AdvancedConfigTemplateUpdateRequest):
+    template_id: str = Field(..., min_length=1, max_length=100)
+    template_name: str = Field(..., min_length=1, max_length=128)
+    progressive_tool_enabled: bool = Field(
+        default=DEFAULT_ADVANCED_CONFIG_SWITCHES["progressive_tool_enabled"]
+    )
+    progressive_tool_optimize: bool = Field(
+        default=DEFAULT_ADVANCED_CONFIG_SWITCHES["progressive_tool_optimize"]
+    )
+    a4p_enabled: bool = Field(default=DEFAULT_ADVANCED_CONFIG_SWITCHES["a4p_enabled"])
+    auto_memory_enabled: bool = Field(
+        default=DEFAULT_ADVANCED_CONFIG_SWITCHES["auto_memory_enabled"]
+    )
+    enable_kv_cache_affinity: bool = Field(
+        default=DEFAULT_ADVANCED_CONFIG_SWITCHES["enable_kv_cache_affinity"]
     )
 
 

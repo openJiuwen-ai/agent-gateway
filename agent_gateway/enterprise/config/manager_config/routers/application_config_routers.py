@@ -7,7 +7,6 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ..core.application_config.advanced_config import AdvancedConfigService
 from ..core.application_config.audit_log_config import AuditLogConfigService
 from ..core.application_config.cron_policy import CronPolicyService
 from ..core.application_config.log_masking_rule import LogMaskingRuleService
@@ -18,7 +17,6 @@ from ..core.application_config.user_preference_default import (
     UserPreferenceDefaultService,
 )
 from ..schemas.application_config_schemas import (
-    AdvancedConfigUpsertRequest,
     AuditLogUpsertRequest,
     CronPolicyUpsertRequest,
     LoggingConfigUpsertRequest,
@@ -45,9 +43,6 @@ TaskMemorySyncBody = make_sync_body("TaskMemorySyncBody", TaskMemoryUpsertReques
 MemorySyncBody = make_sync_body("MemorySyncBody", MemoryConfigUpsertRequest)
 AuditLogSyncBody = make_sync_body("AuditLogSyncBody", AuditLogUpsertRequest)
 CronPolicySyncBody = make_sync_body("CronPolicySyncBody", CronPolicyUpsertRequest)
-AdvancedConfigSyncBody = make_sync_body(
-    "AdvancedConfigSyncBody", AdvancedConfigUpsertRequest
-)
 UserPreferenceDefaultSyncBody = make_sync_body(
     "UserPreferenceDefaultSyncBody", UserPreferenceDefaultUpsertRequest
 )
@@ -211,35 +206,6 @@ async def upsert_user_preference_default(
             detail=f"user preference default upsert failed: {exc}",
         ) from exc
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
-
-
-@application_config_router.put("/advanced-config", response_model=ResponseModel)
-async def upsert_advanced_config(
-    sync: Annotated[SyncContext, Depends(verify_sync(AdvancedConfigSyncBody))],
-):
-    try:
-        result = await AdvancedConfigService().upsert(sync.business)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    trigger_runtime_config_update()
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, result))
-
-
-@application_config_router.delete(
-    "/advanced-config/{agent_template_id}", response_model=ResponseModel
-)
-async def delete_advanced_config(
-    agent_template_id: str,
-    sync: VerifySyncEnvelopeOnly,
-):
-    try:
-        await AdvancedConfigService().delete(agent_template_id)
-    except ValueError as exc:
-        detail = str(exc)
-        status = 404 if "not found" in detail else 400
-        raise HTTPException(status_code=status, detail=detail) from exc
-    trigger_runtime_config_update()
-    return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
 
 
 @application_config_router.put("/audit-log", response_model=ResponseModel)
