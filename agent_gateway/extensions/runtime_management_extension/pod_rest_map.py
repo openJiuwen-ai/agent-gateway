@@ -372,6 +372,11 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.routing``（``group_id`` / ``bot_id`` / ``gateway_id``）
     必须经 ``X-*`` 头传到 Agent，由 Agent HTTP 入口重建。
 
+    Web 逻辑路由同理：``channel_context.app_id`` / ``agent_ref`` 经
+    ``X-App-Id`` / ``X-Agent-Ref-Mode`` / ``X-Agent-Ref-Id`` 透传（A4P 授权
+    pending/complete 等依赖它们与发单路由对齐）。键存在时即使值为空也发送，
+    以便 Agent 区分「显式省略维度」与「缺失后填 default」。
+
     企业租户顶层字段同理：``service_id`` / ``agent_id`` / ``workspace_key``
     （Gateway ``apply_invoke_ids_to_envelope`` 写入）经
     ``X-Service-Id`` / ``X-Agent-Id`` / ``X-Workspace-Key`` 透传。
@@ -429,6 +434,16 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    if "app_id" in channel_context:
+        # Keep empty string so AgentServer does not invent app_id=default.
+        headers["X-App-Id"] = str(channel_context.get("app_id") or "")
+    agent_ref = channel_context.get("agent_ref")
+    if isinstance(agent_ref, dict) and ("mode" in agent_ref or "id" in agent_ref):
+        headers["X-Agent-Ref-Mode"] = str(agent_ref.get("mode") or "")
+        headers["X-Agent-Ref-Id"] = str(agent_ref.get("id") or "")
+    ws_id = str(channel_context.get("ws_id") or "").strip()
+    if ws_id:
+        headers["X-Ws-Id"] = ws_id
     cron_targets = str(channel_context.get("targets") or "").strip()
     if cron_targets:
         headers["X-Cron-Targets"] = cron_targets
