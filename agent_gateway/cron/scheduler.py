@@ -2601,6 +2601,7 @@ class CronSchedulerService:
                         scheduled_dt,
                         "push_update", job.id, run_id,
                     )
+                self._prune_finished_runs()
 
         task = asyncio.create_task(_run_agent(), name=f"cron-run-{job.id}")
         self._run_tasks[run_id] = task
@@ -2666,6 +2667,49 @@ class CronSchedulerService:
             )
 
     _ACTIVE_EXEC_STATUSES = frozenset({"pending", "running", "awaiting_approval"})
+    # 终态 run 只用于短时间回看（推送兜底、直播镜像），超过保留期或条数上限即回收。
+    _RUN_HISTORY_LIMIT = 512
+    _RUN_RETENTION_SECONDS = 3600.0
+
+    def _prune_finished_runs(self) -> int:
+        """回收已结束的 run，避免 _runs/_run_tasks 随调度次数无界增长。
+
+        运行中与等待审批的 run 始终保留；已推送、已结束的 run 在超过条数上限时
+        按创建顺序淘汰，超过保留期的则直接淘汰。
+        """
+        now = self._now_fn()
+        finished: list[str] = []
+        expired: list[str] = []
+        for run_id, state in self._runs.items():
+            status = str(getattr(state, "status", "") or "").strip()
+            if status in self._ACTIVE_EXEC_STATUSES:
+                continue
+            finished_at = getattr(state, "finished_at", None)
+            if finished_at is None:
+                continue
+            finished.append(run_id)
+            if now - float(finished_at) >= self._RUN_RETENTION_SECONDS:
+                expired.append(run_id)
+
+        drop = list(expired)
+        remaining = len(self._runs) - len(drop)
+        if remaining > self._RUN_HISTORY_LIMIT:
+            expired_set = set(expired)
+            for run_id in finished:
+                if remaining <= self._RUN_HISTORY_LIMIT:
+                    break
+                if run_id in expired_set:
+                    continue
+                drop.append(run_id)
+                remaining -= 1
+
+        for run_id in drop:
+            self._runs.pop(run_id, None)
+            task = self._run_tasks.pop(run_id, None)
+            if task is not None and not task.done():
+                # 终态 run 正常不会再跑；防御性取消，避免任务悬空。
+                task.cancel()
+        return len(drop)
 
     def list_active_exec_sessions(self) -> dict[str, str]:
         """本进程里还在跑的 cron 执行会话：job_id → exec_session_id。
@@ -3346,6 +3390,7 @@ class CronSchedulerService:
         if state.result_text:
             await self._push_to_targets(job, state, text=state.result_text, is_placeholder=False)
             state.pushed_final = True
+            self._prune_finished_runs()
             return
 
         # Not ready: send placeholder
@@ -3380,6 +3425,7 @@ class CronSchedulerService:
         )
         await self._push_to_targets(job, state, text=state.result_text, is_placeholder=False)
         state.pushed_final = True
+        self._prune_finished_runs()
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
