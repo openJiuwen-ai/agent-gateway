@@ -8,7 +8,7 @@ import struct
 import pytest
 
 from agent_gateway.processes.channel import ChannelClosed, ManagementChannel
-from agent_gateway.processes.protocol import ProtocolError, encode_message
+from agent_gateway.processes.management_protocol import ProtocolError
 
 
 def init_message(slot_id: int = 0) -> dict[str, object]:
@@ -29,6 +29,14 @@ def create_pair(
         ManagementChannel(parent_socket, frame_limit=frame_limit),
         ManagementChannel(worker_socket, frame_limit=frame_limit),
     )
+
+
+def fill_send_buffer(channel: ManagementChannel) -> None:
+    while True:
+        try:
+            channel._sock.send(b"x" * 4096)
+        except BlockingIOError:
+            break
 
 
 async def test_send_receive_round_trips_a_frame() -> None:
@@ -72,11 +80,7 @@ async def test_send_serializes_concurrent_calls() -> None:
 async def test_send_timeout_includes_waiting_for_send_lock() -> None:
     parent, worker = create_pair()
     message = init_message()
-    while True:
-        try:
-            parent._sock.send(b"x" * 4096)
-        except BlockingIOError:
-            break
+    fill_send_buffer(parent)
 
     blocked_send = asyncio.create_task(parent.send(message))
     await asyncio.sleep(0)
@@ -147,12 +151,23 @@ async def test_receive_reports_truncated_frame_as_protocol_error() -> None:
     assert worker.closed is True
 
 
-async def test_receive_reports_zero_payload_eof_after_header_as_protocol_error() -> None:
+async def test_receive_reports_missing_body_as_truncated_frame() -> None:
     parent, worker = create_pair()
     parent._sock.send(struct.pack(">I", 10))
     parent.close()
 
     with pytest.raises(ProtocolError, match="truncated"):
+        await worker.receive()
+
+    assert worker.closed is True
+
+
+async def test_receive_rejects_zero_length_payload() -> None:
+    parent, worker = create_pair()
+    parent._sock.send(struct.pack(">I", 0))
+    parent.close()
+
+    with pytest.raises(ProtocolError, match="empty"):
         await worker.receive()
 
     assert worker.closed is True
@@ -217,3 +232,77 @@ async def test_receive_rejects_invalid_json_and_closes_channel() -> None:
         await worker.receive()
 
     assert worker.closed is True
+
+
+async def test_send_reports_peer_close_as_channel_closed() -> None:
+    parent, worker = create_pair()
+    worker.close()
+
+    with pytest.raises(ChannelClosed):
+        await parent.send(init_message())
+
+    assert parent.closed is True
+
+
+async def test_send_cancellation_closes_channel() -> None:
+    parent, worker = create_pair()
+    fill_send_buffer(parent)
+    blocked_send = asyncio.create_task(parent.send(init_message()))
+    await asyncio.sleep(0)
+
+    blocked_send.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await blocked_send
+
+    assert parent.closed is True
+    worker.close()
+
+
+async def test_close_cancels_inflight_receive() -> None:
+    parent, worker = create_pair()
+    reader = asyncio.create_task(worker.receive())
+    await asyncio.sleep(0)
+
+    worker.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await reader
+
+    assert worker.closed is True
+    parent.close()
+
+
+async def test_close_cancels_inflight_send() -> None:
+    parent, worker = create_pair()
+    fill_send_buffer(parent)
+    blocked_send = asyncio.create_task(parent.send(init_message()))
+    await asyncio.sleep(0)
+
+    parent.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await blocked_send
+
+    assert parent.closed is True
+    worker.close()
+
+
+async def test_send_waiting_for_lock_reports_channel_closed() -> None:
+    parent, worker = create_pair()
+    fill_send_buffer(parent)
+    blocked_send = asyncio.create_task(parent.send(init_message()))
+    await asyncio.sleep(0)
+    waiting_send = asyncio.create_task(parent.send(init_message()))
+    await asyncio.sleep(0)
+
+    parent.close()
+
+    with pytest.raises(ChannelClosed, match="closed"):
+        await waiting_send
+
+    with pytest.raises((asyncio.CancelledError, ChannelClosed)):
+        await blocked_send
+
+    assert parent.closed is True
+    worker.close()

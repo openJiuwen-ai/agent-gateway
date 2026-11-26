@@ -1,6 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Pure management-stage capability checks; no resource acquisition or probing."""
+"""Static capability checks for the future worker process pool.
+
+This preflight does not change the Gateway's default single-process behavior.
+The v1 worker launcher supports non-frozen Linux/macOS Python interpreters.
+Windows and frozen application bundles are excluded for now.
+
+``frozen_interpreter`` is reported because ``sys.executable`` points to the
+packaged application binary rather than a normal CPython interpreter. The
+current worker launch contract assumes a normal Python executable.
+
+These checks are deliberately static: they do not open files, sockets, or
+subprocesses, and they do not prove that the platform event loop or business
+runtime is ready.
+"""
 
 from __future__ import annotations
 
@@ -16,10 +29,6 @@ import sys
 class ManagementPreflight:
     supported: bool
     reasons: tuple[str, ...]
-    stage: str = 'management_preflight'
-    runtime_verified: bool = False
-    business_ready: bool = False
-    recommendation: str = 'Continue using single mode; only management-probe tests runtime support.'
 
 
 def management_preflight() -> ManagementPreflight:

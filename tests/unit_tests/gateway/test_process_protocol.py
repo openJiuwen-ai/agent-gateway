@@ -5,8 +5,7 @@ import json
 
 import pytest
 
-from agent_gateway.processes.protocol import (
-    DEFAULT_FRAME_LIMIT,
+from agent_gateway.processes.management_protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
     decode_message,
@@ -29,6 +28,8 @@ def base_message(message_type: str) -> dict[str, object]:
     elif message_type == "RUNTIME_READY":
         message["pid"] = 123
         message["runtime_ids"] = ["web-http", "web-ws", "protocol"]
+    elif message_type in {"CRON_PREPARED", "CRON_ACTIVE"}:
+        message["pid"] = 123
     elif message_type in {"STOPPED", "FAILED"}:
         message["pid"] = 123
     if message_type == "FAILED":
@@ -37,7 +38,18 @@ def base_message(message_type: str) -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
-    "message_type", ["INIT", "READY", "RUNTIME_READY", "STOP", "STOPPED", "FAILED"]
+    "message_type",
+    [
+        "INIT",
+        "READY",
+        "RUNTIME_READY",
+        "CRON_PREPARED",
+        "CRON_ACTIVATE",
+        "CRON_ACTIVE",
+        "STOP",
+        "STOPPED",
+        "FAILED",
+    ],
 )
 def test_validate_accepts_all_message_types(message_type: str) -> None:
     message = base_message(message_type)
@@ -55,6 +67,26 @@ def test_validate_only_checks_expected_identity_fields() -> None:
     }
 
     assert validate_message(message, expected=expected) == message
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("group_id", 1),
+        ("group_id", ""),
+        ("slot_id", False),
+        ("generation", 1.0),
+    ],
+)
+def test_validate_rejects_invalid_expected_identity_types(
+    field: str, value: object
+) -> None:
+    message = base_message("INIT")
+    expected = {"group_id": "gateway-group", "slot_id": 0, "generation": 1}
+    expected[field] = value
+
+    with pytest.raises(ProtocolError, match="expected"):
+        validate_message(message, expected=expected)
 
 
 @pytest.mark.parametrize(
@@ -121,6 +153,8 @@ def test_validate_rejects_invalid_type_fields(
     ("message_type", "field"),
     [
         ("INIT", "group_id"),
+        ("CRON_PREPARED", "pid"),
+        ("CRON_ACTIVE", "pid"),
         ("READY", "pid"),
         ("RUNTIME_READY", "pid"),
         ("RUNTIME_READY", "runtime_ids"),
@@ -144,6 +178,7 @@ def test_validate_rejects_missing_required_fields(
     [
         ("INIT", {"payload": {}}),
         ("INIT", {"error_code": "invalid"}),
+        ("CRON_ACTIVATE", {"pid": 123}),
         ("READY", {"status": "ready"}),
         ("RUNTIME_READY", {"stage": "management_ready"}),
         ("STOP", {"reason": "shutdown"}),
@@ -190,6 +225,62 @@ def test_encode_message_respects_custom_frame_limit() -> None:
 
     with pytest.raises(ProtocolError):
         encode_message(message, frame_limit=16)
+
+
+def test_encode_message_accepts_frame_exactly_at_limit() -> None:
+    message = base_message("INIT")
+    frame = encode_message(message)
+
+    assert encode_message(message, frame_limit=len(frame)) == frame
+    with pytest.raises(ProtocolError, match="frame limit"):
+        encode_message(message, frame_limit=len(frame) - 1)
+
+
+def test_encode_message_rejects_lone_surrogate() -> None:
+    message = base_message("INIT")
+    message["group_id"] = "\ud800"
+
+    with pytest.raises(ProtocolError, match="group_id"):
+        encode_message(message)
+
+
+def test_encode_message_rejects_integer_beyond_interpreter_limit() -> None:
+    message = base_message("INIT")
+    message["slot_id"] = 10**5000
+
+    with pytest.raises(ProtocolError, match="encode"):
+        encode_message(message)
+
+
+def test_decode_message_rejects_lone_surrogate() -> None:
+    payload = (
+        b'{"protocol_version":1,"group_id":"\\ud800",'
+        b'"slot_id":0,"generation":1,"type":"INIT"}'
+    )
+
+    with pytest.raises(ProtocolError):
+        decode_message(payload)
+
+
+@pytest.mark.parametrize(
+    "message_type",
+    [
+        "INIT",
+        "READY",
+        "RUNTIME_READY",
+        "CRON_PREPARED",
+        "CRON_ACTIVATE",
+        "CRON_ACTIVE",
+        "STOP",
+        "STOPPED",
+        "FAILED",
+    ],
+)
+def test_encode_decode_round_trips_all_message_types(message_type: str) -> None:
+    message = base_message(message_type)
+    frame = encode_message(message)
+
+    assert decode_message(frame[4:]) == message
 
 
 @pytest.mark.parametrize("frame_limit", [True, 0, 4])

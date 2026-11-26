@@ -1,5 +1,18 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Wire protocol for parent-worker process management messages."""
+"""Wire protocol for parent-worker process management messages.
+
+Direction:
+    Parent -> Worker: INIT, STOP, CRON_ACTIVATE.
+    Worker -> Parent: READY, RUNTIME_READY, CRON_PREPARED, CRON_ACTIVE,
+    STOPPED, FAILED.
+
+Expected lifecycle:
+    INIT -> READY -> RUNTIME_READY -> CRON_PREPARED* -> CRON_ACTIVATE
+    -> CRON_ACTIVE -> STOP -> STOPPED.
+
+Protocol v1 uses a closed schema. Adding a field requires a protocol version
+bump and a coordinated parent/worker deployment.
+"""
 
 import json
 import re
@@ -12,8 +25,18 @@ class ProtocolError(ValueError):
     """Raised when a message violates the management process protocol."""
 
 
+def _is_utf8_encodable(value: str) -> bool:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 PROTOCOL_VERSION = 1
 DEFAULT_FRAME_LIMIT = 16384
+FRAME_HEADER_SIZE = struct.calcsize(">I")
+MIN_FRAME_LIMIT = FRAME_HEADER_SIZE + 1
 
 _MAX_GROUP_ID_LENGTH = 256
 _MAX_RUNTIME_COUNT = 64
@@ -65,6 +88,7 @@ def validate_message(message: Any, *, expected: Mapping[str, Any] | None = None)
         not isinstance(group_id, str)
         or not group_id
         or len(group_id) > _MAX_GROUP_ID_LENGTH
+        or not _is_utf8_encodable(group_id)
     ):
         raise ProtocolError("group_id must be a non-empty bounded string")
 
@@ -97,6 +121,7 @@ def validate_message(message: Any, *, expected: Mapping[str, Any] | None = None)
                 not isinstance(runtime_id, str)
                 or not runtime_id
                 or len(runtime_id) > _MAX_RUNTIME_ID_LENGTH
+                or not _is_utf8_encodable(runtime_id)
             ):
                 raise ProtocolError("each runtime_id must be a non-empty bounded string")
         if len(set(runtime_ids)) != len(runtime_ids):
@@ -118,6 +143,20 @@ def validate_message(message: Any, *, expected: Mapping[str, Any] | None = None)
         expected_fields = {"group_id", "slot_id", "generation"}
         if not expected_fields.issubset(expected):
             raise ProtocolError("expected identity is missing required fields")
+        expected_group_id = expected["group_id"]
+        if (
+            not isinstance(expected_group_id, str)
+            or not expected_group_id
+            or len(expected_group_id) > _MAX_GROUP_ID_LENGTH
+            or not _is_utf8_encodable(expected_group_id)
+        ):
+            raise ProtocolError("expected group_id must be a non-empty bounded string")
+        expected_slot_id = expected["slot_id"]
+        if type(expected_slot_id) is not int or expected_slot_id < 0:
+            raise ProtocolError("expected slot_id must be a non-negative integer")
+        expected_generation = expected["generation"]
+        if type(expected_generation) is not int or expected_generation < 1:
+            raise ProtocolError("expected generation must be a positive integer")
         for field in expected_fields:
             if message[field] != expected[field]:
                 raise ProtocolError(f"message {field} does not match expected identity")
@@ -139,15 +178,20 @@ def encode_message(
     *,
     frame_limit: int = DEFAULT_FRAME_LIMIT,
 ) -> bytes:
-    if type(frame_limit) is not int or frame_limit < 5:
-        raise ProtocolError("frame_limit must be an integer of at least 5 bytes")
+    if type(frame_limit) is not int or frame_limit < MIN_FRAME_LIMIT:
+        raise ProtocolError(
+            f"frame_limit must be an integer of at least {MIN_FRAME_LIMIT} bytes"
+        )
 
     validated_message = validate_message(message)
-    payload = json.dumps(
-        validated_message,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    try:
+        payload = json.dumps(
+            validated_message,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (UnicodeEncodeError, ValueError, TypeError, RecursionError) as error:
+        raise ProtocolError("message cannot be encoded as UTF-8 JSON") from error
     if len(payload) > 0xFFFFFFFF:
         raise ProtocolError("message exceeds the length header capacity")
 

@@ -5,8 +5,9 @@ import asyncio
 import socket
 from typing import Any
 
-from agent_gateway.processes.protocol import (
+from agent_gateway.processes.management_protocol import (
     DEFAULT_FRAME_LIMIT,
+    MIN_FRAME_LIMIT,
     ProtocolError,
     decode_message,
     encode_message,
@@ -21,25 +22,48 @@ class ManagementChannel:
     """Serialized async channel for bounded management frames."""
 
     def __init__(self, sock: socket.socket, *, frame_limit: int = DEFAULT_FRAME_LIMIT) -> None:
-        if type(frame_limit) is not int or frame_limit < 5:
-            raise ProtocolError("frame_limit must be an integer of at least 5 bytes")
+        if type(frame_limit) is not int or frame_limit < MIN_FRAME_LIMIT:
+            raise ProtocolError(
+                f"frame_limit must be an integer of at least {MIN_FRAME_LIMIT} bytes"
+            )
 
         self._sock = sock
         self._frame_limit = frame_limit
         self._closed = False
         self._reader_active = False
         self._send_lock = asyncio.Lock()
+        self._io_tasks: set[asyncio.Task[object]] = set()
         self._sock.setblocking(False)
 
     @property
     def closed(self) -> bool:
         return self._closed
 
+    def _track_io_task(self) -> asyncio.Task[object] | None:
+        task = asyncio.current_task()
+        if task is not None:
+            self._io_tasks.add(task)
+        return task
+
+    def _untrack_io_task(self, task: asyncio.Task[object] | None) -> None:
+        if task is not None:
+            self._io_tasks.discard(task)
+
+    def _cancel_io_tasks(self) -> None:
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        for task in tuple(self._io_tasks):
+            if task is not current:
+                task.cancel()
+
     def close(self) -> None:
         if self._closed:
             return
 
         self._closed = True
+        self._cancel_io_tasks()
         try:
             self._sock.shutdown(socket.SHUT_RDWR)
         except OSError:
@@ -61,7 +85,14 @@ class ManagementChannel:
                         raise ChannelClosed("management channel is closed")
 
                     frame = encode_message(message, frame_limit=self._frame_limit)
-                    await loop.sock_sendall(self._sock, frame)
+                    io_task = self._track_io_task()
+                    try:
+                        await loop.sock_sendall(self._sock, frame)
+                    finally:
+                        self._untrack_io_task(io_task)
+        except ChannelClosed:
+            self.close()
+            raise
         except TimeoutError:
             self.close()
             raise
@@ -79,7 +110,7 @@ class ManagementChannel:
             raise RuntimeError("ManagementChannel supports a single reader")
 
         self._reader_active = True
-        loop = asyncio.get_running_loop()
+        io_task = self._track_io_task()
         try:
             async with asyncio.timeout(timeout):
                 header = await self._recv_exact(4)
@@ -105,6 +136,7 @@ class ManagementChannel:
             self.close()
             raise ChannelClosed("failed to receive management frame") from error
         finally:
+            self._untrack_io_task(io_task)
             self._reader_active = False
 
     async def _recv_exact(self, size: int, *, eof_is_truncation: bool = False) -> bytes:
