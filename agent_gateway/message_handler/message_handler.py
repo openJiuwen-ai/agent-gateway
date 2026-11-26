@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from abc import ABC
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import Enum
 from html import escape
@@ -104,6 +105,10 @@ logger = logging.getLogger(__name__)
 _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
+# (channel_id, external_session_id) -> internal_session_id 别名表的上限。
+# a2a 客户端可以自造 external id，不设上限时长跑网关会线性增长
+# （实测每条约 280 B）。
+_EXTERNAL_SESSION_ALIAS_LIMIT = 4096
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
 # + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）。
 # 单一事实源，前置校验与分发同源，避免和 ModeSubcommand/_VALID_MODE_LINES 漂移。
@@ -458,7 +463,7 @@ class MessageHandler(ABC):
         self._session_last_originator: dict[str, tuple[str, str]] = {}
         self._acp_session_aliases: dict[str, str] = {}  # external_session_id -> internal_session_id
         self._acp_session_alias_lock = asyncio.Lock()
-        self._external_session_aliases: dict[tuple[str, str], str] = {}
+        self._external_session_aliases: OrderedDict[tuple[str, str], str] = OrderedDict()
         self._external_session_alias_lock = asyncio.Lock()
 
         # per-channel 控制状态：支持 \new_session / \mode 指令。
@@ -1421,11 +1426,23 @@ class MessageHandler(ABC):
                     resolved = await self._allocate_channel_session(
                         msg, ChannelControlState(mode=mode)
                     )
-                    self._external_session_aliases[key] = resolved
+                    self._remember_external_session_alias(key, resolved)
         metadata = dict(msg.metadata or {})
         metadata.setdefault("external_session_id", external_id)
         msg.metadata = metadata
         msg.session_id = resolved
+
+    def _remember_external_session_alias(self, key: tuple[str, str], internal_session_id: str) -> None:
+        """记录 A2A 外部会话别名；超出上限时淘汰最久未用的条目."""
+        channel_id, external_id = (str(part or "").strip() for part in key)
+        internal = str(internal_session_id or "").strip()
+        if not channel_id or not external_id or not internal:
+            return
+        normalized = (channel_id, external_id)
+        self._external_session_aliases.pop(normalized, None)
+        self._external_session_aliases[normalized] = internal
+        while len(self._external_session_aliases) > _EXTERNAL_SESSION_ALIAS_LIMIT:
+            self._external_session_aliases.popitem(last=False)
 
     @staticmethod
     def _extract_identity_tuple(msg: "Message") -> tuple[str, str, str, str] | None:
