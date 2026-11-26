@@ -194,13 +194,13 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
-    if handler is not None and method in getattr(channel, "_local_only_methods", ()):
-        await _invoke_handler(
-            channel, outbound=outbound, method=method, request_id=request_id,
-            params=params, session_id=session_id, handler=handler,
-        )
-        return
     if method in getattr(channel, "_local_only_methods", ()):
+        if handler is not None:
+            await _invoke_handler(
+                channel, outbound=outbound, method=method, request_id=request_id,
+                params=params, session_id=session_id, handler=handler,
+            )
+            return
         # local_only 且未注册本地 handler 的请求不应再进入 bus/回调转发。
         await channel.send_response(
             outbound, request_id, ok=False,
