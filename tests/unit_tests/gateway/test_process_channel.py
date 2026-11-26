@@ -8,7 +8,7 @@ import struct
 import pytest
 
 from agent_gateway.processes.channel import ChannelClosed, ManagementChannel
-from agent_gateway.processes.management_protocol import ProtocolError
+from agent_gateway.processes.management_protocol import ManagementProtocolError
 
 
 def init_message(slot_id: int = 0) -> dict[str, object]:
@@ -145,7 +145,7 @@ async def test_receive_reports_truncated_frame_as_protocol_error() -> None:
     parent._sock.send(struct.pack(">I", 10) + b"{")
     parent.close()
 
-    with pytest.raises(ProtocolError, match="truncated"):
+    with pytest.raises(ManagementProtocolError, match="truncated"):
         await worker.receive()
 
     assert worker.closed is True
@@ -156,7 +156,7 @@ async def test_receive_reports_missing_body_as_truncated_frame() -> None:
     parent._sock.send(struct.pack(">I", 10))
     parent.close()
 
-    with pytest.raises(ProtocolError, match="truncated"):
+    with pytest.raises(ManagementProtocolError, match="truncated"):
         await worker.receive()
 
     assert worker.closed is True
@@ -167,7 +167,7 @@ async def test_receive_rejects_zero_length_payload() -> None:
     parent._sock.send(struct.pack(">I", 0))
     parent.close()
 
-    with pytest.raises(ProtocolError, match="empty"):
+    with pytest.raises(ManagementProtocolError, match="empty"):
         await worker.receive()
 
     assert worker.closed is True
@@ -178,7 +178,7 @@ async def test_receive_rejects_oversize_frame_before_reading_body() -> None:
     parent._sock.send(struct.pack(">I", 65))
     parent.close()
 
-    with pytest.raises(ProtocolError, match="frame limit"):
+    with pytest.raises(ManagementProtocolError, match="frame limit"):
         await worker.receive()
 
     assert worker.closed is True
@@ -212,7 +212,7 @@ async def test_send_rejects_invalid_message_without_writing() -> None:
     message = init_message()
     message["type"] = "PING"
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         await parent.send(message)
 
     with pytest.raises(TimeoutError):
@@ -228,7 +228,7 @@ async def test_receive_rejects_invalid_json_and_closes_channel() -> None:
     parent._sock.send(struct.pack(">I", len(payload)) + payload)
     parent.close()
 
-    with pytest.raises(ProtocolError, match="JSON"):
+    with pytest.raises(ManagementProtocolError, match="JSON"):
         await worker.receive()
 
     assert worker.closed is True

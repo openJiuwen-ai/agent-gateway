@@ -7,7 +7,7 @@ import pytest
 
 from agent_gateway.processes.management_protocol import (
     PROTOCOL_VERSION,
-    ProtocolError,
+    ManagementProtocolError,
     decode_message,
     encode_message,
     validate_message,
@@ -85,7 +85,7 @@ def test_validate_rejects_invalid_expected_identity_types(
     expected = {"group_id": "gateway-group", "slot_id": 0, "generation": 1}
     expected[field] = value
 
-    with pytest.raises(ProtocolError, match="expected"):
+    with pytest.raises(ManagementProtocolError, match="expected"):
         validate_message(message, expected=expected)
 
 
@@ -110,7 +110,7 @@ def test_validate_rejects_invalid_common_fields(field: str, value: object) -> No
     message = base_message("INIT")
     message[field] = value
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(message)
 
 
@@ -145,7 +145,7 @@ def test_validate_rejects_invalid_type_fields(
     message = base_message(message_type)
     message[field] = value
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(message)
 
 
@@ -169,7 +169,7 @@ def test_validate_rejects_missing_required_fields(
     message = base_message(message_type)
     del message[field]
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(message)
 
 
@@ -192,7 +192,7 @@ def test_validate_rejects_fields_outside_each_type_schema(
     message = base_message(message_type)
     message.update(extra)
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(message)
 
 
@@ -200,12 +200,12 @@ def test_validate_rejects_expected_identity_mismatch() -> None:
     message = base_message("INIT")
     expected = {"group_id": "other-group", "slot_id": 0, "generation": 1}
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(message, expected=expected)
 
 
 def test_validate_rejects_non_dict_message() -> None:
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         validate_message(["INIT"])
 
 
@@ -223,7 +223,7 @@ def test_encode_message_frames_utf8_json() -> None:
 def test_encode_message_respects_custom_frame_limit() -> None:
     message = base_message("INIT")
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         encode_message(message, frame_limit=16)
 
 
@@ -232,7 +232,7 @@ def test_encode_message_accepts_frame_exactly_at_limit() -> None:
     frame = encode_message(message)
 
     assert encode_message(message, frame_limit=len(frame)) == frame
-    with pytest.raises(ProtocolError, match="frame limit"):
+    with pytest.raises(ManagementProtocolError, match="frame limit"):
         encode_message(message, frame_limit=len(frame) - 1)
 
 
@@ -240,7 +240,7 @@ def test_encode_message_rejects_lone_surrogate() -> None:
     message = base_message("INIT")
     message["group_id"] = "\ud800"
 
-    with pytest.raises(ProtocolError, match="group_id"):
+    with pytest.raises(ManagementProtocolError, match="group_id"):
         encode_message(message)
 
 
@@ -248,7 +248,7 @@ def test_encode_message_rejects_integer_beyond_interpreter_limit() -> None:
     message = base_message("INIT")
     message["slot_id"] = 10**5000
 
-    with pytest.raises(ProtocolError, match="encode"):
+    with pytest.raises(ManagementProtocolError, match="encode"):
         encode_message(message)
 
 
@@ -258,7 +258,7 @@ def test_decode_message_rejects_lone_surrogate() -> None:
         b'"slot_id":0,"generation":1,"type":"INIT"}'
     )
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         decode_message(payload)
 
 
@@ -287,7 +287,7 @@ def test_encode_decode_round_trips_all_message_types(message_type: str) -> None:
 def test_encode_message_rejects_invalid_frame_limit(frame_limit: int) -> None:
     message = base_message("INIT")
 
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         encode_message(message, frame_limit=frame_limit)
 
 
@@ -309,7 +309,7 @@ def test_decode_message_accepts_json_object_payload() -> None:
     ],
 )
 def test_decode_message_rejects_invalid_payload(payload: object) -> None:
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         decode_message(payload)  # type: ignore[arg-type]
 
 
@@ -319,18 +319,18 @@ def test_decode_message_rejects_duplicate_json_keys() -> None:
         b'"group_id":"gateway-group", "slot_id":0, "generation":1, "type":"INIT"}'
     )
 
-    with pytest.raises(ProtocolError, match="duplicate"):
+    with pytest.raises(ManagementProtocolError, match="duplicate"):
         decode_message(payload)
 
 
 def test_decode_message_converts_json_recursion_error_to_protocol_error() -> None:
     payload = b"[" * 10000 + b"]" * 10000
 
-    with pytest.raises(ProtocolError, match="JSON"):
+    with pytest.raises(ManagementProtocolError, match="JSON"):
         decode_message(payload)
 
 
 def test_decode_rejects_integer_beyond_interpreter_limit_as_protocol_error() -> None:
     payload = b'{"slot_id":' + b'9' * 5000 + b'}'
-    with pytest.raises(ProtocolError):
+    with pytest.raises(ManagementProtocolError):
         decode_message(payload)

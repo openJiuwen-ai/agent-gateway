@@ -8,7 +8,7 @@ from typing import Any
 from agent_gateway.processes.management_protocol import (
     DEFAULT_FRAME_LIMIT,
     MIN_FRAME_LIMIT,
-    ProtocolError,
+    ManagementProtocolError,
     decode_message,
     encode_message,
 )
@@ -23,7 +23,7 @@ class ManagementChannel:
 
     def __init__(self, sock: socket.socket, *, frame_limit: int = DEFAULT_FRAME_LIMIT) -> None:
         if type(frame_limit) is not int or frame_limit < MIN_FRAME_LIMIT:
-            raise ProtocolError(
+            raise ManagementProtocolError(
                 f"frame_limit must be an integer of at least {MIN_FRAME_LIMIT} bytes"
             )
 
@@ -116,9 +116,9 @@ class ManagementChannel:
                 header = await self._recv_exact(4)
                 payload_length = int.from_bytes(header, "big")
                 if payload_length == 0:
-                    raise ProtocolError("management frame payload is empty")
+                    raise ManagementProtocolError("management frame payload is empty")
                 if payload_length > self._frame_limit - 4:
-                    raise ProtocolError(
+                    raise ManagementProtocolError(
                         f"management frame payload exceeds the {self._frame_limit}-byte frame limit"
                     )
                 payload = await self._recv_exact(payload_length, eof_is_truncation=True)
@@ -126,7 +126,7 @@ class ManagementChannel:
         except ChannelClosed:
             self.close()
             raise
-        except (ProtocolError, TimeoutError):
+        except (ManagementProtocolError, TimeoutError):
             self.close()
             raise
         except asyncio.CancelledError:
@@ -148,7 +148,7 @@ class ManagementChannel:
             chunk = await loop.sock_recv(self._sock, remaining)
             if not chunk:
                 if received or eof_is_truncation:
-                    raise ProtocolError("truncated management frame")
+                    raise ManagementProtocolError("truncated management frame")
                 raise ChannelClosed("management channel reached EOF")
             received.extend(chunk)
             remaining -= len(chunk)
