@@ -88,6 +88,36 @@ def test_resolve_remote_cron_model_prefers_configured_model_on_name_collision() 
     assert resolve_remote_cron_model("GLM-5.2", rows) == ("GLM-5.2", "config")
 
 
+def test_remote_cron_alias_collision_keeps_first_match_within_source() -> None:
+    login_rows = [
+        _row("l1", " first-login ", alias=" shared ", source="huawei-maas-login"),
+        _row("l2", "second-login", alias="shared", source="huawei-maas-login"),
+    ]
+    assert resolve_remote_cron_model("shared", login_rows) == ("first-login", "login")
+
+    rows = [
+        *login_rows,
+        _row("c1", "first-config", alias="shared"),
+        _row("c2", "shared"),
+    ]
+    assert resolve_remote_cron_model("shared", rows) == ("first-config", "config")
+
+
+@pytest.mark.parametrize("count", [0, 20, 22])
+def test_remote_cron_unknown_model_hint_counts_only_named_rows(count: int) -> None:
+    names = [f"model-{i // 2}" for i in range(count)]
+    rows = [_row("blank", "  ", alias="missing")]
+    rows.extend(_row(str(i), f" {name} ") for i, name in enumerate(names))
+
+    with pytest.raises(ValueError) as caught:
+        resolve_remote_cron_model(" missing ", rows)
+
+    hint = ", ".join(names[:20]) or "(no models configured)"
+    if count == 22:
+        hint += " ... and 2 more"
+    assert str(caught.value) == f"Unknown model 'missing'. Available models: {hint}"
+
+
 def test_remote_model_catalog_supports_stable_model_ids() -> None:
     from agent_gateway.common.model_selection import ModelSelection
 
