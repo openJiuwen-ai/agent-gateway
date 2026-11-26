@@ -480,6 +480,40 @@ async def test_gateway_server_session_new_and_list_return_known_sessions():
 
 
 @pytest.mark.asyncio
+async def test_gateway_server_session_list_is_bounded(monkeypatch):
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.protocol.acp.acp_connect._KNOWN_SESSIONS_LIMIT",
+        2,
+    )
+    server = build_server()
+    ws = FakeWebSocket()
+
+    for idx, sid in enumerate(("sess-1", "sess-2", "sess-3"), start=1):
+        await server.handle_raw_message_public(
+            ws,
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": idx,
+                    "method": "session/new",
+                    "params": {"sessionId": sid},
+                },
+                ensure_ascii=False,
+            ),
+        )
+    await server.handle_raw_message_public(
+        ws,
+        json.dumps({"jsonrpc": "2.0", "id": 4, "method": "session/list", "params": {}}, ensure_ascii=False),
+    )
+
+    assert ws.sent_frames[-1] == {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "result": {"sessions": [{"sessionId": "sess-2"}, {"sessionId": "sess-3"}]},
+    }
+
+
+@pytest.mark.asyncio
 async def test_gateway_server_send_response_targets_request_client():
     server = build_server()
     ws = FakeWebSocket()

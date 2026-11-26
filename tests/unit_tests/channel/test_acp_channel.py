@@ -250,6 +250,53 @@ async def test_jsonrpc_session_list_returns_known_sessions(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_jsonrpc_session_list_evicts_least_recently_used_sessions(monkeypatch):
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.protocol.acp.acp_connect._KNOWN_SESSIONS_LIMIT",
+        2,
+    )
+    fake_stdin = FakeStdin(
+        [
+            json_line({"jsonrpc": "2.0", "id": 30, "method": "session/new", "params": {"sessionId": "sess-a"}}),
+            json_line({"jsonrpc": "2.0", "id": 31, "method": "session/new", "params": {"sessionId": "sess-b"}}),
+            # 再次 session/new sess-a：刷新它，sess-b 变成最久未用
+            json_line({"jsonrpc": "2.0", "id": 32, "method": "session/new", "params": {"sessionId": "sess-a"}}),
+            json_line({"jsonrpc": "2.0", "id": 33, "method": "session/new", "params": {"sessionId": "sess-c"}}),
+            json_line({"jsonrpc": "2.0", "id": 34, "method": "session/list", "params": {}}),
+        ]
+    )
+    fake_stdout = FakeStdout()
+    channel = AcpChannelHarness(AcpChannelConfig(enabled=True), DummyBus())
+
+    monkeypatch.setattr("sys.stdin", fake_stdin)
+    monkeypatch.setattr("sys.stdout", fake_stdout)
+    monkeypatch.setattr("agent_gateway.channel_manager.protocol.acp.acp_connect._ACP_STDOUT", fake_stdout)
+
+    await channel.start()
+
+    responses = fake_stdout.buffer.json_lines()
+    assert responses[-1] == {
+        "jsonrpc": "2.0",
+        "id": 34,
+        "result": {"sessions": [{"sessionId": "sess-a"}, {"sessionId": "sess-c"}]},
+    }
+
+
+def test_remember_known_session_keeps_recent_order_and_limit(monkeypatch):
+    from collections import OrderedDict
+
+    from agent_gateway.channel_manager.protocol.acp import acp_connect
+
+    monkeypatch.setattr(acp_connect, "_KNOWN_SESSIONS_LIMIT", 3)
+    sessions: OrderedDict[str, None] = OrderedDict()
+    for sid in ("s1", "s2", "s3", "s1", "s4"):
+        acp_connect._remember_known_session(sessions, sid)
+
+    assert list(sessions) == ["s3", "s1", "s4"]
+    assert sorted(sessions) == ["s1", "s3", "s4"]
+
+
+@pytest.mark.asyncio
 async def test_jsonrpc_session_load_is_rejected_when_capability_is_disabled(monkeypatch):
     fake_stdin = FakeStdin(
         [

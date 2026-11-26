@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -89,6 +90,19 @@ _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _ACP_PENDING_RPC_TIMEOUT_SECONDS = 60.0
 _ACP_GATEWAY_CONNECT_MAX_ATTEMPTS = 12
 _ACP_GATEWAY_CONNECT_BASE_DELAY_SEC = 0.15
+# ACP 会话名单只服务于 session/list，按 LRU 保留最近活跃的若干条即可；
+# 原来是无界 set，长跑进程里每个见过的 session 都会永久留一条。
+_KNOWN_SESSIONS_LIMIT = 1024
+
+
+def _remember_known_session(
+    sessions: OrderedDict[str, None], session_id: str
+) -> None:
+    """把 session_id 记入 session/list 名单，超上限时淘汰最久未用的一条."""
+    sessions[session_id] = None
+    sessions.move_to_end(session_id)
+    while len(sessions) > _KNOWN_SESSIONS_LIMIT:
+        sessions.popitem(last=False)
 
 
 @dataclass
@@ -173,7 +187,8 @@ class AcpGatewayBridge:
         self._idle_finalize_seconds = idle_finalize_seconds
         self._request_ctx_by_request_id: dict[str, AcpGatewayRequestContext] = {}
         self._active_prompt_request_by_session: dict[str, str] = {}
-        self._known_sessions: set[str] = set()
+        # 有序字典：session/list 按最近活跃顺序有界保留，见 _remember_known_session
+        self._known_sessions: OrderedDict[str, None] = OrderedDict()
         self._pending_client_rpc_count_by_session: dict[str, int] = {}
         # value: (session_id, ws, created_at)
         self._pending_client_rpc_session_by_id: dict[str, tuple[str, Any, float]] = {}
@@ -538,7 +553,7 @@ class AcpGatewayBridge:
         sid = str(session_id or "").strip()
         if not sid:
             return
-        self._known_sessions.add(sid)
+        _remember_known_session(self._known_sessions, sid)
         if self._bind_session_client is not None:
             self._bind_session_client(sid, ws)
 
@@ -728,7 +743,8 @@ class AcpChannel(BaseChannel):
         self._request_ctx: dict[str, _AcpRequestContext] = {}
         self._session_ctx: dict[str, dict[str, Any]] = {}
         self._active_prompt_request_by_session: dict[str, str] = {}
-        self._known_sessions: set[str] = set()
+        # 有序字典：session/list 按最近活跃顺序有界保留，见 _remember_known_session
+        self._known_sessions: OrderedDict[str, None] = OrderedDict()
         # value: (session_id, created_at)
         self._pending_client_rpc_session_by_id: dict[str, tuple[str, float]] = {}
 
@@ -1168,7 +1184,7 @@ class AcpChannel(BaseChannel):
         params: dict[str, Any],
     ) -> None:
         session_id = str(params.get("sessionId") or f"acp_{uuid.uuid4().hex[:12]}").strip()
-        self._known_sessions.add(session_id)
+        _remember_known_session(self._known_sessions, session_id)
         self._session_ctx[session_id] = dict(params)
         await self._write_jsonrpc_result(
             rpc_id,
@@ -1183,7 +1199,7 @@ class AcpChannel(BaseChannel):
         session_id = str(params.get("sessionId") or "").strip()
         if not session_id:
             raise ValueError("sessionId is required")
-        self._known_sessions.add(session_id)
+        _remember_known_session(self._known_sessions, session_id)
 
         rpc_params = dict(params)
         prompt = rpc_params.get("prompt")
@@ -1716,7 +1732,7 @@ class AcpChannel(BaseChannel):
         params = data.get("params") if isinstance(data.get("params"), dict) else {}
         session_id = str(params.get("sessionId") or params.get("session_id") or "").strip()
         if jsonrpc_id and session_id:
-            self._known_sessions.add(session_id)
+            _remember_known_session(self._known_sessions, session_id)
             self._pending_client_rpc_session_by_id[jsonrpc_id] = (session_id, time.time())
             for ctx in self._request_ctx.values():
                 if ctx.response_mode == "jsonrpc" and str(ctx.session_id or "") == session_id:
