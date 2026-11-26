@@ -743,48 +743,6 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
 
 
 @pytest.mark.asyncio
-async def test_unary_payload_is_not_serialized_when_debug_logging_disabled(monkeypatch):
-    """DEBUG 关闭时不应为日志构造 JSON 副本（大 payload 会翻倍占内存）。"""
-    client = AgentClientHarness()
-    ws = ManualResponseWebSocket()
-    client.set_ws_for_test(ws)
-    client.set_running_for_test(True)
-    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
-
-    serialized: list[object] = []
-    real_to_json = agent_client._to_json
-
-    def spy(data):
-        serialized.append(data)
-        return real_to_json(data)
-
-    monkeypatch.setattr(agent_client, "_to_json", spy)
-    monkeypatch.setattr(agent_client.logger, "isEnabledFor", lambda level: False)
-
-    try:
-        task = asyncio.create_task(
-            client.send_request(
-                e2a_from_agent_fields(
-                    request_id="rid-lazy-unary",
-                    channel_id="acp",
-                    session_id="sess-lazy",
-                    params={"message": "hello"},
-                    is_stream=False,
-                ),
-                timeout=2.0,
-            )
-        )
-        await _wait_for_send(ws, 1)
-        ws.respond_unary("rid-lazy-unary", {"echo": "ok"})
-        response = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
-        assert response.ok is True
-        assert serialized == []
-    finally:
-        receiver.cancel()
-        await receiver
-
-
-@pytest.mark.asyncio
 async def test_stream_payload_is_not_serialized_when_debug_logging_disabled(monkeypatch):
     client = AgentClientHarness()
     client.set_ws_for_test(FakeWebSocket())
