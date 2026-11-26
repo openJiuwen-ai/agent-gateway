@@ -16,6 +16,7 @@ from e2a.agent_models import AgentResponse, AgentResponseChunk
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from agent_gateway.routing import agent_client
 from agent_gateway.routing.agent_client import (
+    AgentServerResponseBacklogExceeded,
     AgentServerUnaryTimeout,
     WebSocketAgentServerClient,
 )
@@ -740,3 +741,111 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         target_logger.removeHandler(caplog.handler)
         receiver.cancel()
         await receiver
+
+
+@pytest.mark.asyncio
+async def test_response_queue_is_bounded():
+    """每个请求的响应队列必须有界，避免慢消费者把整条流留在内存里。"""
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    env = e2a_from_agent_fields(
+        request_id="rid-bounded-queue",
+        channel_id="acp",
+        session_id="sess-bounded-queue",
+        params={"message": "hi"},
+        is_stream=False,
+    )
+    task = asyncio.create_task(client.send_request(env, timeout=2.0))
+    try:
+        await _wait_for_send(ws, 1)
+        queue = client.get_message_queue_for_test("rid-bounded-queue")
+        assert queue.maxsize == agent_client._MAX_BUFFERED_WIRE_MESSAGES
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        receiver.cancel()
+        await receiver
+
+
+@pytest.mark.asyncio
+async def test_stream_backlog_overflow_fails_request(monkeypatch, caplog):
+    """下游停止消费时，积压到上限即让请求失败，而不是无限缓冲整条流。"""
+    monkeypatch.setattr(agent_client, "_MAX_BUFFERED_WIRE_MESSAGES", 3)
+    target_logger = logging.getLogger("agent_gateway.routing.agent_client")
+    target_logger.addHandler(caplog.handler)
+    caplog.set_level(logging.ERROR, logger=target_logger.name)
+
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+    env = e2a_from_agent_fields(
+        request_id="rid-overflow",
+        channel_id="acp",
+        session_id="sess-overflow",
+        params={"content": "hi"},
+        is_stream=True,
+    )
+    first_consumed = asyncio.Event()
+    release = asyncio.Event()
+
+    def push_chunk(sequence: int) -> None:
+        ws.frames.put_nowait(json.dumps(encode_agent_chunk_for_wire(
+            AgentResponseChunk(
+                request_id="rid-overflow",
+                channel_id="acp",
+                payload={"content": f"part-{sequence}", "event_type": "chat.delta"},
+                is_complete=False,
+            ),
+            response_id="rid-overflow",
+            sequence=sequence,
+        )))
+
+    async def consume() -> None:
+        async for _chunk in client.send_request_stream(env):
+            first_consumed.set()
+            await release.wait()  # 故意阻塞消费，制造积压
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await _wait_for_send(ws, 1)
+        push_chunk(0)
+        await asyncio.wait_for(first_consumed.wait(), 1)
+        for sequence in range(1, 6):
+            push_chunk(sequence)
+        for _ in range(1000):
+            if ws.frames.empty():
+                break
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.02)
+        release.set()
+
+        with pytest.raises(AgentServerResponseBacklogExceeded):
+            await asyncio.wait_for(consumer, timeout=_OUTER_WAIT_TIMEOUT)
+        assert client.has_message_queue_for_test("rid-overflow") is False
+        assert "响应积压超过上限" in caplog.text
+    finally:
+        target_logger.removeHandler(caplog.handler)
+        release.set()
+        consumer.cancel()
+        receiver.cancel()
+        await receiver
+
+
+@pytest.mark.asyncio
+async def test_fatal_error_reaches_full_response_queue():
+    """队列写满时，断连失败信号仍要送达等待方（先丢弃积压帧）。"""
+    client = AgentClientHarness()
+    queue = asyncio.Queue(maxsize=1)
+    queue.put_nowait({"request_id": "rid-full"})
+    client.set_message_queue_for_test("rid-full", queue)
+
+    await client.stop_receiver_after_fatal_error_for_test(ConnectionClosedError(None, None))
+
+    item = queue.get_nowait()
+    assert isinstance(item, agent_client._ReceiverFailure)
