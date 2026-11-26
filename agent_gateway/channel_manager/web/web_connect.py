@@ -37,7 +37,6 @@ from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
 from agent_gateway.enterprise.capabilities.skill_upload.guard import (
-    GUARDED_METHODS,
     schedule_pending_install_result,
 )
 from agent_gateway.common.paths import get_logs_dir
@@ -2546,49 +2545,6 @@ class WebChannel(BaseWsChannel):
                 )
                 return
 
-        # 企业版上传窄门禁：skills.import_upload 拒绝，skills.upload.finalize 走
-        # manager 复核；HTTP 与 WS 必须一致。
-        if method in GUARDED_METHODS:
-            from agent_gateway.channel_manager.web.invoke import (
-                enterprise_skill_upload_denial,
-            )
-
-            denial = await enterprise_skill_upload_denial(
-                method=method,
-                params=params,
-                request_id=req_id,
-                authorization=_ws_authorization(ws),
-                jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
-                agent_template_id=(
-                    getattr(ws, "_web_agent_identity", None) or {}
-                ).get("agent_template_id"),
-            )
-            if denial is not None:
-                error, code = denial
-                logger.warning(
-                    "[WebChannel] skill upload denied via ws request_id=%s code=%s",
-                    req_id,
-                    code,
-                )
-                await self.send_response(ws, req_id, ok=False, error=error, code=code)
-                return
-
-        # Keep the specialized upload error code first, then apply the shared
-        # enterprise write policy before extension interception or preprocessing.
-        from agent_gateway.channel_manager.web.invoke import (
-            is_enterprise_write_forbidden,
-        )
-
-        if is_enterprise_write_forbidden(method):
-            await self.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="企业版配置由管理面统一下发",
-                code="FORBIDDEN",
-            )
-            return
-
         # 扩展运行时先于原生方法分发处理 Gateway 域扩展事件；无 handler 时
         # 原样返回 params，路径与未接入扩展完全一致。request_context.headers
         # 随帧透传，认证类扩展据此判断 authorization 是否存在。
@@ -2745,59 +2701,22 @@ class WebChannel(BaseWsChannel):
         from agent_gateway.telemetry import attach_message_trace
         attach_message_trace(user_message)
 
-        # 发布到 route 或回调
-        handler = self._method_handlers.get(method)
-        if method in self._local_only_methods:
-            if handler is None:
-                await self.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error=f"unknown method: {method}",
-                    code="METHOD_NOT_FOUND",
-                )
-                return
-            invocation = _MethodHandlerInvocation(
-                ws, method, req_id, params, session_id, handler,
-            )
-            await self._invoke_method_handler(invocation)
-            return
-        handler_already_called = False
-        if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
-            handler_already_called = await self._invoke_method_handler(
-                _MethodHandlerInvocation(
-                    ws, method, req_id, params, session_id, handler,
-                ),
-            )
-            if not handler_already_called:
-                return
+        # HTTP 已经统一走 ``invoke.dispatch_web_request``；WS 此前在内联分发里
+        # 重复同一套企业写保护、上传门禁与 handler dispatch 语义，容易出现两
+        # 条通道行为漂移。这里复用同一入口，保证错误码、bus/回调与 RPC 感知一致。
+        from agent_gateway.channel_manager.web.invoke import dispatch_web_request
 
-        handled_by_callback = False
-        if self._on_message_cb is not None:
-            result = self._on_message_cb(user_message)
-            if inspect.isawaitable(result):
-                result = await result
-            handled_by_callback = bool(result)
-        else:
-            await self.bus.publish_user_messages(user_message)
-
-        if handled_by_callback:
-            return
-        if handler_already_called:
-            return
-
-        # 路由到已注册的方法处理器
-        if handler is not None:
-            await self._invoke_method_handler(
-                _MethodHandlerInvocation(
-                    ws, method, req_id, params, session_id, handler,
-                ),
-            )
-        else:
-            await self.send_response(
-                ws, req_id, ok=False,
-                error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
-            )
+        await dispatch_web_request(
+            self,
+            method=method,
+            params=params,
+            request_id=req_id,
+            outbound=ws,
+            session_id=session_id,
+            user_message=user_message,
+            authorization=_ws_authorization(ws),
+            jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+        )
 
     @staticmethod
     def _write_frontend_context_usage(serialized: str) -> None:
