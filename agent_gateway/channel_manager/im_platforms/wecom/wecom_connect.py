@@ -12,6 +12,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable
 
 from e2a.message import EventType, Message, ReqMethod
@@ -44,6 +45,9 @@ from agent_gateway.routing.session_sharing import RoutingTarget
 logger = logging.getLogger(__name__)
 
 _SYSTEM_SESSION_PREFIXES = ("__", "health_check_", "healthcheck_", "cron")
+
+# 已收尾流式请求标记的上限，避免长跑网关按请求数线性增长
+_STREAM_COMPLETED_LIMIT = 1024
 
 try:
     from wecom_aibot_sdk import WSClient
@@ -109,7 +113,7 @@ class WecomChannel(BaseChannel):
         self._sent_group_progress_requests: set[str] = set()
         self._stopping = False
         self._stream_text_buffers: dict[str, str] = {}
-        self._stream_completed_requests: set[str] = set()
+        self._stream_completed_requests: OrderedDict[str, None] = OrderedDict()
         self._message_storage = MessageStore(api_client=None)
         self._im_platform_adapter: Any = im_platform_adapter
         # 文件服务
@@ -1136,7 +1140,7 @@ class WecomChannel(BaseChannel):
                     if not to_send or self._is_thinking_only_content(to_send):
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                         return
                     if not is_final and to_send == entry.get("last_sent"):
                         return
@@ -1155,7 +1159,7 @@ class WecomChannel(BaseChannel):
                         # 群聊场景，私发详细回复给目标用户
                         logger.info("[WecomChannel] 群聊消息私发给目标用户: req_id=%s user_id=%s", req_id, target_user_id)
                         self._pending_streams.pop(req_id, None)
-                        self._stream_completed_requests.add(req_id)
+                        self._mark_stream_completed(req_id)
 
                         # 私发详细回复给目标用户
                         try:
@@ -1183,17 +1187,17 @@ class WecomChannel(BaseChannel):
                         )
                         if is_final:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                     except Exception as e:
                         logger.error("WecomChannel 流式发送失败: %s", e)
                         if msg.event_type == EventType.CHAT_FINAL:
                             self._pending_streams.pop(req_id, None)
-                            self._stream_completed_requests.add(req_id)
+                            self._mark_stream_completed(req_id)
                     return
 
         if req_id and req_id in self._stream_completed_requests:
             logger.debug("WecomChannel 跳过已完成的流式请求: req_id=%s", req_id)
-            self._stream_completed_requests.discard(req_id)
+            self._stream_completed_requests.pop(req_id, None)
             return
 
         if msg.event_type == EventType.CHAT_ERROR:
@@ -1288,6 +1292,15 @@ class WecomChannel(BaseChannel):
 
         except Exception as e:
             logger.error("WecomChannel 发送失败: %s", e)
+
+    def _mark_stream_completed(self, req_id: str) -> None:
+        """记录已收尾的流式请求，超出上限时淘汰最久未使用的条目。"""
+        if not req_id:
+            return
+        self._stream_completed_requests.pop(req_id, None)
+        self._stream_completed_requests[req_id] = None
+        while len(self._stream_completed_requests) > _STREAM_COMPLETED_LIMIT:
+            self._stream_completed_requests.popitem(last=False)
 
     async def _run_client(self) -> None:
         """在后台运行 WebSocket 客户端。"""
