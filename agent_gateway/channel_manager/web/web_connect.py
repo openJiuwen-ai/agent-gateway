@@ -2545,6 +2545,47 @@ class WebChannel(BaseWsChannel):
                 )
                 return
 
+        # 企业版上传门禁与写保护必须在扩展拦截前执行。否则 gateway.request
+        # 扩展可通过 consume/local 抢在企业门禁前给出成功应答，绕过管理面策略。
+        from agent_gateway.enterprise.capabilities.skill_upload.guard import (
+            FINALIZE_METHOD,
+            IMPORT_UPLOAD_METHOD,
+        )
+
+        if method in {IMPORT_UPLOAD_METHOD, FINALIZE_METHOD}:
+            from agent_gateway.channel_manager.web.invoke import (
+                enterprise_skill_upload_denial,
+            )
+
+            denial = await enterprise_skill_upload_denial(
+                method=method,
+                params=params,
+                request_id=req_id,
+                authorization=_ws_authorization(ws),
+                jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+                agent_template_id=(
+                    getattr(ws, "_web_agent_identity", None) or {}
+                ).get("agent_template_id"),
+            )
+            if denial is not None:
+                error, code = denial
+                await self.send_response(ws, req_id, ok=False, error=error, code=code)
+                return
+
+        from agent_gateway.channel_manager.web.invoke import (
+            is_enterprise_write_forbidden,
+        )
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="企业版配置由管理面统一下发",
+                code="FORBIDDEN",
+            )
+            return
+
         # 扩展运行时先于原生方法分发处理 Gateway 域扩展事件；无 handler 时
         # 原样返回 params，路径与未接入扩展完全一致。request_context.headers
         # 随帧透传，认证类扩展据此判断 authorization 是否存在。
