@@ -254,7 +254,8 @@ def test_named_identity_requires_a_canonical_user(user):
         IngressIdentity('local-v1', 'local_compat', 'local', 'named', user)
 
 
-@pytest.mark.parametrize('user', ['ali\nce', 'a' * 257, CJK * 86])
+# A lone surrogate cannot be encoded as UTF-8; strict query decoding refuses it earlier, only direct construction reaches that branch.
+@pytest.mark.parametrize('user', ['ali\nce', 'a' * 257, CJK * 86, '\ud800'])
 def test_named_identity_refuses_a_malformed_user(user):
     with pytest.raises(IngressIdentityError):
         IngressIdentity('local-v1', 'local_compat', 'local', 'named', user)
