@@ -222,21 +222,8 @@ class EtcdCronJobStore:
         if not job_id:
             raise ValueError("id is required")
         async with self._lock:
-            try:
-                existing, mod_rev = await self._get_job_with_rev(job_id)
-            except EtcdError as exc:
-                raise self._unavailable("get") from exc
-            if existing is None:
-                raise KeyError("job not found")
-            updated = apply_cron_job_patch(existing, dict(patch or {}))
-            payload = json.dumps(updated.to_dict(), ensure_ascii=False).encode("utf-8")
-            try:
-                self._revision = await self._client.put_if_mod_revision(
-                    self._job_key(job_id),
-                    payload,
-                    mod_revision=mod_rev,
-                )
-            except EtcdCasError:
+            retried = False
+            while True:
                 try:
                     existing, mod_rev = await self._get_job_with_rev(job_id)
                 except EtcdError as exc:
@@ -251,11 +238,14 @@ class EtcdCronJobStore:
                         payload,
                         mod_revision=mod_rev,
                     )
+                except EtcdCasError as exc:
+                    if retried:
+                        raise self._unavailable("cas-put") from exc
+                    retried = True
                 except EtcdError as exc:
                     raise self._unavailable("cas-put") from exc
-            except EtcdError as exc:
-                raise self._unavailable("cas-put") from exc
-        return updated
+                else:
+                    return updated
 
     async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
         job_id = str(job_id or "").strip()
