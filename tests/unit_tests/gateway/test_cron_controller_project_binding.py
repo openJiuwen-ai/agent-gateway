@@ -146,6 +146,29 @@ async def test_list_jobs_filters_by_project_user_group_and_bot() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("user_id", "group_id", "bot_id"),
+    [
+        ("", "g1", "b1"),
+        ("alice", "", "b1"),
+        ("alice", "g1", ""),
+        ("alice", "g1", None),
+    ],
+)
+async def test_list_jobs_enterprise_requires_routing_triple(
+    monkeypatch, user_id, group_id, bot_id
+) -> None:
+    """企业版 list 缺任一元身份 → ValueError（HTTP 400），不返回空列表假成功。"""
+    monkeypatch.setattr("agent_gateway.cron.controller.is_enterprise", lambda: True)
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])),
+        scheduler=_FakeScheduler(),
+    )
+    with pytest.raises(ValueError, match="enterprise cron requires"):
+        await controller.list_jobs(user_id=user_id, group_id=group_id, bot_id=bot_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("user_id", "expected"), [(" alice ", ["alice-im"]), (" ", [])])
 async def test_list_jobs_normalizes_personal_app_user_filter(user_id, expected) -> None:
     jobs = [
@@ -756,7 +779,7 @@ async def test_enterprise_update_requires_identity_and_drops_mcp(monkeypatch) ->
     )
     cc = _make_controller()
     cc._store.get_job = AsyncMock(return_value=_owned_job())
-    with pytest.raises(KeyError, match="job not found"):
+    with pytest.raises(ValueError, match="enterprise cron requires"):
         await cc.update_job("job-1", {"name": "x"}, user_id="alice", group_id="g", bot_id="")
     await cc.update_job(
         "job-1",
@@ -815,7 +838,8 @@ async def test_delete_job_ownership_and_enterprise_skips_sessions(monkeypatch) -
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     calls.clear()
-    assert await controller.delete_job("job-1", user_id="alice", group_id="g") is False
+    with pytest.raises(ValueError, match="enterprise cron requires"):
+        await controller.delete_job("job-1", user_id="alice", group_id="g")
     assert calls == []
     assert await controller.delete_job(
         "job-1", user_id="alice", group_id="g", bot_id="b"

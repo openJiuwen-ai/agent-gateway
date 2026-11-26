@@ -13,7 +13,7 @@ from openjiuwen.core.events import Event, SessionContext
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig
 from agent_gateway.extensions_v2.loader import LoadedPackage
 from agent_gateway.extensions_v2.management.notifications import notify_installed
-from agent_gateway.extensions_v2.models import GatewayRequestOutput
+from agent_gateway.extensions_v2.models import GatewayRequestInput, GatewayRequestOutput, WEBUI_DISPATCH_METHOD
 from agent_gateway.extensions_v2.registry import HandlerDeclaration
 from agent_gateway.extensions_v2.runtime import GatewayRuntime
 from agent_gateway.extensions_v2.webui.http import attach_browser_routes
@@ -48,7 +48,7 @@ def _channel():
 
 
 async def _runtime(tmp_path: Path, policy=None, action=None):
-    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data"))
     await runtime.start()
 
     async def ready(event, ops, next_handler):
@@ -227,6 +227,81 @@ async def test_other_package_ui_keeps_the_existing_forward_path(tmp_path):
         assert visited is False
         assert returned == params
         assert runtime.channel.responses == []
+    finally:
+        await runtime.shutdown()
+
+
+def _retire(runtime, package_id):
+    """Make ``runtime.packages.owns`` report a Gateway-domain package (installed, inactive)."""
+    runtime.packages.owns = lambda candidate: candidate == package_id
+
+
+async def test_disabled_gateway_package_ui_is_answered_without_forwarding(tmp_path):
+    """还原关闭的 Gateway 包：本地回执无贡献，不再转发给 AgentServer 等满超时。"""
+    runtime = await _runtime(tmp_path)
+    try:
+        _retire(runtime, "retired.package")
+        params = {"event": "ui.ready", "target": {
+            "scope": "application", "slot_id": "application.sidebar.footer", "package_id": "retired.package",
+        }}
+        visited, _ = await runtime.intercept(SimpleNamespace(closed=False), "retired", "webui.dispatch", params)
+        assert visited is True
+        assert runtime.channel.responses[-1]["payload"] == {
+            "accepted": False, "status": "unhandled", "code": "NO_CONTRIBUTION",
+        }
+    finally:
+        await runtime.shutdown()
+
+
+async def test_request_dispatch_handler_answers_a_stale_frame_when_no_application_is_active(tmp_path):
+    """Directly cover application_enabled=False: stale Gateway frames answer locally, others forward."""
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    await runtime.start()
+    try:
+        _retire(runtime, "retired.package")
+        assert runtime.browser.application_enabled is False
+        dispatch_request = runtime.browser.build_request_dispatch_handler()
+        forwarded = []
+
+        async def next_handler(event):
+            forwarded.append(event)
+            return "forwarded"
+
+        stale = await dispatch_request(
+            SimpleNamespace(event_input=GatewayRequestInput(
+                transport="websocket",
+                method=WEBUI_DISPATCH_METHOD,
+                params={"event": "ui.ready", "target": {
+                    "scope": "application",
+                    "slot_id": "application.sidebar.footer",
+                    "package_id": "retired.package",
+                }},
+            )),
+            SimpleNamespace(session_context=None),
+            next_handler,
+        )
+        assert stale.handled is True
+        assert stale.route == "consume"
+        assert stale.response == {
+            "accepted": False, "status": "unhandled", "code": "NO_CONTRIBUTION",
+        }
+        assert forwarded == []
+
+        result = await dispatch_request(
+            SimpleNamespace(event_input=GatewayRequestInput(
+                transport="websocket",
+                method=WEBUI_DISPATCH_METHOD,
+                params={"event": "ui.ready", "target": {
+                    "scope": "application",
+                    "slot_id": "application.sidebar.footer",
+                    "package_id": "agentserver.package",
+                }},
+            )),
+            SimpleNamespace(session_context=None),
+            next_handler,
+        )
+        assert result == "forwarded"
+        assert len(forwarded) == 1
     finally:
         await runtime.shutdown()
 

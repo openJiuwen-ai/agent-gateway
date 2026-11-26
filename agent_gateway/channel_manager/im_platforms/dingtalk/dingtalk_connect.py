@@ -476,13 +476,9 @@ class DingTalkChannel(BaseChannel):
                 file_receipt_key = media_id
                 attachment_name = file_name or os.path.basename(file_path or "file")
                 try:
+                    url, data = self._build_file_send_request(chat_id, conversation_type, media_id, attachment_name)
                     response = await self._http.post(
-                        self._get_send_api_url(conversation_type),
-                        json=(
-                            self._build_group_file_payload(chat_id, media_id, attachment_name)
-                            if not is_direct_message else self._build_private_file_payload(chat_id, media_id, attachment_name)
-                        ),
-                        headers={"x-acs-dingtalk-access-token": token},
+                        url, json=data, headers={"x-acs-dingtalk-access-token": token},
                     )
                 except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
                     return include_file_key({"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"})
@@ -492,14 +488,12 @@ class DingTalkChannel(BaseChannel):
                 if result["outcome"] != "delivered" or not has_text:
                     return include_file_key(result)
 
-        data = (
-            self._build_private_message_payload(chat_id, text)
-            if is_direct_message else self._build_group_message_payload(text, chat_id)
+        url, data = self._build_send_request(
+            chat_id, text, conversation_type, chat_id, robot_code=self.config.robot_code or self.config.client_id,
         )
-        data["robotCode"] = self.config.robot_code or self.config.client_id
         try:
             response = await self._http.post(
-                self._get_send_api_url(conversation_type), json=data,
+                url, json=data,
                 headers={"x-acs-dingtalk-access-token": token},
             )
         except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
@@ -551,29 +545,19 @@ class DingTalkChannel(BaseChannel):
             return {}
         return body if isinstance(body, dict) else {}
 
-    def _build_group_file_payload(self, conversation_id: str, media_id: str, name: str) -> dict[str, Any]:
-        return {
-            "robotCode": self.config.robot_code or self.config.client_id,
-            "openConversationId": conversation_id,
-            "msgKey": "sampleFile",
-            "msgParam": json.dumps({
+    def _build_file_send_request(
+        self, chat_id: str, conversation_type: str, media_id: str, name: str,
+    ) -> tuple[str, dict[str, Any]]:
+        return self._build_robot_request(
+            conversation_type, staff_id=chat_id, group_id=chat_id,
+            robot_code=self.config.robot_code or self.config.client_id,
+            msg_key="sampleFile",
+            msg_param=json.dumps({
                 "mediaId": media_id,
                 "fileName": name,
                 "fileType": os.path.splitext(name)[1].lower().lstrip(".") or "stream",
             }),
-        }
-
-    def _build_private_file_payload(self, staff_id: str, media_id: str, name: str) -> dict[str, Any]:
-        return {
-            "robotCode": self.config.robot_code or self.config.client_id,
-            "userIds": [staff_id],
-            "msgKey": "sampleFile",
-            "msgParam": json.dumps({
-                "mediaId": media_id,
-                "fileName": name,
-                "fileType": os.path.splitext(name)[1].lower().lstrip(".") or "stream",
-            }),
-        }
+        )
 
     async def _persistent_access_token(self) -> tuple[str | None, bool, str | None]:
         """Return ``(token, freshly issued, failure code)`` for a JiuwenMate send.
@@ -857,48 +841,26 @@ class DingTalkChannel(BaseChannel):
         )
         return chat_id
 
-    def _build_group_message_payload(self, content: str, open_conversation_id: str) -> dict:
-        """构建群聊消息负载"""
-        return {
-            "robotCode": self.config.client_id,
-            "openConversationId": open_conversation_id,
-            "msgKey": "sampleMarkdown",
-            "msgParam": json.dumps({
-                "text": content,
-                "title": "JiuSwarm Reply",
-            }),
-        }
-
-    def _build_private_message_payload(self, chat_id: str, content: str) -> dict:
-        """构建私聊消息负载"""
-        return {
-            "robotCode": self.config.client_id,
-            "userIds": [chat_id],
-            "msgKey": "sampleMarkdown",
-            "msgParam": json.dumps({
-                "text": content,
-                "title": "JiuSwarm Reply",
-            }),
-        }
-
-    def _get_send_api_url(self, conversation_type: str) -> str:
-        """根据会话类型获取发送API URL"""
+    def _build_robot_request(
+        self, conversation_type: str, *, staff_id: str, group_id: str,
+        robot_code: str, msg_key: str, msg_param: str,
+    ) -> tuple[str, dict[str, Any]]:
+        data: dict[str, Any] = {"robotCode": robot_code, "msgKey": msg_key, "msgParam": msg_param}
         if conversation_type == "2":
-            return f"{self.config.api_base}/v1.0/robot/groupMessages/send"
-        else:
-            return f"{self.config.api_base}/v1.0/robot/oToMessages/batchSend"
+            data["openConversationId"] = group_id
+            return f"{self.config.api_base}/v1.0/robot/groupMessages/send", data
+        data["userIds"] = [staff_id]
+        return f"{self.config.api_base}/v1.0/robot/oToMessages/batchSend", data
 
-    def _build_send_request(self, chat_id: str, content: str, conversation_type: str, open_conversation_id: str) -> \
-    tuple[str, dict]:
-        """构建发送请求"""
-        url = self._get_send_api_url(conversation_type)
-
-        if conversation_type == "2":
-            data = self._build_group_message_payload(content, open_conversation_id)
-        else:
-            data = self._build_private_message_payload(chat_id, content)
-
-        return url, data
+    def _build_send_request(
+        self, chat_id: str, content: str, conversation_type: str, open_conversation_id: str,
+        *, robot_code: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        return self._build_robot_request(
+            conversation_type, staff_id=chat_id, group_id=open_conversation_id,
+            robot_code=self.config.client_id if robot_code is None else robot_code,
+            msg_key="sampleMarkdown", msg_param=json.dumps({"text": content, "title": "JiuSwarm Reply"}),
+        )
 
     async def _send_http_request(self, url: str, data: dict, token: str, chat_id: str) -> None:
         """发送HTTP请求"""
@@ -1410,24 +1372,10 @@ class DingTalkChannel(BaseChannel):
 
     async def _send_media_message(self, request: DingTalkMediaMessageRequest) -> None:
         """发送媒体消息"""
-        if request.conversation_type == "2":
-            # 群聊
-            url = f"{self.config.api_base}/v1.0/robot/groupMessages/send"
-            data = {
-                "robotCode": self.config.client_id,
-                "openConversationId": request.open_conversation_id,
-                "msgKey": request.msg_key,
-                "msgParam": request.msg_param,
-            }
-        else:
-            # 私聊
-            url = f"{self.config.api_base}/v1.0/robot/oToMessages/batchSend"
-            data = {
-                "robotCode": self.config.client_id,
-                "userIds": [request.chat_id],
-                "msgKey": request.msg_key,
-                "msgParam": request.msg_param,
-            }
+        url, data = self._build_robot_request(
+            request.conversation_type, staff_id=request.chat_id, group_id=request.open_conversation_id,
+            robot_code=self.config.client_id, msg_key=request.msg_key, msg_param=request.msg_param,
+        )
 
         headers = {"x-acs-dingtalk-access-token": request.token}
 

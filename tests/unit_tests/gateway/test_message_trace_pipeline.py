@@ -15,6 +15,7 @@ from e2a.message import Message, ReqMethod
 from agent_gateway import telemetry
 from agent_gateway.channel_manager.channel_manager import ChannelManager
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 def message(request_id="request", channel="web", kind="event"):
@@ -136,14 +137,18 @@ async def test_response_queue_holds_operation_until_dispatch_drops_missing_chann
 
 
 @pytest.mark.asyncio
-async def test_rejected_response_queue_releases_reference(monkeypatch):
+async def test_full_response_queue_defers_and_cancel_releases_reference(monkeypatch):
     op = operation(monkeypatch)
     handler = object.__new__(MessageHandler)
     handler._robot_messages = asyncio.Queue(maxsize=1)
     handler._robot_messages.put_nowait(message("other"))
     with telemetry.bind_request_trace(op):
-        with pytest.raises(asyncio.QueueFull):
-            handler.publish_robot_messages_nowait(message())
+        handler.publish_robot_messages_nowait(message())
+        deferred = list(handler._deferred_put_tasks)
+        assert deferred
+        for task in deferred:
+            task.cancel()
+        await asyncio.gather(*deferred, return_exceptions=True)
     op.complete("success")
     assert op.finished
     assert op.outcome == "incomplete"
@@ -269,7 +274,7 @@ async def test_shutdown_releases_queued_traces_without_changing_messages(monkeyp
     response_op = telemetry.start_request_trace("response", "chat.send", channel="web", connection_id="c")
     late_op = telemetry.start_request_trace("late", "chat.send", channel="web", connection_id="c")
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._user_messages = asyncio.Queue(maxsize=3)
     handler._robot_messages = asyncio.Queue(maxsize=4)
     manager = ChannelManager(handler, {})
@@ -329,7 +334,7 @@ async def test_stop_dispatch_accepts_handler_without_robot_queue():
 async def test_handler_stop_keeps_response_trace_until_active_manager_stops(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     manager._running = True
@@ -348,7 +353,7 @@ async def test_handler_stop_keeps_response_trace_until_active_manager_stops(monk
 async def test_response_from_late_background_task_has_no_shutdown_hold(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     await manager.stop_dispatch()
@@ -370,7 +375,7 @@ async def test_response_from_late_background_task_has_no_shutdown_hold(monkeypat
 async def test_request_after_stop_remains_queued_without_trace_hold(monkeypatch, sync):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._user_messages = asyncio.Queue(maxsize=2)
     await handler.stop_forwarding()
     earlier = message("earlier", kind="req")
@@ -396,7 +401,7 @@ async def test_request_after_stop_remains_queued_without_trace_hold(monkeypatch,
 async def test_restart_restores_queue_trace_admission(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     await manager.stop_dispatch()
@@ -437,7 +442,7 @@ async def test_preprocess_stages_report_duration_without_changing_failures(monke
 async def test_unary_lock_wait_event_is_recorded_before_request_execution(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._broadcast_task_global_running = AsyncMock()
     request = message(kind="req")
     telemetry.attach_message_trace(request, op)
@@ -468,7 +473,7 @@ async def test_unary_lock_wait_event_is_recorded_before_request_execution(monkey
 async def test_cancelled_tool_results_retain_explicit_request_owner(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     env = SimpleNamespace(request_id="derived-cancel", channel="web", method="chat.cancel")
     with telemetry.bind_request_trace(op):
         with telemetry.bind_agent_request_trace(env) as child:
@@ -489,7 +494,7 @@ async def test_cancelled_tool_results_retain_explicit_request_owner(monkeypatch)
 async def test_same_request_id_other_message_does_not_claim_background_task(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._is_session_input_message = lambda msg: False
     handler._handle_channel_control = AsyncMock(return_value=True)
     earlier = message(kind="req")
@@ -530,7 +535,7 @@ async def test_supplement_stream_keeps_parent_until_producer_and_responses_finis
             yield AgentResponseChunk(request_id=env.request_id, channel_id="web",
                                      payload=None, is_complete=True)
 
-    handler = MessageHandler(Client())
+    handler = MessageHandler(Client(), session_login_bindings=NullSessionLoginBindings())
     handler._apply_session_login_owner = AsyncMock()
     handler._broadcast_task_global_running = AsyncMock()
     handler._trigger_before_chat_request_hook = AsyncMock()
@@ -620,7 +625,7 @@ async def test_derived_response_preserves_explicit_owner(monkeypatch, finished):
 async def test_unconsumed_supplement_shutdown_releases_hold_without_removing_message(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     source = message(kind="req")
     telemetry.attach_message_trace(source, op)
     continuation = handler._build_queued_chat_send_message(source, "follow up")
@@ -640,7 +645,7 @@ async def test_unconsumed_supplement_shutdown_releases_hold_without_removing_mes
 async def test_supplement_cancelled_before_stream_task_starts_releases_hold(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._should_emit_processing_status_for_stream = lambda msg: False
     source = message(kind="req")
     telemetry.attach_message_trace(source, op)
@@ -665,7 +670,7 @@ async def test_supplement_cancelled_before_stream_task_starts_releases_hold(monk
 async def test_supplement_stream_exit_does_not_complete_original_producer(monkeypatch, cancel):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._should_emit_processing_status_for_stream = lambda msg: False
     source = message(kind="req")
     telemetry.attach_message_trace(source, op)
@@ -706,7 +711,7 @@ async def test_supplement_stream_exit_does_not_complete_original_producer(monkey
 async def test_supplement_unary_response_retains_original_producer(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     source = message(kind="req")
     telemetry.attach_message_trace(source, op)
     continuation = handler._build_queued_chat_send_message(source, "follow up")
@@ -734,7 +739,7 @@ async def test_supplement_unary_response_retains_original_producer(monkeypatch):
 async def test_supplement_forward_early_continue_does_not_complete_original_producer(monkeypatch):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     handler._is_session_input_message = lambda msg: False
     handler._handle_channel_control = AsyncMock(return_value=True)
     source = message(kind="req")
@@ -762,7 +767,7 @@ async def test_supplement_forward_early_continue_does_not_complete_original_prod
 async def test_supplement_early_response_retains_explicit_parent(monkeypatch, path):
     op = operation(monkeypatch)
     monkeypatch.setattr(MessageHandler, "_instance", None)
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(SimpleNamespace(), session_login_bindings=NullSessionLoginBindings())
     source = message(kind="req")
     telemetry.attach_message_trace(source, op)
     continuation = handler._build_queued_chat_send_message(source, "follow up")

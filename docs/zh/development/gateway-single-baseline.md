@@ -38,6 +38,111 @@ WebSocket 监听任务被取消时先关闭已绑定资源，原任务仍保持�
 测试包括 `test_uvicorn_listener.py`、`test_websocket_listener.py`、
 `test_gateway_listener_lifecycle.py` 及对应进程 ST，覆盖归档、活连接、取消、绑定失败和端口复用。
 
+## P2-B：协议运行时
+
+`routing/protocol_runtime.py` 拥有 ProtocolRuntime、ProtocolRuntimeConfig、RouteConfig、
+ACP bridge 及请求、会话和连接索引。`app_gateway` 与 `routing.gateway_server` 的
+GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名。
+
+保留最新 develop 的 TUI 请求关联、会话切换、断线宽限、重连与路由隔离。客户端请求 ID 映射为
+唯一内部上游 ID，响应时恢复；旧连接的迟到结果不能投递到替代窗口。新模块和测试使用当前
+`e2a` 包，不使用旧 `openjiuwen_protocol` 路径。冷导入不初始化旧入口或提前加载 ACP。
+
+测试包括 `test_protocol_runtime_import_contract.py`、`test_tui_request_correlation.py`、
+`test_tui_lifecycle_routing.py` 与原 `test_app_gateway_acp.py` 兼容测试。
+
+## P2-C：单进程装配
+
+`app_gateway._run()` 将配置保存工厂、重启动作、预处理、连接及启动计时依赖显式传给
+`application/single.py`。
+
+- `services.py` 创建同一份 client、MessageHandler、ChannelManager 和公共服务，保留扩展
+  选择、企业存储初始化与清理、provider 绑定及 AgentOS 配置轮询服务。
+- client 选择保持当前 agent-client 模式校验与扩展客户端直连语义；文件型 Cron 迁移使用
+  AgentServer 模型目录，不回退本地目录。
+- `web.py` 装配原 WebChannel、handler、插件、Git watcher、推荐回调和首次请求门闩，不绑定监听。
+- `tui_acp.py` 在 Web ready 后创建 TuiChannel、ACP 队列与唯一 ProtocolRuntime，通道注册后才订阅 client。
+- `inbound.py`、`connection.py`、`configuration.py` 保留预处理、重试/就绪和配置 helper；
+  旧导入兼容，patch 私有变量时应指向实际定义模块。
+- 入站预处理保留 `app_id` 与当前 Web 本地方法路由：强制转发优先，已注册本地 handler
+  留在本地，拒绝前缀不外发，未知 Web 方法默认仍可透传。
+  `/acp` 复用同一套判定：拒绝前缀回 `METHOD_NOT_ALLOWED`，未登记方法按原方法名透传，
+  其余方法（含已登记转发）先过企业版禁写判定，未登记方法再按原方法名透传；
+  `/tui` 仍只转发已登记方法。
+- `single.py` 在 dispatch/Cron 前启动 Web，保留配置轮询启停顺序和 TUI/ACP 装配前的原让步阶段。
+  Web 就绪预算默认与进程冷启动预算一致，可用 `GATEWAY_WEB_READY_TIMEOUT_SECONDS` 覆盖。
+  `0` 表示不等待，仅已经 ready 的监听可以通过检查。
+
+抽取后，私有 monkeypatch 目标应指向实际定义模块：
+
+| 旧 `app_gateway` 目标 | 新目标 |
+| --- | --- |
+| `configure_gateway_telemetry` | `agent_gateway.application.services.configure_gateway_telemetry` |
+| `_agent_prewarm_enabled` / `_AGENT_PREWARM_EXCLUDED_CHANNELS` | `agent_gateway.application.single` |
+| `_stop_web_runtime` / `_wait_for_web_channel_listening` | `agent_gateway.application.connection` |
+| `_reject_removed_agent_client_type` | `agent_gateway.application.services` |
+| `_build_acp_route_binding` / `_build_route_config_map` | `agent_gateway.application.tui_acp` |
+| 入站预处理 helper | `agent_gateway.application.inbound` |
+
+运维检索日志时，TUI/ACP 后台任务名为 `tui-acp-protocol-runtime`。
+
+可选渠道先于单进程装配抽取：先由旧入口完整调用，本阶段再将相同调用迁至 single。装配测试位于
+`test_application_assembly_contract.py`，真实进程停启/锁测试位于
+`st_test/testcases_gateway/test_gateway_single_lifecycle.py`。
+正常退出可清理不意味着任意早期启动失败都具备事务式清理。
+
+## P2-D：可选渠道生命周期
+
+`application/optional_channels.py::OptionalChannels` 拥有 IM、SSH、A2A、Web Proxy 配置、
+实例和任务。host 显式传入依赖，保留 SDK 延迟导入、单渠道失败隔离及 revision 感知重试。
+退出分三段：配置/重试任务、A2A、TUI/Web 后的其他渠道；等待后台取消任务结束。
+预热仍属于 host，WebChannel.stop 仍拥有 Web Proxy 清理。
+
+`test_optional_channels_lifecycle.py` 验证资源归属、重试与清理。
+`test_gateway_optional_channels_lifecycle.py` 通过真实进程验证装配抽取前后的 host 启停边界。
+AgentOS Web Proxy 使用当前 runtime Cron 配置 helper，测试不再替换缺失的导入。
+真实账号、SDK 和冻结包仍需单独验收。
+
+## P3-A：本地凭据访问
+
+`CredentialAccess`、`CredentialUpdateSink` 暴露最小不可变值，repr 不含 token。
+模型分类同样使用注入的 service；自配模型不读取登录会话，也不触发刷新任务。
+`assemble_services` 注入延迟 AuthService provider、LocalCredentialAccess，以及绑定同一
+MessageHandler 的 `MessageHandlerCredentialUpdateSink`。登录 HTTP handler 与 Web/TUI/ACP
+入站共享依赖；`MessagePreprocessor.with_credential_access()` 与
+`MessageHandler.set_credential_access()` 是新的注入接缝。查找前删除调用方提供的
+`_model_auth` 并记录告警，注入路径不能再次执行旧全局注入。
+保留过期 token 20 秒刷新等待、仍可用 token 回退，以及业务用户与模型登录身份的区别。
+
+未绑定的旧 helper 与 `register_auth_routes(app)` 保持兼容。退出登录先删除本地会话，再经原
+AS 链路尽力通知，不承诺多 AS 可靠吊销。测试包括 `test_local_credential_access.py`、
+`test_credential_pipeline_contract.py` 和 `test_auth_dependency_injection.py`。
+
+## P3-B：Cron 与会话凭据绑定
+
+登录来源的 Cron 模型在创建/更新时绑定凭据引用，执行时仅按该引用取凭据，不能按同名模型
+借用账号。原 job 格式、调度和投递不变。`SessionLoginBindings` 适配现有
+`session_owners.json` 持久化/TTL 与目录检查；保留非 Web 回退范围和登录提示，未登录 Web
+请求不能借用记录的账号。绑定先于 MessageHandler 转发，公共凭据接口先于 Cron 调度接入。
+`CronScheduler.set_credential_access()`、`CronController.set_credential_access()` 与
+`MessageHandler` 构造参数 `session_login_bindings` 是新的注入接缝。`MessageHandler`
+必须显式注入该接口，不再回退到全局会话主人存储；这是账号绑定，不是 Worker 归属。
+
+测试包括 `test_session_login_bindings.py`、`test_cron_credential_access.py`、
+`test_credential_network_contract.py` 和既有 Cron/登录回归。
+
+## P3-C：配置保存副作用
+
+`application/config_saved_effects.py::ConfigSavedEffectCoordinator` 协调原配置快照、AS reload、
+预热、浏览器重启、proactive Cron 与主题同步副作用。
+`_build_config_saved_callback` 保留薄工厂兼容，`sync_saved_topic_recommendation` 仍可从入口
+导入；旧调用仍可传未使用的 `message_handler` 参数。重试时序、重启决策、请求上下文和
+后台错误处理不变。
+
+个人版 Web/TUI 仍由目标 AgentServer 持久化并 reload；远端保存成功不能调用协调器或二次
+reload。协调器不写配置，不替代 OptionalChannels/CM 更新链。
+测试包括 `test_config_saved_effects.py` 与使用真实工厂的 `test_config_save_legacy_worker.py`。
+
 ## 验证与回退
 
 使用每个 worktree 独立的新 `.venv` 和 develop 未修改的锁文件。先记录基线，再验证每个

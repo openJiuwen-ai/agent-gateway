@@ -15,7 +15,11 @@ from agent_gateway.extensions.agentos.agentos_router.logutil import (
     format_agentos,
     log_agentos,
 )
-from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from agent_gateway.extensions.agentos.agentos_router.models import (
+    AgentInfo,
+    AgentStatus,
+    is_allowed_status_transition,
+)
 from agent_gateway.telemetry import current_request_trace, trace_operation
 
 logger = logging.getLogger(__name__)
@@ -27,6 +31,21 @@ BUILTIN_AGENT_TYPE = "jiuwenswarm"
 OPENCLAW_AGENT_TYPE = "openclaw"
 SUPPORTED_AGENT_KEY_FIELDS = frozenset({"user_id", "agent_type", "session_id"})
 DEFAULT_AGENT_KEY_FIELDS = ("user_id", "agent_type")
+
+AGENT_STATE_CHANGED_EVENT = "agent.state.changed"
+AGENT_STATE_INVALID_TRANSITION_EVENT = "agent.state.invalid_transition"
+
+# Closed vocabulary for delete/migration reasons. Keeping these as constants
+# prevents dashboards from splitting one action into multiple spellings.
+DELETE_REASON_EXPLICIT = "explicit_delete"
+DELETE_REASON_IDLE = "idle_reaper"
+DELETE_REASON_DISCONNECT = "disconnect_cleanup"
+DELETE_REASON_NETWORK_FAILURE = "network_failure"
+DELETE_REASON_INSTANCE_UNAVAILABLE = "instance_unavailable"
+DELETE_REASON_CREATE_NOT_RUNNING = "create_not_running"
+DELETE_REASON_WARMUP_FAILURE = "warmup_failure"
+DELETE_REASON_FAILED_RECLAIM = "failed_reclaim"
+DELETE_REASON_UNSPECIFIED = "delete"
 
 
 def is_third_party_agent_type(agent_type: str) -> bool:
@@ -164,24 +183,64 @@ class AgentRuntime:
         resolved.updated_at = time.time()
         return resolved
 
-    def mark_ready(self, resolved: AgentInfo) -> None:
-        self.info = resolved
+    def _check_transition(
+        self, target: AgentStatus, reason: str,
+    ) -> AgentStatus:
+        """Validate a transition; illegal ones are reported but not rejected."""
+        previous = self.info.status
+        if previous is target:
+            return previous
+        if not is_allowed_status_transition(previous, target):
+            _log_state_event(
+                self, previous, target, reason,
+                event=AGENT_STATE_INVALID_TRANSITION_EVENT, level=logging.ERROR,
+            )
+        return previous
+
+    def mark_ready(
+        self, resolved: AgentInfo, *, reason: str = "create_ok",
+    ) -> None:
+        previous = self._check_transition(AgentStatus.READY, reason)
+        ready = resolved.copy()
+        ready.status = AgentStatus.READY
+        ready.error = None
+        ready.updated_at = time.time()
+        self.info = ready
+        if previous is not AgentStatus.READY:
+            _log_state_event(
+                self, previous, AgentStatus.READY, reason,
+                event=AGENT_STATE_CHANGED_EVENT, level=logging.INFO,
+            )
         self.creating_event.set()
 
-    def mark_failed(self, exc: BaseException) -> None:
+    def mark_failed(
+        self, exc: BaseException, *, reason: str = "create_failed",
+    ) -> None:
+        previous = self._check_transition(AgentStatus.FAILED, reason)
         failed = self.info.copy()
         failed.status = AgentStatus.FAILED
         failed.error = str(exc)
         failed.updated_at = time.time()
         self.info = failed
+        if previous is not AgentStatus.FAILED:
+            _log_state_event(
+                self, previous, AgentStatus.FAILED, reason,
+                event=AGENT_STATE_CHANGED_EVENT, level=logging.INFO,
+            )
         self.creating_event.set()
 
-    def mark_deleted(self) -> None:
+    def mark_deleted(self, *, reason: str = DELETE_REASON_UNSPECIFIED) -> None:
+        previous = self._check_transition(AgentStatus.DELETED, reason)
         deleted = self.info.copy()
         deleted.status = AgentStatus.DELETED
         deleted.error = "agent deleted"
         deleted.updated_at = time.time()
         self.info = deleted
+        if previous is not AgentStatus.DELETED:
+            _log_state_event(
+                self, previous, AgentStatus.DELETED, reason,
+                event=AGENT_STATE_CHANGED_EVENT, level=logging.INFO,
+            )
         self.creating_event.set()
 
     async def wait_until_settled(self, timeout: float) -> None:
@@ -266,6 +325,51 @@ class AgentRuntime:
                 metadata=dict(metadata or {}),
             ),
         )
+
+
+def _state_event_attributes(
+    runtime: AgentRuntime,
+    previous: AgentStatus,
+    target: AgentStatus,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "from_status": previous.value,
+        "to_status": target.value,
+        "reason": reason,
+        "agent_type": runtime.info.agent_type,
+    }
+
+
+def _log_state_event(
+    runtime: AgentRuntime,
+    previous: AgentStatus,
+    target: AgentStatus,
+    reason: str,
+    *,
+    event: str,
+    level: int,
+) -> None:
+    """Record a structured state event in logs and the active trace.
+
+    Observability is best-effort: a broken exporter must never break the
+    lifecycle transition itself.
+    """
+    try:
+        attrs = _state_event_attributes(runtime, previous, target, reason)
+        operation = current_request_trace()
+        if operation is not None:
+            operation.event(event, attrs)
+        log_agentos(
+            logger,
+            level,
+            event,
+            user_id=runtime.info.user_id,
+            sandbox_id=str(runtime.info.sandbox_id or ""),
+            **attrs,
+        )
+    except Exception:  # noqa: BLE001 - observability must never break lifecycle
+        logger.debug("Unable to record agent state event %s", event, exc_info=True)
 
 
 class AgentManager:
@@ -516,8 +620,11 @@ class AgentManager:
         agent_type: str,
         *,
         key_values: Mapping[str, Any] | None = None,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> None:
-        await self.pop_agent(user_id, agent_type, key_values=key_values)
+        await self.pop_agent(
+            user_id, agent_type, key_values=key_values, reason=reason,
+        )
 
     async def is_current(self, runtime: AgentRuntime) -> bool:
         """Check that a snapshot still identifies the READY runtime for its key."""
@@ -549,6 +656,7 @@ class AgentManager:
         key_values: Mapping[str, Any] | None = None,
         expected_agent_id: str | None = None,
         include_shared_sandbox: bool = False,
+        reason: str = DELETE_REASON_EXPLICIT,
     ) -> AgentRuntime | None:
         """Detach and return a deleted snapshot if the generation still matches."""
         key = self._make_key(user_id, agent_type, key_values=key_values)
@@ -563,7 +671,7 @@ class AgentManager:
                 key, runtime, include_shared_sandbox,
             ):
                 self._runtimes.pop(other_key)
-                other.mark_deleted()
+                other.mark_deleted(reason=reason)
             return runtime.snapshot()
 
     async def release(
@@ -589,6 +697,7 @@ class AgentManager:
         idle_timeout_seconds: float,
         *,
         include_shared_sandbox: bool = False,
+        reason: str = DELETE_REASON_IDLE,
     ) -> AgentRuntime | None:
         """Atomically remove a READY runtime idle beyond the timeout.
 
@@ -627,7 +736,7 @@ class AgentManager:
                 return None
             for other_key, other in candidates:
                 self._runtimes.pop(other_key)
-                other.mark_deleted()
+                other.mark_deleted(reason=reason)
             return runtime.snapshot()
 
     async def list_keys(self) -> list[AgentKey]:
@@ -647,6 +756,45 @@ class AgentManager:
                 if runtime.info.user_id == normalized_user_id
             ]
 
+    async def list_failed_agents(
+        self, stale_after_seconds: float,
+    ) -> list[AgentRuntime]:
+        """Return FAILED runtimes that are unheld and older than the threshold."""
+        threshold = max(0.0, float(stale_after_seconds))
+        async with self._runtimes_lock:
+            now = time.time()
+            return [
+                runtime.snapshot()
+                for runtime in self._runtimes.values()
+                if runtime.is_failed()
+                and runtime.task_count == 0
+                and now - float(runtime.info.updated_at or 0.0) >= threshold
+            ]
+
+    async def pop_failed_if_expired(
+        self,
+        key: AgentKey,
+        stale_after_seconds: float,
+        *,
+        expected_agent_id: str | None = None,
+        reason: str = DELETE_REASON_FAILED_RECLAIM,
+    ) -> AgentRuntime | None:
+        """Atomically remove a stale FAILED runtime and mark it DELETED."""
+        threshold = max(0.0, float(stale_after_seconds))
+        async with self._runtimes_lock:
+            runtime = self._runtimes.get(key)
+            if runtime is None or not runtime.is_failed():
+                return None
+            if expected_agent_id is not None and runtime.info.agent_id != expected_agent_id:
+                return None
+            if runtime.task_count > 0:
+                return None
+            if time.time() - float(runtime.info.updated_at or 0.0) < threshold:
+                return None
+            self._runtimes.pop(key)
+            runtime.mark_deleted(reason=reason)
+            return runtime.snapshot()
+
     async def _mark_creator_failed(
         self,
         key: AgentKey,
@@ -657,7 +805,12 @@ class AgentManager:
         async with self._runtimes_lock:
             if self._runtimes.get(key) is not owner_runtime:
                 return
-            owner_runtime.mark_failed(exc)
+            reason = (
+                "creator_cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else "create_failed"
+            )
+            owner_runtime.mark_failed(exc, reason=reason)
         session_id = str(owner_runtime.info.metadata.get("session_id") or "")
         sandbox_id = str(owner_runtime.info.sandbox_id or "")
         fields = {

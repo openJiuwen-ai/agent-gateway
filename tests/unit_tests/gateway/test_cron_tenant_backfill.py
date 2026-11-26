@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,25 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
+
+
+def _stub_optional_web_handler_modules() -> None:
+    """本地/缺依赖时跳过扩展包与 WebUI 注册，只测 cron handler。"""
+    for mod_name, attr in (
+        (
+            "agent_gateway.channel_manager.web.extension_package_handlers",
+            "register_extension_package_handlers",
+        ),
+        (
+            "agent_gateway.channel_manager.web.webui_handlers",
+            "register_webui_handlers",
+        ),
+    ):
+        if mod_name in sys.modules:
+            continue
+        stub = ModuleType(mod_name)
+        setattr(stub, attr, lambda *args, **kwargs: None)
+        sys.modules[mod_name] = stub
 
 
 class _FakeWebChannel:
@@ -129,6 +149,7 @@ def _cron_http_request_with_routing(
 
 
 def _bind(channel, cron):
+    _stub_optional_web_handler_modules()
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
@@ -273,3 +294,124 @@ async def test_cron_query_paths_routing_overrides_stale_body_tenant_ids() -> Non
         kwargs = cron.last(op)
         assert kwargs["group_id"] == "group-route", (op, kwargs)
         assert kwargs["bot_id"] == "bot-route", (op, kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("omit", ["group_id", "bot_id", "user_id"])
+async def test_cron_list_enterprise_rejects_missing_routing_identity(
+    monkeypatch, omit
+) -> None:
+    """企业版 GET/list 缺 group/bot/user → BAD_REQUEST，不 200 空列表（Cron023）。"""
+    monkeypatch.setattr(
+        "agent_gateway.channel_manager.web.app_web_handlers._is_enterprise_edition",
+        lambda: True,
+    )
+
+    class _RaisingListCron(_TenantCaptureCronController):
+        async def list_jobs(self, project_id=None, user_id="", group_id="", bot_id=""):
+            from agent_gateway.cron.controller import _require_enterprise_cron_identity
+
+            _require_enterprise_cron_identity(group_id, bot_id, user_id)
+            return await super().list_jobs(
+                project_id=project_id,
+                user_id=user_id,
+                group_id=group_id,
+                bot_id=bot_id,
+            )
+
+    channel = _FakeWebChannel()
+    cron = _RaisingListCron()
+    _bind(channel, cron)
+
+    # 路由头只带部分身份；省略的那一维保持空。
+    routing_kwargs = {
+        "user_id": "zxy",
+        "group_id": "group-route",
+        "bot_id": "bot-route",
+    }
+    if omit == "user_id":
+        http_request = _cron_http_request_with_routing(
+            group_id=routing_kwargs["group_id"],
+            bot_id=routing_kwargs["bot_id"],
+            user_id="",
+        )
+        conn_user = None
+    elif omit == "group_id":
+        http_request = _cron_http_request_with_routing(
+            user_id=routing_kwargs["user_id"],
+            group_id="",
+            bot_id=routing_kwargs["bot_id"],
+        )
+        conn_user = "zxy"
+    else:
+        http_request = _cron_http_request_with_routing(
+            user_id=routing_kwargs["user_id"],
+            group_id=routing_kwargs["group_id"],
+            bot_id="",
+        )
+        conn_user = "zxy"
+
+    await channel.methods["cron.job.list"](
+        http_request, "req-list-missing", {}, "sess", conn_user
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+    assert "enterprise cron requires" in channel.responses[-1]["error"]
+    assert cron.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "enabled",
+    [
+        {"not": "boolean"},
+        "true",
+        "false",
+        1,
+        0,
+        None,
+    ],
+)
+async def test_cron_toggle_rejects_non_boolean_enabled(enabled) -> None:
+    """非布尔 enabled 必须拒绝，且不得调用控制器（避免 bool(对象)=True 误启用）。"""
+    channel = _FakeWebChannel()
+    cron = _TenantCaptureCronController()
+    _bind(channel, cron)
+    http_request = _cron_http_request_with_routing()
+    job_id = cron.job["id"]
+
+    await channel.methods["cron.job.toggle"](
+        http_request,
+        "req-toggle-bad",
+        {"id": job_id, "enabled": enabled},
+        "sess",
+        "zxy",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+    assert channel.responses[-1]["error"] == "enabled must be boolean"
+    assert cron.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_cron_toggle_accepts_boolean_enabled(enabled) -> None:
+    """合法 true/false 仍应成功并原样传给控制器。"""
+    channel = _FakeWebChannel()
+    cron = _TenantCaptureCronController()
+    _bind(channel, cron)
+    http_request = _cron_http_request_with_routing()
+    job_id = cron.job["id"]
+
+    await channel.methods["cron.job.toggle"](
+        http_request,
+        "req-toggle-ok",
+        {"id": job_id, "enabled": enabled},
+        "sess",
+        "zxy",
+    )
+
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
+    assert cron.last("toggle")["enabled"] is enabled

@@ -266,7 +266,37 @@ AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
+USER_PREFERENCE_TABLE_DEF = TableDefinition(
+    table_name="user_preference",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("user_id", "string", length=256, nullable=False),
+        ColumnDefinition(
+            "preferred_language",
+            "string",
+            length=16,
+            nullable=False,
+            default="en",
+        ),
+        # 扩展袋：语言权威在 preferred_language；extras 预留后续用户习惯字段。
+        ColumnDefinition("extras", "json", nullable=True),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["user_id"], unique=True),
+    ],
+)
+
 # config_poll 用 revision 发现变更。更新由数据库执行 revision = revision + 1。
+# user_preference 不进此集合：禁止全表 poll，由懒缓存点查同步（见 UserPreferenceService）。
 POLL_REVISION_TABLES = frozenset({
     CHANNEL_CONFIG_TABLE_DEF.table_name,
     LOG_MASKING_RULE_TABLE_DEF.table_name,

@@ -113,7 +113,7 @@ class GatewayLock:
       ``find_holder`` preflight); authority comes from the OS lock.
 
     Usage:
-        lock = GatewayLock(get_infra_data_dir())
+        lock = GatewayLock(get_user_workspace_dir())
         if not lock.acquire():
             logger.error("Another Gateway is already running")
             raise SystemExit(1)

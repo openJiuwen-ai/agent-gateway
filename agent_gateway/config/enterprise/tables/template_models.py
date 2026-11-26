@@ -2,8 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
 """模板表：model_template、embedding_template、extension_config_template、
-skill_prebuilt_template、expert_package_template、mcp_template、permissions_template
-（与企业级数据模型对齐）。
+skill_prebuilt_template、expert_package_template、mcp_template、permissions_template、
+execution_guard_template（与企业级数据模型对齐）。
 """
 
 from __future__ import annotations
@@ -36,8 +36,6 @@ MODEL_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("parameters", "json", nullable=True),
         ColumnDefinition("timeout", "integer", nullable=False, default=60),
         ColumnDefinition("retry_count", "integer", nullable=False, default=3),
-        ColumnDefinition("enable_streaming", "boolean", nullable=False, default=True),
-        ColumnDefinition("enable_function_calling", "boolean", nullable=False, default=True),
         ColumnDefinition("verify_ssl", "boolean", nullable=False, default=False),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
@@ -204,6 +202,30 @@ PERMISSIONS_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
 )
 
+EXECUTION_GUARD_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="execution_guard_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("body", "json", nullable=False),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["template_id"], unique=True),
+    ],
+)
+
 AGENT_TEMPLATE_TABLE_DEF = TableDefinition(
     table_name="agent_template",
     columns=[
@@ -282,4 +304,26 @@ A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],
     indexes=[IndexDefinition(["policy_id"], unique=True)],
+)
+
+# React 运行策略模板：react 配置整段存 data JSON（不再拆列）。
+REACT_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="react_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["template_id"], unique=True)],
 )

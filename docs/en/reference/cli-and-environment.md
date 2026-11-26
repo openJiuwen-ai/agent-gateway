@@ -39,6 +39,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `GATEWAY_HOST` | `127.0.0.1` | TUI route bind host |
 | `GATEWAY_PORT` | `19001` | TUI route port; a fixed default, assign a distinct port when running several instances on one host |
 | `GATEWAY_URL` | unset | Gateway public URL used by some extensions |
+| `AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS` | On | Whether the Web (`/ws`) and ACP (`/acp`) entry points forward methods the Gateway has not registered to AgentServer under their original name. AgentServer owns the method set; the Gateway only blocks reserved prefixes and enterprise write-protected methods. Set to `0` / `false` / `no` / `off` to restore the strict "static allowlist only" mode for staged rollout and rollback; `/tui` is not affected by this switch |
 | `A2A_SERVER_ENABLED` | disabled | Set to `1` / `true` to enable A2A ingress |
 | `A2A_SERVER_HOST` | `127.0.0.1` | A2A bind host |
 | `A2A_SERVER_PORT` | `19100` | A2A port |
@@ -66,7 +67,7 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 
 ## Configuration file
 
-Default path: `$JIUWENSWARM_DATA_DIR/infra/config/config.yaml`; when `JIUWENSWARM_DATA_DIR` is unset, `$JIUWENSWARM_HOME/.jiuwenswarm/infra/config/config.yaml`.
+Default path: `$JIUWENSWARM_DATA_DIR/config/config.yaml`; when `JIUWENSWARM_DATA_DIR` is unset, `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`.
 
 If the file is missing, configuration reads fall back to Gateway’s bundled template. A standalone start installs that template without overwriting existing configuration. Common settings:
 
@@ -81,19 +82,23 @@ health_check:
 
 | Path | Content |
 | --- | --- |
-| `<root>/infra/config/config.yaml` | Gateway / channel configuration |
-| `<root>/domain/agent/sessions/` | Session data (written by the AgentServer) |
-| `<root>/infra/logs/agent/` | Gateway, AgentServer, and combined logs |
-| `<root>/infra/.gateway.lock` | Workspace singleton lock |
-| `<root>/domain/agent/home/cron_jobs.json` | Cron job store (maintained by the gateway) |
+| `<root>/config/config.yaml` | Gateway / channel configuration |
+| `<root>/profile/agent/sessions/` | Session data (written by the AgentServer) |
+| `<root>/logs/agent/` | Gateway, AgentServer, and combined logs |
+| `<root>/.gateway.lock` | Workspace singleton lock |
+| `<root>/profile/agent/home/cron_jobs.json` | Cron job store (maintained by the gateway) |
 
 `<root>` is `JIUWENSWARM_DATA_DIR` when set, otherwise `JIUWENSWARM_HOME/.jiuwenswarm`.
 
-Enterprise deployments mount only `<root>/domain/` on shared PVC/NFS storage and keep
-`<root>/infra/` private to each Pod; do not mount the entire data root. Personal
-deployments use the same paths as ordinary directories. Runtime logs, including
-`context_usage.jsonl`, belong in `infra/logs/agent/` and are collected through stdout
-in enterprise deployments.
+Enterprise deployments mount only `<root>/profile/` on shared PVC/NFS storage; system
+paths such as `config/`, `logs/`, `auth/`, and `runtime/` stay in the flat data root and
+remain Pod-local. Do not mount the entire data root. Personal deployments use the same
+paths as ordinary directories. Runtime logs, including `context_usage.jsonl`, belong in
+`logs/agent/` and are collected through stdout in enterprise deployments.
+
+On upgrade from the earlier flat layout, known durable business directories are moved
+under `profile/`; their former paths are kept as symlinks when the platform permits.
+System directories remain in place. The unreleased intermediate `domain/infra` layout is not a supported upgrade path.
 
 ## Exit behavior
 

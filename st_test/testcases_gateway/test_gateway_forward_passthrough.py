@@ -324,12 +324,19 @@ def test_rsi_session_id_injected(gateway_ws, stub_agent_server) -> None:
 def _request_and_expect_error(
     gateway_ws: GatewayWsClient, stub_agent_server: Any, method: str, params: dict[str, Any], code: str
 ) -> None:
+    rid = f"st-err-{method}-{code}"
     before = len(stub_agent_server.requests)
-    frames = gateway_ws.request(method, params, rid=f"st-err-{method}-{code}")
+    frames = gateway_ws.request(method, params, rid=rid)
     res = frames[-1]
     assert res["type"] == "res" and res["ok"] is False
     assert res.get("code") == code, res
-    assert len(stub_agent_server.requests) == before, "被拒请求不应触达 AgentServer"
+    # gateway 有 2s 生命周期轮询，后台请求会追加到 stub；只校验本次请求没有被转发。
+    forwarded = [
+        entry
+        for entry in stub_agent_server.requests[before:]
+        if entry.get("request_id") == rid or entry.get("method") == method
+    ]
+    assert not forwarded, "被拒请求不应触达 AgentServer"
 
 
 def test_frame_rejects_non_string_mode(gateway_ws, stub_agent_server) -> None:
@@ -364,38 +371,44 @@ def test_frame_rejects_swarmflow_run_id_mismatch(gateway_ws, stub_agent_server) 
     )
 
 
-def test_frame_rejects_unknown_method(gateway_ws, stub_agent_server) -> None:
-    _request_and_expect_error(
-        gateway_ws, stub_agent_server, "st.no.such.method", {"session_id": SESSION}, "METHOD_NOT_FOUND"
-    )
+def test_unknown_method_forwarded_and_downstream_error_relayed(gateway_ws, stub_agent_server) -> None:
+    """未知方法不再由网关本地拒绝：转发后由 AgentServer 回 METHOD_NOT_FOUND。"""
+    before = len(stub_agent_server.requests)
+    rid = "st-unknown-forwarded"
+    frames = gateway_ws.request("st.no.such.method", {"session_id": SESSION}, rid=rid)
+    res = frames[-1]
+    assert res["type"] == "res" and res["ok"] is False, res
+    assert res.get("code") == "METHOD_NOT_FOUND", res
+    # gateway 有 2s 生命周期轮询，会在后台向 AgentServer 发无关请求；
+    # 只统计本次请求是否被转发，避免用全局请求数做断言造成偶发失败。
+    forwarded = [
+        entry
+        for entry in stub_agent_server.requests[before:]
+        if entry.get("request_id") == rid or entry.get("method") == "st.no.such.method"
+    ]
+    assert forwarded, "未知方法应转发到 AgentServer 由其判定"
 
 
 def test_personal_edition_rejects_team_control(gateway_ws, stub_agent_server) -> None:
-    """个人版从白名单剔除 team 控制面 7 方法：帧级 METHOD_NOT_FOUND。"""
+    """个人版从白名单剔除 team 控制面 7 方法：帧级 METHOD_NOT_FOUND，动态登记不得绕过。"""
     _request_and_expect_error(
         gateway_ws, stub_agent_server, "team.create", {"session_id": SESSION}, "METHOD_NOT_FOUND"
     )
 
 
 def test_unreachable_forward_methods() -> None:
-    """白名单中无协议枚举成员的方法当前不可达（帧级 METHOD_NOT_FOUND）——与文档标注一致。"""
+    """白名单中无协议枚举成员的方法，运行期通过动态登记转发（不再帧级拒绝）。"""
     _, _, unreachable = _forward_registry()
     expected = {
-        "mcp.sources.providers",
         "session.assets.remove",
         "skills.enterprise.install",
         "skills.enterprise.list",
         "skills.enterprise.source.providers",
         "skills.enterprise.source.search",
         "skills.enterprise.uninstall",
-        "skills.source.install",
-        "skills.source.providers",
-        "skills.source.search",
-        "skills.update",
-        "skills.updates.check",
     }
     assert unreachable == expected, (
-        f"不可达方法集合变化（协议包/网关 shim 已补枚举？请同步更新文档标注）: {unreachable ^ expected}"
+        f"协议包未发布的方法集合变化（请同步更新动态登记相关用例）: {unreachable ^ expected}"
     )
 
 
@@ -404,14 +417,20 @@ def test_unreachable_forward_methods() -> None:
     sorted(
         {
             "session.assets.remove",
-            "skills.update",
-            "skills.source.search",
             "skills.enterprise.list",
         }
     ),
 )
-def test_unreachable_method_returns_not_found(gateway_ws, stub_agent_server, method: str) -> None:
-    """抽查不可达方法：白名单在册但协议枚举缺失，帧级即被拒。"""
-    _request_and_expect_error(
-        gateway_ws, stub_agent_server, method, {"session_id": SESSION, "name": "st-skill"}, "METHOD_NOT_FOUND"
-    )
+def test_whitelisted_methods_are_forwarded(gateway_ws, stub_agent_server, method: str) -> None:
+    """白名单在册但协议包未发布枚举的方法，运行期通过动态登记正常转发。"""
+    before = len(stub_agent_server.requests)
+    rid = f"st-forward-{method}"
+    frames = gateway_ws.request(method, {"session_id": SESSION, "name": "st-skill"}, rid=rid)
+    res = frames[-1]
+    assert res["type"] == "res" and res["ok"] is True, res
+    forwarded = [
+        entry
+        for entry in stub_agent_server.requests[before:]
+        if entry.get("request_id") == rid or entry.get("method") == method
+    ]
+    assert forwarded, "白名单方法应转发到 AgentServer"

@@ -14,9 +14,15 @@
      ``Message.user_id`` / ``E2AEnvelope.user_id``
    - ``metadata["routing"] = {group_id, bot_id, gateway_id}``—— 路由维
      （E2A 上对应 ``channel_context.routing``）
+   - ``metadata["agent_identity"] = {agent_name, agent_id, runtime_template_id,
+     agent_template_id}``—— 平台展示身份（无业务路由含义，仅用于工作区落盘），
+     仅企业版入口采信并透传，个人版不写入；其中 ``agent_template_id`` 同时由
+     技能上传门禁回查 Manager 校验
 
    Gateway 入口用 :func:`normalize_routing_identity` + :func:`apply_routing_metadata`
    写一次；下游用 :func:`web_routing_identity` 一次读全（含顶层 ``user_id``）。
+   展示身份由 :func:`normalize_agent_identity` + :func:`apply_agent_identity_metadata`
+   写入，AgentServer 用 :func:`read_agent_identity` 读取。
 
 3. **不要**：把身份写入业务 ``params``；不要把 ``group_id``/``bot_id``/``gateway_id``
    摊到 metadata 顶层；不要把 ``user_id`` 放进 ``routing``。
@@ -45,6 +51,95 @@ from e2a.identity import (
     web_routing_identity,
 )
 
+AGENT_IDENTITY_METADATA_KEY = "agent_identity"
+# 平台展示身份（由 Manager 计算），只在 metadata.agent_identity 内成组出现。
+# 其中 agent_template_id 亦供技能上传门禁使用。
+AGENT_IDENTITY_FIELDS = (
+    "agent_name",
+    "agent_id",
+    "runtime_template_id",
+    "agent_template_id",
+)
+
+
+def _identity_value(value: Any) -> str | None:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _pick_field(mapping: Mapping[str, Any], field: str) -> str | None:
+    return _identity_value(mapping.get(field))
+
+
+def normalize_agent_identity(
+    *sources: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """从若干 mapping 归一化平台展示身份（先出现的非空值为准）。
+
+    与路由身份不同，这里没有必填项：旧 Manager 可能只返回 ``agent_name``。
+    是否足以落盘由调用方按 ``agent_name`` + ``agent_id`` 判断；整体缺失时
+    返回空 dict，由上传门禁按“无法确认”处理。
+    """
+    identity: dict[str, str] = {}
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for field in AGENT_IDENTITY_FIELDS:
+            if field in identity:
+                continue
+            value = _pick_field(source, field)
+            if value:
+                identity[field] = value
+    return identity
+
+
+def normalize_agent_identity_query(
+    query: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    """归一化 WS 握手 query 中的展示身份。
+
+    Query 的展示 id 键是 ``agent_identity_id``，避免与路由层的 ``agent_id``
+    （模式内 Agent id）冲突；这里映射回统一的 ``agent_id`` 字段。
+    """
+    if not isinstance(query, Mapping):
+        return {}
+    return normalize_agent_identity(
+        {
+            "agent_name": query.get("agent_name"),
+            "agent_id": query.get("agent_identity_id"),
+            "runtime_template_id": query.get("runtime_template_id"),
+            "agent_template_id": query.get("agent_template_id"),
+        }
+    )
+
+
+def apply_agent_identity_metadata(
+    metadata: Mapping[str, Any] | None,
+    identity: Mapping[str, str] | None,
+) -> dict[str, Any]:
+    """把平台展示身份写入 ``metadata.agent_identity``（空身份则移除）。"""
+    meta = dict(metadata or {})
+    cleaned = normalize_agent_identity(identity)
+    if cleaned:
+        meta[AGENT_IDENTITY_METADATA_KEY] = cleaned
+    else:
+        meta.pop(AGENT_IDENTITY_METADATA_KEY, None)
+    return meta
+
+
+def read_agent_identity(metadata: Mapping[str, Any] | None) -> dict[str, str]:
+    """读取 ``metadata.agent_identity``；缺失或结构不符时返回空 dict。"""
+    if not isinstance(metadata, Mapping):
+        return {}
+    raw = metadata.get(AGENT_IDENTITY_METADATA_KEY)
+    if not isinstance(raw, Mapping):
+        return {}
+    return normalize_agent_identity(raw)
+
 
 def merge_routing_into_params(
     params: Mapping[str, Any] | None,
@@ -62,11 +157,17 @@ def merge_routing_into_params(
 
 __all__ = (
     "ROUTING_METADATA_KEY",
+    "AGENT_IDENTITY_METADATA_KEY",
     "USER_ID_FIELD",
     "WEB_ROUTING_ID_FIELDS",
     "WEB_IDENTITY_FIELDS",
+    "AGENT_IDENTITY_FIELDS",
     "normalize_routing_identity",
     "apply_routing_metadata",
     "merge_routing_into_params",
     "web_routing_identity",
+    "normalize_agent_identity",
+    "normalize_agent_identity_query",
+    "apply_agent_identity_metadata",
+    "read_agent_identity",
 )

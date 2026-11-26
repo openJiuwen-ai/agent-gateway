@@ -1,7 +1,13 @@
+from __future__ import annotations
+
+import asyncio
 import logging
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 import httpx
 
+from agent_gateway.common.retry import jittered_delay
 from agent_gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from agent_gateway.extensions.auth.credential_authenticator import (
     AuthContext,
@@ -10,6 +16,13 @@ from agent_gateway.extensions.auth.credential_authenticator import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The Web/TUI handshake has a 10 s hard limit (websockets library default).
+#: Leave room for the rest of the handshake; auth must finish within 8 s.
+_AUTH_MAX_BUDGET_SECONDS = 8.0
+_AUTH_MAX_ATTEMPTS = 3
+_AUTH_BACKOFF_INITIAL_SECONDS = 0.2
+_AUTH_BACKOFF_FACTOR = 2.0
 
 
 class AgentOSAuthenticator(CredentialAuthenticator):
@@ -24,10 +37,75 @@ class AgentOSAuthenticator(CredentialAuthenticator):
     """
 
     def __init__(self, auth_service_url: str,  # agent-os 后端地址，例如 "http://localhost:8000"
-                 timeout: float = 10.0):  # HTTP 请求超时秒数，默认 10
+                 timeout: float = 8.0):  # 认证总预算秒数（含重试），上限 8 秒
         self._auth_service_url = auth_service_url.rstrip("/")
-        self._timeout = timeout
-        self._auth_client = httpx.AsyncClient(timeout=timeout)
+        # The configured value is a *total* budget, not a single-request
+        # timeout. The Web/TUI handshake has a 10 s hard limit, so auth must
+        # finish well before that even when retries are used.
+        configured = float(timeout)
+        if configured > _AUTH_MAX_BUDGET_SECONDS:
+            logger.warning(
+                "IAM auth budget %.1fs exceeds the %.1fs handshake limit; "
+                "using %.1fs",
+                configured,
+                _AUTH_MAX_BUDGET_SECONDS,
+                _AUTH_MAX_BUDGET_SECONDS,
+            )
+        self._timeout = max(0.1, min(configured, _AUTH_MAX_BUDGET_SECONDS))
+        self._auth_client = httpx.AsyncClient(timeout=self._timeout)
+
+    @staticmethod
+    def _failure(error: str, code: str) -> AuthResult:
+        return AuthResult(
+            success=False,
+            user_id="",
+            error=error,
+            extensions={"error_code": code},
+        )
+
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        return deadline - asyncio.get_running_loop().time()
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> float | None:
+        raw = response.headers.get("Retry-After")
+        if not raw:
+            return None
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            return max(0.0, float(text))
+        except ValueError:
+            pass
+        try:
+            when = parsedate_to_datetime(text)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+
+    def _log_retry(
+        self,
+        *,
+        attempt: int,
+        error: str,
+        status: object = "",
+        retry_in: float | None = None,
+        final: bool = False,
+    ) -> None:
+        fields: dict[str, object] = {"error": error, "attempt": attempt}
+        if status != "":
+            fields["status"] = status
+        if retry_in is not None:
+            fields["retry_in"] = f"{retry_in:.2f}s"
+        if final:
+            fields["final"] = "yes"
+        log_agentos(logger, logging.WARNING, "auth.iam_error", **fields)
 
     async def _authenticate_token(self, token: str,
                                   extra_headers: dict | None = None
@@ -59,54 +137,190 @@ class AgentOSAuthenticator(CredentialAuthenticator):
         }
         # 不要把 WS 握手头（Host/Upgrade/authorization 等）原样并入 IAM 请求，
         # 否则可能产生重复 Authorization 或错误 Host，导致 verify 失败。
-        try:
-            resp = await self._auth_client.post(
-                f"{self._auth_service_url}/api/v1/auth/verify",
-                json={"token": token, "resource_id": "apps", "action_id": "read"},
-                headers=headers,
-                timeout=self._timeout,
-            )
+        deadline = asyncio.get_running_loop().time() + self._timeout
+        backoff = _AUTH_BACKOFF_INITIAL_SECONDS
+        json_retry_used = False
+        attempt = 0
+        while attempt < _AUTH_MAX_ATTEMPTS:
+            remaining = self._remaining(deadline)
+            if remaining <= 0:
+                self._log_retry(attempt=attempt, error="budget_exhausted", final=True)
+                return self._failure("登录服务响应超时", "IAM_UNAVAILABLE")
+            attempt += 1
+            try:
+                # httpx applies a float timeout to connect/read/write/pool
+                # separately, so it is not an end-to-end limit. Bound the whole
+                # attempt with the remaining auth budget instead.
+                async with asyncio.timeout(max(0.001, remaining)):
+                    resp = await self._auth_client.post(
+                        f"{self._auth_service_url}/api/v1/auth/verify",
+                        json={"token": token, "resource_id": "apps", "action_id": "read"},
+                        headers=headers,
+                        timeout=max(0.001, remaining),
+                    )
+            except (TimeoutError, httpx.TimeoutException) as exc:
+                # The per-request timeout consumes the remaining budget; a
+                # second request cannot finish within the handshake limit.
+                self._log_retry(
+                    attempt=attempt,
+                    error=type(exc).__name__,
+                    final=True,
+                )
+                return self._failure(str(exc) or "登录服务响应超时", "IAM_UNAVAILABLE")
+            except httpx.RequestError as exc:
+                if attempt >= _AUTH_MAX_ATTEMPTS:
+                    self._log_retry(
+                        attempt=attempt,
+                        error=type(exc).__name__,
+                        final=True,
+                    )
+                    return self._failure(str(exc), "IAM_UNAVAILABLE")
+                delay = jittered_delay(backoff)
+                if delay <= 0 or delay >= self._remaining(deadline):
+                    self._log_retry(
+                        attempt=attempt,
+                        error=type(exc).__name__,
+                        final=True,
+                    )
+                    return self._failure(str(exc), "IAM_UNAVAILABLE")
+                self._log_retry(
+                    attempt=attempt,
+                    error=type(exc).__name__,
+                    retry_in=delay,
+                )
+                await asyncio.sleep(delay)
+                backoff *= _AUTH_BACKOFF_FACTOR
+                continue
 
-        # 3. 异常处理
-        except httpx.RequestError as e:
-            log_agentos(
-                logger,
-                logging.WARNING,
-                "auth.iam_error",
-                error=type(e).__name__,
-            )
-            return AuthResult(success=False, user_id="", error=str(e))
+            status = int(getattr(resp, "status_code", 0) or 0)
+            if status == 429:
+                wait = self._retry_after_seconds(resp)
+                if wait is None:
+                    # Many rate limiters omit Retry-After. Fall back to the
+                    # normal bounded backoff instead of rejecting immediately.
+                    wait = jittered_delay(backoff)
+                    backoff *= _AUTH_BACKOFF_FACTOR
+                remaining = self._remaining(deadline)
+                if attempt >= _AUTH_MAX_ATTEMPTS or wait >= remaining:
+                    self._log_retry(
+                        attempt=attempt,
+                        error="RATE_LIMITED",
+                        status=status,
+                        final=True,
+                    )
+                    return self._failure("登录服务限流，请稍后重试", "IAM_UNAVAILABLE")
+                self._log_retry(
+                    attempt=attempt,
+                    error="RATE_LIMITED",
+                    status=status,
+                    retry_in=wait,
+                )
+                await asyncio.sleep(wait)
+                continue
 
-        # 4. 解析业务响应
-        try:
-            body = resp.json()
-        except ValueError:
-            log_agentos(
-                logger,
-                logging.WARNING,
-                "auth.iam_error",
+            if status >= 500:
+                if attempt >= _AUTH_MAX_ATTEMPTS:
+                    self._log_retry(
+                        attempt=attempt,
+                        error="IAM_UNAVAILABLE",
+                        status=status,
+                        final=True,
+                    )
+                    return self._failure(
+                        f"登录服务暂时不可用 (HTTP {status})", "IAM_UNAVAILABLE",
+                    )
+                delay = jittered_delay(backoff)
+                if delay <= 0 or delay >= self._remaining(deadline):
+                    self._log_retry(
+                        attempt=attempt,
+                        error="IAM_UNAVAILABLE",
+                        status=status,
+                        final=True,
+                    )
+                    return self._failure(
+                        f"登录服务暂时不可用 (HTTP {status})", "IAM_UNAVAILABLE",
+                    )
+                self._log_retry(
+                    attempt=attempt,
+                    error="IAM_UNAVAILABLE",
+                    status=status,
+                    retry_in=delay,
+                )
+                await asyncio.sleep(delay)
+                backoff *= _AUTH_BACKOFF_FACTOR
+                continue
+
+            if status == 401:
+                return self._failure("Token 无效或已过期", "INVALID_TOKEN")
+            if status == 403:
+                return self._failure("无权访问登录服务", "IAM_FORBIDDEN")
+            if not 200 <= status < 300:
+                self._log_retry(
+                    attempt=attempt,
+                    error="INVALID_RESPONSE",
+                    status=status,
+                    final=True,
+                )
+                return self._failure(
+                    f"登录服务返回异常状态 (HTTP {status})", "INVALID_RESPONSE",
+                )
+
+            try:
+                body = resp.json()
+            except ValueError:
+                if (
+                    not json_retry_used
+                    and attempt < _AUTH_MAX_ATTEMPTS
+                ):
+                    delay = jittered_delay(backoff)
+                    if delay > 0 and delay < self._remaining(deadline):
+                        json_retry_used = True
+                        self._log_retry(
+                            attempt=attempt,
+                            error="INVALID_RESPONSE",
+                            status=status,
+                            retry_in=delay,
+                        )
+                        await asyncio.sleep(delay)
+                        backoff *= _AUTH_BACKOFF_FACTOR
+                        continue
+                self._log_retry(
+                    attempt=attempt,
+                    error="INVALID_RESPONSE",
+                    status=status,
+                    final=True,
+                )
+                return self._failure("登录服务返回了无效响应", "INVALID_RESPONSE")
+
+            data = body.get("data", {}) if isinstance(body, dict) else {}
+            if not isinstance(data, dict):
+                data = {}
+
+            # 3. 仅校验身份合法性（valid）；authorized 不参与门禁决策
+            if data.get("valid"):
+                return AuthResult(
+                    success=True,
+                    user_id=str(data.get("user_id") or ""),
+                    extensions={
+                        "username": data.get("username"),
+                        "role": data.get("role"),
+                        "auth_method": "token",
+                    },
+                )
+            if "valid" in data:
+                return self._failure(
+                    str(data.get("error") or "Token 无效或已过期"),
+                    "INVALID_TOKEN",
+                )
+            self._log_retry(
+                attempt=attempt,
                 error="INVALID_RESPONSE",
-                status=getattr(resp, "status_code", ""),
+                status=status,
+                final=True,
             )
-            return AuthResult(success=False, extensions={"error_code": "INVALID_RESPONSE"})
-        data = body.get("data", {}) if isinstance(body, dict) else {}
+            return self._failure("登录服务返回了无效响应", "INVALID_RESPONSE")
 
-        # 5. 仅校验身份合法性（valid）；authorized 不参与门禁决策
-        if data.get("valid"):
-            return AuthResult(
-                success=True,
-                user_id=str(data.get("user_id") or ""),
-                extensions={
-                    "username": data.get("username"),
-                    "role": data.get("role"),
-                    "auth_method": "token",
-                },
-            )
-        return AuthResult(
-            success=False,
-            error=str(data.get("error") or "Token 无效或已过期"),
-            extensions={"error_code": "INVALID_TOKEN"},
-        )
+        return self._failure("登录服务暂时不可用", "IAM_UNAVAILABLE")
 
     async def refresh_access_token(self, refresh_token: str) -> str | None:
         """使用 Manager refresh token 换取新的 access token。"""

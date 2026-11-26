@@ -33,6 +33,8 @@ CONNECTION_ACK = {
     "payload": {"status": "ready", "readiness": "AGENT_READY"},
 }
 
+_UNKNOWN_METHODS = frozenset({"st.no.such.method"})
+
 _UNARY_PAYLOADS: dict[str, dict[str, Any]] = {
     "session.list": {"sessions": [], "total": 0},
     "connection.status": {"server_ready": True, "agent_ready": True},
@@ -121,6 +123,15 @@ class StubAgentServer:
             self._connections.discard(connection)
 
     def _unary_wire(self, envelope: dict[str, Any], request_id: str, method: str) -> dict[str, Any]:
+        if method in _UNKNOWN_METHODS:
+            # 模拟真实 AgentServer 未注册方法时的响应（unsupported_method_wire）。
+            response = AgentResponse(
+                request_id=request_id,
+                channel_id=str(envelope.get("channel") or "web"),
+                payload={"error": f"unknown method: {method}", "code": "METHOD_NOT_FOUND"},
+                ok=False,
+            )
+            return encode_agent_response_for_wire(response, response_id=request_id)
         payload = _UNARY_PAYLOADS.get(method, {"echo_method": method})
         response = AgentResponse(
             request_id=request_id,

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import sys
 import types
@@ -18,12 +17,9 @@ import pytest
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.extension import ExtensionFailure
 
-from agent_gateway.channel_manager.web import extension_package_handlers
-from agent_gateway.common.system_plugin_recovery import SystemPluginRecovery
 from agent_gateway.extensions_v2 import assembly
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig
 from agent_gateway.extensions_v2.loader import LoadedPackage
-from agent_gateway.extensions_v2.management.catalog import list_installed, package_detail
 from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
 from agent_gateway.extensions_v2.management.registry import GatewayPackageManager
 from agent_gateway.extensions_v2.registry import HandlerDeclaration
@@ -130,52 +126,10 @@ def _package_zip(
     return archive
 
 
-def _package_dir(tmp_path: Path, **manifest_extra) -> Path:
-    root = tmp_path / "examples" / "demo.gateway"
-    root.mkdir(parents=True)
-    manifest = {
-        "package_type": "extension",
-        "schemaVersion": 1,
-        "expose": True,
-        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
-        **manifest_extra,
-    }
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return root
 
 
-def test_detail_projects_preview_readme_and_events(tmp_path):
-    root = _package_dir(
-        tmp_path,
-        display={
-            "details": "## 能力\n- 示例能力",
-            "events": [{"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}],
-        },
-    )
-    (root / "README.md").write_text("# 生效机制\n读取请求头", encoding="utf-8")
-    image = b"\x89PNG-preview"
-    (root / "assets").mkdir()
-    (root / "assets" / "preview.png").write_bytes(image)
-
-    detail = package_detail("demo.gateway", tmp_path / "examples", {})
-
-    assert detail["details"] == {"zh": "## 能力\n- 示例能力", "en": "## 能力\n- 示例能力"}
-    assert detail["readme"] == {"zh": "# 生效机制\n读取请求头", "en": "# 生效机制\n读取请求头"}
-    assert detail["preview"] == f"data:image/png;base64,{base64.b64encode(image).decode()}"
-    assert detail["events"] == [
-        {"name": "gateway.request", "description": {"zh": "放行请求", "en": "Route requests"}}
-    ]
 
 
-def test_detail_omits_missing_preview_and_readme(tmp_path):
-    _package_dir(tmp_path)
-
-    detail = package_detail("demo.gateway", tmp_path / "examples", {})
-
-    assert detail["preview"] is None
-    assert detail["readme"] == {"zh": "", "en": ""}
-    assert detail["details"] == {"zh": "", "en": ""}
-    assert detail["events"] == []
 
 
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
@@ -436,81 +390,10 @@ async def test_reload_republishes_the_installed_copy(tmp_path):
     assert runtime.user_handler_count == 1
 
 
-async def test_query_frame_is_answered_locally_for_gateway_packages(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install([_package_zip(tmp_path)])
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    channel = runtime.channel
-    ws = SimpleNamespace()
-
-    handled = await extension_package_handlers._handle_locally(
-        channel=channel,
-        resolve_client=lambda: None,
-        ws=ws,
-        req_id="r1",
-        params={"package_id": "demo.gateway"},
-        session_id=None,
-        user_id=None,
-        method=extension_package_handlers.ReqMethod.EXTENSIONS_V2_QUERY,
-    )
-
-    assert handled is True
-    assert channel.responses[0]["payload"]["state"]["installed_packages"][0]["package_id"] == "demo.gateway"
 
 
-async def test_uninstall_of_an_agent_package_is_forwarded(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-
-    handled = await extension_package_handlers._handle_locally(
-        channel=runtime.channel,
-        resolve_client=lambda: None,
-        ws=SimpleNamespace(),
-        req_id="r2",
-        params={"package_id": "demo.agent"},
-        session_id=None,
-        user_id=None,
-        method=extension_package_handlers.ReqMethod.EXTENSIONS_V2_UNINSTALL,
-    )
-
-    assert handled is False
-    assert runtime.channel.responses == []
 
 
-async def test_management_frames_follow_user_request_policy(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    await GatewayPackageManager(runtime, tmp_path / "extension_pkgs").install(
-        [_package_zip(tmp_path, entry=AUTH_ENTRY)]
-    )
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    channel = runtime.channel
-    ws = SimpleNamespace()
-    method = extension_package_handlers.ReqMethod.EXTENSIONS_V2_UNINSTALL.value
-
-    visited, _ = await runtime.intercept(ws, "r3", method, {"package_id": "demo.gateway"})
-
-    assert visited is True
-    assert channel.responses[0]["code"] == "AUTH_REQUIRED"
-
-    visited, _ = await runtime.intercept(
-        ws, "r3b", method, {"package_id": "demo.gateway"}, {"authorization": "Bearer valid"}
-    )
-
-    assert visited is False
-
-    handled = await extension_package_handlers._handle_locally(
-        channel=channel,
-        resolve_client=lambda: None,
-        ws=ws,
-        req_id="r4",
-        params={"package_id": "demo.gateway"},
-        session_id=None,
-        user_id=None,
-        method=extension_package_handlers.ReqMethod.EXTENSIONS_V2_UNINSTALL,
-    )
-
-    assert handled is True
-    assert channel.responses[1]["ok"] is True
 
 
 async def test_partial_registration_failure_rolls_the_package_back(tmp_path):
@@ -569,432 +452,48 @@ async def test_uninstall_retries_a_transient_delete_lock(tmp_path, monkeypatch):
     assert manager.installed() == []
 
 
-def _example_package(examples_dir: Path, package_id: str, domain: str) -> Path:
-    root = examples_dir / package_id
-    root.mkdir(parents=True)
-    manifest = {
-        "package_type": "extension",
-        "schemaVersion": 1,
-        "package": {"id": package_id, "version": "0.1.0", "displayName": package_id, "domain": domain},
-        "expose": True,
-        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
-    }
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    (root / "extension.py").write_text(ENTRY, encoding="utf-8")
-    return root
-
-
-def _local_gateway(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
-    examples_dir = tmp_path / "examples"
-    examples_dir.mkdir()
-    install_dir = tmp_path / "extension_pkgs"
-    monkeypatch.setattr(extension_package_handlers, "resolve_examples_dir", lambda: examples_dir)
-    return examples_dir, install_dir
-
-
-async def _handle(runtime: GatewayRuntime, method, params, req_id="r") -> bool:
-    return await extension_package_handlers._handle_locally(
-        channel=runtime.channel,
-        resolve_client=lambda: None,
-        ws=SimpleNamespace(),
-        req_id=req_id,
-        params=params,
-        session_id=None,
-        user_id=None,
-        method=method,
-    )
-
-
-async def test_catalog_lists_gateway_presets_before_any_install(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.gateway", "gateway")
-    _example_package(examples_dir, "demo.agent", "agentserver")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "catalog"}
-    )
-
-    assert handled is True
-    payload = runtime.channel.responses[0]["payload"]
-    assert [package["id"] for package in payload["packages"]] == ["demo.gateway"]
-
-
-def test_catalog_skips_an_active_record_without_a_string_root(tmp_path):
-    packages = list_installed(tmp_path, {"active": [{"package_id": "demo.gateway", "root": None}]})
-
-    assert packages == []
-
-
-async def test_catalog_lists_disabled_installed_gateway_package(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_CATALOG, {"scope": "mine"}
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["payload"]["packages"] == [
-        {
-            "id": "demo.gateway",
-            "packageId": "demo.gateway",
-            "assetId": "",
-            "version": "0.1.0",
-            "installedVersion": "0.1.0",
-            "versions": ["0.1.0"],
-            "displayName": {"zh": "demo.gateway", "en": "demo.gateway"},
-            "displayDescription": {"zh": "", "en": ""},
-            "tags": [],
-            "avatar": None,
-            "source": "local",
-            "origin": "user",
-            "installed": True,
-            "active": False,
-            "enabled": False,
-        }
-    ]
-
-
-@pytest.mark.parametrize("restored_enabled", [False, True])
-async def test_catalog_mine_and_detail_after_gateway_recovery(tmp_path, monkeypatch, restored_enabled):
-    methods = extension_package_handlers.ReqMethod
-    package_id = "demo.gateway"
-    examples, install_dir = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples, package_id, "gateway")
-    monkeypatch.delenv("JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH", raising=False)
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    try:
-        archive = _package_zip(tmp_path, enable=restored_enabled)
-        await _handle(runtime, methods.EXTENSIONS_V2_INSTALL, {"paths": [str(archive)]})
-        assert runtime.channel.responses[-1]["payload"]["reports"][0]["status"] == "SUCCESS"
-        recovery = SystemPluginRecovery(install_dir, tmp_path / "extension")
-        point = recovery.begin_session("before-toggle")
-        await _handle(
-            runtime, methods.EXTENSIONS_V2_SET_ENABLED, {"package_id": package_id, "enable": not restored_enabled},
-        )
-        assert runtime.channel.responses[-1]["payload"]["reports"][0]["status"] == "SUCCESS"
-        recovery.restore(point["id"])
-    finally:
-        await runtime.shutdown()
-
-    runtime = await _runtime(tmp_path)
-    try:
-        store = ExtensionInstallState.for_install_dir(install_dir)
-        assert store.get(package_id).enabled is not restored_enabled
-        assert runtime.is_active_package(package_id) is restored_enabled
-        for scope in ("catalog", "mine"):
-            await _handle(runtime, methods.EXTENSIONS_V2_CATALOG, {"scope": scope})
-            [card] = runtime.channel.responses[-1]["payload"]["packages"]
-            assert (card["enabled"], card["active"], card["origin"]) == (restored_enabled, restored_enabled, "user")
-        await _handle(runtime, methods.EXTENSIONS_V2_SHOW, {"package_id": package_id})
-        detail = runtime.channel.responses[-1]["payload"]["package"]
-        assert (detail["enabled"], detail["active"]) == (restored_enabled, restored_enabled)
-    finally:
-        await runtime.shutdown()
-
-
-async def test_set_enabled_accepts_proxy_metadata_fields(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
-
-    handled = await _handle(
-        runtime,
-        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
-        {"package_id": "demo.gateway", "enable": True, "session_id": "session-1"},
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["ok"] is True
-    assert runtime.user_handler_count == 1
-
-
-async def test_set_enabled_notifies_mounted_slots_after_enabling(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    await runtime.packages.install([_package_zip(tmp_path, enable=False)])
-    notices = []
-
-    async def broadcast(event, payload):
-        notices.append((event, payload))
-
-    runtime.channel.broadcast_event = broadcast
-
-    await _handle(
-        runtime,
-        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
-        {"package_id": "demo.gateway", "enable": True},
-    )
-
-    assert runtime.channel.responses[0]["payload"]["ui_notified"] is True
-    assert notices == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
-
-    await _handle(
-        runtime,
-        extension_package_handlers.ReqMethod.EXTENSIONS_V2_SET_ENABLED,
-        {"package_id": "demo.gateway", "enable": False},
-        req_id="r2",
-    )
-
-    assert runtime.channel.responses[1]["payload"]["reports"][0]["operation"] == "disable"
-    assert notices == [("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
-
-
-async def test_show_answers_for_an_uninstalled_gateway_preset(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.gateway", "gateway")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "demo.gateway"}
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["payload"]["package"]["id"] == "demo.gateway"
-
-
-async def test_show_of_an_agent_package_is_forwarded(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.agent", "agentserver")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_SHOW, {"package_id": "demo.agent"}
-    )
-
-    assert handled is False
-    assert runtime.channel.responses == []
-
-
-async def test_install_by_package_id_is_answered_locally_for_gateway(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.gateway", "gateway")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["demo.gateway"]}
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["payload"]["reports"][0]["status"] == "SUCCESS"
-    assert (install_dir / "demo.gateway" / "0.1.0" / "manifest.json").is_file()
-    assert [package.package_id for package in runtime.active_packages()] == ["demo.gateway"]
-
-
-async def test_install_by_package_id_is_forwarded_for_agent(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
-    _example_package(examples_dir, "demo.agent", "agentserver")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL, {"package_ids": ["demo.agent"]}
-    )
-
-    assert handled is False
-    assert runtime.channel.responses == []
-    assert not (install_dir / "demo.agent").exists()
-
-
-def _plugin_package(root: Path) -> Path:
-    root.mkdir(parents=True)
-    manifest = {"package_type": "plugin", "schemaVersion": 1, "name": "demo-plugin", "version": "1.0.0"}
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return root
-
-
-async def test_import_local_installs_a_gateway_package(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, install_dir = _local_gateway(tmp_path, monkeypatch)
-    source = _example_package(examples_dir, "demo.gateway", "gateway")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
-    )
-
-    assert handled is True
-    payload = runtime.channel.responses[0]["payload"]
-    assert payload["kind"] == "extension"
-    assert [report["status"] for report in payload["reports"]] == ["SUCCESS"]
-    assert (install_dir / "demo.gateway" / "0.1.0" / "manifest.json").is_file()
-
-
-@pytest.mark.parametrize("action", ["import", "install", "reload"])
-async def test_web_management_notifies_mounted_slots_after_release_settles(tmp_path, monkeypatch, action):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    source = _example_package(examples_dir, "demo.gateway", "gateway")
-    if action == "reload":
-        assert (await runtime.packages.install([source]))[0].status == "SUCCESS"
-    order = []
-    settle = runtime.browser.settle
-
-    async def settled():
-        await settle()
-        order.append("released")
-
-    async def broadcast(event, payload):
-        order.append((event, payload))
-
-    monkeypatch.setattr(runtime.browser, "settle", settled)
-    runtime.channel.broadcast_event = broadcast
-    method = getattr(extension_package_handlers.ReqMethod, "EXTENSIONS_V2_" + action.upper())
-    params = {"path": str(source)} if action == "import" else (
-        {"package_ids": ["demo.gateway"]} if action == "install" else {"package_id": "demo.gateway"}
-    )
-    try:
-        assert await _handle(runtime, method, params)
-        assert order == ["released", ("extensions.v2.installed", {"package_ids": ["demo.gateway"]})]
-        assert runtime.channel.responses[-1]["payload"]["ui_notified"] is True
-    finally:
-        await runtime.shutdown()
-
-
-async def test_web_notification_failure_preserves_the_confirmed_install_result(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    source = _example_package(examples_dir, "demo.gateway", "gateway")
-
-    async def broadcast(event, payload):
-        raise ConnectionError("browser closed")
-
-    runtime.channel.broadcast_event = broadcast
-    try:
-        assert await _handle(runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)})
-        payload = runtime.channel.responses[-1]["payload"]
-        assert payload["reports"][0]["status"] == "SUCCESS"
-        assert payload["ui_notified"] is False
-        assert runtime.is_active_package("demo.gateway")
-    finally:
-        await runtime.shutdown()
-
-
-async def test_import_local_routes_agent_packages_to_the_agent_server(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    calls: list[dict] = []
-
-    async def fake_fetch(**kwargs):
-        calls.append(kwargs)
-        return True, {"reports": []}
-
-    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
-
-    extension_source = _example_package(examples_dir, "demo.agent", "agentserver")
-    await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(extension_source)}
-    )
-    plugin_source = _plugin_package(tmp_path / "plugin-src")
-    await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(plugin_source)}
-    )
-
-    assert [call["req_method"] for call in calls] == [
-        extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL,
-        extension_package_handlers.ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL,
-    ]
-    assert calls[0]["params"] == {"paths": [str(extension_source)]}
-    assert calls[1]["params"] == {"path": str(plugin_source)}
-
-
-async def test_import_local_routes_a_managed_agent_package_zip_to_the_agent_server(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    _local_gateway(tmp_path, monkeypatch)
-    calls: list[dict] = []
-
-    async def fake_fetch(**kwargs):
-        calls.append(kwargs)
-        return True, {"reports": []}
-
-    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
-    source = _example_package(tmp_path / "source", "demo.agent", " AgentServer ")
-    archive = tmp_path / "demo-agent.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        for entry in source.rglob("*"):
-            if entry.is_file():
-                bundle.write(entry, f"demo.agent/0.1.0/{entry.relative_to(source).as_posix()}")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(archive)}
-    )
-
-    assert handled is True
-    assert calls[0]["req_method"] == extension_package_handlers.ReqMethod.EXTENSIONS_V2_INSTALL
-    assert calls[0]["params"] == {"paths": [str(archive)]}
-
-
-async def test_import_local_routes_a_zipped_plugin_package(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    _local_gateway(tmp_path, monkeypatch)
-    calls: list[dict] = []
-
-    async def fake_fetch(**kwargs):
-        calls.append(kwargs)
-        return True, {"id": "demo-plugin"}
-
-    monkeypatch.setattr(extension_package_handlers, "fetch_agent_unary", fake_fetch)
-
-    source = tmp_path / "plugin-src"
-    source.mkdir()
-    manifest = {"package_type": "plugin", "schemaVersion": 1, "name": "demo-plugin", "version": "1.0.0"}
-    (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    archive = tmp_path / "demo-plugin.zip"
-    with zipfile.ZipFile(archive, "w") as bundle:
-        bundle.write(source / "manifest.json", "manifest.json")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(archive)}
-    )
-
-    assert handled is True
-    assert calls[0]["req_method"] == extension_package_handlers.ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL
-    assert calls[0]["params"] == {"path": str(archive)}
-
-
-async def test_import_local_rejects_an_unknown_package_type(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    _local_gateway(tmp_path, monkeypatch)
-    source = tmp_path / "unknown-src"
-    source.mkdir()
-    (source / "manifest.json").write_text(json.dumps({"package_type": "mcp"}), encoding="utf-8")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["ok"] is False
-    assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE
-
-
-async def test_import_local_rejects_the_legacy_agent_domain(tmp_path, monkeypatch):
-    runtime = await _runtime(tmp_path)
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    examples_dir, _ = _local_gateway(tmp_path, monkeypatch)
-    source = _example_package(examples_dir, "demo.legacy", "agent")
-
-    handled = await _handle(
-        runtime, extension_package_handlers.ReqMethod.EXTENSIONS_V2_IMPORT, {"path": str(source)}
-    )
-
-    assert handled is True
-    assert runtime.channel.responses[0]["ok"] is False
-    assert runtime.channel.responses[0]["code"] == extension_package_handlers.INVALID_PARAMS_CODE
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # ── shared install report (production path) ──────────────────────────────────
@@ -1064,64 +563,10 @@ async def test_reported_install_switches_to_a_new_version_and_rejects_the_same_o
         await runtime.shutdown()
 
 
-def test_merge_packages_applies_gateway_state_to_remote_cards():
-    remote = [
-        {
-            "id": "asset-1",
-            "packageId": "webui.login-demo",
-            "installed": False,
-            "active": False,
-            "enabled": True,
-        }
-    ]
-    state = {
-        "active": [{"package_id": "webui.login-demo"}],
-        "installed_packages": [{"package_id": "webui.login-demo", "version": "1.0.0"}],
-    }
-
-    merged = extension_package_handlers._merge_packages([], remote, state)
-
-    assert merged[0]["installed"] is True
-    assert merged[0]["active"] is True
-    assert merged[0]["enabled"] is True
 
 
-def test_catalog_switch_uses_the_active_versions_manifest(tmp_path):
-    package_id = "demo.gateway"
-    install_dir = tmp_path / "installed" / package_id
-    for version, enabled in (("0.1.0", False), ("0.2.0", True)):
-        with zipfile.ZipFile(_package_zip(tmp_path, package_id=package_id, version=version, enable=enabled)) as archive:
-            archive.extractall(install_dir / version)
-    state = {
-        "installed": [str(install_dir / "0.1.0"), str(install_dir / "0.2.0")],
-        "active": [{"package_id": package_id, "version": "0.1.0", "root": str(install_dir / "0.1.0")}],
-    }
-    detail = package_detail(package_id, tmp_path / "examples", state)
-    assert (detail["installedVersion"], detail["active"], detail["enabled"]) == ("0.1.0", True, False)
 
 
-def test_hub_card_and_asset_detail_use_gateway_status(tmp_path, monkeypatch):
-    package_id = "demo.gateway"
-    root = tmp_path / "installed" / package_id / "1.0.0"
-    state = {
-        "installed": [str(root)],
-        "active": [{"package_id": package_id, "version": "1.0.0", "root": str(root)}],
-    }
-    gateway_card = {"id": "hub-asset", "packageId": package_id, "enabled": True, "active": True}
-    agent_card = {"id": "agent-asset", "packageId": "demo.agent", "enabled": True, "active": False}
-
-    merged = extension_package_handlers._merge_packages([], [gateway_card, agent_card], state)
-    expected = {**gateway_card, "installed": True, "active": True, "enabled": True}
-    # Cards the Gateway does not own keep the AgentServer values instead of a Gateway fact.
-    assert merged == [expected, agent_card]
-
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(enabled=True),
-        packages=SimpleNamespace(query=lambda package_id=None: state),
-    )
-    monkeypatch.setattr(assembly, "get_gateway_runtime", lambda: runtime)
-    detail = extension_package_handlers._gateway_detail_status({"package": dict(gateway_card)})
-    assert detail["package"] == expected
 
 
 async def test_reported_uninstall_one_version_keeps_the_other(tmp_path):
@@ -1460,3 +905,293 @@ async def test_gateway_assembly_survives_an_invalid_configuration(tmp_path, monk
 
     monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.load_gateway_config", broken_config)
     assert installed_splash_providers() == []
+
+
+@pytest.mark.asyncio
+async def test_managed_member_root_is_visible_after_the_startup_snapshot(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    try:
+        await manager.load_installed()
+        root = tmp_path / "extension_pkgs" / "demo.bundle" / "2.0.0" / "plugins" / "demo.gateway"
+        root.mkdir(parents=True)
+        document = {
+            "package_type": "extension",
+            "schemaVersion": 1,
+            "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+            "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+        }
+        (root / "manifest.json").write_text(json.dumps(document), encoding="utf-8")
+        (root / "extension.py").write_text(ENTRY, encoding="utf-8")
+
+        registered = manager.register_managed_root("demo.gateway", "0.1.0", root)
+
+        assert registered == root.resolve()
+        assert [item.root for item in manager.gateway_installed("demo.gateway")] == [root.resolve()]
+        manager.unregister_managed_root("demo.gateway", "0.1.0")
+        assert manager.gateway_installed("demo.gateway") == []
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sync_loads_a_bundle_member_after_the_startup_snapshot(tmp_path):
+    from openjiuwen.core.events import HostPackageInstallRequest
+
+    from agent_gateway.extensions_v2.management import containers
+    from agent_gateway.extensions_v2.management.install_state import (
+        ActiveInstance,
+        BundleMemberRecord,
+        ExtensionBundleMember,
+        ExtensionBundleRecord,
+        ExtensionInstallState,
+    )
+
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    try:
+        await manager.load_installed()
+        root = install_dir / "demo.bundle" / "2.0.0" / "plugins" / "demo.gateway"
+        root.mkdir(parents=True)
+        document = {
+            "package_type": "extension",
+            "schemaVersion": 1,
+            "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+            "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+        }
+        (root / "manifest.json").write_text(json.dumps(document), encoding="utf-8")
+        (root / "extension.py").write_text(ENTRY, encoding="utf-8")
+        store.upsert_bundle(
+            ExtensionBundleRecord(
+                bundle_id="demo.bundle",
+                version="2.0.0",
+                origin="user",
+                members=(ExtensionBundleMember("demo.gateway", "0.1.0", "gateway"),),
+                member_records=(
+                    BundleMemberRecord(
+                        package_id="demo.gateway",
+                        version="0.1.0",
+                        domain="gateway",
+                        root=str(root),
+                        enabled=True,
+                        active=True,
+                        status="pending",
+                    ),
+                ),
+                status="partial",
+                active=True,
+            )
+        )
+        store.switch_active_instance(
+            ActiveInstance(
+                package_id="demo.gateway",
+                version="0.1.0",
+                kind="bundle",
+                bundle_id="demo.bundle",
+                bundle_version="2.0.0",
+                root=str(root),
+            )
+        )
+
+        async def trigger(operation, package_id, version, container_id, container_version):
+            report = await manager.enable_version(package_id, version, skip_dependencies=True)
+            request = HostPackageInstallRequest(
+                package_id=package_id, version=version, operation=operation,
+                container_id=container_id, container_version=container_version,
+            )
+            return containers.record_install_outcome(
+                store, request, event_id="", success=report.status == "SUCCESS",
+                error="" if report.status == "SUCCESS" else str(report.error),
+            )
+
+        await containers.sync_members(manager, store, trigger)
+
+        member = store.get_bundle_member("demo.bundle", "2.0.0", "demo.gateway")
+        assert member is not None and member.status == "active" and member.active is True
+        assert runtime.user_handler_count == 1
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sync_loads_a_runtime_standalone_after_the_startup_snapshot(tmp_path):
+    from openjiuwen.core.events import HostPackageInstallRequest
+
+    from agent_gateway.extensions_v2.management import containers
+    from agent_gateway.extensions_v2.management.install_state import (
+        ActiveInstance,
+        ExtensionInstallRecord,
+        ExtensionInstallState,
+    )
+
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    try:
+        await manager.load_installed()
+        root = install_dir / "demo.gateway" / "0.1.0"
+        root.mkdir(parents=True)
+        document = {
+            "package_type": "extension",
+            "schemaVersion": 1,
+            "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+            "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+        }
+        (root / "manifest.json").write_text(json.dumps(document), encoding="utf-8")
+        (root / "extension.py").write_text(ENTRY, encoding="utf-8")
+        store.upsert(
+            ExtensionInstallRecord(
+                package_id="demo.gateway",
+                version="0.1.0",
+                origin="hub",
+                install_path=str(root),
+                active=True,
+                enabled=True,
+                domain="gateway",
+                status="pending",
+            )
+        )
+        store.switch_active_instance(
+            ActiveInstance(package_id="demo.gateway", version="0.1.0", kind="standalone")
+        )
+
+        async def trigger(operation, package_id, version, container_id, container_version):
+            report = await manager.enable_version(package_id, version, skip_dependencies=True)
+            request = HostPackageInstallRequest(
+                package_id=package_id, version=version, operation=operation,
+                container_id=container_id, container_version=container_version,
+            )
+            return containers.record_install_outcome(
+                store, request, event_id="", success=report.status == "SUCCESS",
+                error="" if report.status == "SUCCESS" else str(report.error),
+            )
+
+        await containers.sync_members(manager, store, trigger)
+
+        record = store.get("demo.gateway", "0.1.0")
+        assert record is not None and record.status == "active" and record.active is True
+        assert runtime.user_handler_count == 1
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+def _write_gateway_copy(root: Path) -> None:
+    root.mkdir(parents=True)
+    document = {
+        "package_type": "extension",
+        "schemaVersion": 1,
+        "package": {"id": "demo.gateway", "version": "0.1.0", "domain": "gateway"},
+        "extensions": [{"id": "demo", "runtime": "backend", "module": "extension.py"}],
+    }
+    (root / "manifest.json").write_text(json.dumps(document), encoding="utf-8")
+    (root / "extension.py").write_text(ENTRY, encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_root_resolution_prefers_the_registered_member(tmp_path):
+    from types import SimpleNamespace
+
+    from agent_gateway.extensions_v2.management.registry import GatewayPackageManager
+
+    install_dir = tmp_path / "extension_pkgs"
+    standard = install_dir / "demo.gateway" / "0.1.0"
+    member = install_dir / "demo.bundle" / "1.0.0" / "plugins" / "demo.gateway"
+    _write_gateway_copy(standard)
+    _write_gateway_copy(member)
+    manager = GatewayPackageManager(
+        SimpleNamespace(active_record=lambda package_id: None),
+        install_dir,
+        recovery_data_dir=tmp_path / "extension",
+    )
+    manager.register_managed_root("demo.gateway", "0.1.0", member)
+    manager._startup_loaded = True
+    manager._accepted_roots.add(standard.resolve())
+
+    assert manager._find_root("demo.gateway", "0.1.0") == member.resolve()
+    manager._prefer_managed_roots()
+    assert [item.root for item in manager.gateway_installed("demo.gateway")] == [member.resolve()]
+
+    manager._accepted_roots.add(standard.resolve())
+    report = await manager.remove_standalone_copy("demo.gateway", "0.1.0")
+
+    assert report.status == "SUCCESS"
+    assert not standard.exists()
+    assert member.is_dir()
+    assert [item.root for item in manager.gateway_installed("demo.gateway")] == [member.resolve()]
+
+
+@pytest.mark.asyncio
+async def test_accept_version_replaces_a_same_version_member_root(tmp_path):
+    from types import SimpleNamespace
+
+    from agent_gateway.extensions_v2.management.registry import GatewayPackageManager
+
+    install_dir = tmp_path / "extension_pkgs"
+    standard = install_dir / "demo.gateway" / "0.1.0"
+    member = install_dir / "demo.bundle" / "1.0.0" / "plugins" / "demo.gateway"
+    _write_gateway_copy(standard)
+    _write_gateway_copy(member)
+    manager = GatewayPackageManager(
+        SimpleNamespace(active_record=lambda package_id: None),
+        install_dir,
+        recovery_data_dir=tmp_path / "extension",
+    )
+    manager.register_managed_root("demo.gateway", "0.1.0", member)
+
+    manager.accept_version("demo.gateway", "0.1.0")
+
+    assert manager._store.is_managed_root(member.resolve()) is False
+    assert manager._find_root("demo.gateway", "0.1.0") == standard.resolve()
+
+
+@pytest.mark.asyncio
+async def test_reported_remove_standalone_copy_deletes_only_the_standard_copy(tmp_path):
+    runtime = await _runtime(tmp_path)
+    manager = await _reported_manager(tmp_path, runtime)
+    install_dir = tmp_path / "extension_pkgs"
+    try:
+        assert (await manager.install([_package_zip(tmp_path)]))[0].status == "SUCCESS"
+        assert (await manager.disable_version("demo.gateway", "0.1.0")).status == "SUCCESS"
+        standard = install_dir / "demo.gateway" / "0.1.0"
+        member = install_dir / "demo.bundle" / "1.0.0" / "plugins" / "demo.gateway"
+        _write_gateway_copy(member)
+        manager.register_managed_root("demo.gateway", "0.1.0", member)
+
+        report = await manager.remove_standalone_copy("demo.gateway", "0.1.0")
+
+        assert report.status == "SUCCESS"
+        assert not standard.exists()
+        assert member.is_dir()
+    finally:
+        await manager.close()
+        await runtime.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_bundle_version_deletes_only_that_copy(tmp_path):
+    from types import SimpleNamespace
+
+    from agent_gateway.extensions_v2.management.registry import GatewayPackageManager
+
+    install_dir = tmp_path / "extension_pkgs"
+    first = install_dir / "demo.bundle" / "1.0.0"
+    second = install_dir / "demo.bundle" / "1.0.1"
+    _write_gateway_copy(first)
+    _write_gateway_copy(second)
+    manager = GatewayPackageManager(
+        SimpleNamespace(active_record=lambda package_id: None),
+        install_dir,
+        recovery_data_dir=tmp_path / "extension",
+    )
+
+    error = await manager.remove_bundle_version("demo.bundle", "1.0.0")
+
+    assert error == ""
+    assert not first.exists()
+    assert second.is_dir()

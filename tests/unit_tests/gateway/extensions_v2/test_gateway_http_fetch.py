@@ -109,7 +109,7 @@ def _package(handler) -> LoadedPackage:
 async def _runtime(tmp_path: Path, policy: HttpPolicy) -> GatewayRuntime:
     runtime = GatewayRuntime(
         channel=Channel(),
-        config=GatewayExtensionConfig(install_dir=tmp_path, http=policy),
+        config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data", http=policy),
     )
     await runtime.start()
     return runtime

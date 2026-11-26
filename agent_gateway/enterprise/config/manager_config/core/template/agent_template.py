@@ -17,25 +17,17 @@ from ...infrastructure.utils import (
     utc_now,
 )
 from ...schemas.template_schemas import AgentTemplateUpdateRequest
+from .template_id import normalize_template_id
 
 _TABLE = AGENT_TEMPLATE_TABLE_DEF.table_name
 logger = logging.getLogger(__name__)
-
-
-def _normalize_template_id(template_id: Any) -> str:
-    normalized = str(template_id or "").strip()
-    if not normalized:
-        raise ValueError("template_id is required")
-    if len(normalized) > 100:
-        raise ValueError("template_id must be at most 100 characters")
-    return normalized
 
 
 async def _get_row_for_instance(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> dict[str, Any] | None:
-    return await repo.get(template_id=_normalize_template_id(template_id))
+    return await repo.get(template_id=normalize_template_id(template_id))
 
 
 def _build_row_from_template(
@@ -43,12 +35,11 @@ def _build_row_from_template(
     *,
     now: Any,
 ) -> dict[str, Any]:
-    template_uuid = _normalize_template_id(template.get("template_id"))
+    template_uuid = normalize_template_id(template.get("template_id"))
     return {
         "template_id": template_uuid,
         "template_name": str(template["template_name"]).strip(),
         "description": template.get("description"),
-        "agent_tags": template.get("agent_tags"),
         "template_ref": normalize_template_ref(template.get("template_ref") or {}),
         "enabled": bool(template.get("enabled", True)),
         "data": template.get("data"),
@@ -62,7 +53,7 @@ async def _upsert_agent_template_from_sync(
     template: dict[str, Any]
 ) -> None:
     now = utc_now()
-    tid = _normalize_template_id(template.get("template_id"))
+    tid = normalize_template_id(template.get("template_id"))
     existing = await _get_row_for_instance(repo, tid)
     row_data = _build_row_from_template(template, now=now)
     if existing is None:
@@ -88,7 +79,7 @@ async def update_agent_template(
     *,
     existing: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     row = existing if existing is not None else await _get_row_for_instance(repo, tid)
     if row is None:
         return None
@@ -112,7 +103,7 @@ async def delete_agent_template(
     repo: EnterpriseRecordRepository,
     template_id: str,
 ) -> bool:
-    tid = _normalize_template_id(template_id)
+    tid = normalize_template_id(template_id)
     existing = await _get_row_for_instance(repo, tid)
     if existing is None:
         return False
@@ -131,7 +122,7 @@ class AgentTemplateService:
         await _upsert_agent_template_from_sync(
             repo, template
         )
-        result = {"template_id": _normalize_template_id(template.get("template_id"))}
+        result = {"template_id": normalize_template_id(template.get("template_id"))}
         logger.info(
             "[ManagerConfigReceiver] agent_templates create template_id=%s",
             result["template_id"],
@@ -148,7 +139,7 @@ class AgentTemplateService:
         if not isinstance(updates, dict) or not updates:
             raise ValueError("agent_templates.update requires non-empty updates")
         req = AgentTemplateUpdateRequest.model_validate(updates)
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         row = await update_agent_template(repo, tid, req)
         if row is None:
@@ -161,7 +152,7 @@ class AgentTemplateService:
     async def delete(self, template_id: str) -> None:
         if template_id is None:
             raise ValueError("agent_templates.delete requires template_id")
-        tid = _normalize_template_id(template_id)
+        tid = normalize_template_id(template_id)
         repo = require_enterprise_repository(_TABLE)
         await delete_agent_template(repo, tid)
         logger.info(

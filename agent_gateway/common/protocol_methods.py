@@ -1,38 +1,12 @@
 """Compatibility for request methods missing from the pinned protocol."""
 
-from enum import Enum
-
 from e2a.message import ReqMethod
 
-
-def _ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
-    """Register a member of a protocol enum the pinned protocol package does not ship yet.
-
-    ``e2a`` owns the enum; 这里只为协议包尚未发布的成员开一个缺口，
-    待协议包提供同名同值成员后本函数与调用一并删除。
-    """
-    existing = enum_cls.__members__.get(name)
-    if existing is not None:
-        if existing.value != value:
-            raise RuntimeError(
-                f"{enum_cls.__name__}.{name} is {existing.value!r}, expected {value!r}"
-            )
-        return
-    if any(item.value == value for item in enum_cls):
-        raise RuntimeError(f"{enum_cls.__name__} value {value!r} is already registered")
-    # Enum exposes no public API for adding a member, so extending the pinned
-    # protocol enum requires its internal registries. Keep those accesses here.
-    member = object.__new__(enum_cls)
-    member._name_ = name  # pylint: disable=protected-access
-    member._value_ = value  # pylint: disable=protected-access
-    type.__setattr__(enum_cls, name, member)
-    enum_cls._member_map_[name] = member  # pylint: disable=protected-access
-    enum_cls._value2member_map_[value] = member  # pylint: disable=protected-access
-    enum_cls._member_names_.append(name)  # pylint: disable=protected-access
+from agent_gateway.common.protocol_compat import ensure_protocol_member
 
 
 def _ensure_req_method(name: str, value: str) -> None:
-    _ensure_protocol_member(ReqMethod, name, value)
+    ensure_protocol_member(ReqMethod, name, value)
 
 
 # 企业版 Skill 包上传审批：协议包尚未发布这两个方法，先在此登记。
@@ -43,8 +17,8 @@ SKILL_UPLOAD_FINALIZE = "skills.upload.finalize"
 
 # 企业版团队控制面：协议包尚未发布这 7 个方法，先在此登记（与 Agent 侧
 # ``jiuwenswarm/common/schema/message.py`` 的 ``ensure_team_control_req_methods``
-# 同名同值对齐）。缺失时 ``parse_request_method`` 返回 None，转发门禁直接短路，
-# 请求会退化成 METHOD_NOT_FOUND 而不是发往 Agent。
+# 同名同值对齐）。企业版由启动流程登记后转发；个人版保持“未知方法”语义，
+# 不允许通过 Web 入站的动态登记绕过 edition 门禁。
 _TEAM_CONTROL_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("TEAM_CREATE", "team.create"),
     ("TEAM_GET", "team.get"),
@@ -77,6 +51,20 @@ def register_edition_req_methods() -> None:
         ensure_team_control_req_methods()
 
 
+def is_dynamic_req_method_denied(value: str) -> bool:
+    """个人版禁止通过动态登记暴露企业版团队控制面方法。
+
+    个人版已把这 7 个方法从转发白名单剔除；若允许 Web 入站动态登记，默认透传
+    会绕过 edition 门禁，因此这里保持“未知方法”语义。
+    """
+    if value not in TEAM_CONTROL_METHODS:
+        return False
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    return not is_enterprise()
+
+
+_ensure_req_method("MEMORY_PORTAL_OPEN", "memory.portal.open")
 _ensure_req_method("RECOMMENDATION", "recommendation.job")
 _ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
 _ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
@@ -95,4 +83,15 @@ _ensure_req_method("WORKSPACE_TREE", "workspace.tree")
 _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
 _ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+_ensure_req_method("WORKSPACE_DOWNLOAD", "workspace.download")
 _ensure_req_method("VIDEO_CONVERSATION_APPEND", "video.conversation.append")
+# 企业技能广场 / 技能源 SPI：与 Agent 侧 message.py 对齐。缺失时 HTTP
+# /skills/sources* 会在 Gateway 被映射成 skills.source.* 后直接 METHOD_NOT_FOUND。
+_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
+_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
+_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
+_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
+_ensure_req_method("SKILLS_UPDATE", "skills.update")
+# 企业连接器广场多源：与 Agent 侧 message.py 的 MCP_SOURCES_PROVIDERS 对齐。
+# 缺失时 mcp.sources.providers 在转发门禁被 METHOD_NOT_FOUND，前端显示「加载连接器源失败」。
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")

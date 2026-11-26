@@ -22,6 +22,7 @@ from agent_gateway.extensions_v2.webui.models import (
     RenderTarget,
     UiRenderInput,
     UiRenderOutput,
+    node_to_payload,
 )
 from agent_gateway.extensions_v2.webui.schema import validate_request, validate_root
 
@@ -157,7 +158,7 @@ def _package(handler) -> LoadedPackage:
 async def _runtime(tmp_path: Path) -> GatewayRuntime:
     runtime = GatewayRuntime(
         channel=RenderChannel(),
-        config=GatewayExtensionConfig(install_dir=tmp_path),
+        config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data"),
     )
     await runtime.start()
     return runtime
@@ -376,3 +377,26 @@ async def test_disconnect_drops_application_instances(tmp_path):
     await runtime.on_disconnect(ws)
 
     assert runtime.registry.snapshot() == ()
+
+
+@pytest.mark.parametrize("props,valid", [
+    ({"src": "https://example.com"}, True),
+    ({"src": "https://example.com", "permissions": []}, True),
+    ({"src": "https://example.com", "permissions": [
+        "clipboard-write", "fullscreen", "camera", "microphone", "display-capture", "autoplay", "future-feature",
+    ]}, True),
+    ({"src": "/preview", "permissions": "fullscreen"}, False),
+    ({"src": "/preview", "permissions": ["fullscreen *"]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen; autoplay"]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen\n"]}, False),
+    ({"src": "/preview", "permissions": [""]}, False),
+    ({"src": "/preview", "permissions": ["fullscreen", "fullscreen"]}, True),
+    ({"srcDoc": "<p>Preview</p>", "permissions": ["fullscreen"]}, True),
+    ({"srcDoc": "<p>Preview</p>", "permissions": "fullscreen"}, True),
+])
+def test_iframe_permission_contract(props, valid):
+    root = RenderNode("Iframe", {"title": "Editor", **props})
+    assert validate_root(root).ok is valid
+    if valid and "srcDoc" in props:
+        assert node_to_payload(root)["props"] == {"title": "Editor", "srcDoc": props["srcDoc"]}
+        assert root.props["permissions"] == props["permissions"]

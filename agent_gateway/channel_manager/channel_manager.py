@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 import time
 from abc import ABC
@@ -20,6 +21,9 @@ from agent_gateway.telemetry import (
 from agent_gateway.routing.keys import ChannelKey
 
 logger = logging.getLogger(__name__)
+
+# 同一 session 的 fan_out 回退告警最小间隔（秒），见 _should_warn_fanout_fallback。
+_FANOUT_FALLBACK_LOG_INTERVAL_SECONDS = 60.0
 
 if TYPE_CHECKING:
     from e2a.message import Message
@@ -116,7 +120,10 @@ class ChannelManager(ABC):
         self._on_config_updated = on_config_updated
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
+        self._inbound_busy = False
         self._dispatch_diag_count: int = 0
+        # fan_out 回退告警按 session 限流：流式 chunk 每帧都会回退，避免刷屏。
+        self._fanout_fallback_warned_at: dict[str, float] = {}
         # Channel 连接事件订阅回调列表
         self._channel_event_callbacks: list[Callable[[ChannelEvent], Awaitable[None]]] = []
 
@@ -539,6 +546,32 @@ class ChannelManager(ABC):
 
         asyncio.create_task(self._message_handler.handle_message(msg))
 
+    async def _reject_inbound_busy(
+        self, msg: "Message", reject: Callable[..., Any],
+    ) -> bool:
+        """Let the channel tell the client that the inbound queue is full.
+
+        Returns true only when the channel actually accepted the rejection.
+        A missing peer or a failed send returns false so the caller can fall
+        back to queue backpressure instead of dropping the message.
+        """
+        try:
+            result = reject(
+                msg,
+                error="系统繁忙，请稍后重试",
+                code="SERVER_BUSY",
+            )
+            if inspect.isawaitable(result):
+                result = await result
+            return result is not False
+        except Exception:  # noqa: BLE001 - rejecting is best-effort
+            logger.exception(
+                "[ChannelManager] reject busy inbound failed: id=%s channel_id=%s",
+                msg.id,
+                msg.channel_id,
+            )
+            return False
+
     def register_channel(self, channel: "BaseChannel") -> None:
         """注册 Channel，并为其注册「收到消息时转发给 MessageHandler」的回调."""
         cid = channel.channel_id
@@ -695,7 +728,35 @@ class ChannelManager(ABC):
         self._channels[key] = channel
 
     async def deliver_to_message_handler(self, msg: "Message") -> None:
-        """将消息交给 MessageHandler（供自定义入站路径使用）。"""
+        """将消息交给 MessageHandler（供自定义入站路径使用）。
+
+        Web/TUI 走这条路径而不是 ``_on_channel_message``。入站队列满时，
+        支持 ``reject_inbound`` 的通道（目前是 Web）直接回 ``SERVER_BUSY``；
+        其他通道继续走 ``handle_message``，在队列上形成背压而不丢消息。
+        """
+        queue_full = getattr(self._message_handler, "is_user_queue_full", None)
+        if callable(queue_full) and queue_full():
+            if not self._inbound_busy:
+                logger.warning(
+                    "[ChannelManager] inbound queue full: channel_id=%s",
+                    msg.channel_id,
+                )
+                self._inbound_busy = True
+            else:
+                logger.debug(
+                    "[ChannelManager] inbound queue still full: id=%s channel_id=%s",
+                    msg.id,
+                    msg.channel_id,
+                )
+            channel = self._get_channel_by_id(msg.channel_id)
+            reject = getattr(channel, "reject_inbound", None)
+            if callable(reject) and await self._reject_inbound_busy(msg, reject):
+                return
+            # No channel-level busy response (IM, or Web peer already gone):
+            # keep the message and apply real backpressure in handle_message.
+        elif self._inbound_busy:
+            logger.info("[ChannelManager] inbound queue recovered")
+            self._inbound_busy = False
         await self._message_handler.handle_message(msg)
 
     # ── Channel 连接事件 ──
@@ -896,8 +957,9 @@ class ChannelManager(ABC):
                             ))
                     if fan_out:
                         registry = self._message_handler.get_session_sharing_registry()
+                        delivered = 0
                         try:
-                            await asyncio.wait_for(
+                            delivered = await asyncio.wait_for(
                                 dispatch_to_session(
                                     msg, msg.session_id or "", fan_out, self, registry,
                                 ),
@@ -910,6 +972,7 @@ class ChannelManager(ABC):
                                 " session=%s id=%s — skipping to unblock dispatch loop",
                                 msg.session_id, msg.id,
                             )
+                            continue
                         except Exception:
                             delivery_reason = "delivery_failed"
                             logger.exception(
@@ -917,7 +980,22 @@ class ChannelManager(ABC):
                                 " session=%s id=%s",
                                 msg.session_id, msg.id,
                             )
-                        continue
+                            continue
+                        if not self._fanout_needs_origin_fallback(fan_out, delivered):
+                            continue
+                        # 广播目标没有一个成功送达：继续落到下方常规 channel
+                        # 投递，由 channel 按 metadata.ws_id / session_id 回给发起
+                        # 连接。否则这条流的所有终态帧都会被静默丢弃，客户端卡死。
+                        log = (
+                            logger.warning
+                            if self._should_warn_fanout_fallback(msg.session_id or "")
+                            else logger.debug
+                        )
+                        log(
+                            "[ChannelManager] fan_out delivered to no receiver, falling back to "
+                            "origin connection: session=%s id=%s event_type=%s",
+                            msg.session_id, msg.id, _et,
+                        )
 
                 # ── 飞书 cron 推送 / 心跳 relay fan-out：个人渠道 app 各自投递（各用各的 last_*）。
                 # 仅普通飞书（channel_id == "feishu"）：多 app 共享同一 channel_id，精确路由只到创建 app
@@ -1067,6 +1145,46 @@ class ChannelManager(ABC):
                 await web_channel.send(error_msg)
             except Exception:
                 logger.warning("[ChannelManager] 发送 cron 推送失败通知到 web 也失败了")
+
+    @staticmethod
+    def _fanout_needs_origin_fallback(fan_out: list, delivered: int) -> bool:
+        """广播目标一个接收者都没成功送达时，是否回退给发起连接。
+
+        返回 True 仅当 fan_out 含 godview（会话广播）目标，且成功投递容器数为 0。
+        这里的 0 涵盖三种情况：没有订阅者、订阅对应的 channel 已缺失、channel
+        send 超时或抛异常。
+
+        godview 无订阅通常意味着观察者登记缺失（例如 web 首次 chat.send 未带
+        mode，Gateway 因此没有为该连接注册 GodView）。此时静默丢弃会吞掉整条流
+        的 chat.delta / chat.final / chat.processing_status(false)，发起请求的
+        连接永远等不到终态。回退后由 channel 按 metadata.ws_id / session_id
+        投给发起连接，保证"发了消息的人一定能收到回复"。
+
+        mention / private 目标找不到席位是正常语义（未认领成员），不回退，
+        避免把定向消息广播给发起者。
+        """
+        if delivered:
+            return False
+        return any(str(getattr(target, "intent", "")) == "godview" for target in fan_out)
+
+    def _should_warn_fanout_fallback(self, session_id: str) -> bool:
+        """回退告警按 session 限流。
+
+        流式 chunk 每帧都会走到回退分支，逐帧 warning 会刷屏；同一 session
+        在限流窗口内只记一条 warning，其余降为 debug。
+        """
+        now = time.monotonic()
+        last = self._fanout_fallback_warned_at.get(session_id)
+        if last is not None and now - last < _FANOUT_FALLBACK_LOG_INTERVAL_SECONDS:
+            return False
+        self._fanout_fallback_warned_at[session_id] = now
+        # 防止长跑进程里 session 只增不减。
+        if len(self._fanout_fallback_warned_at) > 1024:
+            cutoff = now - _FANOUT_FALLBACK_LOG_INTERVAL_SECONDS
+            for sid, ts in list(self._fanout_fallback_warned_at.items()):
+                if ts < cutoff:
+                    del self._fanout_fallback_warned_at[sid]
+        return True
 
     async def _inject_file_delivery_fanout(self, msg: "Message", event_type_str: str) -> list | None:
         """为 chat.file / chat.media 自动注入 fan_out_targets，实现跨 channel 文件投递。

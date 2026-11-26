@@ -70,7 +70,7 @@ def _package(handler, event_type: str = EVENT_GATEWAY_REQUEST) -> LoadedPackage:
 async def _runtime(tmp_path: Path, channel: FakeChannel | None = None) -> GatewayRuntime:
     runtime = GatewayRuntime(
         channel=channel or FakeChannel(),
-        config=GatewayExtensionConfig(install_dir=tmp_path),
+        config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data"),
     )
     await runtime.start()
     return runtime

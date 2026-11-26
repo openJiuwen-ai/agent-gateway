@@ -2,10 +2,10 @@
 
 """转发方法可达性门禁。
 
-`_FORWARD_REQ_METHODS` 里的方法必须先能被 `parse_request_method` 解析，否则转发
-门禁拿到空串直接短路，请求退化成 ``METHOD_NOT_FOUND`` —— 用户侧看到的是「未知方法」，
-而不是「方法未实现」，排障成本很高。这类回归曾真实发生（team.* 七方法与
-mcp.sources.providers），本测试把它变成 CI 门禁。
+`_FORWARD_REQ_METHODS` 里的方法在 Web 入站会先经 `parse_request_method` 解析；协议包
+尚未发布的方法由入站动态登记后转发（见 web_connect._parse_req_method），不再退化成
+帧级 ``METHOD_NOT_FOUND``。本测试仍锁住「白名单在册、但协议包与网关 shim 都未声明」
+的名单，避免它无声漂移；个人版另要求 team.* 七方法始终不可解析（edition 门禁）。
 
 白名单只允许「明确知道为何暂不可达、且有人在跟」的条目；新增项必须写理由。
 """
@@ -22,21 +22,14 @@ import time
 _SUBPROCESS_TIMEOUT_SECONDS = 180.0
 
 # 协议包尚未发布、gateway 侧也没有补齐的方法。键是方法名，值是「为何还在名单里」。
+# skills.source.* / skills.update* / mcp.sources.providers 已在 protocol_methods 登记，勿再列入。
 _KNOWN_UNREACHABLE: dict[str, str] = {
-    # 企业连接器广场：gateway 单方面加了北向路由与转发名单，Agent 侧无端点。
-    # 待 connector 作者确认真实端点后再决定「补 Agent 端点」还是「撤回映射」。
-    "mcp.sources.providers": "connector 广场 SPI 未在 Agent 侧落地（commit b9a5dcae2）",
     "session.assets.remove": "协议包未发布该成员，当前无调用方",
     "skills.enterprise.install": "企业技能仓方法待协议包发布",
     "skills.enterprise.list": "企业技能仓方法待协议包发布",
     "skills.enterprise.source.providers": "企业技能仓方法待协议包发布",
     "skills.enterprise.source.search": "企业技能仓方法待协议包发布",
     "skills.enterprise.uninstall": "企业技能仓方法待协议包发布",
-    "skills.source.install": "技能来源方法待协议包发布",
-    "skills.source.providers": "技能来源方法待协议包发布",
-    "skills.source.search": "技能来源方法待协议包发布",
-    "skills.update": "技能更新方法待协议包发布",
-    "skills.updates.check": "技能更新方法待协议包发布",
 }
 
 
@@ -63,13 +56,13 @@ def test_enterprise_team_forwarding_contract(tmp_path):
     code = """
 from agent_gateway.app_gateway import ReqMethod
 from agent_gateway.channel_manager.web.app_web_handlers import (
-    _ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
+    ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
 )
 from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import _lookup_route
 from e2a.runtime_http_routes import resolve_runtime_http_route
 
-for method in _ENTERPRISE_TEAM_CONTROL_METHODS:
+for method in ENTERPRISE_TEAM_CONTROL_METHODS:
     assert method in _FORWARD_REQ_METHODS, method
     assert parse_request_method(method) is ReqMethod(method), method
     declared = resolve_runtime_http_route(method)
@@ -91,14 +84,14 @@ def test_personal_team_control_is_not_enabled(tmp_path):
     code = """
 import agent_gateway.app_gateway
 from agent_gateway.channel_manager.web.app_web_handlers import (
-    _ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
+    ENTERPRISE_TEAM_CONTROL_METHODS, _FORWARD_REQ_METHODS,
 )
 from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled, _lookup_route,
 )
-assert _ENTERPRISE_TEAM_CONTROL_METHODS.isdisjoint(_FORWARD_REQ_METHODS)
-for method in _ENTERPRISE_TEAM_CONTROL_METHODS:
+assert ENTERPRISE_TEAM_CONTROL_METHODS.isdisjoint(_FORWARD_REQ_METHODS)
+for method in ENTERPRISE_TEAM_CONTROL_METHODS:
     assert parse_request_method(method) is None, method
     try:
         _lookup_route(method, is_stream=False)

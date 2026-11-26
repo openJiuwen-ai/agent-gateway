@@ -33,7 +33,7 @@ RUN chgrp -R 0 /app/agent-gateway && chmod -R g+rwX /app/agent-gateway
 #   末尾断言兜底——任何残留 git source 让构建显式失败而非静默漏删。
 RUN sed -i -E '/^[[:space:]]*"openjiuwen([>=<!~=]| @ |")/d' pyproject.toml \
     && sed -i -E '/^[[:space:]]*"(e2a|openjiuwen-e2a) @ git+/d' pyproject.toml \
-    && sed -i '/"openjiuwen-runtime-foundation",/d' pyproject.toml \
+    && sed -i -E '/^[[:space:]]*"openjiuwen-runtime-foundation([>=<!~=]| @ |")/d' pyproject.toml \
     && sed -i -E '/^[[:space:]]*"?(openjiuwen|openjiuwen-runtime-foundation|e2a|openjiuwen-e2a)"?[[:space:]]*=[[:space:]]*\{[[:space:]]*git[[:space:]]*=/d' pyproject.toml \
     && if grep -Eq 'git[[:space:]]*=' pyproject.toml; then \
          echo "[docker] pyproject 仍残留 git source：rev 须由流水线参数或 pyproject 单边钉定（避免同包双 URL 冲突）" >&2; \

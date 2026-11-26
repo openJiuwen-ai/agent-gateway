@@ -44,6 +44,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
 
 from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
+from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
 from agent_gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
@@ -60,6 +61,7 @@ from agent_gateway.common.config import (
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import models_handlers
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -484,6 +486,7 @@ _FORWARD_REQ_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -708,17 +711,6 @@ _FORWARD_REQ_METHODS = frozenset({
     "proactive.feedback",
 })
 
-# 企业团队控制面方法。个人版进程不把它们放进转发名单。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     *_JIUWENMATE_FORWARD_METHODS,
     'group.create',
@@ -739,6 +731,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 
     "initialize",
     "session.switch",
+    "session.input.intent",
     "session.fork",
     "mode.set",
     "mode.get",
@@ -942,9 +935,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 })
 
 if not _is_enterprise_edition():
-    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     _FORWARD_NO_LOCAL_HANDLER_METHODS = (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+        _FORWARD_NO_LOCAL_HANDLER_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     )
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
@@ -4292,13 +4285,28 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
-        """Return the selected AgentServer user's preferred language."""
+        """企业：读 Gateway DB 用户习惯表；个人：代理 AgentServer 读 yaml。"""
+        if _is_enterprise_edition():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                lang = await get_user_preference_service().get_language(user_id)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": lang}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.get_conf] enterprise resolve failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
         from e2a.message import ReqMethod
 
         from agent_gateway.routing.e2a_proxy import proxy_unary_request
 
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and resolved_client is None:
+        if resolved_client is None:
             try:
                 cfg = get_config()
                 lang = str(cfg.get("preferred_language") or "zh").strip().lower()
@@ -4313,17 +4321,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
 
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={}, session_id=session_id, user_id=user_id,
             req_method=ReqMethod.LOCALE_GET_CONF, label="locale.get_conf",
         )
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
-        """Update preferred language in the selected AgentServer directory."""
-        from e2a.message import ReqMethod
-
-        from agent_gateway.routing.e2a_proxy import proxy_unary_request
-
+        """企业：写 Gateway DB 用户习惯表；个人：代理 AgentServer 写 yaml。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -4343,8 +4347,42 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST"
             )
             return
+
+        if _is_enterprise_edition():
+            uid = str(user_id or "").strip()
+            if not uid:
+                await channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error="user_id is required",
+                    code="BAD_REQUEST",
+                )
+                return
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                saved = await get_user_preference_service().upsert_user_language(uid, lang)
+                await channel.send_response(
+                    ws, req_id, ok=True, payload={"preferred_language": saved}
+                )
+            except ValueError as exc:
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[locale.set_conf] enterprise upsert failed: %s", exc)
+                await channel.send_response(
+                    ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+                )
+            return
+
+        from e2a.message import ReqMethod
+
+        from agent_gateway.routing.e2a_proxy import proxy_unary_request
+
         resolved_client = _resolve(agent_client)
-        if not _is_enterprise_edition() and resolved_client is None:
+        if resolved_client is None:
             try:
                 update_preferred_language_in_config(lang)
                 await channel.send_response(ws, req_id, ok=True, payload={"preferred_language": lang})
@@ -4353,7 +4391,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
             return
         await proxy_unary_request(
-            channel=channel, agent_client=_resolve(agent_client), ws=ws,
+            channel=channel, agent_client=resolved_client, ws=ws,
             req_id=req_id, params={"preferred_language": lang}, session_id=session_id,
             user_id=user_id, req_method=ReqMethod.LOCALE_SET_CONF,
             label="locale.set_conf",
@@ -4607,6 +4645,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.xiaoyi.set_conf] 写回 config.yaml apps 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "xiaoyi", cm.get_conf("xiaoyi"))
             await channel.send_response(ws, req_id, ok=True, payload={"config": {"apps": merged_apps}})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.xiaoyi.set_conf] 异常, req_id=%s: %s", req_id, e)
@@ -4660,6 +4699,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.telegram.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "telegram", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.telegram.set_conf] %s", e)
@@ -4763,6 +4803,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.whatsapp.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "whatsapp", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.whatsapp.set_conf] %s", e)
@@ -4814,6 +4855,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.discord.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "discord", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.discord.set_conf] %s", e)
@@ -4865,6 +4907,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.slack.set_conf] failed to persist config.yaml: %s", e)
+            schedule_channel_config(_resolve(agent_client), "slack", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.slack.set_conf] %s", e)
@@ -4916,6 +4959,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wecom.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wecom", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wecom.set_conf] %s", e)
@@ -4978,6 +5022,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 await _clear_agent_config_cache(_resolve(agent_client))
             except Exception as e:  # noqa: BLE001
                 logger.warning("[channel.wechat.set_conf] 写回 config.yaml 失败: %s", e)
+            schedule_channel_config(_resolve(agent_client), "wechat", conf)
             await channel.send_response(ws, req_id, ok=True, payload={"config": conf})
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.wechat.set_conf] %s", e)
@@ -5225,10 +5270,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     app_ids = _personal_cron_app_ids()
                     if app_ids:
                         identity["personal_app_ids"] = app_ids
-        jobs = await cc.list_jobs(
-            project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
-            **identity,
-        )
+        try:
+            jobs = await cc.list_jobs(
+                project_id=(str(raw.get("project_id") or "") if "project_id" in raw else None),
+                **identity,
+            )
+        except ValueError as e:
+            # 企业版三元身份缺一（Cron023）：不返回 200 空列表掩盖漏传。
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         # 连接上带了用户时再对一下，避免列表里混进别的用户。
         if uid_str:
             jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
@@ -5289,7 +5339,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            job = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if job is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5452,7 +5506,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
         # proactive.tick job 由主动推荐开关自动创建/删除，禁止面板删除。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5465,6 +5523,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             deleted = await cc.delete_job(job_id, **_cron_owner_ids(ws, user_id, params))
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
         except Exception as exc:
             from agent_gateway.lifecycle_errors import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
@@ -5490,11 +5551,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        if enabled is None:
-            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+        # 与 heartbeat toggle 一致：只接受真正的 JSON boolean。
+        # bool({"not":"boolean"}) 为 True，会把禁用任务误启用（TC_SDS_CR_079）。
+        if not isinstance(enabled, bool):
+            await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
-        existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        try:
+            existing = await _get_owned_cron_job(cc, job_id, user_id, params, ws=ws)
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
+            return
         if existing is None:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -5506,8 +5573,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(ws, user_id, params))
+            job = await cc.toggle_job(job_id, enabled, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except ValueError as e:
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
 
@@ -5878,6 +5947,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # config.get/set/save_all：本仓不携带本地 handler——企业版在
     # invoke.is_enterprise_write_forbidden 统一拦截（配置由管理面下发）；
     # 个人版不带本地 handler，经 E2A 代理到目标 AgentServer（ConfigAdapter）执行。
+    from agent_gateway.common.protocol_methods import ReqMethod as _MemoryReq
+
+    # Always open through the target AgentServer; Gateway owns no memory Runtime.
+    _register_config_proxy("memory.portal.open", _MemoryReq.MEMORY_PORTAL_OPEN)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
@@ -6063,12 +6136,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     from agent_gateway.common.protocol_methods import ReqMethod as _FileReq
+    from agent_gateway.channel_manager.web.web_method_register import (
+        register_workspace_web_methods,
+    )
 
-    for file_method in (
-        _FileReq.FILE_IMPORT_URL, _FileReq.WORKSPACE_TREE, _FileReq.WORKSPACE_PREVIEW,
-        _FileReq.WORKSPACE_USAGE, _FileReq.WORKSPACE_ENTRIES_DELETE,
-    ):
-        channel.register_method(file_method.value, _file_proxy(file_method))
+    channel.register_method(_FileReq.FILE_IMPORT_URL.value, _file_proxy(_FileReq.FILE_IMPORT_URL))
+    register_workspace_web_methods(channel, agent_client=lambda: _resolve(agent_client))
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
     channel.register_method("document.persist", _document_persist)

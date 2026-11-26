@@ -156,44 +156,46 @@ async def test_multimodal_without_agent_server_uses_existing_unavailable_error(m
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_enterprise_locale_routes_to_agent_server(monkeypatch, method, legacy):
+async def test_enterprise_locale_uses_user_preference_service(monkeypatch, method):
     monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
+
     def fail_local(*args, **kwargs):
-        pytest.fail("Enterprise locale must not use Gateway config")
+        pytest.fail("Enterprise locale must not use Gateway yaml")
+
     monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
     monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
-    client = WebSocketAgentServerClient() if legacy else SimpleNamespace(server_ready=True)
-    if legacy:
-        client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
-    send = AsyncMock(return_value=SimpleNamespace(ok=True, payload={"preferred_language": "en"}))
-    monkeypatch.setattr(client, "send_request", send, raising=False)
-    channel = _bind(agent_client=client)
+
+    class _Svc:
+        async def get_language(self, user_id):
+            assert user_id == "user"
+            return "en"
+
+        async def upsert_user_language(self, user_id, lang):
+            assert user_id == "user"
+            assert lang == "en"
+            return "en"
+
+    monkeypatch.setattr(
+        "agent_gateway.config.user_preference.get_user_preference_service",
+        lambda: _Svc(),
+    )
+    send = AsyncMock(side_effect=AssertionError("enterprise locale must not E2A"))
+    channel = _bind(agent_client=SimpleNamespace(server_ready=True, send_request=send))
     await channel.methods[method](object(), "req", {"preferred_language": " EN "}, "sess", "user")
-    envelope = send.await_args.args[0]
-    assert envelope.method == method
-    assert envelope.params == ({"preferred_language": "en"} if method.endswith("set_conf") else {})
-    assert envelope.user_id == "user"
-    assert envelope.session_id == "sess"
+    assert send.await_count == 0
     assert channel.responses[-1]["payload"] == {"preferred_language": "en"}
     assert channel.responses[-1]["ok"] is True
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["locale.get_conf", "locale.set_conf"])
-@pytest.mark.parametrize("state", ["missing", "not-ready", "disconnected"])
-async def test_enterprise_locale_unavailable_does_not_use_local_config(monkeypatch, method, state):
+async def test_enterprise_locale_set_requires_user_id(monkeypatch):
     monkeypatch.setattr(app_web_handlers, "_is_enterprise_edition", lambda: True)
-    def fail_local(*args, **kwargs):
-        pytest.fail("Enterprise locale must not use Gateway config")
-    monkeypatch.setattr(app_web_handlers, "get_config", fail_local)
-    monkeypatch.setattr(app_web_handlers, "update_preferred_language_in_config", fail_local)
-    send = AsyncMock(side_effect=ConnectionError("disconnected"))
-    client = None if state == "missing" else SimpleNamespace(server_ready=state == "disconnected", send_request=send)
-    channel = _bind(agent_client=client)
-    await channel.methods[method](object(), "req", {"preferred_language": "en"}, "sess", "user")
-    assert channel.responses[-1]["code"] == "SERVICE_UNAVAILABLE"
-    assert send.await_count == (1 if state == "disconnected" else 0)
+    channel = _bind(agent_client=None)
+    await channel.methods["locale.set_conf"](
+        object(), "req", {"preferred_language": "en"}, "sess", None
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
 
 
 @pytest.mark.asyncio
@@ -1064,8 +1066,9 @@ async def test_enterprise_session_management_preserves_e2a_failures(monkeypatch,
         ("personal", "ou_sender", {}, None, "verified", ["feishu", "feishu-to-web", "sender-web"]),
         ("personal", "ou_sender", {}, None, "iam-username", ["sender-web"]),
         ("personal", "ou_sender", {"bot_id": ""}, None, "local", ["sender-web"]),
-        ("enterprise", None, {}, None, "remote", ["web", "other-project"]),
-        ("enterprise", "ou_sender", {}, None, "remote", ["sender-web"]),
+        # 企业版三元缺一 → BAD_REQUEST（expected=None），不得 200 空列表掩盖漏传。
+        ("enterprise", None, {}, None, "remote", None),
+        ("enterprise", "ou_sender", {}, None, "remote", None),
         ("enterprise", "other-user", {"user_id": "ou_sender", "group_id": "oc_chat", "bot_id": "bot"}, None, "remote", []),
         ("enterprise", "ou_sender", {"group_id": "wrong-group", "bot_id": "bot"}, None, "remote", []),
         ("enterprise", "ou_sender", {"group_id": "oc_chat", "bot_id": "wrong-bot"}, None, "remote", []),
@@ -1136,7 +1139,12 @@ async def test_cron_job_list_scopes_identity_by_edition(monkeypatch, edition, us
         ws.local_address = (remote_host if browser == "wildcard-nonlocal" else "localhost", 5173)
     await channel.methods["cron.job.list"](ws, "list-cron", params, None, user_id)
     response = channel.responses[-1]
-    assert response["ok"] is True
+    if expected is None:
+        assert response["ok"] is False
+        assert response["code"] == "BAD_REQUEST"
+        assert "enterprise cron requires" in str(response["error"])
+        return
+    assert response["ok"] is True, response
     assert [item["id"] for item in response["payload"]["jobs"]] == expected
 
 
@@ -3720,3 +3728,26 @@ async def test_task_asr_rejects_invalid_config_protocol(monkeypatch, payload):
     await channel.methods["task.asr.transcribe"](ws, "invalid-config", {}, "session")
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "UPSTREAM_PROTOCOL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_memory_portal_open_forwards_to_agentserver_with_trusted_connection_identity(monkeypatch):
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"status": "ready", "mode": "sdk", "url": "http://127.0.0.1:12345/portal/#access=synthetic"}
+    send = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send)
+    channel = _bind(agent_client=client)
+    ws = SimpleNamespace(_jiuwen_auth_session="authenticated-session")
+    await channel.methods["memory.portal.open"](
+        ws, "portal-open", {E2A_AUTH_SESSION_PARAM_KEY: "spoofed"}, "settings", "user-42",
+    )
+    send.assert_awaited_once()
+    request = send.call_args.args[0]
+    assert request.method == "memory.portal.open"
+    assert request.user_id == "user-42"
+    assert request.params[E2A_AUTH_SESSION_PARAM_KEY] == "authenticated-session"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload

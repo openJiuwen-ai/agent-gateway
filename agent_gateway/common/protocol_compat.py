@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from enum import Enum
 
 from e2a.message import EventType, ReqMethod
+
+logger = logging.getLogger(__name__)
 
 GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("MODE_SET", "mode.set"),
@@ -25,6 +28,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections"),
     ("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove"),
     ("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare"),
+    ("JIUWENMATE_CHANNEL_CONFIG_SYNC", "jiuwenmate.channel_config.sync"),
     ("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack"),
     ("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack"),
     ("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response"),
@@ -87,6 +91,7 @@ GATEWAY_REQ_METHODS: tuple[tuple[str, str], ...] = (
     ("WORKSPACE_PREVIEW", "workspace.preview"),
     ("WORKSPACE_USAGE", "workspace.usage"),
     ("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete"),
+    ("WORKSPACE_DOWNLOAD", "workspace.download"),
     ("CLIENT_ATTACH", "client.attach"),
     ("CLIENT_RENEW", "client.renew"),
     ("CLIENT_LIST", "client.list"),
@@ -125,6 +130,9 @@ EXTENSION_REQ_METHODS: tuple[tuple[str, str], ...] = (
 MAX_DYNAMIC_REQ_METHODS = 64
 
 _dynamic_req_methods: set[str] = set()
+
+#: 配额打满只告警一次，避免被未知方法请求刷爆日志。
+_quota_warned = False
 
 
 def ensure_protocol_member(enum_cls: type[Enum], name: str, value: str) -> None:
@@ -166,12 +174,21 @@ def ensure_req_method(value: str) -> ReqMethod | None:
     或动态成员已达 ``MAX_DYNAMIC_REQ_METHODS`` 时返回 ``None``，调用方保持
     未知方法语义。
     """
+    global _quota_warned  # pylint: disable=global-statement
+
     if not isinstance(value, str) or not value or len(value) > 128:
         return None
     for item in ReqMethod:
         if item.value == value:
             return item
     if len(_dynamic_req_methods) >= MAX_DYNAMIC_REQ_METHODS:
+        if not _quota_warned:
+            _quota_warned = True
+            logger.warning(
+                "dynamic ReqMethod registry is full (limit=%d); method %r will be treated as unknown",
+                MAX_DYNAMIC_REQ_METHODS,
+                value,
+            )
         return None
     base = re.sub(r"[^0-9A-Za-z]+", "_", value).strip("_").upper()
     if not base:

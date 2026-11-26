@@ -3,14 +3,17 @@
 """Gateway Web HTTP mapped-route table (settings + workspace modules).
 
 Each row is the contract: HTTP verb+path → WebChannel ``register_method`` name.
-Handlers stay transport-agnostic; this module has no FastAPI / Gateway imports
-so it can be unit-tested and used as the OpenAPI/catalog source of truth.
+Handlers stay transport-agnostic; this module imports only a pure-data constant
+from ``agent_gateway.common`` and no FastAPI / runtime Gateway modules, so it
+can be unit-tested and used as the OpenAPI/catalog source of truth.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
+
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 
 
 @dataclass(frozen=True)
@@ -660,6 +663,12 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "POST", "/skills/actions/import-upload", "skills.import_upload",
+        "skills", "上传 .zip 技能包并安装",
+        accept_body=True,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "POST", "/skills/actions/upload-stage", "skills.upload.stage",
         "skills", "企业版：暂存上传包并返回签名描述符",
         accept_body=True,
@@ -890,7 +899,9 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "GET", "/workspace/usage", "workspace.usage", "workspace",
-        "查询本人工作区用量与配额状态", query_keys=_TENANT_QUERY,
+        "查询本人工作区用量与配额状态",
+        query_keys=("session_id", "force_refresh") + _TENANT_QUERY,
+        bind_session_param=True,
     ),
     WebHttpMappedRoute(
         "DELETE", "/workspace/entries", "workspace.entries.delete", "workspace",
@@ -902,6 +913,8 @@ WORKSPACE_FILE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         "预览文件正文（二进制 content=null；目录 400）",
         query_keys=("relative_path", "max_bytes") + _TENANT_QUERY,
     ),
+    # workspace.download 成功返回文件流，不能走 mapped 一元 JSON；
+    # 见 agent_gateway.channel_manager.web.http_routes.workspace 的专用挂载。
 )
 
 # Connector marketplace (enterprise HTTP northbound; aligns with pod_rest_map).
@@ -1076,25 +1089,13 @@ MAPPED_ROUTES: tuple[WebHttpMappedRoute, ...] = (
 )
 
 
-# 个人版已有 team.list / team.delete 等旧方法。这 7 个是企业控制面新增协议。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
-
 def mapped_routes_for_edition(*, enterprise: bool) -> tuple[WebHttpMappedRoute, ...]:
     routes = MAPPED_ROUTES
     if not enterprise:
         return tuple(
             route
             for route in routes
-            if route.rpc_method not in _ENTERPRISE_TEAM_CONTROL_METHODS
+            if route.rpc_method not in ENTERPRISE_TEAM_CONTROL_METHODS
         )
     from agent_gateway.enterprise.capabilities.experts.http_routes import northbound_routes
 

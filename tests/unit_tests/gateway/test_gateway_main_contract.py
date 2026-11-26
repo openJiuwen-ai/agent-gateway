@@ -54,6 +54,7 @@ class _RunCall:
     web_port: int
     web_path: str
     web_ws_deflate: bool
+    required_client_type: str | tuple[str, ...] | None = None
 
 
 def _isolated_python_env(tmp_path: Path) -> dict[str, str]:
@@ -106,7 +107,7 @@ def _patch_main_boundaries(
     from agent_gateway.routing import mcp_remote, session_metadata_remote
 
     monkeypatch.setenv("WEB_WS_PERMESSAGE_DEFLATE", "0")
-    monkeypatch.setattr(app_gateway, "get_infra_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(app_gateway, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(app_gateway, "_run_with_shutdown_signals", run)
     monkeypatch.setattr(app_gateway, "install_crash_exit_handler", Mock())
     monkeypatch.setattr(app_gateway, "install_async_dump_handler", Mock())
@@ -114,9 +115,11 @@ def _patch_main_boundaries(
     monkeypatch.setattr(mcp_remote, "install", Mock())
 
 
+@pytest.mark.parametrize("require_adx_router", [False, True])
 def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    require_adx_router: bool,
 ) -> None:
     from agent_gateway import app_gateway
 
@@ -129,6 +132,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        required_client_type: str | tuple[str, ...] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -137,6 +141,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=required_client_type,
             )
         )
 
@@ -154,6 +159,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
             "19001",
             "--web-path",
             "/gateway-ws",
+            *(["--require-adx-router"] if require_adx_router else []),
         ],
     )
     monkeypatch.setenv("AGENT_SERVER_URL", "ws://ignored:1")
@@ -170,6 +176,7 @@ def test_main_passes_explicit_cli_options_and_releases_workspace_lock(
             web_port=19001,
             web_path="/gateway-ws",
             web_ws_deflate=False,
+            required_client_type=("agentos_router", "adx_router") if require_adx_router else None,
         )
     ]
     _assert_lock_is_released(tmp_path)
@@ -190,6 +197,7 @@ def test_main_passes_environment_defaults_and_releases_workspace_lock(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        required_client_type: str | tuple[str, ...] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -198,6 +206,7 @@ def test_main_passes_environment_defaults_and_releases_workspace_lock(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=required_client_type,
             )
         )
 
@@ -237,6 +246,7 @@ def test_main_uses_fallback_defaults_when_environment_is_absent(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        required_client_type: str | tuple[str, ...] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -245,6 +255,7 @@ def test_main_uses_fallback_defaults_when_environment_is_absent(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=required_client_type,
             )
         )
 
@@ -290,6 +301,7 @@ def test_main_releases_workspace_lock_when_startup_fails(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        required_client_type: str | tuple[str, ...] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -298,6 +310,7 @@ def test_main_releases_workspace_lock_when_startup_fails(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=required_client_type,
             )
         )
         raise RuntimeError("startup failed")
@@ -336,6 +349,7 @@ def test_main_rejects_a_lock_held_by_another_process_without_releasing_it(
         web_port: int,
         web_path: str,
         web_ws_deflate: bool,
+        required_client_type: str | tuple[str, ...] | None = None,
     ) -> None:
         calls.append(
             _RunCall(
@@ -344,6 +358,7 @@ def test_main_rejects_a_lock_held_by_another_process_without_releasing_it(
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=required_client_type,
             )
         )
         pytest.fail("a second Gateway must not start while another process holds the lock")

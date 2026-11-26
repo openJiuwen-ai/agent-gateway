@@ -489,6 +489,32 @@ async def test_send_request_fails_pending_request_when_receiver_stops():
 
 
 @pytest.mark.asyncio
+async def test_unary_cancellation_releases_request_queue_without_resending():
+    """Characterize local cancellation before extracting the data plane."""
+    client = AgentClientHarness()
+    ws = FakeWebSocket()
+    client.set_ws_for_test(ws)
+    envelope = e2a_from_agent_fields(
+        request_id="rid-cancel", channel_id="acp", session_id="sess-cancel",
+        params={"content": "hello"}, is_stream=False,
+    )
+    task = asyncio.create_task(client.send_request(envelope))
+    try:
+        async with asyncio.timeout(_OUTER_WAIT_TIMEOUT):
+            while not ws.sent_payloads:
+                await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not client.has_message_queue_for_test("rid-cancel")
+        assert len(ws.sent_payloads) == 1
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_send_request_reconnects_before_new_request_after_disconnect():
     client = ReconnectingAgentClientHarness()
     client.set_uri_for_test("ws://agent-server")

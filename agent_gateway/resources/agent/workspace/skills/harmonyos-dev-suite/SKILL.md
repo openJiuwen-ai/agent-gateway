@@ -45,7 +45,7 @@ Example local install:
 ```bash
 python agent_gateway/resources/agent/workspace/skills/harmonyos-dev-suite/scripts/install_atomic_skill.py \
   --source /path/to/harmonyos-agent-skills \
-  --target ~/.jiuwenswarm/domain/agent/workspace/skills \
+  --target ~/.jiuwenswarm/profile/agent/workspace/skills \
   --skill hmos-arkui-develop-skill
 ```
 

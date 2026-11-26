@@ -16,6 +16,7 @@ def test_agentos_template_is_gateway_only_plus_deploy_handoff_keys() -> None:
     b2_owned = {
         "heartbeat", "mcp", "permissions", "experimental", "recommendation",
         "endpoint_profile_overrides", "rsi", "trajectory_ui",
+        "config_version", "health_check", "redis", "session_cleanup",
     }
     # AgentOS 模板保持 Gateway-only，AS/B3 段不进入渲染模板。
     assert set(AGENTOS) == (set(BASE) - b2_owned - {"react", "memory"}) | {"code_graph", "sandbox"}
@@ -45,6 +46,25 @@ def test_agentos_template_has_agentos_overrides() -> None:
     assert AGENTOS["channels"]["web_proxy"]["enabled"] is True
     assert "code_graph" in AGENTOS
     assert "sandbox" in AGENTOS
+
+
+def test_gateway_base_keeps_shared_extension_roots() -> None:
+    extensions = BASE["extensions"]
+    assert extensions["install_dir"] == "${EXTENSION_INSTALL_DIR:-extension_pkgs}"
+    assert extensions["data_dir"] == "${EXTENSION_DATA_DIR:-extension}"
+    assert extensions["install_report"] == {
+        "poll_interval_ms": 500,
+        "dependency_timeout_seconds": 300,
+        "lock_timeout_seconds": 5,
+    }
+
+
+def test_agentos_template_stays_a_subset_of_yuanrong_source() -> None:
+    extensions = AGENTOS["extensions"]
+    assert "extension_dirs" in extensions
+    assert "install_dir" not in extensions
+    assert "data_dir" not in extensions
+    assert "install_report" not in extensions
 
 
 def test_agentos_template_hooks_start_from_base_template() -> None:
@@ -105,7 +125,8 @@ def test_gateway_templates_drop_mcp_and_heartbeat() -> None:
 
 def test_gateway_templates_drop_as_only_channel_keys() -> None:
     for template in (BASE, AGENTOS):
-        for app in template["channels"]["xiaoyi"]["apps"]:
+        assert "phone_tools_enabled" not in template["channels"]["xiaoyi"]
+        for app in template["channels"]["xiaoyi"].get("apps", []):
             assert "phone_tools_enabled" not in app
 
 
@@ -160,10 +181,9 @@ def test_gateway_templates_drop_as_only_modes_runtime_keys() -> None:
 
 
 def test_gateway_modes_keep_only_gateway_owned_keys() -> None:
-    for template in (BASE, AGENTOS):
-        team = template["modes"]["team"]["jiuwen_team"]
-        assert set(team) == {
-            "enable_swarmflow",
-            "external_cli_agents",
-            "external_transport",
-        }
+    assert set(BASE["modes"]["team"]["jiuwen_team"]) == {
+        "enable_swarmflow",
+        "external_cli_agents",
+        "external_transport",
+    }
+    assert set(AGENTOS["modes"]["team"]["jiuwen_team"]) == {"enable_swarmflow"}

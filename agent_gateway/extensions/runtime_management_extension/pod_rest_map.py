@@ -31,6 +31,9 @@ _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("media.persist", "POST", "/sessions/{session_id}/media"),
     ("media.discard", "DELETE", "/sessions/{session_id}/media"),
+    ("session.assets.list", "GET", "/sessions/{session_id}/assets"),
+    ("session.assets.register", "POST", "/sessions/{session_id}/assets"),
+    ("session.assets.rename", "PATCH", "/sessions/{session_id}/assets/{asset_id}"),
     ("document.persist", "POST", "/sessions/{session_id}/documents"),
     ("document.formats", "GET", "/documents/formats"),
     ("file.import_url", "POST", "/sessions/{session_id}/files/import"),
@@ -147,6 +150,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("skills.marketplace.toggle", "POST", "/skills/marketplace/{name}/actions/toggle"),
     ("skills.install", "POST", "/skills/install"),
     ("skills.import_local", "POST", "/skills/import-local"),
+    ("skills.import_upload", "POST", "/skills/actions/import-upload"),
     ("skills.online.search", "POST", "/skills/online-search"),
     ("skills.online_search.search", "POST", "/skills/online-search"),
     ("skills.retrieval.status", "GET", "/skills/retrieval/status"),
@@ -331,7 +335,7 @@ class RestAssemblyError(ValueError):
     """REST 路径无法从信封拼出（缺 method / 缺路径占位符）。"""
 
 
-class HttpMethodNotHandled(RestAssemblyError):
+class HttpMethodNotHandled(Exception):
     """这个方法没有专用 HTTP 网址，Gateway 不再改走 /rpc。"""
 
 
@@ -369,17 +373,29 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
+    新建 ``X-Cron-Targets`` 和 ``X-Cron-Meta`` 头：
+    - ``channel_context.targets`` → ``X-Cron-Targets`` → ``metadata["targets"]``
+    - ``channel_context.cron`` → ``X-Cron-Meta`` → ``metadata["cron"]``
+
     企业版另附 ``X-Jiuwenswarm-Package-Allowlist``。值来自发送前读到的库行，
     不采用 ``channel_context`` 里客户端自带的名单。
 
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
+
+    平台展示身份 ``channel_context.agent_identity`` 中只透传 ``agent_id`` /
+    ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` / ``X-Agent-Template-Id``；
+    ``agent_name`` 仅保留在 metadata，供 Gateway 本地展示/技能上传判定使用，不进入
+    AgentServer 的 HTTP 头（避免非 ASCII/控制字符导致请求失败）。
     """
     from agent_gateway.common.request_ext import (
         INTERNAL_HEADER_NAME,
         METADATA_KEY,
         encode_internal_header,
     )
-    from agent_gateway.common.request_identity import web_routing_identity
+    from agent_gateway.common.request_identity import (
+        read_agent_identity,
+        web_routing_identity,
+    )
 
     headers = {
         "X-Request-Id": str(envelope.request_id or ""),
@@ -415,6 +431,29 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    cron_targets = str(channel_context.get("targets") or "").strip()
+    if cron_targets:
+        headers["X-Cron-Targets"] = cron_targets
+    cron_meta = channel_context.get("cron")
+    if isinstance(cron_meta, dict) and cron_meta:
+        headers["X-Cron-Meta"] = json.dumps(
+            cron_meta, ensure_ascii=True, separators=(",", ":"),
+        )
+    # 展示身份只透传可用于跨进程的 id / 模板 id，且仅企业版透传：个人版
+    # 请求即使 channel_context 携带 agent_identity 也不下发。``X-Agent-Id``
+    # 已被路由层 Agent id 占用，展示 id 改用 ``X-Agent-Identity-Id``。
+    # ``agent_name`` 是人类可读展示名，可能含非 ASCII/控制字符，只保留在
+    # metadata，不进入 HTTP 头。
+    if is_enterprise():
+        display_identity = read_agent_identity(channel_context)
+        for field, header_name in (
+            ("agent_id", "X-Agent-Identity-Id"),
+            ("runtime_template_id", "X-Runtime-Template-Id"),
+            ("agent_template_id", "X-Agent-Template-Id"),
+        ):
+            value = display_identity.get(field)
+            if value:
+                headers[header_name] = value
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
@@ -461,15 +500,12 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
         return "POST", path
     if method == "history.get" and is_stream:
         return "GET", "/sessions/{session_id}/history/stream"
-    if method in TEAM_CONTROL_METHODS and not is_enterprise():
+    found = None
+    if method not in TEAM_CONTROL_METHODS or is_enterprise():
+        found = REST_ROUTES.get(method) or _enterprise_pod_route(method)
+    if found is None:
         raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
-    found = REST_ROUTES.get(method)
-    if found is not None:
-        return found[0], found[1]
-    extra = _enterprise_pod_route(method)
-    if extra is not None:
-        return extra
-    raise HttpMethodNotHandled(f"这个方法还没有 HTTP 处理: {method}")
+    return found
 
 
 def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
@@ -483,6 +519,22 @@ def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
     return pod_http_routes().get(method)
 
 
+_PATH_SEGMENT_NON_SCALAR = (list, tuple, dict, set)
+
+
+def _normalize_path_segment(key: str, value: Any) -> str:
+    """路径占位符只接受标量；拒绝 list/dict 等，避免 ``[]`` 被编成 ``%5B%5D``（#169）。"""
+    if isinstance(value, _PATH_SEGMENT_NON_SCALAR) or isinstance(value, bool):
+        raise RestAssemblyError(
+            f"REST 路径占位符 '{key}' 类型非法: {type(value).__name__}"
+        )
+    raw = value if isinstance(value, str) else str(value)
+    if raw in (".", "..") or "/" in raw or "\\" in raw:
+        # 与 AgentServer ``_safe_path_name`` 对齐；含分隔符会破坏单段路径。
+        raise RestAssemblyError(f"REST 路径占位符 '{key}' 含非法路径片段: {raw!r}")
+    return raw
+
+
 def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]:
     used: set[str] = set()
     missing: list[str] = []
@@ -492,8 +544,9 @@ def _fill_path(template: str, values: Mapping[str, Any]) -> tuple[str, set[str]]
         if key not in values or values[key] is None or values[key] == "":
             missing.append(key)
             return match.group(0)
+        raw = _normalize_path_segment(key, values[key])
         used.add(key)
-        return quote(str(values[key]), safe="")
+        return quote(raw, safe="")
 
     filled = _PATH_PLACEHOLDER.sub(_replace, template)
     if missing:

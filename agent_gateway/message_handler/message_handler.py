@@ -332,11 +332,40 @@ class ModeChangeCancelParams:
 
 
 if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess
+    from agent_gateway.auth.session_login_bindings import SessionLoginBindings
     from e2a.agent_models import AgentResponse, AgentResponseChunk
     from e2a.models import E2AEnvelope
     from e2a.message import Message
 
     from agent_gateway.routing.agent_client import AgentServerClient
+
+
+def _queue_maxsize_from_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    if value <= 0:
+        logger.warning(
+            "[MessageHandler] %s=%s is invalid; using default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+# Bounded by default. A full user queue is surfaced as "busy" on the Web
+# channel; robot_messages applies backpressure to the dispatch loop.
+_USER_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_USER_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
+_ROBOT_MESSAGE_QUEUE_MAXSIZE = _queue_maxsize_from_env(
+    "GATEWAY_ROBOT_MESSAGE_QUEUE_MAXSIZE", 1000,
+)
 
 
 # ---------- 双队列实现：入队经 AgentServerClient 发往 AgentServer ----------
@@ -351,8 +380,10 @@ class MessageHandler(ABC):
     （``jiuwenswarm.e2a.wire_codec``）解析并还原为 ``AgentResponse`` / ``AgentResponseChunk``，
     本类仍通过 ``_response_to_message`` / ``_chunk_to_message`` 转为 ``Message`` 供 Channel 消费。
 
-    单例模式：全局仅存在一个 MessageHandler 实例，可通过 MessageHandler(client) 或
-    MessageHandler.get_instance(client) 获取。
+    单例模式：全局仅存在一个 MessageHandler 实例，可通过
+    MessageHandler(client, session_login_bindings=...) 或 MessageHandler.get_instance(
+        client, session_login_bindings=...
+    ) 获取。
     """
 
     _instance: "MessageHandler | None" = None
@@ -362,7 +393,12 @@ class MessageHandler(ABC):
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, agent_client: "AgentServerClient") -> None:
+    def __init__(
+        self,
+        agent_client: "AgentServerClient",
+        *,
+        session_login_bindings: "SessionLoginBindings",
+    ) -> None:
         if getattr(self, "_singleton_initialized", False):
             return
         self._singleton_initialized = True
@@ -375,10 +411,17 @@ class MessageHandler(ABC):
         self.on_recommendation_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         # Chat requests that ended here before AgentServer answered: request_id -> session_id.
         self._awaiting_host_completion: dict[str, str] = {}
-        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
-        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
+        self._user_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_USER_MESSAGE_QUEUE_MAXSIZE,
+        )
+        self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue(
+            maxsize=_ROBOT_MESSAGE_QUEUE_MAXSIZE,
+        )
         self._running = False
+        self._credential_access: CredentialAccess | None = None
+        self._session_login_bindings = session_login_bindings
         self._forward_task: asyncio.Task | None = None
+        self._deferred_put_tasks: set[asyncio.Task] = set()
         self._scheduler_stream_ids: set[str] = set()
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
@@ -515,10 +558,28 @@ class MessageHandler(ABC):
         self._result_delivery_handler = handler
 
     async def _resolve_response_language(self, msg: Any) -> str | None:
-        """Read preferred language from the routed AgentServer via E2A.
+        """Resolve preferred language for review prompts.
 
-        The local config remains a fallback for no-client/legacy deployments.
+        企业：Gateway DB 用户习惯表（按消息 ``user_id``）。
+        个人：经 E2A 读 AgentServer；失败时回退本地 config。
         """
+        from agent_gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            try:
+                from agent_gateway.config.user_preference import get_user_preference_service
+
+                language = await get_user_preference_service().get_language(
+                    getattr(msg, "user_id", None)
+                )
+                return language if language in {"zh", "en"} else None
+            except Exception as exc:  # noqa: BLE001 - prompt falls back to local config
+                logger.warning(
+                    "[MessageHandler] enterprise preferred_language resolve failed: %s",
+                    exc,
+                )
+                return None
+
         try:
             from e2a.gateway_normalize import e2a_from_agent_fields
             from e2a.message import ReqMethod
@@ -806,19 +867,26 @@ class MessageHandler(ABC):
             )
 
     @classmethod
-    def get_instance(cls, agent_client: "AgentServerClient | None" = None) -> "MessageHandler":
+    def get_instance(
+        cls,
+        agent_client: "AgentServerClient | None" = None,
+        *,
+        session_login_bindings: "SessionLoginBindings | None" = None,
+    ) -> "MessageHandler":
         """获取单例实例。
 
         - 若实例已存在：可直接调用 get_instance() 或 get_instance(None)，无需传入 client。
-        - 若尚未创建：需传入 agent_client，即 get_instance(client) 或 MessageHandler(client)。
+        - 若尚未创建：需同时传入 agent_client 和 session_login_bindings。
         """
         if cls._instance is not None:
             return cls._instance
         if agent_client is None:
             raise RuntimeError(
-                "MessageHandler 尚未初始化，请先使用 MessageHandler(client) 或 get_instance(client) 创建"
+                "MessageHandler 尚未初始化，请先使用 MessageHandler(client, session_login_bindings=...) 创建"
             )
-        return cls(agent_client)
+        if session_login_bindings is None:
+            raise TypeError("get_instance() missing required keyword-only argument: 'session_login_bindings'")
+        return cls(agent_client, session_login_bindings=session_login_bindings)
 
     @classmethod
     def try_get_instance(cls) -> "MessageHandler | None":
@@ -881,7 +949,7 @@ class MessageHandler(ABC):
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        await self._user_messages.put(msg)
         logger.debug(
             "[MessageHandler] _user_messages 入队: id=%s channel_id=%s session_id=%s",
             msg.id, msg.channel_id, msg.session_id,
@@ -3028,6 +3096,10 @@ class MessageHandler(ABC):
 
     # ---------- user_messages ----------
 
+    def is_user_queue_full(self) -> bool:
+        """Return whether the inbound message queue has reached its limit."""
+        return self._user_messages.full()
+
     async def publish_user_messages(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（异步）."""
         queue_request_trace(msg)
@@ -3041,12 +3113,62 @@ class MessageHandler(ABC):
             raise RuntimeError("runtime wake host is not forwarding")
         await self.publish_user_messages(msg)
 
+    def _defer_queue_put(
+        self,
+        queue: asyncio.Queue["Message"],
+        msg: "Message",
+        *,
+        kind: str,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        async def _put() -> None:
+            await queue.put(msg)
+
+        task = asyncio.create_task(
+            _put(),
+            name=f"agentos-{kind}-deferred-{getattr(msg, 'id', '')}",
+        )
+        tasks = getattr(self, "_deferred_put_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._deferred_put_tasks = tasks
+        tasks.add(task)
+
+        def _done(done: asyncio.Task) -> None:
+            tasks.discard(done)
+            if done.cancelled() and on_cancel is not None:
+                try:
+                    on_cancel()
+                except Exception:  # noqa: BLE001 - trace cleanup is best-effort
+                    logger.debug(
+                        "[MessageHandler] deferred put trace cleanup failed",
+                        exc_info=True,
+                    )
+
+        task.add_done_callback(_done)
+
     def publish_user_messages_nowait(self, msg: "Message") -> None:
-        """将消息放入 user_messages 队列（同步）."""
+        """将消息放入 user_messages 队列（同步）.
+
+        队列有界后不能再假定 put_nowait 必然成功。满了就转入后台 put，
+        保留消息并形成背压，避免在同步调用点抛出 QueueFull。
+        """
         queue_request_trace(msg)
         if getattr(self, "_trace_request_stopped", False):
             release_message_trace(msg, requests=True)
-        self._user_messages.put_nowait(msg)
+        try:
+            self._user_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] user queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._user_messages,
+                msg,
+                kind="inbound",
+                on_cancel=lambda: release_message_trace(msg, requests=True),
+            )
 
     async def consume_user_messages(self, timeout: float | None = None) -> "Message | None":
         """消费一条 user_messages；timeout 为 None 则阻塞，否则超时返回 None."""
@@ -3187,7 +3309,54 @@ class MessageHandler(ABC):
             await web_channel.broadcast_event("models.updated", {})
             logger.info("[MessageHandler] broadcasted models.updated")
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[MessageHandler] broadcast models.updated failed: %s", exc)
+            # 与 _broadcast_push_terminated 一致：models.updated 是前端刷新可用
+            # 模型列表的唯一通道，失败须在生产 INFO 级日志可查。
+            logger.warning("[MessageHandler] broadcast models.updated failed: %s", exc)
+
+    async def _broadcast_push_terminated(self, payload: dict[str, Any]) -> None:
+        """把 ``gateway.push_terminated`` 推送给所有 Web 连接。
+
+        来源：``HttpSseAgentServerClient._push_loop`` 在 events/stream 连续失败
+        达到 ``_PUSH_MAX_CONNECT_FAILURES`` 次后，停止推送循环前合成的 frame
+        （issue #115 现象 1）。
+
+        **事件性质与前端契约**：这是 **pod 级** 事件——只表示 gateway 失去对
+        某个 agentserver pod 的 push 订阅（载荷 ``affected_scope="pod"``，
+        ``api_root`` 标识具体 pod），不代表整个 gateway 不可用。受影响会话的
+        后续 server_push 可能延迟或丢失，但前端→gateway 的 WS 仍然健康。
+
+        因此前端收到此事件后 **应当只显示提示**（"推送通道暂时不可用，新消息
+        可能延迟"），**不得无条件重建 SSE/WS**——否则单个 pod 故障会引发所有
+        不相关会话的连接抖动，且 reconnect 不会触发 gateway 重新订阅 pod 的
+        push 通道（gateway 自身的 _push_loop 退避重连逻辑会处理）。
+
+        广播范围：载荷是 pod 级的，但当前实现仍广播给所有 Web 连接，因为
+        前端按 ``api_root`` 过滤的成本高于直接广播（连接数有限），事件本身
+        的处理成本（显示一条 toast）也极低。若未来 Web 连接数显著增长或
+        pod 数量增加，可在 payload 补 ``affected_sessions`` 列表做精确路由。
+        """
+        web_channel = self._resolve_web_channel()
+        if web_channel is None:
+            return
+        try:
+            await web_channel.broadcast_event("gateway.push_terminated", payload)
+            logger.info(
+                "[MessageHandler] broadcasted gateway.push_terminated: reason=%s api_root=%s",
+                payload.get("reason"),
+                payload.get("api_root"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # gateway.push_terminated 是通知前端「推送已永久终止」的唯一通道；
+            # 失败时若只 DEBUG 级记录，生产 INFO 日志下无任何痕迹，前端会
+            # 静默挂等在已断开的 SSE 上（issue #115 现象 1 原样重现）。故提
+            # 升到 WARNING 并带异常信息，便于排查。
+            #
+            # 广播失败不能向上抛——_handle_agent_server_push_ordered 调用方
+            # （_push_loop / RuntimeRoutedAgentClient._handle_pod_push）不期望
+            # 一条通知帧的转发失败把推送通道整条链路炸掉。
+            logger.warning(
+                "[MessageHandler] broadcast gateway.push_terminated failed: %s", exc
+            )
 
     def _resolve_web_channel(self) -> Any:
         """从 ChannelManager 取 web channel 实例（广播用）；取不到返回 None。"""
@@ -3253,6 +3422,17 @@ class MessageHandler(ABC):
             release_message_trace(msg)
         try:
             self._robot_messages.put_nowait(msg)
+        except asyncio.QueueFull:
+            logger.warning(
+                "[MessageHandler] robot queue full, deferring nowait publish: id=%s",
+                getattr(msg, "id", ""),
+            )
+            self._defer_queue_put(
+                self._robot_messages,
+                msg,
+                kind="robot",
+                on_cancel=lambda: release_response_trace(msg, reason="queue_failed"),
+            )
         except BaseException:
             release_response_trace(msg, reason="queue_failed")
             raise
@@ -3739,6 +3919,10 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
+    def set_credential_access(self, credential_access: CredentialAccess) -> None:
+        """Bind the local credential port before forwarding starts."""
+        self._credential_access = credential_access
+
     async def _handle_login_credential_refresh_push(self, chunk: Any) -> bool:
         """AgentServer 请求给在用的登录模型凭据续期。是这类消息返回 ``True``。
 
@@ -3754,7 +3938,12 @@ class MessageHandler(ABC):
 
         credential_ref = str(payload.get("credential_ref") or "")
         try:
-            update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
+            access = getattr(self, '_credential_access', None)
+            if access is None:
+                update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
+            else:
+                result = await access.credential_update_for_ref(credential_ref)
+                update = result.to_params() if result is not None else None
         except Exception:  # noqa: BLE001 — 续期失败不能影响 push 通道上的其他消息
             logger.warning("[MessageHandler] 登录凭据续期失败", exc_info=True)
             return True
@@ -3848,6 +4037,15 @@ class MessageHandler(ABC):
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "gateway.push_terminated":
+            # ``HttpSseAgentServerClient._push_loop`` synthesises this frame
+            # right before it gives up on an agentserver pod (issue #115
+            # 现象 1): without it, the frontend SSE stays attached to a
+            # gateway that has no source to push, so the user must refresh
+            # manually. Broadcast it so the web client can show a reconnect
+            # prompt / rebuild the SSE.
+            await self._broadcast_push_terminated(chunk.payload)
             return
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == EVENT:
             await handle_checkpoint_push(self.agent_client, chunk, session_id)
@@ -4342,6 +4540,11 @@ class MessageHandler(ABC):
                         # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
                         if str(params.get(key) or "").strip() in {"", "default"}:
                             params.pop(key, None)
+                # create 刚把写库身份硬覆盖成 chat routing；顶部 tenant_* 仍是
+                # override=False 时的旧快照（可能含 LLM 注入租户）。回写后再发 ACK，
+                # 保证「落库租户」与「ACK 声明租户」一致。
+                tenant_group_id = str(params.get("group_id") or "")
+                tenant_bot_id = str(params.get("bot_id") or "")
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
@@ -4422,6 +4625,8 @@ class MessageHandler(ABC):
                     run_id=str(data.get("run_id") or ""),
                     user_id=owner_user_id or None,
                     session_id=session_id,
+                    group_id=tenant_group_id or None,
+                    bot_id=tenant_bot_id or None,
                 )
             else:
                 data = {"error": f"unknown cron action: {action}"}
@@ -4434,6 +4639,8 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
                 session_id=session_id,
+                group_id=tenant_group_id or None,
+                bot_id=tenant_bot_id or None,
             )
 
         if not channel_id:
@@ -4459,6 +4666,34 @@ class MessageHandler(ABC):
         )
         await self.publish_robot_messages(out)
 
+    @staticmethod
+    def _cron_ack_route_metadata(
+        *,
+        user_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """ACK 必须带对话租户，否则企业版 identity_from_envelope 会 FORBIDDEN。
+
+        develop 已补 session_id（粘 Pod）；企业版还要求真实 group/bot，
+        不能退回 ``default``。个人版缺省时仍可由 Runtime 填 default。
+        """
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
+        uid = str(user_id or "").strip()
+        gid = str(group_id or "").strip()
+        bid = str(bot_id or "").strip()
+        if not (uid or gid or bid):
+            return None
+        routing: dict[str, str] = {}
+        if uid:
+            routing["user_id"] = uid
+        if gid:
+            routing["group_id"] = gid
+        if bid:
+            routing["bot_id"] = bid
+        return apply_routing_metadata({}, routing)
+
     async def _push_cron_command_ack(
         self,
         *,
@@ -4466,6 +4701,8 @@ class MessageHandler(ABC):
         data: Any,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
@@ -4478,6 +4715,9 @@ class MessageHandler(ABC):
                 params={"command_id": command_id, "data": data},
                 is_stream=False, timestamp=time.time(), user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client, env, label="cron.command.ack"
@@ -4493,6 +4733,8 @@ class MessageHandler(ABC):
         run_id: str,
         user_id: str | None = None,
         session_id: str | None = None,
+        group_id: str | None = None,
+        bot_id: str | None = None,
     ) -> None:
         """把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer（P2）。
 
@@ -4518,6 +4760,9 @@ class MessageHandler(ABC):
                 timestamp=time.time(),
                 user_id=user_id,
                 session_id=session_id,
+                metadata=self._cron_ack_route_metadata(
+                    user_id=user_id, group_id=group_id, bot_id=bot_id,
+                ),
             )
             await send_agent_request_with_timeout(
                 self.agent_client,
@@ -4867,7 +5112,10 @@ class MessageHandler(ABC):
             request_id=msg.id,
             channel_id=msg.channel_id,
             session_id=msg.session_id,
-            req_method=msg.req_method.value if msg.req_method is not None else None,
+            req_method=(
+                getattr(msg.req_method, "value", msg.req_method)
+                if msg.req_method is not None else None
+            ),
             params=params,
         )
         from agent_gateway.extensions.registry import ExtensionRegistry
@@ -5230,9 +5478,7 @@ class MessageHandler(ABC):
         if isinstance(auth, dict):
             # 凭据是 Gateway 按登录会话挂的：记下会话主人
             try:
-                from agent_gateway.auth import session_owners
-
-                session_owners.remember(
+                await self._session_login_bindings.remember(
                     session_id,
                     str(auth.get("credential_ref") or ""),
                     str(params.get("model_name") or ""),
@@ -5244,10 +5490,9 @@ class MessageHandler(ABC):
             return
 
         try:
-            from agent_gateway.auth import session_owners
             from agent_gateway.auth.login_credentials import bare_model_name
 
-            owner = session_owners.lookup(session_id)
+            owner = await self._session_login_bindings.lookup(session_id)
             effective_model = await self._effective_session_model(
                 session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
             )
@@ -5259,10 +5504,11 @@ class MessageHandler(ABC):
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
-            auth = await asyncio.wait_for(
-                asyncio.to_thread(session_owners.login_auth_for_owner, owner),
+            value = await asyncio.wait_for(
+                self._session_login_bindings.model_auth_for_binding(owner),
                 timeout=_SESSION_OWNER_AUTH_WAIT_S,
             )
+            auth = value.to_params() if value is not None else None
         except asyncio.TimeoutError:
             logger.warning("[MessageHandler] 取会话主人的登录凭据超时 session=%s", session_id)
             params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_RETRY
@@ -6985,6 +7231,13 @@ class MessageHandler(ABC):
             except asyncio.CancelledError:
                 pass
             self._forward_task = None
+
+        deferred = list(self._deferred_put_tasks)
+        for task in deferred:
+            task.cancel()
+        if deferred:
+            await asyncio.gather(*deferred, return_exceptions=True)
+        self._deferred_put_tasks.clear()
 
         release_queued_message_traces(self._user_messages, requests=True)
         manager = getattr(self, "_channel_manager", None)

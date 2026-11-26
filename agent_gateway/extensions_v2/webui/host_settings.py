@@ -1,9 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Host-owned application settings: splash preferences and host methods (S_10).
+"""Host-owned application settings: splash preferences, the appearance layer order and host methods (S_10).
 
-The splash order is a cross-package setting, so it belongs to the host and not
-to any package store. The host methods are answered by a BUILTIN
+The splash order and the appearance layer order are cross-package settings, so they belong to the
+host and not to any package store. The host methods are answered by a BUILTIN
 ``gateway.request`` handler: USER request policies decide first, so a package
 that requires a login also guards these methods (S_01 section 6).
 """
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 HOST_DIR = "host"
 SPLASH_FILE = "splash.json"
+APPEARANCE_FILE = "appearance.json"
 METHOD_SPLASH_SETTINGS = "webui.splash.settings"
 METHOD_SPLASH_UPDATE = "webui.splash.settings.update"
 METHOD_UPLOAD_BEGIN = "webui.upload.begin"
@@ -47,6 +48,74 @@ def _ids(value: Any) -> list[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         return None
     return value if len(set(value)) == len(value) else None
+
+
+def _replace_json(path: Path, payload: Mapping[str, Any]) -> None:
+    """Replace a host record atomically; raises ``OSError`` and leaves the old file on failure."""
+    directory = path.parent
+    if directory.is_symlink():
+        raise OSError("host settings directory must not be a symlink")
+    directory.mkdir(parents=True, exist_ok=True)
+    temporary = directory / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+class AppearanceOrder:
+    """Install order of application packages: the layer order of appearance parts (S_08 section 5).
+
+    A package is appended when it is first published, so a later install is a higher layer; reloads,
+    upgrades and restarts keep its place, and uninstalling forgets it.
+    """
+
+    def __init__(self, data_dir: Path) -> None:
+        self.path = Path(data_dir) / HOST_DIR / APPEARANCE_FILE
+        self.installed: list[str] = []
+
+    def load(self) -> None:
+        """Read the saved record; an unreadable record counts as empty."""
+        self.installed = []
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            installed = _ids(raw.get("installed")) if isinstance(raw, dict) and raw.get("version") == 1 else None
+            if installed is None:
+                raise ValueError("unexpected appearance order")
+        except (OSError, UnicodeError, ValueError) as exc:
+            logger.warning("[GatewayExtensions] ignore appearance order %s: %s", self.path, exc)
+            return
+        self.installed = installed
+
+    def _save(self) -> None:
+        """Persist the order; a failure is logged and the next change writes it again."""
+        try:
+            _replace_json(self.path, {"version": 1, "installed": self.installed})
+        except OSError as exc:
+            logger.warning("[GatewayExtensions] cannot save appearance order %s: %s", self.path, exc)
+
+    def note_installed(self, package_id: str) -> None:
+        """Append a package the first time it is published."""
+        if package_id not in self.installed:
+            self.installed.append(package_id)
+            self._save()
+
+    def forget(self, package_id: str) -> None:
+        """Drop an uninstalled package."""
+        if package_id in self.installed:
+            self.installed = [item for item in self.installed if item != package_id]
+            self._save()
+
+    def rank(self, package_id: str) -> int:
+        """Layer of a package: higher is above; packages missing from the record lie below all others."""
+        try:
+            return self.installed.index(package_id)
+        except ValueError:
+            return -1
 
 
 class SplashPreferences:
@@ -82,19 +151,7 @@ class SplashPreferences:
 
     def _write(self, installed: list[str], order: list[str] | None, disabled: list[str]) -> None:
         """Replace the saved record atomically; raises ``OSError`` and leaves the old file on failure."""
-        directory = self.path.parent
-        if directory.is_symlink():
-            raise OSError("host settings directory must not be a symlink")
-        directory.mkdir(parents=True, exist_ok=True)
-        temporary = directory / f".{SPLASH_FILE}.{uuid4().hex}.tmp"
-        try:
-            temporary.write_text(json.dumps({
-                "version": 1, "installed": installed, "order": order, "disabled": disabled,
-            }, ensure_ascii=False), encoding="utf-8")
-            os.replace(temporary, self.path)
-        except OSError:
-            temporary.unlink(missing_ok=True)
-            raise
+        _replace_json(self.path, {"version": 1, "installed": installed, "order": order, "disabled": disabled})
 
     def _save(self) -> None:
         """Persist bookkeeping that is not a user choice; a failure is logged and retried by the next write."""

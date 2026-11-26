@@ -32,6 +32,9 @@ from agent_gateway.channel_manager.web.web_http_timeouts import (
     resolve_web_http_sse_timeout,
     resolve_web_http_unary_timeout,
 )
+from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
+    RestAssemblyError,
+)
 
 _HEADER_TO_PARAM = {
     "x-user-id": "user_id",
@@ -197,6 +200,7 @@ def _envelope_from_res(
     status = {
         "BAD_REQUEST": 400,
         "UNAUTHORIZED": 401,
+        "IDENTITY_CONFLICT": 400,
         "FORBIDDEN": 403,
         "NOT_FOUND": 404,
         "METHOD_NOT_FOUND": 404,
@@ -205,6 +209,15 @@ def _envelope_from_res(
         "SERVICE_UNAVAILABLE": 503,
         "WORKSPACE_QUOTA_EXCEEDED": 403,
         "SKILL_UPLOAD_FEATURE_RETIRED": 403,
+        "SKILL_UPLOAD_LOCAL_SKILL_DISABLED": 403,
+        "SKILL_UPLOAD_POLICY_UNAVAILABLE": 503,
+        "SKILL_UPLOAD_UNAUTHORIZED": 401,
+        "SKILL_UPLOAD_FORBIDDEN": 403,
+        "SKILL_INVALID_PACKAGE": 400,
+        "SKILL_UNSAFE_PATH": 400,
+        "SKILL_ALREADY_EXISTS": 409,
+        "SKILL_IMPORT_OVERWRITE_REQUIRED": 409,
+        "SKILL_BUILTIN_READ_ONLY": 403,
         "SKILL_UPLOAD_PACKAGE_INVALID": 400,
         "SKILL_UPLOAD_PACKAGE_TOO_LARGE": 413,
         "SKILL_FILE_TOO_LARGE": 413,
@@ -237,11 +250,13 @@ def register_web_http_api_routes(
     """
     enterprise_mode = is_enterprise() if enterprise is None else bool(enterprise)
     mapped_routes = mapped_routes_for_edition(enterprise=enterprise_mode)
+    from agent_gateway.channel_manager.web.http_routes import register_special_http_routes
     from agent_gateway.channel_manager.web.http_routes.share_jobs import (
         register_share_job_routes,
     )
 
     register_share_job_routes(app)
+    register_special_http_routes(app, channel)
 
     @app.get("/api/v1/health", tags=["health"], summary="探活")
     async def health(request: Request) -> JSONResponse:
@@ -724,19 +739,47 @@ async def _unary(
             bind_session_param=bind_session_param,
             client_host=_request_client_host(request),
         )
-        # Only explicit user-answer callers wait beyond the transport ACK.
         timeout = resolve_web_http_unary_timeout()
-        if method == "chat.user_answer" and wait_for_result:
+        if method == "chat.interrupt":
+            # Interrupt needs its final result after ACK, including authoritative Todos.
+            frame = await outbound.wait_response(
+                req_id, timeout=timeout, result_event="chat.interrupt_result",
+            )
+        elif method == "chat.user_answer" and wait_for_result:
             frame = await outbound.wait_response(
                 req_id, timeout=min(timeout, 120.0), await_user_answer_result=True,
             )
         else:
             frame = await outbound.wait_response(req_id, timeout=timeout)
         body, status = _envelope_from_res(frame, req_id, rpc_method=method)
+        if method == "chat.interrupt":
+            result = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
+            logger.info(
+                "[WebHTTP] interrupt settled request_id=%s session_id=%s success=%s todos=%s code=%s",
+                req_id, _sid, result.get("success"),
+                len(result["todos"]) if isinstance(result.get("todos"), list) else None,
+                frame.get("code"),
+            )
         if created and body.get("ok"):
             status = 201
         return JSONResponse(
             body, status_code=status, headers=_response_headers(req_id, method),
+        )
+    except RestAssemblyError as exc:
+        # 缺路径占位符等入参错误：勿落成 500，与 _envelope_from_res(BAD_REQUEST) 一致。
+        return JSONResponse(
+            {
+                "request_id": req_id,
+                "ok": False,
+                "error": {
+                    "code": "BAD_REQUEST",
+                    "message": str(exc),
+                    "details": {},
+                },
+                "metadata": _web_http_metadata(method),
+            },
+            status_code=400,
+            headers=_response_headers(req_id, method),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)

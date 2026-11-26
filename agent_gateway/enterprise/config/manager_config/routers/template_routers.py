@@ -15,11 +15,13 @@ from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateSe
 from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
 from ..core.template.embedding_template import EmbeddingTemplateService
+from ..core.template.execution_guard_template import ExecutionGuardTemplateService
 from ..core.template.expert_package_template import ExpertPackageTemplateService
 from ..core.template.extension_config_template import ExtensionConfigTemplateService
 from ..core.template.mcp_template import McpTemplateService
 from ..core.template.model_template import ModelTemplateService
 from ..core.template.permissions_template import PermissionsTemplateService
+from ..core.template.react_template import ReactTemplateService
 from ..core.template.skill_prebuilt_template import SkillPrebuiltTemplateService
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import SyncEnvelopeOnlyBody, make_sync_body
@@ -32,6 +34,8 @@ from ..schemas.template_schemas import (
     AgentTemplateUpdateRequest,
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
+    ExecutionGuardTemplateCreateRequest,
+    ExecutionGuardTemplateUpdateRequest,
     ExpertPackageTemplateCreateRequest,
     ExpertPackageTemplateUpdateRequest,
     ExtensionConfigTemplateCreateRequest,
@@ -42,6 +46,8 @@ from ..schemas.template_schemas import (
     ModelTemplateUpdateRequest,
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
+    ReactTemplateCreateRequest,
+    ReactTemplateUpdateRequest,
     SkillPrebuiltTemplateCreateRequest,
     SkillPrebuiltTemplateUpdateRequest,
 )
@@ -227,6 +233,20 @@ _add_template_crud(
     "permissions",
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/execution-guard-templates",
+    ExecutionGuardTemplateService,
+    "execution_guard",
+    ExecutionGuardTemplateCreateRequest,
+    ExecutionGuardTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/react-templates",
+    ReactTemplateService,
+    "react",
+    ReactTemplateCreateRequest,
+    ReactTemplateUpdateRequest,
 )
 _add_template_crud(
     "/mcp-templates",

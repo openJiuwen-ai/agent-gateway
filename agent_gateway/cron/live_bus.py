@@ -219,6 +219,12 @@ class CronLiveBus:
         self._origin = _gateway_origin_id()
         self._bridge_tasks: dict[str, asyncio.Task[None]] = {}
         self._seen: dict[str, deque[str]] = {}
+        # Fingerprints already delivered live to one specific subscriber queue.
+        # Replay dedupes against this per-queue set: a frame that went out live
+        # while the Redis backlog was being read must not be queued a second time
+        # with the replay marker, while frames delivered to a previous (already
+        # unsubscribed) queue must still replay to the new one.
+        self._queue_seen: dict[asyncio.Queue[dict[str, Any]], deque[str]] = {}
         # Track fingerprints for a full replay window (plus headroom for in-flight).
         self._seen_size = max(256, self._replay_size * 2)
 
@@ -257,13 +263,20 @@ class CronLiveBus:
             return queue
         self._prune_expired_replay()
         if replay:
+            # ``_seen`` only dedupes delivery to subscribers attached at publish
+            # time, so it must not swallow a replay: when the effect rebuilds or
+            # the user navigates back, the previous watcher already took the
+            # terminal frame and the new one would wait forever. Dedupe within
+            # this replay only (local buffer vs Redis list) and keep remembering
+            # globally so the live Redis echo is still dropped.
+            replay_seen: set[str] = set()
             # Same-pod late join: fill immediately from the in-process buffer.
             for frame in list(self._replay.get(sid, ())):
-                self._enqueue(queue, frame, sid=sid, mark_seen=True)
+                self._enqueue(queue, frame, sid=sid, replay_seen=replay_seen)
             # Cross-pod late join: Redis list may hold frames this process never saw.
             # Dedup fingerprints drop overlap with the local buffer above.
             if _redis_client() is not None:
-                self._schedule(self._redis_replay_into(sid, queue))
+                self._schedule(self._redis_replay_into(sid, queue, replay_seen))
         self._subscribers.setdefault(sid, set()).add(queue)
         self._replay_deadline.pop(sid, None)
         self._schedule(self._ensure_redis_bridge(sid))
@@ -275,6 +288,7 @@ class CronLiveBus:
         if bucket is None:
             return
         bucket.discard(queue)
+        self._queue_seen.pop(queue, None)
         if not bucket:
             self._subscribers.pop(sid, None)
             # Keep replay briefly so a reconnect / slow run-now still catches up.
@@ -303,9 +317,14 @@ class CronLiveBus:
         if mark_seen and self._frame_already_seen(sid, frame):
             return
         delivered = False
+        fingerprint = _frame_fingerprint(frame)
         for queue in list(self._subscribers.get(sid, ())):
-            if _queue_put(queue, frame):
-                delivered = True
+            if not _queue_put(queue, frame):
+                continue
+            delivered = True
+            bucket = self._queue_seen.setdefault(queue, deque(maxlen=self._seen_size))
+            if fingerprint not in bucket:
+                bucket.append(fingerprint)
         # Only remember after a successful put — otherwise QueueFull + mark_seen
         # would permanently erase the frame (Redis same-origin echo is skipped too).
         if mark_seen and delivered:
@@ -323,16 +342,30 @@ class CronLiveBus:
         frame: dict[str, Any],
         *,
         sid: str,
-        mark_seen: bool,
+        replay_seen: set[str],
     ) -> None:
-        if mark_seen and self._frame_already_seen(sid, frame):
+        """Queue one replayed frame for a late subscriber.
+
+        Dedupe against ``replay_seen`` (this subscriber's replay only) instead of
+        the session-level ``_seen`` bucket, which may already hold the terminal
+        frame from a previous watcher. Also skip frames this queue already got
+        live: a frame published between ``subscribe()`` and the Redis list read
+        lands in the queue first, then shows up in the backlog.
+        """
+        fingerprint = _frame_fingerprint(frame)
+        if fingerprint in replay_seen:
+            return
+        if fingerprint in self._queue_seen.get(queue, ()):
+            replay_seen.add(fingerprint)
             return
         # Only replay copies carry this marker; live fanout and the stored
         # frame stay unchanged so clients can distinguish backlog from new output.
         if not _queue_put(queue, {**frame, "replay": True}):
             return
-        if mark_seen:
-            self._remember_frame(sid, frame)
+        replay_seen.add(fingerprint)
+        # Still remember globally: a live Redis echo of this frame must not be
+        # delivered a second time while the subscriber is attached.
+        self._remember_frame(sid, frame)
 
     def _frame_already_seen(self, sid: str, frame: dict[str, Any]) -> bool:
         fp = _frame_fingerprint(frame)
@@ -389,7 +422,12 @@ class CronLiveBus:
                 exc_info=True,
             )
 
-    async def _redis_replay_into(self, sid: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def _redis_replay_into(
+        self,
+        sid: str,
+        queue: asyncio.Queue[dict[str, Any]],
+        replay_seen: set[str],
+    ) -> None:
         client = _redis_client()
         if client is None:
             return
@@ -401,16 +439,15 @@ class CronLiveBus:
                 sid,
                 exc_info=True,
             )
-            # Fall back to whatever this pod buffered locally.
-            for frame in list(self._replay.get(sid, ())):
-                self._enqueue(queue, frame, sid=sid, mark_seen=True)
+            # 订阅前的本地缓冲已由 subscribe() 同步回放；这里再读 _replay 会把
+            # 订阅后已实时投递的帧重复入队，因此直接返回。
             return
         for raw in items:
             decoded = _decode_wire(raw)
             if decoded is None:
                 continue
             _origin, frame = decoded
-            self._enqueue(queue, frame, sid=sid, mark_seen=True)
+            self._enqueue(queue, frame, sid=sid, replay_seen=replay_seen)
 
     async def _ensure_redis_bridge(self, sid: str) -> None:
         existing = self._bridge_tasks.get(sid)

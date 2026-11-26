@@ -8,6 +8,7 @@ import socket
 import builtins
 import websockets
 from collections.abc import Awaitable, Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -281,6 +282,58 @@ async def test_stop_before_start_is_idempotent_and_fails_ready() -> None:
         await asyncio.wait_for(ready, timeout=5)
     with pytest.raises(RuntimeError, match="stopped"):
         await listener.start()
+
+
+@pytest.mark.asyncio
+async def test_stop_bounds_a_run_task_that_never_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_gateway.transport import websocket_listener
+
+    monkeypatch.setattr(websocket_listener, "_STOP_TIMEOUT_SECONDS", 0.05)
+    listener = create_listener(
+        ready_handler,
+        host="127.0.0.1",
+        port=0,
+        process_request=no_op_process_request,
+    )
+    run_task = asyncio.create_task(asyncio.Event().wait())
+    listener._run_task = run_task
+    listener._server = SimpleNamespace(close=lambda: None)
+
+    await asyncio.wait_for(listener.stop(), timeout=0.5)
+
+    assert run_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stop_returns_when_cancelled_task_does_not_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent_gateway.transport import websocket_listener
+
+    monkeypatch.setattr(websocket_listener, "_STOP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(websocket_listener, "_CANCEL_TIMEOUT_SECONDS", 0.05)
+    listener = create_listener(
+        ready_handler,
+        host="127.0.0.1",
+        port=0,
+        process_request=no_op_process_request,
+    )
+
+    async def never_finishing_task() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    run_task = asyncio.create_task(never_finishing_task())
+    listener._run_task = run_task
+    listener._server = SimpleNamespace(close=lambda: None)
+
+    await asyncio.wait_for(listener.stop(), timeout=0.5)
+
+    assert not run_task.done()
 
 
 @pytest.mark.asyncio

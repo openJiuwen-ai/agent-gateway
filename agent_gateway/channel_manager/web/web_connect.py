@@ -31,6 +31,8 @@ from agent_gateway.channel_manager.base import (
     ConnectHook,
     RobotMessageRouter,
 )
+from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
+from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
@@ -38,7 +40,6 @@ from agent_gateway.enterprise.capabilities.skill_upload.guard import (
     schedule_pending_install_result,
 )
 from agent_gateway.common.paths import get_logs_dir
-from agent_gateway.common.request_method import parse_request_method
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
@@ -62,6 +63,8 @@ from agent_gateway.routing.keys import AgentRef, RoutingKey
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
     from agent_gateway.transport.uvicorn_listener import UvicornListener
 
 logger = logging.getLogger(__name__)
@@ -224,6 +227,23 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
     }
 )
 
+# Downstream extension frames whose payload schema is fixed by the extensions v2
+# webui contract (render/clear/error, appearance, download, splash, presentation).
+# Only these names are forwarded verbatim; other webui.* events keep the reduced
+# payload because they may carry internal management data that must not reach the
+# browser.
+_WEBUI_FULL_PAYLOAD_EVENTS = frozenset(
+    {
+        "webui.render",
+        "webui.render.clear",
+        "webui.render.error",
+        "webui.appearance",
+        "webui.download",
+        "webui.splash.play",
+        "webui.presentation.start",
+    }
+)
+
 _CONTEXT_USAGE_JSONL_FILENAME = "context_usage.jsonl"
 _CONTEXT_USAGE_MAX_BYTES = 10 * 1024 * 1024
 _CONTEXT_USAGE_BACKUP_COUNT = 3
@@ -273,11 +293,17 @@ class WebChannel(BaseWsChannel):
     name = "web"
     channel_id = "web"
 
-    def __init__(self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None):
+    def __init__(
+        self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None,
+        *, auth_service_provider: Callable[[], AuthService] | None = None,
+        credential_update_sink: CredentialUpdateSink | None = None,
+    ):
         super().__init__(config, router)
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
+        self.auth_service_provider = auth_service_provider
+        self.credential_update_sink = credential_update_sink
         self._listener: UvicornListener | None = None
         self._listener_available = asyncio.Event()
         self._listener_start_error: Exception | None = None
@@ -482,6 +508,37 @@ class WebChannel(BaseWsChannel):
             return wrapper(original, msg)
 
         self._on_message_cb = wrapped
+
+    async def reject_inbound(
+        self,
+        msg: Message,
+        *,
+        error: str = "系统繁忙，请稍后重试",
+        code: str = "SERVER_BUSY",
+    ) -> bool:
+        """Tell the originating WebSocket that its request was not queued.
+
+        Returns false when the peer is already gone; the caller then falls
+        back to normal queue backpressure instead of dropping the message.
+        """
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        ws_id = str(metadata.get("ws_id") or "").strip()
+        ws = self._lookup_peer(ws_id) if ws_id else None
+        if ws is None:
+            logger.warning(
+                "[WebChannel] reject_inbound: peer gone, id=%s ws_id=%s",
+                msg.id,
+                ws_id,
+            )
+            return False
+        await self.send_response(
+            ws,
+            str(msg.id or ""),
+            ok=False,
+            error=error,
+            code=code,
+        )
+        return True
 
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         # All unary, streamed and pushed frames converge here, after internal
@@ -1238,6 +1295,11 @@ class WebChannel(BaseWsChannel):
             # design page binds to; the {session_id, content} reduction here
             # would blank the canvas (empty canvas / no node progress).
             or event_name.startswith("designer.")
+            # webui.* frames carry target/root/revision/theme; the reduction to
+            # {session_id, content} drops them, so extension UI (for example the
+            # AgentServer token/weather widgets) never renders. Only the four
+            # contract events are forwarded in full; other webui.* stay reduced.
+            or event_name in _WEBUI_FULL_PAYLOAD_EVENTS
             or event_name == "cron.run.updated"
         )
 
@@ -1659,6 +1721,14 @@ class WebChannel(BaseWsChannel):
                 isinstance(msg.payload, dict) and msg.payload.get("cron_session_stream")
             ))
             for peer in self._peers_for_session(msg.session_id):
+                # An interrupt receipt belongs to its metadata.ws_id HTTP request.
+                # Session broadcasts (including stream-cancel notifications) must
+                # not settle another pending unary interrupt in the same session.
+                if (
+                    self._resolve_event_name(msg) == "chat.interrupt_result"
+                    and isinstance(peer, HttpJsonOutbound)
+                ):
+                    continue
                 if cron_stream and not self._matches_cron_recipient(peer, msg):
                     continue
                 ws_set.add(peer)
@@ -2104,7 +2174,11 @@ class WebChannel(BaseWsChannel):
             ws, _flat_query, remote,
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
-        from agent_gateway.common.request_identity import normalize_routing_identity
+        # user_id 取上面解析出的连接身份（IAM 启用时即握手校验过的值），其余字段取 query。
+        from agent_gateway.common.request_identity import (
+            normalize_agent_identity_query,
+            normalize_routing_identity,
+        )
         from agent_gateway.enterprise import is_enterprise
 
         _routing = normalize_routing_identity(
@@ -2112,6 +2186,12 @@ class WebChannel(BaseWsChannel):
             _flat_query,
         )
         setattr(ws, "_web_routing", _routing)
+        # 展示身份（Manager 计算的 agent_name/agent_id/模板 id）随连接保存，
+        # 每条消息再写入 metadata.agent_identity 供 AgentServer 落盘。
+        # 与 HTTP 入口共用同一个信任开关，且仅企业版采信：个人版（含回环与
+        # 显式开启信任开关）不接收展示身份，metadata 与 REST 透传均不携带。
+        if is_enterprise() and trust_client_identity_headers(remote):
+            setattr(ws, "_web_agent_identity", normalize_agent_identity_query(_flat_query))
         if is_enterprise() and not _routing.get("bot_id"):
             logger.warning(
                 "WebChannel 新连接缺少 bot_id: remote=%s routing=%s",
@@ -2571,6 +2651,7 @@ class WebChannel(BaseWsChannel):
         # chat.send / history.get still become stream in _normalize_gateway_message
         # even when the client omits this field.
         from agent_gateway.common.request_identity import (
+            apply_agent_identity_metadata,
             apply_routing_metadata,
             normalize_routing_identity,
         )
@@ -2580,18 +2661,21 @@ class WebChannel(BaseWsChannel):
             _routing = normalize_routing_identity(
                 {"user_id": req_user_id} if req_user_id else None,
             )
-        _meta = apply_routing_metadata(
-            {
-                "query": query,
-                "method": method,
-                "user_id": req_user_id,
-                # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
-                "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
-                # 登录会话id（握手时认的)。Gateway据此
-                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
-                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
-            },
-            _routing,
+        _meta = apply_agent_identity_metadata(
+            apply_routing_metadata(
+                {
+                    "query": query,
+                    "method": method,
+                    "user_id": req_user_id,
+                    # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
+                    "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
+                    # 登录会话id（握手时认的)。Gateway据此
+                    # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
+                    "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
+                },
+                _routing,
+            ),
+            getattr(ws, "_web_agent_identity", None),
         )
         user_message = Message(
             id=req_id,
@@ -2601,7 +2685,9 @@ class WebChannel(BaseWsChannel):
             params=params,
             timestamp=time.time(),
             ok=True,
-            req_method=parse_request_method(method),
+            # 协议包尚未发布的业务方法在此动态登记，否则 req_method=None 会在
+            # 转发门禁（application/inbound.py）处被短路成 METHOD_NOT_FOUND。
+            req_method=self._parse_req_method(method),
             mode=self._parse_mode(params.get("mode")),
             is_stream=bool(data.get("is_stream", False)),
             app_id=_app_id,
@@ -2741,6 +2827,26 @@ class WebChannel(BaseWsChannel):
             "payload": payload,
         }
         return frame
+
+    @staticmethod
+    def _parse_req_method(method: str) -> ReqMethod | None:
+        # 个人版的团队控制面必须保持“未知方法”语义：这些方法不在转发白名单里，
+        # 一旦允许动态登记就会被默认透传绕过 edition 门禁。
+        from agent_gateway.common.protocol_methods import is_dynamic_req_method_denied
+
+        if is_dynamic_req_method_denied(method):
+            return None
+        for item in ReqMethod:
+            if item.value == method:
+                return item
+        # 协议包尚未发布的业务方法：运行时补齐枚举成员，避免在
+        # _normalize_gateway_message 里被当成 CHAT_SEND 处理。
+        from agent_gateway.common.protocol_compat import ensure_req_method
+
+        return ensure_req_method(method)
+
+    # Public aliases for HTTP dispatch (G.CLS.11).
+    parse_req_method = _parse_req_method
 
     @staticmethod
     def _parse_mode(raw_mode: Any) -> Mode:

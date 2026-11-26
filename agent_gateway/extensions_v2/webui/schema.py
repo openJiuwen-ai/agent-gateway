@@ -57,6 +57,8 @@ _ROOT_ONLY_COMPONENTS: frozenset[str] = frozenset({"Panel", "Iframe", "MediaSurf
 _STRICT_ROOT_SLOTS: frozenset[str] = frozenset({
     "conversation.panel.right", "application.background", "application.splash", "application.presentation",
 })
+# Declaration-only slots: packages answer their ``ui.ready`` but never render into them.
+_NO_RENDER_SLOTS: frozenset[str] = frozenset({"application.appearance"})
 
 
 def _fail(message: str, code: str = CODE_SCHEMA_ERROR) -> ValidationReport:
@@ -178,6 +180,8 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
     report = validate_root(request.root)
     if not report.ok:
         return report
+    if request.target.slot_id in _NO_RENDER_SLOTS:
+        return _fail(f"{request.target.slot_id} does not render content")
     slot_roots = _SLOT_ROOT_COMPONENTS.get(request.target.slot_id, ())
     if request.root.component == "ApplicationSurface":
         prefix = f"{ASSET_PREFIX}{request.target.package_id}/"

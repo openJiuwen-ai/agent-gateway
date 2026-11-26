@@ -58,7 +58,7 @@ def _package_root(tmp_path: Path, name: str) -> Path:
 
 
 async def _start(tmp_path: Path) -> GatewayRuntime:
-    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path))
+    runtime = GatewayRuntime(channel=_channel(), config=GatewayExtensionConfig(install_dir=tmp_path, data_dir=tmp_path / "data"))
     await runtime.start()
     return runtime
 

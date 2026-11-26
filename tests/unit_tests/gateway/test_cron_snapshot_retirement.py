@@ -199,9 +199,10 @@ def _capture_ack(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_cron_command_ack_envelope_carries_session_id(
+async def test_cron_command_ack_envelope_carries_session_and_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """ACK 需 session + group/bot，企业版才不会 FORBIDDEN。"""
     captured = _capture_ack(monkeypatch)
     handler = _bare_handler()
 
@@ -210,16 +211,23 @@ async def test_cron_command_ack_envelope_carries_session_id(
         data={"deleted": True},
         user_id="alice",
         session_id="sess-1",
+        group_id="org-1",
+        bot_id="bot-1",
     )
 
     env = captured["env"]
     assert env.session_id == "sess-1"
     assert env.user_id == "alice"
     assert env.method == "cron.command.ack"
+    assert env.channel_context.get("user_id") == "alice"
+    assert env.channel_context.get("routing") == {
+        "group_id": "org-1",
+        "bot_id": "bot-1",
+    }
 
 
 @pytest.mark.asyncio
-async def test_cron_run_now_ack_envelope_carries_session_id(
+async def test_cron_run_now_ack_envelope_carries_session_and_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = _capture_ack(monkeypatch)
@@ -231,19 +239,25 @@ async def test_cron_run_now_ack_envelope_carries_session_id(
         run_id="run-1",
         user_id="alice",
         session_id="sess-1",
+        group_id="org-1",
+        bot_id="bot-1",
     )
 
     env = captured["env"]
     assert env.session_id == "sess-1"
     assert env.user_id == "alice"
     assert env.method == "cron.run_now.ack"
+    assert env.channel_context.get("routing") == {
+        "group_id": "org-1",
+        "bot_id": "bot-1",
+    }
 
 
 @pytest.mark.asyncio
-async def test_cron_push_payload_forwards_session_id_to_command_ack(
+async def test_cron_push_payload_forwards_session_and_tenant_to_command_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """钉住 _handle_cron_push_payload → command ack 的 session_id 透传。"""
+    """钉住 _handle_cron_push_payload → command ack 的 session + 租户透传。"""
     captured = _capture_ack(monkeypatch)
     handler = _bare_handler()
     handler._cron_controller = SimpleNamespace(
@@ -255,7 +269,11 @@ async def test_cron_push_payload_forwards_session_id_to_command_ack(
         payload={
             "action": "delete",
             "command_id": "cmd-1",
-            "data": {"job_id": "job-1"},
+            "data": {
+                "job_id": "job-1",
+                "group_id": "org-1",
+                "bot_id": "bot-1",
+            },
         },
         request_id="req-1",
         channel_id="",
@@ -268,13 +286,17 @@ async def test_cron_push_payload_forwards_session_id_to_command_ack(
     assert env.session_id == "sess-1"
     assert env.user_id == "alice"
     assert env.method == "cron.command.ack"
+    assert env.channel_context.get("routing") == {
+        "group_id": "org-1",
+        "bot_id": "bot-1",
+    }
 
 
 @pytest.mark.asyncio
-async def test_cron_push_payload_forwards_session_id_to_run_now_ack(
+async def test_cron_push_payload_forwards_session_and_tenant_to_run_now_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """钉住 _handle_cron_push_payload → run_now ack 的 session_id 透传。"""
+    """钉住 _handle_cron_push_payload → run_now ack 的 session + 租户透传。"""
     captured = _capture_ack(monkeypatch)
     handler = _bare_handler()
     handler._cron_controller = SimpleNamespace(
@@ -283,7 +305,14 @@ async def test_cron_push_payload_forwards_session_id_to_run_now_ack(
     )
 
     await handler._handle_cron_push_payload(
-        payload={"action": "run_now", "data": {"job_id": "job-1"}},
+        payload={
+            "action": "run_now",
+            "data": {
+                "job_id": "job-1",
+                "group_id": "org-1",
+                "bot_id": "bot-1",
+            },
+        },
         request_id="req-1",
         channel_id="",
         session_id="sess-1",
@@ -295,6 +324,58 @@ async def test_cron_push_payload_forwards_session_id_to_run_now_ack(
     assert env.session_id == "sess-1"
     assert env.user_id == "alice"
     assert env.method == "cron.run_now.ack"
+    assert env.channel_context.get("routing") == {
+        "group_id": "org-1",
+        "bot_id": "bot-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cron_create_ack_uses_chat_routing_not_forged_payload_tenant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """create 硬覆盖写库租户后，ACK 必须声明 chat routing，不能用 LLM 注入值。"""
+    captured = _capture_ack(monkeypatch)
+    handler = _bare_handler()
+    handler._stream_metadata["req-1"] = {
+        "user_id": "alice",
+        "routing": {"group_id": "g-real", "bot_id": "b-real"},
+    }
+    handler._cron_controller = SimpleNamespace(
+        create_job=AsyncMock(return_value={"id": "job-1"}),
+    )
+    monkeypatch.setattr(
+        "agent_gateway.enterprise.is_enterprise", lambda: True
+    )
+
+    await handler._handle_cron_push_payload(
+        payload={
+            "action": "create",
+            "command_id": "cmd-1",
+            "data": {
+                "name": "job",
+                "group_id": "g-forged",
+                "bot_id": "b-forged",
+            },
+        },
+        request_id="req-1",
+        channel_id="",
+        session_id="sess-1",
+        metadata=None,
+        user_id="alice",
+    )
+
+    env = captured["env"]
+    assert env.session_id == "sess-1"
+    assert env.method == "cron.command.ack"
+    assert env.channel_context.get("routing") == {
+        "group_id": "g-real",
+        "bot_id": "b-real",
+    }
+    assert env.channel_context.get("routing") != {
+        "group_id": "g-forged",
+        "bot_id": "b-forged",
+    }
 
 
 def test_cron_snapshot_sync_fully_retired() -> None:

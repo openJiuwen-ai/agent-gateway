@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -72,30 +73,27 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-# --- 数据根分区（domain/infra 两区，与 jiuwenswarm.common.utils 同契约）---
-# gateway 包自包含：分区根由本模块手工推导（同 get_user_workspace_dir 的
-# env/home 语义），不 import jiuwenswarm。
-_DOMAIN_DIR_NAME = "domain"
-_INFRA_DIR_NAME = "infra"
+# --- Business profile under the legacy flat data root ---
+# ``profile/`` contains user-owned durable data. System-managed paths remain
+# at their established root locations (config/, logs/, runtime/, and so on).
+# Gateway computes the profile path locally and does not import JiuwenSwarm.
+_PROFILE_DIR_NAME = "profile"
 _config_dir: Path | None = None
 _workspace_dir: Path | None = None
 _root_dir: Path | None = None
 _initialized: bool = False
 
 
-def get_domain_data_dir() -> Path:
-    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
-    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
+def get_profile_data_dir() -> Path:
+    """Return the durable user-data directory shared by enterprise Pods."""
+    return get_user_workspace_dir() / _PROFILE_DIR_NAME
 
 
-def get_infra_data_dir() -> Path:
-    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
-    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
-    周期），个人版为普通子目录。
+def get_application_plugins_dir() -> Path:
+    """获取运维部署的应用插件目录：部署期资产、运行期只读；企业版随
+    profile 共享卷跨 Pod 存活，各副本共享同一目录。
     """
-    return get_user_workspace_dir() / _INFRA_DIR_NAME
+    return get_profile_data_dir() / "application_plugins"
 
 
 def get_bundled_resources_dir() -> Path:
@@ -110,8 +108,8 @@ def _resolve_paths() -> None:
         return
 
     _root_dir = get_user_workspace_dir()
-    _config_dir = get_infra_data_dir() / "config"
-    _workspace_dir = get_domain_data_dir() / "agent" / "workspace"
+    _config_dir = get_user_workspace_dir() / "config"
+    _workspace_dir = get_agent_workspace_dir()
 
     _initialized = True
 
@@ -137,8 +135,9 @@ def get_root_dir() -> Path:
 def get_config_file() -> Path:
     """获取 Gateway 配置文件路径。
 
-    默认 ``<config_dir>/config.yaml``；拆分部署时可用
-    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config.yaml``。
+    默认 ``<config_dir>/config-gateway.yaml``（gateway 专属配置，与 AgentServer
+    ``config/config.yaml`` 分离）；拆分部署时可用
+    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config-gateway.yaml``。
 
     该环境变量必须在 Gateway 进程启动、config 模块导入前设置，运行中修改不受支持。
     """
@@ -147,12 +146,26 @@ def get_config_file() -> Path:
         path = Path(override).expanduser()
         if not path.is_absolute():
             path = get_config_dir() / path
-        return path / "config.yaml"
-    return get_config_dir() / "config.yaml"
+        return path / "config-gateway.yaml"
+    return get_config_dir() / "config-gateway.yaml"
 
 
 def get_env_file() -> Path:
-    """获取 ``.env`` 路径。"""
+    """获取 ``.env`` 路径。
+
+    优先级：
+
+    1. AgentOS：``<workspace>/config/.env``，与 AgentServer 共用一份；
+    2. 个人版：``<config_dir>/.env``，保持原有行为，不跟随
+       ``JIUWENSWARM_GATEWAY_CONFIG_DIR``。
+
+    AgentOS 的 Gateway/AS 是独立进程，但仍然共用 AS 配置目录下的 env，
+    避免运行期配置面板写入后两边 env 漂移。
+    """
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        return get_user_workspace_dir() / "config" / ".env"
     return get_config_dir() / ".env"
 
 
@@ -163,7 +176,7 @@ def env_url(name: str, default: str) -> str:
 
 # --- agent 工作区子目录 ---
 def get_agent_root_dir() -> Path:
-    return get_domain_data_dir() / "agent"
+    return get_profile_data_dir() / "agent"
 
 
 def get_agent_home_dir() -> Path:
@@ -171,7 +184,7 @@ def get_agent_home_dir() -> Path:
 
 
 def get_agent_workspace_dir() -> Path:
-    """DeepAgent 标准工作区：``~/.jiuwenswarm/domain/agent/workspace``。"""
+    """DeepAgent 标准工作区：``~/.jiuwenswarm/profile/agent/workspace``。"""
     return get_agent_root_dir() / "workspace"
 
 
@@ -201,7 +214,7 @@ def get_cron_jobs_path() -> Path:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
+    xy_tmp_dir = get_user_workspace_dir() / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -210,11 +223,39 @@ def get_xy_tmp_dir() -> Path:
 _legacy_migration_done: bool = False
 
 
+def _is_directory_link(path: Path) -> bool:
+    try:
+        if path.is_symlink():
+            return True
+        # Junctions are not symbolic links on Windows. Python 3.11 has no
+        # Path.is_junction(), so inspect the reparse tag without following it.
+        if sys.platform == "win32":
+            return getattr(path.lstat(), "st_reparse_tag", None) == getattr(
+                stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003
+            )
+    except OSError:
+        return False
+    return False
+
+
 def _move_if_absent(old: Path, new: Path) -> None:
-    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
+    """迁移旧路径且不覆盖目标数据；两侧目录并存时递归合并（幂等）。
 
     并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
-    if not old.exists() or new.exists():
+    if not old.exists() or _is_directory_link(old):
+        return
+    if _is_directory_link(new):
+        return
+    if new.exists() and old.is_dir() and new.is_dir():
+        for child in list(old.iterdir()):
+            _move_if_absent(child, new / child.name)
+        try:
+            old.rmdir()
+        except OSError:
+            # A conflicting file remains at the legacy path; never overwrite it.
+            return
+        return
+    if new.exists():
         return
     new.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -223,20 +264,114 @@ def _move_if_absent(old: Path, new: Path) -> None:
         pass
 
 
-def _migrate_legacy_checkpoint_and_logs() -> None:
-    """数据根旧平铺路径一次性搬迁。
+def _link_legacy_path(legacy: Path, current: Path) -> bool:
+    if legacy.exists() or _is_directory_link(legacy) or not current.exists():
+        return True
+    try:
+        if sys.platform == "win32" and current.is_dir():
+            # Native directory junctions do not require symbolic-link privileges.
+            # Avoid invoking cmd.exe with user-controlled filesystem paths.
+            import _winapi
 
-    - ``.checkpoint``（业务态）→ ``domain/agent/``
-    - ``.logs``（系统日志）→ ``infra/logs/agent/``
+            _winapi.CreateJunction(str(current.absolute()), str(legacy.absolute()))
+        else:
+            legacy.symlink_to(current.absolute(), target_is_directory=current.is_dir())
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        logger.warning(
+            "could not create legacy path link %s -> %s: %s", legacy, current, exc
+        )
+        return False
+    return True
+
+
+def _legacy_business_paths(root: Path, profile: Path) -> dict[Path, Path]:
+    legacy_business_paths = {
+        root / "agent": profile / "agent",
+        root / ".checkpoint": profile / "agent" / ".checkpoint",
+        root / "gateway": profile / "gateway",
+        root / "application_plugins": profile / "application_plugins",
+        root / ".agent_teams": profile / ".agent_teams",
+        root / ".organizations": profile / ".organizations",
+        root / "jiuwenmate": profile / "jiuwenmate",
+        root / ".trace": profile / ".trace",
+        root / ".agent_history": profile / ".agent_history",
+        root / "agents": profile / "agents",
+        root / ".personal_context": profile / ".personal_context",
+        root / "runtime_state": profile / "runtime_state",
+    }
+    legacy_business_paths.update(
+        (path, profile / path.name)
+        for path in root.glob("workspace_*")
+        if path not in legacy_business_paths
+    )
+    return legacy_business_paths
+
+
+def repair_windows_legacy_links() -> None:
+    """Repair missing Windows compatibility links after loading runtime dotenv."""
+    if sys.platform != "win32":
+        return
+    from agent_gateway.enterprise.edition import is_enterprise
+
+    profile = get_profile_data_dir()
+    if is_enterprise() or _is_directory_link(profile):
+        return
+    for legacy, current in _legacy_business_paths(get_user_workspace_dir(), profile).items():
+        _link_legacy_path(legacy, current)
+
+
+def _migrate_legacy_checkpoint_and_logs() -> None:
+    """把旧平铺布局中的业务数据迁入 profile，并保留旧路径入口。
+
+    系统目录（config、logs、auth、runtime 等）继续位于数据根，不做迁移。
+    未发布的 domain/infra 中间布局不属于升级路径。
     """
     global _legacy_migration_done
     if _legacy_migration_done:
         return
-    _legacy_migration_done = True
+    links_ok = True
 
-    workspace = get_user_workspace_dir()
-    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
-    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
+    root = get_user_workspace_dir()
+    profile = get_profile_data_dir()
+    legacy_business_paths = _legacy_business_paths(root, profile)
+
+    # 两种早期平铺日志位置都迁入仍处于根目录的 logs/agent。
+    current_logs = get_logs_dir() / "agent"
+    legacy_logs = root / ".logs"
+    legacy_agent_logs = root / "agent" / ".logs"
+    had_legacy_logs = legacy_logs.exists() and not _is_directory_link(legacy_logs)
+    had_agent_logs = legacy_agent_logs.exists() and not _is_directory_link(legacy_agent_logs)
+    _move_if_absent(legacy_logs, current_logs)
+    _move_if_absent(legacy_agent_logs, current_logs)
+    for legacy, current in legacy_business_paths.items():
+        if legacy == root / "agent" and not _is_directory_link(legacy) and (
+            legacy_agent_logs.exists() or _is_directory_link(legacy_agent_logs)
+        ):
+            # A conflicting log must stay Pod-local, not be moved into profile.
+            for child in list(legacy.iterdir()):
+                if child.name != ".logs":
+                    _move_if_absent(child, current / child.name)
+            continue
+        had_legacy = legacy.exists() and not _is_directory_link(legacy)
+        _move_if_absent(legacy, current)
+        if had_legacy:
+            links_ok = _link_legacy_path(legacy, current) and links_ok
+
+    # A retained legacy agent directory (e.g. conflicting logs) must still
+    # expose checkpoint data that was successfully moved into profile.
+    legacy_agent = root / "agent"
+    if legacy_agent.is_dir() and not _is_directory_link(legacy_agent):
+        links_ok = _link_legacy_path(
+            legacy_agent / ".checkpoint", profile / "agent" / ".checkpoint"
+        ) and links_ok
+
+    if had_legacy_logs:
+        links_ok = _link_legacy_path(legacy_logs, current_logs) and links_ok
+    if had_agent_logs and _is_directory_link(root / "agent"):
+        links_ok = _link_legacy_path(profile / "agent" / ".logs", current_logs) and links_ok
+    _legacy_migration_done = links_ok
 
 
 def get_checkpoint_dir() -> Path:
@@ -245,7 +380,7 @@ def get_checkpoint_dir() -> Path:
 
 def get_logs_dir() -> Path:
     """Return the Pod-local log root; component logs use subdirectories here."""
-    return get_infra_data_dir() / "logs"
+    return get_user_workspace_dir() / "logs"
 
 
 def get_gateway_log_dir() -> Optional[Path]:
@@ -369,11 +504,25 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
         path.mkdir(parents=True, exist_ok=True)
 
     config_file = get_config_file()
+    from agent_gateway.common.agentos_runtime import is_agentos_runtime
+
+    if is_agentos_runtime():
+        from agent_gateway.common.agentos_migration import prepare_agentos_config
+
+        prepare_agentos_config(
+            config_file=config_file,
+            template=get_bundled_resources_dir() / "config.agentos.yaml",
+            legacy_config=get_user_workspace_dir() / "config" / "config.yaml",
+        )
+        return
+
     if not config_file.exists():
         config_file.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=config_file.parent) as temp_dir:
             staged = Path(temp_dir) / config_file.name
-            shutil.copyfile(get_bundled_resources_dir() / config_file.name, staged)
+            # 模板资源名固定为 config.yaml（未随落盘名 config-gateway.yaml
+            # 改名）；staged 用落盘名，硬链接落位后即 config-gateway.yaml
+            shutil.copyfile(get_bundled_resources_dir() / "config.yaml", staged)
             try:
                 os.link(staged, config_file)
             except FileExistsError:
@@ -396,12 +545,12 @@ __all__ = [
     "get_config_file",
     "get_cron_jobs_path",
     "get_deepagent_user_md_path",
-    "get_domain_data_dir",
+    "get_user_workspace_dir",
     "get_env_file",
     "get_gateway_log_dir",
-    "get_infra_data_dir",
     "get_interactions_dir",
     "get_logs_dir",
+    "get_profile_data_dir",
     "get_root_dir",
     "get_user_home",
     "get_user_workspace_dir",
@@ -409,6 +558,7 @@ __all__ = [
     "get_xy_tmp_dir",
     "logger",
     "prepare_runtime_workspace",
+    "repair_windows_legacy_links",
     "resolve_git_branch",
     "set_user_home",
 ]

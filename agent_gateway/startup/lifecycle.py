@@ -4,12 +4,17 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 import logging
+import os
 from pathlib import Path
 import signal
 from types import FrameType
-from typing import Any
+from typing import Any, NoReturn
 
 from agent_gateway.gateway_lock import GatewayLock
+
+
+def _force_exit(status_code: int) -> NoReturn:
+    os._exit(status_code)
 
 
 @contextmanager
@@ -37,8 +42,17 @@ async def run_with_shutdown_signals(
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
     previous_handlers: dict[signal.Signals, Any] = {}
+    shutdown_requested = False
 
     def request_shutdown(signum: int, frame: FrameType | None) -> None:
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            logging.getLogger("gateway").warning(
+                "[App] Second shutdown signal received; forcing exit with status %s",
+                signum + 128,
+            )
+            _force_exit(signum + 128)
+        shutdown_requested = True
         loop.call_soon_threadsafe(shutdown_event.set)
 
     try:

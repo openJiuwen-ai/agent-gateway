@@ -35,6 +35,13 @@ class ConfigPollSyncer:
                 continue
             except Exception:  # noqa: BLE001
                 logger.exception("[ConfigPoll] sync failed table=%s", table)
+        # 用户习惯表禁止全表 poll：淘汰本机懒缓存后仅点查仍在缓存中的 user_id
+        try:
+            from agent_gateway.config.user_preference import get_user_preference_service
+
+            await get_user_preference_service().poll_refresh_cached()
+        except Exception:  # noqa: BLE001
+            logger.exception("[ConfigPoll] user_preference cache refresh failed")
 
     async def _sync_table(self, table: str, apply_fn) -> None:
         rows = await list_table_records(table)

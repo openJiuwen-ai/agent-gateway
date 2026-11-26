@@ -105,7 +105,9 @@ class RouterConfig:
     ssh: YuanrongSshSettings = YuanrongSshSettings()
     ssh_channel: SshChannelEndpoint | None = None
     auth_service_url: str = ""
-    timeout: float = 10.0
+    # Auth total budget (seconds, including retries); capped at 8 s so it
+    # stays inside the Web/TUI handshake hard limit.
+    timeout: float = 8.0
     auth_enabled: bool = False
 
 

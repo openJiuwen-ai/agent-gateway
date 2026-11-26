@@ -30,7 +30,6 @@ async def test_signals_request_shutdown_and_restore_handlers(signum: signal.Sign
     async def run(shutdown_event: asyncio.Event) -> None:
         handler = signal.getsignal(signum)
         handler(signum, None)
-        handler(signum, None)
         await asyncio.wait_for(shutdown_event.wait(), 1)
 
     async def cleanup() -> None:
@@ -39,6 +38,35 @@ async def test_signals_request_shutdown_and_restore_handlers(signum: signal.Sign
     await run_with_shutdown_signals(run, cleanup)
     assert cleaned.is_set()
     assert {number: signal.getsignal(number) for number in original} == original
+
+
+@pytest.mark.asyncio
+async def test_second_shutdown_signal_forces_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_gateway.startup import lifecycle
+
+    original = signal.getsignal(signal.SIGTERM)
+    exits: list[int] = []
+
+    def force_exit(status_code: int) -> None:
+        exits.append(status_code)
+        raise SystemExit(status_code)
+
+    monkeypatch.setattr(lifecycle, "_force_exit", force_exit)
+
+    async def run(shutdown_event: asyncio.Event) -> None:
+        handler = signal.getsignal(signal.SIGTERM)
+        handler(signal.SIGTERM, None)
+        handler(signal.SIGTERM, None)
+
+    async def cleanup() -> None:
+        return None
+
+    with pytest.raises(SystemExit) as error:
+        await lifecycle.run_with_shutdown_signals(run, cleanup)
+
+    assert error.value.code == signal.SIGTERM + 128
+    assert exits == [signal.SIGTERM + 128]
+    assert signal.getsignal(signal.SIGTERM) == original
 
 
 @pytest.mark.asyncio

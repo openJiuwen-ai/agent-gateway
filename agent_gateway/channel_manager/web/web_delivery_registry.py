@@ -51,14 +51,7 @@ class WebDeliveryRegistry:
             or "",
         ).strip()
         if oid:
-            self._request_outbounds.pop(oid, None)
-        sid = str(getattr(outbound, "session_id", "") or "").strip()
-        if sid and oid:
-            bucket = self._session_request_outbounds.get(sid)
-            if bucket is not None:
-                bucket.discard(oid)
-                if not bucket:
-                    self._session_request_outbounds.pop(sid, None)
+            self._prune_outbound(oid, outbound)
         close = getattr(outbound, "close", None)
         if callable(close):
             try:
@@ -116,7 +109,7 @@ class WebDeliveryRegistry:
         if not sid:
             return peers
         for oid in list(self._session_request_outbounds.get(sid, ())):
-            out = self._request_outbounds.get(oid)
-            if out is not None and not getattr(out, "closed", False):
+            out = self.lookup(oid)
+            if out is not None:
                 peers.add(out)
         return peers

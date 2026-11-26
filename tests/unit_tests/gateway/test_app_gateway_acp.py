@@ -1522,9 +1522,9 @@ async def test_gateway_server_prompt_result_echoes_user_message_id():
 
 @pytest.mark.asyncio
 async def test_gateway_server_does_not_end_turn_from_chat_final_before_late_tool_result(monkeypatch):
-    import agent_gateway.app_gateway as gateway_module
+    from agent_gateway.routing import protocol_runtime as runtime_module
 
-    monkeypatch.setattr(gateway_module, "_PROMPT_IDLE_FINALIZE_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_module, "_PROMPT_IDLE_FINALIZE_SECONDS", 0.01)
     server = build_server()
     ws = FakeWebSocket()
 
@@ -1774,9 +1774,9 @@ async def test_gateway_server_emits_todo_update_then_waits_for_idle():
 
 @pytest.mark.asyncio
 async def test_gateway_server_delta_only_does_not_trigger_idle_finalize(monkeypatch):
-    import agent_gateway.app_gateway as gateway_module
+    from agent_gateway.routing import protocol_runtime as runtime_module
 
-    monkeypatch.setattr(gateway_module, "_PROMPT_IDLE_FINALIZE_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_module, "_PROMPT_IDLE_FINALIZE_SECONDS", 0.01)
     server = build_server()
     ws = FakeWebSocket()
 
@@ -1908,7 +1908,9 @@ async def test_gateway_server_forwards_tui_client_timeout_as_metadata_only():
 
 
 @pytest.mark.asyncio
-async def test_gateway_server_handle_raw_message_rejects_unknown_method():
+async def test_gateway_server_handle_raw_message_rejects_unknown_method(monkeypatch):
+    # ACP 默认把未登记方法按不透明字符串透传；严格模式（显式关闭透传）仍然拒绝。
+    monkeypatch.setenv("AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS", "0")
     server = build_server()
     ws = FakeWebSocket()
 

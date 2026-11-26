@@ -162,7 +162,10 @@ class UiActionOutput:
 
 @dataclass(frozen=True, slots=True)
 class UiAppearanceInput:
-    """``ui.appearance``: submit, or revoke with ``None``, the caller's appearance on its connection (S_08).
+    """``ui.appearance``: set or withdraw the caller's appearance parts on its connection (S_08).
+
+    ``appearance`` maps parts to values (``None`` withdraws that part), is a colors-only object, or
+    is ``None`` to withdraw every part of the caller.
 
     ``package_id`` names the calling package for USER handlers to match and inspect; the host takes
     the caller itself from the operation, not from this input (S_01 section 4).
@@ -194,12 +197,14 @@ class HostActionOutput:
 
     ``status`` is ``rejected`` (with ``code`` and ``message``) when the host refused the call; a USER
     handler that takes the call over returns its own status, for example ``denied`` with a code.
+    ``shown`` lists the appearance parts the caller provides on its connection after ``ui.appearance``.
     """
 
     status: str
     revision: int | None = None
     code: str | None = None
     message: str | None = None
+    shown: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +258,13 @@ class ClearFrame:
         return payload
 
 
+def effective_render_props(component: str, props: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Omit URL-only iframe permissions without changing the plugin's props."""
+    if component == "Iframe" and "permissions" in props and "src" not in props:
+        return {name: value for name, value in props.items() if name != "permissions"}
+    return props
+
+
 def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
     """Convert a render node into the JSON shape sent to the browser."""
 
@@ -260,7 +272,7 @@ def node_to_payload(node: RenderNode | None) -> dict[str, Any] | None:
         return None
     payload: dict[str, Any] = {
         "component": node.component,
-        "props": _content_to_payload(node.props),
+        "props": _content_to_payload(effective_render_props(node.component, node.props)),
     }
     if node.events is not None:
         payload["events"] = _content_to_payload(node.events)
