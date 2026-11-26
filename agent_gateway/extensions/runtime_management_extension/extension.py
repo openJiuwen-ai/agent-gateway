@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 
-from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import (
+from agent_gateway.southbound.orchestration.delegated_router import (
     RuntimeRoutedAgentClient,
 )
 from agent_gateway.extensions.sdk.agent_server_client import AgentServerClientExtension

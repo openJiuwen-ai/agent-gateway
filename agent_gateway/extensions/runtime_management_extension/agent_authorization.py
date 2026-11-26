@@ -8,7 +8,7 @@ from e2a.models import E2AEnvelope
 from agent_gateway.extensions.runtime_management_extension.invoke_ids import (
     routing_triple_from_envelope,
 )
-from agent_gateway.extensions.runtime_management_extension.session_route_client import (
+from agent_gateway.southbound.control.runtime import (
     FatalRouteError,
 )
 
