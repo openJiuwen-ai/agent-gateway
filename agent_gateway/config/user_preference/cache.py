@@ -72,6 +72,22 @@ class UserPreferenceCache:
         with self._lock:
             return list(self._entries.keys())
 
+    def snapshot_for_refresh(self) -> dict[str, PreferenceCacheEntry]:
+        """Capture live entries; a foreground put replaces the entry, a touch does not."""
+        with self._lock:
+            self.evict_expired()
+            return self._entries.copy()
+
+    def apply_refresh(self, user_id: str, expected: PreferenceCacheEntry, raw_language: object) -> None:
+        language = normalize_preferred_language(raw_language)
+        with self._lock:
+            if self._entries.get(user_id) is not expected:
+                return
+            if language is None:
+                del self._entries[user_id]
+            else:
+                self._entries[user_id] = PreferenceCacheEntry(language, expected.last_used_at)
+
     def delete(self, user_id: str) -> None:
         key = str(user_id or "").strip()
         if not key:

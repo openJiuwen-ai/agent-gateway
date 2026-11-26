@@ -69,32 +69,28 @@ def resolve_remote_cron_model(
     if not value:
         return None, ""
 
-    matching_rows = [
-        row
-        for row in rows
-        if str(row.get("model_name") or "").strip()
-        and value
-        in {
-            str(row.get("model_name") or "").strip(),
-            str(row.get("alias") or "").strip(),
-        }
-    ]
-    configured_rows = [
-        row for row in matching_rows if row.get("source") != LOGIN_MODEL_SOURCE
-    ]
-    if configured_rows:
-        return str(configured_rows[0].get("model_name") or "").strip(), "config"
-    if matching_rows:
-        return str(matching_rows[0].get("model_name") or "").strip(), "login"
+    first_login = None
+    available: list[str] = []
+    omitted = 0
+    for row in rows:
+        name = str(row.get("model_name") or "").strip()
+        if not name:
+            continue
+        if value == name or value == str(row.get("alias") or "").strip():
+            if row.get("source") != LOGIN_MODEL_SOURCE:
+                return name, "config"
+            if first_login is None:
+                first_login = name
+        if len(available) < 20:
+            available.append(name)
+        else:
+            omitted += 1
 
-    available = [
-        str(row.get("model_name") or "").strip()
-        for row in rows
-        if str(row.get("model_name") or "").strip()
-    ]
-    hint = ", ".join(available[:20]) if available else "(no models configured)"
-    if len(available) > 20:
-        hint += f" ... and {len(available) - 20} more"
+    if first_login is not None:
+        return first_login, "login"
+    hint = ", ".join(available) or "(no models configured)"
+    if omitted:
+        hint += f" ... and {omitted} more"
     raise ValueError(f"Unknown model {value!r}. Available models: {hint}")
 
 

@@ -3,7 +3,8 @@
 
 from __future__ import annotations
 
-import time
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -176,13 +177,23 @@ async def test_poll_refresh_updates_language_without_touch(monkeypatch):
         lambda: store,
     )
 
+    now = 10.0
+    monkeypatch.setattr("agent_gateway.config.user_preference.cache.time", SimpleNamespace(monotonic=lambda: now))
     await svc.upsert_user_language("bob", "zh")
-    entry_before = cache._entries["bob"].last_used_at
     store.rows["bob"]["preferred_language"] = "en"
-    time.sleep(0.01)
+    original_get = store.get
+
+    async def read_with_concurrent_touch(name, key):
+        nonlocal now
+        now = 20.0
+        assert cache.get("bob") == "zh"
+        now = 30.0
+        return await original_get(name, key)
+
+    monkeypatch.setattr(store, "get", read_with_concurrent_touch)
     await svc.poll_refresh_cached()
     assert cache.get("bob", touch=False) == "en"
-    assert cache._entries["bob"].last_used_at == entry_before
+    assert cache._entries["bob"].last_used_at == 20.0
 
 
 @pytest.mark.asyncio
@@ -200,3 +211,42 @@ async def test_poll_evicts_expired_before_refresh(monkeypatch):
     store.rows["cold"]["preferred_language"] = "en"
     await svc.poll_refresh_cached()
     assert "cold" not in cache.keys()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_row", "action", "expected"),
+    [("zh", "save", "en"), (None, "save", "en"), ("zh", "evict", None)],
+)
+async def test_poll_discards_result_if_cache_entry_changed(monkeypatch, old_row, action, expected):
+    store = _FakeStore()
+    cache = UserPreferenceCache()
+    svc = UserPreferenceService(cache=cache)
+    monkeypatch.setattr("agent_gateway.config.user_preference.service.get_persistent_store", lambda: store)
+    cache.put("alice", "zh")
+    if old_row is not None:
+        store.rows["alice"] = {"user_id": "alice", "preferred_language": old_row}
+
+    read = asyncio.Event()
+    release = asyncio.Event()
+    original_get = store.get
+
+    async def delayed_get(name, key):
+        row = await original_get(name, key)
+        result = dict(row) if row is not None else None
+        if not read.is_set():
+            read.set()
+            await release.wait()
+        return result
+
+    monkeypatch.setattr(store, "get", delayed_get)
+    async with asyncio.timeout(5), asyncio.TaskGroup() as group:
+        group.create_task(svc.poll_refresh_cached())
+        await read.wait()
+        if action == "save":
+            await svc.upsert_user_language("alice", "en")
+        else:
+            cache.delete("alice")
+        release.set()
+
+    assert cache.get("alice", touch=False) == expected
