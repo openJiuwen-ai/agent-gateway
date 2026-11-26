@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -89,6 +90,8 @@ _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _ACP_PENDING_RPC_TIMEOUT_SECONDS = 60.0
 _ACP_GATEWAY_CONNECT_MAX_ATTEMPTS = 12
 _ACP_GATEWAY_CONNECT_BASE_DELAY_SEC = 0.15
+# session/new 参数快照只需覆盖仍然活跃的会话，超出后按最久未用淘汰
+_SESSION_CTX_LIMIT = 1024
 
 
 @dataclass
@@ -726,7 +729,7 @@ class AcpChannel(BaseChannel):
         self._gateway_reader_task: asyncio.Task | None = None
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._request_ctx: dict[str, _AcpRequestContext] = {}
-        self._session_ctx: dict[str, dict[str, Any]] = {}
+        self._session_ctx: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._active_prompt_request_by_session: dict[str, str] = {}
         self._known_sessions: set[str] = set()
         # value: (session_id, created_at)
@@ -1169,11 +1172,18 @@ class AcpChannel(BaseChannel):
     ) -> None:
         session_id = str(params.get("sessionId") or f"acp_{uuid.uuid4().hex[:12]}").strip()
         self._known_sessions.add(session_id)
-        self._session_ctx[session_id] = dict(params)
+        self._remember_session_ctx(session_id, params)
         await self._write_jsonrpc_result(
             rpc_id,
             build_acp_session_new_result(session_id),
         )
+
+    def _remember_session_ctx(self, session_id: str, params: dict[str, Any]) -> None:
+        """有界保留 session/new 参数快照，供后续 session/prompt 补全。"""
+        self._session_ctx[session_id] = dict(params)
+        self._session_ctx.move_to_end(session_id)
+        while len(self._session_ctx) > _SESSION_CTX_LIMIT:
+            self._session_ctx.popitem(last=False)
 
     async def _handle_jsonrpc_session_prompt(
         self,
@@ -1195,6 +1205,7 @@ class AcpChannel(BaseChannel):
         rpc_params["session_id"] = session_id
         session_ctx = self._session_ctx.get(session_id)
         if isinstance(session_ctx, dict):
+            self._session_ctx.move_to_end(session_id)
             for key, value in session_ctx.items():
                 rpc_params.setdefault(key, value)
 
