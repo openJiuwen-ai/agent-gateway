@@ -156,6 +156,8 @@ MSG_TYPE_MAP = {
 
 # 审批卡片上下文有效期，与 PendingInteraction 的 24h 约定保持一致。
 _CARD_CONTEXT_TTL_SECONDS = 24 * 60 * 60
+# 兜底去重只需覆盖最近一段时间的请求，超出后按最久未用淘汰
+_SENT_FILE_PATHS_LIMIT = 1024
 _APPROVAL_SOURCE_ASK_USER = "ask_user_interrupt"
 _APPROVAL_SOURCE_PERMISSION = "permission_interrupt"
 _APPROVAL_PLAN_EXTRA_KEYS = ("plan_approval_kind", "plan_content", "plan_language")
@@ -460,7 +462,7 @@ class FeishuChannel(BaseChannel):
         self._file_persist_hook: Any = None
         # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重
         # key=request_id, value=set of absolute file paths
-        self._sent_file_paths_by_req: dict[str, set[str]] = {}
+        self._sent_file_paths_by_req: OrderedDict[str, set[str]] = OrderedDict()
         # 审批卡片上下文：request_id -> _ApprovalCardContext（内存快路径）。
         self._card_contexts: dict[str, _ApprovalCardContext] = {}
 
@@ -4359,9 +4361,7 @@ class FeishuChannel(BaseChannel):
 
             req_id = str(getattr(msg, "id", "") or "")
             if req_id:
-                self._sent_file_paths_by_req.setdefault(req_id, set()).add(
-                    os.path.abspath(file_path)
-                )
+                self._remember_sent_file_path(req_id, os.path.abspath(file_path))
 
             if is_image_file(file_path):
                 await self._send_image_message(receive_id, id_type, file_path)
@@ -4371,6 +4371,16 @@ class FeishuChannel(BaseChannel):
                 await self._send_video_message(receive_id, id_type, file_path, file_name)
             else:
                 await self._send_file_card(receive_id, id_type, file_path, file_name)
+
+    def _remember_sent_file_path(self, req_id: str, file_path: str) -> None:
+        """记录请求已发送的文件路径，并按最久未用有界保留。"""
+        paths = self._sent_file_paths_by_req.pop(req_id, None)
+        if paths is None:
+            paths = set()
+        paths.add(file_path)
+        self._sent_file_paths_by_req[req_id] = paths
+        while len(self._sent_file_paths_by_req) > _SENT_FILE_PATHS_LIMIT:
+            self._sent_file_paths_by_req.popitem(last=False)
 
     async def _create_and_send_message(
         self,
