@@ -22,10 +22,16 @@ import urllib.parse
 import urllib.request
 import uuid
 from contextlib import nullcontext
-from dataclasses import dataclass, field
-from typing import Any, Mapping, TypedDict
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from agent_gateway.common.retry import jittered_delay
+from agent_gateway.southbound.control.managed import (
+    AgentMount as AgentMount,
+    AgentRootfsSpec as AgentRootfsSpec,
+    AgentRuntimeSpec as AgentRuntimeSpec,
+    SandboxInfo as SandboxInfo,
+)
 
 TRACE_ID_HEADER = "X-Trace-Id"
 AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
@@ -336,44 +342,6 @@ def _merge_agent_instance_payload(parsed: Mapping[str, Any]) -> dict[str, Any]:
         if value is not None and str(value).strip():
             instance[key] = value
     return instance
-
-
-class AgentMount(TypedDict, total=False):
-    """Bind mount for POST /api/agent ``mounts``."""
-
-    source: str
-    target: str
-    readonly: bool
-
-
-class AgentRootfsSpec(TypedDict, total=False):
-    """Inline ``runtime_spec.rootfs`` for POST /api/agent."""
-
-    imageurl: str
-    user: str
-    ports: list[str]
-
-
-class AgentRuntimeSpec(TypedDict, total=False):
-    """Inline ``runtime_spec`` for POST /api/agent (bypass meta_service)."""
-
-    runtime: str
-    sandbox_type: str
-    rootfs: AgentRootfsSpec
-    cpu: int
-    memory: int
-    code_path: str
-    cmds: list[list[str]]
-    probes: dict[str, Any]
-
-
-@dataclass
-class SandboxInfo:
-    """YuanRong agent instance lifecycle record returned by /api/agent."""
-
-    sandbox_id: str
-    status: str = "ready"
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class YuanrongAgentApiError(RuntimeError):
