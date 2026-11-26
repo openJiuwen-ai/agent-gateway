@@ -468,6 +468,8 @@ def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     # project.lifecycle 的 events/inventory 全目录变体不带 project_id：
     # 给 AgentServer 额外挂一条 scope-wide 网址（同一处理函数按 params 分支）。
     chosen.setdefault(("POST", "/lifecycle"), "project.lifecycle")
+    # Catalog reads must not acquire a synthetic session path parameter.
+    chosen.setdefault(("GET", "/teams"), "team.list")
     return tuple((method, verb, path) for (verb, path), method in chosen.items())
 
 
@@ -558,10 +560,18 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
 
     verb, template = _lookup_route(method, is_stream=bool(envelope.is_stream))
     values: dict[str, Any] = dict(envelope.params or {})
+    session_id = str(envelope.session_id or values.get("session_id") or "").strip()
+    catalog_team_list = method == "team.list" and (
+        not session_id or session_id.startswith(("shared_user_", "webhttp_"))
+    )
+    if catalog_team_list:
+        verb, template = "GET", "/teams"
+        values.pop("session_id", None)
+
     if method in _METHODS_WITHOUT_PARAM_SESSION_ID:
         # 勿 setdefault 信封 session_id；并剥掉 params 里误带的客户端临时 id。
         values.pop("session_id", None)
-    elif envelope.session_id and not values.get("session_id"):
+    elif not catalog_team_list and envelope.session_id and not values.get("session_id"):
         values["session_id"] = envelope.session_id
     if method == "project.lifecycle" and (
         values.get("events") or values.get("inventory")

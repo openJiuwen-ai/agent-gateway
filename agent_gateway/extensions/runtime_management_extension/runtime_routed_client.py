@@ -38,6 +38,9 @@ from agent_gateway.extensions.runtime_management_extension.session_route_client 
 )
 from agent_gateway.routing.agent_client import AgentServerClient
 
+from agent_gateway.enterprise.team.route import TeamRouteResolver
+from agent_gateway.enterprise.team.route_binding_store import ROUTE_STATUS_ACTIVE
+
 logger = logging.getLogger(__name__)
 
 _ROUTE_ATTEMPTS = 3
@@ -65,6 +68,51 @@ _ROUTELESS_METHODS = frozenset(
         "initialize",
     }
 )
+
+#: 无业务会话的只读目录查询（TeamPanel / 会话侧栏 / 项目列表轮询）。它们不参与
+#: runtime scope 并发占槽：``route()`` 会为合成亲和号（``{group}:{bot}:{user}``）
+#: 占用一个 slot 并持续 touch 续期，小 ``scope_concurrency`` 下目录轮询会把真实
+#: 聊天的 slot 挤满，最终目录请求自己也开始 503 ``SCOPE_FULL``。
+#: 会话/团队/项目控制面数据都在共享卷或控制面，任一 Pod 都能服务这些读请求，
+#: 因此复用已知 Pod 入口，只有无已知 Pod 时才 route 一次用于发现。
+_CATALOG_METHODS = frozenset(
+    {
+        "session.list",
+        "session.archived.list",
+        "team.quota.get",
+        # 项目与会话的只读查询：会话侧栏（project.get_sessions）、置顶区
+        # （project.pinned_sessions）、定时任务面板（project.get_cron_sessions）、
+        # 项目列表/详情（project.list / project.info）。它们此前走 route()，
+        # 在 scope 占满（例如 4 个团队同时在线）时会被自己的 SCOPE_FULL 挡住，
+        # 前端表现为“团队/会话列表加载失败”，刷新后才恢复。
+        "project.list",
+        "project.info",
+        "project.get_sessions",
+        "project.get_cron_sessions",
+        "project.pinned_sessions",
+    }
+)
+
+#: 已知 Pod 入口缓存上限（进程内，随 route 成功结果增长）。
+_CATALOG_MAX_BASES = 16
+_CATALOG_BUDGET_SECONDS = 8.0
+_CATALOG_ATTEMPT_SECONDS = 2.0
+_CATALOG_MAX_ATTEMPTS = 3
+_CATALOG_BACKOFF_SECONDS = 15.0
+_CATALOG_BINDING_CACHE_SECONDS = 2.0
+
+#: HTTP 通道为无会话请求合成的路由亲和号前缀（见 web/outbound.bind_http_session）。
+_EPHEMERAL_SESSION_PREFIXES = ("webhttp_", "shared_user_")
+
+
+def _is_ephemeral_route_session(session_id: str, synthesized_id: str = "") -> bool:
+    """True when ``session_id`` 只是路由用合成亲和号，不是真实业务会话。"""
+    sid = (session_id or "").strip()
+    if not sid:
+        return False
+    if sid.startswith(_EPHEMERAL_SESSION_PREFIXES):
+        return True
+    return bool(synthesized_id) and sid == synthesized_id
 
 
 def http_base_from_pod_sse_url(pod_sse_url: str) -> str:
@@ -128,6 +176,28 @@ def _is_routeless_envelope(envelope: E2AEnvelope) -> bool:
         return True
     method = str(envelope.method or "").strip().lower()
     return method in _ROUTELESS_METHODS
+
+
+def _is_catalog_envelope(envelope: E2AEnvelope) -> bool:
+    """True for read-only catalog calls that must not occupy a scope slot.
+
+    ``team.list`` 只有目录态（无业务 ``session_id``）才属于此类；带会话的
+    ``team.list`` 读取的是该会话所在 Pod 的运行态团队池，必须按
+    原有 route/团队亲和送达。目录态在真实链路上不是"顶层为空"：
+    ``GET /teams`` 以 ``bind_session_param=False`` 进入
+    ``bind_http_session``，无客户端会话时顶层被填成 ``shared_user_<user>``
+    合成亲和号（``params`` 无 ``session_id``），必须用
+    ``_is_ephemeral_route_session`` 识别，否则目录轮询仍会被当成
+    业务会话去占 scope 槽位。
+    """
+    method = str(envelope.method or "").strip().lower()
+    if method in _CATALOG_METHODS:
+        return True
+    if method == "team.list":
+        params = envelope.params if isinstance(envelope.params, dict) else {}
+        sid = _first_text(envelope.session_id, params.get("session_id"))
+        return not sid or _is_ephemeral_route_session(sid)
+    return False
 
 
 def _is_interrupt_envelope(envelope: E2AEnvelope) -> bool:
@@ -354,6 +424,7 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         http_client: HttpSseAgentServerClient | None = None,
         touch_interval_seconds: float = _TOUCH_INTERVAL_SECONDS,
         route_attempts: int = _ROUTE_ATTEMPTS,
+        team_route_resolver: TeamRouteResolver | None = None,
     ) -> None:
         self._route = route_client or RuntimeSessionRouteClient()
         self._owns_route = route_client is None
@@ -361,6 +432,14 @@ class RuntimeRoutedAgentClient(AgentServerClient):
         self._owns_http = http_client is None
         self._touch_interval_seconds = max(0.0, float(touch_interval_seconds))
         self._route_attempts = max(1, int(route_attempts))
+        self._catalog_bases: list[str] = []
+        self._catalog_cursor = 0
+        self._catalog_binding_offset = 0
+        self._catalog_binding_cache: list[str] = []
+        self._catalog_binding_expires = 0.0
+        self._catalog_binding_task: asyncio.Task[list[str]] | None = None
+        self._catalog_failed_until: dict[str, float] = {}
+        self._team_routes = team_route_resolver or TeamRouteResolver()
         self._connected = False
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._pod_clients: dict[str, HttpSseAgentServerClient] = {}
@@ -506,6 +585,199 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                 exc,
             )
 
+    # ------------------------------------------------- 只读目录请求（不占槽）
+
+    def _remember_pod_base(self, base_url: str) -> None:
+        base = (base_url or "").strip().rstrip("/")
+        if not base or base in self._catalog_bases:
+            return
+        self._catalog_bases.append(base)
+        if len(self._catalog_bases) > _CATALOG_MAX_BASES:
+            del self._catalog_bases[: len(self._catalog_bases) - _CATALOG_MAX_BASES]
+
+    def _forget_pod_base(self, base_url: str) -> None:
+        base = (base_url or "").strip().rstrip("/")
+        if base in self._catalog_bases:
+            self._catalog_bases.remove(base)
+
+    def _catalog_bases_snapshot(self) -> list[str]:
+        """轮转返回已知 Pod 入口，避免目录请求总压在同一台。
+
+        除 ``route`` 成功写回的入口外，也并入仍有推送连接的 Pod：连接存在
+        即证明 Pod 存活，网关重启后 ``_catalog_bases`` 为空时据此直接服务
+        目录读，不必再 ``route`` 抢一个 scope slot。
+        """
+        bases = list(self._catalog_bases)
+        for base in self._pod_clients:
+            if base not in bases:
+                bases.append(base)
+        if not bases:
+            return []
+        size = len(bases)
+        start = self._catalog_cursor % size
+        self._catalog_cursor = (start + 1) % size
+        return bases[start:] + bases[:start]
+
+    async def _discover_catalog_base(
+        self,
+        envelope: E2AEnvelope,
+        authorized_identity: tuple[str, str, str] | None,
+    ) -> str:
+        """无已知 Pod 时 route 一次拿到入口，并立即释放占用的 slot。"""
+        session_id, group_id, bot_id, request_id, user_id = identity_from_envelope(
+            envelope, authorized_identity=authorized_identity,
+        )
+        synthesized_id = f"{group_id}:{bot_id}:{user_id or '_'}"
+        base_url, _ = await self._route_with_retry(
+            session_id=session_id,
+            group_id=group_id,
+            bot_id=bot_id,
+            request_id=request_id,
+            user_id=user_id,
+        )
+        await self._release_catalog_slot(envelope, session_id, synthesized_id)
+        return base_url
+
+    async def _release_catalog_slot(
+        self, envelope: E2AEnvelope, session_id: str, synthesized_id: str = "",
+    ) -> None:
+        params = envelope.params if isinstance(envelope.params, dict) else {}
+        explicit = _first_text(params.get("session_id"))
+        if explicit and not _is_ephemeral_route_session(explicit, synthesized_id):
+            # 调用方显式给了业务会话：该绑定可能属于真实聊天，不能驱逐。
+            return
+        if not _is_ephemeral_route_session(session_id, synthesized_id):
+            # 只有合成亲和号可释放；WS 客户端显式带进来的真实会话要保留。
+            return
+        try:
+            action = await asyncio.wait_for(
+                self._route.rebind(
+                    from_session_id=session_id,
+                    to_session_id=None,
+                    request_id=uuid.uuid4().hex,
+                ),
+                timeout=_rebind_timeout(),
+            )
+            logger.info(
+                "[RuntimeRouted] catalog route slot released: session=%s action=%s",
+                session_id,
+                action,
+            )
+        except Exception as exc:  # noqa: BLE001 - 释放失败只是多占一个 TTL 槽位
+            logger.warning(
+                "[RuntimeRouted] catalog route slot release failed: session=%s err=%s",
+                session_id,
+                exc,
+            )
+
+    async def _catalog_bases_from_team_bindings(self) -> list[str]:
+        """Share one lookup and cache empty/error results as well as endpoints."""
+        if asyncio.get_running_loop().time() < self._catalog_binding_expires:
+            return list(self._catalog_binding_cache)
+        task = self._catalog_binding_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._read_catalog_binding_page())
+            self._catalog_binding_task = task
+        # A caller's deadline must not abandon a still-running DB thread and
+        # cause the next poll to submit another lookup.
+        return list(await asyncio.shield(task))
+
+    async def _read_catalog_binding_page(self) -> list[str]:
+        """Read a bounded page of distinct endpoints without blocking the loop."""
+        if self._team_routes is None:
+            return []
+        try:
+            store = self._team_routes.store
+            bases = await asyncio.to_thread(
+                store.catalog_endpoints, _CATALOG_MAX_ATTEMPTS, self._catalog_binding_offset,
+            )
+            if not bases and self._catalog_binding_offset:
+                self._catalog_binding_offset = 0
+                bases = await asyncio.to_thread(store.catalog_endpoints, _CATALOG_MAX_ATTEMPTS, 0)
+            self._catalog_binding_offset += len(bases)
+            result = [base.strip().rstrip("/") for base in bases
+                      if base.startswith(("http://", "https://"))]
+        except Exception:
+            logger.debug("[RuntimeRouted] catalog binding lookup failed", exc_info=True)
+            result = []
+        self._catalog_binding_cache = result
+        self._catalog_binding_expires = asyncio.get_running_loop().time() + _CATALOG_BINDING_CACHE_SECONDS
+        return list(result)
+
+    async def _send_catalog_request(
+        self, envelope: E2AEnvelope,
+        authorized_identity: tuple[str, str, str] | None,
+        *, timeout: float | None = None,
+    ) -> AgentResponse:
+        budget = min(timeout, _CATALOG_BUDGET_SECONDS) if timeout is not None else _CATALOG_BUDGET_SECONDS
+        try:
+            async with asyncio.timeout(budget):
+                return await self._send_catalog_request_with_budget(
+                    envelope, authorized_identity, timeout=timeout,
+                )
+        except TimeoutError as exc:
+            raise RetryableRouteError("catalog deadline exceeded", code="TRANSPORT") from exc
+
+    async def _send_catalog_request_with_budget(
+        self,
+        envelope: E2AEnvelope,
+        authorized_identity: tuple[str, str, str] | None,
+        *,
+        timeout: float | None = None,
+    ) -> AgentResponse:
+        """把只读目录请求直发已知 Pod，不调用 ``route``。
+
+        最多尝试一页候选；失败后在同一预算内发现一个新入口。
+        总预算由外层管理，超时不会再进入普通路由的独立重试预算。
+        """
+        now = asyncio.get_running_loop().time()
+        self._catalog_failed_until = {base: until for base, until in self._catalog_failed_until.items() if until > now}
+        bases = [base for base in self._catalog_bases_snapshot() if base not in self._catalog_failed_until]
+        if not bases:
+            bases = await self._catalog_bases_from_team_bindings()
+        if not bases:
+            try:
+                bases = [await self._discover_catalog_base(envelope, authorized_identity)]
+            except RetryableRouteError as exc:
+                logger.warning(
+                    "[RuntimeRouted] catalog pod discovery failed, fall back to route: "
+                    "method=%s err=%s",
+                    envelope.method,
+                    exc,
+                )
+                raise
+        bases = [base for base in bases if base not in self._catalog_failed_until]
+        for base in bases[:_CATALOG_MAX_ATTEMPTS]:
+            try:
+                attempt_timeout = min(timeout, _CATALOG_ATTEMPT_SECONDS) if timeout is not None else _CATALOG_ATTEMPT_SECONDS
+                async with asyncio.timeout(attempt_timeout):
+                    response = await self._http.send_request(envelope, base_url=base, timeout=attempt_timeout)
+            except Exception as exc:  # noqa: BLE001
+                if isinstance(exc, httpx.HTTPStatusError) and (
+                    exc.response.status_code < 500 and exc.response.status_code != 429
+                ):
+                    raise
+                if not _is_http_retryable(exc):
+                    raise
+                self._forget_pod_base(base)
+                self._catalog_failed_until[base] = asyncio.get_running_loop().time() + _CATALOG_BACKOFF_SECONDS
+                logger.warning(
+                    "[RuntimeRouted] catalog pod unreachable, trying next: "
+                    "method=%s base=%s err=%s",
+                    envelope.method,
+                    base,
+                    exc,
+                )
+                continue
+            self._remember_pod_base(base)
+            return response
+        base = await self._discover_catalog_base(envelope, authorized_identity)
+        attempt_timeout = min(timeout, _CATALOG_ATTEMPT_SECONDS) if timeout is not None else _CATALOG_ATTEMPT_SECONDS
+        async with asyncio.timeout(attempt_timeout):
+            response = await self._http.send_request(envelope, base_url=base, timeout=attempt_timeout)
+        self._remember_pod_base(base)
+        return response
+
 
     async def connect(self, uri: str) -> None:
         _ = uri
@@ -631,6 +903,10 @@ class RuntimeRoutedAgentClient(AgentServerClient):
             return self._heartbeat_response(envelope)
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
         apply_invoke_ids_to_envelope(envelope)
+        if _is_catalog_envelope(envelope):
+            response = await self._send_catalog_request(envelope, authorized_identity, timeout=timeout)
+            if response is not None:
+                return response
         if _is_routeless_envelope(envelope):
             base_url = _routeless_base_or_raise(envelope.method)
             try:
@@ -1120,7 +1396,9 @@ class RuntimeRoutedAgentClient(AgentServerClient):
                         )
                         await asyncio.sleep(delay)
                     else:
-                        return http_base_from_pod_sse_url(result.pod_sse_url), result.request_id
+                        base_url = http_base_from_pod_sse_url(result.pod_sse_url)
+                        self._remember_pod_base(base_url)
+                        return base_url, result.request_id
         except TimeoutError as exc:
             if not budget.expired():
                 raise

@@ -61,3 +61,32 @@ class TestInvalidMatchExprFallback:
             OwnerIdentity(user_id="u1"),
         )
         assert limits.max_teams_per_user == 7
+
+
+def test_enterprise_empty_policy_uses_template_limit(monkeypatch):
+    monkeypatch.setattr("agent_gateway.enterprise.edition.is_enterprise", lambda: True)
+    monkeypatch.setattr(quota_policy.TeamQuotaPolicyStore, "_quota_config", staticmethod(lambda: {}))
+    monkeypatch.setattr(quota_policy, "resolve_max_teammates", lambda *_: 99)
+    limits = quota_policy.TeamQuotaPolicyStore._limits_for_rows([], OwnerIdentity(user_id="u1"))
+    assert limits.max_teammates_per_team == 99
+
+
+def test_personal_empty_policy_uses_template_limit(monkeypatch):
+    monkeypatch.setattr("agent_gateway.enterprise.edition.is_enterprise", lambda: False)
+    monkeypatch.setattr(quota_policy.TeamQuotaPolicyStore, "_quota_config", staticmethod(lambda: {}))
+    monkeypatch.setattr(quota_policy, "resolve_max_teammates", lambda *_: 9)
+    limits = quota_policy.TeamQuotaPolicyStore._limits_for_rows([], OwnerIdentity(user_id="u1"))
+    assert limits.max_teammates_per_team == 9
+
+
+def test_enterprise_explicit_policy_is_preserved(monkeypatch):
+    monkeypatch.setattr("agent_gateway.enterprise.edition.is_enterprise", lambda: True)
+    monkeypatch.setattr(quota_policy, "matches", lambda *_: True)
+    limits = quota_policy.TeamQuotaPolicyStore._limits_for_rows(
+        [{"policy_id": "p1", "enabled": True, "match_expr": [],
+          "max_teams_per_user": 7, "max_teammates_per_team": 7, "max_teams_per_org": 4}],
+        OwnerIdentity(user_id="u1"),
+    )
+    assert limits.max_teams_per_user == 7
+    assert limits.max_teammates_per_team == 7
+    assert limits.max_teams_per_org == 4

@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock
 from e2a.models import E2AEnvelope
+from agent_gateway.enterprise.team.route import TeamRouteResolver
+from agent_gateway.enterprise.team.route_binding_store import InMemoryTeamRouteBindingStore
 
 _EXT_DIR = (
     Path(__file__).resolve().parents[3]
@@ -91,7 +93,11 @@ async def test_missing_target_error_survives_request_dispatch(clean_env, stream)
     module = _reload_routed()
     clean_env.setenv("JIUWENSWARM_EDITION", "enterprise")
     http = AsyncMock()
-    client = module.RuntimeRoutedAgentClient(route_client=AsyncMock(), http_client=http)
+    client = module.RuntimeRoutedAgentClient(
+        route_client=AsyncMock(),
+        http_client=http,
+        team_route_resolver=TeamRouteResolver(store=InMemoryTeamRouteBindingStore()),
+    )
     client._connected = True
     envelope = E2AEnvelope(method="initialize", request_id="r", channel="web")
     with pytest.raises(module.RoutelessTargetMissing) as caught:
@@ -112,7 +118,11 @@ async def test_configured_target_keeps_http_failure_response(clean_env):
     clean_env.setenv("GATEWAY_RUNTIME_DEFAULT_HTTP_BASE", "http://agent:8766")
     http = AsyncMock()
     http.send_request.side_effect = RuntimeError("connection failed")
-    client = module.RuntimeRoutedAgentClient(route_client=AsyncMock(), http_client=http)
+    client = module.RuntimeRoutedAgentClient(
+        route_client=AsyncMock(),
+        http_client=http,
+        team_route_resolver=TeamRouteResolver(store=InMemoryTeamRouteBindingStore()),
+    )
     client._connected = True
     response = await client.send_request(E2AEnvelope(method="initialize", request_id="r"))
     assert response.ok is False
