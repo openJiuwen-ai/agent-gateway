@@ -123,7 +123,7 @@ class FilePersistentBackend:
         self._file_lock_timeout = float(file_lock_timeout)
         self._on_write = on_write
         self._extra_write_locks = dict(extra_write_locks or {})
-        self._lock = asyncio.Lock()
+        self._locks: dict[str, asyncio.Lock] = {}
 
     async def ensure_ready(self) -> None:
         """文件 backend 无连接；写时再创建父目录。"""
@@ -132,6 +132,14 @@ class FilePersistentBackend:
     async def close(self) -> None:
         """文件 backend 无连接，无需释放。"""
         return None
+
+    def _lock_for(self, path: str) -> asyncio.Lock:
+        """同一物理文件串行，不同文件互不阻塞。"""
+        lock = self._locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[path] = lock
+        return lock
 
     def _layout(self, name: str) -> tuple[StoreLayout, FileLayout]:
         """按 name 取文件布局；没有 file 布局则失败。"""
@@ -442,9 +450,9 @@ class FilePersistentBackend:
             rows = rows[:limit]
         return [dict(row) for row in rows]
 
-    async def _run(self, fn: Any) -> Any:
-        """进程内串行，把同步文件 IO 丢到线程。"""
-        async with self._lock:
+    async def _run(self, lock_path: str, fn: Any) -> Any:
+        """按文件串行，把同步文件 IO 丢到线程。"""
+        async with self._lock_for(lock_path):
             return await asyncio.to_thread(fn)
 
     async def list(
@@ -476,7 +484,7 @@ class FilePersistentBackend:
                 offset=offset,
             )
 
-        return await self._run(_body)
+        return await self._run(file_layout.path, _body)
 
     async def get(self, name: str, key: dict[str, Any]) -> dict[str, Any] | None:
         """按主键取一条；内部复用 list(limit=1)。"""
@@ -509,7 +517,7 @@ class FilePersistentBackend:
 
             return self._with_file_lock(path, _mutate)
 
-        return await self._run(_body)
+        return await self._run(file_layout.path, _body)
 
     async def update(
         self,
@@ -544,7 +552,7 @@ class FilePersistentBackend:
 
             return self._with_file_lock(path, _mutate)
 
-        return await self._run(_body)
+        return await self._run(file_layout.path, _body)
 
     async def delete(self, name: str, key: dict[str, Any]) -> bool:
         """按主键删除；返回是否删到记录。"""
@@ -571,7 +579,7 @@ class FilePersistentBackend:
                 deleted = self._with_file_lock(path, _mutate) or deleted
             return deleted
 
-        return await self._run(_body)
+        return await self._run(file_layout.path, _body)
 
 
 __all__ = ["FilePersistentBackend"]
