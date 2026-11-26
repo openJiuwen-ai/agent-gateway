@@ -1,12 +1,16 @@
 """Only explicitly mentioned groups are read; member identity is not routing evidence."""
 import asyncio
 import json
+from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from agent_gateway.channel_manager.im_platforms.welink.welink_reader import WelinkReader
-from agent_gateway.channel_manager.im_platforms.welink.welink_subscriptions import MentionSubscriptions
 from agent_gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
+from agent_gateway.channel_manager.im_platforms.welink.welink_reader import (
+    WelinkReader,
+    write_checkpoint,
+)
+from agent_gateway.channel_manager.im_platforms.welink.welink_subscriptions import MentionSubscriptions
 
 
 class Cli:
@@ -152,7 +156,7 @@ def test_standalone_never_replays_legacy_or_other_owner_pending(tmp_path, monkey
     old_account = hashlib.sha256(b'reader').hexdigest()[:24]
     old_owner = hashlib.sha256(json.dumps(['reader', 'old-agent', 'ak']).encode()).hexdigest()[:24]
     for name in (f'pending-{old_account}.json', f'registered-pending-{old_owner}.json'):
-        channel._save_pending(tmp_path / name, [message])
+        write_checkpoint(tmp_path / name, [asdict(message)])
     channel._running, channel._auth_ok_at = True, 10**15
     channel._deliver = AsyncMock(return_value=True)
     poller = SimpleNamespace(poll=lambda: [], _registered_groups=lambda: ['g'])
@@ -169,8 +173,8 @@ def test_standalone_drops_revoked_pending_without_delivery(tmp_path, monkeypatch
     channel = WelinkChannel(WelinkConfig(account='reader', agent_id='a',
         assistant_credential_id='ak', credential_dir=str(tmp_path)), None)
     owner = hashlib.sha256(json.dumps(['reader', 'a', 'ak']).encode()).hexdigest()[:24]
-    channel._save_pending(tmp_path / f'registered-pending-{owner}.json', [
-        WelinkHistoryMessage(message_id='10', group_id='revoked', sender_id='human', sender_name='Human', text='old')])
+    write_checkpoint(tmp_path / f'registered-pending-{owner}.json', [asdict(
+        WelinkHistoryMessage(message_id='10', group_id='revoked', sender_id='human', sender_name='Human', text='old'))])
     channel._running, channel._auth_ok_at = True, 10**15
     channel._deliver = AsyncMock(return_value=True)
     poller = SimpleNamespace(poll=lambda: [], _registered_groups=lambda: [])
