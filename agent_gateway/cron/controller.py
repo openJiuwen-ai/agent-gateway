@@ -14,6 +14,7 @@ from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     EXECUTION_WORK_MODES,
 )
+from agent_gateway.auth.credential_access import CredentialAccess
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.cron.cron_expr import (
     clamp_wake_offset_for_delay_seconds,
@@ -127,6 +128,7 @@ class CronController:
         self.mutation_lock = scheduler._lifecycle_mutation_lock
         self._target_channel: CronTargetChannel | None = None
         self._agent_client: Any = None
+        self._credential_access: CredentialAccess | None = None
         # 准入闸门是跨进程 RPC,列表时按项目去重后并发查询,这里限制并发上限,
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
@@ -167,6 +169,21 @@ class CronController:
     def bind_agent_client(self, agent_client: Any) -> None:
         """Keep the Gateway client used to read AgentServer's Zen cache."""
         self._agent_client = agent_client
+
+    def set_credential_access(self, access: CredentialAccess) -> None:
+        self._credential_access = access
+
+    async def _credential_ref_for_login_model(self, auth_session: str) -> str:
+        access = self._credential_access
+        if access is None:
+            return _login_credential_ref_from_session(auth_session)
+        credential_ref = await access.credential_ref_for_login_session(auth_session or None)
+        credential_ref = str(credential_ref or "").strip()
+        if not credential_ref:
+            raise ValueError(
+                "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+            )
+        return credential_ref
 
     async def _zen_entries(self) -> list[dict[str, Any]]:
         client = self._agent_client
@@ -714,7 +731,7 @@ class CronController:
             # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
             # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
             credential_ref = (
-                _login_credential_ref_from_session(auth_session)
+                await self._credential_ref_for_login_model(auth_session)
                 if model_source == CRON_MODEL_SOURCE_LOGIN
                 else ""
             )
@@ -906,7 +923,7 @@ class CronController:
             # 账号；换回自配模型/清除模型 → 解绑，否则执行侧仍会注入登录凭据，
             # 同名自配模型会被切到登录模型计费。
             if model_source == CRON_MODEL_SOURCE_LOGIN:
-                patch["credential_ref"] = _login_credential_ref_from_session(
+                patch["credential_ref"] = await self._credential_ref_for_login_model(
                     auth_session
                 )
             else:

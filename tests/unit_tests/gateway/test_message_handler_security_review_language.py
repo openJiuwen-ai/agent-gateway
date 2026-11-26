@@ -13,6 +13,7 @@ import pytest
 
 from agent_gateway.message_handler import message_handler as message_handler_module
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 from agent_gateway.message_handler.prompts.security_review_prompt import GitPreExecError
 
 
@@ -24,7 +25,7 @@ def _reset_message_handler_singleton():
 
 
 def _handler(client: object) -> MessageHandler:
-    return MessageHandler(client)
+    return MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
 
 
 def _msg() -> SimpleNamespace:

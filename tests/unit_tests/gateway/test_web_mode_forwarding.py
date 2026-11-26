@@ -24,6 +24,7 @@ from agent_gateway.channel_manager.web.app_web_handlers import (
 from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _ClientSocket:
@@ -123,7 +124,7 @@ async def _gateway_with_agent_server():
     agent = _AgentServerSocket()
     client._ws = agent
     client._server_ready = True
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())

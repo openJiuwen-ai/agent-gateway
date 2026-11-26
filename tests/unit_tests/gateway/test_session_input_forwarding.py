@@ -9,6 +9,7 @@ import pytest
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.message import Message, ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 def message(rid, *, stream=False, mode=None, channel="web", **params):
@@ -61,7 +62,7 @@ class GatedClient:
 async def gateway(monkeypatch):
     monkeypatch.setattr(MessageHandler, "_instance", None)
     client = GatedClient()
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     handler._broadcast_task_global_running = AsyncMock()
     handler._trigger_before_chat_request_hook = AsyncMock()
     await handler.start_forwarding()

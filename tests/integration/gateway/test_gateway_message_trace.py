@@ -30,6 +30,7 @@ from agent_gateway.message_handler.message_handler import MessageHandler
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 from agent_gateway.routing.e2a_proxy import proxy_unary_request
 from agent_gateway.routing.keys import AgentRef, RoutingKey
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 @pytest.fixture(autouse=True)
@@ -314,7 +315,7 @@ async def test_stream_trace_waits_for_producer_and_web_writer(collector, monkeyp
     agent = AgentSocket(client, runtime)
     client._ws = agent
     client._server_ready = True
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -438,7 +439,7 @@ async def test_stream_trace_finishes_on_failure_or_cancellation(collector, monke
     agent.fail_send = failure == 'send'
     client._ws = agent
     client._server_ready = True
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -544,7 +545,7 @@ async def test_stream_business_delivery_without_tracing(collector, monkeypatch, 
     agent = AgentSocket(client, runtime)
     client._ws = agent
     client._server_ready = True
-    handler = MessageHandler(client)
+    handler = MessageHandler(client, session_login_bindings=NullSessionLoginBindings())
     manager = ChannelManager(handler, {})
     handler.set_channel_manager(manager)
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
