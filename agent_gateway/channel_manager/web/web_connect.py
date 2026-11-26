@@ -151,6 +151,7 @@ def _ws_authorization(ws: Any) -> str | None:
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 _LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
+_A4P_CONFIG_METHODS = frozenset({"a4p.config.get", "a4p.config.update"})
 _SWARMFLOW_CONTROL_METHODS = frozenset(
     {
         ReqMethod.SWARMFLOW_PAUSE.value,
@@ -2612,6 +2613,21 @@ class WebChannel(BaseWsChannel):
         # 仅合成一个临时 id 供后续 Message 构造使用，但【不】参与 register_ws，
         # 保留 ws 上一次的真实 RoutingKey，避免把 ws 从其所属 team session 摘除。
         _explicit_session_id = params.get("session_id")
+        if method in _A4P_CONFIG_METHODS and _explicit_session_id not in (None, ""):
+            # a4p.config still accepts session_id for legacy clients, but does
+            # not route the RPC by session. Honor it for connection bookkeeping
+            # only when it already belongs to this ws; otherwise ignore the
+            # historical field rather than rejecting the whole config request.
+            try:
+                _candidate_session_id = validate_session_id(_explicit_session_id)
+            except InvalidProtocolId:
+                _explicit_session_id = None
+            else:
+                registered_session_ids = {
+                    routing_key.session_id for routing_key in self.routing_keys_for(ws)
+                }
+                if _candidate_session_id not in registered_session_ids:
+                    _explicit_session_id = None
         has_explicit_session = _explicit_session_id is not None and _explicit_session_id != ""
         try:
             if method in {"chat.send", "chat.resume"} and "group_id" in params:

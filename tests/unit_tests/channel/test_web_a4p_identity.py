@@ -31,7 +31,10 @@ def route(mode, user="alice"):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy_session", [None, "new", "archived-session"])
+@pytest.mark.parametrize(
+    "legacy_session",
+    [None, "new", "archived-session", 123, ["new"], " invalid "],
+)
 @pytest.mark.parametrize("operation,config", [("get", {}), ("update", {"enabled": True})])
 async def test_a4p_config_websocket_without_chat_route(operation, config, legacy_session):
     channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
@@ -65,6 +68,33 @@ async def test_a4p_config_websocket_without_chat_route(operation, config, legacy
     assert envelope.agent_ref is None
     assert envelope.params == config
     assert channel.send_response.call_args.kwargs["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_websocket_reuses_registered_session():
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    client = SimpleNamespace(server_ready=True, send_request=AsyncMock(
+        return_value=SimpleNamespace(ok=True, payload={"enabled": True})))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    channel.send_response = AsyncMock()
+    channel.on_message(lambda msg: None)
+    ws = Socket()
+    registered = route("agent")
+    try:
+        await channel.register_ws(ws, registered)
+        await channel._handle_raw_message(ws, json.dumps({
+            "type": "req", "id": "rpc", "method": "a4p.config.get",
+            "params": {"session_id": registered.session_id},
+        }), {})
+
+        assert channel._ws_sessions[id(ws)] == {registered.session_id}
+        assert await channel.routing_keys_for_ws(ws) == [registered]
+        envelope = client.send_request.call_args.args[0]
+        assert envelope.session_id is None
+        assert channel.send_response.call_args.kwargs["ok"] is True
+    finally:
+        channel._ws_sessions.pop(id(ws), None)
+        await channel.unregister_ws(ws)
 
 
 @pytest.mark.asyncio
