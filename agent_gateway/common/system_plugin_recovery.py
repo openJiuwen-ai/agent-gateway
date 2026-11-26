@@ -364,12 +364,16 @@ class SystemPluginRecovery:
                 entries.append(entry)
         return entries
 
-    def _apply_snapshot(self, expected: Mapping[tuple[str, str], Mapping[str, Any]]) -> list[str]:
+    def _apply_snapshot(self, expected: Mapping[tuple[str, ...], Mapping[str, Any]]) -> list[str]:
         """Write manifests and the shared ledger, rolling back on a write failure."""
         entries = self._scan_entries()
         pending: list[tuple[str, Path, dict[str, Any], dict[str, Any]]] = []
         changed: set[str] = set()
         for entry in entries:
+            if entry.get("status") == "uninstalling":
+                # The uninstall finalizers still owe this copy; a restore must
+                # not change it or its ledger row.
+                continue
             target = _target_state(entry, expected)
             manifest_path = Path(entry["manifest_path"])
             try:
@@ -393,7 +397,7 @@ class SystemPluginRecovery:
                 _write_json(manifest_path, target)
                 written.append((manifest_path, original))
             changed |= self._sync_install_state(entries, expected)
-        except (OSError, TypeError, ValueError):
+        except (OSError, TypeError, ValueError, portalocker.LockException):
             for manifest_path, original in reversed(written):
                 try:
                     _write_json(manifest_path, original)
@@ -434,7 +438,7 @@ class SystemPluginRecovery:
     def _sync_install_state(
         self,
         entries: Sequence[Mapping[str, Any]],
-        expected: Mapping[tuple[str, str], Mapping[str, Any]],
+        expected: Mapping[tuple[str, ...], Mapping[str, Any]],
     ) -> set[str]:
         """Apply the same enabled/active/status truth to the shared install ledger."""
         path = self.data_dir / _INSTALL_STATE_FILE
@@ -472,6 +476,9 @@ class SystemPluginRecovery:
                 target = _target_state(entry, expected)
                 bundle_id = entry.get("bundle_id")
                 if bundle_id:
+                    bundle = bundle_index.get((bundle_id, entry.get("bundle_version")))
+                    if bundle is not None and bundle.get("status") == "uninstalling":
+                        continue
                     record = member_index.get(
                         (bundle_id, entry.get("bundle_version"), entry["package_id"]),
                     )
@@ -490,7 +497,7 @@ class SystemPluginRecovery:
                         changed_ids.add(entry["package_id"])
             for key in sorted(touched):
                 bundle = bundle_index.get(key)
-                if bundle is not None:
+                if bundle is not None and bundle.get("status") != "uninstalling":
                     changed = _derive_bundle_record(bundle) or changed
             if changed:
                 _write_json(path, document)
@@ -528,9 +535,6 @@ def _snapshot(record: Mapping[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(package_id, str) or not isinstance(version, str) or not isinstance(enabled, bool):
             raise ValueError("recovery record snapshot is invalid")
         entry: dict[str, Any] = {"package_id": package_id, "version": version, "enabled": enabled}
-        active = item.get("active")
-        if isinstance(active, bool):
-            entry["active"] = active
         status = item.get("status")
         if isinstance(status, str) and status in _STATUSES:
             entry["status"] = status
@@ -555,12 +559,22 @@ def _public_record(record: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _expected_states(record: Mapping[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
-    """Return the recorded state of each package copy, keyed by id and version."""
-    return {
-        (item["package_id"], item["version"]): item
-        for item in _snapshot(record)
-    }
+def _expected_states(record: Mapping[str, Any]) -> dict[tuple[str, ...], dict[str, Any]]:
+    """Return the recorded state of each package copy.
+
+    Standalone copies are keyed by ``(package_id, version)``; bundle members also
+    carry their container identity, because the same id and version may exist in
+    a standalone copy and in one or more bundle copies with different states.
+    """
+    result: dict[tuple[str, ...], dict[str, Any]] = {}
+    for item in _snapshot(record):
+        bundle_id = item.get("bundle_id")
+        bundle_version = item.get("bundle_version")
+        if isinstance(bundle_id, str) and bundle_id and isinstance(bundle_version, str) and bundle_version:
+            result[(bundle_id, bundle_version, item["package_id"], item["version"])] = item
+        else:
+            result[(item["package_id"], item["version"])] = item
+    return result
 
 
 def _read_manifest(root: Path) -> dict[str, Any] | None:
@@ -582,9 +596,6 @@ def _public_package_state(entry: Mapping[str, Any]) -> dict[str, Any]:
         "version": entry["version"],
         "enabled": entry["enabled"],
     }
-    for key in ("active",):
-        if isinstance(entry.get(key), bool):
-            value[key] = entry[key]
     status = entry.get("status")
     if isinstance(status, str) and status in _STATUSES:
         value["status"] = status
@@ -625,7 +636,6 @@ def _standalone_entry(
         "package_id": package_id,
         "version": version_dir.name,
         "enabled": enabled,
-        "active": active,
         "status": _state_status(record, enabled, active, member=False),
         "manifest_path": str(root / "manifest.json"),
     }
@@ -668,7 +678,6 @@ def _member_entry(
         "package_id": package_id,
         "version": version,
         "enabled": enabled,
-        "active": active,
         "status": _state_status(record, enabled, active, member=True),
         "manifest_path": str(root / "manifest.json"),
         "bundle_id": bundle_id,
@@ -683,29 +692,35 @@ def _record_enabled(record: Mapping[str, Any] | None, document: Mapping[str, Any
 
 
 def _state_status(record: Mapping[str, Any] | None, enabled: bool, active: bool, *, member: bool) -> str:
-    if not enabled:
-        return "disabled"
     if isinstance(record, Mapping):
         status = record.get("status")
-        if isinstance(status, str) and status in _STATUSES and status != "uninstalling":
+        if isinstance(status, str) and status in _STATUSES:
             return status
+    if not enabled:
+        return "disabled"
     return "standby" if not active else ("pending" if member else "active")
 
 
 def _target_state(
     entry: Mapping[str, Any],
-    expected: Mapping[tuple[str, str], Mapping[str, Any]],
+    expected: Mapping[tuple[str, ...], Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Return the restored state for one copy; missing copies are disabled."""
-    expected_entry = expected.get((entry["package_id"], entry["version"]))
-    if expected_entry is None and entry.get("bundle_id"):
-        # Records created before bundle-member scanning stored the bundle root
-        # only. Only a recorded disable is safe to project onto its members: the
-        # old scanner defaulted a bundle root without ``enable`` to enabled, so
-        # projecting that value would resurrect disabled members.
-        legacy = expected.get((entry["bundle_id"], entry.get("bundle_version")))
-        if legacy is not None and legacy["enabled"] is False:
-            expected_entry = legacy
+    if entry.get("bundle_id"):
+        expected_entry = expected.get((
+            entry["bundle_id"], entry.get("bundle_version"),
+            entry["package_id"], entry["version"],
+        ))
+        if expected_entry is None:
+            # Records created before bundle-member scanning stored the bundle root
+            # only. Only a recorded disable is safe to project onto its members:
+            # the old scanner defaulted a root without ``enable`` to enabled, so
+            # projecting that value would resurrect disabled members.
+            legacy = expected.get((entry["bundle_id"], entry.get("bundle_version")))
+            if legacy is not None and legacy["enabled"] is False:
+                expected_entry = legacy
+    else:
+        expected_entry = expected.get((entry["package_id"], entry["version"]))
     if expected_entry is None:
         return {"enabled": False, "active": False, "status": "disabled"}
     if expected_entry["enabled"] is not True:
@@ -727,6 +742,9 @@ def _target_state(
 
 def _apply_state_record(record: dict[str, Any], target: Mapping[str, Any]) -> bool:
     """Write one ledger row and return whether it changed."""
+    if record.get("status") == "uninstalling":
+        # Keep the tombstone for the host that still has to remove the copy.
+        return False
     changed = any(record.get(key) != target[key] for key in ("enabled", "active", "status"))
     record["enabled"] = target["enabled"]
     record["active"] = target["active"]
