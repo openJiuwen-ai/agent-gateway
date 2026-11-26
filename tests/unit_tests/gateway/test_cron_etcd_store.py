@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -215,21 +216,24 @@ async def test_etcd_cas_conflict_retries_once():
         existing, rev = await original_get(job_id)
         calls["n"] += 1
         if calls["n"] == 1:
-            # Simulate a concurrent writer bumping ModRevision after our read.
-            fake.revision += 1
-            value, _old = fake.kvs[key]
-            fake.kvs[key] = (value, fake.revision)
+            # A second writer changes another field between our read and CAS.
+            concurrent = json.loads(fake.kvs[key][0])
+            concurrent["name"] = "renamed"
+            await fake.put(key, json.dumps(concurrent).encode("utf-8"))
             return existing, rev
         return existing, rev
 
     store._get_job_with_rev = _flaky_get  # type: ignore[method-assign]
     updated = await store.update_job(job.id, {"description": "after-cas"})
     assert updated.description == "after-cas"
+    assert updated.name == "renamed"
+    assert (await store.get_job(job.id)).name == "renamed"
     assert calls["n"] == 2
 
 
 @pytest.mark.asyncio
-async def test_etcd_cas_conflict_without_retry_raises():
+@pytest.mark.parametrize("error_type, attempts", [(EtcdCasError, 2), (EtcdError, 1)])
+async def test_etcd_failed_update_retries_only_conflicts(error_type, attempts):
     store, fake = _store()
     job = await store.create_job(
         name="cas-fail",
@@ -239,12 +243,12 @@ async def test_etcd_cas_conflict_without_retry_raises():
         targets="web",
     )
 
-    async def _always_cas(*_a, **_k):
-        raise EtcdCasError("conflict")
-
-    fake.put_if_mod_revision = _always_cas  # type: ignore[method-assign]
-    with pytest.raises(EtcdError):
+    write = AsyncMock(side_effect=error_type("failed"))
+    fake.put_if_mod_revision = write  # type: ignore[method-assign]
+    with pytest.raises(EtcdError, match="etcd cas-put failed") as error:
         await store.update_job(job.id, {"description": "nope"})
+    assert isinstance(error.value.__cause__, error_type)
+    assert write.await_count == attempts
 
 
 @pytest.mark.asyncio
