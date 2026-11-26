@@ -204,7 +204,7 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     """
     if filepath == get_config_file() and not filepath.exists():
         # 落盘配置缺失时回退读包内模板：模板资源名固定为 config.yaml（历史
-        # 资源名，未随落盘名 config-gateway.yaml 改名），见 docker/update_conf.py
+        # 资源名，未随落盘名 config-gateway.yaml 改名），见 docker/jiuwenswarm-ee/update_conf.py
         filepath = get_bundled_resources_dir() / "config.yaml"
     stamp = _yaml_file_stamp(filepath)
     cache_key = str(filepath)
