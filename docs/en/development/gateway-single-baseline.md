@@ -90,6 +90,10 @@ connection and startup-timing inputs to `application/single.py`.
 - Inbound preprocessing preserves `app_id` and the current Web local-method route:
   forced forwarding wins, registered local handlers stay local, denied prefixes
   never leave the Gateway, and unknown Web methods remain forwardable by default.
+  `/acp` reuses the same decision: denied prefixes answer `METHOD_NOT_ALLOWED`,
+  every remaining method, registered or not, passes the enterprise write-protection
+  check first; unregistered methods are then forwarded under their original name,
+  and `/tui` still forwards registered methods only.
 - `single.py` starts Web before dispatch/Cron and preserves configuration-updater
   start/stop ordering and the existing yield before TUI/ACP assembly.
   The Web readiness budget defaults to the process cold-start budget and can be
@@ -131,6 +135,61 @@ The process test `test_gateway_optional_channels_lifecycle.py` checks the host's
 startup and shutdown boundaries before and after assembly extraction. AgentOS
 Web Proxy uses the current runtime Cron settings helper without a test-only
 replacement. Real accounts/SDKs and frozen packages still need separate acceptance.
+
+## P3-A: local credential access
+
+`CredentialAccess` and `CredentialUpdateSink` expose minimal immutable values;
+tokens are excluded from repr. `assemble_services` injects a lazy AuthService
+provider, LocalCredentialAccess and a `MessageHandlerCredentialUpdateSink` bound
+to its exact MessageHandler. Login HTTP handlers and Web/TUI/ACP preprocessing
+share these dependencies; `MessagePreprocessor.with_credential_access()` and
+`MessageHandler.set_credential_access()` are the new injection seams.
+Model classification also uses the injected service. Self-configured models do
+not read login sessions or start refresh work.
+Caller-supplied `_model_auth` is removed with an audit warning before lookup;
+the injected path must not subsequently use legacy global injection. The 20-second expired-token
+refresh wait, usable-token fallback and distinction between business user IDs
+and model login identities remain unchanged.
+
+Legacy unbound helpers and `register_auth_routes(app)` remain compatible.
+Logout deletes the local session before best-effort notification through the
+existing AS transport; this is not reliable multi-AS revocation.
+Tests: `test_local_credential_access.py`, `test_credential_pipeline_contract.py`
+and `test_auth_dependency_injection.py`.
+
+## P3-B: Cron and session credential bindings
+
+Login-sourced Cron selections bind a credential reference at create/update;
+execution resolves only that reference, not a matching model name. Existing job
+formats, scheduling and delivery are unchanged. `SessionLoginBindings` adapts
+the existing `session_owners.json` persistence/TTL and catalog checks. Non-Web
+fallback scope and login hints remain unchanged; an unauthenticated Web request
+cannot borrow the recorded account. Bindings precede MessageHandler forwarding,
+and the shared credential port precedes Cron scheduling.
+`CronScheduler.set_credential_access()`,
+`CronController.set_credential_access()` and the `MessageHandler` constructor argument
+`session_login_bindings` are the new injection seams. `MessageHandler` requires an
+explicit binding port and no longer falls back to the global session-owner store.
+These are account bindings, not Worker ownership.
+
+Tests: `test_session_login_bindings.py`, `test_cron_credential_access.py`,
+`test_credential_network_contract.py` and existing Cron/login regressions.
+
+## P3-C: saved-configuration effects
+
+`application/config_saved_effects.py::ConfigSavedEffectCoordinator` coordinates
+the original snapshot, AS reload, prewarm, browser restart,
+proactive Cron and topic synchronization effects. `_build_config_saved_callback`
+remains a compatible thin factory and still accepts the unused legacy
+`message_handler` argument; `sync_saved_topic_recommendation` remains
+importable from the entrypoint. Retry timing, restart decisions, request context
+and background error handling remain unchanged.
+
+Personal Web/TUI saves still persist and reload inside the target AgentServer.
+A successful remote save must not call the coordinator or reload again. The
+coordinator does not write configuration or replace OptionalChannels/CM updates.
+Tests: `test_config_saved_effects.py` and the real-factory
+`test_config_save_legacy_worker.py`.
 
 ## Verification and rollback
 

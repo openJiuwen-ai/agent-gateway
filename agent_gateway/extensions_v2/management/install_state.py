@@ -14,7 +14,7 @@ Gateway-side copy: keep behavior in step with
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 import tempfile
 import time
 from dataclasses import asdict, dataclass, replace
@@ -347,10 +347,7 @@ class ExtensionInstallState:
     def packages(self) -> list[ExtensionInstallRecord]:
         """Return every package record, including both host domains."""
 
-        return sorted(
-            self._load()[0].values(),
-            key=lambda record: (record.package_id, _version_text_key(record.version)),
-        )
+        return _ordered_packages(self._load()[0].values())
 
     def by_asset(self, asset_id: str) -> ExtensionInstallRecord | None:
         if not asset_id:
@@ -459,12 +456,7 @@ class ExtensionInstallState:
     def bundles(self) -> list[ExtensionBundleRecord]:
         """Return every bundle record, newest version first per bundle."""
 
-        records = list(self._load()[1].values())
-        return sorted(
-            records,
-            key=lambda record: (record.bundle_id, _version_text_key(record.version)),
-            reverse=True,
-        )
+        return _ordered_bundles(self._load()[1].values())
 
     def get_bundle(self, bundle_id: str, version: str = "") -> ExtensionBundleRecord | None:
         records = [
@@ -626,7 +618,9 @@ class ExtensionInstallState:
 
         candidates: list[tuple[tuple[bool, bool, str], ActiveInstance]] = []
         install_dir = self.path.resolve().parents[1]
-        for record in self.packages():
+        # Both host domains can write this file. Compare claims from the same snapshot.
+        packages, bundles = self._load()
+        for record in _ordered_packages(packages.values()):
             if record.package_id != package_id or not record.active:
                 continue
             candidates.append(
@@ -640,7 +634,7 @@ class ExtensionInstallState:
                     ),
                 )
             )
-        for bundle in self.bundles():
+        for bundle in _ordered_bundles(bundles.values()):
             for member in bundle.member_records:
                 if member.package_id != package_id or not member.active:
                     continue
@@ -928,6 +922,14 @@ def _record_preference(record: ExtensionInstallRecord) -> tuple[bool, bool, str]
     """Prefer the loaded copy, then the enabled copy, then the newest record."""
 
     return record.active, record.enabled, record.installed_at
+
+
+def _ordered_packages(records: Iterable[ExtensionInstallRecord]) -> list[ExtensionInstallRecord]:
+    return sorted(records, key=lambda record: (record.package_id, _version_text_key(record.version)))
+
+
+def _ordered_bundles(records: Iterable[ExtensionBundleRecord]) -> list[ExtensionBundleRecord]:
+    return sorted(records, key=lambda record: (record.bundle_id, _version_text_key(record.version)), reverse=True)
 
 
 def _version_text_key(version: str) -> tuple[int, int, int, str]:

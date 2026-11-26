@@ -9,6 +9,7 @@ import pytest
 from agent_gateway.enterprise.config.manager_config.core.template import (
     agent_template,
     embedding_template,
+    execution_guard_template,
     expert_package_template,
     extension_config_template,
     mcp_template,
@@ -21,6 +22,7 @@ from agent_gateway.enterprise.config.manager_config.core.template import (
 TEMPLATE_MODULES = (
     agent_template,
     embedding_template,
+    execution_guard_template,
     expert_package_template,
     extension_config_template,
     mcp_template,

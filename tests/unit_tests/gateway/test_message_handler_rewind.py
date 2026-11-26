@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _RemoteClient:
@@ -32,7 +33,10 @@ class _RewindHandler(MessageHandler):
         for owner in (MessageHandler, cls):
             if "_singleton_initialized" in owner.__dict__:
                 del owner._singleton_initialized
-        handler = cls(client if client is not None else _RemoteClient())
+        handler = cls(
+            client if client is not None else _RemoteClient(),
+            session_login_bindings=NullSessionLoginBindings(),
+        )
         handler.notices: list[object] = []
         handler._get_config_raw = lambda: {}  # type: ignore[assignment]
         return handler

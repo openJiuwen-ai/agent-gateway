@@ -129,6 +129,7 @@ async def run_single(
         startup_import_phases: list[tuple[str, float]],
         preprocessor: MessagePreprocessor,
         connect_with_retry: Callable[..., Awaitable[None]],
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     from agent_gateway.common.config import get_config
 
@@ -156,12 +157,14 @@ async def run_single(
     services = await assemble_services(
         agent_server_url, log_stage=log_startup_stage, startup_t0=startup_t0,
         connect_with_retry=connect_with_retry,
+        required_client_type=required_client_type,
     )
     web_channel = web_task = tui_assembly = optional_channels = None
     protocol_runtime_task = prewarm_sync_task = prewarm_sync_debounce_task = None
     config_updater = None
     restart_requested = False
     try:
+        preprocessor = preprocessor.with_credential_access(services.credential_access)
         client = services.client
         third_agent = services.third_agent
         agent_server_ext = services.agent_server_ext
@@ -233,7 +236,7 @@ async def run_single(
             )
 
         _on_config_saved = config_saved_factory(
-            client=client, message_handler=message_handler, cron_controller=cron_controller,
+            client=client, cron_controller=cron_controller,
             schedule_agent_prewarm_sync=_schedule_agent_prewarm_sync,
             restart_request=restart_request,
         )
@@ -245,6 +248,8 @@ async def run_single(
             heartbeat_controller=heartbeat_controller, updater_service=updater_service,
             host=web_host, port=web_port, path=web_path, ws_permessage_deflate=web_ws_deflate,
             preprocessor=preprocessor, log_stage=log_startup_stage,
+            auth_service_provider=services.auth_service_provider,
+            credential_update_sink=services.credential_update_sink,
         )
         web_task = await start_web_core(
             web_channel, channel_manager, cron_scheduler, config_updater, log_startup_stage,

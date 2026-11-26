@@ -28,12 +28,15 @@ def _owners_in_tmp(monkeypatch, tmp_path):
 
 
 def _run(env, *, session_model: str = "GLM-5.2") -> dict:
+    from agent_gateway.auth.session_login_bindings import LocalSessionLoginBindings
+
     handler = SimpleNamespace(agent_client=None)
 
     async def _effective_session_model(sid, params, user_id=None):
         return params.get("model_name") or session_model
 
     handler._effective_session_model = _effective_session_model
+    handler._session_login_bindings = LocalSessionLoginBindings(lambda: None)
     asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
     return env.params
 
@@ -45,7 +48,7 @@ def _env(channel: str, params: dict, session_id: str = "web_s1") -> SimpleNamesp
 def test_feishu_reply_uses_the_session_owners_credentials(monkeypatch):
     calls: list = []
 
-    def _owner_auth(owner):
+    def _owner_auth(owner, *, service=None):
         calls.append((owner.model_name, owner.credential_ref))
         return {"api_base": "https://apig", "api_key": "id-owner", "credential_ref": owner.credential_ref}
 
@@ -86,7 +89,10 @@ def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
         lambda allow_refresh=True: SimpleNamespace(invoke_base_url="https://apig/v1"),
     )
     fresh = {"credential_ref": REF, "api_key": "id-new"}
-    monkeypatch.setattr("agent_gateway.auth.passthrough.refreshed_credential_for_ref", lambda ref: fresh)
+    monkeypatch.setattr(
+        "agent_gateway.auth.passthrough.refreshed_credential_for_ref",
+        lambda ref, *, service=None: fresh,
+    )
 
     owner = session_owners.SessionOwner(REF, "GLM-5.2")
     assert session_owners.login_auth_for_owner(owner) == {
@@ -100,7 +106,7 @@ def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
 
 
 def test_feishu_reply_when_owner_logged_out_says_so(monkeypatch):
-    monkeypatch.setattr(session_owners, "login_auth_for_owner", lambda owner: None)
+    monkeypatch.setattr(session_owners, "login_auth_for_owner", lambda owner, *, service=None: None)
     session_owners.remember("web_s1", REF, "GLM-5.2")
 
     params = _run(_env("feishu", {"query": "x"}))
@@ -111,11 +117,14 @@ def test_feishu_reply_when_owner_logged_out_says_so(monkeypatch):
 def test_login_hint_skipped_when_model_unknown():
     """模型读取失败（None 未知）时不下登录结论，放行报文。"""
     env = _env("tui", {"q": "hi"})
+    from agent_gateway.auth.session_login_bindings import LocalSessionLoginBindings
+
     handler = SimpleNamespace(agent_client=None)
 
     async def _unknown(sid, params, user_id=None):
         return None
 
     handler._effective_session_model = _unknown
+    handler._session_login_bindings = LocalSessionLoginBindings(lambda: None)
     asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
     assert E2A_LOGIN_REQUIRED_HINT_PARAM_KEY not in env.params

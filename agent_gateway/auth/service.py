@@ -62,6 +62,10 @@ class AuthService:
     def store(self) -> AuthSessionStore:
         return self._store
 
+    def list_sessions(self) -> list[AuthSession]:
+        """Return the current sessions without exposing the storage object."""
+        return self._store.list_sessions()
+
     @property
     def enabled(self) -> bool:
         return login_enabled()
@@ -196,12 +200,11 @@ class AuthService:
 
         clear_cache()
 
-    @staticmethod
-    def refresh_model_catalog(session_id: str | None = None) -> int:
+    def refresh_model_catalog(self, session_id: str | None = None) -> int:
         from agent_gateway.auth.model_catalog import refresh
 
         try:
-            return len(refresh(session_id))
+            return len(refresh(session_id, service=self))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[Auth] 刷新模型目录失败: %s", exc)
             return 0
@@ -332,7 +335,9 @@ class ModelAuthRequired(Exception):
         self.reason = reason
 
 
-def live_session(session_id: str | None, allow_refresh: bool = True) -> AuthSession:
+def live_session(
+    session_id: str | None, allow_refresh: bool = True, *, service: AuthService | None = None,
+) -> AuthSession:
     """取**这个会话**当前可用的登录态，拿不到抛 :class:`ModelAuthRequired`。
 
     **没有会话 id 就是没登录**，绝不退回「本机唯一登录会话」。早先有过这个兜底，
@@ -342,7 +347,7 @@ def live_session(session_id: str | None, allow_refresh: bool = True) -> AuthSess
     ``allow_refresh=False`` 给**不能阻塞的调用方**：续期是一次同步 HTTP，挂在事件
     循环上会拖住所有连接。这时续期改在后台做（见 :meth:`AuthService.ensure_fresh`）。
     """
-    service = get_auth_service()
+    service = service if service is not None else get_auth_service()
     session = service.resolve_session(session_id)
     if session is None:
         raise ModelAuthRequired("请先登录后再使用该模型", "not_logged_in")
@@ -352,6 +357,8 @@ def live_session(session_id: str | None, allow_refresh: bool = True) -> AuthSess
     return fresh
 
 
-def resolve_id_token(session_id: str | None, allow_refresh: bool = True) -> str:
+def resolve_id_token(
+    session_id: str | None, allow_refresh: bool = True, *, service: AuthService | None = None,
+) -> str:
     """调 APIG 用的 id_token（``Authorization: Bearer <id_token>``）。"""
-    return live_session(session_id, allow_refresh).credential.id_token
+    return live_session(session_id, allow_refresh, service=service).credential.id_token

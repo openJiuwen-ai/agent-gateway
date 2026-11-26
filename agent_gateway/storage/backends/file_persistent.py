@@ -7,9 +7,10 @@ import asyncio
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import portalocker
 from ruamel.yaml import YAML
@@ -196,10 +197,17 @@ class FilePersistentBackend:
         return rt
 
     @staticmethod
-    def _atomic_replace(tmp: Path, dest: Path) -> None:
-        """先写临时文件再 replace，避免写到一半损坏。"""
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp.replace(dest)
+    @contextmanager
+    def _atomic_writer(path: Path, file_format: str) -> Iterator[TextIO]:
+        """只在序列化并关闭临时文件成功后替换目标文件。"""
+        tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.{file_format}.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                yield handle
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _lock_path(path: Path) -> Path:
@@ -257,17 +265,8 @@ class FilePersistentBackend:
             }
         else:
             payload = records
-        tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.json.tmp")
-        try:
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-            self._atomic_replace(tmp, path)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        with self._atomic_writer(path, "json") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
 
     def _load_yaml_root(self, path: Path) -> Any:
         """解析整个 YAML 文件；文件不存在则返回空 mapping。"""
@@ -279,17 +278,8 @@ class FilePersistentBackend:
 
     def _dump_yaml_root(self, path: Path, root: Any) -> None:
         """原子写回整份 YAML，并触发 ``on_write``（如清配置缓存）。"""
-        tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex}.yaml.tmp")
-        try:
-            with open(tmp, "w", encoding="utf-8") as handle:
-                self._yaml().dump(root, handle)
-            self._atomic_replace(tmp, path)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        with self._atomic_writer(path, "yaml") as handle:
+            self._yaml().dump(root, handle)
         if self._on_write is not None:
             self._on_write(path)
 

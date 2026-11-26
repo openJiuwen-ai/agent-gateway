@@ -21,6 +21,24 @@ from agent_gateway.extensions.runtime_management_extension.runtime_routed_client
 )
 
 
+@pytest.mark.asyncio
+async def test_startup_is_not_pod_connection_and_shutdown_preserves_borrowed_clients():
+    """Dynamic startup is lazy; injected transport/control clients are borrowed."""
+    route, http = AsyncMock(), AsyncMock()
+    instance = RuntimeRoutedAgentClient(route_client=route, http_client=http)
+    await instance.connect("unused")
+    assert instance.server_ready
+    assert not instance.agent_ready
+    route.route.assert_not_awaited()
+    http.connect.assert_not_awaited()
+    await instance.disconnect()
+    await instance.disconnect()
+    assert not instance.server_ready
+    assert not instance.agent_ready
+    route.aclose.assert_not_awaited()
+    http.disconnect.assert_not_awaited()
+
+
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(routed, "authorize_agent", AsyncMock(return_value=None))

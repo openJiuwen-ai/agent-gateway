@@ -31,6 +31,19 @@ _GATEWAY_ONLY: dict[str, str] = {
         "企业连接器广场：协议包尚未发布该成员；Gateway 已 shim 枚举并转发，"
         "南向 path 与 Agent /mcp/actions/sources-providers 对齐"
     ),
+    "skills.import_upload": (
+        "企业版本地 Skill 上传：Gateway 按 Agent 模板开关做门禁并转发到 "
+        "AgentServer 的 multipart 导入端点，协议包尚未把该动作登记为 REST 路由"
+    ),
+    "session.assets.list": (
+        "协议包已定义素材列表方法，尚未登记 HTTP 路由。AgentServer 提供 GET /sessions/{session_id}/assets。"
+    ),
+    "session.assets.register": (
+        "协议包已定义素材登记方法，尚未登记 HTTP 路由。AgentServer 提供 POST /sessions/{session_id}/assets。"
+    ),
+    "session.assets.rename": (
+        "协议包已定义素材改名方法，尚未登记 HTTP 路由。AgentServer 提供 PATCH /sessions/{session_id}/assets/{asset_id}。"
+    ),
 }
 
 

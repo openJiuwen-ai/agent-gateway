@@ -178,13 +178,12 @@ class ModelTemplateUpdateRequest(SafeTextMixin):
     """PATCH：未传=不更新；显式 null 由非 Optional 类型在 Field 层拒绝（对齐 NOT NULL 列）。
 
     写法：``field: T = Field(default=None, ...)`` —— 可省略，但传入必须是 T，不能是 null。
-    ``description`` / ``model_tags`` 等可空列仍用 ``T | None``。
+    ``description`` 等可空列仍用 ``T | None``。
     """
 
     template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     model_type: list[str] = Field(default=None)
-    model_tags: list[str] | None = None
     api_base: str = Field(default=None, min_length=1, max_length=512)
     api_key: str = Field(default=None, min_length=1, max_length=4096)
     model_id: str = Field(default=None, min_length=1, max_length=128)
@@ -192,8 +191,6 @@ class ModelTemplateUpdateRequest(SafeTextMixin):
     parameters: dict[str, Any] | None = None
     timeout: int = Field(default=None, ge=1)
     retry_count: int = Field(default=None, ge=0)
-    enable_streaming: bool = Field(default=None)
-    enable_function_calling: bool = Field(default=None)
     verify_ssl: bool = Field(default=None)
     enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
@@ -225,7 +222,6 @@ class EmbeddingTemplateUpdateRequest(SafeTextMixin):
         validation_alias=AliasChoices("template_name", "name"),
     )
     description: str | None = Field(default=None, max_length=512)
-    embed_tags: list[str] | None = None
     api_base: str = Field(default=None, min_length=1, max_length=512)
     api_key: str = Field(default=None, min_length=1, max_length=4096)
     model_id: str = Field(default=None, min_length=1, max_length=128)
@@ -373,6 +369,25 @@ class PermissionsTemplateCreateRequest(PermissionsTemplateUpdateRequest):
     )
 
 
+class ExecutionGuardTemplateUpdateRequest(SafeTextMixin):
+    """对齐 execution_guard_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    enabled: bool = Field(default=None)
+    body: dict[str, Any] = Field(default=None)
+    data: dict[str, Any] | None = None
+
+
+class ExecutionGuardTemplateCreateRequest(ExecutionGuardTemplateUpdateRequest):
+    template_id: str = Field(..., min_length=1, max_length=100)
+    template_name: str = Field(..., min_length=1, max_length=128)
+    body: dict[str, Any] = Field(
+        ...,
+        description="完整 execution_guard 段，含模型异常检测与循环断路器",
+    )
+
+
 class ReactTemplateUpdateRequest(SafeTextMixin):
     """对齐 react_template：body 为传输格式，落库时整段写入 data JSON 列。"""
 
@@ -398,7 +413,6 @@ class AgentTemplateUpdateRequest(SafeTextMixin):
 
     template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    agent_tags: list[str] | None = None
     template_ref: dict[str, list[str]] | None = None
     enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
@@ -448,7 +462,6 @@ class A2AOutboundTemplateUpdateRequest(SafeTextMixin):
 
     template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    a2a_tags: list[str] | None = None
     source_url: A2ASourceUrl = Field(default=None)
     card_path: A2ACardPath = Field(default=None)
     agent_card: dict[str, Any] = Field(default=None)

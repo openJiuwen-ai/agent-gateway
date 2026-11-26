@@ -76,7 +76,6 @@ def _build_row_from_template(
         "template_id": template_uuid,
         "template_name": str(template_name).strip(),
         "description": template.get("description"),
-        "embed_tags": template.get("embed_tags"),
         "api_base": str(template["api_base"]).strip(),
         "api_key": template["api_key"],
         "model_id": str(template["model_id"]).strip(),

@@ -119,7 +119,9 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
 
     channel_app = _load_module("jw_web_channel_app_edition_ut", CHANNEL_APP_PATH, monkeypatch)
     app = FastAPI()
-    channel_app.register_http_routes(app, MagicMock())
+    channel_app.register_http_routes(
+        app, MagicMock(auth_service_provider=None, credential_update_sink=None),
+    )
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/share-api/jobs" in paths
     assert "/api/v1/chat/completions" not in paths
@@ -206,7 +208,6 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     # Stub dispatch before loading web_http_routes.
     dispatch_mod = ModuleType("agent_gateway.channel_manager.web.web_http_dispatch")
     dispatch_mod.dispatch_http_request = MagicMock()  # type: ignore[attr-defined]
-    dispatch_mod._trust_client_tenant_headers = lambda client_host=None: True  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, dispatch_mod.__name__, dispatch_mod)
 
     routes_pkg = ModuleType("agent_gateway.channel_manager.web.http_routes")
