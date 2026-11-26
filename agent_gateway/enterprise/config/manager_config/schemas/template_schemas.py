@@ -546,6 +546,9 @@ class ExpertPackageTemplateUpdateRequest(SafeTextMixin):
     template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     packages: list[ExpertPackageItem] | None = Field(default=None, min_length=1)
+    # Swarmflow 企业策略（企业最小接入设计方案 §4.2）：JSON 对象，键为
+    # allowed / default_enabled / max_workflows / agents_per_run / max_agents_total / swarmflow_budget。
+    swarmflow: dict[str, Any] | None = Field(default=None)
     enabled: bool = Field(default=None)
 
 
