@@ -14,6 +14,7 @@ from e2a.message import Message, ReqMethod
 
 from agent_gateway.app_gateway import _normalize_gateway_message
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 from tests.unit_tests.gateway.test_app_gateway_acp import (
     FakeWebSocket,
     build_server,
@@ -213,7 +214,10 @@ def test_normalize_gateway_message_accepts_opaque_string_method():
 
 @pytest.mark.asyncio
 async def test_acp_opaque_method_survives_dispatch_into_e2a_envelope():
-    handler = MessageHandler(SimpleNamespace())
+    handler = MessageHandler(
+        SimpleNamespace(),
+        session_login_bindings=NullSessionLoginBindings(),
+    )
     handler._acp_session_aliases["sess-opaque"] = "internal-sess"
     msg = Message(
         id="req-opaque",
