@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 import uuid
 from typing import Any
@@ -15,6 +14,7 @@ from e2a.message import Message
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
 from agent_gateway.enterprise import is_enterprise
+from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from agent_gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
@@ -56,21 +56,6 @@ def _cookie_value(headers: dict[str, str], name: str) -> str:
     return ""
 
 
-def _trust_client_tenant_headers(client_host: str | None) -> bool:
-    explicit = os.getenv("GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS", "").strip().lower()
-    if explicit in {"1", "true", "yes"}:
-        return True
-    if explicit in {"0", "false", "no"}:
-        return False
-    # 企业用户面通过 NodePort/Web Pod 访问时，客户端地址不是回环地址。
-    # 企业版的身份边界由上游认证和 ``is_enterprise()`` 控制，必须把选中的
-    # user/group/bot 透传给 Runtime 路由；个人版继续只信任本机请求。
-    if is_enterprise():
-        return True
-    host = str(client_host or "").strip().lower()
-    return host in {"127.0.0.1", "::1", "localhost"}
-
-
 def _build_http_ext(
     hdrs: dict[str, str],
     query: dict[str, list[str]],
@@ -95,7 +80,7 @@ def resolve_http_routing_identity(headers: Any, client_host: str | None) -> dict
     from agent_gateway.common.request_identity import normalize_routing_identity
 
     hdrs = _header_map(headers)
-    if not _trust_client_tenant_headers(client_host):
+    if not trust_client_identity_headers(client_host):
         return {}
     return normalize_routing_identity({
         "user_id": _get_header(hdrs, "X-User-Id"),
@@ -136,7 +121,7 @@ async def dispatch_http_request(
         header_session_id=_get_header(hdrs, "X-Session-Id"),
         bind_param=bind_session_param,
     )
-    trust_tenant_headers = _trust_client_tenant_headers(client_host)
+    trust_tenant_headers = trust_client_identity_headers(client_host)
     user_id = _get_header(hdrs, "X-User-Id") if trust_tenant_headers else None
     channel_id_hdr = _get_header(hdrs, "X-Channel-Id") or "web"
     app_id = _get_header(hdrs, "X-App-Id") or "default"
@@ -190,19 +175,33 @@ async def dispatch_http_request(
     agent_id = str(params.get("agent_id") or "default")
 
     from agent_gateway.common.request_identity import (
+        apply_agent_identity_metadata,
         apply_routing_metadata,
+        normalize_agent_identity,
     )
 
     _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
-    _meta = apply_routing_metadata(
-        {
-            "query": query,
-            "method": method,
-            "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
-            "transport": "web-http",
-        },
-        _routing,
+    _agent_identity = (
+        normalize_agent_identity(
+            {
+                "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
+            }
+        )
+        if trust_tenant_headers
+        else {}
+    )
+    _meta = apply_agent_identity_metadata(
+        apply_routing_metadata(
+            {
+                "query": query,
+                "method": method,
+                "ws_id": getattr(outbound, "_jiuwen_ws_id", ""),
+                "transport": "web-http",
+            },
+            _routing,
+        ),
+        _agent_identity,
     )
 
     from agent_gateway.channel_manager.web.web_connect import WebChannel

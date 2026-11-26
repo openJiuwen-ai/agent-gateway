@@ -539,6 +539,38 @@ async def test_disconnect_unblocks_pending_unary():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_disconnect_during_prepare_rejects_unsent_request(stream, monkeypatch):
+    client = AgentClientHarness()
+    ws = FakeWebSocket()
+    client.set_ws_for_test(ws)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def prepare(_):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(client, "_prepare_envelope", prepare)
+    envelope = e2a_from_agent_fields(request_id="prepare-rid", channel_id="acp", session_id="s",
+                                     params={"content": "hello"}, is_stream=stream)
+
+    async def send():
+        if stream:
+            return [chunk async for chunk in client.send_request_stream(envelope)]
+        return await client.send_request(envelope)
+
+    task = asyncio.create_task(send())
+    await asyncio.wait_for(started.wait(), timeout=_OUTER_WAIT_TIMEOUT)
+    await client.disconnect()
+    release.set()
+    from agent_gateway.southbound.data.websocket import RequestNotSentError
+    with pytest.raises(RequestNotSentError):
+        await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+    assert not ws.sent_payloads
+    assert not client.has_message_queue_for_test("prepare-rid")
+
+
+@pytest.mark.asyncio
 async def test_send_request_reconnects_before_new_request_after_disconnect():
     client = ReconnectingAgentClientHarness()
     client.set_uri_for_test("ws://agent-server")

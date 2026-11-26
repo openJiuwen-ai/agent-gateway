@@ -12,6 +12,11 @@ import os
 import time
 from typing import Any, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess, CredentialUpdate, CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
+    from agent_gateway.auth.session_login_bindings import SessionLoginBindings
+
 from agent_gateway.application.configuration import _load_gateway_runtime_config
 from agent_gateway.application.connection import _connect_with_retry
 from agent_gateway.common.log_sanitize import mask_sensitive
@@ -32,6 +37,14 @@ def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> No
         )
 
 
+class MessageHandlerCredentialUpdateSink:
+    """Publish through the exact handler owned by this service graph."""
+
+    def __init__(self, message_handler: Any) -> None:
+        self._message_handler = message_handler
+
+    async def publish(self, update: CredentialUpdate) -> bool:
+        return await self._message_handler.push_login_credential_update(update.to_params())
 
 
 @dataclass
@@ -60,6 +73,10 @@ class GatewayServices:
     full_cfg: Any
     _hold_release_task: Any
     _cleanup_task: Any
+    auth_service_provider: Callable[[], AuthService] | None = None
+    credential_access: CredentialAccess | None = None
+    credential_update_sink: CredentialUpdateSink | None = None
+    session_login_bindings: SessionLoginBindings | None = None
 
     async def stop(self) -> None:
         await self.cron_scheduler.stop()
@@ -99,6 +116,7 @@ async def assemble_services(
     log_stage: Callable[[str], None],
     startup_t0: float,
     connect_with_retry: Callable[..., Awaitable[None]] = _connect_with_retry,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> GatewayServices:
     from openjiuwen.core.runner import Runner
     from agent_gateway.channel_manager.channel_manager import ChannelManager
@@ -121,6 +139,7 @@ async def assemble_services(
         logger=logger,
     )
     from agent_gateway.agent_client_mode import (
+        _validate_agent_client_registration,
         read_agent_client_mode,
         resolve_agent_server_client,
         validate_agent_client_configuration,
@@ -161,9 +180,10 @@ async def assemble_services(
     max_retries = int(os.getenv("AGENT_CONNECT_RETRY", "20"))
     retry_interval = float(os.getenv("AGENT_CONNECT_RETRY_INTERVAL", "3"))
 
-    # 从扩展注册表获取 AgentServerClient（WebSocket 或 Yuanrong 等扩展实现）
+    # 从扩展注册表获取 AgentServerClient（WebSocket 或其他扩展实现）
     agent_server_ext = extension_registry.get_agent_server_client_extension()
     full_cfg = get_config()
+    _validate_agent_client_registration(full_cfg, agent_server_ext, required_type=required_client_type)
     configure_gateway_telemetry(
         full_cfg or {},
         user_id_formatter=lambda value: mask_sensitive(f"user_id={value}").removeprefix("user_id="),
@@ -207,8 +227,19 @@ async def assemble_services(
         await client.connect("")
     log_stage("agent_server_connected")
 
+    from agent_gateway.auth.local_credential_access import LocalCredentialAccess
+    from agent_gateway.auth.service import get_auth_service
+    from agent_gateway.auth.session_login_bindings import LocalSessionLoginBindings
 
-    message_handler = MessageHandler(client)
+    auth_service_provider = get_auth_service
+    credential_access = LocalCredentialAccess(auth_service_provider)
+    session_login_bindings = LocalSessionLoginBindings(auth_service_provider)
+    message_handler = MessageHandler(
+        client,
+        session_login_bindings=session_login_bindings,
+    )
+    message_handler.set_credential_access(credential_access)
+    credential_update_sink = MessageHandlerCredentialUpdateSink(message_handler)
     await message_handler.start_forwarding()
 
     # IM Pipeline 初始化（数字分身）
@@ -256,7 +287,9 @@ async def assemble_services(
         agent_client=client,
         message_handler=message_handler,
     )
+    cron_scheduler.set_credential_access(credential_access)
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.set_credential_access(credential_access)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
     # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
@@ -394,4 +427,8 @@ async def assemble_services(
         full_cfg=full_cfg,
         _hold_release_task=_hold_release_task,
         _cleanup_task=_cleanup_task,
+        auth_service_provider=auth_service_provider,
+        credential_access=credential_access,
+        credential_update_sink=credential_update_sink,
+        session_login_bindings=session_login_bindings,
     )

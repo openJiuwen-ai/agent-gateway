@@ -1908,7 +1908,9 @@ async def test_gateway_server_forwards_tui_client_timeout_as_metadata_only():
 
 
 @pytest.mark.asyncio
-async def test_gateway_server_handle_raw_message_rejects_unknown_method():
+async def test_gateway_server_handle_raw_message_rejects_unknown_method(monkeypatch):
+    # ACP 默认把未登记方法按不透明字符串透传；严格模式（显式关闭透传）仍然拒绝。
+    monkeypatch.setenv("AGENT_GATEWAY_FORWARD_UNKNOWN_METHODS", "0")
     server = build_server()
     ws = FakeWebSocket()
 

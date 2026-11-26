@@ -574,16 +574,16 @@ class TestEnterpriseUpdateJobClamp:
 
     @pytest.mark.asyncio
     async def test_ent_update_missing_identity_raises_before_clamp(self, enterprise_env, frozen_now) -> None:
-        """企业版更新：缺 bot_id → KeyError，不执行 clamp。"""
+        """企业版更新：缺 bot_id → ValueError（对外 400），不执行 clamp。"""
         cc = _make_controller()
         job_id = await self._create_ent_job(cc)
-        with pytest.raises(KeyError, match="job not found"):
+        with pytest.raises(ValueError, match="enterprise cron requires"):
             await cc.update_job(
                 job_id,
                 {"wake_offset_seconds": 999999},
                 user_id="alice",
                 group_id="team-1",
-                bot_id="",            # 企业版缺身份 → _owns_job 返回 False
+                bot_id="",            # 企业版缺身份 → 显式拒绝，不伪装成 not found
             )
         assert cc.store.update_calls == []
 

@@ -17,7 +17,7 @@ from agent_gateway.southbound.data.connection_pool import ConnectionPool
 from agent_gateway.southbound.data.http_sse import HttpSseConnection
 from agent_gateway.southbound.data.interfaces import PushHandler
 from agent_gateway.southbound.data.push_hub import sourced_push_handler
-from agent_gateway.southbound.data.websocket import DuplicateRequestIdError, WebSocketConnection
+from agent_gateway.southbound.data.websocket import DuplicateRequestIdError, RequestNotSentError, WebSocketConnection
 
 Connection = WebSocketConnection | HttpSseConnection
 
@@ -81,7 +81,7 @@ class AgentDataTransport:
     @staticmethod
     def _failure(exc: Exception, source: Source) -> TransportError:
         state = DeliveryState.MAY_HAVE_EXECUTED
-        if isinstance(exc, DuplicateRequestIdError):
+        if isinstance(exc, (DuplicateRequestIdError, RequestNotSentError)):
             state = DeliveryState.NOT_SENT
         return TransportError("request transport failed", delivery=state, source=source)
 
@@ -90,7 +90,10 @@ class AgentDataTransport:
         source = self._source(target, envelope)
         client = await self._get_for_request(target, source)
         try:
-            payload = await client.send_request(envelope, timeout=timeout)
+            if isinstance(client, HttpSseConnection):
+                payload = await client.send_request(envelope, base_url=target.endpoint, timeout=timeout)
+            else:
+                payload = await client.send_request(envelope, timeout=timeout)
         except Exception as exc:
             raise self._failure(exc, source) from exc
         return Sourced(payload, source)
@@ -100,7 +103,11 @@ class AgentDataTransport:
         source = self._source(target, envelope)
         client = await self._get_for_request(target, source)
         try:
-            async with aclosing(client.send_request_stream(envelope)) as stream:
+            if isinstance(client, HttpSseConnection):
+                iterator = client.send_request_stream(envelope, base_url=target.endpoint)
+            else:
+                iterator = client.send_request_stream(envelope)
+            async with aclosing(iterator) as stream:
                 async for chunk in stream:
                     yield Sourced(chunk, Source(target, str(chunk.request_id or "") or source.request_id,
                                                 source.session_id))

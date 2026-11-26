@@ -148,7 +148,15 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     # The diagnosis service runs in the AgentServer; these routes only proxy to it.
     attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login
-    register_auth_routes(app)
+    auth_service_provider = getattr(channel, 'auth_service_provider', None)
+    credential_update_sink = getattr(channel, 'credential_update_sink', None)
+    if auth_service_provider is None and credential_update_sink is None:
+        register_auth_routes(app)
+    else:
+        register_auth_routes(
+            app, auth_service_provider=auth_service_provider,
+            credential_update_sink=credential_update_sink,
+        )
     # MCP Apps sandbox proxy (separate origin from the UI for app iframes)
     from agent_gateway.channel_manager.web.mcp_app_sandbox_http import (
         register_mcp_app_sandbox_routes,

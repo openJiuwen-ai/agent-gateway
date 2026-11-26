@@ -93,48 +93,8 @@ register_edition_req_methods()
 
 logger = logging.getLogger("gateway")
 
-async def sync_saved_topic_recommendation(
-    client: Any,
-    *,
-    updated_env_keys: Any,
-    reload_scopes: Any,
-    config_payload: dict[str, Any] | None,
-) -> None:
-    """Ask AgentServer to apply a saved topic switch or model.
-
-    ``fetch_agent_unary`` reports a down or rejecting AgentServer as
-    ``(False, payload)`` and does not raise. The config file is already saved,
-    so this only logs; it does not fail the save.
-    """
-    from agent_gateway.routing.e2a_proxy import fetch_agent_unary
-
-    try:
-        ok, payload = await fetch_agent_unary(
-            agent_client=client,
-            req_method=ReqMethod.RECOMMENDATION,
-            params={
-                "action": "apply_saved_config",
-                "updated_env_keys": sorted(updated_env_keys or []),
-                "reload_scopes": sorted(reload_scopes),
-                "config": dict(config_payload or {}),
-            },
-            session_id="sess_reload",
-            user_id="agentos_test",
-            channel_id="web",
-            label="recommendation",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[App] topic recommendation config sync failed: %s", exc)
-        return
-    if ok:
-        return
-    detail = payload if isinstance(payload, dict) else {}
-    logger.warning(
-        "[App] topic recommendation config sync failed: code=%s error=%s",
-        detail.get("code"),
-        detail.get("error"),
-    )
-from agent_gateway.application.connection import _connect_with_retry
+from agent_gateway.application.config_saved_effects import sync_saved_topic_recommendation
+from agent_gateway.application.connection import _connect_with_retry, _wait_for_web_channel_listening
 from agent_gateway.application.inbound import (
     MessagePreprocessor,
     _refresh_expired_login_credential,
@@ -246,227 +206,29 @@ def _schedule_gateway_restart(
 def _build_config_saved_callback(
     *,
     client: Any,
-    message_handler: Any,
+    message_handler: Any = None,
     cron_controller: Any,
     schedule_agent_prewarm_sync: Any,
     restart_request: GatewayRestartRequest,
 ):
+    from agent_gateway.application.config_saved_effects import ConfigSavedEffectCoordinator
     from agent_gateway.channel_manager.web.app_web_handlers import spawn_background_task
 
-    _schedule_agent_prewarm_sync = schedule_agent_prewarm_sync
-    async def _on_config_saved(
-            updated_env_keys: set[str] | None = None,
-            *,
-            env_updates: dict[str, str] | None = None,
-            config_payload: dict[str, Any] | None = None,
-            reload_options: dict[str, Any] | None = None,
-    ) -> bool:
-        browser_runtime_keys = {
-            "MODEL_PROVIDER",
-            "MODEL_NAME",
-            "API_BASE",
-            "API_KEY",
-            "VIDEO_PROVIDER",
-            "VIDEO_MODEL_NAME",
-            "VIDEO_API_BASE",
-            "VIDEO_API_KEY",
-            "AUDIO_PROVIDER",
-            "AUDIO_MODEL_NAME",
-            "AUDIO_API_BASE",
-            "AUDIO_API_KEY",
-            "VISION_PROVIDER",
-            "VISION_MODEL_NAME",
-            "VISION_API_BASE",
-            "VISION_API_KEY",
-        }
-        _reload_max_retries = 3
-        _reload_retry_backoff_base = 2.0  # seconds: 2, 4, 8
+    async def sync_proactive_tick(config_payload: dict[str, Any] | None) -> None:
+        from agent_gateway.cron.proactive_cron_sync import sync_proactive_tick_job
 
-        client.set_or_update_server_config(
-            config=dict(config_payload or {}),
-            env=dict(env_updates or {}),
-        )
+        await sync_proactive_tick_job(cron_controller, config_payload)
 
-        # channel 配置走全局配置保存时，set_or_update_server_config 只更新内存
-        # 快照，不会主动 fanout；这里补一次后台同步，避免阻塞 config.save
-        # 或影响后续热重载。
-        channels = (config_payload or {}).get("channels")
-        from agent_gateway.channel_manager.web.channel_sync import (
-            schedule_channel_snapshot,
-        )
+    from agent_gateway.channel_manager.web.channel_sync import schedule_channel_snapshot
 
-        schedule_channel_snapshot(client, channels)
-
-        from agent_gateway.common.config_panel.config_set_handlers import (
-            needs_agent_reload,
-        )
-
-        reload_scopes = {
-            str(scope)
-            for scope in (dict(reload_options or {}).get("reload_scopes") or [])
-            if isinstance(scope, str) and scope
-        }
-
-        if needs_agent_reload(reload_scopes):
-            # reload 是全局配置热重载，不绑定特定 user。但 faas 沙箱 acquire instance
-            # 需要 X-Session-Context（由 envelope.user_id 透传成 sessionCtxID）；user_id 为空
-            # 时 faas 拿不到 sessionCtxID，acquire lease 走 init 路径失败
-            # （"connect runtime failed"），invocation 60s 超时，首登 config.set 后前端卡死+1001。
-            # user_id 还必须是 faas 沙箱配置了可工作区的真实用户：faas 沙箱按 user_id
-            # 映射 /home/<user>/.jiuwenswarm 工作区，非配置用户（root）建沙箱失败
-            # （code 80004 "Failed to create sandbox"）。agentos_test 是 agentos 部署的默认
-            # 用户（gateway-config.yaml ssh username），有完整工作区，复用其 warm instance。
-            reload_env = e2a_from_agent_fields(
-                request_id=f"agent-reload-{uuid_module.uuid4().hex[:8]}",
-                channel_id="",
-                session_id="sess_reload",
-                user_id="agentos_test",
-                req_method=ReqMethod.AGENT_RELOAD_CONFIG,
-                params={
-                    # config: full config snapshot after save; Agent should prefer this over local yaml.
-                    "config": dict(config_payload or {}),
-                    # env: incremental environment updates; missing keys mean unchanged.
-                    "env": dict(env_updates or {}),
-                    **dict(reload_options or {}),
-                },
-            )
-
-            def persistent_models_unapplied(response: Any) -> bool:
-                payload = getattr(response, "payload", None)
-                if isinstance(payload, dict) and payload.get("code") == "PERSISTENT_MODELS_NOT_APPLIED":
-                    logger.warning("[App] worker could not apply persistent models: %s", payload.get("error"))
-                    return True
-                return False
-
-            reload_ok = False
-            last_error: Exception | None = None
-            runtime_failed_reject = False
-            for attempt in range(_reload_max_retries + 1):
-                try:
-                    reload_resp = await client.send_request(reload_env)
-                    if getattr(reload_resp, "ok", False):
-                        reload_ok = True
-                        break
-                    err_payload = getattr(reload_resp, "payload", None) or {}
-                    if persistent_models_unapplied(reload_resp):
-                        return False
-                    err_msg = (
-                        err_payload.get("error")
-                        if isinstance(err_payload, dict)
-                        else err_payload
-                    )
-                    err_str = str(err_msg or "")
-                    # ValidationError 是配置格式问题，不需要重试也不需要重启 gateway
-                    if any(kw in err_str for kw in ("ValidationError", "validation error", "Field required")):
-                        logger.warning("[App] agent.reload_config validation error (non-fatal): %s", err_str)
-                        return False
-                    last_error = RuntimeError(f"agent.reload_config rejected: {err_msg}")
-                    # AgentServer runtime 处于 FAILED：server 侧已因本次 reload 请求
-                    # 触发 worker 重启自愈；Gateway 自重启修复不了它，只会断开前端。
-                    runtime_failed_reject = (
-                        "RUNTIME_FAILED" in err_str or "runtime failed" in err_str.lower()
-                    )
-                except Exception as e:  # noqa: BLE001
-                    last_error = e
-                    runtime_failed_reject = False
-
-                if attempt < _reload_max_retries:
-                    delay = _reload_retry_backoff_base ** (attempt + 1)
-                    logger.warning(
-                        "[App] agent.reload_config attempt %d/%d failed, retrying in %.1fs: %s",
-                        attempt + 1, _reload_max_retries + 1, delay, last_error,
-                    )
-                    await asyncio.sleep(delay)
-
-            if not reload_ok and runtime_failed_reject:
-                # 恢复尝试未达成时再多等两轮：worker 可能仍在 warming（import 慢）。
-                for _attempt in range(2):
-                    await asyncio.sleep(8.0)
-                    try:
-                        reload_resp = await client.send_request(reload_env)
-                        if getattr(reload_resp, "ok", False):
-                            reload_ok = True
-                            break
-                        if persistent_models_unapplied(reload_resp):
-                            return False
-                    except Exception as e:  # noqa: BLE001
-                        last_error = e
-                if reload_ok:
-                    logger.info("[App] agent.reload_config succeeded after runtime recovery")
-
-            if not reload_ok and not runtime_failed_reject:
-                logger.critical(
-                    "[App] agent.reload_config failed after %d attempts, scheduling restart: %s",
-                    _reload_max_retries + 1, last_error,
-                )
-                _schedule_gateway_restart(restart_request)
-                return False
-
-            if not reload_ok:
-                # RUNTIME_FAILED：重启 Gateway 修复不了 AgentServer 的 runtime
-                # （反而把前端断线）。保持 Gateway 在线；配置已写盘，下次保存
-                # 会再次触发 reload 并重新尝试恢复。
-                logger.critical(
-                    "[App] agent.reload_config rejected with RUNTIME_FAILED; "
-                    "AgentServer runtime recovery failed, keeping Gateway up: %s",
-                    last_error,
-                )
-                return False
-
-            # reload 可能重建 AS 进程或重置 channel 状态；再补一次快照，
-            # 避免 fanout 先于 reload 完成时被覆盖。后台 worker 会合并重复请求。
-            schedule_channel_snapshot(client, channels)
-
-            # reload 成功：config 变更后让 agent 侧 prewarm channels 落到新配置。
-            _schedule_agent_prewarm_sync(
-                "agent-prewarm-sync-after-config",
-                delay_seconds=3.0,
-            )
-
-            if updated_env_keys and (browser_runtime_keys & set(updated_env_keys)):
-                restart_env = e2a_from_agent_fields(
-                    request_id=f"browser-restart-{uuid_module.uuid4().hex[:8]}",
-                    channel_id="",
-                    session_id="sess_reload",
-                    user_id="agentos_test",
-                    req_method=ReqMethod.BROWSER_RUNTIME_RESTART,
-                )
-                try:
-                    await client.send_request(restart_env)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("[App] browser runtime restart failed (non-fatal): %s", e)
-
-        # 主动推荐：enabled 变更时同步 proactive.tick job（创建/删除）
-        proactive_keys = {
-            "proactive_recommendation_enabled",
-        }
-        if updated_env_keys and (proactive_keys & set(updated_env_keys)):
-            try:
-                from agent_gateway.cron.proactive_cron_sync import (
-                    sync_proactive_tick_job,
-                )
-                await sync_proactive_tick_job(cron_controller, config_payload)
-            except Exception as e:  # noqa: BLE001  # 兜底：proactive 同步失败不阻断配置保存
-                logger.warning("[App] proactive.tick sync on config save failed: %s", e)
-
-        # YAML is already on disk. Pool seed and model swap run on AgentServer.
-        should_sync_topic = bool(
-            (updated_env_keys and "topic_recommendation_enabled" in updated_env_keys)
-            or "model" in reload_scopes
-        )
-        if should_sync_topic:
-            spawn_background_task(
-                sync_saved_topic_recommendation(
-                    client,
-                    updated_env_keys=updated_env_keys,
-                    reload_scopes=reload_scopes,
-                    config_payload=config_payload,
-                ),
-                name="topic-recommendation-config-sync",
-            )
-        return True
-
-    return _on_config_saved
+    return ConfigSavedEffectCoordinator(
+        client=client,
+        schedule_prewarm=schedule_agent_prewarm_sync,
+        sync_proactive_tick=sync_proactive_tick,
+        schedule_channel_snapshot=schedule_channel_snapshot,
+        schedule_restart=lambda: _schedule_gateway_restart(restart_request),
+        spawn_background=spawn_background_task,
+    )
 
 
 async def _run(
@@ -476,6 +238,7 @@ async def _run(
         web_path: str,
         shutdown_event: asyncio.Event,
         web_ws_deflate: bool = False,
+        required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Retain the public entrypoint while delegating to the single host."""
     from agent_gateway.application.single import run_single
@@ -483,6 +246,7 @@ async def _run(
     await run_single(
         agent_server_url=agent_server_url, web_host=web_host, web_port=web_port,
         web_path=web_path, shutdown_event=shutdown_event, web_ws_deflate=web_ws_deflate,
+        required_client_type=required_client_type,
         config_saved_factory=_build_config_saved_callback,
         restart_gateway=_exec_gateway_restart,
         process_start_t0=_PROCESS_START_T0,
@@ -501,6 +265,7 @@ async def _run_with_shutdown_signals(
     web_port: int,
     web_path: str,
     web_ws_deflate: bool = False,
+    required_client_type: str | tuple[str, ...] | None = None,
 ) -> None:
     """Translate process signals into one idempotent Gateway shutdown request."""
 
@@ -514,6 +279,7 @@ async def _run_with_shutdown_signals(
             web_path=web_path,
             shutdown_event=shutdown_event,
             web_ws_deflate=web_ws_deflate,
+            required_client_type=required_client_type,
         )
 
     await run_with_shutdown_signals(run, shutdown_gateway_telemetry)
@@ -563,6 +329,12 @@ def main() -> None:
         "--dotenv",
         metavar="<path>",
         help="Load environment from .env file (processed at startup, not used here).",
+    )
+    parser.add_argument(
+        "--require-adx-router",
+        # Accept previously generated service units; validation itself is generic.
+        dest="required_client_type", action="store_const", const=("agentos_router", "adx_router"),
+        help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
 
@@ -622,6 +394,7 @@ def main() -> None:
                 web_port=web_port,
                 web_path=web_path,
                 web_ws_deflate=web_ws_deflate,
+                required_client_type=args.required_client_type,
             )
         )
 

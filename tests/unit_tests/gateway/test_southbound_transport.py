@@ -122,3 +122,57 @@ async def test_runtime_push_pool_drops_only_matching_connection():
     await pool.close()
     second.disconnect.assert_awaited_once()
     assert await pool.endpoints() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 503])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_http_target_status_preserves_transport_failure(status, stream, monkeypatch):
+    target = ConnectionTarget(TransportKind.HTTP_SSE, "http://pod", "pod")
+
+    async def respond(request):
+        if request.url.path.endswith("/health"):
+            return httpx.Response(200, json={"ok": True})
+        return httpx.Response(status, json={"ok": False})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        connection = HttpSseConnection(http_client=http)
+        await connection.connect(target.endpoint)
+        transport = AgentDataTransport()
+        monkeypatch.setattr(transport._pool, "_connect", AsyncMock(return_value=connection))
+        await transport.start()
+        envelope = E2AEnvelope(method="chat.send" if stream else "session.list", request_id="r", session_id="s")
+        with pytest.raises(TransportError) as caught:
+            if stream:
+                async for _ in transport.send_request_stream(target, envelope):
+                    pass
+            else:
+                await transport.send_request(target, envelope)
+        assert isinstance(caught.value.__cause__, httpx.HTTPStatusError)
+        assert caught.value.__cause__.response.status_code == status
+        await transport.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retire", [False, True])
+async def test_pool_retirement_reports_not_sent_to_waiter(retire, monkeypatch):
+    target = ConnectionTarget(TransportKind.WEBSOCKET, "ws://agent")
+    started = asyncio.Event()
+
+    async def connect(_):
+        started.set()
+        await asyncio.Event().wait()
+
+    transport = AgentDataTransport()
+    monkeypatch.setattr(transport._pool, "_connect", connect)
+    await transport.start()
+    task = asyncio.create_task(transport.send_request(target, E2AEnvelope(method="session.list", request_id="r")))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    if retire:
+        await transport.disconnect(target)
+    else:
+        await transport.close()
+    with pytest.raises(TransportError) as caught:
+        await asyncio.wait_for(task, timeout=2)
+    assert caught.value.delivery is DeliveryState.NOT_SENT
+    await transport.close()

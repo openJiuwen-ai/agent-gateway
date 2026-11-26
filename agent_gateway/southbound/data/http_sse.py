@@ -29,6 +29,7 @@ from e2a.wire_codec import (
 from agent_gateway.common.security.link_mtls import LinkMTLSConfig
 from agent_gateway.southbound.data.rest_map import (
     HttpMethodNotHandled,
+    RestAssemblyError,
     assemble_rest_request,
     normalize_agent_http_base,
 )
@@ -384,6 +385,19 @@ class HttpSseConnection:
                 envelope.method,
             )
             return _http_method_not_handled(envelope, str(exc))
+        except RestAssemblyError as exc:
+            logger.info(
+                "[E2A][out][http][unary] request_id=%s method=%s REST 组装失败: %s",
+                envelope.request_id,
+                envelope.method,
+                exc,
+            )
+            return AgentResponse(
+                request_id=str(envelope.request_id or ""),
+                channel_id=str(envelope.channel or "web"),
+                ok=False,
+                payload={"error": str(exc), "code": "BAD_REQUEST"},
+            )
         http = self._ensure_http()
         channel_id = str(envelope.channel or "web")
         rid = str(envelope.request_id or "")
@@ -471,6 +485,20 @@ class HttpSseConnection:
                 envelope.method,
             )
             yield _http_method_not_handled_chunk(envelope, str(exc))
+            return
+        except RestAssemblyError as exc:
+            logger.info(
+                "[E2A][out][http][stream] request_id=%s method=%s REST 组装失败: %s",
+                envelope.request_id,
+                envelope.method,
+                exc,
+            )
+            yield AgentResponseChunk(
+                request_id=str(envelope.request_id or ""),
+                channel_id=str(envelope.channel or "web"),
+                payload={"error": str(exc), "code": "BAD_REQUEST"},
+                is_complete=True,
+            )
             return
         http = self._ensure_http()
         channel_id = str(envelope.channel or "web")

@@ -3554,7 +3554,7 @@ def _patch_login_credential_lookup(
     """
     monkeypatch.setattr(
         "agent_gateway.auth.passthrough.refreshed_credential_for_ref",
-        lambda ref: fresh
+        lambda ref, *, service=None: fresh
         if fresh is not None
         else {"credential_ref": ref, "revoked": True},
     )

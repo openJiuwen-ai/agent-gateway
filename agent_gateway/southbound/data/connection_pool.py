@@ -40,7 +40,15 @@ class ConnectionPool(Generic[C]):
                 task = asyncio.create_task(self._connect(target))
                 self._entries[target] = task
                 task.add_done_callback(lambda done: self._on_done(target, done))
-        result = await asyncio.shield(task)
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            waiter = asyncio.current_task()
+            if waiter is not None and waiter.cancelling():
+                raise
+            if task.cancelled():
+                raise RuntimeError("connection setup was retired") from None
+            raise
         if self._entries.get(target) is not task:
             raise RuntimeError("connection was retired during setup")
         return result

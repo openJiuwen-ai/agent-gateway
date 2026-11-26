@@ -31,6 +31,7 @@ from agent_gateway.channel_manager.base import (
     ConnectHook,
     RobotMessageRouter,
 )
+from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
@@ -63,6 +64,8 @@ from agent_gateway.routing.keys import AgentRef, RoutingKey
 from agent_gateway.routing.session_sharing import RoutingTarget
 
 if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
     from agent_gateway.transport.uvicorn_listener import UvicornListener
 
 logger = logging.getLogger(__name__)
@@ -291,11 +294,17 @@ class WebChannel(BaseWsChannel):
     name = "web"
     channel_id = "web"
 
-    def __init__(self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None):
+    def __init__(
+        self, config: WebChannelConfig, router: RobotMessageRouter, agent_client: Any = None,
+        *, auth_service_provider: Callable[[], AuthService] | None = None,
+        credential_update_sink: CredentialUpdateSink | None = None,
+    ):
         super().__init__(config, router)
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
+        self.auth_service_provider = auth_service_provider
+        self.credential_update_sink = credential_update_sink
         self._listener: UvicornListener | None = None
         self._listener_available = asyncio.Event()
         self._listener_start_error: Exception | None = None
@@ -2167,7 +2176,10 @@ class WebChannel(BaseWsChannel):
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
         # user_id 取上面解析出的连接身份（IAM 启用时即握手校验过的值），其余字段取 query。
-        from agent_gateway.common.request_identity import normalize_routing_identity
+        from agent_gateway.common.request_identity import (
+            normalize_agent_identity_query,
+            normalize_routing_identity,
+        )
         from agent_gateway.enterprise import is_enterprise
 
         _routing = normalize_routing_identity(
@@ -2175,6 +2187,9 @@ class WebChannel(BaseWsChannel):
             _flat_query,
         )
         setattr(ws, "_web_routing", _routing)
+        # Agent 模板 id 随连接保存，每条消息再写入 metadata.agent_identity。
+        if trust_client_identity_headers(remote):
+            setattr(ws, "_web_agent_identity", normalize_agent_identity_query(_flat_query))
         if is_enterprise() and not _routing.get("bot_id"):
             logger.warning(
                 "WebChannel 新连接缺少 bot_id: remote=%s routing=%s",
@@ -2541,6 +2556,9 @@ class WebChannel(BaseWsChannel):
                 request_id=req_id,
                 authorization=_ws_authorization(ws),
                 jiuwenclaw_id=_ws_cookie(ws, "jiuwenclaw_id") or None,
+                agent_template_id=(
+                    getattr(ws, "_web_agent_identity", None) or {}
+                ).get("agent_template_id"),
             )
             if denial is not None:
                 error, code = denial
@@ -2551,6 +2569,22 @@ class WebChannel(BaseWsChannel):
                 )
                 await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
+
+        # Keep the specialized upload error code first, then apply the shared
+        # enterprise write policy before extension interception or preprocessing.
+        from agent_gateway.channel_manager.web.invoke import (
+            is_enterprise_write_forbidden,
+        )
+
+        if is_enterprise_write_forbidden(method):
+            await self.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="企业版配置由管理面统一下发",
+                code="FORBIDDEN",
+            )
+            return
 
         # 扩展运行时先于原生方法分发处理 Gateway 域扩展事件；无 handler 时
         # 原样返回 params，路径与未接入扩展完全一致。request_context.headers
@@ -2660,6 +2694,7 @@ class WebChannel(BaseWsChannel):
         # chat.send / history.get still become stream in _normalize_gateway_message
         # even when the client omits this field.
         from agent_gateway.common.request_identity import (
+            apply_agent_identity_metadata,
             apply_routing_metadata,
             normalize_routing_identity,
         )
@@ -2669,18 +2704,21 @@ class WebChannel(BaseWsChannel):
             _routing = normalize_routing_identity(
                 {"user_id": req_user_id} if req_user_id else None,
             )
-        _meta = apply_routing_metadata(
-            {
-                "query": query,
-                "method": method,
-                "user_id": req_user_id,
-                # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
-                "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
-                # 登录会话id（握手时认的)。Gateway据此
-                # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
-                "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
-            },
-            _routing,
+        _meta = apply_agent_identity_metadata(
+            apply_routing_metadata(
+                {
+                    "query": query,
+                    "method": method,
+                    "user_id": req_user_id,
+                    # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
+                    "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
+                    # 登录会话id（握手时认的)。Gateway据此
+                    # 给登录模型挂上**这个用户**的凭据，见 common/auth/passthrough.py。
+                    "auth_session": getattr(ws, "_jiuwen_auth_session", "") or "",
+                },
+                _routing,
+            ),
+            getattr(ws, "_web_agent_identity", None),
         )
         user_message = Message(
             id=req_id,
@@ -2705,21 +2743,6 @@ class WebChannel(BaseWsChannel):
         attach_message_trace(user_message)
 
         # 发布到 route 或回调
-        # WS 分发与 HTTP 共享企业拦截语义：HTTP 走 invoke.dispatch_web_request
-        # 已在入口检查；本内联分发此前漏检，企业版禁写方法（config.set 等）
-        # 会经 WS 旁路到达本地 handler。拦截响应对齐 HTTP 的 FORBIDDEN 文案。
-        from agent_gateway.channel_manager.web.invoke import is_enterprise_write_forbidden
-
-        if is_enterprise_write_forbidden(method):
-            await self.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="企业版配置由管理面统一下发",
-                code="FORBIDDEN",
-            )
-            return
-
         handler = self._method_handlers.get(method)
         if method in self._local_only_methods:
             if handler is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -89,9 +90,33 @@ def test_context_round_trip_persists_tui_project_metadata(
     state_path = persist_harmonyos_project_context(context)
     loaded = load_harmonyos_project_context(project)
     assert state_path.is_file()
+    if os.name == "posix":
+        assert state_path.stat().st_mode & 0o777 == 0o600
     assert loaded is not None
     assert loaded["project"]["path"] == str(project.resolve())
     assert loaded["selected"]["module"] == "entry"
+
+
+@pytest.mark.parametrize("operation", ["fsync", "replace"])
+def test_failed_context_write_keeps_previous_state(
+    operation: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    project = tmp_path / "Sample"
+    _write_project(project)
+    monkeypatch.setattr(harmonyos_project, "get_workspace_dir", lambda: tmp_path / "state")
+    context = inspect_harmonyos_project(project)
+    state_path = persist_harmonyos_project_context(context)
+    original = state_path.read_bytes()
+
+    def fail(*_args):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(os, operation, fail)
+    with pytest.raises(OSError, match="simulated write failure"):
+        persist_harmonyos_project_context({**context, "warnings": ["updated"]})
+
+    assert state_path.read_bytes() == original
+    assert list(state_path.parent.iterdir()) == [state_path]
 
 
 def test_load_refreshes_context_when_descriptor_changes(

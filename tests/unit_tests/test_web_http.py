@@ -59,14 +59,10 @@ class _FakePeer:
 def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
     # Stub dispatch module before loading web_http_routes.
     # Use monkeypatch.setitem so xdist workers restore the real module after
-    # this fixture (otherwise later file-api tests ImportError on
-    # ``_trust_client_tenant_headers`` from a leftover bare ModuleType stub).
+    # this fixture (otherwise later file-api tests import the bare stub).
     dispatch_mod = ModuleType("agent_gateway.channel_manager.web.web_http_dispatch")
     dispatch_mock = AsyncMock()
     dispatch_mod.dispatch_http_request = dispatch_mock  # type: ignore[attr-defined]
-    dispatch_mod._trust_client_tenant_headers = (  # type: ignore[attr-defined]
-        lambda client_host=None: True
-    )
     monkeypatch.setitem(
         sys.modules,
         "agent_gateway.channel_manager.web.web_http_dispatch",
@@ -387,7 +383,9 @@ def test_http_dispatch_session_create_emits_resolve_identity(
         "agent_gateway.enterprise.capabilities.audit.audit_emit.emit_audit_ua",
         _capture_ua,
     )
-    monkeypatch.setattr(disp, "is_enterprise", lambda: True)
+    from agent_gateway.channel_manager.web import client_trust
+
+    monkeypatch.setattr(client_trust, "is_enterprise", lambda: True)
 
     async def _handler(ws, req_id, params, session_id, **kwargs):
         await channel.send_response(ws, req_id, ok=True, payload={"id": "s1"})
@@ -474,6 +472,27 @@ def test_http_sse_unregister_on_cancel():
         assert out2.closed is True
 
     asyncio.run(_run())
+
+
+@pytest.mark.asyncio
+async def test_session_peer_lookup_prunes_closed_http_outbounds():
+    from agent_gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+
+    registry = WebDeliveryRegistry()
+    first = outbound_mod.HttpSseOutbound(session_id="session")
+    second = outbound_mod.HttpSseOutbound(session_id="session")
+    other = outbound_mod.HttpSseOutbound(session_id="other")
+    first_id, second_id, other_id = (registry.register(peer) for peer in (first, second, other))
+
+    await first.close()
+    assert registry.peers_for_session("session") == {second}
+    assert first_id not in registry.request_outbounds
+    assert registry.session_request_outbounds["session"] == {second_id}
+
+    await second.close()
+    assert registry.peers_for_session("session") == set()
+    assert registry.session_request_outbounds == {"other": {other_id}}
+    assert registry.request_outbounds == {other_id: other}
 
 
 def test_sse_idle_timeout_ends_stream():

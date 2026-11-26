@@ -22,7 +22,6 @@ from agent_gateway.common.protocol_methods import (
 
 logger = logging.getLogger(__name__)
 
-RETIRED_CODE = "SKILL_UPLOAD_FEATURE_RETIRED"
 IMPORT_UPLOAD_METHOD = "skills.import_upload"
 FINALIZE_METHOD = SKILL_UPLOAD_FINALIZE
 # 门禁覆盖的方法集合：WS 与 HTTP 两个入口都按它决定是否调用本门禁。
@@ -217,6 +216,7 @@ async def enterprise_skill_upload_denial(
     request_id: str,
     authorization: str | None,
     jiuwenclaw_id: str | None,
+    agent_template_id: str | None = None,
 ) -> tuple[str, str] | None:
     """返回 ``(message, code)`` 表示拒绝；``None`` 表示放行。"""
     from agent_gateway.enterprise import is_enterprise
@@ -224,7 +224,41 @@ async def enterprise_skill_upload_denial(
     if not is_enterprise():
         return None
     if method == IMPORT_UPLOAD_METHOD:
-        return ("企业版已停止使用该上传方式", RETIRED_CODE)
+        from agent_gateway.enterprise.capabilities.skill_upload.policy import (
+            LOCAL_SKILL_DISABLED,
+            POLICY_UNAVAILABLE,
+            SkillUploadPolicyError,
+            query_allow_local_skill_upload,
+        )
+
+        token = str(authorization or "").strip()
+        cluster = str(jiuwenclaw_id or "").strip()
+        # 模板 id 只取自受信来源（HTTP 受信头 / WS 握手 query）。这里不回退
+        # 到客户端请求体里的 agent_template_id，否则会绕过
+        # GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS 的关闭开关。
+        template = str(agent_template_id or "").strip()
+        if not token.lower().startswith("bearer ") or not cluster or not template:
+            return (
+                "skill upload policy cannot be verified: missing credentials or context",
+                POLICY_UNAVAILABLE,
+            )
+        try:
+            allowed = await query_allow_local_skill_upload(
+                authorization=token,
+                jiuwenclaw_id=cluster,
+                agent_template_id=template,
+            )
+        except SkillUploadPolicyError as exc:
+            return (exc.message, exc.code)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[SkillUpload] policy query failed: %s", exc)
+            return ("skill upload policy is unavailable", POLICY_UNAVAILABLE)
+        if not allowed:
+            return (
+                "local skill upload is not enabled for this Agent template",
+                LOCAL_SKILL_DISABLED,
+            )
+        return None
     if method != FINALIZE_METHOD:
         # skills.upload.stage 仅依赖企业版白名单；其他方法不归本门禁管。
         return None

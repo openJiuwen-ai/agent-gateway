@@ -14,6 +14,7 @@ from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import
     DingTalkChannel,
     DingTalkConfig,
     DingTalkHandler,
+    DingTalkMediaMessageRequest,
 )
 from agent_gateway.channel_manager.persistent_events import DingTalkInboundEvent
 from agent_gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
@@ -103,6 +104,32 @@ def test_group_broadcast_is_not_treated_as_an_explicit_bot_mention():
 def test_event_never_guesses_missing_identity_or_unsupported_input(changes):
     with pytest.raises(ValueError):
         DingTalkInboundEvent.from_callback(_callback(**changes), app_id="app-test", agent_id="agent-dingtalk")
+
+
+@pytest.mark.parametrize("conversation_type, endpoint, recipient", [
+    ("1", "oToMessages/batchSend", {"userIds": ["staff-test"]}),
+    ("2", "groupMessages/send", {"openConversationId": "conversation-test"}),
+])
+@pytest.mark.asyncio
+async def test_channel_replies_and_media_use_the_same_recipient(conversation_type, endpoint, recipient):
+    channel = _channel()
+    channel._http.post.return_value = httpx.Response(200)
+    await channel.send_attachment_error_reply("staff-test", "conversation-test", conversation_type)
+    image_param = json.dumps({"photoURL": "media-test"})
+    await channel._send_media_message(DingTalkMediaMessageRequest(
+        token="fake-token", chat_id="staff-test", open_conversation_id="conversation-test",
+        conversation_type=conversation_type, msg_key="sampleImageMsg", msg_param=image_param,
+    ))
+
+    text_call, media_call = channel._http.post.await_args_list
+    for call in (text_call, media_call):
+        assert call.args == (f"https://api.example.invalid/v1.0/robot/{endpoint}",)
+        data = call.kwargs["json"]
+        assert {k: data[k] for k in ("openConversationId", "userIds") if k in data} == recipient
+        assert data["robotCode"] == "app-test"
+    assert text_call.kwargs["json"]["msgKey"] == "sampleMarkdown"
+    assert media_call.kwargs["json"]["msgKey"] == "sampleImageMsg"
+    assert media_call.kwargs["json"]["msgParam"] == image_param
 
 
 @pytest.mark.asyncio
@@ -262,6 +289,8 @@ async def test_attachment_mode_keeps_the_file_in_the_group_chat(tmp_path):
     channel._file_service.upload_media.assert_awaited_once_with(str(source), "file")
     request = channel._http.post.await_args
     assert request.args[0] == "https://api.example.invalid/v1.0/robot/groupMessages/send"
+    assert request.kwargs["json"]["robotCode"] == "robot-test"
+    assert request.kwargs["json"]["openConversationId"] == "conversation-test"
     assert request.kwargs["json"]["msgKey"] == "sampleFile"
     assert '"fileType": "pptx"' in request.kwargs["json"]["msgParam"]
 

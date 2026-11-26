@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
+from agent_gateway.channel_manager.im_platforms.welink import welink_poller
 from agent_gateway.channel_manager.im_platforms.welink.welink_cli import build_command
 from agent_gateway.channel_manager.im_platforms.welink.welink_messages import (
     extract_login_prompt,
@@ -337,6 +339,21 @@ def test_poll_baselines_then_delivers_the_reader_and_other_people(tmp_path: Path
 
     assert poller.poll() == []
     assert cli.history_calls[-1] == ("g-1", "14")
+
+
+def test_successful_polls_decode_each_cli_response_once(tmp_path: Path) -> None:
+    cli = _ScriptedCli()
+    poller = WelinkPoller(cli, "jiuwenswarmbot1", CursorStore(tmp_path / "cursors.json"))
+
+    with (
+        patch.object(welink_poller, "parse_cli_json", wraps=welink_poller.parse_cli_json) as decode,
+        patch.object(welink_poller, "redact_secrets", wraps=welink_poller.redact_secrets) as redact,
+    ):
+        assert poller.poll() == []  # recent conversations + group members
+        assert decode.call_count == 2
+        assert [item.message_id for item in poller.poll()] == ["10", "11"]  # recent conversations + history
+        assert decode.call_count == 4
+        redact.assert_not_called()
 
 
 def test_startup_delivers_a_short_backlog(tmp_path: Path) -> None:

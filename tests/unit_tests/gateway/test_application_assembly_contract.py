@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 
-@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single'])
+@pytest.mark.parametrize('module', ['services', 'web', 'tui_acp', 'single', 'config_saved_effects'])
 def test_application_import_does_not_initialize_entrypoint(tmp_path: Path, module: str) -> None:
     env = os.environ.copy()
     for key, suffix in [('JIUWENSWARM_HOME', 'home'), ('JIUWENSWARM_DATA_DIR', 'data'), ('AGENTOS_GATEWAY_LOG_DIR', 'logs')]:
@@ -309,11 +309,12 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     extension_manager = SimpleNamespace(load_all_extensions=AsyncMock(side_effect=lambda: events.append('extensions')), list_extensions=lambda: [])
     monkeypatch.setattr(manager, 'ExtensionManager', Mock(return_value=extension_manager))
 
-    handler = SimpleNamespace(set_session_login_bindings=Mock(side_effect=lambda value: events.append('bindings.bound')), set_credential_access=Mock(side_effect=lambda value: events.append('credentials.bound')), start_forwarding=AsyncMock(side_effect=lambda: events.append('forwarding')), set_inbound_pipeline=Mock(), set_outbound_pipeline=Mock(), set_cron_controller=Mock(), set_channel_manager=Mock())
-    def create_handler(client):
+    handler = SimpleNamespace(set_credential_access=Mock(side_effect=lambda value: events.append('credentials.bound')), start_forwarding=AsyncMock(side_effect=lambda: events.append('forwarding')), set_inbound_pipeline=Mock(), set_outbound_pipeline=Mock(), set_cron_controller=Mock(), set_channel_manager=Mock())
+    def create_handler(client, *, session_login_bindings):
         events.append('handler.created')
         if enterprise:
             assert events.index('storage') < events.index('handler.created')
+        assert session_login_bindings is not None
         return handler
     handler_factory = Mock(side_effect=create_handler)
     monkeypatch.setattr(message_handler, 'MessageHandler', handler_factory)
@@ -351,7 +352,9 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         assert value.third_agent is third
         assert value.storage_ctx is storage if enterprise else value.storage_ctx is None
         assert value.message_handler is handler and value.channel_manager is cm
-        handler_factory.assert_called_once_with(value.client)
+        handler_factory.assert_called_once_with(
+            value.client, session_login_bindings=value.session_login_bindings,
+        )
         cm_factory.assert_called_once_with(handler, config={})
         handler.set_channel_manager.assert_called_once_with(cm)
         handler.set_inbound_pipeline.assert_called_once_with(inbound)
@@ -362,6 +365,12 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
         scheduler_factory.assert_called_once_with(store=store, agent_client=value.client, message_handler=handler)
         session_bind.assert_called_once_with(value.client)
         mcp_bind.assert_called_once_with(value.client)
+        assert events.index('credentials.bound') < events.index('forwarding')
+        assert value.session_login_bindings._auth_service_provider is value.auth_service_provider
+        scheduler.set_credential_access.assert_called_once_with(value.credential_access)
+        controller.set_credential_access.assert_called_once_with(value.credential_access)
+        handler.set_credential_access.assert_called_once_with(value.credential_access)
+        assert value.credential_update_sink._message_handler is handler
         scheduler.start.assert_not_awaited()
         cm.start_dispatch.assert_not_awaited()
         assert events.index('telemetry') < events.index('handler.created')
@@ -418,11 +427,16 @@ async def test_web_assembly_keeps_original_instances_and_first_request_gate(monk
     from e2a.message import PROMPT_SUGGESTION_READY_EVENT, TOPIC_STARTERS_READY_EVENT
 
     handler, client = SimpleNamespace(), object()
+    auth_service_provider, credential_update_sink = Mock(return_value=object()), object()
     channel = SimpleNamespace(
         send=AsyncMock(), broadcast_event=AsyncMock(), channel_id='web',
         registered_methods=lambda: {'session.create'}, wrap_message_callback=Mock(),
     )
-    constructor = Mock(return_value=channel)
+    def constructor(*args, **kwargs):
+        channel.auth_service_provider = kwargs['auth_service_provider']
+        channel.credential_update_sink = kwargs['credential_update_sink']
+        return channel
+    constructor = Mock(side_effect=constructor)
     monkeypatch.setattr(web_connect, 'WebChannel', constructor)
     monkeypatch.setattr(web_proxy_listen, 'register_3rdagent_web_method', Mock())
     watchers = SimpleNamespace(set_channel=Mock(), set_diff_status_fetcher=Mock())
@@ -433,10 +447,12 @@ async def test_web_assembly_keeps_original_instances_and_first_request_gate(monk
     manager = SimpleNamespace(register_channel_with_inbound=Mock(), deliver_to_message_handler=AsyncMock())
     save, health, cron, heartbeat, updater = AsyncMock(), object(), object(), object(), object()
     processor = MessagePreprocessor(AsyncMock(), lambda msg: msg, Mock())
-    actual, gate = assemble_web(agent_client=client, message_handler=handler, channel_manager=manager, extension_registry=plugins, on_config_saved=save, heartbeat_service=health, cron_controller=cron, heartbeat_controller=heartbeat, updater_service=updater, host='127.0.0.1', port=0, path='/ws', ws_permessage_deflate=True, preprocessor=processor, log_stage=Mock())
+    actual, gate = assemble_web(agent_client=client, message_handler=handler, channel_manager=manager, extension_registry=plugins, on_config_saved=save, heartbeat_service=health, cron_controller=cron, heartbeat_controller=heartbeat, updater_service=updater, host='127.0.0.1', port=0, path='/ws', ws_permessage_deflate=True, preprocessor=processor, log_stage=Mock(), auth_service_provider=auth_service_provider, credential_update_sink=credential_update_sink)
     assert actual is channel and not gate.is_set()
     constructor.assert_called_once()
     assert constructor.call_args.kwargs['agent_client'] is client
+    assert actual.auth_service_provider is auth_service_provider
+    assert actual.credential_update_sink is credential_update_sink
     assert constructor.call_args.args[0].ws_permessage_deflate is True
     params = bind.call_args.args[0]
     assert params.channel is channel and params.message_handler is handler and params.channel_manager is manager

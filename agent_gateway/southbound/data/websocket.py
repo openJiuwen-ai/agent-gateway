@@ -102,6 +102,10 @@ class _ReceiverFailure:
         self.exc = exc
 
 
+class RequestNotSentError(RuntimeError):
+    """The connection was retired before the request could be written."""
+
+
 def _wire_request_id_key(request_id: Any) -> str:
     """与 AgentServer 回包 ``request_id`` 对齐：统一为 str，避免 JSON 数字/字符串导致队列键不一致。"""
     if request_id is None:
@@ -165,6 +169,7 @@ class WebSocketConnection:
         self._cancelled_request_ids: set[str] = set()  # 已取消但等待清理的 request_id
         self._receiver_task: asyncio.Task | None = None
         self._running = False
+        self._connection_generation = 0
         # AgentServer send_push：旁路投递，勿进入与 request_id 绑定的 RPC 等待队列
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
         self._server_push_tails: dict[str, asyncio.Task] = {}
@@ -493,6 +498,7 @@ class WebSocketConnection:
             describe_ws_exception(exc),
         )
         self._running = False
+        self._connection_generation += 1
         self._server_ready = False
         self._agent_ready = False
         self._readiness_state = None
@@ -531,6 +537,11 @@ class WebSocketConnection:
     async def disconnect(self) -> None:
         # 停止接收任务
         self._running = False
+        self._connection_generation += 1
+        ws = self._ws
+        self._ws = None
+        self._uri = None
+        self._reconnect_enabled = False
         if self._receiver_task and not self._receiver_task.done():
             self._receiver_task.cancel()
             try:
@@ -553,8 +564,8 @@ class WebSocketConnection:
 
         # 关闭 WebSocket
         try:
-            if self._ws is not None:
-                await self._ws.close()
+            if ws is not None:
+                await ws.close()
         except Exception as e:
             logger.warning(
                 "关闭 AgentServer WebSocket 时异常: %s",
@@ -587,6 +598,10 @@ class WebSocketConnection:
     def _ensure_connected(self) -> None:
         if self._ws is None:
             raise RuntimeError("未连接 AgentServer，请先调用 connect(uri)")
+
+    def _check_request_connection(self, generation: int) -> None:
+        if self._ws is None or generation != self._connection_generation:
+            raise RequestNotSentError("AgentServer WebSocket connection closed before send")
 
     async def _ensure_connected_for_request(self) -> None:
         # A reconnect publishes the socket before its acknowledgement arrives.
@@ -654,7 +669,9 @@ class WebSocketConnection:
         timeout: float | None = None,
     ) -> AgentResponse:
         await self._ensure_connected_for_request()
+        generation = self._connection_generation
         await self._prepare_envelope(envelope)
+        self._check_request_connection(generation)
         # 非流式 API 必须与 AgentServer 的 unary 路径一致；忽略信封上误带的 is_stream=True。
         envelope.is_stream = False
         rid = _wire_request_id_key(envelope.request_id)
@@ -702,6 +719,7 @@ class WebSocketConnection:
             send_outcome = "failed"
             try:
                 async with self._lock:
+                    self._check_request_connection(generation)
                     lock_wait_ms = (monotonic() - lock_started) * 1000
                     payload = _e2a_to_wire(wire_envelope)
                     logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
@@ -813,7 +831,9 @@ class WebSocketConnection:
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         await self._ensure_connected_for_request()
+        generation = self._connection_generation
         await self._prepare_envelope(envelope)
+        self._check_request_connection(generation)
         envelope.is_stream = True
         rid = _wire_request_id_key(envelope.request_id)
         sid = str(envelope.session_id or "")
@@ -852,6 +872,7 @@ class WebSocketConnection:
             send_outcome = "failed"
             try:
                 async with self._lock:
+                    self._check_request_connection(generation)
                     lock_wait_ms = (monotonic() - lock_started) * 1000
                     payload = _e2a_to_wire(wire_envelope)
                     logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))

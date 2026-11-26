@@ -40,7 +40,6 @@ def _build_row_from_template(
         "template_id": template_uuid,
         "template_name": str(template["template_name"]).strip(),
         "description": template.get("description"),
-        "agent_tags": template.get("agent_tags"),
         "template_ref": normalize_template_ref(template.get("template_ref") or {}),
         "enabled": bool(template.get("enabled", True)),
         "data": template.get("data"),
