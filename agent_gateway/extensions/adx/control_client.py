@@ -352,7 +352,8 @@ class AdxControlClient:
             body['env']['HOME'] = self.config.workspace_target
             body['env']['JIUWENSWARM_HOME'] = self.config.workspace_target
             # The built-in AgentServer authenticates tool requests to the node.
-            body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+            body['env'].pop('JIUWENSWARM_ADX_API_TOKEN', None)
+            body['env']['ADX_TOKEN'] = self.config.token
         if local_rootfs is not None and not body.get('process', {}).get('commands'):
             raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
