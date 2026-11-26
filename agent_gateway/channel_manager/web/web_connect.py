@@ -2569,6 +2569,11 @@ class WebChannel(BaseWsChannel):
             )
             if denial is not None:
                 error, code = denial
+                logger.warning(
+                    "[WebChannel] skill upload denied via ws request_id=%s code=%s",
+                    req_id,
+                    code,
+                )
                 await self.send_response(ws, req_id, ok=False, error=error, code=code)
                 return
 
