@@ -2,8 +2,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
 """模板表：model_template、embedding_template、extension_config_template、
-skill_prebuilt_template、expert_package_template、mcp_template、permissions_template
-（与企业级数据模型对齐）。
+skill_prebuilt_template、expert_package_template、mcp_template、permissions_template、
+execution_guard_template（与企业级数据模型对齐）。
 """
 
 from __future__ import annotations
@@ -180,6 +180,30 @@ MCP_TEMPLATE_TABLE_DEF = TableDefinition(
 
 PERMISSIONS_TEMPLATE_TABLE_DEF = TableDefinition(
     table_name="permissions_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("body", "json", nullable=False),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["template_id"], unique=True),
+    ],
+)
+
+EXECUTION_GUARD_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="execution_guard_template",
     columns=[
         ColumnDefinition(
             "id",
