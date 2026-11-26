@@ -5,6 +5,7 @@ import heapq
 import json
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -128,6 +129,10 @@ _CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
 # toasts, unread marks) are disabled; runs stay visible only through their
 # execution sessions. Flip to True to re-enable the pipeline.
 _WEB_RUN_NOTIFICATIONS_ENABLED = False
+
+# 认领成功的 run_id 只用于本机推送放行，保留最近若干趟即可。
+# 个人版每次唤醒都会登记，若不设上限会随运行时长无界增长。
+_CLAIMED_RUN_ID_LIMIT = 4096
 
 
 def _is_cron_interrupt_event(event_type: str) -> bool:
@@ -414,8 +419,9 @@ class CronSchedulerService:
         self._lifecycle_owner_store = LifecycleOwners(_cron_lifecycle_source(store))
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
-        # 企业版库表认领成功的 run_id。推送时只放行这些，避免没抢到的机器也推结果。
-        self._claimed_run_ids: set[str] = set()
+        # 本机认领成功的 run_id（个人版总是认领）。企业版推送时只放行这些，
+        # 避免没抢到的机器也推结果。
+        self._claimed_run_ids: OrderedDict[str, None] = OrderedDict()
         # run_id -> job_id.  A run skipped during crash recovery must stay
         # suppressed across later store reloads; otherwise a reload after the
         # boot grace period could schedule the same orphaned wake again.
@@ -1858,11 +1864,11 @@ class CronSchedulerService:
         用户点「立即执行」不抢，避免和到点那一趟互相挤掉。
         """
         if not self._use_db_schedule():
-            self._claimed_run_ids.add(run_id)
+            self._remember_claimed_run(run_id)
             return True
         state = self._runs.get(run_id)
         if state is not None and state.manually_triggered:
-            self._claimed_run_ids.add(run_id)
+            self._remember_claimed_run(run_id)
             logger.info(
                 "[Cron] db schedule claim bypassed (manual run_now) job=%s run_id=%s",
                 job.id,
@@ -1888,7 +1894,7 @@ class CronSchedulerService:
         if is_oneshot_job(job):
             ok = await claim_oneshot_run(job, fire_at)
             if ok:
-                self._claimed_run_ids.add(run_id)
+                self._remember_claimed_run(run_id)
                 self._jobs.pop(job.id, None)
             else:
                 logger.warning(
@@ -1900,7 +1906,7 @@ class CronSchedulerService:
             return ok
         ok = await claim_periodic_run(job, fire_at)
         if ok:
-            self._claimed_run_ids.add(run_id)
+            self._remember_claimed_run(run_id)
             next_push = compute_next_push_after_fire(job, fire_at)
             if next_push is not None:
                 job.next_run_at = next_push.timestamp()
@@ -1914,6 +1920,13 @@ class CronSchedulerService:
                 getattr(job, "next_run_at", None),
             )
         return ok
+
+    def _remember_claimed_run(self, run_id: str) -> None:
+        """记录本机认领的 run_id，超出上限时淘汰最早的一趟。"""
+        self._claimed_run_ids.pop(run_id, None)
+        self._claimed_run_ids[run_id] = None
+        while len(self._claimed_run_ids) > _CLAIMED_RUN_ID_LIMIT:
+            self._claimed_run_ids.popitem(last=False)
 
     def _push_allowed(self, run_id: str) -> bool:
         """没抢到这一趟的机器不推结果。个人版始终可以推。"""
