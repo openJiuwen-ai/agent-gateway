@@ -340,7 +340,11 @@ class WebSocketAgentServerClient(AgentServerClient):
                 raw = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
                 logger.debug("[WebSocketAgentServerClient] connect 首帧(raw): %s", raw)
                 data = json.loads(raw)
-                logger.debug("[WebSocketAgentServerClient] connect 首帧(parsed): %s", _to_json(data))
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        "[WebSocketAgentServerClient] connect 首帧(parsed): %s",
+                        _to_json(data),
+                    )
                 if data.get("type") == "event" and data.get("event") == "connection.ack":
                     self._apply_connection_ack(data)
                 else:
@@ -669,10 +673,11 @@ class WebSocketAgentServerClient(AgentServerClient):
             envelope.is_stream,
             extra={"session_id": sid} if sid else {},
         )
-        logger.debug(
-            "[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s",
-            _to_json(envelope.to_dict()),
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[WebSocketAgentServerClient] 发送请求(非流式) E2A: %s",
+                _to_json(envelope.to_dict()),
+            )
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -699,7 +704,11 @@ class WebSocketAgentServerClient(AgentServerClient):
                 async with self._lock:
                     lock_wait_ms = (monotonic() - lock_started) * 1000
                     payload = _e2a_to_wire(wire_envelope)
-                    logger.debug("[WebSocketAgentServerClient] 发送请求(非流式) payload: %s", _to_json(payload))
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "[WebSocketAgentServerClient] 发送请求(非流式) payload: %s",
+                            _to_json(payload),
+                        )
                     send_started = monotonic()
                     await self._send_wire_payload(payload)
                     send_outcome = "written"
@@ -821,10 +830,11 @@ class WebSocketAgentServerClient(AgentServerClient):
             envelope.is_stream,
             extra={"session_id": sid} if sid else {},
         )
-        logger.debug(
-            "[WebSocketAgentServerClient] 发送请求(流式) E2A: %s",
-            _to_json(envelope.to_dict()),
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(
+                "[WebSocketAgentServerClient] 发送请求(流式) E2A: %s",
+                _to_json(envelope.to_dict()),
+            )
 
         if rid in self._message_queues:
             raise DuplicateRequestIdError(rid)
@@ -849,7 +859,11 @@ class WebSocketAgentServerClient(AgentServerClient):
                 async with self._lock:
                     lock_wait_ms = (monotonic() - lock_started) * 1000
                     payload = _e2a_to_wire(wire_envelope)
-                    logger.debug("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "[WebSocketAgentServerClient] 发送请求(流式) payload: %s",
+                            _to_json(payload),
+                        )
                     send_started = monotonic()
                     await self._send_wire_payload(payload)
                     send_outcome = "written"

@@ -740,3 +740,138 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
         target_logger.removeHandler(caplog.handler)
         receiver.cancel()
         await receiver
+
+
+@pytest.mark.asyncio
+async def test_unary_payload_is_not_serialized_when_debug_logging_disabled(monkeypatch):
+    """DEBUG 关闭时不应为日志构造 JSON 副本（大 payload 会翻倍占内存）。"""
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+
+    serialized: list[object] = []
+    real_to_json = agent_client._to_json
+
+    def spy(data):
+        serialized.append(data)
+        return real_to_json(data)
+
+    monkeypatch.setattr(agent_client, "_to_json", spy)
+    monkeypatch.setattr(agent_client.logger, "isEnabledFor", lambda level: False)
+
+    try:
+        task = asyncio.create_task(
+            client.send_request(
+                e2a_from_agent_fields(
+                    request_id="rid-lazy-unary",
+                    channel_id="acp",
+                    session_id="sess-lazy",
+                    params={"message": "hello"},
+                    is_stream=False,
+                ),
+                timeout=2.0,
+            )
+        )
+        await _wait_for_send(ws, 1)
+        ws.respond_unary("rid-lazy-unary", {"echo": "ok"})
+        response = await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert response.ok is True
+        assert serialized == []
+    finally:
+        receiver.cancel()
+        await receiver
+
+
+@pytest.mark.asyncio
+async def test_stream_payload_is_not_serialized_when_debug_logging_disabled(monkeypatch):
+    client = AgentClientHarness()
+    client.set_ws_for_test(FakeWebSocket())
+
+    monkeypatch.setattr(
+        "agent_gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        0.05,
+    )
+    serialized: list[object] = []
+    real_to_json = agent_client._to_json
+
+    def spy(data):
+        serialized.append(data)
+        return real_to_json(data)
+
+    monkeypatch.setattr(agent_client, "_to_json", spy)
+    monkeypatch.setattr(agent_client.logger, "isEnabledFor", lambda level: False)
+
+    env = e2a_from_agent_fields(
+        request_id="rid-lazy-stream",
+        channel_id="acp",
+        session_id="sess-lazy",
+        params={"content": "hello"},
+        is_stream=True,
+    )
+
+    async def inject_frames():
+        while not client.has_message_queue_for_test("rid-lazy-stream"):
+            await asyncio.sleep(0.001)
+        queue = client.get_message_queue_for_test("rid-lazy-stream")
+        await queue.put(
+            encode_agent_chunk_for_wire(
+                AgentResponseChunk(
+                    request_id="rid-lazy-stream",
+                    channel_id="acp",
+                    payload={"is_complete": True},
+                    is_complete=True,
+                ),
+                response_id="rid-lazy-stream",
+                sequence=0,
+            )
+        )
+
+    injector = asyncio.create_task(inject_frames())
+    chunks = [chunk async for chunk in client.send_request_stream(env)]
+    await injector
+
+    assert len(chunks) == 1
+    assert serialized == []
+
+
+@pytest.mark.asyncio
+async def test_payload_is_serialized_when_debug_logging_enabled(monkeypatch):
+    client = AgentClientHarness()
+    ws = ManualResponseWebSocket()
+    client.set_ws_for_test(ws)
+    client.set_running_for_test(True)
+    receiver = asyncio.create_task(client.run_message_receiver_loop_for_test())
+
+    serialized: list[object] = []
+    real_to_json = agent_client._to_json
+
+    def spy(data):
+        serialized.append(data)
+        return real_to_json(data)
+
+    monkeypatch.setattr(agent_client, "_to_json", spy)
+    monkeypatch.setattr(agent_client.logger, "isEnabledFor", lambda level: True)
+
+    try:
+        task = asyncio.create_task(
+            client.send_request(
+                e2a_from_agent_fields(
+                    request_id="rid-debug-on",
+                    channel_id="acp",
+                    session_id="sess-lazy",
+                    params={"message": "hello"},
+                    is_stream=False,
+                ),
+                timeout=2.0,
+            )
+        )
+        await _wait_for_send(ws, 1)
+        ws.respond_unary("rid-debug-on", {"echo": "ok"})
+        await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        # 信封与 wire payload 各一份
+        assert len(serialized) == 2
+    finally:
+        receiver.cancel()
+        await receiver
