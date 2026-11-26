@@ -28,14 +28,24 @@ class OwnerIdentity:
     ``group_id`` / ``bot_id`` are the enterprise routing scope; together with
     ``user_id`` they are what the gateway derives ``service_id`` / ``agent_id`` /
     ``workspace_key`` from. Personal edition leaves group/bot empty.
+
+    ``agent_id`` is the per-instance agent resource identifier (issue #124);
+    empty means identity does not carry agent scope (``agent_id in (...)``
+    expressions will not match, mirroring workspace quota semantics).
     """
 
     user_id: str = ""
     group_id: str = ""
     bot_id: str = ""
+    agent_id: str = ""
 
     def as_dict(self) -> dict[str, str]:
-        return {"user_id": self.user_id, "group_id": self.group_id, "bot_id": self.bot_id}
+        return {
+            "user_id": self.user_id,
+            "group_id": self.group_id,
+            "bot_id": self.bot_id,
+            "agent_id": self.agent_id,
+        }
 
     def same_scope(self, other: "OwnerIdentity") -> bool:
         """Phase-1 "same tenant" check: same routing scope (group + bot)."""
@@ -141,6 +151,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         "user_id": identity.user_id,
         "group_id": identity.group_id,
         "bot_id": identity.bot_id,
+        "agent_id": identity.agent_id,
     }
     hits: list[dict[str, Any]] = []
     for row in policies:
