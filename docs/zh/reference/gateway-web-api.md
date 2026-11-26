@@ -90,7 +90,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 | 检查项 | 条件与默认 | 失败结果 |
 |--------|-----------|---------|
-| Origin 校验 | 仅当环境变量 `JIUWENSWARM_ENABLE_ORIGIN_CHECK=1` 开启（默认关闭）；白名单为 `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS`（逗号分隔 hostname，含 `none` 可放行无 Origin 客户端）（`common/security/ws_origin.py:12-41`） | HTTP 403 `Forbidden: Origin not allowed`（`web_channel_app.py:153-186`） |
+| Origin 校验 | 仅当环境变量 `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK=1`（旧名 `JIUWENSWARM_ENABLE_ORIGIN_CHECK`）开启（默认关闭）；白名单为 `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS`（旧名 `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS`；逗号分隔 hostname，含 `none` 可放行无 Origin 客户端）（`common/security/ws_origin.py:16-40`） | HTTP 403 `Forbidden: Origin not allowed`（`web_channel_app.py:153-186`） |
 | 握手鉴权 | 由 `AgentOSRouterClient.set_handshake_auth` 注册（`extensions/agentos/agentos_router/router_client.py:548-558`），**仅 AgentOS 多用户部署启用**；token 取 URL `?token=` → `Authorization: Bearer` → `X-Token`（`extensions/agentos/auth/common.py:33-60`）；IAM 启用时，连接声明的 user_id（query `user_id` 与 `X-User-Id` 头，凡出现者）必须是该 token 的 username，否则拒绝握手（`USER_MISMATCH`；未声明则放行）。声明 IAM user_id（UUID）同样拒绝：连接身份按 username 建模，这一点比 `/file-api` 严格；IAM 未返回 username 时无名字可绑定，任何声明都拒绝；两处各至多声明一次，重复的 query 参数或头一律拒绝（`AMBIGUOUS_USER_ID`）；普通单用户部署不注册钩子，握手放行 | HTTP 401 `Unauthorized`（`web_channel_app.py:195-222`） |
 | query `session_id` 合法性 | 若携带必须通过 `validate_session_id`（§2.3） | WS close 1008（`web_connect.py:1372-1386`） |
 | path 不匹配（非 `/ws`、`/ws/git`） | — | WS close 1008 `unsupported path`（`web_connect.py:1354-1360`） |
@@ -194,8 +194,8 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 
 | 开关 | 默认 | 影响的接口行为 |
 |------|------|---------------|
-| `JIUWENSWARM_ENABLE_ORIGIN_CHECK` | 关闭（仅 `=1` 开启） | WS 握手 Origin 校验（§2.1）：开启后 Origin 不在白名单 → 403 |
-| `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` | 空 | Origin 白名单（逗号分隔 hostname，含 `none` 可放行无 Origin 客户端） |
+| `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK`（旧名 `JIUWENSWARM_ENABLE_ORIGIN_CHECK`） | 关闭（仅 `=1` 开启） | WS 握手 Origin 校验（§2.1）：开启后 Origin 不在白名单 → 403 |
+| `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS`（旧名 `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS`） | 空 | Origin 白名单（逗号分隔 hostname，含 `none` 可放行无 Origin 客户端） |
 | `GATEWAY_HOST` / `GATEWAY_PORT` | `127.0.0.1` / `19001` | GatewayServer（`/tui`、`/acp` 辅助路由）监听地址 |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | 20 / 3s | 启动时连接 AgentServer 的重试次数与间隔（重试耗尽前转发方法回 `SERVICE_UNAVAILABLE`） |
 | `trajectory_ui.enabled`（config） | 关 | `/api/trajectory/*` 全部 503 `TRAJECTORY_DISABLED`（§9.3） |

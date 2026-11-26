@@ -15,6 +15,8 @@ from agent_gateway.app_gateway import (
     RouteConfig,
     _normalize_gateway_message,
 )
+from agent_gateway.common import env_names
+from agent_gateway.common.process_supervision import SUPERVISOR_PID_ENV
 
 
 class DummyBus:
@@ -230,7 +232,23 @@ def test_exec_gateway_restart_exits_to_supervisor(monkeypatch):
     _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
     # The real parent (pytest) is alive and older than us, so the live
     # supervisor check passes without stubbing psutil.
-    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+    monkeypatch.setenv(SUPERVISOR_PID_ENV, str(os.getppid()))
+
+    with pytest.raises(_ProcessExited):
+        gateway_module._exec_gateway_restart()
+
+    assert exit_codes == [gateway_module.GATEWAY_RESTART_EXIT_CODE]
+    assert execv_calls == []
+
+
+def test_exec_gateway_restart_reads_the_new_supervisor_pid_name(monkeypatch):
+    import agent_gateway.app_gateway as gateway_module
+
+    exit_codes = []
+    execv_calls = []
+    _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
+    monkeypatch.delenv(SUPERVISOR_PID_ENV, raising=False)
+    monkeypatch.setenv(env_names.SUPERVISOR_PID.name, str(os.getppid()))
 
     with pytest.raises(_ProcessExited):
         gateway_module._exec_gateway_restart()
@@ -247,10 +265,10 @@ def test_exec_gateway_restart_execs_without_its_supervisor(monkeypatch, supervis
     execv_calls = []
     _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
     if supervisor_pid is None:
-        monkeypatch.delenv(gateway_module.SUPERVISOR_PID_ENV, raising=False)
+        monkeypatch.delenv(SUPERVISOR_PID_ENV, raising=False)
     else:
         # A PID leaked through a saved environment must not be mistaken for our parent.
-        monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, supervisor_pid)
+        monkeypatch.setenv(SUPERVISOR_PID_ENV, supervisor_pid)
 
     gateway_module._exec_gateway_restart()
 
@@ -269,7 +287,7 @@ def test_exec_gateway_restart_execs_when_the_supervisor_pid_is_dead(monkeypatch)
     exit_codes = []
     execv_calls = []
     _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
-    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+    monkeypatch.setenv(SUPERVISOR_PID_ENV, str(os.getppid()))
 
     def dead_process(pid=None):
         raise psutil.NoSuchProcess(pid if pid is not None else 0)
@@ -292,7 +310,7 @@ def test_exec_gateway_restart_execs_when_the_supervisor_pid_was_recycled(monkeyp
     exit_codes = []
     execv_calls = []
     _install_fake_os(monkeypatch, gateway_module, exit_codes, execv_calls)
-    monkeypatch.setenv(gateway_module.SUPERVISOR_PID_ENV, str(os.getppid()))
+    monkeypatch.setenv(SUPERVISOR_PID_ENV, str(os.getppid()))
 
     class _RecycledProcess:
         def __init__(self, pid=None):

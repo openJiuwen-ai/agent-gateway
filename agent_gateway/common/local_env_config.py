@@ -55,6 +55,7 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
     {
         "HOME",
         "JIUWENSWARM_DATA_DIR",
+        "AGENT_GATEWAY_DATA_DIR",
         "JIUWENSWARM_AGENT_ROOT",
         "PYTHONUNBUFFERED",
         "WEB_HOST",
@@ -77,6 +78,7 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "OTEL_LOG_MESSAGES",
         "PATH",
         "JIUWENSWARM_EDITION",
+        "AGENT_GATEWAY_EDITION",
         # Unified tool switch (blacklist); config.yaml references ${DISABLED_TOOLS-...}.
         # Defaults to disabling search_skill / install_skill / uninstall_skill.
         "DISABLED_TOOLS",

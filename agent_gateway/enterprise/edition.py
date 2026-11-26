@@ -8,11 +8,11 @@
 
 from __future__ import annotations
 
-import os
+from agent_gateway.common import env_names
 
 __all__ = ["is_enterprise"]
 
 
 def is_enterprise() -> bool:
-    """True if JIUWENSWARM_EDITION is 'enterprise'."""
-    return os.getenv("JIUWENSWARM_EDITION", "").strip().lower() == "enterprise"
+    """True if AGENT_GATEWAY_EDITION (legacy: JIUWENSWARM_EDITION) is 'enterprise'."""
+    return (env_names.get(env_names.EDITION) or "").strip().lower() == "enterprise"

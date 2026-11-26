@@ -38,7 +38,7 @@ The gateway builds and runs as its own Python package `agent-gateway` with two e
 | Security                       | WebSocket origin checks, user-id whitelist, explicit stripping of client-forged auth keys, and credentials forwarded only from authenticated channels                                            |
 | Protocol bridges               | ACP, A2A, SSH relay and web proxy channels share the same routing layer                                                                                                                        |
 | Health & heartbeat             | Periodic health checks and heartbeat keep the gateway/AgentServer pair observable and let the supervisor restart a stuck half                                                                   |
-| Multi-instance isolation       | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
+| Multi-instance isolation       | `AGENT_GATEWAY_HOME` / `AGENT_GATEWAY_DATA_DIR` (legacy `JIUWENSWARM_*` names still work) isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
 
 ## Attachments and file references
 
@@ -161,13 +161,15 @@ The gateway is stateless with respect to agent execution: everything that touche
 
 | Variable                                          | Default                     | Description                                                    |
 | ------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
-| `JIUWENSWARM_HOME`                                | `~`                         | Workspace root; the instance directory is `.jiuwenswarm`       |
-| `JIUWENSWARM_DATA_DIR`                            | unset                       | Data directory for multi-instance isolation                    |
+| `AGENT_GATEWAY_HOME`                              | `~`                         | Workspace root; the instance directory is `.jiuwenswarm`. Legacy: `JIUWENSWARM_HOME` |
+| `AGENT_GATEWAY_DATA_DIR`                          | unset                       | Data directory for multi-instance isolation. Legacy: `JIUWENSWARM_DATA_DIR` |
 | `AGENT_SERVER_URL`                                | derived                     | AgentServer WebSocket URL (highest priority)                   |
 | `AGENT_SERVER_HOST` / `AGENT_SERVER_PORT`         | `127.0.0.1` / `18092`       | Used to build `ws://host:port` when the URL is unset           |
 | `WEB_HOST` / `WEB_PORT` / `WEB_PATH`              | `127.0.0.1` / `19000` / `/ws` | WebChannel (uvicorn) listen address                          |
 | `GATEWAY_HOST` / `GATEWAY_PORT`                   | `127.0.0.1` / `19001`       | TUI route listen address                                       |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | `20` / `3`             | Southbound connection retries / interval in seconds            |
+
+See the [CLI and environment reference](docs/en/reference/cli-and-environment.md) for every new name and its legacy name. When deployed together with the JiuwenSwarm AgentServer, keep using the legacy `JIUWENSWARM_*` names.
 
 ### config.yaml
 

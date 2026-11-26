@@ -19,6 +19,8 @@ GATEWAY_RESTART_EXIT_CODE = 75
 CRASH_EXIT_CODE = 70
 # Set to the supervisor's PID so a child can tell it is supervised, even when
 # the variable leaks into an unrelated process through a saved environment.
+# This is the legacy name the jiuwenswarm supervisor writes; Gateway reads it
+# through ``env_names.SUPERVISOR_PID`` so ``AGENT_GATEWAY_SUPERVISOR_PID`` wins.
 SUPERVISOR_PID_ENV = "JIUWENSWARM_SUPERVISOR_PID"
 
 __all__ = [

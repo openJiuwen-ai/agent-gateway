@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common import env_names
+
 logger = logging.getLogger(__name__)
 
 _ASSET_STATE_STAGED = "staged"
@@ -30,7 +32,7 @@ _DIGEST_CHUNK_SIZE = 1024 * 1024
 
 
 def _default_asset_root() -> Path:
-    configured = str(os.getenv("JIUWENSWARM_DOWNLOAD_ASSET_ROOT") or "").strip()
+    configured = str(env_names.get(env_names.DOWNLOAD_ASSET_ROOT) or "").strip()
     if configured:
         return Path(configured).expanduser()
     owner_id = os.getuid() if hasattr(os, "getuid") else os.getpid()

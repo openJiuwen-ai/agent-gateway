@@ -4,15 +4,16 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import requests
 
+from agent_gateway.common import env_names
+
 
 def ssl_verify_enabled() -> bool:
-    """``JIUWENSWARM_SSL_VERIFY``，默认开。"""
-    return (os.environ.get("JIUWENSWARM_SSL_VERIFY") or "").strip().lower() not in (
+    """``AGENT_GATEWAY_SSL_VERIFY``（旧名 ``JIUWENSWARM_SSL_VERIFY``），默认开。"""
+    return (env_names.get(env_names.SSL_VERIFY) or "").strip().lower() not in (
         "0", "false", "no", "off",
     )
 

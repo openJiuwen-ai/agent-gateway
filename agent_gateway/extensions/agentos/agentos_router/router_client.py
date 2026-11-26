@@ -3711,6 +3711,7 @@ class AgentOSRouterClient(AgentServerClient):
             # 不注入 AGENT_SERVER_HOST: 留空让沙箱内 agentserver 自行检测沙箱本地
             # 非 loopback IP(ISOLATED 模式 bind veth 地址,外部可达;见
             # app_agentserver._resolve_bind_host)。单机版默认仍 127.0.0.1。
+            # AgentServer 目前只认 JIUWENSWARM_* 旧名，注入时保持旧名。
             env_vars = {
                 USER_DIRECTORY_ENV_KEY: workspace,
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",

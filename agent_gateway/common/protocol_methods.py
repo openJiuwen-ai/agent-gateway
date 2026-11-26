@@ -42,7 +42,7 @@ def ensure_team_control_req_methods() -> None:
 def register_edition_req_methods() -> None:
     """按当前 edition 补齐协议包缺失的方法成员。
 
-    必须在 dotenv 已加载之后调用（``JIUWENSWARM_EDITION`` 决定企业版语义），
+    必须在 dotenv 已加载之后调用（``AGENT_GATEWAY_EDITION`` / ``JIUWENSWARM_EDITION`` 决定企业版语义），
     因此由启动流程（``apply_group_environment`` 之后）显式触发，不在 import 期执行。
     """
     from agent_gateway.enterprise.edition import is_enterprise

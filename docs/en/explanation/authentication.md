@@ -39,7 +39,7 @@ The flow is implemented in `auth/account_kit.py` (`AccountKitFlow`) and `auth/se
 
 `auth/session_store.py` (`AuthSessionStore`):
 
-- **Storage**: in-memory plus an AES-256-GCM encrypted file `~/.jiuwenswarm/auth/sessions.json` (affected by `JIUWENSWARM_DATA_DIR`). The key is the per-machine `.install_key` (32 bytes, mode 0600, rebuilt on corruption). The archive contains the `refresh_token`; storing it in plain text would hand over the account.
+- **Storage**: in-memory plus an AES-256-GCM encrypted file `~/.jiuwenswarm/auth/sessions.json` (affected by `AGENT_GATEWAY_DATA_DIR`, legacy name `JIUWENSWARM_DATA_DIR`). The key is the per-machine `.install_key` (32 bytes, mode 0600, rebuilt on corruption). The archive contains the `refresh_token`; storing it in plain text would hand over the account.
 - **Multi-process sharing**: Gateway writes, AgentServer reads. Reloads follow the archive mtime; every write re-reads first so one process never overwrites another's update with a stale snapshot.
 - **Binding**: `session_id` (random 24-byte urlsafe) maps to `user_id` (Huawei account openid). **One session per account** — logging in again evicts the old session.
 - **Lifecycle**: session TTL is 30 days; the `id_token` rotates roughly hourly and is refreshed in the background when less than 5 minutes remain (concurrent refreshes for the same user are merged under a lock); logout deletes the session.
@@ -113,7 +113,7 @@ IM / cron requests have no login session, yet their conversation may use a free 
 
 The WebChannel WebSocket upgrade passes two optional gates (`channel_manager/web/web_channel_app.py`):
 
-- **Origin check** (`common/security/ws_origin.py`): enabled with `JIUWENSWARM_ENABLE_ORIGIN_CHECK=1` (off by default). Allowed hostnames come from `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` (comma-separated); requests without an Origin are only allowed if the list contains `none`; anything else gets 403. The trajectory HTTP side path follows the same rule and rejects `Sec-Fetch-Site: cross-site` outright.
+- **Origin check** (`common/security/ws_origin.py`): enabled with `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK=1` (off by default). Allowed hostnames come from `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS` (comma-separated); requests without an Origin are only allowed if the list contains `none`; anything else gets 403. The trajectory HTTP side path follows the same rule and rejects `Sec-Fetch-Site: cross-site` outright.
 - **IAM handshake auth**: when the southbound side is an AgentOS router, the handshake token is verified by agent-os IAM (below); failure returns 401.
 
 ### AgentOS IAM auth
@@ -149,7 +149,7 @@ The E2A WebSocket has no auth by default (a local process boundary). Setting `JI
 
 `common/file_download_token.py` authorizes file downloads / uploads with HMAC-SHA256-signed self-contained tokens (`base64url(payload).hex(hmac)`), verifiable across processes without shared memory:
 
-- **Secret**: the `JIUWENSWARM_FILE_DOWNLOAD_SECRET` environment variable (≥32 chars) takes precedence; otherwise one is generated into the workspace `config/.file_download_secret` (mode 0600).
+- **Secret**: the `AGENT_GATEWAY_FILE_DOWNLOAD_SECRET` environment variable (≥32 chars; legacy name `JIUWENSWARM_FILE_DOWNLOAD_SECRET`, the only name the AgentServer reads today) takes precedence; otherwise one is generated into the workspace `config/.file_download_secret` (mode 0600).
 - **Shapes**: plain download `{path, sid, exp?}`; skill content images expire after 600 seconds by default; managed-asset tokens additionally bind `asset_id` / `size` / `digest`; upload tokens constrain `path` under the user-directory root.
 - **Validation**: constant-time HMAC comparison; payloads without `exp` are accepted only under two exact legacy schemas (anything else is rejected); an optional `session_id` must equal `sid` exactly.
 
@@ -189,11 +189,11 @@ Enterprise management-plane routes (`/api/v1/*` templates, config sync) are guar
 | Variable / config | Purpose | Default |
 | --- | --- | --- |
 | `JIUWENSWARM_CONFIG_URL` | Remote config (login switch, OAuth parameters, APIG endpoints, model allow/deny lists); empty or `off` disables login | production endpoint |
-| `JIUWENSWARM_DATA_DIR` | Data root; determines the `auth/` session directory | `~/.jiuwenswarm` |
-| `JIUWENSWARM_SSL_VERIFY` | TLS verification for outbound requests | on |
-| `JIUWENSWARM_ENABLE_ORIGIN_CHECK` | WebSocket / HTTP origin check switch (`1` enables) | off |
-| `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` | Allowed Origin hostnames (comma-separated; `none` admits requests without Origin) | empty |
-| `JIUWENSWARM_FILE_DOWNLOAD_SECRET` | HMAC secret for file tokens (≥32 chars) | auto-generated `.file_download_secret` |
+| `AGENT_GATEWAY_DATA_DIR` (legacy `JIUWENSWARM_DATA_DIR`) | Data root; determines the `auth/` session directory | `~/.jiuwenswarm` |
+| `AGENT_GATEWAY_SSL_VERIFY` (legacy `JIUWENSWARM_SSL_VERIFY`) | TLS verification for outbound requests | on |
+| `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK` (legacy `JIUWENSWARM_ENABLE_ORIGIN_CHECK`) | WebSocket / HTTP origin check switch (`1` enables) | off |
+| `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS` (legacy `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS`) | Allowed Origin hostnames (comma-separated; `none` admits requests without Origin) | empty |
+| `AGENT_GATEWAY_FILE_DOWNLOAD_SECRET` (legacy `JIUWENSWARM_FILE_DOWNLOAD_SECRET`) | HMAC secret for file tokens (≥32 chars) | auto-generated `.file_download_secret` |
 | `JIUWENSWARM_GATEWAY_INTERNAL_TOKEN` | Gateway → AgentServer internal shared-secret header | unset |
 | `JIUWEN_SECRET_MASTER_KEY` | Enterprise SecretStore AES master key | `~/.jiuwenswarm/config/.master_key` |
 | `channels.<platform>.allow_from` | IM sender allowlist (`config.yaml`) | empty = allow everyone |

@@ -38,7 +38,7 @@ Gateway 以独立 Python 包 `agent-gateway` 构建和运行，提供两个入�
 | 安全防护 | WebSocket Origin 校验、user_id 白名单、显式剔除客户端伪造的认证键，凭据只从已认证频道转发 |
 | 协议桥接 | ACP、A2A、SSH relay 与 web proxy 频道复用同一套路由层 |
 | 健康检查与心跳 | 周期性健康检查与心跳让 Gateway / AgentServer 状态可观测，便于守护进程拉起异常的一半 |
-| 多实例隔离 | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` 隔离工作区，工作区锁避免两个 Gateway 服务同一实例 |
+| 多实例隔离 | `AGENT_GATEWAY_HOME` / `AGENT_GATEWAY_DATA_DIR`（旧名 `JIUWENSWARM_*` 仍可用）隔离工作区，工作区锁避免两个 Gateway 服务同一实例 |
 
 ## 附件与文件引用
 
@@ -161,13 +161,15 @@ Gateway 不承担 Agent 执行：所有涉及工作区、模型凭据与工具�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `JIUWENSWARM_HOME` | `~` | 工作区根目录，实例目录为 `.jiuwenswarm` |
-| `JIUWENSWARM_DATA_DIR` | 未设置 | 多实例隔离用的数据目录 |
+| `AGENT_GATEWAY_HOME` | `~` | 工作区根目录，实例目录为 `.jiuwenswarm`；旧名 `JIUWENSWARM_HOME` |
+| `AGENT_GATEWAY_DATA_DIR` | 未设置 | 多实例隔离用的数据目录；旧名 `JIUWENSWARM_DATA_DIR` |
 | `AGENT_SERVER_URL` | 自动拼接 | AgentServer WebSocket URL（优先级最高） |
 | `AGENT_SERVER_HOST` / `AGENT_SERVER_PORT` | `127.0.0.1` / `18092` | 未设置 URL 时用于拼接 `ws://host:port` |
 | `WEB_HOST` / `WEB_PORT` / `WEB_PATH` | `127.0.0.1` / `19000` / `/ws` | WebChannel（uvicorn）监听地址 |
 | `GATEWAY_HOST` / `GATEWAY_PORT` | `127.0.0.1` / `19001` | TUI 路由监听地址 |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | `20` / `3` | 下游连接重试次数 / 间隔（秒） |
+
+新旧变量名的完整对照见[命令行与环境变量参考](docs/zh/reference/cli-and-environment.md)。与 JiuwenSwarm AgentServer 一起部署时，请继续使用 `JIUWENSWARM_*` 旧名。
 
 ### config.yaml
 
