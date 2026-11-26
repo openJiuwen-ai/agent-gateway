@@ -12,13 +12,20 @@ from agent_gateway.enterprise import is_enterprise
 def trust_client_identity_headers(client_host: object) -> bool:
     """Whether this entry may trust client-supplied identity values.
 
-    ``GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS`` covers the client identity this
-    policy owns: the HTTP identity headers (``X-User-Id``/``X-Group-Id``/
-    ``X-Bot-Id``/``X-Gateway-Id``/``X-Agent-Template-Id``) and the WebSocket
-    ``agent_template_id`` from the handshake query. An explicit ``0/false/no``
-    disables them, while ``1/true/yes`` enables them. Without the override,
+    ``GATEWAY_WEB_HTTP_TRUST_CLIENT_HEADERS`` is the single switch for both the
+    HTTP and WebSocket entries: an explicit ``0/false/no`` disables client
+    identity everywhere, while ``1/true/yes`` enables it. Without the override,
     enterprise deployments trust authenticated user-plane traffic; personal
     deployments only trust loopback requests.
+
+    The switch covers the client identity this policy owns: the HTTP identity
+    headers (``X-User-Id``/``X-Group-Id``/``X-Bot-Id``/``X-Gateway-Id`` plus the
+    agent display identity ``X-Agent-Name``/``X-Agent-Identity-Id``/
+    ``X-Runtime-Template-Id``/``X-Agent-Template-Id``) and the WebSocket agent
+    display identity (``agent_name``/``agent_identity_id``/
+    ``runtime_template_id``/``agent_template_id``) from the handshake query.
+    The agent display identity is additionally enterprise-only: personal
+    deployments never accept it, even from trusted loopback clients.
 
     The WebSocket routing identity (``group_id``/``bot_id``/``gateway_id`` from
     the handshake query) is not gated by this switch; it keeps its existing
