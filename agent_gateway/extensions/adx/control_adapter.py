@@ -2,12 +2,12 @@
 
 """ADX Environment control and ingress endpoint metadata."""
 
+import ipaddress
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
 from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.southbound.control.managed import ManagedSandboxControl, SandboxCreateRequest, SandboxInfo
-from agent_gateway.extensions.adx.control_client import AdxControlClient
-from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
+from agent_gateway.extensions.adx.control_client import AdxControlClient, trace_headers
 
 
 class AdxControl(ManagedSandboxControl):
@@ -34,12 +34,20 @@ class AdxControl(ManagedSandboxControl):
 
     def ws_headers(self) -> dict[str, str]:
         config = self._config if self._config is not None else self.backend.config
-        return apply_trace_header({'Authorization': 'Bearer ' + config.token})
+        return trace_headers({'Authorization': 'Bearer ' + config.token})
 
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
+        scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
+        try:
+            local_ingress = ipaddress.ip_address(origin.hostname).is_loopback
+        except ValueError:
+            local_ingress = origin.hostname == 'localhost'
+        if local_ingress:
+            return urlunsplit((scheme, origin.netloc, f'/{quote(instance_id, safe="")}/{port}', '', ''))
+        # ADX decodes the query value and the instance segment of its target URN separately.
         target = 'urn:adx:instance:' + quote(instance_id, safe='')
-        return urlunsplit(('wss' if protocol == 'ws' else 'https', origin.netloc,
+        return urlunsplit((scheme, origin.netloc,
                           f'/agent/{protocol}', urlencode({'target': target, 'port': port}), ''))
 
     def ws_url(self, instance_id: str, port: int) -> str:
