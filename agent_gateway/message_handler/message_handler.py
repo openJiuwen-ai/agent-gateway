@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from abc import ABC
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import Enum
 from html import escape
@@ -104,6 +105,9 @@ logger = logging.getLogger(__name__)
 _DIAGNOSIS_PUSH_EVENTS = frozenset({"trajectory.diagnosis.progress", "trajectory.diagnosis.status"})
 _ACP_CHANNEL_ID = "acp"
 _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
+# external_session_id -> internal_session_id 别名表的上限。客户端可以自造
+# external id，不设上限时长跑网关会按 ACP 会话数线性增长（实测每条约 210 B）。
+_ACP_SESSION_ALIAS_LIMIT = 4096
 # \mode 切换合法输入集：新 canonical + 旧 canonical（DEPRECATION_MAP.keys()）
 # + 正式别名（MODE_ALIASES.keys()，如 team.plan / team.code）。
 # 单一事实源，前置校验与分发同源，避免和 ModeSubcommand/_VALID_MODE_LINES 漂移。
@@ -456,7 +460,10 @@ class MessageHandler(ABC):
         # team 模式下 file msg 不携带发起者身份（rid 固定为建会话那轮），send_file 定向
         # 投递时按 session_id 取最近发起者兜底（并发时可能取到另一 human，仅投错人不泄漏）。
         self._session_last_originator: dict[str, tuple[str, str]] = {}
-        self._acp_session_aliases: dict[str, str] = {}  # external_session_id -> internal_session_id
+        self._acp_session_aliases: OrderedDict[str, str] = OrderedDict()  # external_session_id -> internal_session_id
+        # internal_session_id -> external_session_id 反向索引：出站每帧都要反查，
+        # 逐帧扫全表是 O(n) 的 CPU 开销（10 万条实测 3.9 ms/次）。
+        self._acp_session_alias_reverse: dict[str, str] = {}
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
         self._external_session_alias_lock = asyncio.Lock()
@@ -3496,8 +3503,24 @@ class MessageHandler(ABC):
                 return cached, cached != external
 
             ensured = await self._ensure_acp_agent_session()
-            self._acp_session_aliases[external] = ensured
+            self._remember_acp_session_alias(external, ensured)
             return ensured, ensured != external
+
+    def _remember_acp_session_alias(self, external_session_id: str, internal_session_id: str) -> None:
+        """记录 ACP 会话别名；超出上限时淘汰最久未用的条目并同步反向索引."""
+        external = str(external_session_id or "").strip()
+        internal = str(internal_session_id or "").strip()
+        if not external or not internal:
+            return
+        previous = self._acp_session_aliases.pop(external, None)
+        if previous and previous != internal and self._acp_session_alias_reverse.get(previous) == external:
+            self._acp_session_alias_reverse.pop(previous, None)
+        self._acp_session_aliases[external] = internal
+        self._acp_session_alias_reverse[internal] = external
+        while len(self._acp_session_aliases) > _ACP_SESSION_ALIAS_LIMIT:
+            evicted_external, evicted_internal = self._acp_session_aliases.popitem(last=False)
+            if self._acp_session_alias_reverse.get(evicted_internal) == evicted_external:
+                self._acp_session_alias_reverse.pop(evicted_internal, None)
 
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
         with trace_stage("preprocess.session"):
@@ -3545,6 +3568,10 @@ class MessageHandler(ABC):
         if original:
             return original
 
+        cached = self._acp_session_alias_reverse.get(sid)
+        if cached:
+            return cached
+        # 兜底：兼容未走 _remember_acp_session_alias 的直接写入。
         for external, internal in self._acp_session_aliases.items():
             if internal == sid:
                 return external
