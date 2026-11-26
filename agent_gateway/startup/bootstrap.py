@@ -17,12 +17,12 @@ def configure_process_logging(mark: StageMarker) -> None:
     """Configure third-party logging before Gateway logging."""
     import logging
     from agent_gateway.common.openjiuwen_logging import (
-        configure_openjiuwen_core_logging,
         configure_openjiuwen_runtime_logging,
     )
 
     configure_openjiuwen_runtime_logging()
-    configure_openjiuwen_core_logging(suppress_level=logging.CRITICAL)
+    # Core logging is configured before the first SDK consumer. Importing it
+    # here imports the execution SDK before the Web control listener exists.
     mark("third_party_logging_pinned")
 
     from agent_gateway.common.logging_setup import setup_gateway_logger

@@ -26,6 +26,14 @@
 
 The gateway builds and runs as its own Python package `agent-gateway` with two entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP bridge).
 
+Web control startup does not wait for the execution SDK or legacy Cron model migration.
+Cron execution and mutations wait for migration readiness; a failed catalog read retries
+without starting unmigrated jobs. Extension manifests may declare `requires_sdk: false`
+when their module import and initialization need no SDK. Omitted declarations retain
+the legacy SDK/logging initialization order. Authentication, crypto, storage and selected
+southbound clients are initialized before Web traffic in either case. Deferred callback
+registrations preserve order; triggering a registered event waits for SDK readiness.
+
 ## Core Features
 
 | Capability                     | Value                                                                                                                                                                                          |

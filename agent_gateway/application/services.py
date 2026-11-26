@@ -60,12 +60,36 @@ class GatewayServices:
     full_cfg: Any
     _hold_release_task: Any
     _cleanup_task: Any
+    cron_startup: Any
+    _callback_task: asyncio.Task | None = None
+
+    def start_preparation(self) -> None:
+        self.cron_startup.start()
+        if self._callback_task is None and self.extension_registry.has_deferred_callbacks:
+            async def prepare():
+                try:
+                    await asyncio.sleep(1)
+                    await self.extension_registry.prepare_callback_framework()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("[App] callback preparation failed", exc_info=True)
+            self._callback_task = asyncio.create_task(prepare(), name="gateway-callback-preparation")
 
     async def stop(self) -> None:
+        await self.cron_startup.stop()
+        if self._callback_task is not None:
+            self._callback_task.cancel()
+            await asyncio.gather(self._callback_task, return_exceptions=True)
         await self.cron_scheduler.stop()
         await self.channel_manager.stop_dispatch()
         await self.heartbeat_service.stop()
         await self.message_handler.stop_forwarding()
+        await self.extension_manager.shutdown_all_extensions()
+        await self.extension_registry.aclose()
+        from agent_gateway.extensions.registry import ExtensionRegistry
+        if ExtensionRegistry._instance is self.extension_registry:
+            ExtensionRegistry.reset_instance()
         await self.client.disconnect()
 
         if self.storage_ctx is not None:
@@ -100,7 +124,6 @@ async def assemble_services(
     startup_t0: float,
     connect_with_retry: Callable[..., Awaitable[None]] = _connect_with_retry,
 ) -> GatewayServices:
-    from openjiuwen.core.runner import Runner
     from agent_gateway.channel_manager.channel_manager import ChannelManager
     from agent_gateway.cleanup import start_background_cleanup
     from agent_gateway.common.config import get_config
@@ -114,9 +137,11 @@ async def assemble_services(
     from agent_gateway.message_handler.message_handler import MessageHandler
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
-    callback_framework = Runner.callback_framework
+    from agent_gateway.application.preparation import callback_framework, preload_callback_modules
     extension_registry = ExtensionRegistry.create_instance(
-        callback_framework=callback_framework,
+        callback_framework=None,
+        callback_framework_factory=callback_framework,
+        callback_module_preloader=preload_callback_modules,
         config={},
         logger=logger,
     )
@@ -195,16 +220,32 @@ async def assemble_services(
         third_agent = get_unsupported_third_agent()
 
     # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
-    if isinstance(client, WebSocketAgentServerClient):
-        await connect_with_retry(
-            client,
-            agent_server_url,
-            max_retries=max_retries,
-            interval=retry_interval,
-        )
-    else:
-        # YuanrongFrontendAgentClient 是 HTTP 客户端，无需连接
-        await client.connect("")
+    from agent_gateway.application.preparation import preload_web_modules
+
+    async def connect():
+        if isinstance(client, WebSocketAgentServerClient):
+            await connect_with_retry(
+                client, agent_server_url,
+                max_retries=max_retries, interval=retry_interval,
+            )
+        else:
+            await client.connect("")
+
+    connection_task = asyncio.create_task(connect(), name="gateway-front-connect")
+    web_import_task = asyncio.create_task(asyncio.to_thread(preload_web_modules), name="gateway-web-import")
+    try:
+        await asyncio.gather(connection_task, asyncio.shield(web_import_task))
+    except BaseException:
+        connection_task.cancel()
+        await asyncio.gather(connection_task, web_import_task, return_exceptions=True)
+        await client.disconnect()
+        await extension_manager.shutdown_all_extensions()
+        await extension_registry.aclose()
+        ExtensionRegistry.reset_instance()
+        if storage_ctx is not None:
+            from agent_gateway.storage_assembly.setup import teardown_gateway_storage_repositories
+            await teardown_gateway_storage_repositories(storage_ctx)
+        raise
     log_stage("agent_server_connected")
 
 
@@ -220,37 +261,6 @@ async def assemble_services(
     message_handler.set_outbound_pipeline(im_outbound)
 
     cron_store = await create_gateway_cron_store()
-    from agent_gateway.common.model_migration import migrate_legacy_cron_selections
-    from agent_gateway.runtime.cron.factory import load_cron_store_settings
-
-    # Shared etcd jobs need the target user's catalog; that migration runs on
-    # the per-user resource/reference boundary, never using Gateway's catalog.
-    if load_cron_store_settings(get_config()).backend == "file":
-        try:
-            from agent_gateway.common.remote_model_catalog import (
-                RemoteModelCatalog,
-                fetch_agent_model_rows,
-            )
-
-            rows = await fetch_agent_model_rows(
-                agent_client=client,
-                channel_id="gateway-cron-migration",
-            )
-            if rows is None:
-                logger.warning(
-                    "Cron model-selection migration skipped: "
-                    "AgentServer models.list is unavailable; "
-                    "will retry on the next Gateway startup"
-                )
-            else:
-                await migrate_legacy_cron_selections(
-                    cron_store,
-                    catalog=RemoteModelCatalog(rows),
-                    user_id=None,
-                    remote_validated=True,
-                )
-        except Exception:  # noqa: BLE001
-            logger.warning("Cron model-selection migration deferred", exc_info=True)
     cron_scheduler = CronSchedulerService(
         store=cron_store,
         agent_client=client,
@@ -258,6 +268,14 @@ async def assemble_services(
     )
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
+    from agent_gateway.application.cron_startup import CronStartup
+    from agent_gateway.runtime.cron.factory import load_cron_store_settings
+
+    cron_startup = CronStartup(
+        cron_store, cron_scheduler, cron_controller, client,
+        migrate_file=load_cron_store_settings(get_config()).backend == "file",
+    )
+    cron_controller.bind_startup_waiter(cron_startup.wait_ready)
     message_handler.set_cron_controller(cron_controller)
     # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
     # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
@@ -394,4 +412,5 @@ async def assemble_services(
         full_cfg=full_cfg,
         _hold_release_task=_hold_release_task,
         _cleanup_task=_cleanup_task,
+        cron_startup=cron_startup,
     )

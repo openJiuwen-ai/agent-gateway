@@ -551,7 +551,8 @@ async def test_enterprise_feishu_tasks_and_adapters_keep_original_ownership(monk
         await _close(owner)
 
 
-async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(monkeypatch):
+@pytest.mark.parametrize('fail_tui', [False, True])
+async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(monkeypatch, fail_tui):
     from agent_gateway.application import single
     from agent_gateway.common import config as config_module
     from agent_gateway.cron import proactive_cron_sync
@@ -566,6 +567,7 @@ async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(mon
         heartbeat_service=object(), config_updater=None, channel_manager=object(),
         updater_service=object(), initial_channels_conf={}, full_cfg={},
         stop=AsyncMock(side_effect=lambda: events.append('services.stop')),
+        start_preparation=Mock(),
     )
     monkeypatch.setattr(single, 'assemble_services', AsyncMock(return_value=services))
     web = SimpleNamespace(stop=AsyncMock(side_effect=lambda: events.append('web.stop')))
@@ -579,7 +581,7 @@ async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(mon
     monkeypatch.setattr(single, 'start_web_core', start_web)
     runtime = SimpleNamespace(start=AsyncMock(side_effect=lambda: events.append('protocol.ready')), wait_until_closed=asyncio.Event().wait)
     tui = SimpleNamespace(protocol_runtime=runtime, stop=AsyncMock(side_effect=lambda: events.append('tui.stop')))
-    monkeypatch.setattr(single, 'assemble_tui_acp', AsyncMock(return_value=tui))
+    monkeypatch.setattr(single, 'assemble_tui_acp', AsyncMock(return_value=tui, side_effect=RuntimeError('TUI startup failed') if fail_tui else None))
     monkeypatch.setattr(config_module, 'get_config', lambda: {})
     monkeypatch.setattr(proactive_cron_sync, 'sync_proactive_tick_job', AsyncMock())
     monkeypatch.setattr(single, 'shutdown_gateway_telemetry', AsyncMock(side_effect=lambda: events.append('telemetry.stop')))
@@ -614,11 +616,19 @@ async def test_single_retains_optional_startup_and_shutdown_stage_boundaries(mon
 
     monkeypatch.setattr(single, 'OptionalChannels', Channels)
     shutdown.set()
-    await single.run_single(
-        'ws://example/ws', '127.0.0.1', 0, '/ws', shutdown,
-        config_saved_factory=Mock(), restart_gateway=Mock(), process_start_t0=0.0,
-        startup_import_phases=[], preprocessor=SimpleNamespace(with_credential_access=lambda access: object()), connect_with_retry=AsyncMock(),
-    )
+    async def run():
+        await single.run_single(
+            'ws://example/ws', '127.0.0.1', 0, '/ws', shutdown,
+            config_saved_factory=Mock(), restart_gateway=Mock(), process_start_t0=0.0,
+            startup_import_phases=[], preprocessor=SimpleNamespace(with_credential_access=lambda access: object()), connect_with_retry=AsyncMock(),
+        )
+    if fail_tui:
+        with pytest.raises(RuntimeError, match='TUI startup failed'):
+            await run()
+        assert events == ['web.ready', 'web.stop', 'services.stop', 'telemetry.stop']
+        services.stop.assert_awaited_once()
+        return
+    await run()
     assert events == [
         'web.ready', 'optional.create', 'optional.a2a', 'optional.install',
         'protocol.ready', 'optional.schedule', 'optional.config.stop',

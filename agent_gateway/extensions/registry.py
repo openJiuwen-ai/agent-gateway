@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
 from agent_gateway.agent_client_mode import AgentClientModeError
 from agent_gateway.extensions.callback_compat import unregister_callback_sync
@@ -12,6 +12,7 @@ from agent_gateway.extensions import base_crypto
 from agent_gateway.extensions.base_crypto import CryptoProvider
 
 if TYPE_CHECKING:
+    from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
     from agent_gateway.common.client.agent_client import AgentServerClient
     from agent_gateway.common.client.third_agent import ThirdAgent
     from agent_gateway.extensions.sdk.agent_server_client import (
@@ -34,6 +35,7 @@ else:
     # Skill / Connector Source SPI 与上方扩展基类同属 gateway，运行期仍不导入扩展框架。
     SkillSourceExtension = Any
     ConnectorSourceExtension = Any
+    AsyncCallbackFramework = Any
 
 
 class _RegistryCryptoBridge:
@@ -93,9 +95,11 @@ class ExtensionRegistry:
 
     def __init__(
         self,
-        callback_framework: AsyncCallbackFramework,
+        callback_framework: AsyncCallbackFramework | None,
         config: dict[str, Any],
         logger: Any,
+        callback_framework_factory: Callable[[], AsyncCallbackFramework] | None = None,
+        callback_module_preloader: Callable[[], None] | None = None,
     ):
         self._agent_server_client: AgentServerClientExtension | None = None
         self._crypto_tool: CryptoUtility | None = None
@@ -105,8 +109,66 @@ class ExtensionRegistry:
         self._skill_source_extensions: dict[str, SkillSourceExtension] = {}
         # provider_type → ConnectorSourceExtension factory (Connector Source SPI)
         self._connector_source_extensions: dict[str, ConnectorSourceExtension] = {}
-        self.callback_framework = callback_framework
+        if callback_framework is None and callback_framework_factory is None:
+            raise ValueError("A callback framework or factory is required")
+        self._callback_framework = callback_framework
+        self._callback_candidate = None
+        self._callback_factory = callback_framework_factory
+        self._callback_preloader = callback_module_preloader
+        self._callback_import_task: asyncio.Task | None = None
+        self._pending_callbacks: list[tuple[str, str, Callable | None, int, dict]] = []
+        self._closed = False
         self._config = ExtensionConfig(config=config, logger=logger)
+
+    @property
+    def has_deferred_callbacks(self) -> bool:
+        return self._callback_framework is None and bool(self._pending_callbacks)
+
+    @property
+    def callback_framework(self) -> AsyncCallbackFramework:
+        """Retain synchronous access for legacy extensions that require the SDK."""
+        if self._closed:
+            raise RuntimeError("Extension registry is closed")
+        if self._callback_framework is None:
+            if self._callback_candidate is None:
+                self._callback_candidate = self._callback_factory()
+            framework = self._callback_candidate
+            # Replay on the owner loop, before publishing the ready framework.
+            while self._pending_callbacks:
+                operation, event, handler, priority, kwargs = self._pending_callbacks[0]
+                if operation == "register":
+                    framework.register_sync(event, handler, priority=priority, **kwargs)
+                else:
+                    unregister_callback_sync(framework, event, handler)
+                self._pending_callbacks.pop(0)
+            self._callback_framework = framework
+            self._callback_candidate = None
+        return self._callback_framework
+
+    @callback_framework.setter
+    def callback_framework(self, framework: AsyncCallbackFramework) -> None:
+        if self._pending_callbacks:
+            raise RuntimeError("Cannot replace a callback framework with pending registrations")
+        self._callback_framework = framework
+
+    async def prepare_callback_framework(self) -> AsyncCallbackFramework:
+        if self._closed:
+            raise RuntimeError("Extension registry is closed")
+        if self._callback_framework is None and self._callback_preloader is not None:
+            if self._callback_import_task is None:
+                self._callback_import_task = asyncio.create_task(
+                    asyncio.to_thread(self._callback_preloader), name="gateway-sdk-import",
+                )
+            # One cancelled caller must not cancel another caller's SDK preparation.
+            await asyncio.shield(self._callback_import_task)
+        return self.callback_framework
+
+    async def aclose(self) -> None:
+        self._closed = True
+        if self._callback_import_task is not None:
+            # Synchronous Python imports cannot be forcibly cancelled safely.
+            await asyncio.gather(self._callback_import_task, return_exceptions=True)
+        self._pending_callbacks.clear()
 
     @classmethod
     def get_instance(cls) -> "ExtensionRegistry":
@@ -117,9 +179,11 @@ class ExtensionRegistry:
     @classmethod
     def create_instance(
         cls,
-        callback_framework: AsyncCallbackFramework,
+        callback_framework: AsyncCallbackFramework | None,
         config: dict[str, Any],
         logger: Any,
+        callback_framework_factory: Callable[[], AsyncCallbackFramework] | None = None,
+        callback_module_preloader: Callable[[], None] | None = None,
     ) -> "ExtensionRegistry":
         if cls._instance is not None:
             raise RuntimeError("ExtensionRegistry 已初始化，请勿重复调用 create_instance()")
@@ -127,6 +191,8 @@ class ExtensionRegistry:
             callback_framework=callback_framework,
             config=config,
             logger=logger,
+            callback_framework_factory=callback_framework_factory,
+            callback_module_preloader=callback_module_preloader,
         )
         # 桥接 crypto 扩展到 common 全局钩子（common/config 的 api_key 解密入口）。
         base_crypto.set_crypto_provider(_RegistryCryptoBridge())
@@ -285,13 +351,28 @@ class ExtensionRegistry:
         priority: int = 100,
         **kwargs,
     ) -> None:
-        self.callback_framework.register_sync(event, handler, priority=priority, **kwargs)
+        if self._closed:
+            raise RuntimeError("Extension registry is closed")
+        if self._callback_framework is None:
+            self._pending_callbacks.append(("register", event, handler, priority, kwargs))
+        else:
+            self._callback_framework.register_sync(event, handler, priority=priority, **kwargs)
 
     def unregister(self, event: str, handler: Callable | None = None) -> None:
-        unregister_callback_sync(self.callback_framework, event, handler)
+        if self._callback_framework is None:
+            if not self._closed:
+                self._pending_callbacks.append(("unregister", event, handler, 100, {}))
+        else:
+            unregister_callback_sync(self._callback_framework, event, handler)
 
     async def trigger(self, event: str, context: Any | None = None, **kwargs: Any) -> None:
         """触发事件。约定由调用方传入的 context 承载回调副作用"""
+        if self._callback_framework is None and not self._pending_callbacks and self._callback_factory is not None:
+            # No extension registered a callback: an empty trigger needs no SDK.
+            if self._closed:
+                raise RuntimeError("Extension registry is closed")
+            return
+        await self.prepare_callback_framework()
         if context is None and not kwargs:
             await self.callback_framework.trigger(event)
         elif context is not None:

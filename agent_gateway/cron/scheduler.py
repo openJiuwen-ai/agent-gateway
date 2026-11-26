@@ -1035,7 +1035,11 @@ class CronSchedulerService:
         # 可能超过 grace 窗口（初始化耗时长），此时崩溃重启后的首次 reload
         # 不应被误判为运行期而恢复原先要避免的重复执行风险。
         self._boot_time = self._now_fn()
-        await self.reload()
+        try:
+            await self.reload()
+        except BaseException:
+            self._running = False
+            raise
         self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
         if bool(getattr(self._store, "supports_watch", False)):
             self._watch_task = asyncio.create_task(
