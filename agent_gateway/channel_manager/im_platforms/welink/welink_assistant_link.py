@@ -18,8 +18,9 @@ import re
 import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from collections import OrderedDict
 from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable
 
 from agent_gateway.channel_manager.im_platforms.welink.welink_assistant_send import (
@@ -38,6 +39,9 @@ logger = logging.getLogger(__name__)
 MentionHandler = Callable[["Mention"], Awaitable[bool]]
 _HEARTBEAT_SECONDS = 30.0
 _SLOT_TTL_SECONDS = 480.0
+# 去重表只用于抑制短时间内的重复投递，按最近使用淘汰即可，避免随群消息数无界增长。
+_ALIAS_LIMIT = 4096
+_DELIVERED_LIMIT = 8192
 _MENTION_SPACE = re.compile(r"[\u200b-\u200f\ufeff]")
 _MENTION_TOKEN = re.compile(r"@\S+")
 
@@ -212,8 +216,8 @@ class AssistantLink:
         self._slot_ttl_seconds = slot_ttl_seconds
         self._commands: queue.Queue[Any] = queue.Queue()
         self._slots: dict[str, _QaSlot] = {}
-        self._aliases: dict[tuple[str, str], str] = {}
-        self._delivered: set[tuple[str, str]] = set()
+        self._aliases: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._delivered: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -269,13 +273,29 @@ class AssistantLink:
                        and _same_text(slot.text, text)
                        and slot.message_id not in self._aliases.values()]
             if len(matches) == 1:
-                self._aliases[(group_id, message_id)] = matches[0].message_id
+                self._remember_alias(group_id, message_id, matches[0].message_id)
                 return matches[0].accepted
         return False
 
     def canonical_message_id(self, group_id: str, message_id: str) -> str:
         with self._lock:
             return self._aliases.get((group_id, message_id), message_id)
+
+    def _remember_alias(self, group_id: str, message_id: str, canonical: str) -> None:
+        """调用方必须持有 ``self._lock``。"""
+        key = (group_id, message_id)
+        self._aliases.pop(key, None)
+        self._aliases[key] = canonical
+        while len(self._aliases) > _ALIAS_LIMIT:
+            self._aliases.popitem(last=False)
+
+    def _remember_delivered(self, group_id: str, message_id: str) -> None:
+        """调用方必须持有 ``self._lock``。"""
+        key = (group_id, message_id)
+        self._delivered.pop(key, None)
+        self._delivered[key] = None
+        while len(self._delivered) > _DELIVERED_LIMIT:
+            self._delivered.popitem(last=False)
 
     def _run(self) -> None:
         delay = 1.0
@@ -481,7 +501,7 @@ class AssistantLink:
                 self._send_raw(socket, frame)
             if source_message_id:
                 with self._lock:
-                    self._delivered.add((group_id, source_message_id))
+                    self._remember_delivered(group_id, source_message_id)
             return message_id
         if on_prepared is not None:
             on_prepared(slot.reply_message_id, slot.tool_session_id, slot.trace_id)
@@ -511,9 +531,9 @@ class AssistantLink:
             },
         )
         with self._lock:
-            self._delivered.add((group_id, slot.message_id))
+            self._remember_delivered(group_id, slot.message_id)
             if source_message_id:
-                self._delivered.add((group_id, source_message_id))
+                self._remember_delivered(group_id, source_message_id)
         return slot.reply_message_id
 
     def _take_slot(self, source_message_id: str, group_id: str) -> _QaSlot | None:
