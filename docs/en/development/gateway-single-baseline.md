@@ -90,6 +90,10 @@ connection and startup-timing inputs to `application/single.py`.
 - Inbound preprocessing preserves `app_id` and the current Web local-method route:
   forced forwarding wins, registered local handlers stay local, denied prefixes
   never leave the Gateway, and unknown Web methods remain forwardable by default.
+  `/acp` reuses the same decision: denied prefixes answer `METHOD_NOT_ALLOWED`,
+  every remaining method, registered or not, passes the enterprise write-protection
+  check first; unregistered methods are then forwarded under their original name,
+  and `/tui` still forwards registered methods only.
 - `single.py` starts Web before dispatch/Cron and preserves configuration-updater
   start/stop ordering and the existing yield before TUI/ACP assembly.
   The Web readiness budget defaults to the process cold-start budget and can be

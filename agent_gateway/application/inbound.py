@@ -84,7 +84,8 @@ def _normalize_gateway_message(msg, *, apply_model_auth: bool = True):
         req_method = ReqMethod.CHAT_CANCEL
         params.setdefault("intent", "resume")
 
-    method_val = req_method.value
+    # 上游方法可能是枚举，也可能是 ACP 透传的未知方法字符串。
+    method_val = getattr(req_method, "value", req_method)
     is_stream = bool(
         msg.is_stream
         or method_val in (ReqMethod.CHAT_SEND.value, ReqMethod.HISTORY_GET.value)
