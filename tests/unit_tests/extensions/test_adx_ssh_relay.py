@@ -41,8 +41,20 @@ class Writer:
 
 
 @pytest.mark.asyncio
-async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monkeypatch,tmp_path):
+@pytest.mark.parametrize('trace_id', [
+    '12345678-1234-1234-1234-123456789abc',
+    'invalid\r\nignored',
+    'invalid\x00id',
+    'invalid-é',
+])
+async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monkeypatch,tmp_path,trace_id):
     import agent_gateway.extensions.adx.ssh_relay as module
+    from agent_gateway.extensions.adx import control_client
+    monkeypatch.setattr(control_client, 'inject_request_headers', lambda headers: {
+        **headers, 'X-Trace-Id': trace_id,
+        'traceparent': '00-12345678123412341234123456789abc-1234567812345678-01',
+        'Unexpected-Header': 'unexpected',
+    })
     config=settings(monkeypatch,tmp_path)
     relay=AdxSshRelay(config)
     monkeypatch.setattr(relay,'_resolve_client_keys',lambda user:['unit-key'])
@@ -59,6 +71,12 @@ async def test_ssh_connect_rejection_never_opens_ssh_or_exposes_credentials(monk
     connect.assert_not_called()
     assert b'CONNECT test-alice+http:2222 HTTP/1.1' in writer.data
     assert b'Authorization: Bearer unit-platform-key\r\n' in writer.data
+    if trace_id.startswith('invalid'):
+        assert b'X-Trace-Id:' not in writer.data and b'invalid' not in writer.data
+    else:
+        assert f'X-Trace-Id: {trace_id}\r\n'.encode('ascii') in writer.data
+    assert b'Unexpected-Header:' not in writer.data
+    assert b'traceparent: 00-12345678123412341234123456789abc-1234567812345678-01\r\n' in writer.data
     assert open_connection.call_args.kwargs['ssl'].verify_mode.name=='CERT_REQUIRED'
 
 

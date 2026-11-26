@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import http.client
 import json
 import logging
@@ -26,18 +25,32 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from agent_gateway.common.retry import jittered_delay
-from agent_gateway.southbound.control.managed import (
-    AgentMount as AgentMount,
-    AgentRootfsSpec as AgentRootfsSpec,
-    AgentRuntimeSpec as AgentRuntimeSpec,
-    SandboxInfo as SandboxInfo,
-)
-
-TRACE_ID_HEADER = "X-Trace-Id"
-AGENT_GENERATION_ENV = "JIUWEN_GATEWAY_SANDBOX_GENERATION"
-_TRACE_ID_MAX_LEN = 128
-_southbound_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "yuanrong_southbound_trace_id", default=""
+from agent_gateway.extensions.agentos.agentos_router.backend import (
+    AGENT_GENERATION_ENV,
+    TRACE_ID_HEADER,
+    normalize_trace_id,
+    bind_southbound_trace_id,
+    current_southbound_trace_id,
+    clear_southbound_trace_id,
+    extract_trace_id,
+    apply_trace_header,
+    RuntimeProbeSettings,
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    AgentMount,
+    AgentRootfsSpec,
+    AgentRuntimeSpec,
+    SandboxInfo,
+    AgentApiError as YuanrongAgentApiError,
+    AgentRequestNotSentError as YuanrongAgentRequestNotSentError,
+    AgentDeleteRejectedError as YuanrongAgentDeleteRejectedError,
+    AgentCreateUncertainError as YuanrongAgentCreateUncertainError,
+    AgentTimeoutError as YuanrongAgentTimeoutError,
+    AgentNotVisibleError as YuanrongAgentNotVisibleError,
+    AgentNotFoundError as YuanrongAgentNotFoundError,
+    AgentGenerationMismatchError as YuanrongAgentGenerationMismatchError,
+    AgentFailedError as YuanrongAgentFailedError,
+    AgentFileError as YuanrongAgentFileError,
 )
 
 
@@ -53,54 +66,6 @@ def deterministic_agent_instance_id(namespace: str, name: str) -> str:
     )
     return str(uuid.uuid5(uuid.NAMESPACE_URL, canonical))
 
-
-def normalize_trace_id(value: str | None = None) -> str:
-    """Use the caller value, or mint a UUID (frontend also caps at 128 chars)."""
-    text = str(value or "").strip()
-    if not text:
-        text = str(uuid.uuid4())
-    return text[:_TRACE_ID_MAX_LEN]
-
-
-def bind_southbound_trace_id(value: str | None = None) -> str:
-    """Normalize, remember on this task, and return the id sent southbound."""
-    resolved = normalize_trace_id(value)
-    _southbound_trace_id.set(resolved)
-    return resolved
-
-
-def current_southbound_trace_id() -> str:
-    """Last southbound mint in this task; empty if YuanRong was not called."""
-    return str(_southbound_trace_id.get() or "").strip()
-
-
-def clear_southbound_trace_id() -> None:
-    """Drop the task-local id so a later 401 cannot inherit a previous call."""
-    _southbound_trace_id.set("")
-
-
-def extract_trace_id(headers: Mapping[str, Any] | None) -> str:
-    """Read ``X-Trace-Id`` from headers (any case). Empty when absent."""
-    if not headers:
-        return ""
-    for key, raw in headers.items():
-        if str(key).lower() == "x-trace-id":
-            return str(raw or "").strip()
-    return ""
-
-
-def apply_trace_header(
-    headers: Mapping[str, str] | None,
-    trace_id: str | None = None,
-) -> dict[str, str]:
-    """Set canonical ``X-Trace-Id``; prefer explicit, then existing header, then mint."""
-    merged = {str(key): str(value) for key, value in dict(headers or {}).items()}
-    resolved = bind_southbound_trace_id(trace_id or extract_trace_id(merged))
-    return {
-        key: value
-        for key, value in merged.items()
-        if str(key).lower() != "x-trace-id"
-    } | {TRACE_ID_HEADER: resolved}
 
 from agent_gateway.routing.container_files import AgentFileDownloadChunk
 from agent_gateway.telemetry import (
@@ -123,89 +88,6 @@ _AGENT_RUNNING_TIMEOUT_SECONDS = 90.0
 _AGENT_RUNNING_RETRY_INTERVAL_SECONDS = 1.0
 _AGENT_FAILED_STATUSES = frozenset(
     {"failed", "error", "deleted", "stopped", "killed"}
-)
-
-
-@dataclass(frozen=True)
-class RuntimeProbeSettings:
-    """TCP probe timings and GET wait knobs (YuanRong camelCase).
-
-    Startup/liveness override via ``gateway.agentos.probes`` /
-    ``AGENTOS_PROBE_*``. GET wait override via
-    ``gateway.agentos.wait_running_{timeout,interval}_seconds`` /
-    ``AGENTOS_WAIT_RUNNING_*`` (see ``load_router_config``).
-    """
-
-    startup_initial_delay_seconds: int = 3
-    startup_period_seconds: int = 3
-    startup_timeout_seconds: int = 2
-    startup_failure_threshold: int = 6
-    liveness_timeout_seconds: int = 2
-    liveness_failure_threshold: int = 3
-    wait_running_timeout_seconds: float = 90.0
-    wait_running_interval_seconds: float = 1.0
-
-    def startup_budget_seconds(self) -> float:
-        """Worst-case startup TCP probe window before ``status=running``.
-
-        ``initialDelaySeconds + periodSeconds * failureThreshold``.
-        Liveness runs after the instance is already running and is not part
-        of the GET wait.
-        """
-        return float(
-            int(self.startup_initial_delay_seconds)
-            + int(self.startup_period_seconds)
-            * int(self.startup_failure_threshold)
-        )
-
-    def same_tcp_timings(self, other: RuntimeProbeSettings) -> bool:
-        """True when startup/liveness knobs match (GET wait knobs ignored)."""
-        return (
-            int(self.startup_initial_delay_seconds)
-            == int(other.startup_initial_delay_seconds)
-            and int(self.startup_period_seconds)
-            == int(other.startup_period_seconds)
-            and int(self.startup_timeout_seconds)
-            == int(other.startup_timeout_seconds)
-            and int(self.startup_failure_threshold)
-            == int(other.startup_failure_threshold)
-            and int(self.liveness_timeout_seconds)
-            == int(other.liveness_timeout_seconds)
-            and int(self.liveness_failure_threshold)
-            == int(other.liveness_failure_threshold)
-        )
-
-    def startup_tcp(self, port: int) -> dict[str, Any]:
-        return {
-            "tcpSocket": {"port": int(port)},
-            "initialDelaySeconds": int(self.startup_initial_delay_seconds),
-            "periodSeconds": int(self.startup_period_seconds),
-            "timeoutSeconds": int(self.startup_timeout_seconds),
-            "failureThreshold": int(self.startup_failure_threshold),
-        }
-
-    def liveness_tcp(self, port: int) -> dict[str, Any]:
-        return {
-            "tcpSocket": {"port": int(port)},
-            "timeoutSeconds": int(self.liveness_timeout_seconds),
-            "failureThreshold": int(self.liveness_failure_threshold),
-        }
-
-    def tcp_probes(self, port: int, *, with_liveness: bool = False) -> dict[str, Any]:
-        probes: dict[str, Any] = {"startup": self.startup_tcp(port)}
-        if with_liveness:
-            probes["liveness"] = self.liveness_tcp(port)
-        return probes
-
-
-DEFAULT_RUNTIME_PROBE_SETTINGS = RuntimeProbeSettings()
-DEFAULT_THIRD_AGENT_PROBE_SETTINGS = RuntimeProbeSettings(
-    startup_initial_delay_seconds=2,
-    startup_period_seconds=3,
-    startup_timeout_seconds=2,
-    startup_failure_threshold=8,
-    liveness_timeout_seconds=2,
-    liveness_failure_threshold=3,
 )
 
 
@@ -344,49 +226,6 @@ def _merge_agent_instance_payload(parsed: Mapping[str, Any]) -> dict[str, Any]:
     return instance
 
 
-class YuanrongAgentApiError(RuntimeError):
-    """Raised when YuanRong /api/agent returns a non-success response."""
-
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
-        super().__init__(message)
-        # Preserve the HTTP status so callers can distinguish e.g. a 429
-        # (definitely rejected, safe to retry before any sandbox exists)
-        # from an uncertain create result.
-        self.status_code = status_code
-
-
-class YuanrongAgentRequestNotSentError(YuanrongAgentApiError):
-    """The request could not be dispatched because connection setup failed."""
-
-
-class YuanrongAgentDeleteRejectedError(YuanrongAgentApiError):
-    """The frontend explicitly rejected a delete request."""
-
-
-class YuanrongAgentCreateUncertainError(YuanrongAgentApiError):
-    """A create response does not establish whether an instance was created."""
-
-
-class YuanrongAgentTimeoutError(YuanrongAgentApiError):
-    """YuanRong did not respond in time. A write may already have taken effect."""
-
-
-class YuanrongAgentNotVisibleError(YuanrongAgentTimeoutError):
-    """Every completed observation during a guarded wait reported absence."""
-
-
-class YuanrongAgentNotFoundError(YuanrongAgentApiError):
-    """GET explicitly reports the instance as not found or not running."""
-
-
-class YuanrongAgentGenerationMismatchError(YuanrongAgentApiError):
-    """GET returned an instance belonging to a different generation."""
-
-
-class YuanrongAgentFailedError(YuanrongAgentApiError):
-    """The requested generation reached a terminal failure status."""
-
-
 @dataclass(frozen=True)
 class _AgentFileRequest:
     """Shared identity/auth for agent file HTTP calls (G.FNM.03)."""
@@ -395,15 +234,6 @@ class _AgentFileRequest:
     path: str
     auth_headers: dict[str, str]
     trace_id: str | None = None
-
-
-class YuanrongAgentFileError(RuntimeError):
-    """Raised when YuanRong agent file upload/download/list/mkdir fails."""
-
-    def __init__(self, message: str, *, http_status: int = 500, error_code: str = "INTERNAL_ERROR") -> None:
-        super().__init__(message)
-        self.http_status = int(http_status)
-        self.error_code = str(error_code)
 
 
 class YuanrongFrontendAgentClient:

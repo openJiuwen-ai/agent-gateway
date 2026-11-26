@@ -14,14 +14,13 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
     load_router_config as load_agentos_config,
 )
 
-
 @dataclass(frozen=True)
 class AdxRouterConfig:
     ingress_url: str
     tenant: str
     token: str = field(repr=False)
     router: RouterConfig = field(repr=False)
-    builtin_image: str = 'jiuwenswarm-agent-runtime:latest'
+    builtin_image: str | None = None
     runtime_class: str = 'runc'
     workspace_target: str = '/home/agentos'
     ssh_user: str = 'agentos'
@@ -29,6 +28,9 @@ class AdxRouterConfig:
     restart_policy: dict[str, int] | None = None
     connect_timeout_seconds: float = 60.0
     builtin_process_from_image: bool = False
+    builtin_launch: dict | None = field(default=None, repr=False)
+
+
 
 
 def adx_router_selected(config: dict) -> bool:
@@ -46,10 +48,10 @@ def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
     return value
 
 
-def _restart_policy(value: object) -> dict[str, int] | None:
+def normalize_restart_policy(value: object, *, field_name: str = 'gateway.adx.restart_policy') -> dict[str, int] | None:
     if value is None:
         return None
-    error = 'gateway.adx.restart_policy requires attempts and ordered positive backoff seconds'
+    error = f'{field_name} requires attempts and ordered positive backoff seconds'
     fields = {'maxAttempts', 'initialBackoffSeconds', 'maxBackoffSeconds'}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError(error)
@@ -63,12 +65,25 @@ def _restart_policy(value: object) -> dict[str, int] | None:
     return dict(value)
 
 
+def validate_local_rootfs(value: dict, source: str) -> None:
+    if not isinstance(value, dict) or value.get('type') != 'local':
+        raise ValueError(f'{source}.rootfs requires type=local and an absolute node path')
+    path = value.get('path')
+    if not isinstance(path, str) or not path.startswith('/'):
+        raise ValueError(f'{source}.rootfs.path must be an absolute node path')
+    if (any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in path)
+            or any(part in ('.', '..') for part in path.split('/'))):
+        raise ValueError(f'{source}.rootfs.path cannot contain traversal or control characters')
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
         'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
-        'builtin_process_from_image',
+        'builtin_process_from_image', 'builtin_launch', 'local_images',
+        # Accepted for upgrades; initialization is owned by Enterprise.
+        'workspace_config_template',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
@@ -91,10 +106,29 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not math.isfinite(timeout) or not 0 < timeout <= 86400:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
-    builtin_image = _text_setting(settings, 'builtin_image', 'jiuwenswarm-agent-runtime:latest')
+    builtin_image = settings.get('builtin_image')
+    if 'builtin_image' not in settings and not settings.get('builtin_launch'):
+        builtin_image = 'jiuwenswarm-agent-runtime:latest'
+    elif builtin_image not in (None, ''):
+        builtin_image = _text_setting(settings, 'builtin_image')
+    else:
+        builtin_image = None
     builtin_process_from_image = settings.get('builtin_process_from_image', False)
     if not isinstance(builtin_process_from_image, bool):
         raise ValueError('gateway.adx.builtin_process_from_image must be a boolean')
+    builtin_launch = settings.get('builtin_launch')
+    if builtin_launch is not None:
+        if not isinstance(builtin_launch, dict) or set(builtin_launch) - {
+                'process', 'rootfs', 'mounts', 'env', 'image_env', 'workspace_mount_options'}:
+            raise ValueError('gateway.adx.builtin_launch contains invalid settings')
+        if not isinstance(builtin_launch.get('process'), dict) or not builtin_launch['process'].get('commands'):
+            raise ValueError('gateway.adx.builtin_launch requires process.commands')
+        if 'rootfs' in builtin_launch:
+            validate_local_rootfs(builtin_launch['rootfs'], 'gateway.adx.builtin_launch')
+        image_env = builtin_launch.get('image_env', {})
+        if not isinstance(image_env, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str) for k, v in image_env.items()):
+            raise ValueError('gateway.adx.builtin_launch.image_env requires literal string values')
     runtime_class = _text_setting(settings, 'runtime_class', 'runc')
     workspace_target = _text_setting(settings, 'workspace_target', '/home/agentos')
     if not workspace_target.startswith('/') or any(part in ('.', '..') for part in workspace_target.split('/')):
@@ -105,12 +139,14 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     ssh_known_hosts = settings.get('ssh_known_hosts', '')
     if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
         raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
-    restart_policy = _restart_policy(settings.get('restart_policy'))
+    restart_policy = normalize_restart_policy(settings.get('restart_policy'))
+    sandbox = config.get('sandbox')
+    tool_defaults = sandbox if isinstance(sandbox, dict) and sandbox.get('type') == 'adx-environment' else None
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
-        router=load_agentos_config(config, require_frontend_endpoint=False),
+        router=load_agentos_config(config, require_frontend_endpoint=False, tool_sandbox_defaults=tool_defaults),
         builtin_image=builtin_image, runtime_class=runtime_class,
-        builtin_process_from_image=builtin_process_from_image,
+        builtin_process_from_image=builtin_process_from_image, builtin_launch=builtin_launch,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,
     )
