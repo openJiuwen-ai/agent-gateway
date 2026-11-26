@@ -9,6 +9,7 @@ import random
 import re
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -133,6 +134,9 @@ class WechatConfig(BaseModel):
     # 是否下发过程消息（工具调用/结果、delta 在工具边界的冲刷）；False 时仅在下发 chat.final（及 interrupt 等完结类事件）时合并发送
     enable_streaming: bool = True
 
+
+# 每个用户最近一次消息带的 context_token，只用于回发；保留最近若干用户即可。
+_CONTEXT_TOKEN_LIMIT = 4096
 
 # 供前端轮询展示扫码登录进度（与 Logger 输出互补）
 _login_ui_lock = asyncio.Lock()
@@ -365,7 +369,7 @@ class WechatChannel(BaseChannel):
         self._message_callback: Callable[[Message], Any] | None = None
         self._poll_task: asyncio.Task | None = None
         self._poll_cursor: str = ""
-        self._context_tokens: dict[str, str] = {}
+        self._context_tokens: OrderedDict[str, str] = OrderedDict()
         self._backoff_sec: float = self.config.backoff_base_sec
         self._delta_accumulator = StreamDeltaAccumulator()
         self._delta_leading: dict[str, str] = {}
@@ -876,9 +880,20 @@ class WechatChannel(BaseChannel):
         for key in ("wechat_context_token", "context_token"):
             token = str(meta.get(key) or "").strip()
             if token:
-                self._context_tokens[user_id] = token
+                self._remember_context_token(user_id, token)
                 return token
         return str(self._context_tokens.get(user_id) or "").strip()
+
+    def _remember_context_token(self, user_id: str, token: str) -> None:
+        """记录用户的 context_token，超出上限时淘汰最久未用的用户。"""
+        user_id = str(user_id or "").strip()
+        token = str(token or "").strip()
+        if not user_id or not token:
+            return
+        self._context_tokens.pop(user_id, None)
+        self._context_tokens[user_id] = token
+        while len(self._context_tokens) > _CONTEXT_TOKEN_LIMIT:
+            self._context_tokens.popitem(last=False)
 
     def get_metadata(self) -> ChannelMetadata:
         token_preview = (
@@ -1192,7 +1207,7 @@ class WechatChannel(BaseChannel):
 
         context_token = str(wx_msg.get("context_token") or "").strip()
         if context_token:
-            self._context_tokens[user_id] = context_token
+            self._remember_context_token(user_id, context_token)
 
         # 持久化 last_user_id 和 context_token 供 cron/心跳推送使用
         try:
