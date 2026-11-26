@@ -130,6 +130,8 @@ from agent_gateway.extensions.yuanrong_frontend_client import (
     extract_trace_id,
 )
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.extensions.agentos.agentos_router.control_adapter import YuanRongControl
+from agent_gateway.southbound.control.managed import SandboxCreateRequest
 from agent_gateway.telemetry import (
     TraceOperation, bind_request_trace, current_request_trace, inject_request_headers,
     start_gateway_trace, trace_operation, bind_cleanup_trace, current_cleanup_trace,
@@ -674,6 +676,7 @@ class AgentOSRouterClient(AgentServerClient):
         probe_settings: RuntimeProbeSettings | None = None,
     ) -> None:
         self._yuanrong = yuanrong
+        self._managed_control = YuanRongControl(yuanrong)
         self._registry = registry
         self._agent_manager = agent_manager
         self._sandbox_lifecycles: dict[str, _SandboxLifecycle] = {}
@@ -1703,34 +1706,14 @@ class AgentOSRouterClient(AgentServerClient):
         其中 ``instance`` 是 create 返回的 instanceID，``port`` 是 create cmds 里
         agentserver 监听的端口。
         """
-        frontend = str(self._yuanrong.frontend_endpoint or "").rstrip("/")
-        parsed = urllib.parse.urlsplit(frontend)
-        ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-        query = urllib.parse.urlencode(
-            {
-                "instance": instance_id,
-                "tenant_id": self._yuanrong.agent_namespace or "default",
-                "port": str(agent_port),
-            }
-        )
-        return f"{ws_scheme}://{parsed.netloc}/serverless/v1/ws?{query}"
+        return self._managed_control.ws_url(instance_id, agent_port)
 
     def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
         """Frontend instance HTTP proxy URL.
 
         ``http://<host>:8888/serverless/v1/http?instance=<id>&tenant_id=default&port=<port>``
         """
-        frontend = str(self._yuanrong.frontend_endpoint or "").rstrip("/")
-        parsed = urllib.parse.urlsplit(frontend)
-        http_scheme = "https" if parsed.scheme == "https" else "http"
-        query = urllib.parse.urlencode(
-            {
-                "instance": instance_id,
-                "tenant_id": self._yuanrong.agent_namespace or "default",
-                "port": str(agent_port),
-            }
-        )
-        return f"{http_scheme}://{parsed.netloc}/serverless/v1/http?{query}"
+        return self._managed_control.http_url(instance_id, agent_port)
 
     def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
         """Web-app WebSocket endpoint: the HTTP tunnel path with a ws scheme.
@@ -1739,13 +1722,7 @@ class AgentOSRouterClient(AgentServerClient):
         ``/api/remote.mux``) survives ``_append_tail``. ``/serverless/v1/ws``
         is the control channel and rejects such subpaths.
         """
-        parsed = urllib.parse.urlsplit(
-            self._agent_http_url(instance_id, agent_port)
-        )
-        ws_scheme = "wss" if parsed.scheme == "https" else "ws"
-        return urllib.parse.urlunsplit(
-            (ws_scheme, parsed.netloc, parsed.path, parsed.query, parsed.fragment)
-        )
+        return self._managed_control.web_ws_url(instance_id, agent_port)
 
     async def _connect_ws_until_ready(
         self,
@@ -3276,7 +3253,7 @@ class AgentOSRouterClient(AgentServerClient):
     async def _startup_cleanup_sandboxes(self) -> None:
         try:
             await cleanup_stale_sandboxes(
-                yuanrong=self._yuanrong,
+                control=self._managed_control,
                 registry=self._registry,
                 agent_manager=self._agent_manager,
                 is_closed=lambda: self._closed,
@@ -3544,7 +3521,7 @@ class AgentOSRouterClient(AgentServerClient):
     ) -> bool:
         """Return true only for an explicit absence; retry only after a positive observation."""
         try:
-            await self._yuanrong.get_agent_info(lifecycle.retired_instance)
+            await self._managed_control.query(lifecycle.retired_instance)
         except YuanrongAgentNotFoundError:
             lifecycle.delete_retry_at = None
             return True
@@ -3818,16 +3795,16 @@ class AgentOSRouterClient(AgentServerClient):
         # generation must never reuse the ID addressed by a previous DELETE.
         generation = agent_info.agent_id
         physical_name = f"gateway-{generation}"
-        namespace = self._yuanrong.agent_namespace
+        namespace = self._managed_control.backend.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._yuanrong.create_sandbox(
+            return await self._managed_control.create(SandboxCreateRequest(
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
                 runtime_spec=runtime_spec,
                 env_vars={**(env_vars or {}), AGENT_GENERATION_ENV: generation},
-            )
+            ))
 
         try:
             async with self._sandbox_lifecycle(logical_name) as lifecycle:
@@ -4248,7 +4225,7 @@ class AgentOSRouterClient(AgentServerClient):
         retry_delay = max(1.0, self._probe_settings.wait_running_interval_seconds)
         try:
             async with asyncio.timeout(self._probe_settings.wait_running_timeout_seconds):
-                await self._yuanrong.delete_sandbox(lifecycle.retired_instance)
+                await self._managed_control.delete(lifecycle.retired_instance)
         except (YuanrongAgentRequestNotSentError, YuanrongAgentDeleteRejectedError):
             retry_delay = max(0.01, self._probe_settings.wait_running_interval_seconds)
             raise
