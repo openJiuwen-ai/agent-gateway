@@ -11,6 +11,7 @@ import pytest
 from agent_gateway.config.channel.access import (
     clear_channel_config_repository,
     get_channel_config_repository,
+    update_xiaoyi_runtime_in_config,
 )
 from agent_gateway.config.channel.repository import find_xiaoyi_app
 from agent_gateway.config.enterprise.catalog import ENTERPRISE_RECORD_STORE_NAMES
@@ -190,7 +191,11 @@ async def test_xiaoyi_push_id_selects_same_app_in_yaml_and_repository(
     path = tmp_path / "config.yaml"
     monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
     config.dump_yaml_round_trip(path, {"channels": {"xiaoyi": {"apps": apps}}})
-    config.update_xiaoyi_runtime_in_config({"push_id": "new"}, api_id=api_id, agent_id=agent_id)
+    await update_xiaoyi_runtime_in_config(
+        {"push_id": "new"},
+        api_id=api_id,
+        agent_id=agent_id,
+    )
     yaml_section = config.load_yaml_round_trip(path)["channels"]["xiaoyi"]
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")

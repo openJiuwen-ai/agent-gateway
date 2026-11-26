@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
@@ -451,6 +452,7 @@ def update_xiaoyi_runtime_in_config(
     *,
     api_id: str = "",
     agent_id: str = "",
+    app_writer: Callable[..., Any] | None = None,
 ) -> None:
     """更新 ``channels.xiaoyi`` 运行时身份，并在存在 ``push_id`` 时同步写入 ``apps[]``。
 
@@ -458,6 +460,7 @@ def update_xiaoyi_runtime_in_config(
     ``apps[].push_id`` 供频道重启后 ``XiaoyiChannelConfig`` 加载。一次 IO 写完，避免不一致。
 
     ``apps`` 匹配优先级：``api_id`` → ``agent_id`` → ``is_default`` → 唯一 app。
+    ``app_writer`` 由 channel 层注入，避免 common 反向依赖 config 模块。
     """
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "channels" not in data:
@@ -469,15 +472,14 @@ def update_xiaoyi_runtime_in_config(
     for k, v in conf.items():
         section[k] = _as_plain_yaml_str(v)
 
-    from agent_gateway.config.channel.repository import find_xiaoyi_app
-
     push_id = conf.get("push_id")
-    find_xiaoyi_app(
-        section.get("apps"),
-        api_id,
-        agent_id,
-        push_id=_as_plain_yaml_str(str(push_id)) if push_id else None,
-    )
+    if push_id and app_writer is not None:
+        app_writer(
+            section.get("apps"),
+            api_id,
+            agent_id,
+            push_id=_as_plain_yaml_str(str(push_id)),
+        )
 
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
