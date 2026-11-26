@@ -237,7 +237,7 @@ async def test_send_request_stream_keeps_tail_window_for_processing_status(monke
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "agent_gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "agent_gateway.southbound.data.websocket._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -311,7 +311,7 @@ async def test_send_request_stream_absorbs_duplicate_complete_frames(monkeypatch
     client.set_ws_for_test(FakeWebSocket())
 
     monkeypatch.setattr(
-        "agent_gateway.routing.agent_client._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
+        "agent_gateway.southbound.data.websocket._STREAM_TRAILING_MESSAGE_GRACE_SECONDS",
         0.05,
     )
 
@@ -436,7 +436,7 @@ async def test_message_receiver_loop_stops_on_closed_websocket():
 
 @pytest.mark.asyncio
 async def test_message_receiver_loop_logs_close_diagnostics(caplog):
-    target_logger = logging.getLogger("agent_gateway.routing.agent_client")
+    target_logger = logging.getLogger("agent_gateway.southbound.data.websocket")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.INFO, logger=target_logger.name)
 
@@ -512,6 +512,62 @@ async def test_unary_cancellation_releases_request_queue_without_resending():
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_unblocks_pending_unary():
+    client = AgentClientHarness()
+    ws = FakeWebSocket()
+    client.set_ws_for_test(ws)
+    envelope = e2a_from_agent_fields(
+        request_id="disconnect-rid", channel_id="acp", session_id="s",
+        params={"content": "hello"}, is_stream=False,
+    )
+    task = asyncio.create_task(client.send_request(envelope))
+    try:
+        async with asyncio.timeout(_OUTER_WAIT_TIMEOUT):
+            while not ws.sent_payloads:
+                await asyncio.sleep(0)
+        await client.disconnect()
+        with pytest.raises(RuntimeError, match="connection closed"):
+            await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+        assert not client.has_message_queue_for_test("disconnect-rid")
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_disconnect_during_prepare_rejects_unsent_request(stream, monkeypatch):
+    client = AgentClientHarness()
+    ws = FakeWebSocket()
+    client.set_ws_for_test(ws)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def prepare(_):
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(client, "_prepare_envelope", prepare)
+    envelope = e2a_from_agent_fields(request_id="prepare-rid", channel_id="acp", session_id="s",
+                                     params={"content": "hello"}, is_stream=stream)
+
+    async def send():
+        if stream:
+            return [chunk async for chunk in client.send_request_stream(envelope)]
+        return await client.send_request(envelope)
+
+    task = asyncio.create_task(send())
+    await asyncio.wait_for(started.wait(), timeout=_OUTER_WAIT_TIMEOUT)
+    await client.disconnect()
+    release.set()
+    from agent_gateway.southbound.data.websocket import RequestNotSentError
+    with pytest.raises(RequestNotSentError):
+        await asyncio.wait_for(task, timeout=_OUTER_WAIT_TIMEOUT)
+    assert not ws.sent_payloads
+    assert not client.has_message_queue_for_test("prepare-rid")
 
 
 @pytest.mark.asyncio
@@ -692,6 +748,8 @@ async def test_send_request_delivers_response_when_request_id_reused_after_compl
     finally:
         receiver.cancel()
         await receiver
+
+
 @pytest.mark.asyncio
 async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(caplog):
     """弃单（超时）后保留已取消标记：复用请求的响应被丢弃并记 warning.
@@ -699,7 +757,7 @@ async def test_send_request_timeout_keeps_cancel_guard_for_reused_request_id(cap
     防串线的既定取舍：超时后旧请求的响应可能迟到，放行会串进复用同 rid 的
     新等待者。与正常完成路径（不立标记）相区分。
     """
-    target_logger = logging.getLogger("agent_gateway.routing.agent_client")
+    target_logger = logging.getLogger("agent_gateway.southbound.data.websocket")
     target_logger.addHandler(caplog.handler)
     caplog.set_level(logging.WARNING, logger=target_logger.name)
 

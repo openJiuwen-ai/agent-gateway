@@ -9,16 +9,28 @@ import json
 import logging
 import os
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 
 from openjiuwen.harness_providers.jsonsafe import to_json_safe
 
 logger = logging.getLogger(__name__)
+_PROCESS_EXIT_GRACE_SECONDS = 1.0
 
 
 def _hook_input_json(hook_input: dict) -> str:
     """Serialize hook input; tool results are models (e.g. ``ToolOutput``), not plain JSON."""
     return json.dumps(to_json_safe(hook_input), ensure_ascii=False)
+
+
+async def _stop_command_process(proc: asyncio.subprocess.Process) -> None:
+    try:
+        with suppress(ProcessLookupError):
+            proc.kill()
+        # A descendant may keep the shell's output pipes open after the shell exits.
+        await asyncio.wait_for(proc.wait(), timeout=_PROCESS_EXIT_GRACE_SECONDS)
+    except Exception:
+        logger.debug("Failed to finish hook process cleanup", exc_info=True)
 
 
 class HookOutcome:
@@ -79,7 +91,6 @@ class HookExecutor:
         tool_name = hook_input.get("tool_name", "")
         env["TOOL_NAME"] = tool_name
 
-        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 shell, "-c", command,
@@ -89,19 +100,17 @@ class HookExecutor:
                 env=env,
             )
 
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=hook_input_json.encode()),
-                timeout=timeout,
-            )
-            returncode = proc.returncode
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(input=hook_input_json.encode()),
+                    timeout=timeout,
+                )
+                returncode = proc.returncode
+            finally:
+                if proc.returncode is None:
+                    await _stop_command_process(proc)
 
         except asyncio.TimeoutError:
-            try:
-                if proc is not None:
-                    proc.kill()
-                    await proc.wait()
-            except Exception:
-                logger.debug("Failed to kill hook process after timeout", exc_info=True)
             return HookResult(
                 outcome=HookOutcome.NON_BLOCKING_ERROR,
                 error=f"hook timeout after {timeout}s",

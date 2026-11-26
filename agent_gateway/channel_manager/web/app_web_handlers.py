@@ -6801,8 +6801,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
 
         # Only the connection identity in envelope.user_id is authoritative.
+        # Enterprise runtime routing still needs the trusted group/bot triple from
+        # the Web connection (HTTP headers / WS attach); without it,
+        # identity_from_envelope raises "Agent routing identity is required".
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
         forwarded_params = dict(params) if isinstance(params, dict) else {}
         forwarded_params.pop("user_id", None)
+        forwarded_params.pop("group_id", None)
+        forwarded_params.pop("bot_id", None)
+        route_metadata = apply_routing_metadata(
+            route_metadata,
+            getattr(ws, "_web_routing", None),
+        )
         env = e2a_from_agent_fields(
             request_id=str(req_id) if req_id else "",
             channel_id="web",
@@ -6849,7 +6860,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and replacement["requestId"] != request_id
         )
         if payload.get("ok") is True and (authorize_completion or replaced):
-            channel.forget_a4p_route(route, request_id)
+            # HTTP Outbound without a WS routing key uses ``route = True`` as a
+            # sentinel so forwarding can proceed; forget only applies to a real
+            # RoutingKey cache entry (``route.user_id`` would raise on bool).
+            from agent_gateway.routing.keys import RoutingKey as _RoutingKey
+
+            if isinstance(route, _RoutingKey):
+                channel.forget_a4p_route(route, request_id)
         await channel.send_response(
             ws,
             req_id,
