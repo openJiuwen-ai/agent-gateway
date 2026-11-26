@@ -36,7 +36,7 @@ class AdxRouterClient(AdxFileMixin, AgentServerClient):
         self._control = control_client or AdxControlClient(config)
         settings = config.router
         self._router = ManagedRouter(
-            AdxControl(self._control),
+            AdxControl(self._control, config),
             registry_client or RegistryClient(settings.registry),
             AgentManager(
                 creating_timeout_seconds=settings.creating_timeout_seconds, key_fields=settings.agent_key_fields,

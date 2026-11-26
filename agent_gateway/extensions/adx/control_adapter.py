@@ -4,6 +4,7 @@
 
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
+from agent_gateway.extensions.adx.config import AdxRouterConfig
 from agent_gateway.southbound.control.managed import ManagedSandboxControl, SandboxCreateRequest, SandboxInfo
 from agent_gateway.extensions.adx.control_client import AdxControlClient
 from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
@@ -11,6 +12,10 @@ from agent_gateway.extensions.yuanrong_frontend_client import apply_trace_header
 
 class AdxControl(ManagedSandboxControl):
     backend: AdxControlClient
+
+    def __init__(self, backend: AdxControlClient, config: AdxRouterConfig) -> None:
+        super().__init__(backend)
+        self._config = config
 
     async def create(self, request: SandboxCreateRequest) -> SandboxInfo:
         return await self.backend.create_sandbox(
@@ -26,7 +31,7 @@ class AdxControl(ManagedSandboxControl):
         )
 
     def ws_headers(self) -> dict[str, str]:
-        return apply_trace_header({'Authorization': 'Bearer ' + self.backend.config.token})
+        return apply_trace_header({'Authorization': 'Bearer ' + self._config.token})
 
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
