@@ -6,18 +6,44 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from typing import TYPE_CHECKING, Any
 
-from .welink_checkpoint import read_checkpoint, write_checkpoint
-from .welink_connect import WelinkChannel, auth_recheck_due
 from .welink_messages import WelinkHistoryMessage, WelinkMedia, select_new_messages
 from .welink_poller import CursorStore, WelinkPoller
 from .welink_subscriptions import MentionSubscriptions
 
+if TYPE_CHECKING:
+    from .welink_connect import WelinkChannel
+
 logger = logging.getLogger(__name__)
+
+
+def read_checkpoint(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_checkpoint(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = None
+    try:
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as stream:
+            staged = Path(stream.name)
+            json.dump(value, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        staged.replace(path)
+    except BaseException:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+        raise
 
 
 class WelinkReader:
@@ -49,16 +75,14 @@ class WelinkReader:
             self._pending = [{'message': raw, 'targets': list(channels),
                               'target_agents': self._target_agents(channels), 'commit': True}
                              for raw in read_checkpoint(old)]
-            self._save(self._pending_path, self._pending)
+            write_checkpoint(self._pending_path, self._pending)
         for job in self._pending:
             if 'target_agents' not in job:
                 credentials = [job['credential']] if job.get('prepare_catchup') else job.get('targets', [])
                 job['target_agents'] = self._target_agents(credentials)
         if self._pending:
-            self._save(self._pending_path, self._pending)
+            write_checkpoint(self._pending_path, self._pending)
         self._auth_ok_at = 0.0
-
-    _save = staticmethod(write_checkpoint)
 
     @staticmethod
     def _message(raw) -> WelinkHistoryMessage:
@@ -96,7 +120,7 @@ class WelinkReader:
                 jobs.append({'message': asdict(item), 'targets': targets,
                              'target_agents': self._target_agents(targets), 'commit': True})
             self._pending = jobs
-            self._save(self._pending_path, jobs)
+            write_checkpoint(self._pending_path, jobs)
         while self._pending:
             job = self._pending[0]
             if job.get('prepare_catchup'):
@@ -104,17 +128,17 @@ class WelinkReader:
                 channel = self.channels.get(credential)
                 if channel is None or job['target_agents'].get(credential) != channel.config.agent_id:
                     self._pending.pop(0)
-                    self._save(self._pending_path, self._pending)
+                    write_checkpoint(self._pending_path, self._pending)
                     continue
                 if not self._eligible(group).get(credential):
                     self._pending.pop(0)
-                    self._save(self._pending_path, self._pending)
+                    write_checkpoint(self._pending_path, self._pending)
                     continue
                 # Old discovery-era catchup jobs have no authorized history page.
                 # Drop them; a later subscribed poll prepares a fresh bounded page.
                 if 'history' not in job:
                     self._pending.pop(0)
-                    self._save(self._pending_path, self._pending)
+                    write_checkpoint(self._pending_path, self._pending)
                     continue
                 history = [self._message(raw) for raw in job['history']]
                 catchup, _ = select_new_messages(history, None, account=self.account)
@@ -128,9 +152,9 @@ class WelinkReader:
                             for index, item in enumerate(catchup)]
                 if not prepared:
                     self._seen.add(job['seen_key'])
-                    self._save(self._seen_path, sorted(self._seen))
+                    write_checkpoint(self._seen_path, sorted(self._seen))
                 self._pending = prepared + self._pending[1:]
-                self._save(self._pending_path, self._pending)
+                write_checkpoint(self._pending_path, self._pending)
                 continue
             original = self._message(job['message'])
             alias_key = json.dumps([original.group_id, original.message_id])
@@ -147,33 +171,35 @@ class WelinkReader:
                             break
             if self._aliases.get(alias_key) != canonical:
                 self._aliases[alias_key] = canonical
-                self._save(self._aliases_path, self._aliases)
+                write_checkpoint(self._aliases_path, self._aliases)
             if job.get('canonical_message_id') != canonical:
                 job['canonical_message_id'] = canonical
-                self._save(self._pending_path, self._pending)
+                write_checkpoint(self._pending_path, self._pending)
             message = replace(original, message_id=canonical)
             eligible = self._eligible(original.group_id)
             for credential in list(job['targets']):
                 channel = eligible.get(credential)
                 if channel is None or job['target_agents'].get(credential) != channel.config.agent_id:
                     job['targets'].remove(credential)
-                    self._save(self._pending_path, self._pending)
+                    write_checkpoint(self._pending_path, self._pending)
                     continue
                 accepted = await channel._deliver(message, first_observation=job.get('first_observation', False),
                                                   visible_from=job.get('visible_from', ''))
                 if not accepted:
                     return
                 job['targets'].remove(credential)
-                self._save(self._pending_path, self._pending)
+                write_checkpoint(self._pending_path, self._pending)
             if job.get('commit'):
                 self._poller.commit(original.group_id, original.message_id)
             if job.get('seen_key'):
                 self._seen.add(job['seen_key'])
-                self._save(self._seen_path, sorted(self._seen))
+                write_checkpoint(self._seen_path, sorted(self._seen))
             self._pending.pop(0)
-            self._save(self._pending_path, self._pending)
+            write_checkpoint(self._pending_path, self._pending)
 
     async def run(self) -> None:
+        from .welink_connect import auth_recheck_due
+
         while True:
             try:
                 channel = next(iter(self.channels.values()), None)
