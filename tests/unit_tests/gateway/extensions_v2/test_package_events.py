@@ -123,6 +123,7 @@ def _bundle_member(
     status: str = "pending",
     enabled: bool = True,
     active: bool = True,
+    enable: bool | None = None,
 ) -> Path:
     root = install_dir / "demo.bundle" / "2.0.0" / "plugins" / package_id
     root.mkdir(parents=True, exist_ok=True)
@@ -132,6 +133,7 @@ def _bundle_member(
                 "package_type": "extension",
                 "schemaVersion": 1,
                 "package": {"id": package_id, "version": member_version, "domain": "gateway"},
+                **({"enable": enable} if enable is not None else {}),
                 "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
             }
         ),
@@ -876,3 +878,73 @@ def test_adjust_management_reports_marks_a_failed_bundle_uninstall(tmp_path: Pat
 
     assert adjusted["reports"][0]["status"] == "FAILED"
     assert adjusted["reports"][0]["error"]["message"] == "copy is locked"
+
+
+def _write_manifest(root: Path, package_id: str, version: str, *, enable: bool) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "manifest.json").write_text(
+        json.dumps(
+            {
+                "package_type": "extension",
+                "schemaVersion": 1,
+                "package": {"id": package_id, "version": version, "domain": "gateway"},
+                "enable": enable,
+                "extensions": [{"id": "main", "runtime": "backend", "module": "extension.py"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_resurrect_a_manifest_disabled_standalone(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    _write_manifest(install_dir / "demo.gw" / "1.0.0", "demo.gw", "1.0.0", enable=False)
+    _standalone(store, "demo.gw", status="active")
+
+    results = await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert results == []
+    assert ("install", "demo.gw") not in manager.calls
+    record = store.get("demo.gw", "1.0.0")
+    assert record is not None
+    assert (record.enabled, record.active, record.status) == (False, False, "disabled")
+
+
+@pytest.mark.asyncio
+async def test_sync_does_not_resurrect_a_manifest_disabled_member(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    _bundle_member(store, install_dir, "demo.gw", status="active", enable=False)
+
+    results = await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert results == []
+    assert ("install", "demo.gw") not in manager.calls
+    member = store.get_bundle_member("demo.bundle", "2.0.0", "demo.gw")
+    assert member is not None
+    assert (member.enabled, member.active, member.status) == (False, False, "disabled")
+
+
+@pytest.mark.asyncio
+async def test_sync_still_promotes_a_standby_copy_seeded_unloaded(tmp_path: Path) -> None:
+    install_dir = tmp_path / "extension_pkgs"
+    store = ExtensionInstallState.for_install_dir(install_dir)
+    manager = FakeManager()
+    manager.install_dir = install_dir
+    _write_manifest(install_dir / "demo.gw" / "1.0.0", "demo.gw", "1.0.0", enable=False)
+    _standalone(store, "demo.gw", status="standby", claim=False)
+
+    results = await containers.sync_members(manager, store, _trigger(manager, store))
+
+    assert [(item.package_id, item.status) for item in results] == [("demo.gw", "success")]
+    assert ("install", "demo.gw") in manager.calls
+    record = store.get("demo.gw", "1.0.0")
+    assert record is not None
+    assert record.status == "active"
