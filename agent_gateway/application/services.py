@@ -12,6 +12,11 @@ import os
 import time
 from typing import Any, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialAccess, CredentialUpdate, CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
+    from agent_gateway.auth.session_login_bindings import SessionLoginBindings
+
 from agent_gateway.application.configuration import _load_gateway_runtime_config
 from agent_gateway.application.connection import _connect_with_retry
 from agent_gateway.common.log_sanitize import mask_sensitive
@@ -32,6 +37,14 @@ def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> No
         )
 
 
+class MessageHandlerCredentialUpdateSink:
+    """Publish through the exact handler owned by this service graph."""
+
+    def __init__(self, message_handler: Any) -> None:
+        self._message_handler = message_handler
+
+    async def publish(self, update: CredentialUpdate) -> bool:
+        return await self._message_handler.push_login_credential_update(update.to_params())
 
 
 @dataclass
@@ -60,6 +73,10 @@ class GatewayServices:
     full_cfg: Any
     _hold_release_task: Any
     _cleanup_task: Any
+    auth_service_provider: Callable[[], AuthService] | None = None
+    credential_access: CredentialAccess | None = None
+    credential_update_sink: CredentialUpdateSink | None = None
+    session_login_bindings: SessionLoginBindings | None = None
 
     async def stop(self) -> None:
         await self.cron_scheduler.stop()
@@ -210,8 +227,19 @@ async def assemble_services(
         await client.connect("")
     log_stage("agent_server_connected")
 
+    from agent_gateway.auth.local_credential_access import LocalCredentialAccess
+    from agent_gateway.auth.service import get_auth_service
+    from agent_gateway.auth.session_login_bindings import LocalSessionLoginBindings
 
-    message_handler = MessageHandler(client)
+    auth_service_provider = get_auth_service
+    credential_access = LocalCredentialAccess(auth_service_provider)
+    session_login_bindings = LocalSessionLoginBindings(auth_service_provider)
+    message_handler = MessageHandler(
+        client,
+        session_login_bindings=session_login_bindings,
+    )
+    message_handler.set_credential_access(credential_access)
+    credential_update_sink = MessageHandlerCredentialUpdateSink(message_handler)
     await message_handler.start_forwarding()
 
     # IM Pipeline 初始化（数字分身）
@@ -259,7 +287,9 @@ async def assemble_services(
         agent_client=client,
         message_handler=message_handler,
     )
+    cron_scheduler.set_credential_access(credential_access)
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
+    cron_controller.set_credential_access(credential_access)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
     # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
@@ -397,4 +427,8 @@ async def assemble_services(
         full_cfg=full_cfg,
         _hold_release_task=_hold_release_task,
         _cleanup_task=_cleanup_task,
+        auth_service_provider=auth_service_provider,
+        credential_access=credential_access,
+        credential_update_sink=credential_update_sink,
+        session_login_bindings=session_login_bindings,
     )

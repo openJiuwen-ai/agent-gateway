@@ -103,6 +103,46 @@ GatewayServer、GatewayServerConfig 兼容导出仍是同一类对象的别名�
 AgentOS Web Proxy 使用当前 runtime Cron 配置 helper，测试不再替换缺失的导入。
 真实账号、SDK 和冻结包仍需单独验收。
 
+## P3-A：本地凭据访问
+
+`CredentialAccess`、`CredentialUpdateSink` 暴露最小不可变值，repr 不含 token。
+模型分类同样使用注入的 service；自配模型不读取登录会话，也不触发刷新任务。
+`assemble_services` 注入延迟 AuthService provider、LocalCredentialAccess，以及绑定同一
+MessageHandler 的 `MessageHandlerCredentialUpdateSink`。登录 HTTP handler 与 Web/TUI/ACP
+入站共享依赖；`MessagePreprocessor.with_credential_access()` 与
+`MessageHandler.set_credential_access()` 是新的注入接缝。查找前删除调用方提供的
+`_model_auth` 并记录告警，注入路径不能再次执行旧全局注入。
+保留过期 token 20 秒刷新等待、仍可用 token 回退，以及业务用户与模型登录身份的区别。
+
+未绑定的旧 helper 与 `register_auth_routes(app)` 保持兼容。退出登录先删除本地会话，再经原
+AS 链路尽力通知，不承诺多 AS 可靠吊销。测试包括 `test_local_credential_access.py`、
+`test_credential_pipeline_contract.py` 和 `test_auth_dependency_injection.py`。
+
+## P3-B：Cron 与会话凭据绑定
+
+登录来源的 Cron 模型在创建/更新时绑定凭据引用，执行时仅按该引用取凭据，不能按同名模型
+借用账号。原 job 格式、调度和投递不变。`SessionLoginBindings` 适配现有
+`session_owners.json` 持久化/TTL 与目录检查；保留非 Web 回退范围和登录提示，未登录 Web
+请求不能借用记录的账号。绑定先于 MessageHandler 转发，公共凭据接口先于 Cron 调度接入。
+`CronScheduler.set_credential_access()`、`CronController.set_credential_access()` 与
+`MessageHandler` 构造参数 `session_login_bindings` 是新的注入接缝。`MessageHandler`
+必须显式注入该接口，不再回退到全局会话主人存储；这是账号绑定，不是 Worker 归属。
+
+测试包括 `test_session_login_bindings.py`、`test_cron_credential_access.py`、
+`test_credential_network_contract.py` 和既有 Cron/登录回归。
+
+## P3-C：配置保存副作用
+
+`application/config_saved_effects.py::ConfigSavedEffectCoordinator` 协调原配置快照、AS reload、
+预热、浏览器重启、proactive Cron 与主题同步副作用。
+`_build_config_saved_callback` 保留薄工厂兼容，`sync_saved_topic_recommendation` 仍可从入口
+导入；旧调用仍可传未使用的 `message_handler` 参数。重试时序、重启决策、请求上下文和
+后台错误处理不变。
+
+个人版 Web/TUI 仍由目标 AgentServer 持久化并 reload；远端保存成功不能调用协调器或二次
+reload。协调器不写配置，不替代 OptionalChannels/CM 更新链。
+测试包括 `test_config_saved_effects.py` 与使用真实工厂的 `test_config_save_legacy_worker.py`。
+
 ## 验证与回退
 
 使用每个 worktree 独立的新 `.venv` 和 develop 未修改的锁文件。先记录基线，再验证每个

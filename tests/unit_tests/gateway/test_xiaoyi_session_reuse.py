@@ -17,6 +17,7 @@ import pytest
 
 from e2a.message import Message, ReqMethod
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 _CONVERSATION_ID = "5a423bc9f2ce471cab9e316d2d06edbf"
 _PHYSICAL_SESSION_ID = "ef130309-65f4-4aa6-9df1-639390ad08cb"
@@ -43,7 +44,7 @@ class _Harness(MessageHandler):
             del MessageHandler._singleton_initialized
         if "_singleton_initialized" in cls.__dict__:
             del cls._singleton_initialized
-        handler = cls(_FakeAgentClient())
+        handler = cls(_FakeAgentClient(), session_login_bindings=NullSessionLoginBindings())
         handler._get_config_raw = lambda: {}  # type: ignore[assignment]
         handler.allocated_session_ids: list[str] = []
 
