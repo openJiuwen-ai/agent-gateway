@@ -9,7 +9,11 @@ from collections.abc import Callable
 import inspect
 import logging
 import time
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent_gateway.auth.credential_access import CredentialUpdateSink
+    from agent_gateway.auth.service import AuthService
 
 from e2a.message import (
     Message, PROMPT_SUGGESTION_READY_EVENT,
@@ -38,6 +42,8 @@ def assemble_web(
     ws_permessage_deflate: bool,
     preprocessor: MessagePreprocessor,
     log_stage: Callable[[str], None],
+    auth_service_provider: Callable[[], AuthService] | None = None,
+    credential_update_sink: CredentialUpdateSink | None = None,
 ) -> tuple[Any, asyncio.Event]:
     from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_listen import register_3rdagent_web_method
     from agent_gateway.channel_manager.web.app_web_handlers import (
@@ -58,6 +64,7 @@ def assemble_web(
     )
     web_channel = WebChannel(
         web_config, _DummyBus(), agent_client=client,
+        auth_service_provider=auth_service_provider, credential_update_sink=credential_update_sink,
     )
     register_3rdagent_web_method(web_channel)
 

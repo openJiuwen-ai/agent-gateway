@@ -17,6 +17,7 @@ from e2a import Message
 
 from agent_gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from agent_gateway.routing.session_sharing import SubRole
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _FakeAgentClient:
@@ -90,13 +91,16 @@ class _TestMessageHandler(MessageHandler):
         setattr(MessageHandler, "_instance", None)
         setattr(cls, "_instance", None)
         _FakeAgentClient.sent_requests = []
-        return cls(_FakeAgentClient())
+        return cls(
+            _FakeAgentClient(),
+            session_login_bindings=NullSessionLoginBindings(),
+        )
 
     @classmethod
     def create_with_client(cls, client: object) -> "_TestMessageHandler":
         setattr(MessageHandler, "_instance", None)
         setattr(cls, "_instance", None)
-        return cls(client)
+        return cls(client, session_login_bindings=NullSessionLoginBindings())
 
     async def cancel_stream_tasks_for_channel(self, msg: Message) -> int:
         return await getattr(self, "_cancel_stream_tasks_for_channel")(msg)

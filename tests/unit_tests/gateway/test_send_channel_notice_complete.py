@@ -14,6 +14,7 @@ import pytest
 
 from e2a.message import EventType
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 class _FakeAgentClient:
@@ -32,7 +33,7 @@ class _TestMessageHandler(MessageHandler):
     def create(cls) -> "_TestMessageHandler":
         setattr(MessageHandler, "_instance", None)
         setattr(cls, "_instance", None)
-        handler = cls(_FakeAgentClient())
+        handler = cls(_FakeAgentClient(), session_login_bindings=NullSessionLoginBindings())
         handler.published = []
         return handler
 

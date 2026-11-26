@@ -31,6 +31,35 @@ _GATEWAY_ONLY: dict[str, str] = {
         "企业连接器广场：协议包尚未发布该成员；Gateway 已 shim 枚举并转发，"
         "南向 path 与 Agent /mcp/actions/sources-providers 对齐"
     ),
+    "skills.import_upload": (
+        "企业版本地 Skill 上传：Gateway 按 Agent 模板开关做门禁并转发到 "
+        "AgentServer 的 multipart 导入端点，协议包尚未把该动作登记为 REST 路由"
+    ),
+    "session.assets.list": (
+        "协议包已定义素材列表方法，尚未登记 HTTP 路由。AgentServer 提供 GET /sessions/{session_id}/assets。"
+    ),
+    "session.assets.register": (
+        "协议包已定义素材登记方法，尚未登记 HTTP 路由。AgentServer 提供 POST /sessions/{session_id}/assets。"
+    ),
+    "session.assets.rename": (
+        "协议包已定义素材改名方法，尚未登记 HTTP 路由。AgentServer 提供 PATCH /sessions/{session_id}/assets/{asset_id}。"
+    ),
+    "a4p.authorization.pending": (
+        "A4P 待授权列表：AgentServer 已提供 GET /a4p/authorization/pending；"
+        "协议包 RUNTIME_HTTP_ROUTES 尚未登记，Gateway 先行对齐南向 path"
+    ),
+    "a4p.authorization.complete": (
+        "A4P 授权确认：AgentServer 已提供 POST /a4p/authorization/actions/complete；"
+        "协议包尚未登记，Gateway 先行对齐南向 path"
+    ),
+    "a4p.authorization.reject": (
+        "A4P 授权拒绝：AgentServer 已提供 POST /a4p/authorization/actions/reject；"
+        "协议包尚未登记，Gateway 先行对齐南向 path"
+    ),
+    "a4p.authorization.reprepare": (
+        "A4P 重新准备授权：AgentServer 已提供 POST /a4p/authorization/actions/reprepare；"
+        "协议包尚未登记，Gateway 先行对齐南向 path"
+    ),
 }
 
 

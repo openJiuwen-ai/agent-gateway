@@ -61,6 +61,7 @@ from agent_gateway.common.config import (
     update_updater_in_config,
 )
 from agent_gateway.common.config_panel import models_handlers
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 from agent_gateway.common.model_catalog import ModelCatalog
 from agent_gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
     build_external_cli_publish_url as _build_external_cli_publish_url,
@@ -710,17 +711,6 @@ _FORWARD_REQ_METHODS = frozenset({
     "proactive.feedback",
 })
 
-# 企业团队控制面方法。个人版进程不把它们放进转发名单。
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     *_JIUWENMATE_FORWARD_METHODS,
     'group.create',
@@ -945,9 +935,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
 })
 
 if not _is_enterprise_edition():
-    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    _FORWARD_REQ_METHODS = _FORWARD_REQ_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     _FORWARD_NO_LOCAL_HANDLER_METHODS = (
-        _FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+        _FORWARD_NO_LOCAL_HANDLER_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     )
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
@@ -5561,8 +5551,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        if enabled is None:
-            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+        # 与 heartbeat toggle 一致：只接受真正的 JSON boolean。
+        # bool({"not":"boolean"}) 为 True，会把禁用任务误启用（TC_SDS_CR_079）。
+        if not isinstance(enabled, bool):
+            await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
         # proactive.tick job 的 enabled 由 config 开关驱动，禁止面板手动切换。
         try:
@@ -5581,7 +5573,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            job = await cc.toggle_job(job_id, bool(enabled), **_cron_owner_ids(ws, user_id, params))
+            job = await cc.toggle_job(job_id, enabled, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
@@ -5955,6 +5947,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # config.get/set/save_all：本仓不携带本地 handler——企业版在
     # invoke.is_enterprise_write_forbidden 统一拦截（配置由管理面下发）；
     # 个人版不带本地 handler，经 E2A 代理到目标 AgentServer（ConfigAdapter）执行。
+    from agent_gateway.common.protocol_methods import ReqMethod as _MemoryReq
+
+    # Always open through the target AgentServer; Gateway owns no memory Runtime.
+    _register_config_proxy("memory.portal.open", _MemoryReq.MEMORY_PORTAL_OPEN)
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL)
@@ -6805,8 +6801,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
 
         # Only the connection identity in envelope.user_id is authoritative.
+        # Enterprise runtime routing still needs the trusted group/bot triple from
+        # the Web connection (HTTP headers / WS attach); without it,
+        # identity_from_envelope raises "Agent routing identity is required".
+        from agent_gateway.common.request_identity import apply_routing_metadata
+
         forwarded_params = dict(params) if isinstance(params, dict) else {}
         forwarded_params.pop("user_id", None)
+        forwarded_params.pop("group_id", None)
+        forwarded_params.pop("bot_id", None)
+        route_metadata = apply_routing_metadata(
+            route_metadata,
+            getattr(ws, "_web_routing", None),
+        )
         env = e2a_from_agent_fields(
             request_id=str(req_id) if req_id else "",
             channel_id="web",
@@ -6853,7 +6860,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and replacement["requestId"] != request_id
         )
         if payload.get("ok") is True and (authorize_completion or replaced):
-            channel.forget_a4p_route(route, request_id)
+            # HTTP Outbound without a WS routing key uses ``route = True`` as a
+            # sentinel so forwarding can proceed; forget only applies to a real
+            # RoutingKey cache entry (``route.user_id`` would raise on bool).
+            from agent_gateway.routing.keys import RoutingKey as _RoutingKey
+
+            if isinstance(route, _RoutingKey):
+                channel.forget_a4p_route(route, request_id)
         await channel.send_response(
             ws,
             req_id,

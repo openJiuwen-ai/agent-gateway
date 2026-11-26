@@ -61,6 +61,8 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.update",
     # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
     "skills.import_local",
+    # 本地 Skill 包直传：由 skill_upload guard 按 Agent 模板开关校验。
+    "skills.import_upload",
     # 按包上传审批：stage 暂存、finalize 安装（finalize 另有 manager 复核）。
     SKILL_UPLOAD_STAGE,
     SKILL_UPLOAD_FINALIZE,
@@ -156,6 +158,12 @@ async def dispatch_web_request(
     from agent_gateway.channel_manager.web.web_connect import (
         _HANDLER_BEFORE_CALLBACK_METHODS,
     )
+    from agent_gateway.common.request_identity import read_agent_identity
+
+    agent_identity = read_agent_identity(
+        user_message.metadata if isinstance(user_message.metadata, dict) else None
+    )
+    agent_template_id = agent_identity.get("agent_template_id")
 
     denial = await enterprise_skill_upload_denial(
         method=method,
@@ -163,6 +171,7 @@ async def dispatch_web_request(
         request_id=request_id,
         authorization=authorization,
         jiuwenclaw_id=jiuwenclaw_id,
+        agent_template_id=agent_template_id,
     )
     if denial is not None:
         error, code = denial
@@ -185,17 +194,24 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
-    if handler is not None and method in getattr(channel, "_local_only_methods", ()):
-        await _invoke_handler(
-            channel, outbound=outbound, method=method, request_id=request_id,
-            params=params, session_id=session_id, handler=handler,
+    if method in getattr(channel, "_local_only_methods", ()):
+        if handler is not None:
+            await _invoke_handler(
+                channel, outbound=outbound, method=method, request_id=request_id,
+                params=params, session_id=session_id, handler=handler,
+            )
+            return
+        # local_only 且未注册本地 handler 的请求不应再进入 bus/回调转发。
+        await channel.send_response(
+            outbound, request_id, ok=False,
+            error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
         )
         return
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None
     )
-    if not routing.get("bot_id"):
+    if is_enterprise() and not routing.get("bot_id"):
         logger.warning(
             "[WebChannel] missing bot_id in metadata.routing method=%s request_id=%s routing=%s",
             method,

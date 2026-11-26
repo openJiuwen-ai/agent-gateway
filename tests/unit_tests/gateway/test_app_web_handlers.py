@@ -57,6 +57,7 @@ class FakeWebChannel:
         self.routing_keys: list[RoutingKey] = []
         self.rebounds: list[tuple[str | None, str]] = []
         self.cleared: list[str | None] = []
+        self.forgotten: list[tuple[object, object]] = []
 
     def register_method(self, name, handler, *, local_only=False):
         self.methods[name] = handler
@@ -89,7 +90,7 @@ class FakeWebChannel:
         return set()
 
     def forget_a4p_route(self, route, request_id):
-        pass
+        self.forgotten.append((route, request_id))
 
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
@@ -453,6 +454,67 @@ async def test_a4p_rpc_uses_current_websocket_route(method, user_id) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    "a4p.authorization.pending",
+    "a4p.authorization.complete",
+    "a4p.authorization.reject",
+    "a4p.authorization.reprepare",
+])
+async def test_a4p_rpc_forwards_web_routing_identity(method) -> None:
+    """Enterprise AS needs group/bot from the trusted Web connection, not params."""
+
+    class _AgentClient:
+        server_ready = True
+
+        def __init__(self) -> None:
+            self.envelope = None
+
+        async def send_request(self, envelope):
+            self.envelope = envelope
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    channel.routing_keys = [RoutingKey(
+        user_id="alice",
+        channel_id="web",
+        app_id="app-1",
+        agent_ref=AgentRef(mode="agent.code.normal", id="coder"),
+        session_id="session-1",
+    )]
+    agent_client = _AgentClient()
+    _bind(channel, agent_client=agent_client)
+    ws = SimpleNamespace(
+        _jiuwen_ws_id="ws-1",
+        _web_connection_user_id="alice",
+        _web_routing={"user_id": "alice", "group_id": "group-1", "bot_id": "bot-1"},
+    )
+
+    await channel.methods[method](
+        ws,
+        "rpc-1",
+        {
+            "requestId": "intent-1",
+            "user_id": "spoofed",
+            "group_id": "spoofed-group",
+            "bot_id": "spoofed-bot",
+        },
+        "session-1",
+        user_id="alice",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert agent_client.envelope.user_id == "alice"
+    assert agent_client.envelope.params == {"requestId": "intent-1"}
+    assert agent_client.envelope.channel_context == {
+        "ws_id": "ws-1",
+        "app_id": "app-1",
+        "agent_ref": {"mode": "agent.code.normal", "id": "coder"},
+        "user_id": "alice",
+        "routing": {"group_id": "group-1", "bot_id": "bot-1"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_a4p_pending_rejects_websocket_without_session_route() -> None:
     channel = _bind(agent_client=SimpleNamespace(server_ready=True))
     await channel.methods["a4p.authorization.pending"](
@@ -479,7 +541,11 @@ async def test_a4p_pending_http_outbound_allows_empty_agent_ref_without_route() 
     channel = FakeWebChannel()
     agent_client = _AgentClient()
     _bind(channel, agent_client=agent_client)
-    ws = SimpleNamespace(_jiuwen_ws_id="http-out-1", is_http_outbound=True)
+    ws = SimpleNamespace(
+        _jiuwen_ws_id="http-out-1",
+        is_http_outbound=True,
+        _web_routing={"user_id": "alice", "group_id": "group-1", "bot_id": "bot-1"},
+    )
 
     await channel.methods["a4p.authorization.pending"](ws, "rpc-1", {}, "session-1")
 
@@ -488,7 +554,44 @@ async def test_a4p_pending_http_outbound_allows_empty_agent_ref_without_route() 
         "ws_id": "http-out-1",
         "app_id": "",
         "agent_ref": {"mode": "", "id": ""},
+        "user_id": "alice",
+        "routing": {"group_id": "group-1", "bot_id": "bot-1"},
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    "a4p.authorization.complete",
+    "a4p.authorization.reject",
+])
+async def test_a4p_http_outbound_complete_without_route_does_not_crash(method) -> None:
+    """HTTP authorize after Agent 200 must not call forget_a4p_route on bool sentinel."""
+
+    class _AgentClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    _bind(channel, agent_client=_AgentClient())
+    ws = SimpleNamespace(
+        _jiuwen_ws_id="http-out-1",
+        is_http_outbound=True,
+        _web_routing={"user_id": "alice", "group_id": "group-1", "bot_id": "bot-1"},
+    )
+
+    await channel.methods[method](
+        ws,
+        "rpc-1",
+        {"requestId": "intent-1"},
+        "session-1",
+        user_id="alice",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.forgotten == []
+    assert channel.rebounds == [("session-1", "http-out-1")]
 
 
 @pytest.mark.asyncio
@@ -3728,3 +3831,26 @@ async def test_task_asr_rejects_invalid_config_protocol(monkeypatch, payload):
     await channel.methods["task.asr.transcribe"](ws, "invalid-config", {}, "session")
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "UPSTREAM_PROTOCOL_ERROR"
+
+
+@pytest.mark.asyncio
+async def test_memory_portal_open_forwards_to_agentserver_with_trusted_connection_identity(monkeypatch):
+    from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
+    client = WebSocketAgentServerClient()
+    client._apply_connection_ack({"payload": {"readiness": "AGENT_READY"}})
+    payload = {"status": "ready", "mode": "sdk", "url": "http://127.0.0.1:12345/portal/#access=synthetic"}
+    send = AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload))
+    monkeypatch.setattr(client, "send_request", send)
+    channel = _bind(agent_client=client)
+    ws = SimpleNamespace(_jiuwen_auth_session="authenticated-session")
+    await channel.methods["memory.portal.open"](
+        ws, "portal-open", {E2A_AUTH_SESSION_PARAM_KEY: "spoofed"}, "settings", "user-42",
+    )
+    send.assert_awaited_once()
+    request = send.call_args.args[0]
+    assert request.method == "memory.portal.open"
+    assert request.user_id == "user-42"
+    assert request.params[E2A_AUTH_SESSION_PARAM_KEY] == "authenticated-session"
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"] == payload

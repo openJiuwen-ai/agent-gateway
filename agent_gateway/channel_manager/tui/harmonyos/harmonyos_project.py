@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +20,7 @@ from typing import Any
 
 from json_repair import loads as json_repair_loads
 
+from agent_gateway.channel_manager.tui.harmonyos._state_file import write_state_json
 from agent_gateway.common.paths import get_workspace_dir
 
 SCHEMA_VERSION = 1
@@ -240,22 +240,7 @@ def persist_harmonyos_project_context(context: dict[str, Any]) -> Path:
     if target.is_symlink():
         raise HarmonyOSProjectError(f"refusing symbolic-link state file: {target}")
 
-    serialized = (
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    )
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{project_id}.", suffix=".tmp", dir=state_dir
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(serialized)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(tmp_name, 0o600)
-        os.replace(tmp_name, target)
-    finally:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
+    write_state_json(target, payload, mode=0o600)
     return target
 
 

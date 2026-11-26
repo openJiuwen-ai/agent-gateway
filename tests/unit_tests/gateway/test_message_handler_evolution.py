@@ -14,6 +14,7 @@ from e2a.message import (
 )
 
 from agent_gateway.message_handler.message_handler import MessageHandler
+from tests._support.null_session_login_bindings import NullSessionLoginBindings
 
 
 _APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
@@ -67,7 +68,7 @@ class _TestMessageHandler(MessageHandler):
         _FakeAgentClient.sent_requests = []
         _FakeAgentClient.sent_stream_requests = []
         _FakeAgentClient.stream_payloads = []
-        return cls(_FakeAgentClient())
+        return cls(_FakeAgentClient(), session_login_bindings=NullSessionLoginBindings())
 
     def seed_pending_evolution_approval(
         self,

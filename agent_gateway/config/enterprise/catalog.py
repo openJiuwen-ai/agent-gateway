@@ -32,6 +32,7 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "expert_package_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "mcp_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "permissions_template": EnterpriseRecordSpec(key_fields=("template_id",)),
+    "execution_guard_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "react_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "agent_template": EnterpriseRecordSpec(key_fields=("template_id",)),
     "a2a_outbound_template": EnterpriseRecordSpec(key_fields=("template_id",)),

@@ -16,6 +16,7 @@ from agent_gateway.common.config import (
     get_config,
 )
 from agent_gateway.common.config_panel import tui_models_handlers
+from agent_gateway.common.enterprise_methods import ENTERPRISE_TEAM_CONTROL_METHODS
 from agent_gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
@@ -387,20 +388,10 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
     }
 )
 
-_ENTERPRISE_TEAM_CONTROL_METHODS = frozenset({
-    "team.create",
-    "team.get",
-    "team.stop",
-    "team.member.join",
-    "team.member.leave",
-    "team.members.list",
-    "team.quota.get",
-})
-
 if not _is_enterprise_edition():
-    CLI_FORWARD_REQ_METHODS = CLI_FORWARD_REQ_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+    CLI_FORWARD_REQ_METHODS = CLI_FORWARD_REQ_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = (
-        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS - _ENTERPRISE_TEAM_CONTROL_METHODS
+        CLI_FORWARD_NO_LOCAL_HANDLER_METHODS - ENTERPRISE_TEAM_CONTROL_METHODS
     )
 
 
@@ -2251,14 +2242,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         if not job_id:
             await channel.send_response(ws, req_id, ok=False, error="id is required", code="BAD_REQUEST")
             return
-        if enabled is None:
-            await channel.send_response(ws, req_id, ok=False, error="enabled is required", code="BAD_REQUEST")
+        if not isinstance(enabled, bool):
+            await channel.send_response(ws, req_id, ok=False, error="enabled must be boolean", code="BAD_REQUEST")
             return
         try:
             owner_ids = _cron_lookup_ids(ws, params, user_id)
             job = await cc.toggle_job(
                 job_id,
-                bool(enabled),
+                enabled,
                 user_id=owner_ids["user_id"],
                 group_id=owner_ids["group_id"],
                 bot_id=owner_ids["bot_id"],
