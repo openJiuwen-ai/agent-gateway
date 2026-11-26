@@ -72,6 +72,47 @@ def _telegram(monkeypatch):
     return instances
 
 
+async def test_disabled_placeholder_channels_do_not_import_their_sdks(monkeypatch):
+    from agent_gateway.application import optional_channels
+
+    prepare = AsyncMock(side_effect=AssertionError('Disabled channel imported an SDK'))
+    monkeypatch.setattr(optional_channels, '_prepare_channel_module', prepare)
+    owner, manager = _owner()
+    owner._im_inbound = SimpleNamespace(unregister_adapter=Mock())
+    owner._im_outbound = SimpleNamespace(unregister_adapter=Mock())
+    try:
+        await manager.set_conf('feishu', {'apps': [{'enabled': False}]})
+        await manager.set_conf('feishu_enterprise', {'bot': {'enabled': False}})
+        await manager.set_conf('xiaoyi', {'apps': [{'enabled': False}]})
+        prepare.assert_not_awaited()
+        assert not manager.get_channels_by_id('feishu')
+    finally:
+        await _close(owner)
+
+
+async def test_optional_import_keeps_loop_responsive_and_joins_on_cancel(monkeypatch):
+    import threading
+    from agent_gateway.application import optional_channels
+
+    entered, release = threading.Event(), threading.Event()
+
+    def load(name):
+        entered.set()
+        assert release.wait(10)
+        return object()
+
+    monkeypatch.setattr(optional_channels, 'import_module', load)
+    task = asyncio.create_task(optional_channels._prepare_channel_module('slow-fixture'))
+    while not entered.is_set():
+        await asyncio.sleep(0.001)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
 def test_import_keeps_optional_sdks_and_entrypoint_unloaded(tmp_path):
     env = os.environ.copy()
     for key in ('JIUWENSWARM_HOME', 'JIUWENSWARM_DATA_DIR', 'AGENTOS_GATEWAY_LOG_DIR'):
