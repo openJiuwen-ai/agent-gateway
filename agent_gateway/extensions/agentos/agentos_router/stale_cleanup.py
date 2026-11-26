@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, nullcontext
 
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.southbound.orchestration.agent_manager import AgentManager
 from agent_gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from agent_gateway.telemetry import (
     bind_cleanup_trace, get_cleanup_result, record_cleanup_result, trace_operation,

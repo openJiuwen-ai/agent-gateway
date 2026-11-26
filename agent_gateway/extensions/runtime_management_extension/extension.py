@@ -12,7 +12,7 @@ from agent_gateway.extensions.runtime_management_extension.runtime_routed_client
 )
 from agent_gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
 from agent_gateway.extensions.types import ExtensionConfig
-from agent_gateway.routing.agent_client import AgentServerClient
+from agent_gateway.common.client.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 

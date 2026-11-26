@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.southbound.orchestration.agent_manager import (
     DEFAULT_AGENT_KEY_FIELDS,
     normalize_agent_key_fields,
 )

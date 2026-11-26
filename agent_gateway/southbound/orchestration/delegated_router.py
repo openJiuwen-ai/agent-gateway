@@ -26,8 +26,8 @@ from agent_gateway.southbound.control.runtime import (
     RetryableRouteError,
     RuntimeSessionRouteClient,
 )
-from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.southbound.data.http_sse import HttpSseConnection
+from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.southbound.data.push_hub import EndpointPushPool
 
 logger = logging.getLogger(__name__)
@@ -334,7 +334,7 @@ class _StreamKeepalive:
     users: int = 1
 
 
-class DelegatedRouter(AgentServerClient):
+class DelegatedRouter(SouthboundAgentClient):
     """查 Runtime Manager 路由，再用 HTTP 客户端把信封发到对应 Pod。"""
 
     agent_client_mode = "runtime"

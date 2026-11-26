@@ -296,19 +296,22 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     monkeypatch.setattr(setup, 'start_gateway_storage', start_storage)
 
     class Client:
+        requires_initial_connection = True
+
         def __init__(self, *, ping_interval=20.0, ping_timeout=600.0):
             events.append('client.created')
             self.connect = AsyncMock(side_effect=lambda uri: events.append('client.connected'))
             self.set_or_update_server_config = Mock()
     monkeypatch.setattr(agent_client, 'WebSocketAgentServerClient', Client)
     class StaticClient:
+        requires_initial_connection = True
+
         def __init__(self, uri, *, shared_directory_layout=False):
             assert uri == 'ws://example/ws'
             events.append('client.created')
             self.connect = AsyncMock(side_effect=lambda uri: events.append('client.connected'))
             self.set_or_update_server_config = Mock()
             self.shared_directory_layout = shared_directory_layout
-    monkeypatch.setattr(southbound_client, 'SouthboundAgentClient', StaticClient)
     monkeypatch.setattr(southbound_client, 'build_static_client', StaticClient)
     selected = SimpleNamespace(connect=AsyncMock(side_effect=lambda uri: events.append('extension.connected')), set_or_update_server_config=Mock())
     extension = SimpleNamespace(metadata=SimpleNamespace(id='external', name='external'), get_client=lambda: selected) if extension_client else None

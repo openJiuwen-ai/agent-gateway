@@ -5,7 +5,7 @@ from __future__ import annotations
 from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.common.client.third_agent import ThirdAgent
 from agent_gateway.common.config import get_config
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from agent_gateway.southbound.orchestration.agent_manager import AgentManager
 from agent_gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
@@ -15,7 +15,7 @@ from agent_gateway.extensions.agentos.agentos_router.config import (
     load_router_config,
 )
 from agent_gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
-from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.southbound.orchestration.managed_router import AgentOSRouterClient
 from agent_gateway.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
 from agent_gateway.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
 from agent_gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
