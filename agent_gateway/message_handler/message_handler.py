@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from abc import ABC
+from collections import OrderedDict
 from dataclasses import dataclass, replace
 from enum import Enum
 from html import escape
@@ -150,6 +151,8 @@ _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
 # runtime streams member events as they happen and has no non-streaming entry
 # point, so the request is refused rather than silently downgraded.
 _SESSION_OWNER_AUTH_WAIT_S = 20.0
+# 会话上下文只服务当前活跃会话，按最久未写入淘汰，避免随会话总数无界增长。
+_SESSION_CONTEXT_LIMIT = 4096
 # The "session owner not logged in or login expired" hint fires on every
 # chat.send for a free-model session without a login, so it is logged at most
 # once per session per window. Module-level state on purpose: MessageHandler is
@@ -451,11 +454,11 @@ class MessageHandler(ABC):
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
         self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
-        self._session_last_user_query: dict[str, str] = {}
+        self._session_last_user_query: OrderedDict[str, str] = OrderedDict()
         # session_id -> 最近一次人类发起请求的 (channel_id, member_name)。
         # team 模式下 file msg 不携带发起者身份（rid 固定为建会话那轮），send_file 定向
         # 投递时按 session_id 取最近发起者兜底（并发时可能取到另一 human，仅投错人不泄漏）。
-        self._session_last_originator: dict[str, tuple[str, str]] = {}
+        self._session_last_originator: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._acp_session_aliases: dict[str, str] = {}  # external_session_id -> internal_session_id
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
@@ -1060,7 +1063,9 @@ class MessageHandler(ABC):
         query = str(msg.params.get("query") or msg.params.get("content") or "").strip()
         if not query:
             return
-        self._session_last_user_query[session_id] = query[:8000]
+        self._remember_session_context(
+            self._session_last_user_query, session_id, query[:8000],
+        )
         # 记录最近人类发起者身份（member_name 由 resolve_member_by_user 注入 msg.metadata），
         # 供 send_file 在 file msg 不携带发起者时按 session_id 反查定向。
         # 排除 GodView：它是通道级自动注册的伪 member，非真实 /join 人类席位，不应作为发起者定向。
@@ -1068,12 +1073,21 @@ class MessageHandler(ABC):
         # last-originator，避免 web 发起时残留上一次 feishu 用户导致文件误投到 feishu。
         origin_member = str((msg.metadata or {}).get("member_name") or "").strip()
         if origin_member and origin_member != SubRole.GODVIEW:
-            self._session_last_originator[session_id] = (
-                str(msg.channel_id or "").strip(),
-                origin_member,
+            self._remember_session_context(
+                self._session_last_originator,
+                session_id,
+                (str(msg.channel_id or "").strip(), origin_member),
             )
         else:
             self._session_last_originator.pop(session_id, None)
+
+    @staticmethod
+    def _remember_session_context(store: OrderedDict[str, Any], key: str, value: Any) -> None:
+        """调用方持有事件循环；重复写入刷新位置，超出上限淘汰最久未写入的会话。"""
+        store.pop(key, None)
+        store[key] = value
+        while len(store) > _SESSION_CONTEXT_LIMIT:
+            store.popitem(last=False)
 
     def _get_session_last_user_query(self, session_id: str | None) -> str:
         if not session_id:
