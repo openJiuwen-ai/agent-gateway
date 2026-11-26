@@ -52,10 +52,10 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AGENT_GATEWAY_HOME` | 用户主目录 | 用户主目录；实例根目录为其下的 `.jiuwenswarm`。旧名 `JIUWENSWARM_HOME` |
-| `AGENT_GATEWAY_DATA_DIR` | 未设置 | 直接指定实例根目录，优先级高于 `AGENT_GATEWAY_HOME`。旧名 `JIUWENSWARM_DATA_DIR` |
+| `AGENT_GATEWAY_HOME` | 用户主目录 | 用户主目录；实例根目录为其下的 `.jiuwenswarm` |
+| `AGENT_GATEWAY_DATA_DIR` | 未设置 | 直接指定实例根目录，优先级高于 `AGENT_GATEWAY_HOME` |
 | `JIUWENSWARM_RUNTIME_WORKSPACE_READY` | 未设置 | 内部标记；由桌面端等父进程设置，避免重复初始化工作区 |
-| `AGENT_GATEWAY_CONFIG_DIR` | 未设置 | Gateway 专用配置目录；文件名固定为 `config.yaml`，未设置时使用 `<config_dir>/config.yaml`，相对路径按配置目录解析；必须在 Gateway 进程启动前设置。旧名 `JIUWENSWARM_GATEWAY_CONFIG_DIR` |
+| `AGENT_GATEWAY_CONFIG_DIR` | 未设置 | Gateway 专用配置目录；文件名固定为 `config.yaml`，未设置时使用 `<config_dir>/config.yaml`，相对路径按配置目录解析；必须在 Gateway 进程启动前设置 |
 | `BROWSER_PROFILE_NAME` | `jiuwenclaw` | 浏览器相关功能的 profile 名称 |
 
 ### 健康检查 / 心跳
@@ -66,32 +66,17 @@
 | `HEALTH_CHECK_TIMEOUT` | 未设置 | 单次检查超时（秒） |
 | `HEALTH_CHECK_RELAY_CHANNEL_ID` / `HEARTBEAT_RELAY_CHANNEL_ID` | `config.yaml` 的 `health_check.target`，否则 `web` | 结果回传频道 |
 
-### 旧名兼容
+### 兼容说明
 
-Gateway 读取环境变量时先读 `AGENT_GATEWAY_*` 新名，未设置时回退到旧名，已有部署无需修改。
+为兼容已有部署，Gateway 仍会读取旧变量名；新部署请使用 `AGENT_GATEWAY_*`。
 
-| 新名 | 旧名 |
-| --- | --- |
-| `AGENT_GATEWAY_HOME` | `JIUWENSWARM_HOME` |
-| `AGENT_GATEWAY_DATA_DIR` | `JIUWENSWARM_DATA_DIR` |
-| `AGENT_GATEWAY_CONFIG_DIR` | `JIUWENSWARM_GATEWAY_CONFIG_DIR` |
-| `AGENT_GATEWAY_DOWNLOAD_ASSET_ROOT` | `JIUWENSWARM_DOWNLOAD_ASSET_ROOT` |
-| `AGENT_GATEWAY_EDITION` | `JIUWENSWARM_EDITION` |
-| `AGENT_GATEWAY_SSL_VERIFY` | `JIUWENSWARM_SSL_VERIFY` |
-| `AGENT_GATEWAY_ENABLE_ORIGIN_CHECK` | `JIUWENSWARM_ENABLE_ORIGIN_CHECK` |
-| `AGENT_GATEWAY_WS_ALLOWED_ORIGIN_HOSTS` | `JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS` |
-| `AGENT_GATEWAY_LOG_MASKING_PROBE` | `JIUWENCLAW_LOG_MASKING_PROBE`、`JIUWENSWARM_LOG_MASKING_PROBE` |
-| `AGENT_GATEWAY_FILE_DOWNLOAD_SECRET` | `JIUWENSWARM_FILE_DOWNLOAD_SECRET` |
-| `AGENT_GATEWAY_REQUEST_EXT_FORWARD_HEADERS` | `JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS`、`JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS` |
-| `AGENT_GATEWAY_SUPERVISOR_PID` | `JIUWENSWARM_SUPERVISOR_PID` |
-
-- 新旧名同时设置且取值不同时：路径类变量（`AGENT_GATEWAY_HOME`、`AGENT_GATEWAY_DATA_DIR`、`AGENT_GATEWAY_CONFIG_DIR`、`AGENT_GATEWAY_DOWNLOAD_ASSET_ROOT`）直接报错；其他变量以新名为准，并在日志中告警一次。空白取值一律视为未设置，会继续回退后面的名字，也不参与冲突比较。
-- 与 JiuwenSwarm 的 AgentServer、启动器一起部署时，请继续使用旧名，或把新旧名设为同一个值。它们目前只认旧名，只设新名会导致两边使用不同的数据目录或密钥。
-- Gateway 写给 AgentServer 的变量（如 `JIUWENSWARM_RUNTIME_PROFILE`、`JIUWENSWARM_AGENTOS_SANDBOX_CONFIG`）仍使用旧名。
+- 新旧名同时设置且取值不同时：路径类变量直接报错；其他变量以新名为准，并告警一次。空白取值一律视为未设置，会继续回退后面的名字。
+- 与 JiuwenSwarm AgentServer 一起部署时，请确保 Gateway 和 AgentServer 使用相同的数据目录、文件下载密钥等共享值。
+- Gateway 注入给 AgentServer 的 JWS 专属变量保持原变量名。
 
 ## 配置文件
 
-默认路径：`$AGENT_GATEWAY_DATA_DIR/config/config.yaml`；未设置 `AGENT_GATEWAY_DATA_DIR` 时为 `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`。旧名同样生效，见上文“旧名兼容”。
+默认路径：`$AGENT_GATEWAY_DATA_DIR/config/config.yaml`；未设置 `AGENT_GATEWAY_DATA_DIR` 时为 `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`。
 
 Gateway 可用 `AGENT_GATEWAY_CONFIG_DIR` 指定独立配置目录；文件名固定为 `config.yaml`，首次缺失时从内置 `config.yaml` 模板初始化，已存在文件不会被覆盖。`logging.yaml` 仍按配置目录读取，不跟随该变量。
 
@@ -116,7 +101,7 @@ health_check:
 | `<root>/.gateway.lock` | 工作区单例锁 |
 | `<root>/profile/agent/home/cron_jobs.json` | 定时任务存储（Gateway 维护） |
 
-其中 `<root>` = `AGENT_GATEWAY_DATA_DIR`（若设置），否则为 `AGENT_GATEWAY_HOME/.jiuwenswarm`；旧名同样生效。
+其中 `<root>` = `AGENT_GATEWAY_DATA_DIR`（若设置），否则为 `AGENT_GATEWAY_HOME/.jiuwenswarm`。
 
 企业版只将 `<root>/profile/` 挂到共享 PVC/NFS；`config/`、`logs/`、`auth/`、`runtime/`
 等系统路径仍位于平铺数据根，并由各 Pod 私有持有，不挂载整个数据根。个人版使用相同

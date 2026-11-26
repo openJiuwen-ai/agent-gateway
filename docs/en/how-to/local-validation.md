@@ -35,12 +35,12 @@ uv sync
 ### 2.1 Workspace isolation (recommended)
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 ```
 
-- The workspace is `$JIUWENSWARM_HOME/.jiuwenswarm` and is initialized on first start (default skills, cron files, and so on); no manual setup is required.
-- Default config path: `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`.
-- Use `JIUWENSWARM_DATA_DIR` for data isolation between instances (this is what `--name` uses on the deployment side).
+- The workspace is `$AGENT_GATEWAY_HOME/.jiuwenswarm` and is initialized on first start (default skills, cron files, and so on); no manual setup is required.
+- Default config path: `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`.
+- Use `AGENT_GATEWAY_DATA_DIR` for data isolation between instances (this is what `--name` uses on the deployment side).
 
 ### 2.2 Ports and downstream address
 
@@ -83,7 +83,7 @@ uv run python examples/mock-agent-server/mock_agent_server.py 19501
 Terminal B:
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1 WEB_PORT=19500 GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=19502
 
@@ -158,7 +158,7 @@ Covered contracts:
 - Streaming proxying: `chat.send` downstream chunks become `chat.delta` / `chat.final` event frames
 - Downstream loss: requests return `SERVICE_UNAVAILABLE` instead of hanging
 
-Each case uses its own temporary `JIUWENSWARM_HOME` and random `WEB_PORT` / `GATEWAY_PORT`, so cases can run in parallel. The `agent-gateway` entry on PATH is used by default; you can override it:
+Each case uses its own temporary workspace and random `WEB_PORT` / `GATEWAY_PORT`, so cases can run in parallel. The `agent-gateway` entry on PATH is used by default; you can override it:
 
 ```bash
 AGENT_GATEWAY_BIN="python -m agent_gateway.app_gateway" uv run python -m pytest st_test/testcases_gateway --no-cov
@@ -192,7 +192,7 @@ ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 | Symptom | Cause / fix |
 |---|---|
 | `ModuleNotFoundError: No module named 'agent_gateway'` | Dependencies are incomplete; run `uv sync` again, or check that you are not bypassing the project venv |
-| Startup reports "Another Gateway is already serving this workspace" | Another gateway is running with the same `JIUWENSWARM_HOME` (`.gateway.lock`); use another directory or stop the old process |
+| Startup reports "Another Gateway is already serving this workspace" | Another gateway is running with the same workspace (`.gateway.lock`); use another directory or stop the old process |
 | Log shows `等待 connection.ack 超时` | The mock did not send `connection.ack`, so `server_ready` stays false and some proxy entries are unavailable |
 | `/api/v1/health` returns 404 in the personal edition | The `/api/v1` routes are mounted only in the enterprise edition; the personal edition exposes just `/ws` on the WebChannel port. Probe readiness by connecting to `/ws` and reading the first `connection.ack` |
 | Startup stalls for ~60s then exits when downstream is unreachable | For loopback addresses (`127.0.0.1` / `localhost` / `::1`) retries are forced to at least 240 (about 60s); the process then exits non-zero. To test the degraded path, connect first and then drop the downstream |
@@ -208,7 +208,7 @@ ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 If a venv with the gateway's dependencies already exists, reuse it instead of creating a new one:
 
 ```bash
-JIUWENSWARM_HOME=/tmp/gw-home \
+AGENT_GATEWAY_HOME=/tmp/gw-home \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501 \
 WEB_PORT=19500 GATEWAY_PORT=19502 \
 PYTHONPATH=/path/to/agent-gateway \
