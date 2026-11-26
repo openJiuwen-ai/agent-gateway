@@ -182,13 +182,18 @@ async def dispatch_http_request(
 
     _routing = resolve_http_routing_identity(hdrs, client_host)
     setattr(outbound, "_web_routing", _routing)
+    # 展示身份是企业版能力：个人版入口不采信（回环或显式开启信任开关
+    # 只影响路由身份，展示身份仍不下发）。
     _agent_identity = (
         normalize_agent_identity(
             {
+                "agent_name": _get_header(hdrs, "X-Agent-Name"),
+                "agent_id": _get_header(hdrs, "X-Agent-Identity-Id"),
+                "runtime_template_id": _get_header(hdrs, "X-Runtime-Template-Id"),
                 "agent_template_id": _get_header(hdrs, "X-Agent-Template-Id"),
             }
         )
-        if trust_tenant_headers
+        if trust_tenant_headers and is_enterprise()
         else {}
     )
     _meta = apply_agent_identity_metadata(
