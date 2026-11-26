@@ -50,7 +50,7 @@ if str(_CONFIG_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_MODULE_DIR))
 
 
-def resolve_env_vars(value: Any) -> Any:
+def resolve_env_vars(value: Any, *, _path: tuple = ()) -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
@@ -106,12 +106,16 @@ def resolve_env_vars(value: Any) -> Any:
         ) or "server_id_scope" in value
         if is_mcp_server_entry:
             return {
-                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v, _path=(*_path, k)))
                 for k, v in value.items()
             }
-        return {k: resolve_env_vars(v) for k, v in value.items()}
+        return {
+            key: (item if key == "image_env" and _path in (("sandbox",), ("gateway", "adx", "builtin_launch"))
+                  else resolve_env_vars(item, _path=(*_path, key)))
+            for key, item in value.items()
+        }
     elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
+        return [resolve_env_vars(item, _path=(*_path, None)) for item in value]
     else:
         return value
 

@@ -3568,6 +3568,10 @@ class AgentOSRouterClient(AgentServerClient):
                 attempt.sandbox = await attempt.create()
         except (TimeoutError, YuanrongAgentTimeoutError, YuanrongAgentCreateUncertainError) as exc:
             await self._replay_or_fail_uncertain_create(lifecycle, attempt, exc)
+        except YuanrongAgentGenerationMismatchError as exc:
+            # This name is owned by a different generation; leave it alone.
+            lifecycle.attempt = None
+            raise AgentRebuildPending("AGENT_REBUILD_PENDING: the sandbox generation did not match") from exc
         except (ValueError, YuanrongAgentApiError) as exc:
             status = getattr(exc, "status_code", None)
             if isinstance(exc, YuanrongAgentApiError) and status == 429:
@@ -3586,6 +3590,16 @@ class AgentOSRouterClient(AgentServerClient):
             lifecycle.attempt = None
             await self._request_sandbox_delete(lifecycle)
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement creation was rejected") from exc
+
+    async def _wait_for_replacement(self, sandbox: SandboxInfo, generation: str, deadline: float) -> None:
+        await self._yuanrong.wait_until_running(
+            sandbox.sandbox_id, expected_generation=generation, deadline=deadline,
+        )
+
+    async def _create_sandbox_for_agent(
+        self, agent_info: AgentInfo, *, web_port: int | None = None, **kwargs: Any,
+    ) -> SandboxInfo:
+        return await self._managed_control.create(SandboxCreateRequest(**kwargs))
 
     async def _provision_sandbox(
         self,
@@ -3634,9 +3648,7 @@ class AgentOSRouterClient(AgentServerClient):
             # changed. Never publish it as a replacement.
             raise AgentRebuildPending("AGENT_REBUILD_PENDING: replacement reused the retired sandbox ID")
         try:
-            await self._yuanrong.wait_until_running(
-                sandbox.sandbox_id, expected_generation=attempt.generation, deadline=deadline,
-            )
+            await self._wait_for_replacement(sandbox, attempt.generation, deadline)
         except YuanrongAgentGenerationMismatchError as exc:
             # Each generation has its own name. A mismatch cannot establish
             # ownership of the instance or justify deleting it.
@@ -3692,6 +3704,7 @@ class AgentOSRouterClient(AgentServerClient):
             # pre-create 错误，避免被缓存为永久 FAILED。
             raise AgentPreCreateError(str(exc)) from exc
         # runtime_spec 获取方式因 agent_type 而异
+        web_port = None
         env_vars: dict[str, str] | None = None
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
             # jiuwenswarm: 不从注册中心获取镜像信息，使用内置 runtime_spec
@@ -3798,13 +3811,13 @@ class AgentOSRouterClient(AgentServerClient):
         namespace = self._managed_control.backend.agent_namespace
 
         async def _create_sandbox_once() -> SandboxInfo:
-            return await self._managed_control.create(SandboxCreateRequest(
-                namespace=namespace,
+            return await self._create_sandbox_for_agent(
+                agent_info, web_port=web_port, namespace=namespace,
                 name=physical_name,
                 workspace=workspace,
                 runtime_spec=runtime_spec,
                 env_vars={**(env_vars or {}), AGENT_GENERATION_ENV: generation},
-            ))
+            )
 
         try:
             async with self._sandbox_lifecycle(logical_name) as lifecycle:

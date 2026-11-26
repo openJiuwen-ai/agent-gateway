@@ -8,48 +8,77 @@ import copy
 import hashlib
 import json
 import logging
+import math
 import uuid
 from typing import Any
 from urllib.parse import quote, urljoin
+from weakref import WeakValueDictionary
 
 import httpx
 
-from agent_gateway.extensions.adx.config import AdxRouterConfig
-from agent_gateway.extensions.yuanrong_frontend_client import (
-    SandboxInfo, YuanrongAgentApiError, YuanrongAgentNotFoundError, YuanrongAgentTimeoutError,
+from agent_gateway.extensions.adx.config import AdxRouterConfig, validate_local_rootfs
+from agent_gateway.extensions.agentos.agentos_router.backend import (
+    SandboxInfo, AgentApiError, AgentTimeoutError,
+    AGENT_GENERATION_ENV, AgentNotFoundError, AgentNotVisibleError,
+    AgentGenerationMismatchError, AgentFailedError, AgentCreateUncertainError,
+    TRACE_ID_HEADER, apply_trace_header, bind_southbound_trace_id,
 )
+from agent_gateway.telemetry import inject_request_headers
 
 
 logger = logging.getLogger(__name__)
 
 
-class AdxControlError(YuanrongAgentApiError):
+def trace_headers(headers: dict[str, str], trace_id: str | None = None) -> dict[str, str]:
+    """Propagate business tracing independently of ADX operation identities."""
+    carrier = inject_request_headers(headers)
+    return apply_trace_header(carrier, carrier.get(TRACE_ID_HEADER) or trace_id)
+
+
+def _resolve_trace_id(trace_id: str | None = None) -> str:
+    return bind_southbound_trace_id(inject_request_headers({}).get(TRACE_ID_HEADER) or trace_id)
+
+
+class AdxControlError(AgentApiError):
     """Environment failure compatible with the existing Gateway lifecycle contract."""
     def __init__(self, message: str, *, code: str = 'SERVICE_UNAVAILABLE',
-                 status_code: int | None = None) -> None:
+                 outcome: str | None = None, status_code: int | None = None) -> None:
         super().__init__(message, status_code=status_code)
         self.code = code
+        self.outcome = outcome
 
 
-class AdxCreateTimeout(AdxControlError, YuanrongAgentTimeoutError):
+class AdxCreateTimeout(AdxControlError, AgentTimeoutError):
     """An unknown create outcome must retain its instance and request identities."""
 
 
-class AdxEnvironmentNotFoundError(AdxControlError, YuanrongAgentNotFoundError):
-    """The Environment API explicitly reports that the instance is absent."""
+class AdxCreateUncertain(AdxControlError, AgentCreateUncertainError):
+    """Preserve the attempted generation when ADX cannot confirm creation."""
+
+
+class AdxGenerationMismatch(AdxControlError, AgentGenerationMismatchError):
+    """The existing Environment is confirmed to belong to another generation."""
+
+
+class AdxEnvironmentNotFoundError(AdxControlError, AgentNotFoundError):
+    """Confirmed native absence satisfies the Gateway retirement fence."""
 
 
 class AdxControlClient:
     def __init__(self, config: AdxRouterConfig, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
         self.config = config
         self.agent_namespace = config.router.agent_namespace
+        self.ingress_url = config.ingress_url
         self.frontend_endpoint = config.ingress_url
         self.server_ready = False
+        self.agent_idle_timeout_seconds = config.router.sandbox_idle_timeout_seconds
         self.http = httpx.AsyncClient(
             timeout=config.connect_timeout_seconds, follow_redirects=False, transport=transport,
         )
         self._creates: dict[str, tuple[str, str]] = {}
         self._deletes: dict[str, str] = {}
+        # Active and waiting operations keep the shared lock alive.
+        self._environment_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
     async def connect(self, uri: str) -> None:
         del uri
@@ -68,17 +97,19 @@ class AdxControlClient:
         del config, env
 
     async def _request(self, method: str, path: str, *, body: dict | None = None,
-                       request_id: str | None = None, params: dict | None = None,
-                       missing_ok: bool = False) -> Any:
-        headers = {'Authorization': 'Bearer ' + self.config.token}
+                       request_id: str | None = None, operation_id: str | None = None, params: dict | None = None,
+                       missing_ok: bool = False, trace_id: str | None = None) -> Any:
+        headers = trace_headers({'Authorization': 'Bearer ' + self.config.token}, trace_id)
         if request_id:
             headers['X-Request-Id'] = request_id
+        if operation_id:
+            headers['X-ADX-Request-ID'] = operation_id
         try:
             response = await self.http.request(method, urljoin(self.config.ingress_url, path),
                                                headers=headers, json=body, params=params)
         except httpx.RequestError as exc:
             error = AdxCreateTimeout if method == 'POST' and path.endswith('/environments') else AdxControlError
-            raise error('ADX operation outcome is unknown; reuse the same instance') from exc
+            raise error('ADX operation outcome is unknown; reuse the same instance', outcome='unknown') from exc
         status = response.status_code
         if missing_ok and status == 404:
             return None
@@ -94,11 +125,16 @@ class AdxControlClient:
         if status >= 300:
             error = value.get('error') if isinstance(value, dict) else None
             code = error.get('code', 'SERVICE_UNAVAILABLE') if isinstance(error, dict) else 'SERVICE_UNAVAILABLE'
-            raise AdxControlError(
-                f'ADX {method} returned HTTP {status}',
-                code=code,
-                status_code=status,
-            )
+            outcome = error.get('outcome') if isinstance(error, dict) else None
+            message = value.get('message') if isinstance(value, dict) else None
+            response_request_id = error.get('requestId') if isinstance(error, dict) else None
+            detail = f'ADX {method} returned HTTP {status}'
+            if isinstance(message, str) and message.strip():
+                detail = f'{detail}: {message}'
+            correlation_id = response_request_id or request_id
+            if correlation_id:
+                detail = f'{detail} (request ID: {correlation_id})'
+            raise AdxControlError(detail, code=code, outcome=outcome, status_code=status)
         if isinstance(value, dict) and 'data' in value and 'code' in value:
             if value['code'] not in (200, 201):
                 raise AdxControlError('ADX operation failed')
@@ -110,9 +146,16 @@ class AdxControlClient:
                 raise AdxControlError('Invalid ADX response envelope') from exc
         return value
 
-    async def _lookup(self, instance: str) -> dict | None:
-        value = await self._request('GET', '/api/instances', params={'instance_id': instance}, missing_ok=True)
+    async def _lookup(self, instance: str, *, trace_id: str | None = None) -> dict | None:
+        observed_delete = self._deletes.get(instance)
+        value = await self._request('GET', '/api/instances', params={'instance_id': instance},
+                                    missing_ok=True, trace_id=trace_id)
         if value is None or value == []:
+            if observed_delete is not None:
+                # Release only the deletion observed before the authoritative GET.
+                async with self._environment_locks.setdefault(instance, asyncio.Lock()):
+                    if self._deletes.get(instance) == observed_delete:
+                        self._forget_environment(instance)
             return None
         if not isinstance(value, list) or len(value) != 1:
             raise AdxControlError('ADX Environment identity or tenant mismatch', code='CONFLICT')
@@ -123,59 +166,122 @@ class AdxControlClient:
         return entry
 
     async def get_agent_info(self, instance_id: str, *, trace_id: str | None = None) -> dict:
-        del trace_id
-        value = await self._lookup(instance_id)
+        trace_id = _resolve_trace_id(trace_id)
+        value = await self._lookup(instance_id, trace_id=trace_id)
         if value is None:
-            self._deletes.pop(instance_id, None)
             raise AdxEnvironmentNotFoundError('ADX Environment not found', code='NOT_FOUND')
         return value
 
-    async def wait_until_running(
-        self,
-        instance_id: str,
-        *,
-        trace_id: str | None = None,
-        expected_generation: str | None = None,
-        deadline: float | None = None,
-    ) -> dict:
-        # The Environment ID embeds the generation in its name, so it cannot belong to another one.
-        del trace_id, expected_generation
+    async def _instance_generation(self, instance: str, value: dict, *, trace_id: str | None = None) -> str | None:
+        generation = (value.get('env_vars') or {}).get(AGENT_GENERATION_ENV)
+        if generation is not None or value.get('status') != 'running':
+            return generation
+        # Tenant instance views may redact env_vars. Read only the lifecycle
+        # marker from this exact running Environment, without an admin key.
         try:
-            timeout = (
-                asyncio.timeout_at(deadline)
-                if deadline is not None
-                else asyncio.timeout(self.config.connect_timeout_seconds)
-            )
-            async with timeout:
+            result = await self.invoke(instance, 'cmd.run', {
+                'cmd': f'printf %s "${AGENT_GENERATION_ENV}"', 'timeout': 5,
+            }, trace_id=trace_id)
+        except AdxControlError:
+            return None
+        if result.get('exit_code') != 0:
+            return None
+        generation = result.get('stdout')
+        return generation.strip() or None if isinstance(generation, str) else None
+
+    async def wait_until_running(self, instance_id: str, *, trace_id: str | None = None,
+                                 expected_generation: str | None = None, deadline: float | None = None,
+                                 confirmed_runtime_id: str | None = None) -> dict:
+        trace_id = _resolve_trace_id(trace_id)
+        loop = asyncio.get_running_loop()
+        expires = deadline if deadline is not None else loop.time() + self.config.connect_timeout_seconds
+        observed = False
+        generation_pending = False
+        try:
+            async with asyncio.timeout_at(expires):
                 while True:
-                    value = await self.get_agent_info(instance_id)
+                    try:
+                        value = await self.get_agent_info(instance_id, trace_id=trace_id)
+                    except AdxEnvironmentNotFoundError:
+                        if expected_generation is None:
+                            raise
+                        await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
+                        continue
+                    observed = True
+                    terminal = value.get('status') in ('failed', 'deleted', 'deleting')
+                    if expected_generation is not None:
+                        generation_pending = True
+                        actual = await self._instance_generation(instance_id, value, trace_id=trace_id)
+                        generation_pending = actual is None
+                        if actual is not None and actual != expected_generation:
+                            raise AgentGenerationMismatchError('ADX Environment generation mismatch')
+                        if actual is None and terminal:
+                            if confirmed_runtime_id and confirmed_runtime_id == value.get('runtime_id'):
+                                raise AgentFailedError('ADX replacement Environment is not available')
+                            # This name alone cannot authorize deletion of another incarnation.
+                            raise AdxCreateUncertain('Terminal ADX Environment ownership is unknown', outcome='unknown')
+                        if actual is None:
+                            await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
+                            continue
                     if value.get('status') in ('running', 'paused', 'pausing', 'resuming'):
                         return value
-                    if value.get('status') in ('failed', 'deleted', 'deleting'):
+                    if terminal:
+                        if expected_generation is not None:
+                            raise AgentFailedError('ADX replacement Environment is not available')
                         raise AdxControlError('ADX Environment is not available')
                     await asyncio.sleep(self.config.router.probes.wait_running_interval_seconds)
         except TimeoutError as exc:
+            if expected_generation is not None and not observed:
+                raise AgentNotVisibleError('ADX replacement Environment is not visible yet') from exc
+            if generation_pending:
+                raise AdxCreateTimeout('Timed out confirming the ADX Environment generation') from exc
             raise AdxCreateTimeout('Timed out waiting for the ADX Environment to become available') from exc
 
+    def resolve_runtime_class(self, runtime_spec: dict, *, builtin: bool) -> str:
+        """Keep deployment defaults for builtin agents and honor custom launch specs."""
+        if builtin:
+            return self.config.runtime_class
+        return runtime_spec.get('sandbox_type') or self.config.runtime_class
+
     def _creation_body(self, namespace: str, name: str, workspace: str, runtime_spec: dict,
-                       env_vars: dict | None, mounts: list | None) -> dict:
+                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None,
+                       web_port: int | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
+        if not isinstance(rootfs, dict):
+            raise ValueError('launch-spec rootfs must be a mapping')
         image = rootfs.get('imageurl') or rootfs.get('image_url')
-        builtin = (
-            spec.get('sandbox_type') == 'supervisor'
-            or name.endswith('+jiuwenswarm')
-        ) and image == 'jiuwenswarm-agent-runtime:latest'
+        if builtin is None:
+            builtin = image == 'jiuwenswarm-agent-runtime:latest' and (
+                spec.get('sandbox_type') == 'supervisor' or name.endswith('+jiuwenswarm')
+            )
+        runtime_class = self.resolve_runtime_class(spec, builtin=builtin)
         if builtin:
             image = self.config.builtin_image
-        if not image:
-            raise ValueError('runtime_spec.rootfs.imageurl is required')
         body = {'namespace': namespace, 'name': name,
-                'rootfs': {'type': 'image', 'imageurl': image, 'runtime': self.config.runtime_class},
-                'inheritEntrypoint': True, 'cpu': spec.get('cpu', 1000), 'memory': spec.get('memory', 2048),
+                'cpu': spec.get('cpu', 1000), 'memory': spec.get('memory', 2048),
                 'env': dict(env_vars or {}),
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
+        local_rootfs = rootfs if rootfs.get('type') == 'local' else None
+        if builtin and self.config.builtin_launch:
+            local_rootfs = self.config.builtin_launch.get('rootfs', local_rootfs)
+        if local_rootfs is not None:
+            validate_local_rootfs(local_rootfs, 'Agent launch specification')
+            body['rootfs'] = {'type': 'local', 'path': local_rootfs['path'], 'runtime': runtime_class}
+        elif image:
+            body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
+            body['inheritEntrypoint'] = True
+        elif not builtin:
+            raise ValueError('Custom Agent launch specification requires an image or Local rootfs')
+        if runtime_class == 'runsc':
+            timeout = self.agent_idle_timeout_seconds
+            if not math.isfinite(timeout):
+                raise ValueError('Agent idle timeout must be finite')
+            seconds = math.ceil(max(0, timeout))
+            if seconds >= 1 << 64:
+                raise ValueError('Agent idle timeout exceeds uint64')
+            body['idleTimeoutSeconds'] = seconds
         if self.config.restart_policy is not None:
             body['restartPolicy'] = dict(self.config.restart_policy)
         process = {}
@@ -187,7 +293,7 @@ class AdxControlClient:
             process['cwd'] = spec['code_path']
         # Some deployments own the builtin command and identity in the image
         # binding. Only that explicit mode omits per-create process overrides.
-        if process and not (builtin and self.config.builtin_process_from_image):
+        if process and not (builtin and image and self.config.builtin_process_from_image):
             body['process'] = process
         for mount in [*rootfs.get('mounts', []), *(mounts or [])]:
             binding = {'type': 'bind', 'host_path': mount['source'], 'target': mount['target'],
@@ -216,69 +322,126 @@ class AdxControlClient:
                 action = probe.get('tcpSocket') or probe.get('httpGet')
                 if action and 'port' in action:
                     ports.append(str(action['port']))
+        if not builtin and web_port is not None:
+            ports.append(str(web_port))
+            body['dataPlane'] = {'portForwardSecurityMode': 'tls'}
         body['ports'] = sorted(set(ports))
+        if builtin and self.config.builtin_launch:
+            launch = self.config.builtin_launch
+            if runtime_class == 'runsc' and 'workspace_mount_options' in launch:
+                options = launch['workspace_mount_options']
+                allowed = {'rw', 'ro', 'nosuid', 'nodev', 'noexec', 'disable_file_handle_sharing'}
+                error = 'builtin workspace_mount_options must be unique writable bind options'
+                if not isinstance(options, list) or not options:
+                    raise ValueError(error)
+                if any(not isinstance(value, str) or value not in allowed for value in options):
+                    raise ValueError(error)
+                if len(set(options)) != len(options) or 'rw' not in options or 'ro' in options:
+                    raise ValueError(error)
+                body['mounts'][0]['options'] = ['rbind', *options]
+            body['process'] = copy.deepcopy(launch['process'])
+            body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
+            body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
+                           **copy.deepcopy(launch.get('env', {}))}
+        if builtin:
+            from agent_gateway.extensions.adx.runtime_config import (
+                managed_sandbox_settings, runtime_environment_settings,
+            )
+            body['env']['JIUWENSWARM_RUNTIME_SETTINGS'] = json.dumps(runtime_environment_settings())
+            body['env']['JIUWENSWARM_AGENTOS_SANDBOX_CONFIG'] = json.dumps(managed_sandbox_settings())
+            body['env']['HOME'] = self.config.workspace_target
+            body['env']['JIUWENSWARM_HOME'] = self.config.workspace_target
+            # The built-in AgentServer authenticates tool requests to the node.
+            body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+        if local_rootfs is not None and not body.get('process', {}).get('commands'):
+            raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
-                             trace_id: str | None = None) -> SandboxInfo:
-        del trace_id
+                             trace_id: str | None = None, builtin: bool | None = None,
+                             web_port: int | None = None) -> SandboxInfo:
+        trace_id = _resolve_trace_id(trace_id)
         instance = f'{namespace}-{name}'
-        existing = await self._lookup(instance)
+        existing = await self._lookup(instance, trace_id=trace_id)
         if existing is not None:
-            return await self._ready_sandbox_info(instance)
+            expected_generation = (env_vars or {}).get(AGENT_GENERATION_ENV)
+            if expected_generation is not None:
+                actual = await self._instance_generation(instance, existing, trace_id=trace_id)
+                if actual is None:
+                    raise AdxCreateUncertain('ADX Environment generation is not visible yet', outcome='unknown')
+                if actual != expected_generation:
+                    raise AdxGenerationMismatch('ADX Environment name belongs to another Agent generation',
+                                                code='CONFLICT', outcome='not_started')
+            return await self._ready_sandbox_info(instance, trace_id=trace_id)
         if instance in self._deletes:
-            # A previous DELETE lost its response. Absence is the confirmation
-            # that permits a new create identity for this stable Environment ID.
-            self._deletes.pop(instance, None)
-            self._creates.pop(instance, None)
-        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts)
+            # Confirmed absence permits a fresh create after an uncertain delete.
+            self._forget_environment(instance)
+        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts,
+                                   builtin=builtin, web_port=web_port)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        previous_operation = self._creates.get(instance)
-        operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
+        previous_attempt = self._creates.get(instance)
+        attempt = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
+        operation, original_digest = attempt
         if digest != original_digest:
             raise AdxControlError('Create specification changed while its outcome is unknown', code='CONFLICT')
         try:
-            result = await self._request(
-                'POST', '/api/environment/v1/environments', body=body, request_id=operation,
-            )
-        except AdxControlError as exc:
-            if getattr(exc, 'status_code', None) == 429 and previous_operation is None:
-                # A first-attempt 429 explicitly rejected this create. Forget
-                # the operation so a later generation does not leave an orphan
-                # _creates entry. On replay, keep it: the earlier POST may have
-                # created the instance even if its response was lost.
-                self._creates.pop(instance, None)
-            raise
+            result = await self._request('POST', '/api/environment/v1/environments', body=body,
+                                         request_id=operation, trace_id=trace_id)
+        except AdxControlError as error:
+            if error.status_code == 429:
+                # The first POST was rejected. A replay can still refer to a live Environment.
+                if previous_attempt is None and self._creates.get(instance) is attempt:
+                    self._creates.pop(instance)
+                raise
+            if error.outcome in ('terminal', 'not_started') or error.code in (
+                'INVALID_ARGUMENT', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'NOT_FOUND',
+            ):
+                if self._creates.get(instance) is attempt:
+                    self._creates.pop(instance)
+                raise
+            raise AdxCreateUncertain(str(error), code=error.code, outcome='unknown',
+                                     status_code=error.status_code) from error
         if not isinstance(result, dict) or result.get('environmentId') != instance:
-            raise AdxControlError('ADX create returned an unexpected Environment ID')
-        return await self._ready_sandbox_info(instance)
+            raise AdxCreateUncertain('ADX create returned an unexpected Environment ID', outcome='unknown')
+        return await self._ready_sandbox_info(instance, trace_id=trace_id)
 
-    async def _ready_sandbox_info(self, instance: str) -> SandboxInfo:
+    async def _ready_sandbox_info(self, instance: str, *, trace_id: str | None = None) -> SandboxInfo:
         # Registry requires placement on the initial POST. Read the actual ADX
         # runtime before publishing the sandbox to the business router.
-        view = await self.wait_until_running(instance)
+        trace_id = _resolve_trace_id(trace_id)
+        attempt = self._creates.get(instance)
+        deadline = asyncio.get_running_loop().time() + self.config.router.probes.wait_running_timeout_seconds
+        view = await self.wait_until_running(instance, trace_id=trace_id, deadline=deadline)
+        if attempt is not None and self._creates.get(instance) is attempt:
+            self._creates.pop(instance)
         metadata = {**view, 'node': view.get('node_ip') or '',
-                    'address': view.get('sandbox_ip') or ''}
+                    'address': view.get('sandbox_ip') or '', 'trace_id': trace_id}
         return SandboxInfo(instance, metadata=metadata)
 
-    async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
-        del trace_id
-        operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
-        await self._request(
-            'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
-            request_id=operation, missing_ok=True,
-        )
-        logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s', sandbox_id, operation)
-        self._deletes.pop(sandbox_id, None)
-        self._creates.pop(sandbox_id, None)
+    def _forget_environment(self, instance: str) -> None:
+        self._creates.pop(instance, None)
+        self._deletes.pop(instance, None)
 
-    async def invoke(self, environment: str, action: str, args: dict) -> dict:
+    async def delete_sandbox(self, sandbox_id: str, *, trace_id: str | None = None) -> None:
+        trace_id = _resolve_trace_id(trace_id)
+        # Keep policy results from repopulating the cache after deletion.
+        async with self._environment_locks.setdefault(sandbox_id, asyncio.Lock()):
+            operation = self._deletes.setdefault(sandbox_id, 'delete-' + uuid.uuid4().hex)
+            await self._request(
+                'DELETE', f'/api/environment/v1/environments/{quote(sandbox_id, safe="")}',
+                request_id=operation, missing_ok=True, trace_id=trace_id,
+            )
+            self._forget_environment(sandbox_id)
+            logger.info('[ADX] environment.delete.ok instance_id=%s request_id=%s trace_id=%s',
+                        sandbox_id, operation, trace_id)
+
+    async def invoke(self, environment: str, action: str, args: dict, *, trace_id: str | None = None) -> dict:
         rid = 'invoke-' + uuid.uuid4().hex
         try:
             response = await self.http.post(
                 urljoin(self.config.ingress_url, f'/direct/{quote(environment, safe="")}/invoke'),
-                headers={'Authorization': 'Bearer ' + self.config.token, 'X-ADX-Request-ID': rid},
+                headers=trace_headers({'Authorization': 'Bearer ' + self.config.token, 'X-ADX-Request-ID': rid}, trace_id),
                 json={'action': action, 'args': args, 'requestId': rid},
             )
         except httpx.RequestError as exc:
