@@ -2,6 +2,7 @@
 
 """Regression tests for Runtime routing errors and reverse RPC affinity."""
 
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -9,7 +10,7 @@ import pytest
 from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.runtime_management_extension import runtime_routed_client as routed
-from agent_gateway.extensions.runtime_management_extension.session_route_client import (
+from agent_gateway.southbound.control.runtime import (
     FatalRouteError,
     RetryableRouteError,
     RuntimeSessionRouteClient,
@@ -58,14 +59,20 @@ async def test_http_429_without_business_code_retries_route(body):
         )
     assert base_url == "http://pod1"
     assert len(requests) == 2
+    assert [json.loads(request.content) for request in requests] == [
+        {"type": "route", "metadata": {
+            "session_id": "s1", "bot_id": "b",
+            "request_id": "r", "user_id": "u", "extra": {"group_id": "g"},
+        }, "rawdata": {}}
+    ] * 2
 
 
-def _reply(session_id):
+def _reply(session_id, rpc_id=1):
     return E2AEnvelope(
         method="acp.tool_response",
         request_id="reply-1",
         session_id=session_id,
-        params={"jsonrpc_id": 1},
+        params={"jsonrpc_id": rpc_id},
     )
 
 
@@ -90,14 +97,15 @@ async def test_reverse_rpc_ambiguous_fallback_preserves_other_sessions(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_reverse_rpc_exact_match_keeps_same_id_in_other_session(monkeypatch):
+@pytest.mark.parametrize("rpc_id", [0, 1])
+async def test_reverse_rpc_exact_match_keeps_same_id_in_other_session(monkeypatch, rpc_id):
     client, http = _client(monkeypatch)
-    client._remember_rpc_origin(("s1", "1"), "http://pod1")
-    client._remember_rpc_origin(("s2", "1"), "http://pod2")
-    envelope = _reply("s2")
+    client._remember_rpc_origin(("s1", str(rpc_id)), "http://pod1")
+    client._remember_rpc_origin(("s2", str(rpc_id)), "http://pod2")
+    envelope = _reply("s2", rpc_id)
     await client.send_request(envelope)
     http.send_request.assert_awaited_once_with(envelope, base_url="http://pod2", timeout=None)
-    assert list(client._rpc_origins) == [("s1", "1")]
+    assert list(client._rpc_origins) == [("s1", str(rpc_id))]
 
 
 @pytest.mark.asyncio
@@ -116,3 +124,48 @@ async def test_reverse_rpc_missing_origin_does_not_send(monkeypatch):
     with pytest.raises(RuntimeError, match="unavailable"):
         await client.send_request(_reply("missing"))
     http.send_request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_session_request_protocol():
+    requests = []
+
+    def respond(request):
+        requests.append((request.url.path, json.loads(request.content)))
+        if request.url.path.endswith("/route"):
+            rawdata = {
+                "pod_id": "pod-1", "pod_sse_url": "http://pod1/sse",
+                "mtls_deployment_id": "deployment", "mtls_binding_id": "binding",
+                "mtls_binding_epoch": 3,
+            }
+        elif request.url.path.endswith("/touch"):
+            rawdata = {"touched": True}
+        else:
+            rawdata = {"action": "rebound"}
+        return httpx.Response(200, json={"ok": True, "rawdata": rawdata})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        route = RuntimeSessionRouteClient(http_client=http)
+        result = await route.route(session_id="s", group_id="g", bot_id="b",
+                                   request_id="r", user_id="u")
+        assert (result.mtls_deployment_id, result.mtls_binding_id,
+                result.mtls_binding_epoch) == ("deployment", "binding", 3)
+        assert await route.touch(session_id="s", request_id="t")
+        await route.rebind(from_session_id="s", to_session_id="new", request_id="x")
+        await route.rebind(from_session_id="s", to_session_id=None, request_id="y")
+
+    assert requests == [
+        ("/api/session/route", {"type": "route", "metadata": {
+            "session_id": "s", "bot_id": "b", "user_id": "u", "request_id": "r",
+            "extra": {"group_id": "g"},
+        }, "rawdata": {}}),
+        ("/api/session/touch", {"type": "touch", "metadata": {
+            "session_id": "s", "request_id": "t",
+        }, "rawdata": {}}),
+        ("/api/session/rebind", {"type": "rebind", "metadata": {
+            "session_id": "s", "request_id": "x",
+        }, "rawdata": {"to": "new"}}),
+        ("/api/session/rebind", {"type": "rebind", "metadata": {
+            "session_id": "s", "request_id": "y",
+        }, "rawdata": {"to": ""}}),
+    ]

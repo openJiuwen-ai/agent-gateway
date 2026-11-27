@@ -11,8 +11,8 @@ from e2a.models import E2AEnvelope
 
 from agent_gateway.extensions.runtime_management_extension import agent_authorization as admission
 from agent_gateway.extensions.runtime_management_extension.invoke_ids import routing_triple_from_envelope
-from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import identity_from_envelope
-from agent_gateway.extensions.runtime_management_extension.session_route_client import FatalRouteError
+from agent_gateway.southbound.orchestration.delegated_router import identity_from_envelope
+from agent_gateway.southbound.control.runtime import FatalRouteError
 
 
 def _envelope(method: str = "chat.send") -> E2AEnvelope:
