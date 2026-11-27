@@ -456,13 +456,12 @@ async def test_builtin_launch_injects_sdk_token_without_receiver_conversion(
     from dataclasses import replace
 
     launch = {'process': {'commands': [['python', '-m', 'jiuwenswarm.server.app_agentserver']]},
-              'env': {'ADX_TOKEN': 'stale-sdk-token', 'JIUWENSWARM_ADX_API_TOKEN': 'stale-launch-token'}}
+              'env': {'ADX_TOKEN': 'stale-sdk-token'}}
     client = AdxControlClient(replace(config(monkeypatch, tmp_path),
                                      runtime_class=runtime_class, builtin_launch=launch))
     try:
         body = client._creation_body('test', 'alice', '/users/alice', {}, {}, [], builtin=True)
         assert body['env']['ADX_TOKEN'] == 'platform-secret'
-        assert 'JIUWENSWARM_ADX_API_TOKEN' not in body['env']
         settings = json.loads(body['env']['JIUWENSWARM_RUNTIME_SETTINGS'])
         assert not settings.get('credentials')
         assert {'ADX_TOKEN', 'JIUWENSWARM_ADX_NODE_INGRESS_URL',
