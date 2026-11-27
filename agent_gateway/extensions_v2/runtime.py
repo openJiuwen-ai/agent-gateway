@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from openjiuwen.core.events import (
@@ -71,29 +71,34 @@ from agent_gateway.extensions_v2.webui.host_settings import HOST_METHODS
 from agent_gateway.extensions_v2.webui.presentation_control import RESULT_METHOD
 from agent_gateway.common.system_plugin_recovery import begin_system_plugin_recovery_session
 
+if TYPE_CHECKING:
+    from agent_gateway.extensions_v2.management.install_state import ExtensionInstallState
+
 logger = logging.getLogger(__name__)
 
 #: A frame must never be blocked by an extension for longer than this.
 REQUEST_TIMEOUT_S = 5.0
 
 
-def _has_pending_gateway_work(store: Any) -> bool:
+def _has_pending_gateway_work(store: ExtensionInstallState) -> bool:
     """True while this host still has a copy to load or release."""
 
+    packages, bundles = store.record_snapshot()
     if any(
         record.domain == "gateway"
         and (
             (record.enabled and record.status == "pending")
             or record.status == "uninstalling"
         )
-        for record in store.packages()
+        for record in packages
     ):
         return True
-    if any(bundle.status == "uninstalling" for bundle in store.bundles()):
-        return True
     return any(
-        member.enabled and member.status == "pending" and member.domain == "gateway"
-        for member in store.bundle_members()
+        bundle.status == "uninstalling" or any(
+            member.enabled and member.status == "pending" and member.domain == "gateway"
+            for member in bundle.member_records
+        )
+        for bundle in bundles
     )
 
 

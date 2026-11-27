@@ -60,7 +60,7 @@ class AgentOSSshKeyIssuer:
         except ImportError as exc:
             raise RuntimeError(
                 "SSH ephemeral key issuance requires optional dependency "
-                "`asyncssh>=2.14.0,<2.24`. Install with "
+                "`asyncssh>=2.24.0`. Install with "
                 '`uv sync --extra ssh` / `pip install "agent-gateway[ssh]"`.'
             ) from exc
 

@@ -50,7 +50,7 @@ if str(_CONFIG_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_MODULE_DIR))
 
 
-def resolve_env_vars(value: Any) -> Any:
+def resolve_env_vars(value: Any, *, _path: tuple = ()) -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
@@ -106,12 +106,16 @@ def resolve_env_vars(value: Any) -> Any:
         ) or "server_id_scope" in value
         if is_mcp_server_entry:
             return {
-                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v, _path=(*_path, k)))
                 for k, v in value.items()
             }
-        return {k: resolve_env_vars(v) for k, v in value.items()}
+        return {
+            key: (item if key == "image_env" and _path in (("sandbox",), ("gateway", "adx", "builtin_launch"))
+                  else resolve_env_vars(item, _path=(*_path, key)))
+            for key, item in value.items()
+        }
     elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
+        return [resolve_env_vars(item, _path=(*_path, None)) for item in value]
     else:
         return value
 
@@ -158,31 +162,36 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
 # request path. Deliberately not caching past the parse keeps env var changes
 # (``load_dotenv_runtime`` runs with override=True before some reads) taking
 # effect immediately, so this needs no explicit invalidation hook.
-_YAML_PARSE_CACHE: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+_YamlStamp = tuple[int, int, int, int]
+_YAML_PARSE_CACHE: dict[str, tuple[_YamlStamp, dict[str, Any]]] = {}
 _YAML_PARSE_CACHE_LOCK = threading.Lock()
 
 
-def _yaml_file_stamp(filepath: Path) -> tuple[int, int] | None:
-    """Return the identity a cached parse of this file is keyed on.
+def _yaml_stamp_from_stat(stat_result: os.stat_result) -> _YamlStamp | None:
+    """Return a cache identity from stat data; skip caching without a file ID."""
+    if not stat_result.st_ino:
+        return None
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_mtime_ns,
+        stat_result.st_size,
+    )
 
-    Args:
-        filepath: YAML file to stamp.
 
-    Returns:
-        ``(mtime_ns, size)``, or None when the file cannot be stat'd — in which
-        case the caller must not use or populate the cache.
-    """
+def _yaml_file_stamp(filepath: Path) -> _YamlStamp | None:
+    """Return the identity used for the cache lookup before opening the file."""
     try:
         stat_result = filepath.stat()
     except OSError:
         return None
-    return stat_result.st_mtime_ns, stat_result.st_size
+    return _yaml_stamp_from_stat(stat_result)
 
 
 def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     """读取 YAML，遇解析错误重试（应对跨进程写竞态）。
 
-    解析结果按文件身份（mtime + size）缓存；调用方会就地修改返回值
+    解析结果按文件标识、修改时间和大小缓存；调用方会就地修改返回值
     （``_normalize_config`` 即是），故命中与写入缓存时都做深拷贝，
     保证各调用方拿到互不影响的副本。
 
@@ -195,7 +204,7 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     """
     if filepath == get_config_file() and not filepath.exists():
         # 落盘配置缺失时回退读包内模板：模板资源名固定为 config.yaml（历史
-        # 资源名，未随落盘名 config-gateway.yaml 改名），见 docker/update_conf.py
+        # 资源名，未随落盘名 config-gateway.yaml 改名），见 docker/jiuwenswarm-ee/update_conf.py
         filepath = get_bundled_resources_dir() / "config.yaml"
     stamp = _yaml_file_stamp(filepath)
     cache_key = str(filepath)
@@ -208,10 +217,15 @@ def _read_with_retry(filepath: Path, max_attempts: int = 3) -> dict[str, Any]:
     for attempt in range(max_attempts):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
+                # The path may have been replaced since the lookup or between retries.
+                try:
+                    parsed_stamp = _yaml_stamp_from_stat(os.fstat(f.fileno()))
+                except OSError:
+                    parsed_stamp = None
                 parsed = yaml.safe_load(f) or {}
-            if stamp is not None:
+            if parsed_stamp is not None:
                 with _YAML_PARSE_CACHE_LOCK:
-                    _YAML_PARSE_CACHE[cache_key] = (stamp, deepcopy(parsed))
+                    _YAML_PARSE_CACHE[cache_key] = (parsed_stamp, deepcopy(parsed))
             return parsed
         except yaml.YAMLError:
             if attempt < max_attempts - 1:

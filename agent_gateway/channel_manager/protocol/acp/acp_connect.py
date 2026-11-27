@@ -805,6 +805,7 @@ class AcpChannel(BaseChannel):
             await self._clear_request_context(request_id)
         self._known_sessions.clear()
         self._active_prompt_request_by_session.clear()
+        self._session_ctx.clear()
         self._pending_client_rpc_session_by_id.clear()
         await self._close_gateway_connection()
 

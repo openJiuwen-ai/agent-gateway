@@ -179,7 +179,6 @@ XIAOYI_TLS_VERIFY_ENV = "XIAOYI_TLS_VERIFY"
 XIAOYI_CA_BUNDLE_ENV = "XIAOYI_CA_BUNDLE"
 _FALSY_TLS_VALUES = {"0", "false", "no", "off"}
 
-
 def _is_ip_host(host: str | None) -> bool:
     """Return True when ``host`` is a literal IPv4/IPv6 address."""
     if not host:
@@ -1474,7 +1473,7 @@ class XiaoyiChannel(BaseChannel):
 
         # Mark session as active
         self._mark_session_active(session_id)
-        self._session_task_map[task_id] = session_id
+        self._remember_session_task(task_id, session_id)
 
         # ==================== PROCESS PARTS (TEXT & FILES) ====================
         text = ""
@@ -1787,6 +1786,23 @@ class XiaoyiChannel(BaseChannel):
         """检查会话是否有活跃任务."""
         return session_id in self._session_active
 
+    def _remember_session_task(self, task_id: str, session_id: str) -> None:
+        """记录 task_id 到 session_id 的映射."""
+        if not task_id:
+            return
+        self._session_task_map[task_id] = session_id
+
+    def _forget_session_tasks(self, session_id: str) -> None:
+        """删除某个会话下的全部 task_id 映射（键是 task_id，需按值匹配）."""
+        if not session_id:
+            return
+        for task_id in [
+            task_id
+            for task_id, mapped_session_id in self._session_task_map.items()
+            if mapped_session_id == session_id
+        ]:
+            self._session_task_map.pop(task_id, None)
+
     def _mark_session_active(self, session_id: str) -> None:
         """标记会话为活跃状态."""
         self._session_active.add(session_id)
@@ -1833,7 +1849,7 @@ class XiaoyiChannel(BaseChannel):
     def _force_cleanup_session(self, session_id: str) -> None:
         """强制清理会话."""
         self._sessions_marked_for_cleanup.pop(session_id, None)
-        self._session_task_map.pop(session_id, None)
+        self._forget_session_tasks(session_id)
         self._reset_accumulated_text(session_id)
 
     async def _handle_clear_context(self, message: dict[str, Any]) -> None:

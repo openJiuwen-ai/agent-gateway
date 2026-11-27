@@ -9,12 +9,24 @@ jiuwenswarm，独立安装时同样把第三方日志钉到平铺根目录的 lo
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
 from agent_gateway.common.paths import get_config_dir, get_logs_dir
 
 logger = logging.getLogger(__name__)
+_core_lock = threading.RLock()
+_core_configured = False
+
+
+def ensure_openjiuwen_core_logging() -> None:
+    """Configure once, before SDK-dependent extensions or optional account APIs."""
+    global _core_configured
+    with _core_lock:
+        if not _core_configured:
+            configure_openjiuwen_core_logging(suppress_level=logging.CRITICAL)
+            _core_configured = True
 
 
 def configure_openjiuwen_runtime_logging() -> None:

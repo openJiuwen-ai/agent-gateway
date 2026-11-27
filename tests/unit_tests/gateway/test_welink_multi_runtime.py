@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent_gateway.channel_manager.im_platforms.welink.welink_connect import WelinkChannel, WelinkConfig
+from agent_gateway.channel_manager.im_platforms.welink.welink_reader import write_checkpoint
 
 
 def test_assistants_share_reader_but_have_distinct_channel_keys(tmp_path):
@@ -134,7 +135,7 @@ async def test_retry_after_restart_preserves_invoke_alias_and_completed_targets(
         reader._subscriptions.register(credential, item.config.agent_id, 'g')
     reader._poller = poller()
     reader._pending = [{'message': asdict(message), 'targets': ['ak-a', 'ak-b'], 'target_agents': {'ak-a': 'a', 'ak-b': 'b'}, 'commit': True}]
-    reader._save(reader._pending_path, reader._pending)
+    write_checkpoint(reader._pending_path, reader._pending)
     await reader.scan()
     assert reader._pending
     assert first._deliver.call_args.args[0].message_id == 'invoke-10'
@@ -222,7 +223,7 @@ async def test_canonical_alias_survives_completed_job_and_restart(tmp_path):
     await reader.scan()
     assert not reader._pending
     # A later ordinary poll can still encounter a catchup message after its first job completed.
-    reader._save(reader._pending_path, [job()])
+    write_checkpoint(reader._pending_path, [job()])
     channel._link = None
     restarted = WelinkReader(object(), 'reader', str(tmp_path), 4, channels)
     restarted._poller = poller()

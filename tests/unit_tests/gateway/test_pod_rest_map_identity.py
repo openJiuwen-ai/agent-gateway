@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 from e2a.models import E2AEnvelope
 
-from agent_gateway.extensions.runtime_management_extension import pod_rest_map
+from agent_gateway.southbound.data import rest_map as pod_rest_map
 from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
     assemble_rest_request,
 )

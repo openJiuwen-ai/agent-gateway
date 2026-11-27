@@ -24,7 +24,7 @@ class ManagedControl(Protocol[CreateRequest, Resource, QueryResult]):
     """YuanRong/ADX adapters retain their existing typed resource contracts.
 
     CreateRequest carries the platform-specific namespace, physical name,
-    workspace, runtime spec, environment and mounts. Resource can be the
+    workspace, runtime spec and environment. Resource can be the
     existing SandboxInfo; QueryResult can retain the platform's query shape.
     The manager, not the adapter, owns concurrency and lifecycle decisions.
     Platform errors, including uncertain create and generation mismatch,
@@ -35,8 +35,12 @@ class ManagedControl(Protocol[CreateRequest, Resource, QueryResult]):
 
     async def query(self, instance_id: str) -> QueryResult: ...
 
-    async def delete(self, instance_id: str, *, generation: str) -> None:
-        """Delete only the specified physical instance/generation."""
+    async def delete(self, instance_id: str) -> None:
+        """Delete the exact retired physical instance, never a logical key.
+
+        The manager fences generations before calling this operation; neither
+        platform supports an atomic generation precondition on DELETE.
+        """
         ...
 
 

@@ -109,6 +109,7 @@ def _serialize_mutation(method):
 
     @wraps(method)
     async def serialized(self, *args, **kwargs):
+        await self._wait_for_startup()
         async with self.mutation_lock:
             return await method(self, *args, **kwargs)
 
@@ -128,10 +129,19 @@ class CronController:
         self.mutation_lock = scheduler._lifecycle_mutation_lock
         self._target_channel: CronTargetChannel | None = None
         self._agent_client: Any = None
+        self._startup_waiter = None
         self._credential_access: CredentialAccess | None = None
         # 准入闸门是跨进程 RPC,列表时按项目去重后并发查询,这里限制并发上限,
         # 避免任务/项目很多时一次性打出上百个请求。
         self._gate_concurrency = asyncio.Semaphore(_GATE_QUERY_CONCURRENCY)
+
+    def bind_startup_waiter(self, waiter) -> None:
+        self._startup_waiter = waiter
+
+    async def _wait_for_startup(self) -> None:
+        waiter = getattr(self, "_startup_waiter", None)
+        if waiter is not None:
+            await waiter()
 
     async def _gate_allowed(
         self,
@@ -1038,6 +1048,7 @@ class CronController:
         bot_id: str = "",
         skip_ownership: bool = False,
     ) -> bool:
+        await self._wait_for_startup()
         existing = await self._store.get_job(job_id)
         if existing is None:
             return False
@@ -1134,6 +1145,7 @@ class CronController:
         """
         if is_enterprise():
             _require_enterprise_cron_identity(group_id, bot_id, user_id)
+        await self._wait_for_startup()
         job = await self._store.get_job(job_id)
         if job is None or not self._matches_tenant(
             job, user_id=user_id, group_id=group_id, bot_id=bot_id
@@ -1142,6 +1154,7 @@ class CronController:
         return await self._scheduler.trigger_run_now(job_id)
 
     async def run_now_info(self, job_id: str) -> dict[str, Any]:
+        await self._wait_for_startup()
         return await self._scheduler.trigger_run_now_info(job_id)
 
     def mark_permission_resume_succeeded(self, session_id: str) -> None:

@@ -1,33 +1,68 @@
-# 安全策略
+# 安全策略 (Security Policy)
 
-## 支持范围
+感谢您帮助提升 agent-gateway 的安全性。本文档说明如何报告安全漏洞以及漏洞的处理流程。
 
-安全修复面向最新发布版本。请在报告中注明 Gateway 版本（见 `pyproject.toml`）与运行环境。
+## 支持版本
+
+请以本仓库 **默认分支 / 当前发布标签** 为准进行安全评估与修复；仅维护中的版本线接受安全修复，已过时版本建议升级到最新版本。具体长期支持策略可由维护团队在 Issue 或 Release 说明中补充。
+
+## 安全约束（贡献者须知）
+
+- 禁止硬编码密码 / 密钥 / token；禁止对不可信数据使用 `eval` / `exec` / `pickle.load`
+- 数据源连接串必须去凭据后再进入 artifact / plan / 历史表；凭据只从运行时 config 解析
+- 外部命令一律 `shutil.which()` 取绝对路径执行，禁 `shell=True`
 
 ## 报告漏洞
 
-请勿在公开 Issue 中披露漏洞细节。推荐方式：
+请**勿先公开漏洞细节**，邮件发至 [contact@openjiuwen.com](mailto:contact@openjiuwen.com)，我们将在 3 个工作日内确认，并按 90 天协调披露政策处理。
 
-1. 在 [agent-gateway Issues](https://gitcode.com/openJiuwen/agent-gateway/issues) 创建**私有** Issue，并标记为安全问题；或
-2. 按 [openJiuwen 社区安全漏洞治理及披露](https://gitcode.com/openjiuwen/community/tree/main/contribute/社区安全漏洞治理及披露.md) 中的渠道联系社区安全响应工作组。
+请**勿在公开 Issue、讨论区或代码评论中提交未披露的漏洞细节**（包括可利用代码、PoC）。
 
-报告建议包含：
+按敏感程度选择报告渠道：
 
-- 受影响的版本与部署方式
-- 复现步骤或 PoC
-- 影响评估（信息泄露、权限绕过、拒绝服务等）
-- 已知的缓解措施
+| 渠道 | 适用场景 | 入口 |
+| ---- | -------- | ---- |
+| 安全邮箱（推荐） | 可被利用的漏洞、敏感安全问题 | `contact@openjiuwen.com` |
+| 私密渠道 | 可被利用的漏洞、敏感安全问题 | 通过 GitCode 仓库 `openJiuwen/agent-gateway` 的维护者私信渠道联系；若平台不提供私信，请使用 Issue 模板中的「安全漏洞」模板提交 |
+| Issue | 非敏感的安全加固建议、依赖组件风险讨论 | [https://gitcode.com/openJiuwen/agent-gateway/issues](https://gitcode.com/openJiuwen/agent-gateway/issues) |
 
-请勿在报告中包含真实用户数据、生产环境凭据或第三方系统的敏感信息。
+### 报告内容要求
+
+为便于快速定位与复现，私密报告请尽量包含：
+
+1. **影响范围**：涉及的模块 / 文件 / 版本号（`agent-gateway` 版本或仓库分支）
+2. **漏洞类型**：如命令注入、路径穿越、信息泄露、反序列化等
+3. **复现步骤**：最小可复现的环境、配置与操作序列
+4. **影响评估**：可能的攻击面与后果（机密性 / 完整性 / 可用性）
+5. **修复建议**（可选）
+
+## 响应时限
+
+| 阶段 | 目标时限 |
+| ---- | -------- |
+| 确认收到报告 | 3 个工作日内 |
+| 初步评估（是否为漏洞、严重等级） | 7 个工作日内 |
+| 修复方案与计划 | 评估完成后 5 个工作日内 |
+
+时限为尽力而为的目标，节假日可能顺延；超时未响应可发邮件催办，或通过 Issue 催办（不含漏洞细节）。
 
 ## 处理流程
 
-社区安全响应工作组会验证问题、评估 CVSS 等级、组织修复，并在修复后按负责任的披露原则发布安全公告。详见：
+1. **确认与评估**：维护者确认报告，评定风险等级（safe / low / medium / high / critical）
+2. **修复开发**：在私有分支完成修复与回归测试
+3. **发布**：随下一个 PATCH / MINOR 版本发布安全修复；critical 级别漏洞可发布紧急版本
+4. **披露**：版本发布后，在 [发布页](https://gitcode.com/openJiuwen/agent-gateway/releases) 公开致谢（报告者同意的前提下）
 
-- [社区安全漏洞治理及披露](https://gitcode.com/openjiuwen/community/tree/main/contribute/社区安全漏洞治理及披露.md)
-- [安全公告](https://gitcode.com/openjiuwen/community/tree/main/security/disclosure.md)
-- [网络安全事件管理](https://gitcode.com/openjiuwen/community/tree/main/contribute/网络安全事件管理.md)
+## 披露政策
 
-## 安全设计
+我们遵循 **90 天协调披露** 原则：
 
-Gateway 侧的安全设计（Origin 校验、`user_id` 白名单、认证键清洗、工作区隔离等）见[架构说明](docs/zh/explanation/architecture.md)与 [openJiuwen 安全设计规范](https://gitcode.com/openJiuwen/community/tree/main/contribute/style-guide/openJiuwen-security-design-guide.md)。
+- 修复发布前，请勿公开漏洞细节
+- 我们将在 3 个工作日内确认收到报告，并在协调窗口内推进修复与披露安排
+- 若报告后 90 天内未发布修复，报告者可自行决定是否公开披露（请提前 14 天告知维护者）
+
+## 联系方式
+
+- 安全邮箱：[contact@openjiuwen.com](mailto:contact@openjiuwen.com)
+- 仓库：[https://gitcode.com/openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway)
+- 问题反馈：[https://gitcode.com/openJiuwen/agent-gateway/issues](https://gitcode.com/openJiuwen/agent-gateway/issues)

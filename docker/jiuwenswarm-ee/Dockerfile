@@ -3,11 +3,11 @@ FROM ${BASE_IMAGE}
 
 USER root
 
+# 以下跨仓 ARG（*_REPOS/*_COMMIT/*_BRANCH）企业版由流水线 --build-arg 显式指定，
+# 此处仅为本地构建兜底默认值：改这里对企业版构建无效，勿改（发版值以流水线参数为准）。
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
 ARG AGENT_CORE_COMMIT=f3f8f576164cc405c046e43079c8ad00ee17f0c4
 ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
-# 2bc6e46：协议仓把 e2a/ 迁到 openjiuwen-e2a/，并带上 MULTIMODAL_* 枚举；
-# 旧 d3d1681 + subdirectory=e2a 缺这些字段，gateway 启动会 AttributeError。
 ARG AGENT_PROTOCOL_COMMIT=2bc6e46dedd0336e550a44be39303a2b7650959e
 ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
@@ -64,4 +64,4 @@ ENV HOME=/home/app \
 # 端口：19000=WebChannel(uvicorn)，19001=gateway client face
 EXPOSE 19000 19001
 
-CMD ["/app/agent-gateway/docker/start.sh"]
+CMD ["/app/agent-gateway/docker/jiuwenswarm-ee/start.sh"]
