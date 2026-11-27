@@ -6030,9 +6030,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.restore", _project_restore)
     from agent_gateway.channel_manager.web.lifecycle_handlers import (
         register_lifecycle_handlers,
+        release_session_alias_hook,
     )
     register_lifecycle_handlers(
-        channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller),
+        channel,
+        lambda: _resolve(agent_client),
+        lambda: _resolve(cron_controller),
+        on_session_deleted=release_session_alias_hook(
+            lambda: _resolve(message_handler)
+        ),
     )
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 

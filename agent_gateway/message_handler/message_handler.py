@@ -457,8 +457,13 @@ class MessageHandler(ABC):
         # 投递时按 session_id 取最近发起者兜底（并发时可能取到另一 human，仅投错人不泄漏）。
         self._session_last_originator: dict[str, tuple[str, str]] = {}
         self._acp_session_aliases: dict[str, str] = {}  # external_session_id -> internal_session_id
+        # internal_session_id -> external ids in insertion order. Lets a Session
+        # deletion drop its aliases without scanning the map above, and keeps
+        # the reverse lookup below constant time on the ACP event hot path.
+        self._acp_alias_by_internal: dict[str, dict[str, None]] = {}
         self._acp_session_alias_lock = asyncio.Lock()
         self._external_session_aliases: dict[tuple[str, str], str] = {}
+        self._external_alias_by_internal: dict[str, dict[tuple[str, str], None]] = {}
         self._external_session_alias_lock = asyncio.Lock()
 
         # per-channel 控制状态：支持 \new_session / \mode 指令。
@@ -1086,6 +1091,18 @@ class MessageHandler(ABC):
             return None
         return self._session_last_originator.get(str(session_id))
 
+    def forget_session_aliases(self, session_id: str | None) -> None:
+        """Drop the external-id aliases of a session that no longer exists."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        for external in self._acp_alias_by_internal.pop(sid, {}):
+            if self._acp_session_aliases.get(external) == sid:
+                self._acp_session_aliases.pop(external, None)
+        for key in self._external_alias_by_internal.pop(sid, {}):
+            if self._external_session_aliases.get(key) == sid:
+                self._external_session_aliases.pop(key, None)
+
     def _attach_original_request_to_ask_user_answer(self, msg: "Message") -> "Message":
         if not isinstance(msg.params, dict):
             return msg
@@ -1422,6 +1439,7 @@ class MessageHandler(ABC):
                         msg, ChannelControlState(mode=mode)
                     )
                     self._external_session_aliases[key] = resolved
+                    self._external_alias_by_internal.setdefault(resolved, {})[key] = None
         metadata = dict(msg.metadata or {})
         metadata.setdefault("external_session_id", external_id)
         msg.metadata = metadata
@@ -3497,6 +3515,7 @@ class MessageHandler(ABC):
 
             ensured = await self._ensure_acp_agent_session()
             self._acp_session_aliases[external] = ensured
+            self._acp_alias_by_internal.setdefault(ensured, {})[external] = None
             return ensured, ensured != external
 
     async def _prepare_agent_dispatch_message(self, msg: "Message") -> "Message":
@@ -3545,9 +3564,9 @@ class MessageHandler(ABC):
         if original:
             return original
 
-        for external, internal in self._acp_session_aliases.items():
-            if internal == sid:
-                return external
+        externals = self._acp_alias_by_internal.get(sid)
+        if externals:
+            return next(iter(externals))
         return sid
 
     @staticmethod
