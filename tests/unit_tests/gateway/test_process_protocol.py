@@ -74,6 +74,8 @@ def test_validate_only_checks_expected_identity_fields() -> None:
     [
         ("group_id", 1),
         ("group_id", ""),
+        ("group_id", "a" * 257),
+        ("group_id", "\ud800"),
         ("slot_id", False),
         ("generation", 1.0),
     ],

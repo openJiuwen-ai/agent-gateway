@@ -46,9 +46,13 @@ _ERROR_CODE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*")
 _COMMON_FIELDS = frozenset(
     {"protocol_version", "group_id", "slot_id", "generation", "type"}
 )
+_IDENTITY_FIELDS = frozenset({"group_id", "slot_id", "generation"})
 _MESSAGE_TYPES = frozenset({
     "INIT", "READY", "RUNTIME_READY", "CRON_PREPARED", "CRON_ACTIVATE",
     "CRON_ACTIVE", "STOP", "STOPPED", "FAILED",
+})
+_PID_MESSAGE_TYPES = frozenset({
+    "READY", "RUNTIME_READY", "CRON_PREPARED", "CRON_ACTIVE", "STOPPED", "FAILED",
 })
 _FIELDS_BY_TYPE = {
     "INIT": frozenset(_COMMON_FIELDS),
@@ -61,6 +65,91 @@ _FIELDS_BY_TYPE = {
     "STOPPED": _COMMON_FIELDS | {"pid"},
     "FAILED": _COMMON_FIELDS | {"pid", "error_code"},
 }
+
+
+def _validate_identity(identity: Mapping[str, Any], *, prefix: str = "") -> None:
+    group_id = identity["group_id"]
+    if (
+        not isinstance(group_id, str)
+        or not group_id
+        or len(group_id) > _MAX_GROUP_ID_LENGTH
+        or not _is_utf8_encodable(group_id)
+    ):
+        raise ManagementProtocolError(
+            f"{prefix}group_id must be a non-empty bounded string"
+        )
+
+    slot_id = identity["slot_id"]
+    if type(slot_id) is not int or slot_id < 0:
+        raise ManagementProtocolError(
+            f"{prefix}slot_id must be a non-negative integer"
+        )
+
+    generation = identity["generation"]
+    if type(generation) is not int or generation < 1:
+        raise ManagementProtocolError(
+            f"{prefix}generation must be a positive integer"
+        )
+
+
+def _validate_type_fields(message_type: str, message: Mapping[str, Any]) -> None:
+    if message_type in _PID_MESSAGE_TYPES:
+        pid = message["pid"]
+        if type(pid) is not int or pid <= 0:
+            raise ManagementProtocolError("pid must be a positive integer")
+
+    if message_type == "READY" and message["stage"] != "management_ready":
+        raise ManagementProtocolError("READY stage must be management_ready")
+
+    if message_type == "RUNTIME_READY":
+        runtime_ids = message["runtime_ids"]
+        if type(runtime_ids) is not list or not 1 <= len(runtime_ids) <= _MAX_RUNTIME_COUNT:
+            raise ManagementProtocolError(
+                f"runtime_ids must be a non-empty list of at most {_MAX_RUNTIME_COUNT} entries"
+            )
+        for runtime_id in runtime_ids:
+            if (
+                not isinstance(runtime_id, str)
+                or not runtime_id
+                or len(runtime_id) > _MAX_RUNTIME_ID_LENGTH
+                or not _is_utf8_encodable(runtime_id)
+            ):
+                raise ManagementProtocolError(
+                    "each runtime_id must be a non-empty bounded string"
+                )
+        if len(set(runtime_ids)) != len(runtime_ids):
+            raise ManagementProtocolError("runtime_ids must not contain duplicates")
+
+    if message_type == "FAILED":
+        error_code = message["error_code"]
+        if (
+            not isinstance(error_code, str)
+            or not error_code
+            or len(error_code) > _MAX_ERROR_CODE_LENGTH
+            or not _ERROR_CODE_PATTERN.fullmatch(error_code)
+        ):
+            raise ManagementProtocolError(
+                "error_code must be a bounded machine-readable string"
+            )
+
+
+def _validate_expected_identity(
+    message: Mapping[str, Any],
+    expected: Mapping[str, Any] | None,
+) -> None:
+    if expected is None:
+        return
+    if not isinstance(expected, Mapping):
+        raise ManagementProtocolError("expected identity must be an object")
+    if not _IDENTITY_FIELDS.issubset(expected):
+        raise ManagementProtocolError("expected identity is missing required fields")
+
+    _validate_identity(expected, prefix="expected ")
+    for field in _IDENTITY_FIELDS:
+        if message[field] != expected[field]:
+            raise ManagementProtocolError(
+                f"message {field} does not match expected identity"
+            )
 
 
 def validate_message(message: Any, *, expected: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -83,83 +172,9 @@ def validate_message(message: Any, *, expected: Mapping[str, Any] | None = None)
     if type(protocol_version) is not int or protocol_version != PROTOCOL_VERSION:
         raise ManagementProtocolError(f"unsupported protocol version: {protocol_version!r}")
 
-    group_id = message["group_id"]
-    if (
-        not isinstance(group_id, str)
-        or not group_id
-        or len(group_id) > _MAX_GROUP_ID_LENGTH
-        or not _is_utf8_encodable(group_id)
-    ):
-        raise ManagementProtocolError("group_id must be a non-empty bounded string")
-
-    slot_id = message["slot_id"]
-    if type(slot_id) is not int or slot_id < 0:
-        raise ManagementProtocolError("slot_id must be a non-negative integer")
-
-    generation = message["generation"]
-    if type(generation) is not int or generation < 1:
-        raise ManagementProtocolError("generation must be a positive integer")
-
-    if message_type in {
-        "READY", "RUNTIME_READY", "CRON_PREPARED", "CRON_ACTIVE", "STOPPED", "FAILED",
-    }:
-        pid = message["pid"]
-        if type(pid) is not int or pid <= 0:
-            raise ManagementProtocolError("pid must be a positive integer")
-
-    if message_type == "READY" and message["stage"] != "management_ready":
-        raise ManagementProtocolError("READY stage must be management_ready")
-
-    if message_type == "RUNTIME_READY":
-        runtime_ids = message["runtime_ids"]
-        if type(runtime_ids) is not list or not 1 <= len(runtime_ids) <= _MAX_RUNTIME_COUNT:
-            raise ManagementProtocolError(
-                f"runtime_ids must be a non-empty list of at most {_MAX_RUNTIME_COUNT} entries"
-            )
-        for runtime_id in runtime_ids:
-            if (
-                not isinstance(runtime_id, str)
-                or not runtime_id
-                or len(runtime_id) > _MAX_RUNTIME_ID_LENGTH
-                or not _is_utf8_encodable(runtime_id)
-            ):
-                raise ManagementProtocolError("each runtime_id must be a non-empty bounded string")
-        if len(set(runtime_ids)) != len(runtime_ids):
-            raise ManagementProtocolError("runtime_ids must not contain duplicates")
-
-    if message_type == "FAILED":
-        error_code = message["error_code"]
-        if (
-            not isinstance(error_code, str)
-            or not error_code
-            or len(error_code) > _MAX_ERROR_CODE_LENGTH
-            or not _ERROR_CODE_PATTERN.fullmatch(error_code)
-        ):
-            raise ManagementProtocolError("error_code must be a bounded machine-readable string")
-
-    if expected is not None:
-        if not isinstance(expected, Mapping):
-            raise ManagementProtocolError("expected identity must be an object")
-        expected_fields = {"group_id", "slot_id", "generation"}
-        if not expected_fields.issubset(expected):
-            raise ManagementProtocolError("expected identity is missing required fields")
-        expected_group_id = expected["group_id"]
-        if (
-            not isinstance(expected_group_id, str)
-            or not expected_group_id
-            or len(expected_group_id) > _MAX_GROUP_ID_LENGTH
-            or not _is_utf8_encodable(expected_group_id)
-        ):
-            raise ManagementProtocolError("expected group_id must be a non-empty bounded string")
-        expected_slot_id = expected["slot_id"]
-        if type(expected_slot_id) is not int or expected_slot_id < 0:
-            raise ManagementProtocolError("expected slot_id must be a non-negative integer")
-        expected_generation = expected["generation"]
-        if type(expected_generation) is not int or expected_generation < 1:
-            raise ManagementProtocolError("expected generation must be a positive integer")
-        for field in expected_fields:
-            if message[field] != expected[field]:
-                raise ManagementProtocolError(f"message {field} does not match expected identity")
+    _validate_identity(message)
+    _validate_type_fields(message_type, message)
+    _validate_expected_identity(message, expected)
 
     return message
 
