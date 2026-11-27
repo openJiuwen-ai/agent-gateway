@@ -13,7 +13,11 @@ from ..core.quota import (
     WorkspaceQuotaUsageService,
 )
 from ..schemas.common_schemas import ResponseModel
-from ..schemas.quota_schemas import PolicyUpsertRequest, TeamQuotaPolicyUpsertRequest
+from ..schemas.quota_schemas import (
+    PolicyUpsertRequest,
+    TeamQuotaPolicyUpsertRequest,
+    TeamQuotaUserStopRequest,
+)
 from ..schemas.sync_schemas import make_sync_body
 from .deps import (
     SyncContext,
@@ -103,6 +107,51 @@ async def delete_team_quota_policy(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ResponseModel(code=200, message="success", data=sync_write_data(sync, None))
+
+
+@quota_router.post("/team-quota/orgs/{group_id}/stop", response_model=ResponseModel)
+async def stop_org_teams(group_id: str, sync: VerifySyncEnvelopeOnly):
+    """删除组织后级联停止该组织下的存活团队并释放配额。"""
+    from agent_gateway.enterprise.team.org_cleanup import stop_teams_for_org
+
+    try:
+        stopped = await stop_teams_for_org(group_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ResponseModel(
+        code=200,
+        message="success",
+        data=sync_write_data(sync, {"group_id": group_id, "stopped": stopped}),
+    )
+
+
+TeamQuotaUserStopSyncBody = make_sync_body(
+    "TeamQuotaUserStopSyncBody", TeamQuotaUserStopRequest
+)
+
+
+@quota_router.post("/team-quota/users/{user_id}/stop", response_model=ResponseModel)
+async def stop_user_teams(
+    user_id: str,
+    sync: Annotated[SyncContext, Depends(verify_sync(TeamQuotaUserStopSyncBody))],
+):
+    """用户被删除/移出组织后，停掉其不再归属当前组织的团队并释放配额。"""
+    from agent_gateway.enterprise.team.org_cleanup import stop_teams_for_user
+
+    req = TeamQuotaUserStopRequest.model_validate(sync.business)
+    try:
+        stopped = await stop_teams_for_user(user_id, req.keep_group_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return ResponseModel(
+        code=200,
+        message="success",
+        data=sync_write_data(sync, {"user_id": user_id, "stopped": stopped}),
+    )
 
 
 @quota_router.get("/team-quota/usage", response_model=ResponseModel)
