@@ -19,7 +19,21 @@ from agent_gateway.southbound.orchestration.static_router import StaticRouter
 
 
 class SouthboundAgentClient(AgentServerClient):
-    """Common northbound entry point with explicit deployment capabilities."""
+    """Common northbound entry point with explicit deployment capabilities.
+
+    agent_client_mode identifies the client mode. The runtime selection and
+    Web handlers use "runtime" explicitly; other values describe the client.
+    Extension registration still validates configuration against extension IDs.
+
+    shared_directory_layout indicates a shared single-user directory and is
+    consumed by is_legacy_shared_directory_client in channel handlers.
+    requires_initial_connection tells application.services to connect to the
+    configured URI with retries during startup.
+    managed_routing is consumed by is_agentos_routing_client for managed
+    per-user AgentOS/ADX routing.
+    """
+
+    agent_client_mode: str | None = None
 
     shared_directory_layout = False
     requires_initial_connection = False
@@ -111,7 +125,11 @@ def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> S
 
 
 def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) -> AgentServerClient:
-    """Reuse extension-owned clients and select the default fixed deployment."""
+    """Reuse extension-owned clients and select the default fixed deployment.
+
+    Preserve extension-declared layout capabilities, except for the legacy
+    WebSocket client whose layout is determined by deployment assembly.
+    """
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
     def websocket_factory() -> AgentServerClient:
@@ -122,6 +140,6 @@ def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) ->
         return client
 
     client = resolve_agent_server_client(extension, mode=mode, websocket_factory=websocket_factory)
-    if extension is not None and getattr(client, "requires_initial_connection", False) is True:
+    if extension is not None and isinstance(client, WebSocketAgentServerClient):
         client.shared_directory_layout = False
     return client
