@@ -74,6 +74,7 @@ def start_process(cmd: list[str], env: dict[str, str], log_path: Path) -> subpro
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     finally:
         log_file.close()
@@ -99,11 +100,18 @@ def stop_process(proc: subprocess.Popen) -> None:
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
-        _signal_process_group(proc, signal.SIGKILL)
+        if os.name == "nt":
+            proc.kill()
+        else:
+            _signal_process_group(proc, signal.SIGKILL)
         proc.wait(timeout=5)
 
 
 def _signal_process_group(proc: subprocess.Popen, sig: int) -> None:
+    if os.name == "nt":
+        # Windows has no killpg; descendants are handled by stop_process.
+        proc.send_signal(sig)
+        return
     try:
         os.killpg(proc.pid, sig)
     except (ProcessLookupError, PermissionError):

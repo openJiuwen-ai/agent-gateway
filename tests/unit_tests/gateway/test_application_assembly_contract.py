@@ -81,7 +81,7 @@ async def test_single_web_start_retains_original_stage_order() -> None:
     channel = SimpleNamespace(start=serve, wait_ready=ready, config=SimpleNamespace(host='127.0.0.1', port=0, path='/ws'))
     task = await start_web_core(channel, SimpleNamespace(start_dispatch=dispatch), SimpleNamespace(start=cron), SimpleNamespace(start=update), events.append)
     try:
-        assert events == ['web.start', 'web.ready', 'web_channel_listening', 'dispatch', 'message_dispatch_started', 'cron', 'updater', 'cron_scheduler_started', 'web_core_ready']
+        assert events == ['web.start', 'web.ready', 'web_channel_listening', 'dispatch', 'message_dispatch_started', 'updater', 'web_core_ready']
     finally:
         stopped.set()
         await task
@@ -301,10 +301,12 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
             self.connect = AsyncMock(side_effect=lambda uri: events.append('client.connected'))
             self.set_or_update_server_config = Mock()
     monkeypatch.setattr(agent_client, 'WebSocketAgentServerClient', Client)
-    class StaticClient(Client):
+    class StaticClient:
         def __init__(self, uri, *, shared_directory_layout=False):
             assert uri == 'ws://example/ws'
-            super().__init__()
+            events.append('client.created')
+            self.connect = AsyncMock(side_effect=lambda uri: events.append('client.connected'))
+            self.set_or_update_server_config = Mock()
             self.shared_directory_layout = shared_directory_layout
     monkeypatch.setattr(southbound_client, 'SouthboundAgentClient', StaticClient)
     monkeypatch.setattr(southbound_client, 'build_static_client', StaticClient)
@@ -335,7 +337,7 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     scheduler = SimpleNamespace(set_credential_access=Mock(), start=AsyncMock())
     scheduler_factory = Mock(return_value=scheduler)
     monkeypatch.setattr(cron, 'CronSchedulerService', scheduler_factory)
-    controller = SimpleNamespace(set_credential_access=Mock(), set_on_channels_changed=Mock(), bind_agent_client=Mock())
+    controller = SimpleNamespace(set_credential_access=Mock(), set_on_channels_changed=Mock(), bind_agent_client=Mock(), bind_startup_waiter=Mock())
     monkeypatch.setattr(cron.CronController, 'get_instance', Mock(return_value=controller))
     monkeypatch.setattr(external_providers, 'register', Mock())
     session_bind = Mock()
@@ -388,6 +390,7 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
             selected.connect.assert_awaited_once_with('')
         else:
             retry.assert_awaited_once()
+            assert retry.await_args.args == (value.client, 'ws://example/ws')
             value.client.connect.assert_not_awaited()
     finally:
         for task in (value._hold_release_task, value._cleanup_task):
@@ -413,6 +416,9 @@ async def test_service_shutdown_retains_original_order_and_tolerates_storage_tea
     hold, cleanup = asyncio.create_task(wait('hold')), asyncio.create_task(wait('cleanup'))
     await asyncio.sleep(0)
     services = GatewayServices(*[None for _ in fields(GatewayServices)])
+    services.cron_startup = SimpleNamespace(stop=stop('cron-preparation'))
+    services.extension_manager = SimpleNamespace(shutdown_all_extensions=stop('extensions'))
+    services.extension_registry = SimpleNamespace(aclose=stop('callbacks'))
     services.cron_scheduler = SimpleNamespace(stop=stop('cron'))
     services.channel_manager = SimpleNamespace(stop_dispatch=stop('dispatch'))
     services.heartbeat_service = SimpleNamespace(stop=stop('health'))
@@ -425,7 +431,7 @@ async def test_service_shutdown_retains_original_order_and_tolerates_storage_tea
         raise RuntimeError('unavailable')
     monkeypatch.setattr(setup, 'teardown_gateway_storage_repositories', fail_storage)
     await services.stop()
-    assert events == ['cron', 'dispatch', 'health', 'forwarding', 'client', 'storage', 'hold', 'cleanup']
+    assert events == ['cron-preparation', 'cron', 'dispatch', 'health', 'forwarding', 'extensions', 'callbacks', 'client', 'storage', 'hold', 'cleanup']
 
 
 async def test_web_assembly_keeps_original_instances_and_first_request_gate(monkeypatch: pytest.MonkeyPatch) -> None:
