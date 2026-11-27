@@ -20,6 +20,14 @@ from agent_gateway.channel_manager.web.container_file_http import (
 )
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_gateway_telemetry():
+    """Keep one test's provider from observing later tests' requests."""
+    await telemetry.shutdown_gateway_telemetry()
+    yield
+    await telemetry.shutdown_gateway_telemetry()
+
+
 def _request(headers: dict[str, str]) -> Request:
     return Request({
         "type": "http",
