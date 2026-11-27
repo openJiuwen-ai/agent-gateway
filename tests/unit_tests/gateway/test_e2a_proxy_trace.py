@@ -14,6 +14,13 @@ PARENT_HEX = "b" * 16
 TRACEPARENT = f"00-{TRACE_HEX}-{PARENT_HEX}-01"
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_gateway_telemetry():
+    await telemetry.shutdown_gateway_telemetry()
+    yield
+    await telemetry.shutdown_gateway_telemetry()
+
+
 @pytest.mark.parametrize("header_attr", ["headers", "request_headers"])
 def test_proxy_trace_reads_handshake_headers(monkeypatch, header_attr):
     monkeypatch.setattr(telemetry, "_runtime", None)

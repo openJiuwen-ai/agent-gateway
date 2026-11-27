@@ -13,6 +13,13 @@ CALLER_TRACE_HEX = "6a945399111141118111111111111111"
 UPSTREAM_SPAN_HEX = "b" * 16
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_gateway_telemetry():
+    await telemetry.shutdown_gateway_telemetry()
+    yield
+    await telemetry.shutdown_gateway_telemetry()
+
+
 @pytest.mark.asyncio
 async def test_warmup_traceparent_reaches_adx_create(monkeypatch):
     monkeypatch.setattr(telemetry, "_runtime", None)
