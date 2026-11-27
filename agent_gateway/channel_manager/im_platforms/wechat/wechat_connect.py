@@ -456,6 +456,8 @@ class WechatChannel(BaseChannel):
                 pass
             self._poll_task = None
 
+        self.release_context_tokens()
+
         if self._http:
             await self._http.close()
             self._http = None
@@ -880,6 +882,13 @@ class WechatChannel(BaseChannel):
                 return token
         return str(self._context_tokens.get(user_id) or "").strip()
 
+    def release_context_tokens(self, user_id: str | None = None) -> None:
+        """Drop cached iLink context tokens for one user, or all users when omitted."""
+        if user_id is None:
+            self._context_tokens.clear()
+            return
+        self._context_tokens.pop(str(user_id), None)
+
     def get_metadata(self) -> ChannelMetadata:
         token_preview = (
             self.config.bot_token[:8] + "..."
@@ -928,6 +937,7 @@ class WechatChannel(BaseChannel):
                     self.config.ilink_user_id = str(
                         data.get("ilinkUserId") or data.get("ilink_user_id") or ""
                     )
+                    self.release_context_tokens()
                     logger.info("WechatChannel 已加载本地凭据: %s", cred_path)
                     # 与扫码成功一致：告知前端凭据来源，便于填回表单并「保存」写入 config（而非画二维码）
                     await push_wechat_login_ui(
@@ -1012,6 +1022,7 @@ class WechatChannel(BaseChannel):
                     )
                     self.config.ilink_bot_id = str(status.get("ilink_bot_id") or "")
                     self.config.ilink_user_id = str(status.get("ilink_user_id") or "")
+                    self.release_context_tokens()
                     logger.info("WechatChannel 登录成功")
                     self._save_credentials()
                     await push_wechat_login_ui(

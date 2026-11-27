@@ -5061,6 +5061,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             conf = cm.get_conf("wechat")
             new_conf = clear_wechat_bound_session(conf)
+            # 解绑后旧凭据对应的 iLink context_token 已失效，立即释放缓存。
+            wechat_channel = cm.get_channel("wechat")
+            release = getattr(wechat_channel, "release_context_tokens", None)
+            if callable(release):
+                release()
             await reset_wechat_login_ui_state()
             # 若 YAML 里 bot_token 本就为空，仅删凭据文件时 dict 与上次相同，
             # _should_restart_channel 不会重启，扫码 UI 会一直停在 idle
