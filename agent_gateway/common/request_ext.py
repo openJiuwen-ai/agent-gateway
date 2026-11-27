@@ -3,9 +3,10 @@
 将一个 ``dict[str, Any]`` 从 Channel 入口写入 ``Message.metadata[METADATA_KEY]``，
 由 AgentServer 入口抬升到请求级 ContextVar，供 Agent rail 通过 :func:`get_ext` 读取。
 
-要透传哪些字段由环境变量声明（逗号分隔），两套名字等价，先读 Swarm 名：
+要透传哪些字段由环境变量声明（逗号分隔），三个名字等价，按顺序读取第一个非空值：
 
-- ``JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS``
+- ``AGENT_GATEWAY_REQUEST_EXT_FORWARD_HEADERS``
+- ``JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS``（旧名）
 - ``JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS``（企业 kub 兼容）
 
 运行时可调 :func:`set_forward_headers` 覆盖。载体内的键名与值含义由集成方约定。
@@ -14,10 +15,13 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 from contextvars import ContextVar, Token
 from typing import Any, Mapping
 
+from agent_gateway.common import env_names
+
+# Legacy names, kept for callers/tests that clear them. Reads go through
+# env_names.REQUEST_EXT_FORWARD_HEADERS, which prefers AGENT_GATEWAY_* first.
 ENV_FORWARD_HEADERS = "JIUWENSWARM_REQUEST_EXT_FORWARD_HEADERS"
 ENV_FORWARD_HEADERS_LEGACY = "JIUWENCLAW_REQUEST_EXT_FORWARD_HEADERS"
 METADATA_KEY = "ext"
@@ -75,7 +79,7 @@ def register_forward_headers(names: "list[str]") -> None:
 
 
 def _env_forward_headers() -> "list[str]":
-    raw = os.environ.get(ENV_FORWARD_HEADERS, "") or os.environ.get(ENV_FORWARD_HEADERS_LEGACY, "")
+    raw = env_names.get(env_names.REQUEST_EXT_FORWARD_HEADERS, "")
     if not raw:
         return []
     return [x.strip() for x in raw.split(",") if x.strip()]

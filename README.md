@@ -38,7 +38,7 @@ The gateway builds and runs as its own Python package `agent-gateway` with two e
 | Security                       | WebSocket origin checks, user-id whitelist, explicit stripping of client-forged auth keys, and credentials forwarded only from authenticated channels                                            |
 | Protocol bridges               | ACP, A2A, SSH relay and web proxy channels share the same routing layer                                                                                                                        |
 | Health & heartbeat             | Periodic health checks and heartbeat keep the gateway/AgentServer pair observable and let the supervisor restart a stuck half                                                                   |
-| Multi-instance isolation       | `JIUWENSWARM_HOME` / `JIUWENSWARM_DATA_DIR` isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
+| Multi-instance isolation       | `AGENT_GATEWAY_HOME` / `AGENT_GATEWAY_DATA_DIR` isolate workspaces, and a workspace lock prevents two gateways from serving the same instance                                                        |
 
 ## Attachments and file references
 
@@ -107,7 +107,7 @@ Then start the gateway in another terminal:
 
 ```bash
 # Keep the workspace of this instance separate
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 
 # AgentServer (southbound) and WebChannel (northbound)
 export AGENT_SERVER_HOST=127.0.0.1
@@ -124,7 +124,7 @@ Ready markers in the log:
 - `Uvicorn running on http://127.0.0.1:19000` — WebChannel is up
 - `[Cron] loaded N job(s) from ...` / `background_cleanup: started ...` — cron and background cleanup are running
 
-A `[App] Another Gateway is already serving this workspace` error means another gateway holds the workspace lock; stop it or use a different `JIUWENSWARM_HOME`.
+A `[App] Another Gateway is already serving this workspace` error means another gateway holds the workspace lock; stop it or use a different `AGENT_GATEWAY_HOME`.
 
 For a fully self-contained walkthrough (mock downstream + `chat.send` round trip), see [Quick Start](docs/en/tutorial/01-quick-start.md).
 
@@ -161,17 +161,19 @@ The gateway is stateless with respect to agent execution: everything that touche
 
 | Variable                                          | Default                     | Description                                                    |
 | ------------------------------------------------- | --------------------------- | -------------------------------------------------------------- |
-| `JIUWENSWARM_HOME`                                | `~`                         | Workspace root; the instance directory is `.jiuwenswarm`       |
-| `JIUWENSWARM_DATA_DIR`                            | unset                       | Data directory for multi-instance isolation                    |
+| `AGENT_GATEWAY_HOME`                              | `~`                         | Workspace root; the instance directory is `.jiuwenswarm`. |
+| `AGENT_GATEWAY_DATA_DIR`                          | unset                       | Data directory for multi-instance isolation. |
 | `AGENT_SERVER_URL`                                | derived                     | AgentServer WebSocket URL (highest priority)                   |
 | `AGENT_SERVER_HOST` / `AGENT_SERVER_PORT`         | `127.0.0.1` / `18092`       | Used to build `ws://host:port` when the URL is unset           |
 | `WEB_HOST` / `WEB_PORT` / `WEB_PATH`              | `127.0.0.1` / `19000` / `/ws` | WebChannel (uvicorn) listen address                          |
 | `GATEWAY_HOST` / `GATEWAY_PORT`                   | `127.0.0.1` / `19001`       | TUI route listen address                                       |
 | `AGENT_CONNECT_RETRY` / `AGENT_CONNECT_RETRY_INTERVAL` | `20` / `3`             | Southbound connection retries / interval in seconds            |
 
+See the [CLI and environment reference](docs/en/reference/cli-and-environment.md) for the environment variables. When deployed together with the JiuwenSwarm AgentServer, make sure both sides use the same data directory and secrets.
+
 ### config.yaml
 
-The config file lives at `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`. On a first standalone start, Gateway installs its bundled template when this file is missing; existing user configuration is preserved. To start with every IM channel disabled:
+The config file lives at `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`. On a first standalone start, Gateway installs its bundled template when this file is missing; existing user configuration is preserved. To start with every IM channel disabled:
 
 ```yaml
 channels: {}

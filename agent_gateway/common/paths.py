@@ -8,7 +8,9 @@ Gateway 与母仓共用同一份用户工作区与 ``config`` 目录（配置文
 
 缓存为模块级：若同进程内有人调用母仓的 ``set_user_home`` 改变主目录，本模块
 缓存不会跟随。生产路径由 ``--dotenv/--name`` 早期设置环境变量
-（``JIUWENSWARM_HOME`` / ``JIUWENSWARM_DATA_DIR``）驱动，双方首次解析结果一致。
+（``AGENT_GATEWAY_HOME`` / ``AGENT_GATEWAY_DATA_DIR``，旧名 ``JIUWENSWARM_HOME`` /
+``JIUWENSWARM_DATA_DIR``）驱动，双方首次解析结果一致。母仓目前只认旧名，与母仓
+共用数据根时应继续使用旧名。
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from agent_gateway.common import env_names
+
 logger = logging.getLogger(__name__)
 
 # gateway.log 独立目录开关（与母仓同名的环境变量）
@@ -36,11 +40,11 @@ _workspace_base_dir: Path | None = None
 
 
 def get_user_home() -> Path:
-    """获取用户主目录：缓存 > ``JIUWENSWARM_HOME`` > ``Path.home()``。"""
+    """获取用户主目录：缓存 > ``AGENT_GATEWAY_HOME``（旧名 ``JIUWENSWARM_HOME``）> ``Path.home()``。"""
     global _user_home
     if _user_home is not None:
         return _user_home
-    env_home = os.getenv("JIUWENSWARM_HOME")
+    env_home = env_names.get(env_names.HOME)
     if env_home:
         _user_home = Path(env_home)
         return _user_home
@@ -61,11 +65,11 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
 
 
 def get_user_workspace_dir() -> Path:
-    """获取用户工作区：缓存 > ``JIUWENSWARM_DATA_DIR`` > ``~/.jiuwenswarm``。"""
+    """获取用户工作区：缓存 > ``AGENT_GATEWAY_DATA_DIR``（旧名 ``JIUWENSWARM_DATA_DIR``）> ``~/.jiuwenswarm``。"""
     global _workspace_base_dir
     if _workspace_base_dir is not None:
         return _workspace_base_dir
-    env_workspace = os.getenv("JIUWENSWARM_DATA_DIR")
+    env_workspace = env_names.get(env_names.DATA_DIR)
     if env_workspace:
         _workspace_base_dir = Path(env_workspace)
         return _workspace_base_dir
@@ -136,12 +140,12 @@ def get_config_file() -> Path:
     """获取 Gateway 配置文件路径。
 
     默认 ``<config_dir>/config-gateway.yaml``（gateway 专属配置，与 AgentServer
-    ``config/config.yaml`` 分离）；拆分部署时可用
-    ``JIUWENSWARM_GATEWAY_CONFIG_DIR`` 指定目录，文件名固定为 ``config-gateway.yaml``。
+    ``config/config.yaml`` 分离）；拆分部署时可用 ``AGENT_GATEWAY_CONFIG_DIR``
+    （旧名 ``JIUWENSWARM_GATEWAY_CONFIG_DIR``）指定目录，文件名固定为 ``config-gateway.yaml``。
 
     该环境变量必须在 Gateway 进程启动、config 模块导入前设置，运行中修改不受支持。
     """
-    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    override = (env_names.get(env_names.CONFIG_DIR) or "").strip()
     if override:
         path = Path(override).expanduser()
         if not path.is_absolute():
@@ -157,7 +161,7 @@ def get_env_file() -> Path:
 
     1. AgentOS：``<workspace>/config/.env``，与 AgentServer 共用一份；
     2. 个人版：``<config_dir>/.env``，保持原有行为，不跟随
-       ``JIUWENSWARM_GATEWAY_CONFIG_DIR``。
+       ``AGENT_GATEWAY_CONFIG_DIR``。
 
     AgentOS 的 Gateway/AS 是独立进程，但仍然共用 AS 配置目录下的 env，
     避免运行期配置面板写入后两边 env 漂移。

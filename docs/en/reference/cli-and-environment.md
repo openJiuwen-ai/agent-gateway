@@ -52,9 +52,10 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `JIUWENSWARM_HOME` | user home | User home; the instance root is `.jiuwenswarm` under it |
-| `JIUWENSWARM_DATA_DIR` | unset | Directly sets the instance root; takes priority over `JIUWENSWARM_HOME` |
+| `AGENT_GATEWAY_HOME` | user home | User home; the instance root is `.jiuwenswarm` under it. |
+| `AGENT_GATEWAY_DATA_DIR` | unset | Directly sets the instance root; takes priority over `AGENT_GATEWAY_HOME`. |
 | `JIUWENSWARM_RUNTIME_WORKSPACE_READY` | unset | Internal marker; set by parent processes such as the desktop app to skip duplicate workspace initialization |
+| `AGENT_GATEWAY_CONFIG_DIR` | unset | Gateway-only config directory; the file name is always `config.yaml`, defaulting to `<config_dir>/config.yaml`; relative paths resolve against the config directory; must be set before the Gateway process starts. |
 | `BROWSER_PROFILE_NAME` | `jiuwenclaw` | Profile name for browser-related features |
 
 ### Health check / heartbeat
@@ -65,9 +66,21 @@ Entry points: `agent-gateway` (gateway + channels) and `agent-gateway-acp` (ACP 
 | `HEALTH_CHECK_TIMEOUT` | unset | Timeout per check in seconds |
 | `HEALTH_CHECK_RELAY_CHANNEL_ID` / `HEARTBEAT_RELAY_CHANNEL_ID` | `health_check.target` from `config.yaml`, else `web` | Channel that receives the result |
 
+### Compatibility
+
+For existing deployments, Gateway still reads the legacy variable names; new deployments should use `AGENT_GATEWAY_*`.
+
+- When both names are set to different values, path variables fail at startup; other variables use the new name and log one warning. Blank values count as unset and fall back to the next name.
+- When deployed together with the JiuwenSwarm AgentServer, make sure both sides use the same data directory, file download secret, and other shared values.
+- JWS-specific variables that Gateway injects into the AgentServer keep their original names.
+
 ## Configuration file
 
-Default path: `$JIUWENSWARM_DATA_DIR/config/config.yaml`; when `JIUWENSWARM_DATA_DIR` is unset, `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`.
+Default path: `$AGENT_GATEWAY_DATA_DIR/config/config.yaml`; when `AGENT_GATEWAY_DATA_DIR` is unset, `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`.
+
+Gateway can point at a dedicated config directory with `AGENT_GATEWAY_CONFIG_DIR`; the file name is always `config.yaml`. A missing file is initialized from the bundled `config.yaml` template, and an existing file is never overwritten. `logging.yaml` is still read from the config directory and does not follow this variable.
+
+Set this variable before the Gateway process starts (a systemd drop-in, the launch command, or an early `--dotenv`). `agent_gateway.common.config` binds the config path at import time, so changing the variable while the process runs is not supported and can make reads and writes disagree.
 
 If the file is missing, configuration reads fall back to Gateway’s bundled template. A standalone start installs that template without overwriting existing configuration. Common settings:
 
@@ -88,7 +101,7 @@ health_check:
 | `<root>/.gateway.lock` | Workspace singleton lock |
 | `<root>/profile/agent/home/cron_jobs.json` | Cron job store (maintained by the gateway) |
 
-`<root>` is `JIUWENSWARM_DATA_DIR` when set, otherwise `JIUWENSWARM_HOME/.jiuwenswarm`.
+`<root>` is `AGENT_GATEWAY_DATA_DIR` when set, otherwise `AGENT_GATEWAY_HOME/.jiuwenswarm`.
 
 Enterprise deployments mount only `<root>/profile/` on shared PVC/NFS storage; system
 paths such as `config/`, `logs/`, `auth/`, and `runtime/` stay in the flat data root and

@@ -354,7 +354,7 @@ class LogMaskingEngine:
     ) -> None:
         """从 Gateway 库加载 enabled 规则并刷新**本进程**单例引擎。
 
-        单机版（``JIUWENSWARM_EDITION`` 非企业版）不访问 GDB，直接使用内置规则。
+        单机版（``AGENT_GATEWAY_EDITION`` / ``JIUWENSWARM_EDITION`` 非企业版）不访问 GDB，直接使用内置规则。
         企业版直接读本网关 DB（每网关独立库，不依赖实例 id 绑定）。
         读库走本地 ``enterprise_config.db_queries``，不依赖 ``packages/jiuwenclaw-ee``。
 

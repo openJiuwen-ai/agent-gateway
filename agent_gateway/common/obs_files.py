@@ -20,6 +20,8 @@ from minio import Minio
 from minio.error import S3Error
 from urllib3 import PoolManager, Timeout
 
+from agent_gateway.common import env_names
+
 logger = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
@@ -77,14 +79,16 @@ def _obs_http_client() -> PoolManager:
     # falls back to the default. An explicit opt-out must warn once: this pool
     # carries both SDK uploads and presigned-URL downloads.
     global _ssl_verify_warned
-    verify = os.getenv("JIUWENSWARM_SSL_VERIFY", "true").strip().lower() not in {
+    found = env_names.lookup(env_names.SSL_VERIFY)
+    verify = (found[1] if found else "true").strip().lower() not in {
         "0", "false", "no", "off",
     }
     if not verify and not _ssl_verify_warned:
         _ssl_verify_warned = True
         logger.warning(
-            "OBS TLS certificate verification disabled via JIUWENSWARM_SSL_VERIFY; "
-            "on-path attackers can tamper with OBS uploads/downloads"
+            "OBS TLS certificate verification disabled via %s; "
+            "on-path attackers can tamper with OBS uploads/downloads",
+            found[0] if found else env_names.SSL_VERIFY.name,
         )
     return PoolManager(
         timeout=Timeout(connect=5, read=60), retries=False,

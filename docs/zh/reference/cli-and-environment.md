@@ -52,10 +52,10 @@
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `JIUWENSWARM_HOME` | 用户主目录 | 用户主目录；实例根目录为其下的 `.jiuwenswarm` |
-| `JIUWENSWARM_DATA_DIR` | 未设置 | 直接指定实例根目录，优先级高于 `JIUWENSWARM_HOME` |
+| `AGENT_GATEWAY_HOME` | 用户主目录 | 用户主目录；实例根目录为其下的 `.jiuwenswarm` |
+| `AGENT_GATEWAY_DATA_DIR` | 未设置 | 直接指定实例根目录，优先级高于 `AGENT_GATEWAY_HOME` |
 | `JIUWENSWARM_RUNTIME_WORKSPACE_READY` | 未设置 | 内部标记；由桌面端等父进程设置，避免重复初始化工作区 |
-| `JIUWENSWARM_GATEWAY_CONFIG_DIR` | 未设置 | Gateway 专用配置目录；文件名固定为 `config.yaml`，未设置时使用 `<config_dir>/config.yaml`，相对路径按配置目录解析；必须在 Gateway 进程启动前设置 |
+| `AGENT_GATEWAY_CONFIG_DIR` | 未设置 | Gateway 专用配置目录；文件名固定为 `config.yaml`，未设置时使用 `<config_dir>/config.yaml`，相对路径按配置目录解析；必须在 Gateway 进程启动前设置 |
 | `BROWSER_PROFILE_NAME` | `jiuwenclaw` | 浏览器相关功能的 profile 名称 |
 
 ### 健康检查 / 心跳
@@ -66,11 +66,19 @@
 | `HEALTH_CHECK_TIMEOUT` | 未设置 | 单次检查超时（秒） |
 | `HEALTH_CHECK_RELAY_CHANNEL_ID` / `HEARTBEAT_RELAY_CHANNEL_ID` | `config.yaml` 的 `health_check.target`，否则 `web` | 结果回传频道 |
 
+### 兼容说明
+
+为兼容已有部署，Gateway 仍会读取旧变量名；新部署请使用 `AGENT_GATEWAY_*`。
+
+- 新旧名同时设置且取值不同时：路径类变量直接报错；其他变量以新名为准，并告警一次。空白取值一律视为未设置，会继续回退后面的名字。
+- 与 JiuwenSwarm AgentServer 一起部署时，请确保 Gateway 和 AgentServer 使用相同的数据目录、文件下载密钥等共享值。
+- Gateway 注入给 AgentServer 的 JWS 专属变量保持原变量名。
+
 ## 配置文件
 
-默认路径：`$JIUWENSWARM_DATA_DIR/config/config.yaml`；未设置 `JIUWENSWARM_DATA_DIR` 时为 `$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。
+默认路径：`$AGENT_GATEWAY_DATA_DIR/config/config.yaml`；未设置 `AGENT_GATEWAY_DATA_DIR` 时为 `$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`。
 
-Gateway 可用 `JIUWENSWARM_GATEWAY_CONFIG_DIR` 指定独立配置目录；文件名固定为 `config.yaml`，首次缺失时从内置 `config.yaml` 初始化，已存在文件不会被覆盖。`logging.yaml` 仍按配置目录读取，不跟随该变量。
+Gateway 可用 `AGENT_GATEWAY_CONFIG_DIR` 指定独立配置目录；文件名固定为 `config.yaml`，首次缺失时从内置 `config.yaml` 模板初始化，已存在文件不会被覆盖。`logging.yaml` 仍按配置目录读取，不跟随该变量。
 
 该变量必须在 Gateway 进程启动前注入（systemd/drop-in、启动命令或早期 `--dotenv`）。`agent_gateway.common.config` 会在导入时绑定配置路径，不支持在进程运行中动态修改该变量来切换配置文件；请勿在 import 之后再修改，否则可能出现读写路径不一致。
 
@@ -93,7 +101,7 @@ health_check:
 | `<root>/.gateway.lock` | 工作区单例锁 |
 | `<root>/profile/agent/home/cron_jobs.json` | 定时任务存储（Gateway 维护） |
 
-其中 `<root>` = `JIUWENSWARM_DATA_DIR`（若设置），否则为 `JIUWENSWARM_HOME/.jiuwenswarm`。
+其中 `<root>` = `AGENT_GATEWAY_DATA_DIR`（若设置），否则为 `AGENT_GATEWAY_HOME/.jiuwenswarm`。
 
 企业版只将 `<root>/profile/` 挂到共享 PVC/NFS；`config/`、`logs/`、`auth/`、`runtime/`
 等系统路径仍位于平铺数据根，并由各 Pod 私有持有，不挂载整个数据根。个人版使用相同

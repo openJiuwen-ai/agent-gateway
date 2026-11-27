@@ -13,7 +13,7 @@
 - Skill 正文图片 / 上传等短期令牌仍携带 exp
 - Skill 正文图片 payload: purpose=skill_content_image, name, version, relative_path, exp, sid（无 path）
 - 受管资产令牌额外绑定: asset_id, size, digest, name
-- 密钥来源: 环境变量 JIUWENSWARM_FILE_DOWNLOAD_SECRET 或自动生成并写入共享文件
+- 密钥来源: 环境变量 AGENT_GATEWAY_FILE_DOWNLOAD_SECRET（旧名 JIUWENSWARM_FILE_DOWNLOAD_SECRET）或自动生成并写入共享文件
 """
 
 from __future__ import annotations
@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
+from agent_gateway.common import env_names
+
 if TYPE_CHECKING:
     from agent_gateway.common.verified_download_assets import (
         VerifiedDownloadAsset,
@@ -39,7 +41,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EXPIRES_SECONDS = 600
-_SECRET_ENV_KEY = "JIUWENSWARM_FILE_DOWNLOAD_SECRET"
 _SECRET_FILE_NAME = ".file_download_secret"
 _UPLOAD_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE"
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
@@ -58,7 +59,7 @@ def _get_secret_file_path() -> Path:
 
 
 def _load_or_create_secret() -> str:
-    secret = os.getenv(_SECRET_ENV_KEY)
+    secret = env_names.get(env_names.FILE_DOWNLOAD_SECRET)
     if secret and len(secret) >= 32:
         return secret
 
