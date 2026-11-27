@@ -55,6 +55,7 @@ gateway:
     type: agentos_router
     agent_namespace: default
   adx:
+    # 默认要求 HTTPS。本机回环代理使用 HTTP 时，显式设置 allow_loopback_http: true。
     ingress_url: <<ADX_INGRESS_URL>>
     tenant: <<ADX_TENANT>>
     token_env: ADX_TOKEN

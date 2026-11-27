@@ -38,7 +38,7 @@ def _config(monkeypatch, *, sandbox=None, **overrides):
 
 
 def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
-    config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
+    config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080', allow_loopback_http=True)
     router = AdxRouterClient(config)
     local_url = urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092))
     assert local_url.scheme == 'ws'
@@ -351,17 +351,25 @@ async def test_terminal_environment_is_cleaned_and_next_request_recreates(monkey
 
 
 @pytest.mark.parametrize('url', ['ftp://adx.example', 'https://user:secret@adx.example', 'https://adx.example/path',
-                                  'https://adx.example?token=x', 'https://adx.example/#fragment'])
+                                  'https://adx.example?token=x', 'https://adx.example/#fragment',
+                                  'http://127.0.0.1', 'http://adx.example'])
 def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
     with pytest.raises(ValueError):
         _config(monkeypatch, ingress_url=url)
+
+
+def test_loopback_http_opt_in_excludes_remote_origins(monkeypatch):
+    with pytest.raises(ValueError, match='requires HTTPS'):
+        _config(monkeypatch, ingress_url='http://adx.example', allow_loopback_http=True)
+    assert _config(monkeypatch, ingress_url='http://[::1]', allow_loopback_http=True).ingress_url == 'http://[::1]'
 
 
 @pytest.mark.parametrize('ingress_url', ['https://adx.example', 'http://127.0.0.1:8080'])
 async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch, ingress_url):
     from agent_gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
-    router, _clients = _router(_config(monkeypatch, ingress_url=ingress_url, builtin_image='registry.example/builtin:1'))
+    router, _clients = _router(_config(monkeypatch, ingress_url=ingress_url, allow_loopback_http=True,
+                                       builtin_image='registry.example/builtin:1'))
     spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:2222']},
             'cmds': [['/app/worker', '--serve']], 'code_path': '/work', 'cpu': 500, 'memory': 1024,
             'probes': {'startup': {'tcpSocket': {'port': 2222}, 'failureThreshold': 3}}}

@@ -2,10 +2,9 @@
 
 """ADX Environment control and ingress endpoint metadata."""
 
-import ipaddress
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from agent_gateway.extensions.adx.config import AdxRouterConfig
+from agent_gateway.extensions.adx.config import AdxRouterConfig, is_loopback_ingress
 from agent_gateway.southbound.control.managed import ManagedSandboxControl, SandboxCreateRequest, SandboxInfo
 from agent_gateway.extensions.adx.control_client import AdxControlClient, trace_headers
 
@@ -39,11 +38,7 @@ class AdxControl(ManagedSandboxControl):
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
         scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
-        try:
-            local_ingress = ipaddress.ip_address(origin.hostname).is_loopback
-        except ValueError:
-            local_ingress = origin.hostname == 'localhost'
-        if local_ingress:
+        if is_loopback_ingress(origin.hostname):
             return urlunsplit((scheme, origin.netloc, f'/{quote(instance_id, safe="")}/{port}', '', ''))
         # ADX decodes the query value and the instance segment of its target URN separately.
         target = 'urn:adx:instance:' + quote(instance_id, safe='')

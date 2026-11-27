@@ -2,6 +2,7 @@
 """Deployment settings for Gateway-owned ADX Environments."""
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 from dataclasses import dataclass, field
@@ -70,10 +71,19 @@ def validate_local_rootfs(value: dict, source: str) -> None:
         raise ValueError(f'{source}.rootfs.path cannot contain traversal or control characters')
 
 
+def is_loopback_ingress(host: str) -> bool:
+    if host == 'localhost':
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
-        'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
+        'ingress_url', 'allow_loopback_http', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
         'builtin_process_from_image', 'builtin_launch', 'local_images',
         # Accepted for upgrades; initialization is owned by Enterprise.
@@ -92,6 +102,11 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if parsed.path not in ('', '/') or '?' in url or '#' in url:
         raise ValueError(origin_error)
     parsed.port
+    allow_loopback_http = settings.get('allow_loopback_http', False)
+    if not isinstance(allow_loopback_http, bool):
+        raise ValueError('gateway.adx.allow_loopback_http must be a boolean')
+    if parsed.scheme == 'http' and not (allow_loopback_http and is_loopback_ingress(parsed.hostname)):
+        raise ValueError('gateway.adx.ingress_url requires HTTPS; loopback HTTP requires allow_loopback_http=true')
     env_name = settings.get('token_env')
     token = os.environ.get(env_name, '') if isinstance(env_name, str) else ''
     if not token or not token.isascii() or any(char.isspace() for char in token):
