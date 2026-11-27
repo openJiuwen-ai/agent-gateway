@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 MentionHandler = Callable[["Mention"], Awaitable[bool]]
 _HEARTBEAT_SECONDS = 30.0
 _SLOT_TTL_SECONDS = 480.0
+_DEDUP_WINDOW_SECONDS = 1800.0
 _MENTION_SPACE = re.compile(r"[\u200b-\u200f\ufeff]")
 _MENTION_TOKEN = re.compile(r"@\S+")
 
@@ -69,6 +70,15 @@ class _QaSlot:
     created_at: float
     sender_id: str = ""
     accepted: bool = False
+
+
+@dataclass
+class _DedupAlias:
+    """History message id -> canonical mention id, expiring with its dedup mark."""
+
+    canonical: str
+    created_at: float
+    completed_at: float | None = None
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -202,6 +212,7 @@ class AssistantLink:
         connect: Connect | None = None,
         heartbeat_seconds: float = _HEARTBEAT_SECONDS,
         slot_ttl_seconds: float = _SLOT_TTL_SECONDS,
+        dedup_window_seconds: float = _DEDUP_WINDOW_SECONDS,
         on_delivery_error: Callable[[str, str], None] | None = None,
     ) -> None:
         self._on_delivery_error = on_delivery_error
@@ -210,10 +221,11 @@ class AssistantLink:
         self._connect = connect or _open_socket
         self._heartbeat_seconds = heartbeat_seconds
         self._slot_ttl_seconds = slot_ttl_seconds
+        self._dedup_window_seconds = dedup_window_seconds
         self._commands: queue.Queue[Any] = queue.Queue()
         self._slots: dict[str, _QaSlot] = {}
-        self._aliases: dict[tuple[str, str], str] = {}
-        self._delivered: set[tuple[str, str]] = set()
+        self._aliases: dict[tuple[str, str], _DedupAlias] = {}
+        self._delivered: dict[tuple[str, str], float] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
@@ -232,6 +244,8 @@ class AssistantLink:
         self._thread.start()
 
     def stop(self) -> None:
+        # Dedup marks survive reconnects on purpose: WeLink redelivers mentions
+        # across sessions, and the window bounds their lifetime instead.
         self._stop.set()
         self._close_socket()
         thread = self._thread
@@ -258,24 +272,31 @@ class AssistantLink:
     def claim_polled(self, group_id: str, message_id: str, text: str, *, sender_id: str = "") -> bool:
         """Align one history ID with its mention without replacing the Request's original key."""
         with self._lock:
-            canonical = self._aliases.get((group_id, message_id), message_id)
+            self._prune_dedup_locked(time.monotonic())
+            entry = self._aliases.get((group_id, message_id))
+            canonical = entry.canonical if entry is not None else message_id
             slot = self._slots.get(canonical)
             if slot is not None and slot.group_id == group_id:
                 return slot.accepted
             if (group_id, canonical) in self._delivered:
                 return True
+            aliased = {item.canonical for item in self._aliases.values()}
             matches = [slot for slot in self._slots.values()
                        if slot.group_id == group_id and sender_id and slot.sender_id == sender_id
                        and _same_text(slot.text, text)
-                       and slot.message_id not in self._aliases.values()]
+                       and slot.message_id not in aliased]
             if len(matches) == 1:
-                self._aliases[(group_id, message_id)] = matches[0].message_id
+                self._aliases[(group_id, message_id)] = _DedupAlias(
+                    canonical=matches[0].message_id,
+                    created_at=time.monotonic(),
+                )
                 return matches[0].accepted
         return False
 
     def canonical_message_id(self, group_id: str, message_id: str) -> str:
         with self._lock:
-            return self._aliases.get((group_id, message_id), message_id)
+            entry = self._aliases.get((group_id, message_id))
+            return entry.canonical if entry is not None else message_id
 
     def _run(self) -> None:
         delay = 1.0
@@ -464,7 +485,8 @@ class AssistantLink:
         else:
             # A notice must not consume the task needed for the eventual final answer.
             with self._lock:
-                canonical = self._aliases.get((group_id, source_message_id), source_message_id)
+                entry = self._aliases.get((group_id, source_message_id))
+                canonical = entry.canonical if entry is not None else source_message_id
                 slot = self._slots.get(canonical) if source_message_id else None
                 if slot is None or slot.group_id != group_id:
                     raise AssistantSendError("direct_session_closed")
@@ -481,7 +503,9 @@ class AssistantLink:
                 self._send_raw(socket, frame)
             if source_message_id:
                 with self._lock:
-                    self._delivered.add((group_id, source_message_id))
+                    self._mark_delivered_locked(
+                        group_id, source_message_id, time.monotonic()
+                    )
             return message_id
         if on_prepared is not None:
             on_prepared(slot.reply_message_id, slot.tool_session_id, slot.trace_id)
@@ -511,15 +535,17 @@ class AssistantLink:
             },
         )
         with self._lock:
-            self._delivered.add((group_id, slot.message_id))
+            now = time.monotonic()
+            self._mark_delivered_locked(group_id, slot.message_id, now)
             if source_message_id:
-                self._delivered.add((group_id, source_message_id))
+                self._mark_delivered_locked(group_id, source_message_id, now)
         return slot.reply_message_id
 
     def _take_slot(self, source_message_id: str, group_id: str) -> _QaSlot | None:
         with self._lock:
             if source_message_id:
-                canonical = self._aliases.get((group_id, source_message_id), source_message_id)
+                entry = self._aliases.get((group_id, source_message_id))
+                canonical = entry.canonical if entry is not None else source_message_id
                 slot = self._slots.get(canonical)
                 if slot is not None and slot.group_id == group_id:
                     return self._slots.pop(canonical)
@@ -542,10 +568,27 @@ class AssistantLink:
     def _expire_slots(self, socket: Any) -> None:
         now = time.monotonic()
         with self._lock:
+            self._prune_dedup_locked(now)
             expired = [key for key, slot in self._slots.items() if now - slot.created_at >= self._slot_ttl_seconds]
         for key in expired:
             logger.info("[Welink] mention session closed without a reply message_id=%s", key)
             self._close_slot(socket, key, quiet=True)
+
+    def _mark_delivered_locked(self, group_id: str, message_id: str, now: float) -> None:
+        self._delivered[(group_id, message_id)] = now
+        for key, entry in self._aliases.items():
+            if key[0] == group_id and entry.canonical == message_id:
+                entry.completed_at = now
+
+    def _prune_dedup_locked(self, now: float) -> None:
+        cutoff = now - self._dedup_window_seconds
+        for key, stamp in list(self._delivered.items()):
+            if stamp < cutoff:
+                del self._delivered[key]
+        for key, entry in list(self._aliases.items()):
+            stamp = entry.completed_at if entry.completed_at is not None else entry.created_at
+            if stamp < cutoff:
+                del self._aliases[key]
 
     def _drop_session(self, tool_session_id: str) -> None:
         if not tool_session_id:
