@@ -480,14 +480,16 @@ def test_enterprise_agent_id_conflict_when_connection_pinned(enterprise):
     """连接级 pin agent_id 时，客户端 params 携带不同 agent_id → IDENTITY_CONFLICT。
 
     防止同一连接内 per-request 篡改 agent_id 命中不同配额策略造成配额绕过。
+    受信 agent_id 来自 ``ws._web_agent_identity``（握手期 Manager 写入的展示身份），
+    而非 ``_web_routing``（其字段集合不含 agent_id）。
     """
     ws = SimpleNamespace(
         _web_routing={
             "user_id": "alice",
             "group_id": "__none__",
             "bot_id": "bot-1",
-            "agent_id": "agent-1",
-        }
+        },
+        _web_agent_identity={"agent_id": "agent-1"},
     )
     with pytest.raises(WorkspaceIdentityError) as ei:
         _identity_for_forward(
@@ -506,8 +508,8 @@ def test_enterprise_agent_id_trusted_wins_when_pinned(enterprise):
             "user_id": "alice",
             "group_id": "__none__",
             "bot_id": "bot-1",
-            "agent_id": "agent-1",
-        }
+        },
+        _web_agent_identity={"agent_id": "agent-1"},
     )
     params = {
         "user_id": "alice",
@@ -520,21 +522,27 @@ def test_enterprise_agent_id_trusted_wins_when_pinned(enterprise):
     assert params["agent_id"] == "agent-1"
 
 
-def test_enterprise_agent_id_falls_back_to_params_when_not_pinned(enterprise):
-    """连接级未带 agent_id 时，per-message 客户端值原样采用（不判冲突）。"""
+def test_enterprise_agent_id_empty_when_not_pinned_even_if_client_carries_value(enterprise):
+    """连接级未 pin agent_id 时，返回空串而非客户端值（防配额绕过）。
+
+    若采用客户端 params 中的 ``agent_id``，客户端可在同一已认证连接内 per-request
+    改 ``agent_id`` 命中另一个 Agent 维度的配额策略，绕过该 Agent 的限额上限
+    （issue #224 根因）。故未 pin 时 ``agent_id`` 必须不参与匹配。
+    """
     ws = SimpleNamespace(
         _web_routing={
             "user_id": "alice",
             "group_id": "__none__",
             "bot_id": "bot-1",
-        }
+        },
+        _web_agent_identity=None,
     )
     uid, gid, bid, aid = _identity_for_forward(
         ws,
         {"user_id": "alice", "group_id": "__none__", "bot_id": "bot-1", "agent_id": "agent-x"},
         user_id="alice",
     )
-    assert aid == "agent-x"
+    assert aid == ""
 
 
 def test_personal_agent_id_falls_back_to_params(personal):

@@ -33,7 +33,7 @@ from .key_models import (
     GATEWAY_SIGN_KEYPAIR_TABLE_DEF,
     MANAGER_SIGN_PUBKEY_TABLE_DEF,
 )
-from .quota_models import QUOTA_TABLE_DEFINITIONS
+from .quota_models import QUOTA_TABLE_DEFINITIONS, WORKSPACE_QUOTA_USAGE_TABLE_DEF
 from .session_map_models import SESSION_MAP_TABLE_DEF
 from .template_models import (
     A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
