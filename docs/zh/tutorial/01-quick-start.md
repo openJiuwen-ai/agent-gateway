@@ -46,7 +46,7 @@ MOCK_READY ws://127.0.0.1:19501
 ## 4. 启动 Gateway（终端 B）
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1
 export AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1
@@ -63,7 +63,7 @@ uv run agent-gateway --port 19500
 - `Uvicorn running on http://127.0.0.1:19500`：WebChannel 就绪
 - `[Cron] loaded N job(s) from ...` / `background_cleanup: started ...`：定时任务与后台清理启动
 
-如果出现 `[App] Another Gateway is already serving this workspace`，说明同一工作区已有 Gateway 在运行，请停止旧进程或更换 `JIUWENSWARM_HOME`。
+如果出现 `[App] Another Gateway is already serving this workspace`，说明同一工作区已有 Gateway 在运行，请停止旧进程或更换 `AGENT_GATEWAY_HOME`。
 
 ## 5. 发送第一条请求（终端 C）
 

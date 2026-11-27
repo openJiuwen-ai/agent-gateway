@@ -11,7 +11,7 @@ HTTP connection policy or persistent configuration formats.
 `startup/bootstrap.py` exposes explicit environment, third-party logging,
 Gateway logging and workspace preparation stages. Importing the helper does not
 run these stages; the entrypoint calls them in the original order. The parent's
-`JIUWENSWARM_RUNTIME_WORKSPACE_READY` marker still avoids duplicate preparation.
+`AGENT_GATEWAY_RUNTIME_WORKSPACE_READY` marker still avoids duplicate preparation.
 The removed media-capability migration is not restored.
 
 `startup/lifecycle.py` retains the authoritative workspace OS lock. Duplicate

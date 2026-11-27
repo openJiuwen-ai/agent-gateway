@@ -35,12 +35,12 @@ uv sync
 ### 2.1 目录隔离（推荐）
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 ```
 
-- 工作区为 `$JIUWENSWARM_HOME/.jiuwenswarm`，首次启动会自动初始化（默认技能、cron 任务文件等），无需手工创建。
-- 配置文件默认路径：`$JIUWENSWARM_HOME/.jiuwenswarm/config/config.yaml`。
-- 多实例隔离可用 `JIUWENSWARM_DATA_DIR`（部署侧 `--name` 用的就是这个）。
+- 工作区为 `$AGENT_GATEWAY_HOME/.jiuwenswarm`，首次启动会自动初始化（默认技能、cron 任务文件等），无需手工创建。
+- 配置文件默认路径：`$AGENT_GATEWAY_HOME/.jiuwenswarm/config/config.yaml`。
+- 多实例隔离可用 `AGENT_GATEWAY_DATA_DIR`（部署侧 `--name` 用的就是这个）。
 
 ### 2.2 端口与下游地址
 
@@ -83,7 +83,7 @@ uv run python examples/mock-agent-server/mock_agent_server.py 19501
 终端 B：
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501
 export WEB_HOST=127.0.0.1 WEB_PORT=19500 GATEWAY_HOST=127.0.0.1 GATEWAY_PORT=19502
 
@@ -158,7 +158,7 @@ uv run python -m pytest st_test/testcases_gateway --no-cov
 - 流式转发：`chat.send` 的南向分片转成 `chat.delta` / `chat.final` 事件帧
 - 南向掉线：返回 `SERVICE_UNAVAILABLE`，不挂死
 
-每个用例使用独立的临时 `JIUWENSWARM_HOME` 与随机 `WEB_PORT` / `GATEWAY_PORT`，可与其他用例并行。默认使用 PATH 中的 `agent-gateway` 入口，也可显式指定：
+每个用例使用独立的临时工作区 与随机 `WEB_PORT` / `GATEWAY_PORT`，可与其他用例并行。默认使用 PATH 中的 `agent-gateway` 入口，也可显式指定：
 
 ```bash
 AGENT_GATEWAY_BIN="python -m agent_gateway.app_gateway" uv run python -m pytest st_test/testcases_gateway --no-cov
@@ -192,7 +192,7 @@ ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 | 现象 | 原因 / 处理 |
 |---|---|
 | `ModuleNotFoundError: No module named 'agent_gateway'` | 依赖未安装完全，重新 `uv sync`；或检查是否绕过了项目 venv |
-| 启动即报 “Another Gateway is already serving this workspace” | 同一 `JIUWENSWARM_HOME` 已有 Gateway 在跑（`.gateway.lock`），换目录或先停旧进程 |
+| 启动即报 “Another Gateway is already serving this workspace” | 同一工作区已有 Gateway 在跑（`.gateway.lock`），换目录或先停旧进程 |
 | 日志出现 `等待 connection.ack 超时` | Mock 未发送 `connection.ack`，`server_ready` 会一直为 False，部分代理入口返回不可用 |
 | 个人版访问 `/api/v1/health` 返回 404 | `/api/v1` 系列路由只在企业版挂载；个人版仅在 WebChannel 端口暴露 `/ws`。探活请连 `/ws` 并读首帧 `connection.ack` |
 | 下游指向不可达地址时启动卡约 60s 后退出 | 回环地址（`127.0.0.1` / `localhost` / `::1`）会把重试次数强制提升到至少 240 次（约 60s），仍失败则进程非 0 退出。验证“掉线降级”应先连通再断开南向 |
@@ -208,7 +208,7 @@ ST_WORKSWARM_CHAT=1 python -m pytest st_test/testcases_integration --no-cov
 若本地已有安装 gateway 依赖的 venv，可直接复用，无需另建环境：
 
 ```bash
-JIUWENSWARM_HOME=/tmp/gw-home \
+AGENT_GATEWAY_HOME=/tmp/gw-home \
 AGENT_SERVER_HOST=127.0.0.1 AGENT_SERVER_PORT=19501 \
 WEB_PORT=19500 GATEWAY_PORT=19502 \
 PYTHONPATH=/path/to/agent-gateway \

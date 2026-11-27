@@ -11,6 +11,8 @@ Gateway 使用两个环境变量定位运行时目录：
 | `JIUWENSWARM_DATA_DIR` | 直接指定实例根目录（配置、会话、日志、cron 等） | 最高 |
 | `JIUWENSWARM_HOME` | 指定用户主目录，实例根目录为其下的 `.jiuwenswarm` | 次之 |
 
+Gateway 也接受新名 `AGENT_GATEWAY_DATA_DIR`、`AGENT_GATEWAY_HOME`。下面的示例同时启动 JiuwenSwarm AgentServer，它只认旧名，因此示例使用旧名。
+
 每个实例根目录下有一把工作区锁（`.gateway.lock`）：同一个实例根目录只允许一个 Gateway 进程运行，避免 cron 重复调度。不同实例使用不同根目录即可并行运行。
 
 ## 方式一：环境变量隔离（推荐）
