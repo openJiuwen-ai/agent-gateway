@@ -173,7 +173,10 @@ class AcpGatewayBridge:
         self._idle_finalize_seconds = idle_finalize_seconds
         self._request_ctx_by_request_id: dict[str, AcpGatewayRequestContext] = {}
         self._active_prompt_request_by_session: dict[str, str] = {}
-        self._known_sessions: set[str] = set()
+        # The bridge is shared by every gateway connection, so the session
+        # catalogue is scoped to the connection that created it. Entries live
+        # until ``cleanup(ws)``; the stored ws object guards against id reuse.
+        self._known_sessions_by_ws: dict[int, tuple[Any, set[str]]] = {}
         self._pending_client_rpc_count_by_session: dict[str, int] = {}
         # value: (session_id, ws, created_at)
         self._pending_client_rpc_session_by_id: dict[str, tuple[str, Any, float]] = {}
@@ -268,6 +271,9 @@ class AcpGatewayBridge:
 
     def cleanup(self, ws: Any) -> None:
         """Clean up pending client RPC entries associated with a disconnected ws."""
+        known = self._known_sessions_by_ws.get(id(ws))
+        if known is not None and known[0] is ws:
+            self._known_sessions_by_ws.pop(id(ws), None)
         stale = [
             jsonrpc_id
             for jsonrpc_id, entry in self._pending_client_rpc_session_by_id.items()
@@ -353,7 +359,7 @@ class AcpGatewayBridge:
                 await self._send_raw_jsonrpc_result(
                     ws,
                     rpc_id,
-                    build_acp_session_list_result(sorted(self._known_sessions)),
+                    build_acp_session_list_result(sorted(self._known_sessions_for(ws))),
                 )
                 return True
             if method == "session/load":
@@ -538,9 +544,19 @@ class AcpGatewayBridge:
         sid = str(session_id or "").strip()
         if not sid:
             return
-        self._known_sessions.add(sid)
+        known = self._known_sessions_by_ws.get(id(ws))
+        if known is None or known[0] is not ws:
+            known = (ws, set())
+            self._known_sessions_by_ws[id(ws)] = known
+        known[1].add(sid)
         if self._bind_session_client is not None:
             self._bind_session_client(sid, ws)
+
+    def _known_sessions_for(self, ws: Any) -> set[str]:
+        known = self._known_sessions_by_ws.get(id(ws))
+        if known is None or known[0] is not ws:
+            return set()
+        return known[1]
 
     async def _register_pending_client_rpc(self, session_id: str | None) -> None:
         sid = str(session_id or "").strip()
@@ -787,6 +803,8 @@ class AcpChannel(BaseChannel):
         self._running = False
         for request_id in list(self._request_ctx.keys()):
             await self._clear_request_context(request_id)
+        self._known_sessions.clear()
+        self._active_prompt_request_by_session.clear()
         self._pending_client_rpc_session_by_id.clear()
         await self._close_gateway_connection()
 
