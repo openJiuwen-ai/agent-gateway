@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import os
 import subprocess
@@ -132,6 +133,39 @@ else:
         timeout=20,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "module_path, names",
+    [
+        ("xiaoyi.xiaoyi_connect", ("XiaoyiChannel", "XiaoyiChannelConfig")),
+        ("telegram.telegram_connect", ("TelegramChannel", "TelegramChannelConfig")),
+        ("discord.discord_connect", ("DiscordChannel", "DiscordChannelConfig")),
+        ("slack.slack_connect", ("SlackChannel", "SlackChannelConfig")),
+        ("dingtalk.dingtalk_connect", ("DingTalkChannel", "DingTalkConfig")),
+        ("whatsapp.whatsapp_connect", ("WhatsAppChannel", "WhatsAppChannelConfig")),
+        ("wecom.wecom_connect", ("WecomChannel", "WecomConfig")),
+        ("wechat.wechat_connect", ("WechatChannel", "WechatConfig")),
+    ],
+)
+def test_channel_package_preserves_lazy_optional_channel_exports(module_path: str, names: tuple[str, str]) -> None:
+    """Optional channels resolve through the same lazy path as ACP: every import style gives one class object."""
+    channels = importlib.import_module("agent_gateway.channel_manager")
+    direct = importlib.import_module(f"agent_gateway.channel_manager.im_platforms.{module_path}")
+
+    for name in names:
+        assert name in channels.__all__
+        assert name in dir(channels)
+        expected = getattr(direct, name)
+        assert getattr(channels, name) is expected
+        single: dict[str, object] = {}
+        exec(f"from agent_gateway.channel_manager import {name}", single)
+        assert single[name] is expected
+
+    exports: dict[str, object] = {}
+    exec("from agent_gateway.channel_manager import *", exports)
+    for name in names:
+        assert exports[name] is getattr(direct, name)
 
 
 async def test_extracted_runtime_handles_live_requests_and_disconnect() -> None:
