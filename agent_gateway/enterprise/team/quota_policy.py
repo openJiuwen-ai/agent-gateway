@@ -28,14 +28,24 @@ class OwnerIdentity:
     ``group_id`` / ``bot_id`` are the enterprise routing scope; together with
     ``user_id`` they are what the gateway derives ``service_id`` / ``agent_id`` /
     ``workspace_key`` from. Personal edition leaves group/bot empty.
+
+    ``agent_id`` is the per-instance agent resource identifier (issue #124);
+    empty means identity does not carry agent scope (``agent_id in (...)``
+    expressions will not match, mirroring workspace quota semantics).
     """
 
     user_id: str = ""
     group_id: str = ""
     bot_id: str = ""
+    agent_id: str = ""
 
     def as_dict(self) -> dict[str, str]:
-        return {"user_id": self.user_id, "group_id": self.group_id, "bot_id": self.bot_id}
+        return {
+            "user_id": self.user_id,
+            "group_id": self.group_id,
+            "bot_id": self.bot_id,
+            "agent_id": self.agent_id,
+        }
 
     def same_scope(self, other: "OwnerIdentity") -> bool:
         """Phase-1 "same tenant" check: same routing scope (group + bot)."""
@@ -141,6 +151,7 @@ def _select_limits(policies: list[dict[str, Any]], identity: OwnerIdentity) -> Q
         "user_id": identity.user_id,
         "group_id": identity.group_id,
         "bot_id": identity.bot_id,
+        "agent_id": identity.agent_id,
     }
     hits: list[dict[str, Any]] = []
     for row in policies:
@@ -218,7 +229,7 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
             continue
         default_org = _org_limit_value(row)
         break
-    ident = {"user_id": "", "group_id": group_id, "bot_id": ""}
+    ident = {"user_id": "", "group_id": group_id, "bot_id": "", "agent_id": ""}
     hits: list[dict[str, Any]] = []
     for row in policies:
         if not bool(row.get("enabled", True)) or not _is_org_policy(row.get("match_expr")):
@@ -516,6 +527,9 @@ class TeamQuotaPolicyStore:
             grouped.setdefault(key, []).append(row)
         items = []
         for (uid, gid, bid), leases in grouped.items():
+            # DB 行不含 agent_id 列（team 配额表无该字段），故此处 agent_id=""。
+            # request-sourced 构造（jiuwenswarm team/handlers.py）才会填充 agent_id，
+            # 使 agent 维度团队配额策略命中（PR #426 检视 P3）。
             ident = OwnerIdentity(user_id=uid, group_id=gid, bot_id=bid)
             limits = self.resolve_limits(ident)
             team_ids = [_clean(r.get("team_id")) for r in leases if _clean(r.get("team_id"))]

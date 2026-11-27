@@ -144,12 +144,13 @@ class WorkspaceIdentityError(Exception):
         self.field = field
 
 
-def _identity_from_params(params: dict[str, Any] | None) -> tuple[str, str, str]:
+def _identity_from_params(params: dict[str, Any] | None) -> tuple[str, str, str, str]:
     p = params if isinstance(params, dict) else {}
     return (
         str(p.get("user_id") or "").strip(),
         str(p.get("group_id") or "").strip(),
         str(p.get("bot_id") or "").strip(),
+        str(p.get("agent_id") or "").strip(),
     )
 
 
@@ -178,23 +179,36 @@ def _identity_for_forward(
     params: dict[str, Any],
     *,
     user_id: str | None = None,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     """合成转发身份。
 
     受信来源：dispatch ``user_id`` → ``ws._web_routing`` → 连接级
-    ``_WEB_CONNECTION_USER_ID_ATTR``；``group_id`` / ``bot_id`` 只取 ``_web_routing``。
+    ``_WEB_CONNECTION_USER_ID_ATTR``；``group_id`` / ``bot_id`` 取
+    ``_web_routing``；``agent_id`` 取连接级展示身份
+    ``ws._web_agent_identity``（握手期由 Manager 写入，``_web_routing`` 不含此键）。
 
-    - **企业版**：禁止把 query/body 身份当权威。受信三元组缺失 →
+    - **企业版**：禁止把 query/body 身份当权威。受信三元组（user/group/bot）缺失 →
       ``UNAUTHORIZED``；客户端显式身份与受信不一致 → ``IDENTITY_CONFLICT``。
+      ``agent_id`` 不强制要求（连接级可能未 pin）；但连接级若已 pin
+      ``agent_id``，则客户端值必须一致 —— 否则客户端可在同一连接内 per-request
+      篡改 ``agent_id`` 命中不同配额策略造成配额绕过（PR #426 检视 P2-1）。
+      仅当受信与客户端两端都非空才判冲突，避免连接未 pin ``agent_id`` 时阻断合法请求。
+      **未 pin 时返回空串**（不取客户端值）：客户端可控的 ``agent_id`` 一旦进入
+      ``pick_policy`` 的匹配上下文即可命中其他 Agent 维度的配额策略（issue #224
+      的根因），故未 pin 时 ``agent_id`` 必须不参与匹配。
     - **个人版**：仍可用 params 兜底（本地盘 / 无 routing 握手场景）。
     """
     routing = getattr(ws, "_web_routing", None)
     if not isinstance(routing, dict):
         routing = {}
-    p_uid, p_gid, p_bid = _identity_from_params(params)
+    p_uid, p_gid, p_bid, p_aid = _identity_from_params(params)
     trusted_uid = _trusted_user_id(ws, user_id)
     trusted_gid = str(routing.get("group_id") or "").strip()
     trusted_bid = str(routing.get("bot_id") or "").strip()
+    # 受信 agent_id 来自连接级展示身份（握手期 normalize_agent_identity_query 写入），
+    # 不在 _web_routing（其字段集合 WEB_ROUTING_ID_FIELDS 不含 agent_id）。
+    agent_identity = getattr(ws, "_web_agent_identity", None) or {}
+    trusted_aid = str(agent_identity.get("agent_id") or "").strip()
 
     if is_enterprise():
         if not trusted_uid or not trusted_gid or not trusted_bid:
@@ -213,12 +227,21 @@ def _identity_for_forward(
                     "Request header and body identity must match",
                     field=field,
                 )
-        return trusted_uid, trusted_gid, trusted_bid
+        # agent_id：连接级 pin 时校验冲突；未 pin 时返回空串，不取客户端值
+        # （防 issue #224 的客户端自选配额策略绕过）。
+        if p_aid and trusted_aid and p_aid != trusted_aid:
+            raise WorkspaceIdentityError(
+                "IDENTITY_CONFLICT",
+                "Request header and body identity must match",
+                field="agent_id",
+            )
+        return trusted_uid, trusted_gid, trusted_bid, trusted_aid
 
     return (
         trusted_uid or p_uid,
         trusted_gid or p_gid,
         trusted_bid or p_bid,
+        trusted_aid or p_aid,
     )
 
 
@@ -227,13 +250,14 @@ def _bind_trusted_identity(
     params: dict[str, Any],
     *,
     user_id: str | None = None,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     """把受信身份写回 params；企业版冲突/缺失时抛 ``WorkspaceIdentityError``。"""
-    uid, group_id, bot_id = _identity_for_forward(ws, params, user_id=user_id)
+    uid, group_id, bot_id, agent_id = _identity_for_forward(ws, params, user_id=user_id)
     params["user_id"] = uid
     params["group_id"] = group_id
     params["bot_id"] = bot_id
-    return uid, group_id, bot_id
+    params["agent_id"] = agent_id
+    return uid, group_id, bot_id, agent_id
 
 
 async def _reject_identity(
@@ -266,14 +290,19 @@ async def _forward_to_agent(
         return False, {}, "agent not ready", "INTERNAL_ERROR"
 
     params = call.params
-    user_id, group_id, bot_id = _identity_for_forward(
+    user_id, group_id, bot_id, _agent_id = _identity_for_forward(
         call.ws, params, user_id=call.user_id
     )
-    # 业务 params 不携带身份三元组（与 request_identity 约定一致）；身份走信封。
+    # 业务 params 不携带身份字段（与 request_identity 约定一致）；身份走信封。
+    # agent_id 同样剥离 —— 但它仅在 Gateway 端参与配额匹配
+    # （_usage_payload_from_used → resolve_quota_snapshot / pick_policy），
+    # 不需要随 E2A 转发到 AgentServer；下游用 used_bytes 计算不依赖 agent_id。
+    # apply_routing_metadata 只认 WEB_ROUTING_ID_FIELDS（group/bot/gateway），
+    # 不放 agent_id 进 routing_meta（会被静默丢弃，且与 routing 字段契约不一致）。
     forward_params = {
         k: v
         for k, v in (params or {}).items()
-        if k not in {"user_id", "group_id", "bot_id", "gateway_id"}
+        if k not in {"user_id", "group_id", "bot_id", "gateway_id", "agent_id"}
     }
     routing_meta = apply_routing_metadata(
         {},
@@ -433,7 +462,7 @@ def _local_usage_bytes(params: dict[str, Any]) -> int:
         _WorkspaceService,
     ) = _import_local_workspace()
     svc = _local_service(params)
-    uid, gid, bid = _identity_from_params(params)
+    uid, gid, bid, _aid = _identity_from_params(params)
     raw = params.get("force_refresh")
     force = raw is True or raw == 1
     if isinstance(raw, str) and raw.strip().lower() in {"1", "true", "yes", "on"}:
@@ -460,7 +489,7 @@ def _local_delete_and_usage(
         _WorkspaceError,
         _WorkspaceService,
     ) = _import_local_workspace()
-    uid, gid, bid = _identity_from_params(params)
+    uid, gid, bid, _aid = _identity_from_params(params)
     # DELETE 路由无 force_refresh；删除后必须 measure，否则 get_cached_used
     # 仍是删前值，upsert 会把过期用量当最新上报写回。
     used = measure_and_cache(
@@ -485,20 +514,24 @@ async def _usage_payload_from_used(
     used_bytes: int,
     params: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    user_id, group_id, bot_id = _identity_from_params(params)
+    user_id, group_id, bot_id, agent_id = _identity_from_params(params)
     snap = await resolve_quota_snapshot(
         used_bytes,
         user_id=user_id,
         group_id=group_id,
         bot_id=bot_id,
+        agent_id=agent_id,
     )
     await upsert_usage_cache(
         user_id=user_id,
         group_id=group_id,
         bot_id=bot_id,
+        agent_id=agent_id,
         used_bytes=used_bytes,
     )
-    return snapshot_to_dict(snap, user_id=user_id, group_id=group_id, bot_id=bot_id)
+    return snapshot_to_dict(
+        snap, user_id=user_id, group_id=group_id, bot_id=bot_id, agent_id=agent_id
+    )
 
 
 def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
@@ -542,7 +575,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
     async def _tree(ws, req_id, params, session_id, user_id=None):
         p = dict(params) if isinstance(params, dict) else {}
         try:
-            uid, gid, bid = _bind_trusted_identity(ws, p, user_id=user_id)
+            uid, gid, bid, aid = _bind_trusted_identity(ws, p, user_id=user_id)
         except WorkspaceIdentityError as exc:
             await _reject_identity(channel, ws, req_id, exc)
             return
@@ -570,6 +603,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
                         user_id=uid,
                         group_id=gid,
                         bot_id=bid,
+                        agent_id=aid,
                         used_bytes=used,
                     )
                 data = {k: v for k, v in payload.items() if k != "used_bytes"}
@@ -591,7 +625,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
     async def _usage(ws, req_id, params, session_id, user_id=None):
         p = dict(params) if isinstance(params, dict) else {}
         try:
-            uid, gid, bid = _bind_trusted_identity(ws, p, user_id=user_id)
+            uid, gid, bid, _aid = _bind_trusted_identity(ws, p, user_id=user_id)
         except WorkspaceIdentityError as exc:
             await _reject_identity(channel, ws, req_id, exc)
             return
@@ -660,7 +694,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
     async def _delete(ws, req_id, params, session_id, user_id=None):
         p = dict(params) if isinstance(params, dict) else {}
         try:
-            uid, gid, bid = _bind_trusted_identity(ws, p, user_id=user_id)
+            uid, gid, bid, aid = _bind_trusted_identity(ws, p, user_id=user_id)
         except WorkspaceIdentityError as exc:
             await _reject_identity(channel, ws, req_id, exc)
             return
@@ -698,6 +732,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
                         user_id=uid,
                         group_id=gid,
                         bot_id=bid,
+                        agent_id=aid,
                         used_bytes=used,
                     )
                 await channel.send_response(ws, req_id, ok=True, payload=data)
@@ -709,6 +744,7 @@ def register_workspace_web_methods(channel: Any, *, agent_client: Any) -> None:
                 user_id=uid,
                 group_id=gid,
                 bot_id=bid,
+                agent_id=aid,
                 used_bytes=used,
             )
             await channel.send_response(ws, req_id, ok=True, payload=data)
