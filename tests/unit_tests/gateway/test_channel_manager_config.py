@@ -60,3 +60,14 @@ async def test_config_revision_changes_when_a_user_disables_a_channel() -> None:
 
     assert manager.get_conf("telegram") == {}
     assert manager.get_conf_revision("telegram") == initial_revision + 1
+
+
+async def test_popping_channels_releases_their_config_revisions() -> None:
+    manager = ChannelManager(_MessageHandler())
+    await manager.set_conf("telegram", {"enabled": True})
+    await manager.set_conf("dingtalk", {"enabled": True})
+
+    manager.pop_channels_by_id("telegram")
+
+    assert manager.get_conf_revision("telegram") == 0
+    assert manager.get_conf_revision("dingtalk") == 1

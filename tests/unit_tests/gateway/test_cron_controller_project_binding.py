@@ -396,14 +396,21 @@ class _FakeScheduler:
 
     def __init__(self, **methods) -> None:
         self.hiding_projects: set[str] = set()
+        self.revisions: dict[str, int] = {}
         for name, func in methods.items():
             setattr(self, name, func)
 
     def close_project_admission(self, project_id: str) -> None:
         self.hiding_projects.add(project_id)
+        self.revisions[project_id] = self.revisions.get(project_id, 0) + 1
 
     def reopen_project_admission(self, project_id: str) -> None:
+        self.revisions[project_id] = self.revisions.get(project_id, 0) + 1
         self.hiding_projects.discard(project_id)
+
+    def forget_project_admission(self, project_id: str) -> None:
+        self.hiding_projects.discard(project_id)
+        self.revisions.pop(project_id, None)
 
     async def project_execution_allowed(self, project_id, user_id=None, group_id=None, bot_id=None) -> bool:
         return True
@@ -738,6 +745,36 @@ async def test_hide_commit_rejection_restores_original_enabled_jobs():
     assert jobs["disabled"].enabled is False
     assert scheduler.reload.await_count == 2
     assert "project" not in scheduler.hiding_projects
+
+
+@pytest.mark.asyncio
+async def test_hide_commit_releases_project_admission_state():
+    from unittest.mock import AsyncMock
+
+    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])), scheduler=scheduler
+    )
+
+    await controller.hide_project_jobs("project", commit=AsyncMock())
+
+    assert scheduler.revisions == {}
+    assert scheduler.hiding_projects == set()
+
+
+@pytest.mark.asyncio
+async def test_hide_without_commit_keeps_admission_revision_fence():
+    from unittest.mock import AsyncMock
+
+    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])), scheduler=scheduler
+    )
+
+    await controller.hide_project_jobs("project")
+
+    # 只隐藏、可恢复的项目仍需版本号作废跨隐藏窗口的在途判定。
+    assert scheduler.revisions == {"project": 2}
 
 
 def _owned_job(**overrides):

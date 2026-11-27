@@ -108,6 +108,9 @@ class _TtlSingleFlightCache:
 
     def invalidate_key(self, key: str) -> None:
         self._entries.pop(key, None)
+        # 锁对象本身不携带状态; 条目失效即该键的生命周期终点, 丢掉登记
+        # 让后续访问新建锁。仍在等待的调用方持有各自引用, 不受影响。
+        self._locks.pop(key, None)
 
     def _purge_expired(self) -> None:
         """丢掉过期条目，避免 TTL 失效后条目长期占内存。"""
@@ -119,6 +122,12 @@ class _TtlSingleFlightCache:
         ]
         for key in expired:
             self._entries.pop(key, None)
+        # 条目过期后对应按键锁也不会再被复用, 一并释放; 正在单飞中的锁
+        # 仍被等待方持有, 等其释放后由下一轮 purge 回收。
+        for key in [k for k in self._locks if k not in self._entries]:
+            lock = self._locks.get(key)
+            if lock is None or not lock.locked():
+                self._locks.pop(key, None)
 
     def _maybe_purge(self) -> None:
         self._ops_since_purge += 1

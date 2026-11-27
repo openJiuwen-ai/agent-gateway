@@ -1324,6 +1324,16 @@ class CronSchedulerService:
         )
         self._hiding_projects.discard(project_id)
 
+    def forget_project_admission(self, project_id: str) -> None:
+        """Drop the admission state of a project that no longer exists.
+
+        The revision fences verdicts taken across a hide or restore.  A removed
+        project has no later state to fence, so keeping its counter would only
+        pin one entry per removed project for the lifetime of the process.
+        """
+        self._hiding_projects.discard(project_id)
+        self._project_admission_revisions.pop(project_id, None)
+
     async def project_execution_allowed(
         self,
         project_id: str | None,

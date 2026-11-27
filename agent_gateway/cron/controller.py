@@ -546,6 +546,7 @@ class CronController:
         # Keep admission closed until the AgentServer commits hidden=True.
         self._scheduler.close_project_admission(project_id)
         enabled_job_ids: list[str] = []
+        removed = False
         try:
             jobs = [job for job in await self._store.list_jobs() if job.project_id == project_id]
             enabled_job_ids = [job.id for job in jobs if job.enabled]
@@ -560,6 +561,7 @@ class CronController:
             await self._scheduler.stop_project_runs(project_id)
             if commit is not None:
                 await commit()
+                removed = True
             return {"stopped_cron_jobs": len(jobs)}
         except Exception:
             # A rejected AgentServer commit must not leave visible-project jobs
@@ -578,6 +580,11 @@ class CronController:
             raise
         finally:
             self._scheduler.reopen_project_admission(project_id)
+            if removed:
+                # The project itself is gone, so its revision no longer has to
+                # fence verdicts taken across a later hide or restore.  Drop it
+                # with the project instead of keeping one entry per removal.
+                self._scheduler.forget_project_admission(project_id)
 
     async def get_job(
         self,

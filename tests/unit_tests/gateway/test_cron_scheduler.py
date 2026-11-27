@@ -3538,6 +3538,18 @@ async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatc
     assert await pending is False
 
 
+@pytest.mark.asyncio
+async def test_forget_project_admission_releases_revision_and_hide_flag(tmp_path):
+    svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+    svc._project_admission_revisions["p"] = 2
+    svc._hiding_projects.add("p")
+
+    svc.forget_project_admission("p")
+
+    assert "p" not in svc._project_admission_revisions
+    assert "p" not in svc._hiding_projects
+
+
 # ── 登录免费模型：执行请求携带凭据 ────────────────────────────────────────────
 
 _LOGIN_REF = "0123456789abcdef0123456789abcdef"

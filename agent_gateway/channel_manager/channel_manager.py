@@ -821,6 +821,10 @@ class ChannelManager(ABC):
             ch = self._channels.pop(k, None)
             if ch is not None:
                 out.append(ch)
+        # 配置版本号只用于让在途的重启/重试判定失效。实例被移除后该
+        # channel_id 的生命周期已结束, 版本号随之释放, 否则每个曾经出现
+        # 过的 channel_id 都会在表里留一条到进程结束。
+        self._conf_revisions.pop(channel_id, None)
         return out
 
     def get_channels_by_id(self, channel_id: str) -> list["BaseChannel"]:
