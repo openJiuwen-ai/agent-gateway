@@ -215,3 +215,35 @@ async def test_wait_running_timeout_uses_the_existing_lifecycle_error(monkeypatc
         assert calls and all(request.method == 'GET' for request in calls)
     finally:
         await client.close()
+
+
+async def test_successful_create_releases_idempotency_entry(monkeypatch, tmp_path):
+    cfg = config(monkeypatch, tmp_path)
+    instance = 'test-alice+jiuwenswarm'
+    created = {'done': False}
+    posts = []
+
+    def handle(request):
+        if request.method == 'GET':
+            if not created['done']:
+                return httpx.Response(404)
+            return httpx.Response(200, json=[{
+                'id': instance, 'tenant_id': 'tenant', 'status': 'running',
+            }])
+        posts.append(request.headers['x-request-id'])
+        created['done'] = True
+        return httpx.Response(200, json=envelope({'environmentId': instance}))
+
+    client = AdxControlClient(cfg, transport=httpx.MockTransport(handle))
+    args = dict(namespace='test', name='alice+jiuwenswarm', workspace='/mnt/users/alice',
+                runtime_spec={'rootfs': {'imageurl': 'app:1'}, 'cpu': 1000, 'memory': 512})
+    try:
+        await client.create_sandbox(**args)
+        assert instance not in client._creates
+
+        # A retry resolves through the live Environment lookup, not the table.
+        await client.create_sandbox(**args)
+        assert len(posts) == 1
+        assert instance not in client._creates
+    finally:
+        await client.close()

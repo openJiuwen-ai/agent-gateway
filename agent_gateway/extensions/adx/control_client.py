@@ -252,7 +252,12 @@ class AdxControlClient:
             raise
         if not isinstance(result, dict) or result.get('environmentId') != instance:
             raise AdxControlError('ADX create returned an unexpected Environment ID')
-        return await self._ready_sandbox_info(instance)
+        info = await self._ready_sandbox_info(instance)
+        # The Environment now exists, so a retry resolves through _lookup before
+        # it can consult the idempotency table; keeping the entry only leaks one
+        # row per created sandbox for the lifetime of the process.
+        self._creates.pop(instance, None)
+        return info
 
     async def _ready_sandbox_info(self, instance: str) -> SandboxInfo:
         # Registry requires placement on the initial POST. Read the actual ADX
