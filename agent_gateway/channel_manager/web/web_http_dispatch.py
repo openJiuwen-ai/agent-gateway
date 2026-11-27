@@ -9,13 +9,14 @@ import time
 import uuid
 from typing import Any
 
-from e2a.message import Message
+from e2a.message import Message, ReqMethod
 
 from agent_gateway.common.request_ext import attach_to_metadata as _ext_attach
 from agent_gateway.common.request_ext import build_ext_from_source as _ext_build
 from agent_gateway.enterprise import is_enterprise
 from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
+from agent_gateway.channel_manager.web.trace_agent_name import USER_ACCESS_TOKEN_COOKIE
 from agent_gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
     HttpSseOutbound,
@@ -138,7 +139,6 @@ async def dispatch_http_request(
 
     setattr(outbound, _WEB_CONNECTION_USER_ID_ATTR, user_id)
     setattr(outbound, "_jiuwen_app_id", app_id)
-    channel.register_request_outbound(outbound)
 
     # 仅新建会话且解析到 user_id 时打 http_resolve_identity UA。
     if method == "session.create" and user_id:
@@ -215,6 +215,20 @@ async def dispatch_http_request(
     # 与 WS 入站保持一致：协议包未发布的业务方法动态登记，避免被转发门禁短路。
     parse_req_method = getattr(channel, "parse_req_method", None) or WebChannel.parse_req_method
 
+    authorization = _get_header(hdrs, "authorization")
+    cluster_id = _cookie_value(hdrs, "jiuwenclaw_id")
+    metadata = _ext_attach(_meta, ext=ext)
+    if method == ReqMethod.CHAT_SEND.value and trust_tenant_headers:
+        metadata = await channel.trace_agent_names.attach(
+            params=params,
+            metadata=metadata,
+            routing=_routing,
+            cluster_id=cluster_id,
+            authorization=authorization,
+            access_token=_cookie_value(hdrs, USER_ACCESS_TOKEN_COOKIE),
+        )
+
+    channel.register_request_outbound(outbound)
     user_message = Message(
         id=req_id,
         type="req",
@@ -229,7 +243,7 @@ async def dispatch_http_request(
         app_id=app_id,
         agent_ref={"mode": mode, "id": agent_id},
         user_id=user_id,
-        metadata=_ext_attach(_meta, ext=ext),
+        metadata=metadata,
     )
 
     await invoke_web_request(
@@ -240,7 +254,7 @@ async def dispatch_http_request(
         outbound=outbound,
         session_id=session_id,
         user_message=user_message,
-        authorization=_get_header(hdrs, "authorization") or None,
-        jiuwenclaw_id=_cookie_value(hdrs, "jiuwenclaw_id") or None,
+        authorization=authorization or None,
+        jiuwenclaw_id=cluster_id or None,
     )
     return outbound, req_id, session_id

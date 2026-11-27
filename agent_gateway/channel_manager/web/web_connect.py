@@ -23,7 +23,6 @@ from weakref import WeakKeyDictionary
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
-import httpx
 from e2a.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
@@ -34,21 +33,17 @@ from agent_gateway.channel_manager.base import (
 )
 from agent_gateway.channel_manager.web.client_trust import trust_client_identity_headers
 from agent_gateway.channel_manager.web.outbound import HttpJsonOutbound
+from agent_gateway.channel_manager.web.trace_agent_name import (
+    USER_ACCESS_TOKEN_COOKIE,
+    TraceAgentNameLookup,
+)
 from agent_gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
 from agent_gateway.enterprise.capabilities.skill_upload.guard import (
     schedule_pending_install_result,
 )
-from agent_gateway.common.mode_matrix import deprecate_mode, is_single_agent_mode
 from agent_gateway.common.paths import get_logs_dir
-from agent_gateway.common.request_ext import (
-    METADATA_KEY as REQUEST_EXT_KEY,
-    TRACE_AGENT_NAME_KEY,
-    RequestExtCodecError,
-    attach_to_metadata,
-    encode_internal_header,
-)
 from agent_gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
@@ -155,95 +150,6 @@ def _ws_authorization(ws: Any) -> str | None:
         return header
     token = _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE)
     return f"Bearer {token}" if token else None
-
-
-_TRACE_AGENT_NAME_TIMEOUT_S = 1.0
-_TRACE_AGENT_CONTEXT_FIELDS = ("jiuwenclaw_id", "user_id", "group_id", "bot_id")
-
-
-async def _query_trace_agent_name(
-    scope: tuple[str, str, str, str], authorization: str,
-) -> str | None:
-    from agent_gateway.enterprise.config.manager_config.core.instance.instance_service import (
-        resolve_manager_http_base,
-    )
-
-    try:
-        base_url = resolve_manager_http_base()
-        if not base_url:
-            return None
-        async with asyncio.timeout(_TRACE_AGENT_NAME_TIMEOUT_S):
-            async with httpx.AsyncClient(trust_env=False) as client:
-                response = await client.get(
-                    f"{base_url}/api/v1/user-console/agent-contexts",
-                    headers={"authorization": authorization, "accept": "application/json"},
-                )
-                response.raise_for_status()
-                body = response.json()
-    except (TimeoutError, httpx.HTTPError, httpx.InvalidURL, ValueError):
-        logger.debug("[WebChannel] Agent display name lookup failed")
-        return None
-
-    data = body.get("data") if isinstance(body, dict) else None
-    contexts = data.get("contexts") if isinstance(data, dict) else None
-    if not isinstance(contexts, list):
-        return None
-    matches = [
-        item.get("agent_name")
-        for item in contexts
-        if isinstance(item, dict)
-        and tuple(item.get(field) for field in _TRACE_AGENT_CONTEXT_FIELDS) == scope
-    ]
-    if len(matches) != 1 or not isinstance(matches[0], str):
-        return None
-    name = matches[0].strip()
-    return name if 0 < len(name) <= 128 else None
-
-
-async def _attach_trace_agent_name(
-    ws: Any,
-    params: dict[str, Any],
-    metadata: dict[str, Any],
-    routing: dict[str, str],
-) -> dict[str, Any]:
-    from agent_gateway.enterprise import is_enterprise
-
-    if not is_enterprise() or params.get("team") or not is_single_agent_mode(
-        deprecate_mode(params.get("mode", "agent"))
-    ):
-        return metadata
-    cluster_id = _ws_cookie(ws, "jiuwenclaw_id")
-    user_id = routing.get("user_id", "")
-    group_id = routing.get("group_id", "")
-    bot_id = routing.get("bot_id", "")
-    if not (cluster_id and user_id and bot_id):
-        return metadata
-
-    scope = (cluster_id, user_id, group_id, bot_id)
-    cached_scope, task = getattr(ws, "_trace_agent_name_lookup", (None, None))
-    if cached_scope != scope or task is None:
-        # The browser user console and native clients use different handshake credentials.
-        token = _ws_cookie(ws, "openjiuwen_user_access_token")
-        authorization = _ws_header(ws, "authorization") or (
-            f"Bearer {token}" if token else _ws_authorization(ws)
-        )
-        if not authorization or not authorization.lower().startswith("bearer "):
-            return metadata
-        # Concurrent chat.send handlers on this connection share the bounded lookup.
-        task = asyncio.create_task(_query_trace_agent_name(scope, authorization))
-        setattr(ws, "_trace_agent_name_lookup", (scope, task))
-    name = await asyncio.shield(task)
-    if not name:
-        return metadata
-
-    ext = dict(metadata.get(REQUEST_EXT_KEY) or {})
-    ext[TRACE_AGENT_NAME_KEY] = {"bot_id": bot_id, "name": name}
-    try:
-        encode_internal_header(ext)
-    except RequestExtCodecError:
-        # A display name must not cause the existing request to exceed the header limit.
-        return metadata
-    return attach_to_metadata(metadata, ext=ext)
 
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
@@ -448,6 +354,7 @@ class WebChannel(BaseWsChannel):
         )
 
         self.delivery = WebDeliveryRegistry()
+        self.trace_agent_names = TraceAgentNameLookup()
         # 3rd-agent Web UI proxy: one northbound port per agent_type.
         self.web_proxy_enabled: bool = False
         self.web_proxy_auth_enabled: bool = True
@@ -2824,7 +2731,15 @@ class WebChannel(BaseWsChannel):
             getattr(ws, "_web_agent_identity", None),
         )
         if method == ReqMethod.CHAT_SEND.value:
-            _meta = await _attach_trace_agent_name(ws, params, _meta, _routing)
+            _meta = await self.trace_agent_names.attach(
+                params=params,
+                metadata=_meta,
+                routing=_routing,
+                cluster_id=_ws_cookie(ws, "jiuwenclaw_id"),
+                authorization=_ws_header(ws, "authorization"),
+                access_token=_ws_cookie(ws, USER_ACCESS_TOKEN_COOKIE)
+                or _ws_cookie(ws, _WS_ACCESS_TOKEN_COOKIE),
+            )
         user_message = Message(
             id=req_id,
             type="req",
