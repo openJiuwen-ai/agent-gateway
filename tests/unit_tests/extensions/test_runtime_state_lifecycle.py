@@ -14,8 +14,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent_gateway.southbound.orchestration import delegated_router as routed
-from agent_gateway.southbound.orchestration.delegated_router import (
+from agent_gateway.extensions.runtime_management_extension import runtime_routed_client as routed
+from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import (
     RuntimeRoutedAgentClient,
     _RpcOrigin,
 )

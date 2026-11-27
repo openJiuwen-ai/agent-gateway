@@ -12,8 +12,8 @@ import asyncio
 import httpx
 import pytest
 
-from agent_gateway.southbound.orchestration import delegated_router as runtime_client_module
-from agent_gateway.southbound.orchestration.delegated_router import (
+from agent_gateway.extensions.runtime_management_extension import runtime_routed_client as runtime_client_module
+from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import (
     RuntimeRoutedAgentClient,
 )
 from agent_gateway.southbound.control.runtime import (

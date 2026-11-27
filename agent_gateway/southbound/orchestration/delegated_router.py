@@ -21,21 +21,13 @@ from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
 from agent_gateway.common.request_identity import web_routing_identity
-from agent_gateway.extensions.runtime_management_extension.agent_authorization import (
-    authorize_agent,
-)
-from agent_gateway.extensions.runtime_management_extension.invoke_ids import (
-    apply_invoke_ids_to_envelope,
-)
-from agent_gateway.extensions.runtime_management_extension.pod_http_client import (
-    HttpSseAgentServerClient,
-)
 from agent_gateway.southbound.control.runtime import (
     FatalRouteError,
     RetryableRouteError,
     RuntimeSessionRouteClient,
 )
 from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.southbound.data.http_sse import HttpSseConnection
 from agent_gateway.southbound.data.push_hub import EndpointPushPool
 
 logger = logging.getLogger(__name__)
@@ -352,19 +344,24 @@ class DelegatedRouter(AgentServerClient):
         self,
         *,
         route_client: RuntimeSessionRouteClient | None = None,
-        http_client: HttpSseAgentServerClient | None = None,
+        authorize: Callable[[E2AEnvelope], Awaitable[tuple[str, str, str] | None]],
+        prepare_envelope: Callable[[E2AEnvelope], Any],
+        http_factory: Callable[..., HttpSseConnection],
+        http_client: HttpSseConnection | None = None,
         touch_interval_seconds: float = _TOUCH_INTERVAL_SECONDS,
         route_attempts: int = _ROUTE_ATTEMPTS,
     ) -> None:
         self._route = route_client or RuntimeSessionRouteClient()
         self._owns_route = route_client is None
-        self._http = http_client or HttpSseAgentServerClient()
+        self._authorize = authorize
+        self._prepare_envelope = prepare_envelope
+        self._http = http_client if http_client is not None else http_factory()
         self._owns_http = http_client is None
         self._touch_interval_seconds = max(0.0, float(touch_interval_seconds))
         self._route_attempts = max(1, int(route_attempts))
         self._connected = False
         self._on_server_push: Callable[[dict[str, Any]], Awaitable[None]] | None = None
-        self._push_pool = EndpointPushPool(lambda: HttpSseAgentServerClient(retry_push_connect=False))
+        self._push_pool = EndpointPushPool(lambda: http_factory(retry_push_connect=False))
         self._pod_clients = self._push_pool.clients  # compatibility with readiness observers
         self._rpc_origins: OrderedDict[tuple[str, str], _RpcOrigin] = OrderedDict()
         self._last_rebind_warn = 0.0   # rebind 降级告警节流（滚动期旧 runtime 404 防刷屏）
@@ -411,7 +408,7 @@ class DelegatedRouter(AgentServerClient):
             # session_id 与读取侧（acp.tool_response 分支）同口径：先取推送
             # wire 顶层，缺失时回退 payload（部分 Pod 推送帧不带顶层键）。
             key = (
-                str(wire.get("session_id") or payload.get("session_id") or ""),
+                _first_text(wire.get("session_id"), payload.get("session_id")),
                 str(rpc["id"]),
             )
             origin = self._remember_rpc_origin(key, base_url)
@@ -501,12 +498,12 @@ class DelegatedRouter(AgentServerClient):
         self, envelope: E2AEnvelope, *, timeout: float | None = None,
     ) -> AgentResponse:
         self._ensure_connected()
-        authorized_identity = await authorize_agent(envelope)
+        authorized_identity = await self._authorize(envelope)
         if envelope.method == "acp.tool_response":
             params = envelope.params or {}
             key = (
-                str(envelope.session_id or params.get("session_id") or ""),
-                str(params.get("jsonrpc_id") or ""),
+                _first_text(envelope.session_id, params.get("session_id")),
+                str(params["jsonrpc_id"]) if params.get("jsonrpc_id") is not None else "",
             )
             now = time.monotonic()
             origin = self._rpc_origins.pop(key, None)
@@ -539,7 +536,7 @@ class DelegatedRouter(AgentServerClient):
         if _is_heartbeat_envelope(envelope):
             return self._heartbeat_response(envelope)
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
-        apply_invoke_ids_to_envelope(envelope)
+        self._prepare_envelope(envelope)
         if _is_routeless_envelope(envelope):
             base_url = _routeless_base_or_raise(envelope.method)
             try:
@@ -694,7 +691,7 @@ class DelegatedRouter(AgentServerClient):
         self, envelope: E2AEnvelope
     ) -> AsyncIterator[AgentResponseChunk]:
         self._ensure_connected()
-        authorized_identity = await authorize_agent(envelope)
+        authorized_identity = await self._authorize(envelope)
         if _is_heartbeat_envelope(envelope):
             yield AgentResponseChunk(
                 request_id=str(envelope.request_id or ""),
@@ -704,7 +701,7 @@ class DelegatedRouter(AgentServerClient):
             )
             return
         # 对齐旧 RuntimeManagement：发 Agent 前补齐并 MD5 service/agent/workspace。
-        apply_invoke_ids_to_envelope(envelope)
+        self._prepare_envelope(envelope)
         if _is_routeless_envelope(envelope):
             base_url = _routeless_base_or_raise(str(envelope.method or ""))
             async for chunk in self._http.send_request_stream(
@@ -1057,7 +1054,3 @@ class DelegatedRouter(AgentServerClient):
                 exc_info=True,
             )
             return None
-
-
-class RuntimeRoutedAgentClient(DelegatedRouter):
-    """Compatibility entry point for the Runtime extension and existing callers."""

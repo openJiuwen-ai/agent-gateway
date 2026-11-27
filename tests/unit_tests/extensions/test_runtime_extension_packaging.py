@@ -39,7 +39,7 @@ def clean_env(monkeypatch):
 
 
 def _reload_routed():
-    import agent_gateway.southbound.orchestration.delegated_router as module
+    import agent_gateway.extensions.runtime_management_extension.runtime_routed_client as module
 
     return importlib.reload(module)
 
@@ -75,7 +75,7 @@ def test_legacy_runtime_modules_are_aliases():
     from agent_gateway.southbound.orchestration import delegated_router
     from agent_gateway.southbound.control import runtime
 
-    assert runtime_routed_client is delegated_router
+    assert issubclass(runtime_routed_client.RuntimeRoutedAgentClient, delegated_router.DelegatedRouter)
     assert session_route_client is runtime
 
 
@@ -205,3 +205,26 @@ def test_extension_sources_do_not_import_runtime_sdk():
     for path in _EXT_DIR.glob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert "import openjiuwen_runtime_management" not in text, path
+
+
+def test_runtime_exception_identity():
+    from agent_gateway.extensions.runtime_management_extension import agent_authorization, session_route_client
+    from agent_gateway.southbound.control import runtime
+
+    assert agent_authorization.FatalRouteError is session_route_client.FatalRouteError is runtime.FatalRouteError
+
+
+def test_delegated_router_import_does_not_require_runtime_extension():
+    code = """
+import sys
+
+class BlockRuntimeExtension:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith('agent_gateway.extensions.runtime_management_extension'):
+            raise ModuleNotFoundError(fullname)
+
+sys.meta_path.insert(0, BlockRuntimeExtension())
+from agent_gateway.southbound.orchestration.delegated_router import DelegatedRouter
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
