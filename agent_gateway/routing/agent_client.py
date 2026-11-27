@@ -36,6 +36,8 @@ async def _stamp_expert_packages(envelope: E2AEnvelope) -> None:
 class WebSocketAgentServerClient(WebSocketConnection, AgentServerClient):
     """Compatibility client for existing northbound and router callers."""
 
+    shared_directory_layout = True
+
     async def _prepare_envelope(self, envelope: E2AEnvelope) -> None:
         await _stamp_expert_packages(envelope)
 

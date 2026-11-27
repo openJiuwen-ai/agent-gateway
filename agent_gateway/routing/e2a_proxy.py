@@ -34,10 +34,7 @@ from e2a.gateway_normalize import e2a_from_agent_fields
 from e2a.message import ReqMethod
 from agent_gateway.common.request_identity import apply_routing_metadata
 from agent_gateway.telemetry import bind_request_trace, current_request_trace, ensure_request_trace, start_request_trace
-from agent_gateway.routing.agent_client import (
-    DuplicateRequestIdError,
-    WebSocketAgentServerClient,
-)
+from agent_gateway.routing.agent_client import DuplicateRequestIdError
 from agent_gateway.routing.agent_request_timeout import (
     AGENT_SERVER_TIMEOUT_CODE,
     AGENT_SERVER_TIMEOUT_ERROR,
@@ -59,10 +56,7 @@ def _agent_unavailable(agent_client: Any) -> bool:
     # Compatible clients without readiness keep their existing send behavior.
     if getattr(agent_client, "server_ready", True) is not False:
         return False
-    return not (
-        isinstance(agent_client, WebSocketAgentServerClient)
-        and agent_client.can_reconnect
-    )
+    return getattr(agent_client, "can_reconnect", False) is not True
 
 
 def _new_fetch_request_id() -> str:
@@ -103,13 +97,13 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
 
 
 def is_legacy_shared_directory_client(agent_client: Any) -> bool:
-    """Whether this is the default local WebSocket AgentServer client.
+    """Whether the deployment explicitly shares its user directory with Gateway.
 
     Channel handlers use this to distinguish the single-user shared-directory
     layout from remote/AgentOS clients.  It does not authorize a Gateway-side
     adapter substitute for AgentServer RPCs.
     """
-    return isinstance(agent_client, WebSocketAgentServerClient)
+    return getattr(agent_client, "shared_directory_layout", False) is True
 
 
 @contextmanager
