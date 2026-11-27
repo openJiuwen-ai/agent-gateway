@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Collection
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,7 +97,8 @@ class _TtlSingleFlightCache:
     def __init__(self, ttl_seconds: float = 3600.0) -> None:
         self._ttl = ttl_seconds
         self._entries: dict[str, _CacheEntry] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        # 每条登记一个 (锁, 使用者数)。锁只在还有调用方持有/等待时留在表里。
+        self._locks: dict[str, tuple[asyncio.Lock, int]] = {}
         self._meta_lock: asyncio.Lock | None = None
         self._ops_since_purge = 0
         self._generation = 0
@@ -104,10 +106,11 @@ class _TtlSingleFlightCache:
     def invalidate(self) -> None:
         self._generation += 1
         self._entries.clear()
-        self._locks.clear()
 
     def invalidate_key(self, key: str) -> None:
         self._entries.pop(key, None)
+        # 锁由最后一个使用者退出时回收; 这里不能摘锁, 否则已经进入
+        # get_or_fetch 但还在等锁的调用方会被后来者绕过, 单飞去重失效。
 
     def _purge_expired(self) -> None:
         """丢掉过期条目，避免 TTL 失效后条目长期占内存。"""
@@ -127,15 +130,31 @@ class _TtlSingleFlightCache:
         self._ops_since_purge = 0
         self._purge_expired()
 
-    async def _lock_for(self, key: str) -> asyncio.Lock:
+    @asynccontextmanager
+    async def _lock(self, key: str):
+        """Hold the key's single-flight lock while it is registered.
+
+        登记先于等待: 即使条目在等待期间失效, 后来者仍会排在同一个锁上。
+        最后一个使用者退出时摘除登记, 不留空锁。
+        """
         if self._meta_lock is None:
             self._meta_lock = asyncio.Lock()
-        async with self._meta_lock:
-            lock = self._locks.get(key)
-            if lock is None:
-                lock = asyncio.Lock()
-                self._locks[key] = lock
-            return lock
+        meta = self._meta_lock
+        async with meta:
+            lock, users = self._locks.get(key, (asyncio.Lock(), 0))
+            self._locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            async with meta:
+                entry = self._locks.get(key)
+                if entry is not None and entry[0] is lock:
+                    users = entry[1] - 1
+                    if users:
+                        self._locks[key] = (lock, users)
+                    else:
+                        self._locks.pop(key, None)
 
     def _fresh(self, key: str) -> Any | None:
         entry = self._entries.get(key)
@@ -152,8 +171,7 @@ class _TtlSingleFlightCache:
         if hit is not None:
             return hit
         generation = self._generation
-        lock = await self._lock_for(key)
-        async with lock:
+        async with self._lock(key):
             hit = self._fresh(key)
             if hit is not None:
                 return hit

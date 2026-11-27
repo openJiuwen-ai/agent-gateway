@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import heapq
+import itertools
 import json
 import logging
 import time
@@ -407,6 +408,10 @@ class CronSchedulerService:
         self._lifecycle_mutation_lock = asyncio.Lock()
         self._hiding_projects: set[str] = set()
         self._project_admission_revisions: dict[str, int] = {}
+        # 单调发号器: 任何发出去过的版本号都不复用, 即使中间 forget 过。
+        self._project_admission_sequence = itertools.count(1)
+        # 没有条目的项目共用的缺席版本号; forget 时推进, 让在飞判定作废。
+        self._project_admission_absence_revision = 0
         self._lifecycle_owners: set[str] = {""}
         from agent_gateway.cron.lifecycle_owners import LifecycleOwners
         # 登记谁跑过任务，方便网关重启后还能找到这个人。跟任务文件放在一起。
@@ -1313,16 +1318,39 @@ class CronSchedulerService:
         flight: they answer for the pre-hide state and must not let a job run.
         """
         self._hiding_projects.add(project_id)
-        self._project_admission_revisions[project_id] = (
-            self._project_admission_revisions.get(project_id, 0) + 1
+        self._project_admission_revisions[project_id] = next(
+            self._project_admission_sequence
         )
 
     def reopen_project_admission(self, project_id: str) -> None:
         """Release the admission fence; verdicts taken while it was held are void."""
-        self._project_admission_revisions[project_id] = (
-            self._project_admission_revisions.get(project_id, 0) + 1
+        self._project_admission_revisions[project_id] = next(
+            self._project_admission_sequence
         )
         self._hiding_projects.discard(project_id)
+
+    def forget_project_admission(self, project_id: str) -> None:
+        """Drop the admission state of a project that no longer exists.
+
+        A removed project has no later state to fence, so keeping its entry
+        would only pin one row per removed project for the lifetime of the
+        process.  The version numbers are allocated from a global monotonic
+        sequence, so dropping the row cannot hand an old value to a later
+        state.  Advancing the absence revision also voids gate queries that
+        read the missing entry before this call; it applies to every project
+        without a row, which only ever errs towards refusing a stale verdict.
+        """
+        self._hiding_projects.discard(project_id)
+        self._project_admission_revisions.pop(project_id, None)
+        self._project_admission_absence_revision = next(
+            self._project_admission_sequence
+        )
+
+    def _project_admission_revision(self, project_id: str) -> int:
+        """Current admission revision, or the epoch shared by absent rows."""
+        return self._project_admission_revisions.get(
+            project_id, self._project_admission_absence_revision
+        )
 
     async def project_execution_allowed(
         self,
@@ -1340,7 +1368,7 @@ class CronSchedulerService:
             return True
         from agent_gateway.enterprise import is_enterprise
         from agent_gateway.routing.e2a_proxy import fetch_agent_unary
-        revision = self._project_admission_revisions.get(project_id, 0)
+        revision = self._project_admission_revision(project_id)
         _t0 = time.monotonic()
         # 企业版冷启动 Agent Pod 启动常超过 10s；超时会取消在飞部署并删除正在启动的 Agent Pod。
         # 个人版保持 10s；企业版放宽到 60s 盖过冷启。
@@ -1377,7 +1405,7 @@ class CronSchedulerService:
         # 防止任何路径(如历史数据)让隐藏项目的任务继续跑的执行层闸门。
         return bool(
             ok
-            and revision == self._project_admission_revisions.get(project_id, 0)
+            and revision == self._project_admission_revision(project_id)
             and project_id not in self._hiding_projects
             and payload.get("exists")
             and not payload.get("hidden")

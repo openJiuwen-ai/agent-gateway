@@ -3538,6 +3538,46 @@ async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatc
     assert await pending is False
 
 
+@pytest.mark.asyncio
+async def test_forget_project_admission_releases_revision_and_hide_flag(tmp_path):
+    svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+    svc.close_project_admission("p")
+    assert "p" in svc._project_admission_revisions
+
+    svc.forget_project_admission("p")
+
+    assert "p" not in svc._project_admission_revisions
+    assert "p" not in svc._hiding_projects
+    # 缺席版本号随 forget 前进，forget 前取到的值不会等于之后的状态。
+    stale_absence = svc._project_admission_absence_revision
+    svc.forget_project_admission("other")
+    assert svc._project_admission_absence_revision > stale_absence
+
+
+@pytest.mark.asyncio
+async def test_project_gate_discards_response_crossing_forget(tmp_path, monkeypatch):
+    import asyncio
+    from agent_gateway.routing import e2a_proxy
+
+    svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def stale_response(**kwargs):
+        entered.set()
+        await release.wait()
+        return True, {"exists": True, "hidden": False, "execution_blocked": False}
+
+    monkeypatch.setattr(e2a_proxy, "fetch_agent_unary", stale_response)
+    # 项目从未隐藏过：在飞判定捕获的是缺席版本号，而不是某个条目。
+    pending = asyncio.create_task(svc.project_execution_allowed("p"))
+    await entered.wait()
+    svc.close_project_admission("p")
+    svc.reopen_project_admission("p")
+    svc.forget_project_admission("p")
+    release.set()
+    assert await pending is False
+
+
 # ── 登录免费模型：执行请求携带凭据 ────────────────────────────────────────────
 
 _LOGIN_REF = "0123456789abcdef0123456789abcdef"
