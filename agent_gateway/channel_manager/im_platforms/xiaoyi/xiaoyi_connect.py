@@ -17,7 +17,6 @@ import re
 import ssl
 import time
 import uuid
-from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 from urllib.parse import urlparse
@@ -179,10 +178,6 @@ class XiaoyiChannelConfig:
 XIAOYI_TLS_VERIFY_ENV = "XIAOYI_TLS_VERIFY"
 XIAOYI_CA_BUNDLE_ENV = "XIAOYI_CA_BUNDLE"
 _FALSY_TLS_VALUES = {"0", "false", "no", "off"}
-
-# task_id -> session_id 映射的上限，避免长跑网关按入站消息数线性增长
-_SESSION_TASK_MAP_LIMIT = 4096
-
 
 def _is_ip_host(host: str | None) -> bool:
     """Return True when ``host`` is a literal IPv4/IPv6 address."""
@@ -373,7 +368,7 @@ class XiaoyiChannel(BaseChannel):
         self._running = False
         self._heartbeat_tasks: dict[str, asyncio.Task] = {}  # Heartbeat tasks for each channel
         self._connect_tasks: dict[str, asyncio.Task] = {}  # Connection tasks for each channel
-        self._session_task_map: OrderedDict[str, str] = OrderedDict()
+        self._session_task_map: dict[str, str] = {}
         self._session_heartbeat_tasks: dict[str, asyncio.Task] = {}  # Response heartbeat tasks for each session
         self._stream_text_buffers: dict[str, str] = {}
         self._task_last_activity: dict[str, float] = {}
@@ -1792,13 +1787,10 @@ class XiaoyiChannel(BaseChannel):
         return session_id in self._session_active
 
     def _remember_session_task(self, task_id: str, session_id: str) -> None:
-        """记录 task_id 到 session_id 的映射，超出上限时淘汰最久未用的条目."""
+        """记录 task_id 到 session_id 的映射."""
         if not task_id:
             return
-        self._session_task_map.pop(task_id, None)
         self._session_task_map[task_id] = session_id
-        while len(self._session_task_map) > _SESSION_TASK_MAP_LIMIT:
-            self._session_task_map.popitem(last=False)
 
     def _forget_session_tasks(self, session_id: str) -> None:
         """删除某个会话下的全部 task_id 映射（键是 task_id，需按值匹配）."""
@@ -1857,7 +1849,6 @@ class XiaoyiChannel(BaseChannel):
     def _force_cleanup_session(self, session_id: str) -> None:
         """强制清理会话."""
         self._sessions_marked_for_cleanup.pop(session_id, None)
-        self._session_task_map.pop(session_id, None)
         self._forget_session_tasks(session_id)
         self._reset_accumulated_text(session_id)
 
