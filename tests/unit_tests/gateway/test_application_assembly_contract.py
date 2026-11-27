@@ -274,7 +274,6 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     from agent_gateway.storage_assembly import setup
     from agent_gateway.routing import agent_client, third_agent, session_metadata_remote, mcp_remote
     from agent_gateway.southbound.orchestration import client as southbound_client
-    from agent_gateway.southbound import assembly as southbound_assembly
     from agent_gateway.message_handler import message_handler
     from agent_gateway.channel_manager import channel_manager
     from agent_gateway.channel_manager.persistent_output import resolve_output_file
@@ -308,7 +307,7 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
             super().__init__()
             self.shared_directory_layout = shared_directory_layout
     monkeypatch.setattr(southbound_client, 'SouthboundAgentClient', StaticClient)
-    monkeypatch.setattr(southbound_assembly, 'build_static_client', StaticClient)
+    monkeypatch.setattr(southbound_client, 'build_static_client', StaticClient)
     selected = SimpleNamespace(connect=AsyncMock(side_effect=lambda uri: events.append('extension.connected')), set_or_update_server_config=Mock())
     extension = SimpleNamespace(metadata=SimpleNamespace(id='external', name='external'), get_client=lambda: selected) if extension_client else None
     third = object()

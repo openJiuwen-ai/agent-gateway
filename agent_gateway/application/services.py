@@ -131,8 +131,7 @@ async def assemble_services(
     from agent_gateway.heartbeat import HeartbeatControllerProxy
     from agent_gateway.message_handler.message_handler import MessageHandler
     from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-    from agent_gateway.southbound.assembly import build_static_client
-    from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
+    from agent_gateway.southbound.orchestration.client import SouthboundAgentClient, build_static_client
 
     callback_framework = Runner.callback_framework
     extension_registry = ExtensionRegistry.create_instance(

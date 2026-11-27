@@ -15,7 +15,7 @@ from e2a.models import E2AEnvelope
 from e2a.wire_codec import encode_agent_chunk_for_wire, encode_agent_response_for_wire
 
 from agent_gateway.routing.e2a_proxy import _agent_unavailable, fetch_agent_unary, is_legacy_shared_directory_client
-from agent_gateway.southbound.assembly import build_static_client
+from agent_gateway.southbound.orchestration.client import build_static_client
 from agent_gateway.southbound.contracts import ConnectionTarget, Source, TransportKind
 from agent_gateway.southbound.control.local import FixedTargetControl
 from agent_gateway.southbound.data.websocket import AgentServerUnaryTimeout, DuplicateRequestIdError

@@ -9,10 +9,12 @@ from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
 from agent_gateway.common.client.agent_client import AgentServerClient
-from agent_gateway.southbound.contracts import PushEvent, TransportError
+from agent_gateway.southbound.contracts import ConnectionTarget, PushEvent, TransportError, TransportKind
 from agent_gateway.southbound.control.interfaces import StaticControl
+from agent_gateway.southbound.control.local import FixedTargetControl
 from agent_gateway.southbound.data.transport import StaticWebSocketTransport
 from agent_gateway.southbound.orchestration.interfaces import RoutePolicy, RouteRequest
+from agent_gateway.southbound.orchestration.static_router import StaticRouter
 
 
 class SouthboundAgentClient(AgentServerClient):
@@ -85,3 +87,12 @@ class SouthboundAgentClient(AgentServerClient):
                 if exc.__cause__ is not None:
                     raise exc.__cause__
                 raise
+
+
+def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> SouthboundAgentClient:
+    target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
+    control = FixedTargetControl(target)
+    return SouthboundAgentClient(
+        control, StaticRouter(control), StaticWebSocketTransport(target),
+        shared_directory_layout=shared_directory_layout,
+    )
