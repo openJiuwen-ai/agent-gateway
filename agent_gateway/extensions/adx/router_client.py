@@ -9,7 +9,7 @@ from contextlib import aclosing
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
-from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.extensions.adx.ssh_relay import AdxSshRelay
 from agent_gateway.channel_manager.base import ChannelType
 from agent_gateway.extensions.adx.config import AdxRouterConfig
@@ -25,8 +25,11 @@ from agent_gateway.southbound.orchestration.agent_manager import AgentManager
 from agent_gateway.southbound.orchestration.managed_router import ManagedRouter
 
 
-class AdxRouterClient(AdxFileMixin, AgentServerClient):
+class AdxRouterClient(AdxFileMixin, SouthboundAgentClient):
     """ADX platform entry point, with lifecycle and request coordination delegated."""
+
+    agent_client_mode = "adx_router"
+    managed_routing = True
 
     def __init__(self, config: AdxRouterConfig, *, ws_client_factory: Callable | None = None,
                  control_client: AdxControlClient | None = None,

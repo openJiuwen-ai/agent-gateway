@@ -71,9 +71,7 @@ class _PushCapableAgentOSClient:
 
 
 def _agentos_client_type() -> type:
-    client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "agent_gateway.extensions.agentos.routing"
-    return client_type
+    return type("AgentOSRouterClient", (), {"managed_routing": True})
 
 
 def _cron_push_wire(

@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from agent_gateway.common.client.third_agent import ThirdAgent
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import AgentRuntime
+from agent_gateway.southbound.orchestration.agent_manager import AgentRuntime
 
 if TYPE_CHECKING:
-    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+    from agent_gateway.southbound.orchestration.managed_router import (
         AgentOSRouterClient,
     )
 

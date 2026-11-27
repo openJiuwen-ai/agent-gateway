@@ -619,15 +619,14 @@ async def serve_file_chunks(
 
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
-    from agent_gateway.extensions.agentos.agentos_router.router_client import (
+    from agent_gateway.routing.container_files import (
         AgentOSFileTransferError,
-        AgentOSRouterClient,
     )
     from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
     from agent_gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
-    if not isinstance(client, AgentOSRouterClient) and not is_agentos_routing_client(client):
+    if not is_agentos_routing_client(client):
         return
 
     prefix = FILE_API_PREFIX

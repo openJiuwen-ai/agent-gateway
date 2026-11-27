@@ -153,8 +153,7 @@ async def assemble_services(
     from agent_gateway.health_check import GatewayHealthCheckService, HealthCheckConfig
     from agent_gateway.heartbeat import HeartbeatControllerProxy
     from agent_gateway.message_handler.message_handler import MessageHandler
-    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
-    from agent_gateway.southbound.orchestration.client import SouthboundAgentClient, build_static_client
+    from agent_gateway.southbound.orchestration.client import assemble_client
 
     from agent_gateway.application.preparation import callback_framework, preload_callback_modules
     extension_registry = ExtensionRegistry.create_instance(
@@ -167,7 +166,6 @@ async def assemble_services(
     from agent_gateway.agent_client_mode import (
         _validate_agent_client_registration,
         read_agent_client_mode,
-        resolve_agent_server_client,
         validate_agent_client_configuration,
     )
 
@@ -221,16 +219,9 @@ async def assemble_services(
     if using_adx_router:
         if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
             raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
-    client = resolve_agent_server_client(
-        agent_server_ext,
-        mode=agent_client_mode,
-        websocket_factory=lambda: (
-            WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
-            if is_enterprise() else build_static_client(agent_server_url, shared_directory_layout=True)
-        ),
+    client = assemble_client(
+        agent_server_ext, mode=agent_client_mode, enterprise=is_enterprise(), uri=agent_server_url,
     )
-    if isinstance(client, WebSocketAgentServerClient):
-        client.shared_directory_layout = agent_server_ext is None and not is_enterprise()
     if agent_server_ext is not None:
         logger.info("[App] using extension AgentServerClient: %s", agent_server_ext.metadata.name)
 
@@ -243,11 +234,11 @@ async def assemble_services(
     else:
         third_agent = get_unsupported_third_agent()
 
-    # 如果是 WebSocket 客户端，需要连接；如果是 YuanrongFrontendAgentClient，无需连接
+    # 固定目标需要启动握手；动态路由客户端按需连接目标。
     from agent_gateway.application.preparation import preload_web_modules
 
     async def connect():
-        if isinstance(client, (WebSocketAgentServerClient, SouthboundAgentClient)):
+        if getattr(client, "requires_initial_connection", False) is True:
             await connect_with_retry(
                 client, agent_server_url,
                 max_retries=max_retries, interval=retry_interval,

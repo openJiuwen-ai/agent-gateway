@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Northbound client facade for the fixed-target southbound assembly."""
+"""Northbound southbound-client contract and fixed-target implementation."""
 
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 from e2a.agent_models import AgentResponse, AgentResponseChunk
 from e2a.models import E2AEnvelope
 
+from agent_gateway.agent_client_mode import resolve_agent_server_client
 from agent_gateway.common.client.agent_client import AgentServerClient
 from agent_gateway.southbound.contracts import ConnectionTarget, PushEvent, TransportError, TransportKind
 from agent_gateway.southbound.control.interfaces import StaticControl
@@ -18,7 +19,32 @@ from agent_gateway.southbound.orchestration.static_router import StaticRouter
 
 
 class SouthboundAgentClient(AgentServerClient):
-    """Personal-mode orchestration using an immutable local target."""
+    """Common northbound entry point with explicit deployment capabilities.
+
+    agent_client_mode identifies the client mode. The runtime selection and
+    Web handlers use "runtime" explicitly; other values describe the client.
+    Extension registration still validates configuration against extension IDs.
+
+    shared_directory_layout indicates a shared single-user directory and is
+    consumed by is_legacy_shared_directory_client in channel handlers.
+    requires_initial_connection tells application.services to connect to the
+    configured URI with retries during startup.
+    managed_routing is consumed by is_agentos_routing_client for managed
+    per-user AgentOS/ADX routing.
+    """
+
+    agent_client_mode: str | None = None
+
+    shared_directory_layout = False
+    requires_initial_connection = False
+    managed_routing = False
+
+
+class StaticAgentClient(SouthboundAgentClient):
+    """Fixed-target orchestration using an immutable AgentServer target."""
+
+    agent_client_mode = "websocket"
+    requires_initial_connection = True
 
     def __init__(self, control: StaticControl, router: RoutePolicy, transport: StaticWebSocketTransport,
                  *, shared_directory_layout: bool = False) -> None:
@@ -92,7 +118,28 @@ class SouthboundAgentClient(AgentServerClient):
 def build_static_client(uri: str, *, shared_directory_layout: bool = False) -> SouthboundAgentClient:
     target = ConnectionTarget(TransportKind.WEBSOCKET, uri)
     control = FixedTargetControl(target)
-    return SouthboundAgentClient(
+    return StaticAgentClient(
         control, StaticRouter(control), StaticWebSocketTransport(target),
         shared_directory_layout=shared_directory_layout,
     )
+
+
+def assemble_client(extension: Any, *, mode: str, enterprise: bool, uri: str) -> AgentServerClient:
+    """Reuse extension-owned clients and select the default fixed deployment.
+
+    Preserve extension-declared layout capabilities, except for the legacy
+    WebSocket client whose layout is determined by deployment assembly.
+    """
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+
+    def websocket_factory() -> AgentServerClient:
+        if not enterprise:
+            return build_static_client(uri, shared_directory_layout=True)
+        client = WebSocketAgentServerClient(ping_interval=20.0, ping_timeout=600.0)
+        client.shared_directory_layout = False
+        return client
+
+    client = resolve_agent_server_client(extension, mode=mode, websocket_factory=websocket_factory)
+    if extension is not None and isinstance(client, WebSocketAgentServerClient):
+        client.shared_directory_layout = False
+    return client

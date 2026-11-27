@@ -27,7 +27,7 @@ from agent_gateway.channel_manager.web.channel_sync import (
     merge_channel_snapshots,
     select_channel_snapshot,
 )
-from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 from agent_gateway.southbound.orchestration.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateInterrupted,
@@ -620,8 +620,10 @@ def _validate_agent_workspace(workspace: Path) -> None:
         raise ValueError(f"agent workspace is not a directory: {workspace}")
 
 
-class ManagedRouter(AgentServerClient):
+class ManagedRouter(SouthboundAgentClient):
     """Request and lifecycle coordination for managed AgentServer instances."""
+
+    managed_routing = True
 
     def __init__(
         self,
@@ -4394,6 +4396,8 @@ class ManagedRouter(AgentServerClient):
 
 class AgentOSRouterClient(ManagedRouter):
     """AgentOS compatibility entry point for the shared managed router."""
+
+    agent_client_mode = "agentos_router"
 
     def __init__(self, yuanrong: YuanrongFrontendAgentClient, registry: RegistryClient,
                  agent_manager: AgentManager, *args, **kwargs) -> None:
