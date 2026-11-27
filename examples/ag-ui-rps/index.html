@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>猜拳俱乐部 · AI 对战</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.mjs"></script>
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">AG-UI PLAYGROUND / 01</span><span class="tag">人类 × AI</span></header>
+    <section class="intro">
+      <h1>猜拳<span>俱乐部。</span></h1>
+      <p>凭直觉出手，和 AI 过两招。</p>
+    </section>
+    <details class="connection" open>
+      <summary>连接你的 AI 对手</summary>
+      <div class="fields">
+        <label>Gateway 地址<input id="endpoint" type="url" value="http://127.0.0.1:19500/api/ag-ui/run" spellcheck="false" autocomplete="off"></label>
+        <label>Bearer token（可选）<input id="token" type="password" placeholder="仅在部署要求认证时填写" autocomplete="off"></label>
+      </div>
+      <p class="hint">需要已接入 App 工具能力的宿主，并允许当前页面 Origin。连接后点击下方手势即可开始。</p>
+      <p class="hint" id="origin-hint"></p>
+    </details>
+    <section class="arena" aria-label="猜拳对战区">
+      <div class="scoreboard" aria-label="比分">
+        <div><span>你赢</span><strong id="player-score">0</strong></div>
+        <div><span>平局</span><strong id="draw-score">0</strong></div>
+        <div><span>AI 赢</span><strong id="ai-score">0</strong></div>
+      </div>
+      <div class="matchup">
+        <div><span class="hand" id="player-hand">✊</span><span>你</span><strong id="player-move">准备出拳</strong></div>
+        <span class="versus">VS</span>
+        <div><span class="hand" id="ai-hand">✊</span><span>AI 对手</span><strong id="ai-move">等你挑战</strong></div>
+      </div>
+      <p id="status" role="status" aria-live="polite">选择你的手势，开启第 1 回合</p>
+      <div class="choices" aria-label="选择手势">
+        <button type="button" data-move="rock"><span>✊</span>石头<small>ROCK</small></button>
+        <button type="button" data-move="scissors"><span>✌️</span>剪刀<small>SCISSORS</small></button>
+        <button type="button" data-move="paper"><span>🖐️</span>布<small>PAPER</small></button>
+      </div>
+      <p class="hint">你的出拳在 AI 出手前只保存在浏览器里。石头胜剪刀，剪刀胜布，布胜石头。</p>
+    </section>
+    <section class="comment"><span class="eyebrow">AI 的场边话</span><p id="commentary">对手已就位，等你先出手。</p></section>
+    <section class="history">
+      <div class="section-title"><h2>对局记录</h2><button type="button" id="reset">新开一局 ↗</button></div>
+      <p id="empty-history" class="hint">还没有交手记录。第一招，你来。</p>
+      <ol id="history" aria-label="已完成回合"></ol>
+    </section>
+    <footer>AI 负责出拳，App 负责判分。刷新页面会清空当前对局。</footer>
+  </main>
+</body>
+</html>

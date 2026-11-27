@@ -19,6 +19,7 @@
 
 | 文档 | 说明 |
 | --- | --- |
+| [AG-UI 接入指南](zh/AG-UI.md) | Gateway 侧配置、会话与应用工具闭环 |
 | [local-validation](zh/how-to/local-validation.md) | 完整的本地功能验证步骤、期望输出与排错 |
 | [configure-channels](zh/how-to/configure-channels.md) | 配置飞书、钉钉、企业微信、Telegram、Discord、Slack 等 IM 渠道 |
 | [run-multiple-instances](zh/how-to/run-multiple-instances.md) | 在同一台机器上隔离运行多个 Gateway + AgentServer 实例 |

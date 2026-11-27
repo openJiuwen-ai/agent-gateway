@@ -132,6 +132,7 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
         attach_mcp_oauth_routes,
     )
     from agent_gateway.channel_manager.web.web_http_auth import register_auth_routes
+    from agent_gateway.channel_manager.protocol.ag_ui.http import attach_ag_ui_routes
     from agent_gateway.channel_manager.web.webui_resource_http import (
         attach_webui_resource_routes,
     )
@@ -181,6 +182,7 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
         from agent_gateway.channel_manager.web.personal_share_api import register_personal_share_routes
 
         register_personal_share_routes(app, channel)
+    attach_ag_ui_routes(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

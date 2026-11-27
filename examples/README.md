@@ -5,6 +5,7 @@
 | 示例 | 用途 | 依赖 |
 | --- | --- | --- |
 | [mock-agent-server](mock-agent-server/) | 用 Mock AgentServer 模拟下游，验证 Gateway 启动与 `/tui` 路由的完整往返 | 仅本仓依赖，无需模型配置 |
+| [ag-ui-rps](ag-ui-rps/) | 猜拳 HTML App，AI 调用工具出拳，浏览器揭晓、判分并展示对局记录 | 静态 HTTP 服务；宿主须接入三类通用能力并配置模型 |
 
 ## 使用方式
 
