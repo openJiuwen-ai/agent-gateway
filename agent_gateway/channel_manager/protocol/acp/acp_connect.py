@@ -787,6 +787,7 @@ class AcpChannel(BaseChannel):
         self._running = False
         for request_id in list(self._request_ctx.keys()):
             await self._clear_request_context(request_id)
+        self._session_ctx.clear()
         self._pending_client_rpc_session_by_id.clear()
         await self._close_gateway_connection()
 
