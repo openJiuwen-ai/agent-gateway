@@ -98,17 +98,20 @@ def test_enterprise_trusted_identity_wins_when_params_match(enterprise):
         "bot_id": "bot-1",
         "relative_path": "a.txt",
     }
-    uid, gid, bid = _bind_trusted_identity(ws, params, user_id="alice")
+    uid, gid, bid, aid = _bind_trusted_identity(ws, params, user_id="alice")
     assert (uid, gid, bid) == ("alice", "__none__", "bot-1")
     assert params["user_id"] == "alice"
+    # 连接未 pin agent_id 时，params 无 agent_id → 写回空串（非 None）。
+    assert aid == ""
+    assert params["agent_id"] == ""
 
 
 def test_personal_may_fallback_to_params(personal):
     ws = SimpleNamespace(_web_routing={})
-    uid, gid, bid = _identity_for_forward(
+    uid, gid, bid, aid = _identity_for_forward(
         ws, {"user_id": "local", "group_id": "g", "bot_id": "b"}
     )
-    assert (uid, gid, bid) == ("local", "g", "b")
+    assert (uid, gid, bid, aid) == ("local", "g", "b", "")
 
 
 @pytest.mark.asyncio
@@ -468,3 +471,84 @@ def test_local_download_payload_uses_token_near_e2a_limit(monkeypatch, tmp_path)
     edge = ws_mod._local_download_payload({}, "edge.bin")
     assert "content_b64" in edge
     assert len(base64.b64decode(edge["content_b64"])) == E2A_PAYLOAD_MAX_BYTES
+
+
+# ── PR #426 检视 P2-1：agent_id 受信化 ──
+
+
+def test_enterprise_agent_id_conflict_when_connection_pinned(enterprise):
+    """连接级 pin agent_id 时，客户端 params 携带不同 agent_id → IDENTITY_CONFLICT。
+
+    防止同一连接内 per-request 篡改 agent_id 命中不同配额策略造成配额绕过。
+    受信 agent_id 来自 ``ws._web_agent_identity``（握手期 Manager 写入的展示身份），
+    而非 ``_web_routing``（其字段集合不含 agent_id）。
+    """
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "alice",
+            "group_id": "__none__",
+            "bot_id": "bot-1",
+        },
+        _web_agent_identity={"agent_id": "agent-1"},
+    )
+    with pytest.raises(WorkspaceIdentityError) as ei:
+        _identity_for_forward(
+            ws,
+            {"user_id": "alice", "group_id": "__none__", "bot_id": "bot-1", "agent_id": "agent-2"},
+            user_id="alice",
+        )
+    assert ei.value.code == "IDENTITY_CONFLICT"
+    assert ei.value.field == "agent_id"
+
+
+def test_enterprise_agent_id_trusted_wins_when_pinned(enterprise):
+    """连接级 pin agent_id 时，受信值覆盖客户端值并写回 params。"""
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "alice",
+            "group_id": "__none__",
+            "bot_id": "bot-1",
+        },
+        _web_agent_identity={"agent_id": "agent-1"},
+    )
+    params = {
+        "user_id": "alice",
+        "group_id": "__none__",
+        "bot_id": "bot-1",
+        "agent_id": "agent-1",
+    }
+    uid, gid, bid, aid = _bind_trusted_identity(ws, params, user_id="alice")
+    assert aid == "agent-1"
+    assert params["agent_id"] == "agent-1"
+
+
+def test_enterprise_agent_id_empty_when_not_pinned_even_if_client_carries_value(enterprise):
+    """连接级未 pin agent_id 时，返回空串而非客户端值（防配额绕过）。
+
+    若采用客户端 params 中的 ``agent_id``，客户端可在同一已认证连接内 per-request
+    改 ``agent_id`` 命中另一个 Agent 维度的配额策略，绕过该 Agent 的限额上限
+    （issue #224 根因）。故未 pin 时 ``agent_id`` 必须不参与匹配。
+    """
+    ws = SimpleNamespace(
+        _web_routing={
+            "user_id": "alice",
+            "group_id": "__none__",
+            "bot_id": "bot-1",
+        },
+        _web_agent_identity=None,
+    )
+    uid, gid, bid, aid = _identity_for_forward(
+        ws,
+        {"user_id": "alice", "group_id": "__none__", "bot_id": "bot-1", "agent_id": "agent-x"},
+        user_id="alice",
+    )
+    assert aid == ""
+
+
+def test_personal_agent_id_falls_back_to_params(personal):
+    """个人版 agent_id 同 group/bot 一样可由 params 兜底。"""
+    ws = SimpleNamespace(_web_routing={})
+    uid, gid, bid, aid = _identity_for_forward(
+        ws, {"user_id": "local", "group_id": "g", "bot_id": "b", "agent_id": "a1"}
+    )
+    assert (uid, gid, bid, aid) == ("local", "g", "b", "a1")

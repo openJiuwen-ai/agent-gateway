@@ -54,6 +54,9 @@ WORKSPACE_QUOTA_USAGE_TABLE_DEF = TableDefinition(
         ColumnDefinition("user_id", "string", length=64, nullable=False),
         ColumnDefinition("group_id", "string", length=64, nullable=False, default=""),
         ColumnDefinition("bot_id", "string", length=64, nullable=False),
+        # agent_id 自 PR #426 起作为行属性存储（供管理端用量视图复算 agent 维度策略）；
+        # 唯一键仍为三元组，既有库由 _ensure_workspace_quota_usage_agent_id_column 补列。
+        ColumnDefinition("agent_id", "string", length=64, nullable=False, default=""),
         ColumnDefinition("used_bytes", "bigint", nullable=False),
         ColumnDefinition("reported_at", "datetime", nullable=False),
         ColumnDefinition("data", "json", nullable=True),

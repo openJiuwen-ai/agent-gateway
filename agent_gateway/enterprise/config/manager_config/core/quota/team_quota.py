@@ -333,6 +333,9 @@ class TeamQuotaPolicyService:
             grouped.setdefault(key, []).append(row)
         items = []
         for (uid, gid, bid), leases in grouped.items():
+            # DB 行不含 agent_id 列（team 配额表无该字段），agent_id 取默认 ""。
+            # request-sourced 构造（jiuwenswarm team/handlers.py）才会填充 agent_id
+            # 使 agent 维度团队配额策略命中（PR #426 检视 P3）。
             limits = self._limits_for(policies, OwnerIdentity(uid, gid, bid))
             teams = [
                 {
