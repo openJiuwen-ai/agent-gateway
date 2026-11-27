@@ -31,14 +31,14 @@ from agent_gateway.extensions.agentos.agentos_router.registry_client import (
     RegistryNotFoundError,
     instance_service_id,
 )
-from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from agent_gateway.southbound.control.managed import ManagedSandboxControl
 
 logger = logging.getLogger(__name__)
 
 
 async def cleanup_stale_sandboxes(
     *,
-    yuanrong: YuanrongFrontendAgentClient,
+    control: ManagedSandboxControl,
     registry: RegistryClient,
     agent_manager: AgentManager,
     is_closed: Callable[[], bool] | None = None,
@@ -72,7 +72,7 @@ async def cleanup_stale_sandboxes(
             async with sandbox_guard(record) if sandbox_guard is not None else nullcontext(None) as retire:
                 await _cleanup_one(
                     record,
-                    yuanrong=yuanrong,
+                    control=control,
                     registry=registry,
                     agent_manager=agent_manager,
                     retire=retire,
@@ -89,7 +89,7 @@ async def cleanup_stale_sandboxes(
 async def _cleanup_one(
     record: InstanceRecord,
     *,
-    yuanrong: YuanrongFrontendAgentClient,
+    control: ManagedSandboxControl,
     registry: RegistryClient,
     agent_manager: AgentManager,
     retire: Callable[[], Awaitable[bool]] | None = None,
@@ -100,14 +100,14 @@ async def _cleanup_one(
         "agent_type": record.framework,
     }) as operation, bind_cleanup_trace(operation):
         await _cleanup_one_impl(
-            record, yuanrong=yuanrong, registry=registry, agent_manager=agent_manager, retire=retire,
+            record, control=control, registry=registry, agent_manager=agent_manager, retire=retire,
         )
 
 
 async def _cleanup_one_impl(
     record: InstanceRecord,
     *,
-    yuanrong: YuanrongFrontendAgentClient,
+    control: ManagedSandboxControl,
     registry: RegistryClient,
     agent_manager: AgentManager,
     retire: Callable[[], Awaitable[bool]] | None = None,
@@ -120,7 +120,7 @@ async def _cleanup_one_impl(
         sandbox_is_live = False
         try:
             if retire is None:
-                await yuanrong.delete_sandbox(instance_id)
+                await control.delete(instance_id)
             elif not await retire():
                 record_cleanup_result("frontend.delete", "skipped", reason="lifecycle_in_progress")
                 record_cleanup_result("registry.unregister", "skipped", reason="lifecycle_in_progress")

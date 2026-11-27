@@ -73,6 +73,22 @@ def normalize_packages(value: Any) -> list[dict[str, str]]:
     return packages
 
 
+def _normalize_swarmflow(value: Any) -> dict[str, Any] | None:
+    """校验 Swarmflow 企业策略 JSON：对象或 null。"""
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("swarmflow must be an object") from exc
+    if not isinstance(value, dict):
+        raise ValueError("swarmflow must be an object")
+    return dict(value)
+
+
 def _normalize_row_fields(payload: dict[str, Any]) -> dict[str, Any]:
     name = str(payload.get("template_name") or "").strip()
     if not name or len(name) > 128:
@@ -86,6 +102,7 @@ def _normalize_row_fields(payload: dict[str, Any]) -> dict[str, Any]:
         "template_name": name,
         "description": description,
         "packages": normalize_packages(payload.get("packages")),
+        "swarmflow": _normalize_swarmflow(payload.get("swarmflow")),
         "enabled": bool(payload.get("enabled", True)),
     }
 
@@ -139,6 +156,7 @@ async def update_expert_package_template(
     normalized = _normalize_row_fields(merged)
     updates["template_name"] = normalized["template_name"]
     updates["packages"] = normalized["packages"]
+    updates["swarmflow"] = normalized["swarmflow"]
     updates["enabled"] = normalized["enabled"]
     if "description" in request.model_dump(exclude_unset=True) or normalized["description"] != row.get("description"):
         updates["description"] = normalized["description"]

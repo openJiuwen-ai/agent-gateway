@@ -68,7 +68,7 @@ Gateway 与 AgentServer 为双进程拆分布局（架构说明见 `docs/zh/expl
 3. **入站回调（白名单转发）**：`_FORWARD_REQ_METHODS`（`app_web_handlers.py:459-696`）内的方法经 `_norm_and_forward`（`app_gateway.py:2522-2548`）归一化后交 MessageHandler → E2A → AgentServer。其中 `_FORWARD_NO_LOCAL_HANDLER_METHODS`（`app_web_handlers.py:709-924`，如 `team.*`、`skills.*`、`session.switch`）转发后即结束（响应由 AgentServer 异步回写）；其余（如 `chat.interrupt`）转发后本地 handler 仍会补发 ack。
 4. **未注册方法**：回 `METHOD_NOT_FOUND`（`web_connect.py:2419-2422`）。
 
-> 2026-11 起 HTTP 入口（企业 `/api/v1` 与 mapped 路由）与 WS 共用统一入站管道 `channel_manager/web/invoke.py`（`dispatch_web_request`）。企业版在该管道前置写保护 `is_enterprise_write_forbidden`（`config.set/save_all`、`models.*` 写方法、`multimodal.*` 四写方法与 agents/teams/extensions/plugins/mcp.server/a2a 前缀、`channel.*.set_conf|unbind`、skills 白名单外 → `FORBIDDEN "企业版配置由管理面统一下发"`）；**该写保护 WS 与 HTTP 双入口共用**——WS 内联分发（`web_connect.py:2574-2576`）接入同一 guard（!65/6a2f245f2 起）。企业版另将 team 控制面 7 方法从转发白名单剔除（见 §5.2）。
+> 2026-11 起 HTTP 入口（企业 `/api/v1` 与 mapped 路由）与 WS 共用统一入站管道 `channel_manager/web/invoke.py`（`dispatch_web_request`）。企业版在该管道前置写保护 `is_enterprise_write_forbidden`（`config.set/save_all`、`models.*` 写方法、`multimodal.*` 四写方法与 agents/teams/extensions/plugins/mcp.server/a2a 前缀、`channel.*.set_conf|unbind`、skills 白名单外 → `FORBIDDEN "企业版配置由管理面统一下发"`）；**该写保护 WS 与 HTTP 双入口共用**，二者均经 `dispatch_web_request` 进入同一 guard（原 WS 内联分发已移除）。企业版另将 team 控制面 7 方法从转发白名单剔除（见 §5.2）。
 
 ### 1.4 归一化规则（网关改写请求）
 

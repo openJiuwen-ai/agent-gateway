@@ -85,11 +85,8 @@ async def test_disabled_gateway_tracing_preserves_external_context(monkeypatch):
 async def test_disabled_gateway_tracing_preserves_external_context_during_ws(monkeypatch):
     client = object.__new__(router_client.AgentOSRouterClient)
     client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
-    client._ws_clients = {}
-    client._ws_connecting = {}
-    client._ws_connect_traces = {}
+    client._ws_pool = router_client.ManagedWebSocketPool()
     client._preparation_traces = {}
-    client._ws_clients_lock = asyncio.Lock()
     marker = context.create_key("external-ws-context")
     token = context.attach(context.set_value(marker, "preserved"))
     info = SimpleNamespace(
@@ -128,10 +125,7 @@ async def test_shared_trace_non_owner_ws_links_creation(monkeypatch):
         creation = telemetry.start_gateway_trace("gw.agent.create")
     client = object.__new__(router_client.AgentOSRouterClient)
     client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
-    client._ws_clients = {}
-    client._ws_connecting = {}
-    client._ws_connect_traces = {}
-    client._ws_clients_lock = asyncio.Lock()
+    client._ws_pool = router_client.ManagedWebSocketPool()
     owner = asyncio.create_task(asyncio.Event().wait())
     client._preparation_traces = {
         "sandbox": router_client._PreparationTrace(creation, True, owner, registered=True),
@@ -174,17 +168,14 @@ async def test_unconfirmed_ws_is_incomplete_after_successful_registration(monkey
     operation = telemetry.start_gateway_trace("gw.agent.create", root=True)
     client = object.__new__(router_client.AgentOSRouterClient)
     client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
-    client._ws_clients = {}
-    client._ws_connecting = {}
-    client._ws_connect_traces = {}
-    client._ws_clients_lock = asyncio.Lock()
+    client._ws_pool = router_client.ManagedWebSocketPool()
     client._preparation_traces = {
         "sandbox": router_client._PreparationTrace(operation, True, asyncio.current_task(), registered=True),
     }
     info = SimpleNamespace(sandbox_id="sandbox", user_id="user", agent_type="test", metadata={"agent_port": 1234})
     socket = SimpleNamespace(server_ready=False)
     if cached:
-        client._ws_clients["sandbox"] = socket
+        client._ws_pool.clients["sandbox"] = socket
 
     async def wait_running(self, *args, **kwargs):
         pass
@@ -213,10 +204,7 @@ async def test_foreign_ws_leader_cancel_does_not_cancel_preparation(monkeypatch)
         creation = telemetry.start_gateway_trace("gw.agent.create")
     client = object.__new__(router_client.AgentOSRouterClient)
     client._agent_manager = SimpleNamespace(is_current=AsyncMock(return_value=True))
-    client._ws_clients = {}
-    client._ws_connecting = {}
-    client._ws_connect_traces = {}
-    client._ws_clients_lock = asyncio.Lock()
+    client._ws_pool = router_client.ManagedWebSocketPool()
     info = SimpleNamespace(sandbox_id="sandbox", user_id="user", agent_type="test", metadata={"agent_port": 1234})
     runtime = SimpleNamespace(info=info)
     owner_go, entered = asyncio.Event(), asyncio.Event()

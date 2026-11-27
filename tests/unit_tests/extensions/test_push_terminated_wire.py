@@ -33,7 +33,7 @@ import pytest
 from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from e2a.wire_codec import is_e2a_response_wire_dict, parse_agent_server_wire_chunk
 
-from agent_gateway.extensions.runtime_management_extension import pod_http_client
+from agent_gateway.southbound.data import http_sse as pod_http_client
 from agent_gateway.extensions.runtime_management_extension.pod_http_client import (
     HttpSseAgentServerClient,
     _PUSH_TERMINATED_EVENT_TYPE,

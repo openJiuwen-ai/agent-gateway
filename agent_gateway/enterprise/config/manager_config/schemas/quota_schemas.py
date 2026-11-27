@@ -87,3 +87,17 @@ class UsageListQuery(BaseModel):
     )
     bot_id: str | None = Field(default=None, max_length=64)
     limit: int = Field(default=20, ge=1, le=100)
+
+
+class TeamQuotaUserStopRequest(BaseModel):
+    """用户级级联停机：保留这些组织，其余组织下该用户的团队都停掉。
+
+    ``keep_group_ids`` 必须显式传入：删除用户时传 ``[]``。缺字段应被 422 拦下，
+    避免把"调用方漏传"误当成"用户已无任何组织"而停掉该用户的全部团队。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    keep_group_ids: list[str] = Field(
+        description="用户当前仍归属的组织；删除用户时显式传空列表 []"
+    )
