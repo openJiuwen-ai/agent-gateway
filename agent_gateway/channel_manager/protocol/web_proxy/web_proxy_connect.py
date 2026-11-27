@@ -23,8 +23,8 @@ import logging
 import os
 import time
 import urllib.parse
-import weakref
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any
@@ -101,11 +101,9 @@ _WEB_PROXY_REFRESH_TTL_SECONDS = 30.0
 _WEB_PROXY_REFRESH_FAILURE_TTL_SECONDS = 5.0
 _WEB_PROXY_REFRESH_CACHE: dict[str, tuple[str, float]] = {}
 _WEB_PROXY_REFRESH_FAILURES: dict[str, float] = {}
-# 锁只在刷新期间需要被共享；用完没有协程引用时由弱引用字典自动回收，
-# 避免按 refresh token 无限累积。
-_WEB_PROXY_REFRESH_LOCKS: weakref.WeakValueDictionary[str, asyncio.Lock] = (
-    weakref.WeakValueDictionary()
-)
+# key -> (lock, users). A lock is dropped as soon as its last user leaves, so
+# the table only holds refresh tokens that are refreshing right now.
+_WEB_PROXY_REFRESH_LOCKS: dict[str, tuple[asyncio.Lock, int]] = {}
 _WEB_PROXY_REFRESH_LOCKS_GUARD = asyncio.Lock()
 
 
@@ -351,18 +349,32 @@ def _refresh_cache_key(refresh_token: str) -> str:
     return hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
 
 
-async def _refresh_lock_for(key: str) -> asyncio.Lock:
-    """Get the per-refresh-token single-flight lock.
+@asynccontextmanager
+async def _refresh_lock(key: str) -> AsyncIterator[None]:
+    """Hold the per-refresh-token single-flight lock, then release its slot.
 
     The guard only protects dictionary access and is never held during the
     network call, so one slow refresh cannot block other users or agent ports.
+    Reference counting keeps a waiting refresh on the same lock object; the
+    entry is removed once the last user exits, which bounds the table by the
+    number of refreshes in flight instead of the number of tokens ever seen.
     """
     async with _WEB_PROXY_REFRESH_LOCKS_GUARD:
-        lock = _WEB_PROXY_REFRESH_LOCKS.get(key)
-        if lock is None:
-            lock = asyncio.Lock()
-            _WEB_PROXY_REFRESH_LOCKS[key] = lock
-        return lock
+        entry = _WEB_PROXY_REFRESH_LOCKS.get(key)
+        lock, users = entry if entry is not None else (asyncio.Lock(), 0)
+        _WEB_PROXY_REFRESH_LOCKS[key] = (lock, users + 1)
+    try:
+        async with lock:
+            yield
+    finally:
+        async with _WEB_PROXY_REFRESH_LOCKS_GUARD:
+            entry = _WEB_PROXY_REFRESH_LOCKS.get(key)
+            if entry is not None and entry[0] is lock:
+                remaining = entry[1] - 1
+                if remaining > 0:
+                    _WEB_PROXY_REFRESH_LOCKS[key] = (lock, remaining)
+                else:
+                    _WEB_PROXY_REFRESH_LOCKS.pop(key, None)
 
 
 async def _refresh_web_proxy_token(
@@ -388,8 +400,7 @@ async def _refresh_web_proxy_token(
     if failure_until is not None and failure_until > now:
         return None
 
-    lock = await _refresh_lock_for(key)
-    async with lock:
+    async with _refresh_lock(key):
         now = time.monotonic()
         cached = _WEB_PROXY_REFRESH_CACHE.get(key)
         if cached is not None and cached[1] > now:
