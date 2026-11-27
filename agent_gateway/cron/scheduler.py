@@ -1036,14 +1036,24 @@ class CronSchedulerService:
         # 可能超过 grace 窗口（初始化耗时长），此时崩溃重启后的首次 reload
         # 不应被误判为运行期而恢复原先要避免的重复执行风险。
         self._boot_time = self._now_fn()
-        await self.reload()
-        self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
-        if bool(getattr(self._store, "supports_watch", False)):
-            self._watch_task = asyncio.create_task(
-                self._watch_store(),
-                name="cron-store-watch",
-            )
-        logger.info("[Cron] scheduler started")
+        try:
+            await self.reload()
+            self._task = asyncio.create_task(self._loop(), name="cron-scheduler")
+            if bool(getattr(self._store, "supports_watch", False)):
+                self._watch_task = asyncio.create_task(
+                    self._watch_store(),
+                    name="cron-store-watch",
+                )
+            logger.info("[Cron] scheduler started")
+        except BaseException:
+            self._running = False
+            tasks = [task for task in (self._watch_task, self._task) if task is not None]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._watch_task = self._task = None
+            raise
 
     async def _watch_store(self) -> None:
         watch = getattr(self._store, "watch", None)

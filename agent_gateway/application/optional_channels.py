@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from collections.abc import Callable
 import logging
 import os
@@ -16,6 +17,16 @@ _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"
 _DINGTALK_DEFAULT_OAPI_BASE = "https://oapi.dingtalk.com"
 _XIAOYI_DEFAULT_PUSH_URL = "https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook"
+
+
+async def _prepare_channel_module(name: str):
+    """Import declarations off-loop and join non-preemptible imports on shutdown."""
+    task = asyncio.create_task(asyncio.to_thread(import_module, name), name="optional-channel-import")
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 class OptionalChannels:
@@ -314,10 +325,6 @@ class OptionalChannels:
             if not apps:
                 logger.info("[App] channels.feishu.apps empty, FeishuChannel disabled")
             else:
-                from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
-                    FeishuChannel,
-                    FeishuConfig,
-                )
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
@@ -326,6 +333,10 @@ class OptionalChannels:
                         logger.info("[App] channels.feishu.apps[].%s, skipping", reason)
                         continue
 
+                    module = await _prepare_channel_module(
+                        "agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"
+                    )
+                    FeishuChannel, FeishuConfig = module.FeishuChannel, module.FeishuConfig
                     app_id = str(app.get("app_id") or "").strip()
                     persistent_agent_id = str(app.get("persistent_agent_id") or "").strip()
                     channel_id = "feishu"
@@ -392,10 +403,6 @@ class OptionalChannels:
                     "FeishuEnterpriseChannel disabled"
                 )
             else:
-                from agent_gateway.channel_manager.im_platforms.feishu.feishu_connect import (
-                    FeishuChannel,
-                    FeishuConfig,
-                )
                 for bot_key, bot_conf_raw in enterprise_conf.items():
                     if not isinstance(bot_key, str) or not bot_key.strip():
                         continue
@@ -412,6 +419,10 @@ class OptionalChannels:
                         )
                         continue
 
+                    module = await _prepare_channel_module(
+                        "agent_gateway.channel_manager.im_platforms.feishu.feishu_connect"
+                    )
+                    FeishuChannel, FeishuConfig = module.FeishuChannel, module.FeishuConfig
                     bot_key = bot_key.strip()
                     app_id = str(bot_conf.get("app_id") or "").strip()
                     persistent_agent_id = str(bot_conf.get("persistent_agent_id") or "").strip()
@@ -475,10 +486,6 @@ class OptionalChannels:
             if not apps:
                 logger.info("[App] channels.xiaoyi.apps empty, XiaoyiChannel disabled")
             else:
-                from agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
-                    XiaoyiChannel,
-                    XiaoyiChannelConfig,
-                )
                 for app in apps:
                     if not app.get("enabled", True):
                         continue
@@ -487,6 +494,10 @@ class OptionalChannels:
                         logger.info("[App] channels.xiaoyi.apps[].%s, skipping", reason)
                         continue
 
+                    module = await _prepare_channel_module(
+                        "agent_gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect"
+                    )
+                    XiaoyiChannel, XiaoyiChannelConfig = module.XiaoyiChannel, module.XiaoyiChannelConfig
                     api_id = str(app.get("api_id") or "").strip()
                     is_default = app.get("is_default", False) or len(apps) == 1
                     if not api_id and not is_default:

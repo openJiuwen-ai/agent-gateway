@@ -8,7 +8,6 @@ import asyncio
 import logging
 import hashlib
 import json
-import os
 import re
 import time
 from urllib.parse import urlparse
@@ -34,6 +33,10 @@ from agent_gateway.channel_manager.im_platforms.welink.welink_messages import (
 )
 from agent_gateway.channel_manager.im_platforms.welink.welink_poller import (
     MEMBERSHIP_TTL_SECONDS, CursorStore, MembershipStore, WelinkPoller,
+)
+from agent_gateway.channel_manager.im_platforms.welink.welink_reader import (
+    read_checkpoint,
+    write_checkpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,7 +150,7 @@ class WelinkChannel(BaseChannel):
         )
         pending: list[WelinkHistoryMessage] = []
         if pending_path.is_file():
-            for raw in json.loads(pending_path.read_text(encoding="utf-8")):
+            for raw in read_checkpoint(pending_path):
                 raw["media"] = tuple(WelinkMedia(**item) for item in raw.get("media", ()))
                 pending.append(WelinkHistoryMessage(**raw))
         while self._running:
@@ -158,7 +161,9 @@ class WelinkChannel(BaseChannel):
                 if self._auth_ok_at > 0:
                     if not pending:
                         pending = await asyncio.to_thread(poller.poll)
-                        await asyncio.to_thread(self._save_pending, pending_path, pending)
+                        await asyncio.to_thread(
+                            write_checkpoint, pending_path, [asdict(message) for message in pending]
+                        )
                     while pending:
                         message = pending[0]
                         if not self._running:
@@ -166,13 +171,17 @@ class WelinkChannel(BaseChannel):
                         registered = getattr(poller, "_registered_groups", None)
                         if registered is not None and message.group_id not in registered():
                             pending.pop(0)
-                            await asyncio.to_thread(self._save_pending, pending_path, pending)
+                            await asyncio.to_thread(
+                                write_checkpoint, pending_path, [asdict(message) for message in pending]
+                            )
                             continue
                         accepted = await self._deliver(message)
                         if accepted:
                             poller.commit(message.group_id, message.message_id)
                             pending.pop(0)
-                            await asyncio.to_thread(self._save_pending, pending_path, pending)
+                            await asyncio.to_thread(
+                                write_checkpoint, pending_path, [asdict(message) for message in pending]
+                            )
                         else:
                             break
             except asyncio.CancelledError:
@@ -180,17 +189,6 @@ class WelinkChannel(BaseChannel):
             except Exception:
                 logger.warning("[Welink] poll failed", exc_info=True)
             await asyncio.sleep(max(self.config.poll_interval_seconds, 1))
-
-    @staticmethod
-    def _save_pending(path: Path, messages: list[WelinkHistoryMessage]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            temporary.chmod(0o600)
-            json.dump([asdict(message) for message in messages], stream, ensure_ascii=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
 
     async def stop(self) -> None:
         self._running = False
