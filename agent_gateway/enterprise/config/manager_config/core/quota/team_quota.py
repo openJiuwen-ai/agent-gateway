@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,6 +20,7 @@ from sqlalchemy import text
 from agent_gateway.common.match_expr import coerce_match_expr
 from agent_gateway.config.enterprise.expressions import matches, validate_match_expr
 from agent_gateway.enterprise.db.team_store_actor import (
+    fetch_all,
     get_team_store_actor,
     list_record_dicts,
     policy_enabled_value,
@@ -38,10 +40,19 @@ DEFAULT_MAX_TEAMS_PER_USER = 5
 DEFAULT_MAX_TEAMMATES_PER_TEAM = 5
 DEFAULT_LEADER_MEMBER_NAME = "team-leader"
 
+#: Team statuses that still hold quota. Mirrors the AgentServer control-store
+#: vocabulary; ``stopped`` and ``deleted`` teams must not keep counting.
+TEAM_ACTIVE_STATUSES: frozenset[str] = frozenset(
+    {"creating", "running", "paused", "stopping"}
+)
+
 _POLICY_TABLE = "team_quota_policy"
 _LEASE_TABLE = "team_quota_lease"
+_ENTITY_TABLE = "team_entity"
 
 _DELETE_POLICY_SQL = text("DELETE FROM team_quota_policy WHERE policy_id = :pid")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -202,6 +213,35 @@ def _row_occupies(row: dict[str, Any], now: float) -> bool:
     return float(expires_at) > now
 
 
+def _active_team_ids(actor: Any) -> set[str] | None:
+    """Team ids whose runtime still counts towards quota.
+
+    Returns ``None`` when the control table cannot be read. Callers must then
+    keep every lease instead of treating missing ids as stale.
+    """
+    statuses = sorted(TEAM_ACTIVE_STATUSES)
+    placeholders = ", ".join(f":status{i}" for i in range(len(statuses)))
+    sql = f"SELECT team_id FROM {_ENTITY_TABLE} WHERE status IN ({placeholders})"
+    params = {f"status{i}": status for i, status in enumerate(statuses)}
+    try:
+        rows = actor.call(lambda: fetch_all(actor.handler, sql, params))
+    except Exception:  # noqa: BLE001 - usage stays readable without the filter
+        logger.warning("team quota usage: team_entity read failed", exc_info=True)
+        return None
+    return {_clean(row.get("team_id")) for row in rows if _clean(row.get("team_id"))}
+
+
+def _lease_counts(row: dict[str, Any], live_ids: set[str] | None) -> bool:
+    """Drop leases of teams that are no longer active.
+
+    A lease without a team id is still a live reservation and always counts.
+    """
+    if live_ids is None:
+        return True
+    team_id = _clean(row.get("team_id"))
+    return not team_id or team_id in live_ids
+
+
 def _require_mysql() -> Any:
     if not use_shared_team_store():
         raise RuntimeError("team quota management requires the enterprise database")
@@ -271,6 +311,7 @@ class TeamQuotaPolicyService:
         policies = actor.call(
             lambda: list_record_dicts(actor.handler, _POLICY_TABLE)
         )
+        live_ids = _active_team_ids(actor)
         rows = [
             row
             for row in actor.call(
@@ -280,7 +321,7 @@ class TeamQuotaPolicyService:
                     filters={"kind": KIND_TEAM_CREATE},
                 )
             )
-            if _row_occupies(row, now)
+            if _row_occupies(row, now) and _lease_counts(row, live_ids)
         ]
         grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for row in rows:
