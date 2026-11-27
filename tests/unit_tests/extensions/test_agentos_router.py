@@ -115,6 +115,7 @@ class FakeYuanRongClient:
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        trace_id: str | None = None,
     ) -> SandboxInfo:
         self.create_calls += 1
         payload = {
@@ -125,6 +126,8 @@ class FakeYuanRongClient:
             "env_vars": dict(env_vars or {}),
             "mounts": list(mounts or []),
         }
+        if trace_id:
+            payload["trace_id"] = trace_id
         self.create_payloads.append(payload)
         sandbox_id = f"sbx-{self.create_calls}"
         self.sandbox_env_vars[sandbox_id] = dict(payload["env_vars"])
@@ -2598,6 +2601,7 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
         runtime_spec: dict[str, Any],
         env_vars: dict[str, str] | None = None,
         mounts: list[dict[str, Any]] | None = None,
+        trace_id: str | None = None,
     ) -> SandboxInfo:
         self.attempt_payloads.append(
             {"namespace": namespace, "name": name, "workspace": workspace}
@@ -2611,6 +2615,7 @@ class TimeoutOnceYuanRongClient(FakeYuanRongClient):
             runtime_spec=runtime_spec,
             env_vars=env_vars,
             mounts=mounts,
+            trace_id=trace_id,
         )
 
 
