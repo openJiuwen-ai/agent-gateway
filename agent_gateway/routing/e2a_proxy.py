@@ -78,23 +78,8 @@ def _new_fetch_request_id() -> str:
 
 
 def is_agentos_routing_client(agent_client: Any) -> bool:
-    """Whether ``agent_client`` routes requests to per-user AgentOS runtimes.
-
-    Keep the check local to the Gateway routing boundary: importing the optional
-    AgentOS extension here would make the regular single-user installation depend
-    on that extension.  The concrete client is deliberately identified by its
-    stable module/class name instead.
-    """
-    client_type = type(agent_client)
-    module = client_type.__module__
-    return (
-        client_type.__name__ == "AgentOSRouterClient"
-        and (module.startswith("agent_gateway.extensions.agentos.")
-             or module == "agent_gateway.southbound.orchestration.managed_router")
-    ) or (
-        client_type.__name__ == "AdxRouterClient"
-        and module == "agent_gateway.extensions.adx.router_client"
-    )
+    """Whether the client provides managed per-user AgentOS/ADX routing."""
+    return getattr(agent_client, "managed_routing", False) is True
 
 
 def is_legacy_shared_directory_client(agent_client: Any) -> bool:

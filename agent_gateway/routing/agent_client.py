@@ -4,6 +4,7 @@
 
 from e2a.models import E2AEnvelope
 from agent_gateway.common.client.agent_client import AgentServerClient
+from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
 
 from agent_gateway.southbound.data.websocket import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
@@ -33,10 +34,12 @@ async def _stamp_expert_packages(envelope: E2AEnvelope) -> None:
     apply_packages_to_envelope(envelope, await packages_for_bot(bot_id))
 
 
-class WebSocketAgentServerClient(WebSocketConnection, AgentServerClient):
+class WebSocketAgentServerClient(WebSocketConnection, SouthboundAgentClient):
     """Compatibility client for existing northbound and router callers."""
 
     shared_directory_layout = True
+    agent_client_mode = "websocket"
+    requires_initial_connection = True
 
     async def _prepare_envelope(self, envelope: E2AEnvelope) -> None:
         await _stamp_expert_packages(envelope)

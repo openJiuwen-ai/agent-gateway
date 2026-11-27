@@ -32,7 +32,7 @@ from agent_gateway.channel_manager.web.web_http_timeouts import (
     resolve_web_http_sse_timeout,
     resolve_web_http_unary_timeout,
 )
-from agent_gateway.extensions.runtime_management_extension.pod_rest_map import (
+from agent_gateway.southbound.data.rest_map import (
     RestAssemblyError,
 )
 

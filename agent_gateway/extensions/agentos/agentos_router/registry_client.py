@@ -23,7 +23,7 @@ import httpx
 
 from agent_gateway.telemetry import current_request_trace, inject_request_headers, record_cleanup_result, trace_operation
 
-from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.southbound.orchestration.agent_manager import (
     BUILTIN_AGENT_TYPE,
 )
 from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, ImageInfo

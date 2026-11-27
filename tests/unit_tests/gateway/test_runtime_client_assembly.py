@@ -66,6 +66,75 @@ def test_a_class_name_is_not_a_runtime_capability():
         )
 
 
+@pytest.mark.parametrize("enterprise", [False, True])
+def test_fixed_assembly_declares_deployment_capabilities(enterprise):
+    from agent_gateway.routing.e2a_proxy import is_agentos_routing_client, is_legacy_shared_directory_client
+    from agent_gateway.southbound.orchestration.client import assemble_client
+    from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
+
+    client = assemble_client(None, mode="websocket", enterprise=enterprise, uri="ws://agent:18092")
+    assert isinstance(client, SouthboundAgentClient)
+    assert client.requires_initial_connection is True
+    assert is_legacy_shared_directory_client(client) is not enterprise
+    assert not is_agentos_routing_client(client)
+
+
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.parametrize("shared_directory_layout", [False, True])
+def test_extension_static_client_preserves_declared_layout(enterprise, shared_directory_layout):
+    from agent_gateway.southbound.orchestration.client import assemble_client, build_static_client
+
+    uri = "ws://agent:18092"
+    client = build_static_client(uri, shared_directory_layout=shared_directory_layout)
+    extension = SimpleNamespace(get_client=lambda: client)
+    assembled = assemble_client(extension, mode="websocket", enterprise=enterprise, uri=uri)
+
+    assert assembled is client
+    assert assembled.requires_initial_connection is True
+    assert assembled.shared_directory_layout is shared_directory_layout
+
+
+@pytest.mark.parametrize("enterprise", [False, True])
+def test_extension_legacy_websocket_client_uses_remote_layout(enterprise):
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.southbound.orchestration.client import assemble_client
+
+    client = WebSocketAgentServerClient()
+    assert client.shared_directory_layout is True
+    extension = SimpleNamespace(get_client=lambda: client)
+    assembled = assemble_client(extension, mode="websocket", enterprise=enterprise, uri="ws://agent:18092")
+
+    assert assembled is client
+    assert assembled.requires_initial_connection is True
+    assert assembled.shared_directory_layout is False
+
+
+@pytest.mark.parametrize("platform", ["agentos_router", "adx_router", "runtime"])
+def test_dynamic_assembly_reuses_the_extension_client(platform):
+    from agent_gateway.extensions.adx.router_client import AdxRouterClient
+    from agent_gateway.routing.e2a_proxy import is_agentos_routing_client, is_legacy_shared_directory_client
+    from agent_gateway.southbound.orchestration.client import assemble_client
+    from agent_gateway.southbound.orchestration.client import SouthboundAgentClient
+    from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import RuntimeRoutedAgentClient
+    from agent_gateway.southbound.orchestration.managed_router import AgentOSRouterClient
+
+    client_type = {
+        "agentos_router": AgentOSRouterClient,
+        "adx_router": AdxRouterClient,
+        "runtime": RuntimeRoutedAgentClient,
+    }[platform]
+    client = object.__new__(client_type)
+    extension = SimpleNamespace(get_client=lambda: client)
+    assembled = assemble_client(extension, mode="runtime" if platform == "runtime" else "", enterprise=True,
+                                uri="ws://unused")
+    assert assembled is client
+    assert isinstance(assembled, SouthboundAgentClient)
+    assert assembled.agent_client_mode == platform
+    assert assembled.requires_initial_connection is False
+    assert not is_legacy_shared_directory_client(assembled)
+    assert is_agentos_routing_client(assembled) is (platform != "runtime")
+
+
 @pytest.mark.parametrize("first,second", [
     ("runtime", "agentos_router"), ("adx_router", "runtime"),
     ("agentos_router", "adx_router"), ("runtime", "runtime"),
