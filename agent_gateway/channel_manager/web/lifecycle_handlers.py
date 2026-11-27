@@ -15,6 +15,24 @@ from agent_gateway.common.request_identity import apply_routing_metadata
 _SESSION_TARGET_METHODS = frozenset({"session.archive", "session.unarchive", "session.delete"})
 
 
+def release_session_context_hook(resolve_message_handler):
+    """Build the ``on_session_deleted`` hook that frees per-session context.
+
+    The handler keeps the last user query and last human originator per
+    Session so follow-up RPCs can be attributed. A deleted Session never comes
+    back, so those entries are released at the same moment the deletion is
+    confirmed.
+    """
+
+    async def hook(_project_id, session_id):
+        handler = resolve_message_handler()
+        forget = getattr(handler, "forget_session_context", None)
+        if callable(forget):
+            forget(session_id)
+
+    return hook
+
+
 def _session_target_error(method: str, params: dict) -> str | None:
     """Validate Session targets. They come only from params: channels fill the
     handler's session_id argument with a request-scoped fallback.

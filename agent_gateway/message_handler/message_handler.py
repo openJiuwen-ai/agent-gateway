@@ -1086,6 +1086,14 @@ class MessageHandler(ABC):
             return None
         return self._session_last_originator.get(str(session_id))
 
+    def forget_session_context(self, session_id: str | None) -> None:
+        """Drop the cached query/originator for a session that no longer exists."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        self._session_last_user_query.pop(sid, None)
+        self._session_last_originator.pop(sid, None)
+
     def _attach_original_request_to_ask_user_answer(self, msg: "Message") -> "Message":
         if not isinstance(msg.params, dict):
             return msg
