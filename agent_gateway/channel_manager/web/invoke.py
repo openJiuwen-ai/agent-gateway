@@ -194,17 +194,24 @@ async def dispatch_web_request(
         return
 
     handler = _method_handlers(channel).get(method)
-    if handler is not None and method in getattr(channel, "_local_only_methods", ()):
-        await _invoke_handler(
-            channel, outbound=outbound, method=method, request_id=request_id,
-            params=params, session_id=session_id, handler=handler,
+    if method in getattr(channel, "_local_only_methods", ()):
+        if handler is not None:
+            await _invoke_handler(
+                channel, outbound=outbound, method=method, request_id=request_id,
+                params=params, session_id=session_id, handler=handler,
+            )
+            return
+        # local_only 且未注册本地 handler 的请求不应再进入 bus/回调转发。
+        await channel.send_response(
+            outbound, request_id, ok=False,
+            error=f"unknown method: {method}", code="METHOD_NOT_FOUND",
         )
         return
     # 路由身份已由 WS/HTTP 入口写入 metadata.routing；此处只读、不再二次归一化。
     routing = web_routing_identity(
         user_message.metadata if isinstance(user_message.metadata, dict) else None
     )
-    if not routing.get("bot_id"):
+    if is_enterprise() and not routing.get("bot_id"):
         logger.warning(
             "[WebChannel] missing bot_id in metadata.routing method=%s request_id=%s routing=%s",
             method,

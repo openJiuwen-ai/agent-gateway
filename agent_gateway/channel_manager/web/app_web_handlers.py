@@ -31,17 +31,6 @@ try:
 except ImportError:
     _psutil = None  # type: ignore[assignment]
     _HAS_PSUTIL = False
-from openjiuwen.core.common.logging import LogManager
-from openjiuwen.extensions.external_provider.openai_auth.openai_account_auth import (
-    OpenAIAccountAuthError,
-    OpenAIAccountAuthManager,
-    OpenAIAccountDeviceCode,
-)
-from openjiuwen.extensions.external_provider.openai_auth.openai_account_models import (
-    OpenAIAccountModelCatalog,
-    OpenAIAccountModelListError,
-)
-
 from agent_gateway.agent_client_mode import is_runtime_agent_client
 from agent_gateway.enterprise.edition import is_enterprise as _is_enterprise_edition
 from agent_gateway.channel_manager.web.channel_sync import schedule_channel_config
@@ -91,9 +80,42 @@ from agent_gateway.common.work_mode import (
 )
 from agent_gateway.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from agent_gateway.dotenv_early import load_dotenv_runtime
+from agent_gateway.lifecycle_errors import LifecycleError
 
-for _jiuwen_log in LogManager.get_all_loggers().values():
-    _jiuwen_log.set_level(logging.INFO)
+_OPENAI_ACCOUNT_SDK_NAMES = frozenset({
+    "OpenAIAccountAuthError", "OpenAIAccountAuthManager", "OpenAIAccountDeviceCode",
+    "OpenAIAccountModelCatalog", "OpenAIAccountModelListError",
+})
+
+
+def _openai_account_error_types(name: str) -> tuple[type[Exception], ...]:
+    """Match loaded SDK errors without importing the SDK while handling an error."""
+    error_type = globals().get(name)
+    return (error_type,) if isinstance(error_type, type) and issubclass(error_type, Exception) else ()
+
+
+def _load_openai_account_sdk() -> None:
+    from agent_gateway.common.openjiuwen_logging import ensure_openjiuwen_core_logging
+
+    try:
+        ensure_openjiuwen_core_logging()
+        from openjiuwen.extensions.external_provider.openai_auth import openai_account_auth, openai_account_models
+
+        for name in _OPENAI_ACCOUNT_SDK_NAMES:
+            module = openai_account_models if name in {"OpenAIAccountModelCatalog", "OpenAIAccountModelListError"} else openai_account_auth
+            globals().setdefault(name, getattr(module, name))
+    except Exception as exc:
+        logger.warning("[openai_account] SDK preparation failed", exc_info=True)
+        raise LifecycleError("SERVICE_UNAVAILABLE", "OpenAI account SDK is unavailable") from exc
+
+
+def __getattr__(name: str):
+    # Retain historical imports while ordinary Web configuration needs no SDK.
+    if name in _OPENAI_ACCOUNT_SDK_NAMES:
+        _load_openai_account_sdk()
+        return globals()[name]
+    raise AttributeError(name)
+
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +287,7 @@ def _clear_openai_account_login_jobs() -> None:
 def _openai_account_auth_status_payload(
         manager: OpenAIAccountAuthManager | None = None,
 ) -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         auth_manager = manager or OpenAIAccountAuthManager()
         status = auth_manager.status()
@@ -285,6 +308,7 @@ def _openai_account_login_payload(
         manager: OpenAIAccountAuthManager | None = None,
         now: float | None = None,
 ) -> dict[str, Any]:
+    _load_openai_account_sdk()
     current = time.time() if now is None else now
     device_code = job.device_code
     return {
@@ -302,6 +326,7 @@ def _openai_account_login_payload(
 def _openai_account_pending_login_payload(
         manager: OpenAIAccountAuthManager | None = None,
 ) -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         current = time.time()
         latest_job = _latest_openai_account_login_job(current)
@@ -315,6 +340,7 @@ def _openai_account_pending_login_payload(
 
 
 def _openai_account_start_login_payload() -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         manager = OpenAIAccountAuthManager()
         now = time.time()
@@ -339,6 +365,7 @@ def _openai_account_start_login_payload() -> dict[str, Any]:
 
 
 def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         now = time.time()
         job = _get_openai_account_login_job(login_id, now)
@@ -348,7 +375,7 @@ def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
         manager = OpenAIAccountAuthManager()
         try:
             tokens = manager.poll_device_login(job.device_code)
-        except OpenAIAccountAuthError as exc:
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             if exc.relogin_required:
                 _remove_openai_account_login_job(login_id)
             raise
@@ -368,6 +395,7 @@ def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
 
 
 def _openai_account_logout_payload() -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         manager = OpenAIAccountAuthManager()
         _clear_openai_account_login_jobs()
@@ -379,6 +407,7 @@ def _openai_account_logout_payload() -> dict[str, Any]:
 
 
 def _openai_account_models_payload() -> dict[str, Any]:
+    _load_openai_account_sdk()
     with _OPENAI_ACCOUNT_AUTH_OPERATION_LOCK:
         manager = OpenAIAccountAuthManager()
         catalog = OpenAIAccountModelCatalog(base_url=manager.base_url)
@@ -391,6 +420,7 @@ def _openai_account_models_payload() -> dict[str, Any]:
 
 
 def _openai_account_auth_error_payload(exc: OpenAIAccountAuthError) -> dict[str, Any]:
+    _load_openai_account_sdk()
     return {
         "status": "error",
         "error": str(exc),
@@ -2879,7 +2909,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             payload = await asyncio.to_thread(_openai_account_auth_status_payload)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.status] %s", exc)
             await channel.send_response(
                 ws,
@@ -2903,7 +2935,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.start_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -2922,7 +2956,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             payload = await asyncio.to_thread(_openai_account_pending_login_payload)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.pending_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -2953,7 +2989,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.poll_login] %s", exc)
             await channel.send_response(
                 ws,
@@ -2977,7 +3015,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.auth.logout] %s", exc)
             await channel.send_response(
                 ws,
@@ -3001,7 +3041,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ok=True,
                 payload=payload,
             )
-        except OpenAIAccountAuthError as exc:
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
+        except _openai_account_error_types("OpenAIAccountAuthError") as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(
                 ws,
@@ -3011,7 +3053,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code=exc.code,
                 payload=_openai_account_auth_error_payload(exc),
             )
-        except OpenAIAccountModelListError as exc:
+        except _openai_account_error_types("OpenAIAccountModelListError") as exc:
             logger.warning("[openai_account.models.list] %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="MODEL_LIST_ERROR")
         except _OPENAI_ACCOUNT_LOCAL_ERRORS as exc:
@@ -5424,6 +5466,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     params["project_id"] = resolve_default_project_id(bind_work_mode)
             job = await cc.create_job(params)
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
 
@@ -5488,6 +5532,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             patch["_auth_session"] = getattr(ws, "_jiuwen_auth_session", "") or ""
             job = await cc.update_job(job_id, patch, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except Exception as e:  # noqa: BLE001
@@ -5575,6 +5621,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             job = await cc.toggle_job(job_id, enabled, **_cron_owner_ids(ws, user_id, params))
             await channel.send_response(ws, req_id, ok=True, payload={"job": job})
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except ValueError as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except KeyError:
@@ -5638,6 +5686,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["awaiting_approval"] = True
                 payload["reused_pending_session"] = True
             await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except LifecycleError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=exc.code)
         except KeyError:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
         except ValueError as e:

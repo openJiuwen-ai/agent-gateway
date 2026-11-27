@@ -56,6 +56,7 @@ def _create_persistent() -> PersistentStore:
             build_gateway_store_registry(),
         )
 
+    from agent_gateway.common.config import config_write_lock
     from agent_gateway.common.paths import (
         get_checkpoint_dir,
         get_config_file,
@@ -76,6 +77,9 @@ def _create_persistent() -> PersistentStore:
             session_map_file=session_map_file,
         ),
         on_write=_on_config_written,
+        extra_write_locks={
+            config_file: lambda timeout: config_write_lock(config_path=config_file, lock_timeout=timeout),
+        },
     )
 
 

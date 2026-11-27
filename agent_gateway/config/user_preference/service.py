@@ -185,9 +185,8 @@ class UserPreferenceService:
 
     async def poll_refresh_cached(self) -> None:
         """先按使用 TTL 淘汰，再批量点查仍在缓存中的 user_id 刷新语言（不续命）。"""
-        self._cache.evict_expired()
-        ids = self._cache.keys()
-        if not ids:
+        entries = self._cache.snapshot_for_refresh()
+        if not entries:
             return
         store = get_persistent_store()
         if store is None:
@@ -195,7 +194,7 @@ class UserPreferenceService:
             return
         await store.ensure_ready()
         # 分片 IN：PersistentStore.list 仅等值 filters，逐条 get 更稳妥
-        for user_id in ids:
+        for user_id, entry in entries.items():
             try:
                 row = await store.get(USER_PREFERENCE_STORE, {"user_id": user_id})
             except Exception:  # noqa: BLE001
@@ -203,14 +202,7 @@ class UserPreferenceService:
                     "[UserPreference] poll get failed user_id=%s", user_id
                 )
                 continue
-            lang = normalize_preferred_language(
-                (row or {}).get("preferred_language") if row else None
-            )
-            if lang:
-                self._cache.put(user_id, lang, touch=False)
-                continue
-            # 行缺失：丢掉缓存，避免长期脏值
-            self._cache.delete(user_id)
+            self._cache.apply_refresh(user_id, entry, (row or {}).get("preferred_language"))
 
     async def _db_get(self, user_id: str) -> dict[str, Any] | None:
         store = get_persistent_store()

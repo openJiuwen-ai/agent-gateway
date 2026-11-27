@@ -22,6 +22,7 @@ from agent_gateway.extensions.agentos.agentos_router.registry_client import (
 )
 from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from agent_gateway.extensions.agentos.agentos_router.stale_cleanup import cleanup_stale_sandboxes
+from agent_gateway.southbound.control.managed import ManagedSandboxControl
 from agent_gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 
@@ -69,7 +70,8 @@ async def test_delete_records_swallowed_failure_and_preserves_parent(monkeypatch
     registry = SimpleNamespace(unregister_agent=AsyncMock())
     client = AgentOSRouterClient(frontend, registry, manager)
     socket = SimpleNamespace(disconnect=AsyncMock())
-    client._ws_clients = {"sandbox": socket}
+    client._ws_pool = router_client.ManagedWebSocketPool()
+    client._ws_pool.clients["sandbox"] = socket
     try:
         with telemetry.bind_request_trace(parent):
             assert await client.delete_agent("user", "test") is True
@@ -180,8 +182,7 @@ async def test_independent_cleanup_jobs_do_not_inherit_request_or_cleanup_contex
         decrement_user_connections=lambda _: 0,
         get_user_connection_count=lambda _: 0,
     )
-    client._ws_clients = {}
-    client._ws_clients_lock = asyncio.Lock()
+    client._ws_pool = router_client.ManagedWebSocketPool()
     seen = []
 
     async def observe(*args):
@@ -252,7 +253,7 @@ async def test_sweep_each_instance_has_independent_result_and_preserves_processe
         user_id="u4", agent_type="jiuwenswarm", sandbox_id="live"))]))
     parent = telemetry.start_request_trace("message", "chat.send", channel="web", connection_id="c")
     with telemetry.bind_request_trace(parent):
-        assert await cleanup_stale_sandboxes(yuanrong=Frontend(), registry=Registry(), agent_manager=manager) == 4
+        assert await cleanup_stale_sandboxes(control=ManagedSandboxControl(Frontend()), registry=Registry(), agent_manager=manager) == 4
         assert telemetry.current_request_trace() is parent
         assert telemetry.current_cleanup_trace() is None
     spans = [span for span in exporter.get_finished_spans() if span.name == "gw.agent.sweep"]
@@ -278,7 +279,7 @@ async def test_sweep_unconfirmed_delete_is_not_success(tracing):
                                unregister_instance=AsyncMock(return_value={"deleted": True}))
     manager = SimpleNamespace(list_all_agents=AsyncMock(return_value=[]))
     frontend = SimpleNamespace(delete_sandbox=AsyncMock(return_value=None))
-    assert await cleanup_stale_sandboxes(yuanrong=frontend, registry=registry, agent_manager=manager) == 1
+    assert await cleanup_stale_sandboxes(control=ManagedSandboxControl(frontend), registry=registry, agent_manager=manager) == 1
     span = next(span for span in exporter.get_finished_spans() if span.name == "gw.agent.sweep")
     assert span.attributes["gateway.outcome"] == "incomplete"
     assert span.attributes["cleanup.frontend.delete.reason"] == "delete_result_unconfirmed"
@@ -380,7 +381,7 @@ async def cleanup_setup(monkeypatch):
             entered.set()
             await release.wait()
 
-    router._ws_clients['instance-1'] = Socket()
+    router._ws_pool.clients['instance-1'] = Socket()
     yield SimpleNamespace(router=router, manager=manager, frontend=frontend, registry=registry,
                           events=events, exporter=exporter, response=response, seed=seed,
                           entered=entered, release=release, registry_response=registry_response)

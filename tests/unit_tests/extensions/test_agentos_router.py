@@ -2531,7 +2531,7 @@ async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
     follower_task = asyncio.create_task(client._get_ws_client(runtime))
     await asyncio.sleep(0.05)
     assert not follower_task.done()
-    assert client._ws_connecting
+    assert client._ws_pool.connecting
 
     warmup_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -2541,7 +2541,7 @@ async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
         await asyncio.wait_for(follower_task, timeout=1.0)
 
     assert gated_clients[0].disconnected is True
-    assert client._ws_connecting == {}
+    assert client._ws_pool.connecting == {}
 
     gate.set()
     connected = await asyncio.wait_for(client._get_ws_client(runtime), timeout=1.0)
