@@ -68,6 +68,7 @@ from agent_gateway.routing.protocol_runtime import (
 GatewayServer = ProtocolRuntime
 GatewayServerConfig = ProtocolRuntimeConfig
 
+from agent_gateway.common import env_names
 from agent_gateway.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
@@ -77,10 +78,7 @@ from agent_gateway.common.paths import (
     get_env_file,
     get_user_workspace_dir,
 )
-from agent_gateway.common.process_supervision import (
-    GATEWAY_RESTART_EXIT_CODE,
-    SUPERVISOR_PID_ENV,
-)
+from agent_gateway.common.process_supervision import GATEWAY_RESTART_EXIT_CODE
 from agent_gateway.telemetry import shutdown_gateway_telemetry
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -138,7 +136,7 @@ def _running_under_supervisor() -> bool:
     PID necessarily belongs to a process younger than us, so requiring the
     parent to be live and not created after us rejects both cases.
     """
-    if os.environ.get(SUPERVISOR_PID_ENV) != str(os.getppid()):
+    if env_names.get(env_names.SUPERVISOR_PID) != str(os.getppid()):
         return False
     import psutil
 
@@ -157,7 +155,8 @@ def _exec_gateway_restart() -> None:
         # and the gateway lock.
         logger.info("[App] requesting Gateway restart from supervisor")
         os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
-    if os.environ.get(SUPERVISOR_PID_ENV):
+    supervisor_pid = env_names.lookup(env_names.SUPERVISOR_PID)
+    if supervisor_pid and supervisor_pid[1]:
         # Env says we were spawned by a supervisor, yet the parent check in
         # _running_under_supervisor failed. execv exits 0, which that live
         # supervisor reads as "Gateway stopped" and tears the WHOLE stack
@@ -173,8 +172,8 @@ def _exec_gateway_restart() -> None:
         logger.warning(
             "[App] %s=%s but parent pid %s is %s; execv restart will be read "
             "as a stop by the supervisor",
-            SUPERVISOR_PID_ENV,
-            os.environ.get(SUPERVISOR_PID_ENV),
+            supervisor_pid[0],
+            supervisor_pid[1],
             os.getppid(),
             parent_desc,
         )

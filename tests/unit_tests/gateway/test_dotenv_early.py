@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 import agent_gateway.dotenv_early as dotenv_early
 from agent_gateway.dotenv_early import (
     CLI_PORTS_ENV_FLAG,
@@ -60,7 +62,8 @@ def test_missing_dotenv_file_returns_none(tmp_path: Path, monkeypatch) -> None:
     assert not missing.exists()
 
 
-def test_name_loads_workspace_line(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("home_var", ["AGENT_GATEWAY_HOME", "JIUWENSWARM_HOME"], ids=["new-name", "legacy-name"])
+def test_name_loads_workspace_line(tmp_path: Path, monkeypatch, home_var: str) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -77,7 +80,8 @@ def test_name_loads_workspace_line(tmp_path: Path, monkeypatch) -> None:
         f'    workspace: "{workspace}"\n',
         encoding="utf-8",
     )
-    monkeypatch.setenv("JIUWENSWARM_HOME", str(home))
+    monkeypatch.delenv("JIUWENSWARM_HOME", raising=False)
+    monkeypatch.setenv(home_var, str(home))
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
     _argv(monkeypatch, "--name", "demo")
 

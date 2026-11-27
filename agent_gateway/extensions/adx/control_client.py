@@ -347,6 +347,7 @@ class AdxControlClient:
             from agent_gateway.extensions.adx.runtime_config import (
                 managed_sandbox_settings, runtime_environment_settings,
             )
+            # The built-in AgentServer only reads the JIUWENSWARM_* names; keep them.
             body['env']['JIUWENSWARM_RUNTIME_SETTINGS'] = json.dumps(runtime_environment_settings())
             body['env']['JIUWENSWARM_AGENTOS_SANDBOX_CONFIG'] = json.dumps(managed_sandbox_settings())
             body['env']['HOME'] = self.config.workspace_target

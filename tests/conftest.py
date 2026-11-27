@@ -38,7 +38,12 @@ def _isolate_gateway_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Ge
     temporary home into the next one.
     """
     import agent_gateway.common.paths as paths
+    from agent_gateway.common import env_names
 
+    # New names take precedence over the legacy ones below; drop any that leak
+    # in from the developer shell so every test starts from the same baseline.
+    for var in env_names.ALL:
+        monkeypatch.delenv(var.name, raising=False)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / ".jiuwenswarm"))
     path_caches = (

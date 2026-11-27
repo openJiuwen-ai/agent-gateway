@@ -55,6 +55,7 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
     {
         "HOME",
         "JIUWENSWARM_DATA_DIR",
+        "AGENT_GATEWAY_DATA_DIR",
         "JIUWENSWARM_AGENT_ROOT",
         "PYTHONUNBUFFERED",
         "WEB_HOST",

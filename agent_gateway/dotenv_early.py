@@ -3,7 +3,8 @@
 """Gateway-owned early --dotenv/--name loading.
 
 This is an independent copy of the startup loader. Gateway entry points
-import it before other jiuwenswarm modules so ``JIUWENSWARM_DATA_DIR`` is
+import it before other jiuwenswarm modules so the data root
+(``AGENT_GATEWAY_DATA_DIR``, or the legacy ``JIUWENSWARM_DATA_DIR``) is
 set before path resolution. The copy only loads an existing ``.env``.
 
 ``jiuwenswarm.dotenv_early`` stays the writer for a missing instance
@@ -25,6 +26,8 @@ import logging
 import os
 import sys
 from pathlib import Path
+
+from agent_gateway.common import env_names
 
 # gRPC C-core hygiene — must be set BEFORE grpc initializes (it is imported
 # lazily by the OTLP/otel exporter and chromadb). Gateway entry points import
@@ -190,7 +193,7 @@ def _load_bootstrap_by_name_early(name: str, component_name: str) -> Path | None
         _early_error(component_name, f"Invalid instance name '{name}'")
         return None
 
-    user_home = os.environ.get("JIUWENSWARM_HOME") or Path.home()
+    user_home = env_names.get(env_names.HOME) or Path.home()
     yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
 
     if not yaml_path.exists():
