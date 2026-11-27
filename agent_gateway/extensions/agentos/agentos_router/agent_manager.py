@@ -17,6 +17,7 @@ from agent_gateway.extensions.agentos.agentos_router.logutil import (
 )
 from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from agent_gateway.telemetry import current_request_trace, trace_operation
+from agent_gateway.trace_context import current_trace_id
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +349,7 @@ class AgentManager:
         creator: AgentCreator | None = None,
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
+        trace_id: str | None = None,
         acquire: bool = False,
         wait: bool = True,
     ) -> AgentRuntime:
@@ -361,6 +363,10 @@ class AgentManager:
         ``wait=False`` still single-flights create (only one owner), but
         non-owners raise :class:`AgentCreating` instead of blocking.
         """
+
+        resolved_trace_id = str(trace_id or "").strip()
+        if not resolved_trace_id:
+            resolved_trace_id = current_trace_id()
 
         key = self._make_key(user_id, agent_type, key_values=key_values)
         key_user_id, key_agent_type = self._identity_from_key(key)
@@ -389,11 +395,14 @@ class AgentManager:
                     return existing.snapshot()
 
                 if existing is None:
+                    create_metadata = dict(metadata or {})
+                    if resolved_trace_id:
+                        create_metadata["trace_id"] = resolved_trace_id
                     runtime = AgentRuntime.for_key(
                         key,
                         user_id=key_user_id,
                         agent_type=key_agent_type,
-                        metadata=metadata,
+                        metadata=create_metadata,
                     )
                     self._runtimes[key] = runtime
                     operation = current_request_trace()
@@ -402,6 +411,8 @@ class AgentManager:
                     owner = True
                 else:
                     runtime = existing
+                    if resolved_trace_id:
+                        runtime.info.metadata.setdefault("trace_id", resolved_trace_id)
                     if runtime.is_failed():
                         # Do not reset_for_retry: a cancelled/failed create may
                         # still have provisioned a YuanRong sandbox; retrying

@@ -35,8 +35,11 @@ class AdxRouter(AgentServerClientExtension, ThirdAgentExtension):
         self._client.set_key_issuer(key_issuer, ephemeral_key_ttl_sec=ephemeral_key_ttl_sec)
 
     async def resolve_web_endpoint(self, user_id: str, agent_type: str, protocol: str,
-                                   *, acquire: bool = False) -> str | None:
-        return await self._client.resolve_web_endpoint(user_id, agent_type, protocol, acquire=acquire)
+                                   *, acquire: bool = False, trace_id: str | None = None) -> str | None:
+        kwargs = {"acquire": acquire}
+        if trace_id:
+            kwargs["trace_id"] = trace_id
+        return await self._client.resolve_web_endpoint(user_id, agent_type, protocol, **kwargs)
 
     async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
         await self._client.release_web_endpoint(user_id, agent_type)
