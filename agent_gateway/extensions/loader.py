@@ -83,6 +83,11 @@ class ExtensionLoader:
             await plugin.initialize(self.registry.config)
             return [plugin]
 
+        # Unknown/legacy extensions retain SDK and logging readiness before
+        # their entry module executes. Only audited control-only declarations
+        # opt out; auth, crypto and southbound client initialization stays here.
+        if manifest.get("requires_sdk") is not False:
+            await self.registry.prepare_callback_framework()
         module = self._import_module(root)
 
         if hasattr(module, "register_extensions"):
