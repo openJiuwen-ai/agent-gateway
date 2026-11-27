@@ -55,6 +55,9 @@ from agent_gateway.channel_manager.persistent_events import FeishuInboundEvent, 
 
 logger = logging.getLogger(__name__)
 
+# Late chat.file / duplicate chat.final events can arrive after the final answer.
+_SENT_FILE_PATHS_WINDOW_SECONDS = 300.0
+
 
 class _FeishuWebSocketLogHandler(logging.Handler):
     """Forward this channel's Lark SDK connection state into Gateway logs."""
@@ -461,6 +464,8 @@ class FeishuChannel(BaseChannel):
         # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重
         # key=request_id, value=set of absolute file paths
         self._sent_file_paths_by_req: dict[str, set[str]] = {}
+        # key=request_id, value=monotonic time of the final/error event
+        self._sent_file_paths_completed_at: dict[str, float] = {}
         # 审批卡片上下文：request_id -> _ApprovalCardContext（内存快路径）。
         self._card_contexts: dict[str, _ApprovalCardContext] = {}
 
@@ -2270,6 +2275,34 @@ class FeishuChannel(BaseChannel):
             return {"outcome": "unknown", "error_code": "FEISHU_RECEIPT_MISSING"}
         return {"outcome": "delivered", "external_message_id": message_id}
 
+    def _prune_sent_file_paths(self, now: float) -> None:
+        """Release per-request file dedup state once its window has elapsed."""
+        expired = [
+            key
+            for key, completed_at in self._sent_file_paths_completed_at.items()
+            if now - completed_at >= _SENT_FILE_PATHS_WINDOW_SECONDS
+        ]
+        for key in expired:
+            self._sent_file_paths_completed_at.pop(key, None)
+            self._sent_file_paths_by_req.pop(key, None)
+
+    def _record_send_completion(self, event_name: str, msg: Message) -> None:
+        """Start the release window when the request can no longer emit files."""
+        if event_name == "chat.final":
+            payload = msg.payload if isinstance(msg.payload, dict) else {}
+            if payload.get("is_complete") is False:
+                return
+        elif event_name not in {"chat.error", "chat.interrupt_result"}:
+            return
+
+        req_id = str(getattr(msg, "id", "") or "").strip()
+        if not req_id:
+            return
+        now = time.monotonic()
+        self._prune_sent_file_paths(now)
+        if req_id in self._sent_file_paths_by_req:
+            self._sent_file_paths_completed_at.setdefault(req_id, now)
+
     async def send(
         self,
         msg: Message,
@@ -2284,6 +2317,7 @@ class FeishuChannel(BaseChannel):
             logger.warning("飞书客户端未初始化")
             return
 
+        event_name = ""
         try:
             payload = msg.payload if isinstance(msg.payload, dict) else {}
             event_name = getattr(msg.event_type, "value", None) or payload.get("event_type") or ""
@@ -2473,6 +2507,7 @@ class FeishuChannel(BaseChannel):
                 and self._file_service
             ):
                 req_id = str(getattr(msg, "id", "") or "")
+                self._prune_sent_file_paths(time.monotonic())
                 already_sent = self._sent_file_paths_by_req.get(req_id, set())
                 detected_files = [
                     fp for fp in self._detect_workspace_files(content_str)
@@ -2564,6 +2599,11 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.error(f"发送飞书消息时发生异常: {e}")
             raise
+        finally:
+            try:
+                self._record_send_completion(event_name, msg)
+            except Exception as exc:
+                logger.debug("飞书发送完成态记录失败: %s", exc)
 
     async def _handle_cardkit_streaming_event(
         self,
