@@ -273,6 +273,7 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     from agent_gateway.extensions import redis
     from agent_gateway.storage_assembly import setup
     from agent_gateway.routing import agent_client, third_agent, session_metadata_remote, mcp_remote
+    from agent_gateway.southbound.orchestration import client as southbound_client
     from agent_gateway.message_handler import message_handler
     from agent_gateway.channel_manager import channel_manager
     from agent_gateway.channel_manager.persistent_output import resolve_output_file
@@ -300,6 +301,13 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
             self.connect = AsyncMock(side_effect=lambda uri: events.append('client.connected'))
             self.set_or_update_server_config = Mock()
     monkeypatch.setattr(agent_client, 'WebSocketAgentServerClient', Client)
+    class StaticClient(Client):
+        def __init__(self, uri, *, shared_directory_layout=False):
+            assert uri == 'ws://example/ws'
+            super().__init__()
+            self.shared_directory_layout = shared_directory_layout
+    monkeypatch.setattr(southbound_client, 'SouthboundAgentClient', StaticClient)
+    monkeypatch.setattr(southbound_client, 'build_static_client', StaticClient)
     selected = SimpleNamespace(connect=AsyncMock(side_effect=lambda uri: events.append('extension.connected')), set_or_update_server_config=Mock())
     extension = SimpleNamespace(metadata=SimpleNamespace(id='external', name='external'), get_client=lambda: selected) if extension_client else None
     third = object()
@@ -348,7 +356,8 @@ async def test_service_assembly_preserves_selection_storage_order_and_single_ins
     retry = AsyncMock(side_effect=lambda *args, **kwargs: events.append('client.connected'))
     value = await services.assemble_services('ws://example/ws', log_stage=events.append, startup_t0=0.0, connect_with_retry=retry)
     try:
-        assert value.client is selected if extension_client else isinstance(value.client, Client)
+        assert value.client is selected if extension_client else type(value.client) is (Client if enterprise else StaticClient)
+        assert getattr(value.client, 'shared_directory_layout', False) is (not enterprise and not extension_client)
         assert value.third_agent is third
         assert value.storage_ctx is storage if enterprise else value.storage_ctx is None
         assert value.message_handler is handler and value.channel_manager is cm
