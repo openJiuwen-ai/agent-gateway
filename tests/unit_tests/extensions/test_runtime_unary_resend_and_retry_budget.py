@@ -16,7 +16,7 @@ from agent_gateway.extensions.runtime_management_extension import runtime_routed
 from agent_gateway.extensions.runtime_management_extension.runtime_routed_client import (
     RuntimeRoutedAgentClient,
 )
-from agent_gateway.extensions.runtime_management_extension.session_route_client import (
+from agent_gateway.southbound.control.runtime import (
     RetryableRouteError,
 )
 
