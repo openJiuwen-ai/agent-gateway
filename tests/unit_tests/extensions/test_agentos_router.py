@@ -2345,6 +2345,73 @@ async def test_connect_warmup_failure_does_not_raise() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("agent_type", "online", "deleted", "expected"), [
+    ("jiuwenswarm", True, True, True),
+    ("jiuwenswarm", False, True, False),
+    ("third", True, True, False),
+    ("jiuwenswarm", True, False, False),
+])
+async def test_network_failure_cleanup_schedules_warmup(
+    monkeypatch, agent_type, online, deleted, expected,
+) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    runtime = await manager.get_or_create_agent(
+        "u1", agent_type, creator=_ready_creator,
+    )
+    if online:
+        manager.increment_user_connections("u1")
+    scheduled: list[tuple[str, bool]] = []
+
+    def _schedule(user_id: str, *, require_online: bool = False) -> None:
+        scheduled.append((user_id, require_online))
+
+    monkeypatch.setattr(client, "_schedule_connect_warmup", _schedule)
+    monkeypatch.setattr(client, "delete_agent", AsyncMock(return_value=deleted))
+    try:
+        await client._run_network_failure_delete(runtime)
+        assert scheduled == ([("u1", True)] if expected else [])
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failure_warmup_rechecks_online_before_create() -> None:
+    yuanrong = FakeYuanRongClient()
+    manager = AgentManager()
+    client = _router_client(yuanrong, agent_manager=manager)
+    try:
+        await client._warmup_user_agent("u1", require_online=True)
+        assert yuanrong.create_calls == 0
+
+        manager.increment_user_connections("u1")
+        await client._warmup_user_agent("u1", require_online=True)
+        assert yuanrong.create_calls == 1
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_network_failure_warmup_schedule_error_does_not_raise(monkeypatch) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    runtime = await manager.get_or_create_agent(
+        "u1", "jiuwenswarm", creator=_ready_creator,
+    )
+    manager.increment_user_connections("u1")
+    monkeypatch.setattr(client, "delete_agent", AsyncMock(return_value=True))
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(client, "_schedule_connect_warmup", _boom)
+    try:
+        await client._run_network_failure_delete(runtime)
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_chat_after_failed_warmup_create_retries() -> None:
     """Warmup create failure must not pin a FAILED runtime that blocks chat."""
 
