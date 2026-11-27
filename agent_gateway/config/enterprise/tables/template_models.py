@@ -145,6 +145,10 @@ EXPERT_PACKAGE_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("template_name", "string", length=128, nullable=False),
         ColumnDefinition("description", "string", length=512, nullable=True),
         ColumnDefinition("packages", "json", nullable=False),
+        # Swarmflow 企业策略（企业最小接入设计方案 §4.2）：JSON 对象。
+        # 缺省/null 表示未配置，运行时沿用引擎默认。键：allowed / default_enabled /
+        # max_workflows / agents_per_run / max_agents_total / swarmflow_budget。
+        ColumnDefinition("swarmflow", "json", nullable=True),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
