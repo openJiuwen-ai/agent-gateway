@@ -446,6 +446,28 @@ async def test_duplicate_click_after_submit_is_rejected(channel):
     notify.assert_awaited_once()
 
 
+@pytest.mark.parametrize("age_hours,survives", [(1, True), (25, False)])
+def test_expired_card_contexts_are_swept_on_save(channel, age_hours, survives):
+    """A card nobody clicked must not stay resident past its TTL."""
+    channel._card_contexts["old-a"] = _ctx(
+        request_id="old-a", created_at=time.time() - age_hours * 60 * 60
+    )
+    channel._card_contexts["old-b"] = _ctx(
+        request_id="old-b", created_at=time.time() - age_hours * 60 * 60
+    )
+    channel._save_card_context(_ctx(request_id="new"))
+    surviving = {"old-a", "old-b"} & set(channel._card_contexts)
+    assert surviving == ({"old-a", "old-b"} if survives else set())
+    assert "new" in channel._card_contexts
+
+
+@pytest.mark.asyncio
+async def test_card_contexts_are_dropped_when_the_channel_stops(channel):
+    channel._save_card_context(_ctx())
+    await channel.stop()
+    assert not channel._card_contexts
+
+
 @pytest.mark.asyncio
 async def test_delivery_failure_reports_invalid_card_without_retry_hint(channel):
     channel._save_card_context(_ctx())
