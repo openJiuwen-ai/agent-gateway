@@ -12,7 +12,6 @@ hook_event / hooks_context 已下沉 ``jiuwenswarm.common``；
 - ``agentos/config_updater``、``agentos/registry_watcher``、
   ``agentos/agentos_router``（含 agent_manager/models/logutil、router/registry
   client、ssh_relay、stale_cleanup、third_agent 与扩展入口）、``adx``、
-  ``yuanrong_frontend_client``、
   ``video_duplex/backend/tasks/bridge`` 以本包为**唯一实现**，
   ``jiuwenswarm.extensions`` 侧已删除原文件并反向 import 本包；
   （历史 ``agent_client`` 直连 FaaS invoke 扩展已随 invoke 链路一并删除。）

@@ -33,7 +33,7 @@ def _reject_removed_agent_client_type(agent_client_config: dict[str, Any]) -> No
     if client_type in _REMOVED_AGENT_CLIENT_TYPES:
         raise RuntimeError(
             f"gateway.agent_client.type={client_type} 已移除（FaaS invoke 链路已删除），"
-            "请改用 agentos_router（YuanRong 部署）或 websocket（本地 AgentServer）"
+            "请改用 agentos_router（ADX 部署）或 websocket（本地 AgentServer）"
         )
 
 

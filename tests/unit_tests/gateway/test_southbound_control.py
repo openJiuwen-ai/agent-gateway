@@ -8,7 +8,6 @@ import pytest
 
 from agent_gateway.extensions.adx.control_adapter import AdxControl
 from agent_gateway.extensions.agentos.agentos_router.control_adapter import YuanRongControl
-from agent_gateway.extensions.yuanrong_frontend_client import SandboxInfo as LegacySandboxInfo
 from agent_gateway.southbound.contracts import ConnectionTarget, TransportKind
 from agent_gateway.southbound.control.interfaces import ManagedControl
 from agent_gateway.southbound.control.local import FixedTargetControl
@@ -65,8 +64,7 @@ async def test_managed_operations_preserve_arguments_results_and_errors(adapter)
         assert caught.value is error
 
 
-def test_managed_adapter_preserves_contract_and_legacy_resource_type():
-    assert LegacySandboxInfo is SandboxInfo
+def test_managed_adapter_preserves_contract():
     for method in ("create", "query", "delete"):
         expected = signature(getattr(ManagedControl, method))
         actual = signature(getattr(ManagedSandboxControl, method))
