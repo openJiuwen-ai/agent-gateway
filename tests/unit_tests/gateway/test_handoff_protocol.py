@@ -122,3 +122,51 @@ def test_malformed_container_fields_are_protocol_errors(field: str, value: objec
     metadata[field] = value
     with pytest.raises(HandoffProtocolError):
         decode_frame(raw_frame(metadata))
+
+
+OFFER_METADATA = {
+    'version': 1, 'type': 'OFFER', 'group_id': 'test-group', 'slot_id': 0,
+    'generation': 1, 'handoff_id': '0:1', 'runtime_id': 'web', 'prefix_length': 0,
+}
+ACK_METADATA = {
+    'version': 1, 'type': 'ACK', 'group_id': 'test-group', 'slot_id': 0,
+    'generation': 1, 'handoff_id': '0:1', 'status': 'REJECTED', 'error_code': 'UNKNOWN_RUNTIME',
+}
+
+
+@pytest.mark.parametrize('field,value', [
+    ('group_id', ''), ('group_id', 'g' * 257), ('group_id', 7),
+    ('slot_id', -1), ('slot_id', 2 ** 31),
+    ('generation', 0), ('generation', -1),
+    ('handoff_id', '1:1'), ('handoff_id', '0:01'), ('handoff_id', '0'),
+    ('handoff_id', '0:' + '1' * 20),
+    ('runtime_id', ''), ('runtime_id', '../web'),
+])
+def test_wire_offer_values_are_validated_again(field: str, value: object) -> None:
+    metadata = dict(OFFER_METADATA)
+    metadata[field] = value
+    with pytest.raises(HandoffProtocolError):
+        decode_frame(raw_frame(metadata))
+
+
+def test_wire_offer_prefix_over_the_limit_is_rejected() -> None:
+    metadata = dict(OFFER_METADATA, prefix_length=49153)
+    with pytest.raises(HandoffProtocolError):
+        decode_frame(raw_frame(metadata, b'x' * 49153))
+
+
+@pytest.mark.parametrize('change', [
+    {'status': 'ADOPTED', 'error_code': 'ERROR'},
+    {'status': 'REJECTED', 'error_code': None},
+    {'status': 'REJECTED', 'error_code': 'has space'},
+])
+def test_wire_ack_values_are_validated_again(change: dict) -> None:
+    metadata = dict(ACK_METADATA)
+    metadata.update(change)
+    with pytest.raises(HandoffProtocolError):
+        decode_frame(raw_frame(metadata))
+
+
+def test_wire_ack_cannot_carry_a_prefix() -> None:
+    with pytest.raises(HandoffProtocolError):
+        decode_frame(raw_frame(ACK_METADATA, b'trailing'))

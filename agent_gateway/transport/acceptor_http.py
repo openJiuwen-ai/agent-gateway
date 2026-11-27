@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Read one bounded HTTP head without becoming a body-forwarding transport."""
 
 from __future__ import annotations
@@ -11,12 +12,18 @@ import h11
 
 HEADER_LIMIT = 32768
 OVERREAD_LIMIT = 16384
+# Credential, identity and routing inputs are read again by the runtime with its own
+# parsers; two values would let this precheck and the runtime disagree. The identity
+# fields follow agent_gateway.common.request_identity.
 _SINGLE_HEADERS = frozenset({
-    b'host', b'authorization', b'x-user-id', b'x-auth-session',
+    b'host', b'authorization', b'x-token', b'x-user-id', b'x-auth-session',
+    b'x-group-id', b'x-bot-id', b'x-gateway-id',
     b'content-length', b'transfer-encoding', b'upgrade',
     b'sec-websocket-key', b'sec-websocket-version',
 })
-_IDENTITY_QUERY = frozenset({'user_id', 'auth_session', 'token', 'access_token'})
+_IDENTITY_QUERY = frozenset({
+    'user_id', 'group_id', 'bot_id', 'gateway_id', 'auth_session', 'token', 'access_token',
+})
 
 
 class HeadRejected(ValueError):
@@ -85,7 +92,7 @@ def parse_request_head(prefix: bytes) -> RequestHead:
             raise HeadRejected(400)
         cookies = [value for name, value in headers if name == b'cookie']
         auth_cookies = sum(
-            item.strip().partition(b'=')[0] == b'jiuwenswarm_auth'
+            item.strip().partition(b'=')[0].strip() == b'jiuwenswarm_auth'
             for cookie in cookies for item in cookie.split(b';')
         )
         if auth_cookies > 1:
@@ -108,7 +115,12 @@ def parse_request_head(prefix: bytes) -> RequestHead:
 
 
 async def read_request_head(sock: socket.socket, *, timeout: float = 5.0) -> RequestHead:
-    """Borrow a raw socket until the first head; caller retains all ownership."""
+    """Borrow a non-blocking socket until the first head; the caller keeps ownership.
+
+    A blocking socket would stall the event loop instead of honouring the timeout.
+    """
+    if sock.gettimeout() != 0:
+        raise ValueError('read_request_head requires a non-blocking socket')
     prefix = bytearray()
     loop = asyncio.get_running_loop()
     try:

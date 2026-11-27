@@ -25,6 +25,8 @@ dependencies = [
     "fastapi>=0.115,<1.0",
     "starlette>=0.49.1,<2",
     "uvicorn[standard]>=0.52.1,<1.0",  # 0.50.0-0.52.0 websockets-sansio sends duplicate Content-Length in WS denial responses
+    # 北向握手头校验（transport/acceptor_http.py 顶层 import），此前仅靠 uvicorn 的传递依赖带入
+    "h11>=0.16,<1.0",
     "websocket-client>=1.8,<2",
     "websockets>=12.0,<16",
     "httpx[http2,socks]>=0.27,<1.0",

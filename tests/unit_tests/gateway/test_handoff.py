@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from agent_gateway.transport.handoff import HandoffReceiver, HandoffRejected, HandoffSender
-from agent_gateway.transport.handoff_channel import HandoffChannel, HandoffChannelClosed
+from agent_gateway.transport.handoff_channel import HandoffChannel, HandoffChannelClosed, ReceivedHandoff
 from agent_gateway.transport.handoff_protocol import (
     HandoffAck, HandoffIdentity, HandoffOffer, HandoffProtocolError,
 )
@@ -262,10 +262,12 @@ async def test_ack_send_failure_does_not_close_or_shutdown_adopted_connection() 
     try:
         # Deliberately lose the ACK path after a complete offer has reached the peer.
         await sender.channel.send(HandoffOffer(sender.identity, '0:1', 'web', b'once'), accepted)
-        accepted.close()
         sender.channel.close()
         with pytest.raises(OSError):
             await receiver.receive_one()
+        # Keep our reference until the peer has read the offer: on macOS a socket still queued
+        # in an unread SCM_RIGHTS message arrives dead once the sender closed it and its endpoint.
+        accepted.close()
         child, prefix = runtime.connections[0]
         assert prefix == b'once'
         loop = asyncio.get_running_loop()
@@ -278,5 +280,128 @@ async def test_ack_send_failure_does_not_close_or_shutdown_adopted_connection() 
         runtime.close()
         client.close()
         accepted.close()
+        sender.channel.close()
+        receiver.channel.close()
+
+
+async def test_closed_client_socket_is_rejected_without_closing_a_healthy_channel() -> None:
+    runtime = HoldingRuntime()
+    sender, receiver = setup(runtime)
+    dead, dead_peer = socket.socketpair()
+    dead.close()
+    live, live_peer = socket.socketpair()
+    task = asyncio.create_task(receiver.receive_one())
+    try:
+        with pytest.raises(HandoffProtocolError, match='closed'):
+            await sender.handoff(dead, 'web', b'')
+        assert not sender.channel.closed
+        assert not receiver.channel.closed
+        assert (await sender.handoff(live, 'web', b'prefix')).status == 'ADOPTED'
+        await task
+        assert [prefix for _sock, prefix in runtime.connections] == [b'prefix']
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        runtime.close()
+        for peer in (dead_peer, live_peer):
+            peer.close()
+        sender.channel.close()
+        receiver.channel.close()
+
+
+
+async def test_sender_keeps_its_client_reference_until_the_worker_takes_the_offer() -> None:
+    # When a closed queued descriptor turns dead is kernel timing that a test cannot
+    # control, so observe the reference that prevents it instead of the symptom.
+    class LateReadingChannel:
+        """A worker endpoint that takes the descriptor only from inside receive()."""
+
+        def __init__(self, descriptor: socket.socket) -> None:
+            self.descriptor = descriptor
+            self.offered: HandoffOffer | None = None
+            self.descriptor_at_send = -1
+            self.descriptor_at_read = -1
+            self.closed = False
+
+        async def send(self, message: HandoffOffer, descriptor=None, *, timeout=None) -> None:
+            self.offered = message
+            self.descriptor_at_send = descriptor.fileno()
+
+        async def receive(self, *, timeout=None) -> ReceivedHandoff:
+            # The worker's recvmsg takes the descriptor now.
+            self.descriptor_at_read = self.descriptor.fileno()
+            return ReceivedHandoff(HandoffAck(
+                self.offered.identity, self.offered.handoff_id, 'ADOPTED',
+            ))
+
+        def close(self) -> None:
+            self.closed = True
+
+    client, accepted = socket.socketpair()
+    channel = LateReadingChannel(accepted)
+    identity = HandoffIdentity('group', 0, 1)
+    try:
+        ack = await HandoffSender(channel, identity).handoff(accepted, 'web', b'')
+        assert ack.status == 'ADOPTED'
+        assert channel.descriptor_at_send >= 0
+        assert channel.descriptor_at_read == channel.descriptor_at_send
+        assert not channel.closed
+        assert accepted.fileno() == -1
+    finally:
+        client.close()
+
+async def test_client_connection_stays_usable_when_the_worker_reads_the_offer_late() -> None:
+    runtime = HoldingRuntime()
+    sender, receiver = setup(runtime)
+    client, accepted = socket.socketpair()
+    client.setblocking(False)
+    sending = asyncio.create_task(sender.handoff(accepted, 'web', b'head', timeout=3))
+    receiving = None
+    try:
+        # The worker event loop is still busy when the offer reaches the channel.
+        await asyncio.sleep(.05)
+        receiving = asyncio.create_task(receiver.receive_one())
+        assert (await sending).status == 'ADOPTED'
+        await receiving
+        child, prefix = runtime.connections[0]
+        assert prefix == b'head'
+        loop = asyncio.get_running_loop()
+        await loop.sock_sendall(client, b'late-but-alive')
+        assert await asyncio.wait_for(loop.sock_recv(child, 32), 1) == b'late-but-alive'
+    finally:
+        for task in (sending, receiving):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(*(task for task in (sending, receiving) if task), return_exceptions=True)
+        runtime.close()
+        client.close()
+        sender.channel.close()
+        receiver.channel.close()
+
+
+@pytest.mark.parametrize('mismatch', ['group', 'slot', 'generation'])
+async def test_offer_for_another_target_is_rejected_before_adoption(mismatch: str) -> None:
+    runtime = HoldingRuntime()
+    sender, receiver = setup(runtime)
+    identity = sender.identity
+    identity = HandoffIdentity(
+        'other' if mismatch == 'group' else identity.group_id,
+        1 if mismatch == 'slot' else identity.slot_id,
+        2 if mismatch == 'generation' else identity.generation,
+    )
+    client, accepted = socket.socketpair()
+    try:
+        await sender.channel.send(HandoffOffer(identity, f'{identity.slot_id}:1', 'web', b''), accepted)
+        with pytest.raises(HandoffProtocolError, match='invalid handoff target'):
+            await receiver.receive_one()
+        assert runtime.connections == []
+        assert receiver.channel.closed
+        accepted.close()
+        client.setblocking(False)
+        assert await asyncio.wait_for(asyncio.get_running_loop().sock_recv(client, 1), 1) == b''
+    finally:
+        runtime.close()
+        accepted.close()
+        client.close()
         sender.channel.close()
         receiver.channel.close()

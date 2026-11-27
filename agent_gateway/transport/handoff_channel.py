@@ -164,7 +164,8 @@ class HandoffChannel:
                     descriptors.pop(0)
                     if owned_socket.type != socket.SOCK_STREAM:
                         raise HandoffProtocolError('client descriptor is not a stream socket')
-                    owned_socket.getpeername()
+                    # No connectedness probe: a peer that already reset makes getpeername()
+                    # fail, and that must stay an ordinary dead connection for the runtime.
                     owned_socket.setblocking(False)
                 result = ReceivedHandoff(message, owned_socket)
                 owned_socket = None

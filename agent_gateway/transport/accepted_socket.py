@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Adopt an existing connection and replay its prefix before socket reads."""
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class _ReplayTransport(asyncio.Transport):
             self._transport.set_protocol(protocol)
 
     def is_reading(self):
+        """Reading as the inner protocol asked for it; the real pause only serves replay."""
         return self._reading_requested if self._replaying else self._transport.is_reading()
 
     def pause_reading(self):
@@ -80,13 +82,18 @@ class _AcceptedProtocol(asyncio.Protocol):
     def __init__(self, protocol: asyncio.Protocol, prefix: bytes) -> None:
         self.protocol = protocol
         self.prefix = prefix
+        self.replay: _ReplayTransport | None = None
         self.transport: asyncio.Transport | None = None
         self.ready = asyncio.get_running_loop().create_future()
+
+    def current_protocol(self) -> asyncio.Protocol:
+        """The inner protocol that last received an event, even once the transport closed."""
+        return self.protocol if self.replay is None else self.replay.get_protocol()
 
     def connection_made(self, transport: asyncio.Transport) -> None:
         self.transport = transport
         transport.pause_reading()
-        replay = _ReplayTransport(transport, self.protocol)
+        replay = self.replay = _ReplayTransport(transport, self.protocol)
         try:
             self.protocol.connection_made(replay)
             if self.prefix:
@@ -102,17 +109,21 @@ class _AcceptedProtocol(asyncio.Protocol):
         finally:
             self.prefix = b''
 
+    def data_received(self, data):
+        # Bytes a loop delivers before the replay finishes still belong to the inner protocol.
+        self.current_protocol().data_received(data)
+
     def connection_lost(self, error):
-        self.protocol.connection_lost(error)
+        self.current_protocol().connection_lost(error)
 
     def eof_received(self):
-        return self.protocol.eof_received()
+        return self.current_protocol().eof_received()
 
     def pause_writing(self):
-        self.protocol.pause_writing()
+        self.current_protocol().pause_writing()
 
     def resume_writing(self):
-        self.protocol.resume_writing()
+        self.current_protocol().resume_writing()
 
 
 async def adopt_connection(
@@ -129,7 +140,7 @@ async def adopt_connection(
             lambda: bootstrap, sock,
         )
         await bootstrap.ready
-        return transport, transport.get_protocol()
+        return transport, bootstrap.current_protocol()
     except BaseException:
         if bootstrap is not None and bootstrap.transport is not None:
             bootstrap.transport.abort()

@@ -297,3 +297,135 @@ async def test_non_socket_descriptor_is_closed_on_rejection() -> None:
         os.close(original_read_fd)
         if write_fd >= 0:
             os.close(write_fd)
+
+
+async def test_reset_client_connection_is_delivered_and_the_channel_stays_usable() -> None:
+    listener = socket.socket()
+    listener.bind(('127.0.0.1', 0))
+    listener.listen(1)
+    client = socket.socket()
+    client.connect(listener.getsockname())
+    accepted, _address = listener.accept()
+    listener.close()
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+    client.close()
+    # A client that already reset is an ordinary dead connection, not a channel failure.
+    accepted.setblocking(False)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5
+    while True:
+        try:
+            assert accepted.recv(1) == b''
+            break
+        except ConnectionResetError:
+            break
+        except BlockingIOError:
+            assert loop.time() < deadline, 'the reset was not applied'
+            await asyncio.sleep(.01)
+    parent, worker = pair()
+    received = None
+    try:
+        await parent.send(offer(), accepted)
+        received = await worker.receive(timeout=1)
+        assert received.sock is not None
+        assert not worker.closed
+        ack = HandoffAck(offer().identity, '0:1', 'ADOPTED')
+        await parent.send(ack)
+        assert (await worker.receive()).message == ack
+    finally:
+        if received is not None:
+            received.close()
+        accepted.close()
+        parent.close()
+        worker.close()
+
+
+async def test_send_blocked_on_writable_attaches_the_descriptor_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, worker = pair()
+    client, accepted = socket.socketpair()
+    for channel in (parent, worker):
+        channel._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+    original = parent._sendmsg
+    attachments = []
+    blocked = []
+
+    def observed(data, ancillary):
+        attachments.append(bool(ancillary))
+        try:
+            return original(data, ancillary)
+        except BlockingIOError:
+            blocked.append(True)
+            raise
+
+    monkeypatch.setattr(parent, '_sendmsg', observed)
+    try:
+        # Nobody reads while the oversized offer fills the small send buffer.
+        sending = asyncio.create_task(parent.send(offer(b'x' * 49152), accepted, timeout=5))
+        await asyncio.sleep(0)
+        assert not sending.done()
+        assert blocked
+        received = await worker.receive(timeout=5)
+        await sending
+        assert received.message == offer(b'x' * 49152)
+        assert attachments.count(True) == 1
+        received.close()
+    finally:
+        accepted.close()
+        client.close()
+        parent.close()
+        worker.close()
+
+
+async def test_close_wakes_a_sender_blocked_on_writable() -> None:
+    parent, worker = pair()
+    client, accepted = socket.socketpair()
+    for channel in (parent, worker):
+        channel._sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+    try:
+        sending = asyncio.create_task(parent.send(offer(b'x' * 49152), accepted, timeout=5))
+        await asyncio.sleep(0)
+        assert not sending.done()
+        parent.close()
+        with pytest.raises(HandoffChannelClosed):
+            await asyncio.wait_for(sending, 1)
+        assert accepted.fileno() >= 0
+    finally:
+        accepted.close()
+        client.close()
+        parent.close()
+        worker.close()
+
+
+async def test_zero_length_send_closes_the_channel(monkeypatch: pytest.MonkeyPatch) -> None:
+    parent, worker = pair()
+    client, accepted = socket.socketpair()
+    monkeypatch.setattr(parent, '_sendmsg', lambda data, ancillary: 0)
+    try:
+        with pytest.raises(HandoffChannelClosed, match='short send'):
+            await parent.send(offer(), accepted)
+        assert parent.closed
+        assert accepted.fileno() >= 0
+    finally:
+        accepted.close()
+        client.close()
+        parent.close()
+        worker.close()
+
+
+async def test_datagram_descriptor_is_rejected_and_closes_the_channel() -> None:
+    left, right = socket.socketpair()
+    worker = HandoffChannel(right)
+    peer, datagram = socket.socketpair(type=socket.SOCK_DGRAM)
+    try:
+        left.sendmsg([encode_frame(offer())], [
+            (socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [datagram.fileno()])),
+        ])
+        datagram.close()
+        with pytest.raises(HandoffProtocolError, match='stream socket'):
+            await worker.receive(timeout=1)
+        assert worker.closed
+    finally:
+        peer.close()
+        datagram.close()
+        left.close()
+        worker.close()

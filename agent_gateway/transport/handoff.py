@@ -36,7 +36,16 @@ class HandoffSender:
     async def handoff(
         self, sock: socket.socket, runtime_id: str, prefix: bytes, *, timeout: float = 2.0,
     ) -> HandoffAck:
-        """Close our client reference, never shutdown/retry, including cancellation."""
+        """Close our client reference once the peer has taken it; never shutdown or retry.
+
+        The reference has to outlive the peer's read of the offer. On macOS a socket that
+        is still queued in an unread SCM_RIGHTS message can be delivered dead, reading EOF
+        at once, once the sender has closed its last reference.
+
+        A handoff that fails or is cancelled after the send still releases its reference at
+        once. An offer the peer has not read by then reaches it dead on macOS; that
+        connection was abandoned with the channel, and the runtime only sees it drop.
+        """
         active = False
         try:
             async with asyncio.timeout(timeout):
@@ -45,9 +54,10 @@ class HandoffSender:
                     offer = HandoffOffer(self.identity, f'{self.identity.slot_id}:{self._sequence}', runtime_id, prefix)
                     # Invalid local inputs cannot corrupt an otherwise healthy channel.
                     encode_frame(offer)
+                    if sock.fileno() < 0:
+                        raise HandoffProtocolError('descriptor is closed')
                     active = True
                     await self.channel.send(offer, sock)
-                    sock.close()
                     received = await self.channel.receive()
                     try:
                         acknowledgement = received.message

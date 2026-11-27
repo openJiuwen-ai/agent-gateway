@@ -1,3 +1,4 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 import asyncio
 import socket
 
@@ -209,3 +210,94 @@ async def test_real_write_buffer_pause_and_drain_callbacks_survive_adoption():
         if transport is not None:
             transport.close()
         client.close()
+
+
+@pytest.mark.parametrize('where', ['connection_made', 'data_received'])
+async def test_adopt_reports_the_inner_protocol_that_closed_the_connection(where: str):
+    from agent_gateway.transport.accepted_socket import adopt_connection
+
+    class ClosingProtocol(asyncio.Protocol):
+        def connection_made(self, transport):
+            self.transport = transport
+            if where == 'connection_made':
+                transport.close()
+
+        def data_received(self, data):
+            if where == 'data_received':
+                self.transport.close()
+
+    client, accepted = await connected_pair()
+    protocol = ClosingProtocol()
+    try:
+        transport, returned = await adopt_connection(
+            accepted, b'GET / HTTP/1.1\r\nHost:x\r\n\r\n', lambda: protocol,
+        )
+        assert returned is protocol
+        assert transport.is_closing()
+    finally:
+        client.close()
+        accepted.close()
+
+
+async def test_replay_failure_tells_the_switched_to_protocol_the_connection_is_lost():
+    from agent_gateway.transport.accepted_socket import adopt_connection
+
+    lost = asyncio.Event()
+
+    class NextProtocol(asyncio.Protocol):
+        def data_received(self, data):
+            raise ValueError('replay failed')
+
+        def connection_lost(self, error):
+            lost.set()
+
+    class InitialProtocol(asyncio.Protocol):
+        def connection_made(self, transport):
+            transport.set_protocol(NextProtocol())
+
+    client, accepted = await connected_pair()
+    try:
+        with pytest.raises(ValueError, match='replay failed'):
+            await adopt_connection(accepted, b'prefix', InitialProtocol)
+        await asyncio.wait_for(lost.wait(), 1)
+        assert await asyncio.wait_for(asyncio.get_running_loop().sock_recv(client, 1), 1) == b''
+    finally:
+        client.close()
+        accepted.close()
+
+
+async def test_bytes_reaching_the_bootstrap_after_a_switch_follow_the_new_protocol():
+    from agent_gateway.transport.accepted_socket import _AcceptedProtocol
+
+    received = []
+
+    class NextProtocol(asyncio.Protocol):
+        def data_received(self, data):
+            received.append(data)
+
+    class InitialProtocol(asyncio.Protocol):
+        def connection_made(self, transport):
+            transport.set_protocol(NextProtocol())
+
+    class IdleTransport:
+        """The loop has not started reading yet; events are driven by hand."""
+
+        def __init__(self):
+            self.protocol = None
+
+        def pause_reading(self):
+            pass
+
+        def resume_reading(self):
+            pass
+
+        def is_closing(self):
+            return False
+
+        def set_protocol(self, protocol):
+            self.protocol = protocol
+
+    bootstrap = _AcceptedProtocol(InitialProtocol(), b'')
+    bootstrap.connection_made(IdleTransport())
+    bootstrap.data_received(b'after-switch')
+    assert received == [b'after-switch']

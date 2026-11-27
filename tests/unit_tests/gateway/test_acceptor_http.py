@@ -1,7 +1,9 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Bounded first-head classification before framework socket adoption."""
 
 import asyncio
 import socket
+import threading
 
 import pytest
 
@@ -44,6 +46,15 @@ def test_classifies_websocket_without_consuming_or_validating_frames():
     b'POST /ws HTTP/1.1\r\nHost:x\r\nConnection:upgrade\r\nUpgrade:websocket\r\n\r\n',
     b'GET / HTTP/1.1\r\nHost:x\nX-Hidden:value\r\n\r\n',
     b'GET / HTTP/1.1\r\nHost:x\r\nCookie:jiuwenswarm_auth=a; jiuwenswarm_auth=b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nCookie:jiuwenswarm_auth=a; jiuwenswarm_auth =b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nCookie:jiuwenswarm_auth=a; jiuwenswarm_auth\t=b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nX-Token:a\r\nX-Token:b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nX-Group-Id:a\r\nX-Group-Id:b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nX-Bot-Id:a\r\nX-Bot-Id:b\r\n\r\n',
+    b'GET / HTTP/1.1\r\nHost:x\r\nX-Gateway-Id:a\r\nX-Gateway-Id:b\r\n\r\n',
+    b'GET /?group_id=a&group_id=b HTTP/1.1\r\nHost:x\r\n\r\n',
+    b'GET /?bot_id=a&bot_id=b HTTP/1.1\r\nHost:x\r\n\r\n',
+    b'GET /?gateway_id=a&gateway_id=b HTTP/1.1\r\nHost:x\r\n\r\n',
 ])
 def test_rejects_ambiguous_or_unsupported_heads_without_echoing_input(raw):
     from agent_gateway.transport.acceptor_http import HeadRejected, parse_request_head
@@ -118,5 +129,22 @@ async def test_read_timeout_disconnect_and_cancel_leave_socket_with_caller():
             await read_request_head(accepted, timeout=1)
         assert error.value.status == 400
     finally:
+        accepted.close()
+        client.close()
+
+
+async def test_read_refuses_a_blocking_socket_without_stalling_the_loop():
+    from agent_gateway.transport.acceptor_http import read_request_head
+
+    accepted, client = socket.socketpair()
+    # Until the guard exists, the read blocks the loop until this head arrives, so the
+    # test fails on the missing error instead of hanging.
+    late_head = threading.Timer(.3, client.sendall, args=(b'GET / HTTP/1.1\r\nHost:x\r\n\r\n',))
+    late_head.start()
+    try:
+        with pytest.raises(ValueError, match='non-blocking'):
+            await read_request_head(accepted, timeout=1)
+    finally:
+        late_head.cancel()
         accepted.close()
         client.close()
