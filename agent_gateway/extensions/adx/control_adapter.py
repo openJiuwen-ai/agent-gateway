@@ -23,6 +23,7 @@ class AdxControl(ManagedSandboxControl):
             namespace=request.namespace, name=request.name, workspace=request.workspace,
             runtime_spec=request.runtime_spec, env_vars=request.env_vars,
             builtin=request.builtin, web_port=request.web_port,
+            trace_id=request.trace_id,
         )
 
     async def verify_generation(self, sandbox: SandboxInfo, *, generation: str, deadline: float) -> None:
@@ -31,9 +32,9 @@ class AdxControl(ManagedSandboxControl):
             confirmed_runtime_id=sandbox.metadata.get("runtime_id"),
         )
 
-    def ws_headers(self) -> dict[str, str]:
+    def ws_headers(self, trace_id: str | None = None) -> dict[str, str]:
         config = self._config if self._config is not None else self.backend.config
-        return trace_headers({'Authorization': 'Bearer ' + config.token})
+        return trace_headers({'Authorization': 'Bearer ' + config.token}, trace_id)
 
     def _url(self, instance_id: str, port: int, protocol: str) -> str:
         origin = urlsplit(self.backend.frontend_endpoint)
