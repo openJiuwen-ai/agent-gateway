@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
+from agent_gateway.channel_manager.im_platforms.attachment_persistence import (
+    AttachmentPersistenceMixin,
+    safe_attachment_filename,
+)
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
@@ -25,7 +28,7 @@ from agent_gateway.channel_manager.im_platforms.file_types import (
 )
 
 
-class WecomFileService:
+class WecomFileService(AttachmentPersistenceMixin):
     """企业微信文件服务，处理文件下载和上传。"""
 
     def __init__(
@@ -49,33 +52,12 @@ class WecomFileService:
         self.workspace_dir = workspace_dir
         self._download_semaphore = asyncio.Semaphore(3)
         # 附件落盘钩子（Phase 3）：Gateway 下载字节后经 E2A 交给目标 AgentServer 落盘。
-        self._persist_hook: Any = None
-
-    def set_persist_hook(self, hook: Any) -> None:
-        """注入附件落盘钩子 ``async (content, category, filename) -> dict``。"""
-        self._persist_hook = hook
-
-    async def _persist_downloaded_file(
-        self, content: bytes, category: str, filename: str,
-    ) -> dict[str, Any]:
-        """把下载字节落盘（经钩子到 AgentServer，或本地回落），返回 file_info 字段。"""
-        if self._persist_hook is not None:
-            try:
-                return await self._persist_hook(content, category, filename)
-            except AttachmentPersistError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise AttachmentPersistError(str(exc)) from exc
-        raise AttachmentPersistError(
-            "IM 附件落盘钩子未注入（AgentServer 上下文缺失）"
-        )
+        self._initialize_attachment_persistence()
 
     @staticmethod
     def _safe_filename(name: str) -> str:
         """生成安全的文件名。"""
-        # 移除或替换不安全字符
-        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-        return safe[:100]  # 限制长度
+        return safe_attachment_filename(name)
 
     async def download_file(
         self,

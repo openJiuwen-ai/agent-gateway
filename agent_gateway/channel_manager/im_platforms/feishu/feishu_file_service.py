@@ -9,6 +9,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.channel_manager.im_platforms.attachment_persistence import (
+    AttachmentPersistenceMixin,
+)
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
@@ -85,7 +88,7 @@ def is_video_file(file_path: str) -> bool:
     return ext in _VIDEO_EXTENSIONS
 
 
-class FeishuFileService:
+class FeishuFileService(AttachmentPersistenceMixin):
     """
     飞书文件服务，负责文件的下载与上传。
 
@@ -113,31 +116,8 @@ class FeishuFileService:
         self._workspace_dir = workspace_dir
         self._download_semaphore = asyncio.Semaphore(3)  # 限制并发下载数
         # 附件落盘钩子（Phase 3）：Gateway 下载字节后经 E2A 交给目标 AgentServer
-        # 落盘其注入目录。未注入时回落本地写盘（仅测试 / 无 AgentServer 上下文）。
-        self._persist_hook: Any = None
-
-    def set_persist_hook(self, hook: Any) -> None:
-        """注入附件落盘钩子 ``async (content, category, filename) -> dict``。
-
-        返回形如 ``{"path": ..., "name": ..., "size": ...}`` 的落盘结果；抛错
-        视为附件落盘失败（决策 D6：按可重试错误失败整条消息）。
-        """
-        self._persist_hook = hook
-
-    async def _persist_downloaded_file(
-        self, content: bytes, category: str, local_name: str,
-    ) -> dict[str, Any]:
-        """把下载字节落盘（经钩子到 AgentServer，或本地回落），返回 file_info 字段。"""
-        if self._persist_hook is not None:
-            try:
-                return await self._persist_hook(content, category, local_name)
-            except AttachmentPersistError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise AttachmentPersistError(str(exc)) from exc
-        raise AttachmentPersistError(
-            "IM 附件落盘钩子未注入（AgentServer 上下文缺失）"
-        )
+        # 落盘其注入目录；未注入时按可重试错误拒绝附件。
+        self._initialize_attachment_persistence()
 
     # ──────────────────────────────────────────────────────────────────────────
     # 工具方法

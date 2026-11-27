@@ -11,13 +11,16 @@ import asyncio
 import hashlib
 import stat
 import os
-import re
 from pathlib import Path
 from typing import Any, Callable
 
 import httpx
 from loguru import logger
 
+from agent_gateway.channel_manager.im_platforms.attachment_persistence import (
+    AttachmentPersistenceMixin,
+    safe_attachment_filename,
+)
 from agent_gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
@@ -36,7 +39,7 @@ class DingTalkFileUploadError(RuntimeError):
         self.code = code
 
 
-class DingTalkFileService:
+class DingTalkFileService(AttachmentPersistenceMixin):
     """钉钉文件服务，处理文件下载和上传。"""
 
     def __init__(
@@ -74,7 +77,7 @@ class DingTalkFileService:
         self._signed_upload = signed_upload or self._upload_signed_url
         self._download_semaphore = asyncio.Semaphore(3)
         # 附件落盘钩子（Phase 3）：Gateway 下载字节后经 E2A 交给目标 AgentServer 落盘。
-        self._persist_hook: Any = None
+        self._initialize_attachment_persistence()
 
 
     async def _upload_signed_url(self, url: str, headers: dict[str, str], content: bytes) -> None:
@@ -284,31 +287,10 @@ class DingTalkFileService:
             raise DingTalkFileUploadError("DingTalk did not confirm the group file upload", outcome="unknown")
         return {"dentryId": str(dentry_id), "dentryUuid": dentry_uuid}
 
-    def set_persist_hook(self, hook: Any) -> None:
-        """注入附件落盘钩子 ``async (content, category, filename) -> dict``。"""
-        self._persist_hook = hook
-
-    async def _persist_downloaded_file(
-        self, content: bytes, category: str, filename: str,
-    ) -> dict[str, Any]:
-        """把下载字节落盘（经钩子到 AgentServer，或本地回落），返回 file_info 字段。"""
-        if self._persist_hook is not None:
-            try:
-                return await self._persist_hook(content, category, filename)
-            except AttachmentPersistError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                raise AttachmentPersistError(str(exc)) from exc
-        raise AttachmentPersistError(
-            "IM 附件落盘钩子未注入（AgentServer 上下文缺失）"
-        )
-
-    @classmethod
-    def _safe_filename(cls, name: str) -> str:
+    @staticmethod
+    def _safe_filename(name: str) -> str:
         """生成安全的文件名。"""
-        # 移除或替换不安全字符
-        safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name)
-        return safe[:100]  # 限制长度
+        return safe_attachment_filename(name)
 
     async def _download_with_retry(
         self,
