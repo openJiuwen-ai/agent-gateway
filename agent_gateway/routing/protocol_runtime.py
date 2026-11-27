@@ -62,9 +62,13 @@ _REQUEST_REFERENCE_FIELDS = ("request_id", "turn_request_id", "source_request_id
 # that reply win. The fallback applies when the timeout policy sets no limit.
 _TUI_SWITCH_DEADLINE_MARGIN_SECONDS = 10.0
 _TUI_SWITCH_DEADLINE_FALLBACK_SECONDS = 55.0
-# Answered unary TUI requests whose correlation is kept per socket, so follow-up
-# requests and late events can still reference recent ones.
+# Answered TUI requests whose correlation is kept per socket, so follow-up
+# requests and late events can still reference recent ones. Unary requests settle
+# at their reply, streamed ones at their terminal event.
 _TUI_ANSWERED_ORIGINS_KEPT = 256
+# Events that end a streamed turn. Until one arrives the correlation must stay so
+# the turn's output keeps routing; afterwards it moves to the answered window.
+_TUI_STREAM_END_EVENTS = frozenset({"chat.final", "chat.error", "runtime.error"})
 # A TUI socket that drops mid-turn normally reconnects within seconds. Its Sessions
 # and in-flight request correlations are held this long for the same user's next
 # socket. Shorter than MessageHandler's 60 s disconnect cancel, so a re-attach that
@@ -771,23 +775,35 @@ class ProtocolRuntime(BaseWebChannel):
         return outgoing
 
     def _note_tui_request_answered(self, upstream_id: str, origin: _TuiRequestOrigin) -> None:
-        """Bound the correlations kept for a socket's answered unary requests.
+        """Bound the correlations kept for a socket's settled requests.
 
         Without this every forwarded request stays in ``_tui_request_origins`` and
         ``_request_to_client`` until disconnect, and the TUI's periodic requests
-        make both grow for as long as the window is open. Stream origins are kept:
-        the gateway cannot see where a stream ends, and there is one per turn.
+        make both grow for as long as the window is open. A stream settles at its
+        terminal event instead of a reply, and lands in the same window.
         """
-        if origin.is_stream:
+        ws = origin.ws
+        if ws is None:
             return
-        answered = getattr(origin.ws, "_tui_answered_requests", None)
+        answered = getattr(ws, "_tui_answered_requests", None)
         if answered is None:
-            answered = origin.ws._tui_answered_requests = deque()
+            answered = ws._tui_answered_requests = deque()
+        if upstream_id in answered:
+            return
         answered.append(upstream_id)
         while len(answered) > _TUI_ANSWERED_ORIGINS_KEPT:
             evicted = self._tui_request_origins.pop(answered.popleft(), None)
             if evicted is not None:
                 self._request_to_client.pop(evicted.request_key, None)
+
+    @staticmethod
+    def _tui_stream_end_event(msg: Any) -> bool:
+        """Whether an outbound frame is the last one of a streamed turn."""
+        if getattr(msg, "type", None) != "event":
+            return False
+        event_type = getattr(msg, "event_type", None)
+        name = getattr(event_type, "value", event_type)
+        return isinstance(name, str) and name in _TUI_STREAM_END_EVENTS
 
     def _tui_request_outbound(self, msg: Any) -> tuple[Any, Any] | None:
         origin = self._tui_request_origin(msg)
@@ -799,6 +815,8 @@ class ProtocolRuntime(BaseWebChannel):
                 return None, None
             outgoing = self._tui_client_message(msg, origin)
             if is_reply:
+                self._note_tui_request_answered(msg.id, origin)
+            elif origin.is_stream and self._tui_stream_end_event(msg):
                 self._note_tui_request_answered(msg.id, origin)
             return origin.ws, outgoing
         if str(msg.id or "").startswith(_TUI_REQUEST_PREFIX):
