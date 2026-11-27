@@ -2004,7 +2004,7 @@ class WebChannel(BaseWsChannel):
         if payload is not None and payload.get("source") == "org_stop":
             sid = payload.get("session_id") or msg.session_id
             if sid and payload.get("success") is True:
-                self._session_busy[sid] = False
+                self._set_session_busy(sid, False)
                 requests = self._expert_processing_requests.get(sid, set())
                 items = payload.get("cancelled_requests")
                 if isinstance(items, list):
@@ -2041,11 +2041,13 @@ class WebChannel(BaseWsChannel):
         if event_name == "chat.processing_status" and payload is not None:
             sid = payload.get("session_id") or msg.session_id
             if sid:
-                self._session_busy[sid] = bool(payload.get("is_processing", False))
+                self._set_session_busy(sid, bool(payload.get("is_processing", False)))
         elif event_name == "chat.interrupt_result":
             intent = payload.get("intent", "cancel") if payload is not None else "cancel"
             if msg.session_id:
-                self._session_busy[msg.session_id] = intent in ("pause", "supplement", "resume")
+                self._set_session_busy(
+                    msg.session_id, intent in ("pause", "supplement", "resume")
+                )
 
         if event_name in {"chat.processing_status", "chat.ask_user_question"} and payload is not None:
             sid = payload.get("session_id") or msg.session_id
@@ -2079,6 +2081,20 @@ class WebChannel(BaseWsChannel):
         校验会话非忙碌,避免与正在进行的 agent 文件写入冲突。
         """
         return self._session_busy.get(session_id, False) or bool(self._expert_processing_requests.get(session_id))
+
+    def _set_session_busy(self, session_id: str, busy: bool) -> None:
+        """Record a Session's busy flag, dropping the key once it goes idle.
+
+        An absent key already reads as not busy, so keeping ``False`` entries
+        would retain every Session ever seen for the life of the process.
+        """
+        sid = str(session_id or "")
+        if not sid:
+            return
+        if busy:
+            self._session_busy[sid] = True
+        else:
+            self._session_busy.pop(sid, None)
 
     def clear_expert_processing(self, session_id: str) -> None:
         """Release expert request records after a session is closed."""
