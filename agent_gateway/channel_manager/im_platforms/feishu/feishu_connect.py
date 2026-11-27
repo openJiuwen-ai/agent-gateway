@@ -876,6 +876,7 @@ class FeishuChannel(BaseChannel):
                 logger.warning("停止时关闭飞书流式卡片失败", exc_info=True)
         self._cardkit_sessions.clear()
         self._cardkit_buffers.clear()
+        self._card_contexts.clear()
 
         if self._websocket_client and self._ws_thread_loop and self._ws_thread_loop.is_running():
             try:
@@ -3247,6 +3248,22 @@ class FeishuChannel(BaseChannel):
     def _save_card_context(self, ctx: _ApprovalCardContext) -> None:
         """保存上下文到内存（request_id 为键）。"""
         self._card_contexts[ctx.request_id] = ctx
+        self._prune_card_contexts()
+
+    def _prune_card_contexts(self, now: float | None = None) -> None:
+        """回收已过期卡片，避免无人作答的卡片常驻到进程退出。
+
+        过期此前只在 ``_load_card_context`` 里发现，用户不点卡片就永远不会
+        触发，因此这里在写入时顺带按 TTL 清扫。
+        """
+        current = time.time() if now is None else now
+        stale = [
+            request_id
+            for request_id, ctx in self._card_contexts.items()
+            if ctx.is_expired(current)
+        ]
+        for request_id in stale:
+            self._card_contexts.pop(request_id, None)
 
     def _load_card_context(self, request_id: str) -> _ApprovalCardContext | None:
         """读取上下文；过期则清理并返回 None。"""
