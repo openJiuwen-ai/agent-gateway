@@ -30,7 +30,7 @@ except ImportError:
 
 def _raise_missing_asyncssh(exc: ImportError) -> None:
     raise RuntimeError(
-        "SSH channel is enabled but optional dependency `asyncssh>=2.14.0,<2.24` "
+        "SSH channel is enabled but optional dependency `asyncssh>=2.24.0` "
         "is not installed. Install with `pip install -e \".[ssh]\"` or "
         '`uv sync --extra ssh` / `pip install "agent-gateway[ssh]"`.'
     ) from exc

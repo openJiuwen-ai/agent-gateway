@@ -86,7 +86,7 @@ class SshSouthConnectError(Exception):
 
 def _raise_missing_asyncssh(exc: ImportError) -> None:
     raise RuntimeError(
-        "SSH relay requires optional dependency `asyncssh>=2.14.0,<2.24`. "
+        "SSH relay requires optional dependency `asyncssh>=2.24.0`. "
         "Install with `pip install -e \".[ssh]\"` or "
         '`uv sync --extra ssh` / `pip install "agent-gateway[ssh]"`.'
     ) from exc
