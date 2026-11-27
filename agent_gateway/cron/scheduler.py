@@ -129,6 +129,12 @@ _CRON_LIVE_MIRROR_EVENTS = _CRON_LIVE_FORWARD_EVENTS | frozenset({
 # execution sessions. Flip to True to re-enable the pipeline.
 _WEB_RUN_NOTIFICATIONS_ENABLED = False
 
+# 终态 run 在内存里保留一小段时间，供迟到的 chat.file 等事件按执行会话找回
+# （见 _find_active_run_by_exec_session 的 fallback）；窗口过后 _runs /
+# _run_tasks / _claimed_run_ids 一并释放，不再随调度轮次累积。
+_RUN_RETENTION_SECONDS = 300.0
+_FINAL_RUN_STATUSES = frozenset({"succeeded", "failed", "skipped", "cancelled"})
+
 
 def _is_cron_interrupt_event(event_type: str) -> bool:
     """Whether *event_type* parks the turn waiting for a human answer."""
@@ -1081,6 +1087,9 @@ class CronSchedulerService:
             if not t.done():
                 t.cancel()
         self._run_tasks.clear()
+        # 调度器生命周期结束，run 记录与认领标记一并释放。
+        self._runs.clear()
+        self._claimed_run_ids.clear()
         logger.info("[Cron] scheduler stopped")
 
     async def reload(self) -> None:
@@ -1858,10 +1867,10 @@ class CronSchedulerService:
         用户点「立即执行」不抢，避免和到点那一趟互相挤掉。
         """
         if not self._use_db_schedule():
-            self._claimed_run_ids.add(run_id)
             return True
         state = self._runs.get(run_id)
         if state is not None and state.manually_triggered:
+            # 企业版也要放行这一趟的推送，所以手动触发的 claim 必须记下来。
             self._claimed_run_ids.add(run_id)
             logger.info(
                 "[Cron] db schedule claim bypassed (manual run_now) job=%s run_id=%s",
@@ -1921,9 +1930,25 @@ class CronSchedulerService:
             return True
         return run_id in self._claimed_run_ids
 
+    def _release_finished_runs(self) -> None:
+        """回收已到终态、且过了保留窗口的 run 记录。"""
+        now = self._now_fn()
+        for run_id, state in list(self._runs.items()):
+            if str(getattr(state, "status", "") or "").strip() not in _FINAL_RUN_STATUSES:
+                continue
+            finished_at = getattr(state, "finished_at", None)
+            if finished_at is None:
+                continue
+            if now - float(finished_at) < _RUN_RETENTION_SECONDS:
+                continue
+            self._runs.pop(run_id, None)
+            self._run_tasks.pop(run_id, None)
+            self._claimed_run_ids.discard(run_id)
+
     async def _loop(self) -> None:
         while self._running:
             try:
+                self._release_finished_runs()
                 if not self._events:
                     self._reload_event.clear()
                     try:
@@ -2072,6 +2097,7 @@ class CronSchedulerService:
                 try:
                     await self._push_to_targets(job, state, text=text or "本次未触发推荐", is_placeholder=False)
                     state.pushed_final = True
+                    self._claimed_run_ids.discard(state.run_id)
                 except Exception as exc:
                     logger.warning("[Cron] proactive result notification failed job=%s: %s", job.id, exc)
             # proactive.tick 走专属分支提前 return，跳过下方 643 通用 reschedule。
@@ -3346,6 +3372,7 @@ class CronSchedulerService:
         if state.result_text:
             await self._push_to_targets(job, state, text=state.result_text, is_placeholder=False)
             state.pushed_final = True
+            self._claimed_run_ids.discard(run_id)
             return
 
         # Not ready: send placeholder
@@ -3380,6 +3407,7 @@ class CronSchedulerService:
         )
         await self._push_to_targets(job, state, text=state.result_text, is_placeholder=False)
         state.pushed_final = True
+        self._claimed_run_ids.discard(run_id)
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
