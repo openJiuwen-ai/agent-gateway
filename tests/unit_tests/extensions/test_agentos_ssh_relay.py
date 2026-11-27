@@ -473,6 +473,29 @@ async def test_ssh_relay_follows_user_current_agent_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_disconnect_releases_current_agent_type_cache() -> None:
+    """客户端生命周期结束时，用户当前 agent_type 缓存随之释放。"""
+    client = AgentOSRouterClient(
+        FakeYuanRongClient(),
+        FakeRegistryClient(),
+        AgentManager(),
+        ssh_relay=StubSshRelay(),
+        ssh_channel_endpoint=SshChannelEndpoint(ip="0.0.0.0", port=2222),
+    )
+    try:
+        result = await client.thirdagent_switch(user_id="alice", agent_type="opencode")
+        assert result["ok"]
+        assert client.get_current_agent_type("alice") == "opencode"
+
+        await client.disconnect()
+
+        assert client._current_agent_types == {}
+        assert client.get_current_agent_type("alice") == "jiuwenswarm"
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_ssh_relay_without_switch_uses_opencode_command_prefix() -> None:
     """未 switch：``ssh ... "opencode ..."`` 按指令首词拉起 opencode。"""
     yuanrong = FakeYuanRongClient()

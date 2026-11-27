@@ -1536,6 +1536,9 @@ class AgentOSRouterClient(AgentServerClient):
                 task.cancel()
         self._pending_cleanups.clear()
         self._warmup_tasks.clear()
+        # Per-user agent type is a routing hint for live connections; once the
+        # client lifecycle ends nobody can read it again.
+        self._current_agent_types.clear()
         await self._drain_background_tasks()
         await self._close_all_ws_clients()
         try:
