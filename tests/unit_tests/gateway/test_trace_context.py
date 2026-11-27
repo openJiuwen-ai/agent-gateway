@@ -18,6 +18,13 @@ UUID_STR = str(UUID(hex=HEX))
 TRACEPARENT = f"00-{HEX}-bbbbbbbbbbbbbbbb-01"
 
 
+@pytest.fixture(autouse=True)
+async def _isolate_gateway_telemetry():
+    await telemetry.shutdown_gateway_telemetry()
+    yield
+    await telemetry.shutdown_gateway_telemetry()
+
+
 def _enable_trace(monkeypatch):
     monkeypatch.setattr(telemetry, "_runtime", None)
     telemetry.configure_gateway_telemetry(
