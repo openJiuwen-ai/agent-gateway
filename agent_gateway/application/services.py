@@ -54,7 +54,6 @@ class GatewayServices:
     client: Any
     third_agent: Any
     agent_server_ext: Any
-    using_adx_router: Any
     extension_registry: Any
     extension_manager: Any
     storage_ctx: Any
@@ -215,10 +214,6 @@ async def assemble_services(
     gateway_config = full_cfg.get("gateway") or {}
     agent_client_config = gateway_config.get("agent_client") or {}
     _reject_removed_agent_client_type(agent_client_config)
-    using_adx_router = str(agent_client_config.get("type") or "").strip().lower() == "adx_router"
-    if using_adx_router:
-        if agent_server_ext is None or agent_server_ext.metadata.id != "adx_router":
-            raise RuntimeError("Selected adx_router extension failed to load; check gateway.adx configuration")
     client = assemble_client(
         agent_server_ext, mode=agent_client_mode, enterprise=is_enterprise(), uri=agent_server_url,
     )
@@ -421,7 +416,6 @@ async def assemble_services(
         client=client,
         third_agent=third_agent,
         agent_server_ext=agent_server_ext,
-        using_adx_router=using_adx_router,
         extension_registry=extension_registry,
         extension_manager=extension_manager,
         storage_ctx=storage_ctx,

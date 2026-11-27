@@ -3592,19 +3592,22 @@ async def test_create_uses_configured_workspace_root(tmp_path) -> None:
         await client.shutdown()
 
 
+@pytest.mark.parametrize("selector", ["agentos_router", "adx_router"])
 @pytest.mark.asyncio
 async def test_agentos_extension_registers_when_selected(
-    monkeypatch,
+    monkeypatch, tmp_path, selector,
 ) -> None:
+    import yaml
+    from agent_gateway.common import config as gateway_config
+    from agent_gateway.agent_client_mode import _validate_agent_client_registration
+    from agent_gateway.extensions.loader import ExtensionLoader
+    from agent_gateway.extensions.manager import _enabled_extension_filter
     from agent_gateway.extensions.agentos import extension as agentos_extension
-    from agent_gateway.extensions.agentos.agentos_router import (
-        extension as agentos_router_impl,
-    )
 
     config = {
         "gateway": {
             "agent_client": {
-                "type": "agentos_router",
+                "type": selector,
                 "frontend_endpoint": "http://yuanrong.test",
                 "function_version_urn": "urn:test",
             },
@@ -3612,7 +3615,10 @@ async def test_agentos_extension_registers_when_selected(
     }
     monkeypatch.setenv("ROUTER_ONLY_TEST_TOKEN", "test-token")
     config["gateway"]["adx"] = {"ingress_url": "https://adx.example", "tenant": "test", "token_env": "ROUTER_ONLY_TEST_TOKEN"}
-    monkeypatch.setattr(agentos_router_impl, "get_config", lambda: config)
+    config["extensions"] = {"enabled": ["ADX Router" if selector == "adx_router" else "AgentOS Router"]}
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(gateway_config, "get_config_file", lambda: path)
 
     class Registry:
         registered = None
@@ -3625,10 +3631,13 @@ async def test_agentos_extension_registers_when_selected(
             self.third_agent = extension
 
     registry = Registry()
-    registered = await agentos_extension.register_extensions(registry)
+    registered = await ExtensionLoader(registry).load_extension(Path(agentos_extension.__file__).parent)
 
     assert len(registered) == 1
     assert isinstance(registered[0], AgentOSRouter)
+    effective = gateway_config.get_config()
+    assert registered[0].metadata.name in _enabled_extension_filter(effective)
+    _validate_agent_client_registration(effective, registered[0])
     assert registry.registered is registered[0]
     assert registry.third_agent is registered[0]
     assert registry.third_agent.get_third_agent() is registered[0].get_third_agent()

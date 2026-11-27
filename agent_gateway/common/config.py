@@ -128,6 +128,16 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
     """
     if config is None:
         return
+    # Older Gateway deployments selected the same ADX backend via a separate extension.
+    gateway = config.get("gateway")
+    client = gateway.get("agent_client") if isinstance(gateway, dict) else None
+    if isinstance(client, dict) and str(client.get("type")).strip().lower() == "adx_router":
+        client["type"] = "agentos_router"
+        extensions = config.get("extensions")
+        if isinstance(extensions, dict) and isinstance(extensions.get("enabled"), list):
+            extensions["enabled"] = [
+                "AgentOS Router" if name == "ADX Router" else name for name in extensions["enabled"]
+            ]
     models = config.get("models", {})
     if isinstance(models, dict):
         for entry in models.values():
