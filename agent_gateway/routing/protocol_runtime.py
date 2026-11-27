@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 from copy import copy
 import inspect
 import json
@@ -65,6 +65,13 @@ _TUI_SWITCH_DEADLINE_FALLBACK_SECONDS = 55.0
 # Answered unary TUI requests whose correlation is kept per socket, so follow-up
 # requests and late events can still reference recent ones.
 _TUI_ANSWERED_ORIGINS_KEPT = 256
+# Backstop for a socket's request correlations. Answered unary TUI requests are
+# released above, but a streamed turn keeps its correlation until disconnect and
+# non-TUI channels never release one at all, so a long-lived window or CLI would
+# grow ``_request_to_client`` / ``_tui_request_origins`` for as long as it runs.
+# One open socket cannot plausibly have this many turns in flight; the oldest
+# ones are finished and only kept as translation targets.
+_REQUEST_CORRELATIONS_KEPT = 1024
 # A TUI socket that drops mid-turn normally reconnects within seconds. Its Sessions
 # and in-flight request correlations are held this long for the same user's next
 # socket. Shorter than MessageHandler's 60 s disconnect cancel, so a re-attach that
@@ -506,6 +513,7 @@ class ProtocolRuntime(BaseWebChannel):
                 continue
             self._tui_request_origins[upstream_id] = replace(origin, ws=ws, adopted=True)
             self._request_to_client[origin.request_key] = ws
+            self._remember_request_correlation(ws, origin.request_key)
         ws._tui_adopted_routing_keys = list(record.routing_keys)
 
     def unclaimed_tui_disconnect_keys(
@@ -788,6 +796,31 @@ class ProtocolRuntime(BaseWebChannel):
             evicted = self._tui_request_origins.pop(answered.popleft(), None)
             if evicted is not None:
                 self._request_to_client.pop(evicted.request_key, None)
+
+    def _remember_request_correlation(self, ws: Any, request_key: tuple) -> None:
+        """Cap one socket's request correlations, evicting the oldest first.
+
+        A streamed turn's correlation is released at disconnect, not at its last
+        chunk, and a non-TUI request keeps its entry after the reply, because the
+        gateway cannot tell a finished stream from one that will resume. Both
+        tables are lookup-only history at this point, so the oldest entries can
+        go: they no longer route anything a live turn waits for.
+        """
+        kept = getattr(ws, "_gateway_request_correlations", None)
+        if kept is None:
+            kept = ws._gateway_request_correlations = OrderedDict()
+        # A client may reuse an ID; the newest correlation is the live one.
+        kept[request_key] = None
+        kept.move_to_end(request_key)
+        while len(kept) > _REQUEST_CORRELATIONS_KEPT:
+            evicted, _ = kept.popitem(last=False)
+            # Another socket may hold the key now; only release our own entry.
+            if self._request_to_client.get(evicted) is not ws:
+                continue
+            self._request_to_client.pop(evicted, None)
+            origin = self._tui_request_origins.get(evicted[1])
+            if origin is not None and origin.ws is ws and origin.request_key == evicted:
+                self._tui_request_origins.pop(evicted[1], None)
 
     def _tui_request_outbound(self, msg: Any) -> tuple[Any, Any] | None:
         origin = self._tui_request_origin(msg)
@@ -1169,6 +1202,9 @@ class ProtocolRuntime(BaseWebChannel):
             pending_switch = self._pending_tui_switches.get(request_key)
             if pending_switch is not None:
                 self._release_pending_tui_switch(pending_switch)
+        kept = getattr(ws, "_gateway_request_correlations", None)
+        if kept is not None:
+            kept.clear()
         for session_key in stale_session_keys:
             self._session_to_client.pop(session_key, None)
         stale_pending_session_keys = [
@@ -1503,6 +1539,8 @@ class ProtocolRuntime(BaseWebChannel):
                     is_stream=bool(data.get("is_stream", False)),
                     session_id=session_id if explicit_session_id else "",
                 )
+            if request_key is not None:
+                self._remember_request_correlation(ws, request_key)
             if deferred_switch:
                 pending_switch = _PendingTuiSwitch(route, session_id, ws, request_key)
                 wait_seconds = resolve_agent_request_timeout_seconds(

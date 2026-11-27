@@ -359,6 +359,70 @@ async def test_answered_unary_correlations_are_bounded_per_socket(pair, monkeypa
     assert pair.sockets[1].frames == []
 
 
+@pytest.mark.asyncio
+async def test_stream_correlations_are_bounded_per_socket(pair, monkeypatch):
+    """A window's streamed turns are released before disconnect, oldest first."""
+    monkeypatch.setattr(runtime, "_REQUEST_CORRELATIONS_KEPT", 3)
+    server = pair.server
+    streams = [await pair.send(0, f"stream-{number}", is_stream=True) for number in range(6)]
+
+    kept = server._tui_request_origins
+    assert [stream.id in kept for stream in streams] == [False, False, False, True, True, True]
+    assert set(kept) == {key[1] for key in server._request_to_client if key[1].startswith("tui-forward-")}
+
+    # An evicted stream's late chunk is dropped instead of falling back to the
+    # Session, while the newest stream still restores its client's ID.
+    await pair.respond(
+        streams[0], type="event", event_type=SimpleNamespace(value="chat.delta"),
+        payload={"content": "stale", "request_id": streams[0].id},
+    )
+    await pair.respond(
+        streams[-1], type="event", event_type=SimpleNamespace(value="chat.delta"),
+        payload={"content": "late", "request_id": streams[-1].id},
+    )
+    await pair.wait_frames(0, 1)
+    assert pair.sockets[0].frames[0]["payload"]["request_id"] == "stream-5"
+    await _settle()
+    assert len(pair.sockets[0].frames) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_tui_request_correlations_are_bounded_per_socket(pair, monkeypatch):
+    """A CLI channel never releases a reply's correlation; the cap must."""
+    monkeypatch.setattr(runtime, "_REQUEST_CORRELATIONS_KEPT", 4)
+    server = pair.server
+    acp = RouteConfig(path="/acp", channel_id="acp", forward_methods=frozenset({"session.list"}))
+    for number in range(6):
+        before = len(pair.forwarded)
+        await server._handle_raw_message(pair.sockets[0], json.dumps({
+            "type": "req", "id": f"rpc-{number}", "method": "session.list", "params": {},
+        }), "/acp", acp)
+        assert len(pair.forwarded) == before + 1
+
+    keys = {key for key in server._request_to_client if key[0] == "acp"}
+    assert keys == {("acp", f"rpc-{number}") for number in (2, 3, 4, 5)}
+
+
+@pytest.mark.asyncio
+async def test_reused_client_id_keeps_its_live_correlation(pair, monkeypatch):
+    """CLI clients reuse short request IDs; eviction must not drop the live one."""
+    monkeypatch.setattr(runtime, "_REQUEST_CORRELATIONS_KEPT", 2)
+    server = pair.server
+    acp = RouteConfig(path="/acp", channel_id="acp", forward_methods=frozenset({"session.list"}))
+
+    async def send(request_id):
+        await server._handle_raw_message(pair.sockets[0], json.dumps({
+            "type": "req", "id": request_id, "method": "session.list", "params": {},
+        }), "/acp", acp)
+
+    for _ in range(5):
+        await send("1")
+    await send("2")
+
+    assert server._request_to_client[("acp", "1")] is pair.sockets[0]
+    assert server._request_to_client[("acp", "2")] is pair.sockets[0]
+
+
 async def _drop_mid_stream(pair):
     """Window 0 starts a streamed turn in its Session ``old-0``; then its socket drops."""
     stream = await pair.send(0, "chat-1", is_stream=True)
