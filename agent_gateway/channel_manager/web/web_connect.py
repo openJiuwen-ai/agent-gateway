@@ -325,6 +325,9 @@ class WebChannel(BaseWsChannel):
         # 未跟踪的 session 默认返回 False(不忙碌)。
         self._session_busy: dict[str, bool] = {}
         self._session_event_listeners: list[Callable[[str, str, dict], Any]] = []
+        # archive/delete 完成时触发的会话关闭清理, 由 MessageHandler 的
+        # completion wait 表持有者注册。
+        self._session_close_hook: Callable[[str], Any] | None = None
         self._queued_moa_notices: WeakKeyDictionary[asyncio.Queue, int] = WeakKeyDictionary()
         self._expert_processing_requests: dict[str, set[tuple[str, str]]] = {}
         # session_id -> 重新绑定的 ws_id: 刷新后经新连接完成 A4P 授权
@@ -2135,7 +2138,15 @@ class WebChannel(BaseWsChannel):
         stopped Session as still processing.
         """
         if session_id:
-            self._session_busy.pop(str(session_id), None)
+            sid = str(session_id)
+            self._session_busy.pop(sid, None)
+            hook = getattr(self, "_session_close_hook", None)
+            if callable(hook):
+                hook(sid)
+
+    def set_session_close_hook(self, hook: Callable[[str], Any]) -> None:
+        """Register cleanup that runs once a Session is archived or deleted."""
+        self._session_close_hook = hook
 
     def get_metadata(self) -> ChannelMetadata:
         """获取 Channel 元数据."""

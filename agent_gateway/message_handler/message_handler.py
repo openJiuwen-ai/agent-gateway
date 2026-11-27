@@ -5567,6 +5567,26 @@ class MessageHandler(ABC):
         except Exception:
             logger.warning("Chat completion callback failed: session_id=%s", session_id, exc_info=True)
 
+    def release_session_completion_waits(self, session_id: str) -> int:
+        """Drop host-completion waits owned by a closed Session.
+
+        ``_awaiting_host_completion`` deliberately outlives the local request:
+        the AgentServer may still report its terminal row.  A Session that has
+        been archived or deleted will never report one, so its waits must end
+        with the Session instead of accumulating for the process lifetime.
+        """
+        owner = str(session_id or "")
+        if not owner:
+            return 0
+        stale = [
+            rid
+            for rid, waiting_session in self._awaiting_host_completion.items()
+            if waiting_session == owner
+        ]
+        for rid in stale:
+            self._awaiting_host_completion.pop(rid, None)
+        return len(stale)
+
     async def _process_non_stream_request(
         self, msg: "Message", env: "E2AEnvelope", *, complete_trace: bool = False,
     ) -> Any:

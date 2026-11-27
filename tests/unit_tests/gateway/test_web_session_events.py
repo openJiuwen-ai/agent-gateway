@@ -27,3 +27,15 @@ def test_session_observers_require_session_identity(event, envelope_sid, payload
     ))
     assert seen == ([(event, expected, payload)] if expected else [])
     assert None not in channel._session_busy and "" not in channel._session_busy
+
+
+def test_clear_session_busy_runs_session_close_hook():
+    channel = WebChannel.__new__(WebChannel)
+    channel._session_busy = {"sess-1": True}
+    seen = []
+    channel.set_session_close_hook(seen.append)
+
+    channel.clear_session_busy("sess-1")
+
+    assert seen == ["sess-1"]
+    assert channel._session_busy == {}

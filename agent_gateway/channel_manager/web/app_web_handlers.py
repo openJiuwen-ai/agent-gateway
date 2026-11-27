@@ -2164,6 +2164,14 @@ async def _pre_persist_large_media(
     return params
 
 
+def _bind_session_close_release(channel: Any, message_handler: Any) -> None:
+    """Route Session close cleanup to the owner of completion waits."""
+    release = getattr(message_handler, "release_session_completion_waits", None)
+    register = getattr(channel, "set_session_close_hook", None)
+    if callable(release) and callable(register):
+        register(release)
+
+
 def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     """注册 Web 前端需要的 method 与 on_connect。
     on_config_saved: 可选，config.set 写回后调用的回调；
@@ -2177,6 +2185,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     agent_client = bind.agent_client
     message_handler = bind.message_handler
     channel_manager = bind.channel_manager
+    _bind_session_close_release(channel, message_handler)
     on_config_saved = bind.on_config_saved
     heartbeat_service = bind.heartbeat_service
     cron_controller = bind.cron_controller
