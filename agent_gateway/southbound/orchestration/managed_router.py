@@ -3798,6 +3798,7 @@ class ManagedRouter(AgentServerClient):
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
+        deleted = False
         try:
             delete_reason = (
                 DELETE_REASON_INSTANCE_UNAVAILABLE
@@ -3806,7 +3807,7 @@ class ManagedRouter(AgentServerClient):
             )
             token = _cleanup_trigger.set((delete_reason, False))
             try:
-                await self.delete_agent(
+                deleted = await self.delete_agent(
                     info.user_id,
                     info.agent_type,
                     key_values=key_values,
@@ -3823,6 +3824,24 @@ class ManagedRouter(AgentServerClient):
                 info.agent_type,
                 str(info.sandbox_id or ""),
             )
+
+        # 故障强删成功后，在线用户直接后台预热，避免下一条消息再等冷启动。
+        if (
+            deleted
+            and info.agent_type == BUILTIN_AGENT_TYPE
+            and self._agent_manager.get_user_connection_count(info.user_id) > 0
+        ):
+            log_agentos(
+                logger,
+                logging.INFO,
+                "sandbox.warmup.after_failure",
+                user_id=info.user_id,
+                session_id=session_id,
+                agent_type=info.agent_type,
+                sandbox_id=str(info.sandbox_id or ""),
+                reason=reason,
+            )
+            self._schedule_connect_warmup(info.user_id)
 
     async def _cleanup_agent_after_create_not_running(
         self,

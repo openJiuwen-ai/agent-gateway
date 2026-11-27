@@ -2345,6 +2345,33 @@ async def test_connect_warmup_failure_does_not_raise() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("agent_type", "online", "deleted", "expected"), [
+    ("jiuwenswarm", True, True, True),
+    ("jiuwenswarm", False, True, False),
+    ("third", True, True, False),
+    ("jiuwenswarm", True, False, False),
+])
+async def test_network_failure_cleanup_schedules_warmup(
+    monkeypatch, agent_type, online, deleted, expected,
+) -> None:
+    manager = AgentManager()
+    client = _router_client(FakeYuanRongClient(), agent_manager=manager)
+    runtime = await manager.get_or_create_agent(
+        "u1", agent_type, creator=_ready_creator,
+    )
+    if online:
+        manager.increment_user_connections("u1")
+    scheduled: list[str] = []
+    monkeypatch.setattr(client, "_schedule_connect_warmup", scheduled.append)
+    monkeypatch.setattr(client, "delete_agent", AsyncMock(return_value=deleted))
+    try:
+        await client._run_network_failure_delete(runtime)
+        assert scheduled == (["u1"] if expected else [])
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_chat_after_failed_warmup_create_retries() -> None:
     """Warmup create failure must not pin a FAILED runtime that blocks chat."""
 
