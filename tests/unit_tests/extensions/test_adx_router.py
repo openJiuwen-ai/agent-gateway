@@ -125,7 +125,7 @@ async def test_connect_warmup_survives_a_timed_out_foreground_waiter(monkeypatch
         await finish.wait()
         return await original_create(info)
 
-    router._create_agent = delayed_create
+    router._router._create_agent = delayed_create
     await router.connect('')
     try:
         router._schedule_connect_warmup('alice')

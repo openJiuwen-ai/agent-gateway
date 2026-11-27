@@ -203,7 +203,7 @@ async def test_tls_or_ingress_auth_failure_never_sends_business_requests(tmp_pat
                     await rejected.send_request(_request())
             else:
                 assert not (await rejected.send_request(_request())).ok
-            assert not rejected._ws_clients
+            assert not rejected._ws_pool.clients
             assert not requests and not targets
         finally:
             await rejected.disconnect()

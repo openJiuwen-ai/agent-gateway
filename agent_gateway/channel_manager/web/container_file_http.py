@@ -623,10 +623,11 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         AgentOSFileTransferError,
         AgentOSRouterClient,
     )
+    from agent_gateway.routing.e2a_proxy import is_agentos_routing_client
     from agent_gateway.extensions.auth.common import headers_to_dict
 
     client = getattr(channel, "container_file_client", None)
-    if not isinstance(client, AgentOSRouterClient):
+    if not isinstance(client, AgentOSRouterClient) and not is_agentos_routing_client(client):
         return
 
     prefix = FILE_API_PREFIX
