@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -37,9 +39,44 @@ def clean_env(monkeypatch):
 
 
 def _reload_routed():
-    import agent_gateway.extensions.runtime_management_extension.runtime_routed_client as module
+    import agent_gateway.southbound.orchestration.delegated_router as module
 
     return importlib.reload(module)
+
+
+@pytest.mark.parametrize("module_name", [
+    "agent_gateway.southbound.orchestration.delegated_router",
+    "agent_gateway.southbound.control.runtime",
+    "agent_gateway.extensions.runtime_management_extension.agent_authorization",
+])
+def test_runtime_modules_can_be_imported_first(module_name):
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module_name}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_runtime_package_import_defers_registration():
+    code = """
+import sys
+import agent_gateway.extensions.runtime_management_extension
+
+assert 'agent_gateway.extensions.runtime_management_extension.extension' not in sys.modules
+assert 'agent_gateway.southbound.orchestration.delegated_router' not in sys.modules
+assert 'agent_gateway.southbound.control.runtime' not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_runtime_modules_are_aliases():
+    from agent_gateway.extensions.runtime_management_extension import runtime_routed_client, session_route_client
+    from agent_gateway.southbound.orchestration import delegated_router
+    from agent_gateway.southbound.control import runtime
+
+    assert runtime_routed_client is delegated_router
+    assert session_route_client is runtime
 
 
 # --------------------------------------------------------------------------- #

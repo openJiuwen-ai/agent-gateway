@@ -8,8 +8,8 @@ import httpx
 import pytest
 from e2a.models import E2AEnvelope
 
-from agent_gateway.extensions.runtime_management_extension import runtime_routed_client as routed
-from agent_gateway.extensions.runtime_management_extension.session_route_client import (
+from agent_gateway.southbound.orchestration import delegated_router as routed
+from agent_gateway.southbound.control.runtime import (
     FatalRouteError,
     RetryableRouteError,
     RuntimeSessionRouteClient,
