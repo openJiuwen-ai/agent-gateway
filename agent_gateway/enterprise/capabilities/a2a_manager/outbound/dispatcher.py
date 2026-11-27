@@ -942,9 +942,14 @@ class A2AOutboundDispatcher:
             changes["error_code"] = A2AOutboundErrorCode.DISPATCH_REJECTED.value
         elif remote.status is A2AOutboundDispatchStatus.UNKNOWN:
             changes["error_code"] = A2AOutboundErrorCode.REMOTE_STATUS_UNKNOWN.value
-        return await self._repository.transition_dispatch(
+        updated = await self._repository.transition_dispatch(
             dispatch_id, remote.status, **changes
         )
+        if updated is not None and updated.is_terminal:
+            # A finished dispatch is never polled again, so its throttle entry
+            # would otherwise stay resident for the life of the process.
+            self._last_query_monotonic.pop(str(dispatch_id), None)
+        return updated
 
     async def _settle_cancelled(
         self,
