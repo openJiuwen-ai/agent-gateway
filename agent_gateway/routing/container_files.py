@@ -29,9 +29,10 @@ class AgentFileDownloadChunk:
 class AgentOSFileTransferError(RuntimeError):
     """Raised when AgentOS container file transfer cannot be completed."""
 
-    def __init__(self, message: str, *, code: str = "INTERNAL_ERROR") -> None:
+    def __init__(self, message: str, *, code: str = "INTERNAL_ERROR", status_code: int | None = None) -> None:
         super().__init__(message)
         self.code = str(code)
+        self.status_code = status_code
 
 
 # Upload: relative path (+ optional dir prefix) → ``/home/agentos/<relative>``.

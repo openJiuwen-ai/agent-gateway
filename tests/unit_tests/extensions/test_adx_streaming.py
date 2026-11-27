@@ -29,6 +29,27 @@ async def browser(monkeypatch):
         await router.shutdown()
 
 
+@pytest.mark.parametrize("status,payload,code", [
+    (409, {}, "CONFLICT"),
+    (409, {"error": {"code": "FILE_BUSY"}}, "FILE_BUSY"),
+    (413, {"error_code": "FILE_TOO_LARGE"}, "FILE_TOO_LARGE"),
+])
+async def test_native_file_errors_reach_browser(browser, status, payload, code):
+    client, _, control = browser
+    original = control.http._transport
+    async def handle(request):
+        if request.url.path.endswith(("/download", "/upload")):
+            return httpx.Response(status, json=payload)
+        return await original.handle_async_request(request)
+    control.http._transport = httpx.MockTransport(handle)
+    control.invoke.return_value = {"type": "file", "size": 3}
+    response = await client.get("/file-api/raw-file", params={"path": "/home/agentos/a", "user_id": "alice"})
+    assert (response.status_code, response.json()["code"]) == (status, code)
+    response = await client.post("/file-api/upload", data={"user_id": "alice"}, files={"file": ("a.txt", b"abc")})
+    assert response.status_code == 200
+    assert response.json()["errors"][0]["code"] == code
+
+
 async def test_native_http_disconnect_closes_upstream_and_releases_activity(monkeypatch):
     from agent_gateway.channel_manager.web.container_file_http import _native_file_response
     router, control = _files(monkeypatch)

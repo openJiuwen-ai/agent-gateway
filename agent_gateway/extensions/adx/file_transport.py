@@ -27,7 +27,7 @@ async def _check_response(response: httpx.Response) -> None:
         if len(body) >= 4096:
             break
     code = {400: 'BAD_REQUEST', 401: 'UNAUTHORIZED', 403: 'FORBIDDEN',
-            404: 'NOT_FOUND', 413: 'FILE_TOO_LARGE',
+            404: 'NOT_FOUND', 409: 'CONFLICT', 413: 'FILE_TOO_LARGE',
             416: 'BAD_REQUEST'}.get(response.status_code, 'SERVICE_UNAVAILABLE')
     detail = body.decode('utf-8', errors='replace')
     try:
@@ -37,14 +37,18 @@ async def _check_response(response: httpx.Response) -> None:
     payload = value if isinstance(value, dict) else {}
     error = payload.get('error')
     error_code = error.get('code') if isinstance(error, dict) else None
-    structured = str(error_code or payload.get('error_code') or '').upper()
-    if structured == 'FILE_NOT_FOUND':
+    error_code = error_code or payload.get('error_code')
+    structured = error_code.strip() if isinstance(error_code, str) else ''
+    if structured.upper() == 'FILE_NOT_FOUND':
         code = 'file_not_found'
-    elif structured in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
+    elif structured.upper() in ('NOT_FOUND', 'INSTANCE_NOT_FOUND'):
         code = 'instance_not_found'
+    elif structured:
+        code = structured
     elif response.status_code == 400 and ('not found' in detail.lower() or 'no such file' in detail.lower()):
         code = 'file_not_found'
-    raise AdxControlError(f'ADX file transfer returned HTTP {response.status_code}: {detail}', code=code)
+    raise AdxControlError(f'ADX file transfer returned HTTP {response.status_code}: {detail}',
+                          code=code, status_code=response.status_code)
 
 
 @asynccontextmanager

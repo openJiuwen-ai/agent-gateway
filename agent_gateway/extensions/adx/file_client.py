@@ -78,7 +78,7 @@ class AdxFileMixin:
             yield environment
         except AdxControlError as exc:
             code = "instance_not_found" if isinstance(exc, AdxEnvironmentNotFoundError) else exc.code
-            raise AgentOSFileTransferError(str(exc), code=code) from exc
+            raise AgentOSFileTransferError(str(exc), code=code, status_code=exc.status_code) from exc
         finally:
             if runtime is not None:
                 with anyio.CancelScope(shield=True):

@@ -165,7 +165,7 @@ class MkdirQuery(BaseModel):
     recursive: bool = False
 
 
-def _status_for_transfer_code(code: str) -> int:
+def _status_for_transfer_code(code: str, upstream_status: int | None = None) -> int:
     normalized = str(code or "").strip().upper()
     if normalized in {
         "BAD_REQUEST",
@@ -188,11 +188,17 @@ def _status_for_transfer_code(code: str) -> int:
         return 403
     if normalized in {"NOT_FOUND", "INSTANCE_NOT_FOUND", "FILE_NOT_FOUND"}:
         return 404
+    if normalized == "CONFLICT":
+        return 409
     if normalized in {"PAYLOAD_TOO_LARGE", "FILE_TOO_LARGE"}:
         return 413
     if normalized in {"LIST_NOT_SUPPORTED", "NOT_IMPLEMENTED"}:
         return 501
-    return 502
+    return upstream_status if upstream_status is not None and 400 <= upstream_status < 500 else 502
+
+
+def _transfer_error_response(exc: AgentOSFileTransferError) -> JSONResponse:
+    return _error_json(error=str(exc), code=exc.code, status_code=_status_for_transfer_code(exc.code, exc.status_code))
 
 
 def _error_json(*, error: str, code: str | None = None, status_code: int | None = None) -> JSONResponse:
@@ -774,7 +780,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 session_id=sid,
             )
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[file-api/list] failed: %s", exc)
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
@@ -875,7 +881,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 headers={"Cache-Control": "no-store"},
             )
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[file-api/raw-file] failed: %s", exc)
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
@@ -918,7 +924,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 session_id=session_id,
             )
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[file-api/download] failed: %s", exc)
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
@@ -988,7 +994,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             raw = b"".join(parts)
             text, used = _decode_text(raw, params.encoding)
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except OSError as exc:
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
         except Exception as exc:  # noqa: BLE001
@@ -1085,7 +1091,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     }
                 )
             except AgentOSFileTransferError as exc:
-                errors.append({"filename": filename, "error": str(exc)})
+                errors.append({"filename": filename, "error": str(exc), "code": exc.code})
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[file-api/upload] failed for %s: %s", filename, exc)
                 errors.append({"filename": filename, "error": str(exc)})
@@ -1131,7 +1137,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 session_id=sid,
             )
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[file-api/file-content POST] failed: %s", exc)
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
@@ -1163,7 +1169,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 session_id=sid,
             )
         except AgentOSFileTransferError as exc:
-            return _error_json(error=str(exc), code=exc.code)
+            return _transfer_error_response(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[file-api/mkdir] failed: %s", exc)
             return _error_json(error=str(exc), code="INTERNAL_ERROR", status_code=500)
