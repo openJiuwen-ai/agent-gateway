@@ -139,6 +139,52 @@ async def _ensure_user_preference_extras_column(handler: DBHandler) -> None:
                 raise
 
 
+async def _ensure_workspace_quota_usage_agent_id_column(handler: DBHandler) -> None:
+    """旧库补 ``workspace_quota_usage.agent_id``（init_table 不会给已有表加列）。
+
+    PR #426 检视 P2-2：``agent_id`` 作为行属性存储，供管理端用量视图复算 agent
+    维度配额策略；唯一键仍为三元组，故仅 ADD COLUMN，不改唯一索引。
+    """
+    from sqlalchemy import inspect, text
+    from sqlalchemy.exc import DBAPIError
+
+    table_name = WORKSPACE_QUOTA_USAGE_TABLE_DEF.table_name
+
+    def upgrade(connection) -> None:
+        inspector = inspect(connection)
+        if not inspector.has_table(table_name):
+            return
+        cols = {col["name"] for col in inspector.get_columns(table_name)}
+        if "agent_id" in cols:
+            return
+        quote = connection.dialect.identifier_preparer.quote
+        connection.execute(
+            text(
+                f"ALTER TABLE {quote(table_name)} "
+                f"ADD COLUMN {quote('agent_id')} VARCHAR(64) NOT NULL DEFAULT ''"
+            )
+        )
+
+    for attempt in range(3):
+        try:
+            async with handler.get_engine().begin() as connection:
+                await connection.run_sync(upgrade)
+            return
+        except DBAPIError as exc:
+            dialect = handler.get_engine().dialect.name
+            sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(
+                exc.orig, "pgcode", None
+            )
+            errno = exc.orig.args[0] if exc.orig.args else None
+            column_race = (
+                (dialect == "postgresql" and sqlstate == "42701")
+                or (dialect == "mysql" and errno == 1060)
+                or "duplicate column" in str(exc.orig).lower()
+            )
+            if not column_race or attempt == 2:
+                raise
+
+
 async def _drop_model_template_retired_flags(handler: DBHandler) -> None:
     """删除已下线的 model_template 布尔列，避免旧库 NOT NULL 无默认值导致写入失败。
 
@@ -255,4 +301,5 @@ async def init_all_tables(handler: DBHandler) -> None:
         await handler.init_table(table_def)
     await _ensure_user_preference_extras_column(handler)
     await _ensure_expert_package_template_swarmflow_column(handler)
+    await _ensure_workspace_quota_usage_agent_id_column(handler)
     await _drop_model_template_retired_flags(handler)

@@ -229,7 +229,7 @@ def _select_org_limit(policies: list[dict[str, Any]], group_id: str) -> tuple[in
             continue
         default_org = _org_limit_value(row)
         break
-    ident = {"user_id": "", "group_id": group_id, "bot_id": ""}
+    ident = {"user_id": "", "group_id": group_id, "bot_id": "", "agent_id": ""}
     hits: list[dict[str, Any]] = []
     for row in policies:
         if not bool(row.get("enabled", True)) or not _is_org_policy(row.get("match_expr")):
@@ -527,6 +527,9 @@ class TeamQuotaPolicyStore:
             grouped.setdefault(key, []).append(row)
         items = []
         for (uid, gid, bid), leases in grouped.items():
+            # DB 行不含 agent_id 列（team 配额表无该字段），故此处 agent_id=""。
+            # request-sourced 构造（jiuwenswarm team/handlers.py）才会填充 agent_id，
+            # 使 agent 维度团队配额策略命中（PR #426 检视 P3）。
             ident = OwnerIdentity(user_id=uid, group_id=gid, bot_id=bid)
             limits = self.resolve_limits(ident)
             team_ids = [_clean(r.get("team_id")) for r in leases if _clean(r.get("team_id"))]

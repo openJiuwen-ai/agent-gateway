@@ -211,12 +211,14 @@ def snapshot_to_dict(
     user_id: str,
     group_id: str,
     bot_id: str,
+    agent_id: str = "",
 ) -> dict[str, Any]:
     """用量接口响应体（limit/status 由 Gateway 现算，不落用量表）。"""
     return {
         "user_id": user_id,
         "group_id": group_id,
         "bot_id": bot_id,
+        "agent_id": str(agent_id or ""),
         "used_bytes": snap.used_bytes,
         "limit_bytes": snap.limit_bytes,
         "percent": snap.percent,
@@ -288,8 +290,15 @@ async def upsert_usage_cache(
     group_id: str,
     bot_id: str,
     used_bytes: int,
+    agent_id: str = "",
 ) -> None:
-    """按三元组 upsert Gateway ``workspace_quota_usage``；未装配时静默跳过。"""
+    """按三元组 upsert Gateway ``workspace_quota_usage``；未装配时静默跳过。
+
+    缓存唯一键仍是 ``(user_id, group_id, bot_id)``（与建表唯一索引一致，避免
+    既有库改唯一索引的迁移风险）；``agent_id`` 作为行属性存储，供管理端用量视图
+    用同一字段调 ``pick_policy`` 复算 limit/status，消除请求侧与管理视图的分叉
+    （PR #426 检视 P2-2）。同一工作区多 agent_id 的罕见场景按 last-write-wins。
+    """
     try:
         from agent_gateway.config.enterprise.access import (
             get_enterprise_record_repository,
@@ -303,6 +312,7 @@ async def upsert_usage_cache(
     uid = str(user_id or "").strip()
     gid = str(group_id or "").strip()
     bid = str(bot_id or "").strip()
+    aid = str(agent_id or "").strip()
     if not uid or not bid:
         logger.debug("[workspace.usage] skip cache upsert: missing user_id/bot_id")
         return
@@ -310,12 +320,14 @@ async def upsert_usage_cache(
     now = _utc_now()
     used = max(0, int(used_bytes))
     key = {"user_id": uid, "group_id": gid, "bot_id": bid}
+    aid_field = {"agent_id": aid}
     try:
         existing = await repo.get(key)
         if existing is None:
             await repo.create(
                 {
                     **key,
+                    **aid_field,
                     "used_bytes": used,
                     "reported_at": now,
                     "data": None,
@@ -329,6 +341,7 @@ async def upsert_usage_cache(
         await repo.update(
             key,
             {
+                **aid_field,
                 "used_bytes": used,
                 "reported_at": now,
                 "updated_at": now,

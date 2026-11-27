@@ -77,6 +77,9 @@ class WorkspaceQuotaUsageService:
             item_user = _as_str(row.get("user_id")).strip()
             item_group = _as_str(row.get("group_id"))
             item_bot = _as_str(row.get("bot_id")).strip()
+            # PR #426 检视 P2-2：用量缓存行现携带 agent_id（默认 ""），
+            # 用同一字段复算 agent 维度策略，消除请求侧与管理视图的 limit/status 分叉。
+            item_agent = _as_str(row.get("agent_id")).strip()
             if not item_user or not item_bot:
                 continue
             used = max(0, _as_int(row.get("used_bytes")))
@@ -85,6 +88,7 @@ class WorkspaceQuotaUsageService:
                 user_id=item_user,
                 group_id=item_group,
                 bot_id=item_bot,
+                agent_id=item_agent,
             )
             if policy is None:
                 snap = compute_quota_status(
@@ -107,6 +111,7 @@ class WorkspaceQuotaUsageService:
                     "user_id": item_user,
                     "group_id": item_group,
                     "bot_id": item_bot,
+                    "agent_id": item_agent,
                     "used_bytes": snap.used_bytes,
                     "limit_bytes": snap.limit_bytes,
                     "source_policy_id": snap.source_policy_id,
