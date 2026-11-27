@@ -1111,7 +1111,7 @@ class ManagedRouter(AgentServerClient):
             except asyncio.CancelledError:
                 return
 
-    def _schedule_connect_warmup(self, user_id: str) -> None:
+    def _schedule_connect_warmup(self, user_id: str, *, require_online: bool = False) -> None:
         """Fire-and-forget builtin sandbox + instance WS warmup for one user."""
         if self._closed or not self._connect_warmup_enabled:
             return
@@ -1133,7 +1133,7 @@ class ManagedRouter(AgentServerClient):
             )
             return
         task = asyncio.create_task(
-            self._warmup_user_agent(user_id),
+            self._warmup_user_agent(user_id, require_online=require_online),
             name=f"agentos-connect-warmup-{user_id[:24]}",
         )
         self._warmup_tasks[user_id] = task
@@ -1146,7 +1146,12 @@ class ManagedRouter(AgentServerClient):
 
         task.add_done_callback(_on_done)
 
-    async def _warmup_user_agent(self, user_id: str) -> None:
+    async def _warmup_user_agent(self, user_id: str, *, require_online: bool = False) -> None:
+        if require_online and (
+            self._closed
+            or self._agent_manager.get_user_connection_count(user_id) <= 0
+        ):
+            return
         with trace_operation(
             "gw.connect.warmup", root=True, attributes={"source": "connect.warmup", "user_id": user_id},
         ):
@@ -3798,6 +3803,7 @@ class ManagedRouter(AgentServerClient):
         key_values: dict[str, Any] | None = None
         if "session_id" in self._agent_manager.key_fields and session_id:
             key_values = {"session_id": session_id}
+        deleted = False
         try:
             delete_reason = (
                 DELETE_REASON_INSTANCE_UNAVAILABLE
@@ -3806,7 +3812,7 @@ class ManagedRouter(AgentServerClient):
             )
             token = _cleanup_trigger.set((delete_reason, False))
             try:
-                await self.delete_agent(
+                deleted = await self.delete_agent(
                     info.user_id,
                     info.agent_type,
                     key_values=key_values,
@@ -3823,6 +3829,34 @@ class ManagedRouter(AgentServerClient):
                 info.agent_type,
                 str(info.sandbox_id or ""),
             )
+
+        # 故障强删成功后，在线用户直接后台预热，避免下一条消息再等冷启动。
+        if (
+            deleted
+            and info.agent_type == BUILTIN_AGENT_TYPE
+            and self._agent_manager.get_user_connection_count(info.user_id) > 0
+        ):
+            try:
+                log_agentos(
+                    logger,
+                    logging.INFO,
+                    "sandbox.warmup.after_failure",
+                    user_id=info.user_id,
+                    session_id=session_id,
+                    agent_type=info.agent_type,
+                    sandbox_id=str(info.sandbox_id or ""),
+                    reason=reason,
+                )
+                self._schedule_connect_warmup(
+                    info.user_id, require_online=True,
+                )
+            except Exception:  # noqa: BLE001 - cleanup must not mask the route error
+                logger.exception(
+                    "[AgentOSRouter] failure warmup scheduling failed: "
+                    "user_id=%s agent_type=%s",
+                    info.user_id,
+                    info.agent_type,
+                )
 
     async def _cleanup_agent_after_create_not_running(
         self,
