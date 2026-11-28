@@ -19,7 +19,7 @@ uv run python examples/mock-agent-server/mock_agent_server.py 19501
 终端 B（Gateway）：
 
 ```bash
-export JIUWENSWARM_HOME="$PWD/.local-home"
+export AGENT_GATEWAY_HOME="$PWD/.local-home"
 export AGENT_SERVER_HOST=127.0.0.1
 export AGENT_SERVER_PORT=19501
 export WEB_PORT=19500
