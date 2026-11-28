@@ -458,9 +458,13 @@ class FeishuChannel(BaseChannel):
         self._file_service: FeishuFileService | None = None
         # IM 附件落盘钩子（Phase 3）：由 Gateway 注入，经 E2A 落盘到目标 AgentServer。
         self._file_persist_hook: Any = None
-        # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重
-        # key=request_id, value=set of absolute file paths
-        self._sent_file_paths_by_req: dict[str, set[str]] = {}
+        # 按 request_id 记录已通过 chat.file 发送的文件路径，用于兜底去重。
+        # key=request_id, value=(最近写入时间, 已发送文件绝对路径集合)。
+        # req_id 由上游请求分配，chat.final 发完也不会回调“该请求结束”，
+        # 只写不删会让每个发过文件的请求各留一份，常驻到进程退出。
+        self._sent_file_paths_by_req: dict[str, tuple[float, set[str]]] = {}
+        # 上次全表清扫的时间点，用于给写入路径的清扫做节流。
+        self._sent_file_paths_pruned_at: float = 0.0
         # 审批卡片上下文：request_id -> _ApprovalCardContext（内存快路径）。
         self._card_contexts: dict[str, _ApprovalCardContext] = {}
 
@@ -877,6 +881,7 @@ class FeishuChannel(BaseChannel):
         self._cardkit_sessions.clear()
         self._cardkit_buffers.clear()
         self._card_contexts.clear()
+        self._sent_file_paths_by_req.clear()
 
         if self._websocket_client and self._ws_thread_loop and self._ws_thread_loop.is_running():
             try:
@@ -2474,7 +2479,7 @@ class FeishuChannel(BaseChannel):
                 and self._file_service
             ):
                 req_id = str(getattr(msg, "id", "") or "")
-                already_sent = self._sent_file_paths_by_req.get(req_id, set())
+                already_sent = self._already_sent_file_paths(req_id)
                 detected_files = [
                     fp for fp in self._detect_workspace_files(content_str)
                     if os.path.abspath(fp) not in already_sent
@@ -4333,6 +4338,47 @@ class FeishuChannel(BaseChannel):
 
     # ==================== 文件消息发送 ====================
 
+    # 兜底去重记录的保留期：文件只可能在 chat.final 前后几秒内重复，一小时足够宽松，
+    # 同时保证没有结束回调的 request_id 不会无限累积。
+    _SENT_FILE_PATHS_TTL_SECONDS = 3600.0
+    # 写入路径清扫的节流间隔：一条消息可能连着发多个文件，逐条登记都做一次全表扫描
+    # 没有必要，按时间节流后回收的实时性也不受影响。
+    _SENT_FILE_PATHS_PRUNE_INTERVAL_SECONDS = 30.0
+
+    def _remember_sent_file_path(self, req_id: str, file_path: str) -> None:
+        """记录本请求已发出的文件路径，并在写入时按 TTL 清扫旧请求。"""
+        now = time.time()
+        if now - self._sent_file_paths_pruned_at >= self._SENT_FILE_PATHS_PRUNE_INTERVAL_SECONDS:
+            self._prune_sent_file_paths(now)
+            self._sent_file_paths_pruned_at = now
+        # 每次登记都刷新时间戳（滑窗 TTL）。一个请求可能分多次发文件，若时间戳冻结在
+        # 首次写入时刻，间隔较长的请求会在 chat.final 兜底时被判过期，导致文件重发。
+        entry = self._sent_file_paths_by_req.get(req_id)
+        paths = entry[1] if entry is not None else set()
+        self._sent_file_paths_by_req[req_id] = (now, paths)
+        paths.add(os.path.abspath(file_path))
+
+    def _already_sent_file_paths(self, req_id: str) -> set[str]:
+        """读取本请求已发出的文件路径；命中过期条目时顺手回收并返回空集。"""
+        entry = self._sent_file_paths_by_req.get(req_id)
+        if entry is None:
+            return set()
+        if time.time() - entry[0] > self._SENT_FILE_PATHS_TTL_SECONDS:
+            self._sent_file_paths_by_req.pop(req_id, None)
+            return set()
+        return set(entry[1])
+
+    def _prune_sent_file_paths(self, now: float | None = None) -> None:
+        """回收超出 TTL 的去重记录，避免按 request_id 只写不删常驻内存。"""
+        current = time.time() if now is None else now
+        stale = [
+            request_id
+            for request_id, (seen_at, _paths) in self._sent_file_paths_by_req.items()
+            if current - seen_at > self._SENT_FILE_PATHS_TTL_SECONDS
+        ]
+        for request_id in stale:
+            self._sent_file_paths_by_req.pop(request_id, None)
+
     async def _send_file_message(
         self,
         msg: Message,
@@ -4376,9 +4422,7 @@ class FeishuChannel(BaseChannel):
 
             req_id = str(getattr(msg, "id", "") or "")
             if req_id:
-                self._sent_file_paths_by_req.setdefault(req_id, set()).add(
-                    os.path.abspath(file_path)
-                )
+                self._remember_sent_file_path(req_id, file_path)
 
             if is_image_file(file_path):
                 await self._send_image_message(receive_id, id_type, file_path)
